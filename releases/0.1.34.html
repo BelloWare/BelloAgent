@@ -1,0 +1,8 @@
+<h2>Bello Agent 0.1.34</h2>
+<ul>
+  <li>Work lines tell the truth: a file counts once however many times it was read or edited, a directory listing is not a file read, and failed or skipped calls are reported as attempts rather than as work done. Verbs follow what happened: Editing, Edited, Failed editing, Skipped editing.</li>
+  <li>MCP calls say what they did: listed servers, loaded tool schemas, or called a tool.</li>
+  <li>Edit previews are labelled as the requested change. A failed or skipped call is marked not applied, an overwrite shows its requested content plainly, and only a confirmed new file reads as added lines.</li>
+  <li>Turns follow the helper's own turn id: a compaction, a retry notice or a failure mid-run no longer splits a turn, a turn that began before the loaded history says so, and model time is measured around each request instead of inferred from the gaps between rows. The turn line counts files changed.</li>
+  <li>An expanded work line stays open while its reply streams in instead of snapping shut. The reply line no longer repeats the live bar's spinner and current action; the model link beside the line is its own keyboard stop; reasoning inside an expanded line starts folded and unfolds smoothly; a live reply's line eases in once it has work to report.</li>
+</ul>

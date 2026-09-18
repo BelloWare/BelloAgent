@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "description": "DeepSeek V4.1 Flash. Preserves your LiteLLM alias; the official DeepSeek API calls this model deepseek-flash. Output uses the published 384K ceiling; reduce it for a smaller context reserve.",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 393216,
+      "reasoning": [
+        "off",
+        "low",
+        "high",
+        "max"
+      ],
+      "deprecated": false,
+      "order": 10
+    },
+    {
+      "id": "glm-5.3-flash",
+      "name": "GLM 5.3 Flash",
+      "description": "GLM 5.3 Flash with low/high/max reasoning. Uses a 1M context and 128K output cap from the referenced serving catalog; confirm your LiteLLM deployment supports these limits.",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 131072,
+      "reasoning": [
+        "low",
+        "high",
+        "max"
+      ],
+      "deprecated": false,
+      "order": 20
+    },
+    {
+      "id": "glm-5.3",
+      "name": "GLM 5.3",
+      "description": "GLM 5.3 with low/high/max reasoning. Uses a 1M context and 128K output cap from the referenced serving catalog; confirm your LiteLLM deployment supports these limits.",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 131072,
+      "reasoning": [
+        "low",
+        "high",
+        "max"
+      ],
+      "deprecated": false,
+      "order": 30
+    },
+    {
+      "id": "kimi-k3",
+      "name": "Kimi K3",
+      "description": "Kimi K3 with always-on thinking. The 131072 output cap is its documented API default, not its larger provider ceiling; this avoids reserving the whole context in Bello Agent.",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 131072,
+      "reasoning": [
+        "low",
+        "high",
+        "max"
+      ],
+      "deprecated": false,
+      "order": 40
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash",
+      "description": "Gemini 3.8 Flash. Uses Google's 1048576 input limit conservatively as the app context capacity, with a 65536 output cap. Minimal and off are not offered.",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 65536,
+      "reasoning": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "deprecated": false,
+      "order": 50
+    },
+    {
+      "id": "auto-router",
+      "name": "Auto Router — GPT-5.6 Sol + DeepSeek V4.1 Flash",
+      "description": "Your LiteLLM router alias. Context and output use the lower limits of GPT-5.6 Sol and DeepSeek V4.1 Flash; effort choices are their common native labels. This entry does not configure the router.",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 128000,
+      "reasoning": [
+        "off",
+        "low",
+        "high",
+        "max"
+      ],
+      "deprecated": false,
+      "order": 60
+    }
+  ]
+}

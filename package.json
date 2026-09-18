@@ -1,0 +1,35 @@
+{
+  "name": "bello-agent",
+  "version": "0.1.6",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.21.0"
+  },
+  "packageManager": "npm@11.19.0",
+  "scripts": {
+    "pretest:host": "python3 scripts/patch-pi.py",
+    "typecheck": "tsc --noEmit",
+    "test:host": "node --import tsx --test packages/host/test/*.test.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "highlight.js": "11.12.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "smol-toml": "1.8.0",
+    "typebox": "1.3.27",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "esbuild": "0.28.2",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,72 @@
+name: PiApp
+options:
+  minimumXcodeGenVersion: 2.44.1
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    MARKETING_VERSION: 0.1.37
+    CURRENT_PROJECT_VERSION: 41
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    DEVELOPMENT_TEAM: 43TXHV3TM3
+    ARCHS: arm64
+    ENABLE_HARDENED_RUNTIME: YES
+    RELEASE_MESSAGE: "Replaces the macOS title bar on every window with the app's own header, and calms the dashboard. Tiles are lighter and keep one height per row; sheet headers are softer."
+  configs:
+    Debug:
+      ENABLE_HARDENED_RUNTIME: NO
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.8.1
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: 1.19.0
+targets:
+  PiApp:
+    type: application
+    productName: Bello Agent
+    platform: macOS
+    sources:
+      - apps/macos/PiApp
+      - path: catalogs/bello-agent.models.json
+        buildPhase: resources
+    postBuildScripts:
+      - name: Embed pinned host and transcript
+        script: /usr/bin/python3 "$SRCROOT/scripts/embed-runtime.py"
+        basedOnDependencyAnalysis: false
+    dependencies:
+      - package: Sparkle
+      - package: SwiftTerm
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.belloware.PiApp
+        PRODUCT_NAME: Bello Agent
+        PRODUCT_MODULE_NAME: PiApp
+        INFOPLIST_FILE: apps/macos/PiApp/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: apps/macos/PiApp/PiApp.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+  PiAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [apps/macos/PiAppTests]
+    dependencies:
+      - target: PiApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.belloware.PiAppTests
+schemes:
+  PiApp:
+    build:
+      targets:
+        PiApp: all
+    test:
+      targets: [PiAppTests]
+      environmentVariables:
+        PI_APP_TESTING: "1"

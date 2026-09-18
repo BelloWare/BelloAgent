@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "jsx": "react-jsx"
+  },
+  "include": ["packages/host/**/*.ts", "packages/protocol/**/*.ts", "packages/transcript/**/*.tsx", "fixtures/**/*.ts"]
+}

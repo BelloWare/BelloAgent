@@ -1,0 +1,348 @@
+import Foundation
+
+public struct NDJSONDecoder {
+    private var buffer=Data()
+    public init() {}
+    public mutating func feed(_ bytes: Data) throws -> [JSON] {
+        buffer.append(bytes); var result:[JSON]=[]
+        while let nl=buffer.firstIndex(of:10) {
+            guard nl > 0, nl <= 1048576 else { throw AgentError("invalid_frame", "Protocol frame exceeds limit or is empty") }
+            let data=Data(buffer[..<nl]); buffer.removeSubrange(...nl)
+            guard String(data:data,encoding:.utf8) != nil else { throw AgentError("invalid_frame", "Protocol frame is not UTF-8") }
+            let value=try JSON.parse(data); guard value.isObject else { throw AgentError("invalid_frame", "Protocol frame must be an object") }; result.append(value)
+        }
+        guard buffer.count <= 1048576 else { throw AgentError("invalid_frame", "Protocol frame exceeds 1 MiB") }; return result
+    }
+    public func finish() throws { if !buffer.isEmpty { throw AgentError("invalid_frame", "Incomplete protocol frame at EOF") } }
+}
+
+/// All commands enter one actor; model calls run in independent session actors.
+/// A command ID is content-bound for this host epoch and replay never repeats it.
+public actor NativeHostService {
+    public let epoch=UUID().uuidString
+    private let emit: @Sendable (JSON)->Void
+    private var hello=false, closing=false, quiesced=false, opening=false
+    private var cwd: URL?, roots: [URL]=[], directory: URL?, resources: Resources?, mcp: MCPManager?, nativeTools: NativeTools?
+    private let traces: TraceStore, capture: CaptureDelivery
+    private let editingGate=AsyncGate(), runtimeGate=AsyncGate()
+    private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:], sideParents:[String:String]=[:], recency:[String]=[]
+    private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:JSON]=[:], replyOrder:[String]=[]
+    private var mutationLedger = MutationLedger()
+    private var dirty:[String:Int]=[:], flushTask:Task<Void,Never>?
+    public init(emit: @escaping @Sendable (JSON)->Void) {
+        self.emit=emit
+        let delivery = CaptureDelivery(epoch: epoch, emit: emit)
+        capture=delivery; traces=TraceStore(sink: { await delivery.send($0) })
+    }
+    public func receive(_ frame: JSON) {
+        guard !closing else { return }
+        if frame["kind"].text == "capture.ack" {
+            guard hello, frame["v"].int == 1, frame["hostEpoch"].text == epoch, let id = frame["transferId"].text, id.utf8.count <= 128 else { return }
+            Task { await capture.acknowledge(id, accepted: frame["accepted"].flag == true) }; return
+        }
+        if frame["kind"].text == "hello" {
+            guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
+            hello=true
+            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":"1.0.0","piBehaviorReference":"0.85.1","limits":["frameBytes":1048576,"captureBytes":134217728],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","queue.edit"]]); return
+        }
+        let id=frame["commandId"].text ?? ""
+        guard hello, frame["v"].int == 1, frame["kind"].text == "command", frame["hostEpoch"].text == epoch, !id.isEmpty, id.utf8.count <= 128, let method=frame["method"].text, frame["params"].isNull || frame["params"].isObject else { reply(id,.failure(AgentError("invalid_command", "Invalid command or stale host epoch"))); return }
+        let fingerprint=sha256(Data(frame.removing(["commandId"]).encoded().utf8))
+        let readOnly = method == "clock.sync" || method == "runtime.info" || method == "profiles.discover" || method == "resources.inspect" || method == "resources.skill.read" || method.hasPrefix("session.content.") || ["session.status","session.snapshot","session.history","session.message.read","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"].contains(method)
+        if fingerprints[id] == nil {
+            if let previous = mutationLedger.fingerprint(for: id) {
+                reply(id,.failure(AgentError(previous == fingerprint ? "command_result_expired" : "command_conflict", "Previously observed mutation will not be replayed; reconcile session state"))); return
+            }
+            if mutationLedger.mayHaveExpired(id) {
+                reply(id,.failure(AgentError("command_result_expired", "Command identity matches an expired mutation tombstone (or a conservative hash collision); reconcile session state before any new action"))); return
+            }
+        }
+        if let previous=fingerprints[id] {
+            guard previous == fingerprint else { reply(id,.failure(AgentError("command_conflict", "Command identity reused with different arguments"))); return }
+            if let cached=replies[id] { emit(cached) }; return
+        }
+        guard tasks.count<32 || method == "turn.stop" else { reply(id,.failure(AgentError("host_busy", "Too many concurrent commands"))); return }
+        if !readOnly {
+            mutationLedger.record(id, fingerprint: fingerprint)
+        }
+        fingerprints[id]=fingerprint
+        tasks[id]=Task { [weak self] in
+            guard let self else { return }
+            do { let result=try await self.command(method,sessionID:frame["sessionId"].text,params:frame["params"].isNull ? [:] : frame["params"],commandID:id); await self.finish(id,.success(result)) }
+            catch { await self.finish(id,.failure(error as? AgentError ?? AgentError("command_failed", "Command failed: \(error.localizedDescription)"))) }
+        }
+    }
+    private func reply(_ id: String,_ result: Result<JSON,AgentError>) {
+        var message: JSON=["v":1,"kind":"reply","hostEpoch":JSON(epoch),"commandId":JSON(id)]
+        switch result { case .success(let value): message["ok"]=true; message["result"]=value
+        case .failure(let error): message["ok"]=false; message["error"]=error.json;message["result"]=error.json }
+        emit(message)
+    }
+    private func finish(_ id:String,_ result:Result<JSON,AgentError>) {
+        var message: JSON=["v":1,"kind":"reply","hostEpoch":JSON(epoch),"commandId":JSON(id)]
+        switch result { case .success(let value): message["ok"]=true; message["result"]=value
+        case .failure(let error): message["ok"]=false; message["error"]=error.json;message["result"]=error.json }
+        if ((try? message.data().count) ?? 1048577)>1048576 { message["ok"]=false; message["error"]=AgentError("reply_limit", "Result exceeds the IPC frame limit; request a smaller range").json;message["result"]=message["error"] }
+        tasks.removeValue(forKey:id); replies[id]=message; replyOrder.append(id)
+        while replyOrder.count > 512 { let old=replyOrder.removeFirst(); replies.removeValue(forKey:old); fingerprints.removeValue(forKey:old) }
+        emit(message)
+    }
+    private func mark(_ id:String,_ seq:Int) async {
+        if let session=sessions[id], !(await session.isEphemeral) { sideParents.removeValue(forKey:id) }
+        dirty[id]=max(seq,dirty[id] ?? 0)
+        if flushTask == nil { flushTask=Task { try? await Task.sleep(nanoseconds:16_000_000); self.flush() } }
+    }
+    private func flush() { for (id,seq) in dirty { emit(["v":1,"kind":"event","hostEpoch":JSON(epoch),"sessionId":JSON(id),"seq":JSON(seq),"type":"session.changed","payload":[:]]) }; dirty.removeAll(); flushTask=nil }
+    private func notification() -> @Sendable (String,Int)->Void { { [weak self] id, seq in Task { await self?.mark(id,seq) } } }
+    private func touch(_ id:String) { recency.removeAll{$0==id}; recency.append(id) }
+    private func ensureCapacity(protect:String? = nil) async throws {
+        if sessions.count<3 { return }
+        for id in recency where id != protect && sideParents[id] == nil && !sideParents.values.contains(id) {
+            if let s=sessions[id], await s.unloadIfIdle() {
+                sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); recency.removeAll{$0==id}
+                emit(["v":1,"kind":"event","hostEpoch":JSON(epoch),"sessionId":JSON(id),"seq":0,"type":"session.unloaded","payload":[:]]); return
+            }
+        }
+        throw AgentError("runtime_capacity", "Three runtimes are active or pinned by side chats; close or keep a side first")
+    }
+    public func command(_ method:String, sessionID:String?, params p:JSON, commandID:String=UUID().uuidString) async throws -> JSON {
+        guard !closing else { throw AgentError("closing","Host is shutting down") }
+        if method == "runtime.info" { return ["engine":"swift","engineVersion":"1.0.0","piBehaviorReference":"0.85.1","bundledNode":false,"protocolMajor":1,"protocolMinor":1] }
+        if method == "clock.sync" { return ["monotonic":JSON(nowMS()),"monotonicMs":JSON(nowMS()),"hostMonotonicMs":JSON(nowMS()),"wallTime":JSON(isoNow())] }
+        if method == "profiles.discover" { return try ProfileFiles.discover(path:required(p["path"],"models path")) }
+        if method == "workspace.open" {
+            guard !opening else { throw AgentError("workspace_busy", "Workspace initialization is already in progress") }
+            opening=true; defer { opening=false }
+            let requestedRoots=try Self.workspaceRoots(p), requested=requestedRoots[0]; var state=canonical(try required(p["directory"],"session directory"))
+            guard p["resources"]["mcpConfigPath"].isNull, p["resources"]["mcpConfigSHA256"].isNull else {
+                throw AgentError("vault_configuration_required", "External MCP configuration files are retired. Configure servers in the native vault.")
+            }
+            if let cwd { guard cwd == requested, roots.map(\.path) == requestedRoots.map(\.path), directory == state else { throw AgentError("workspace_conflict", "Host is already bound to a different workspace") }; return ["opened":true,"cwd":JSON(cwd.path),"roots":.array(roots.map { JSON($0.path) }),"directory":directory.map { JSON($0.path) } ?? .null] }
+            for root in requestedRoots {
+                var isDir: ObjCBool=false; guard FileManager.default.fileExists(atPath:root.path,isDirectory:&isDir),isDir.boolValue else { throw AgentError("workspace_missing", "Workspace directory does not exist: \(root.path)") }
+            }
+            try FileManager.default.createDirectory(at:state,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+            // Symlinked prefixes (/var → /private/var) resolve only once the
+            // directory exists; bind the resolved path so a repeated open matches.
+            state=canonical(state.path)
+            let extra=Array(requestedRoots.dropFirst())
+            let manager=MCPManager(cwd:requested,roots:extra,outcomeMarker:state.appendingPathComponent(".mcp-outcome-unknown.json"))
+            try await manager.configure(p["mcp"].isNull ? ["servers":[:]] : p["mcp"])
+            if p["captureProtocol"].int == 1 { await capture.enable() }
+            cwd=requested; roots=requestedRoots; directory=state; mcp=manager
+            resources=Resources(cwd:requested,roots:extra,options:p["resources"].isNull ? [:] : p["resources"])
+            nativeTools=NativeTools(cwd:requested,roots:extra,outputs:state.appendingPathComponent("tool-output"),mcp:manager)
+            return ["opened":true,"cwd":JSON(requested.path),"roots":.array(requestedRoots.map { JSON($0.path) }),"directory":JSON(state.path)]
+        }
+        guard let cwd, let directory, let resources, let mcp, let nativeTools else { throw AgentError("workspace_required", "Open a workspace first") }
+        if method == "workspace.quiesce" {
+            quiesced=true
+            for s in sessions.values { let idle=await s.isIdle, ephemeral=await s.isEphemeral; if !idle || ephemeral { quiesced=false; throw AgentError("session_busy", "A run is active; stop it before updating") } }
+            return ["quiesced":true]
+        }
+        if method == "workspace.resume" { quiesced=false; return ["resumed":true] }
+        if method == "resources.configure" { try await resources.configure(p["options"].isNull ? [:] : p["options"]); return try await resources.inspect(["refresh":true]) }
+        if method == "resources.inspect" {
+            var applied: String?; if let id=sessionID, let session=sessions[id] { applied=await session.resourceRevision }
+            let available=await nativeTools.capabilityIDs(readOnly:sessionID.flatMap { sessions[$0]?.readOnly } ?? false)
+            return try await resources.inspect(p,applied:applied,tools:available)
+        }
+        if method == "resources.skill.read" { return try await resources.readSkill(required(p["skillId"],"skill id"),offset:boundedInt(p["offset"],maximum:262144)) }
+        if method == "mcp.configure" {
+            for s in sessions.values { guard !(await s.isRunning) else { throw AgentError("session_busy", "Stop active runs before changing MCP connections") } }
+            guard p["path"].isNull, p["config"].isObject else { throw AgentError("vault_configuration_required", "MCP configuration must come from the native vault over private IPC.") }
+            try await mcp.configure(p["config"])
+            var result=try await mcp.perform(["action":"list"]);result["configurationSource"]="native vault via private IPC";return result
+        }
+        if ["mcp.list","mcp.describe"].contains(method) {
+            var args=p;args["action"]=JSON(method == "mcp.list" ? "list":"describe");var result=try await mcp.perform(args,readOnly:true)
+            result["configurationSource"]="native vault via private IPC";return result
+        }
+        if method == "mcp.acknowledgeUnknown" { guard p["confirmed"].flag == true else { throw AgentError("confirmation_required","Confirm that the previous invocation outcome has been checked") }; try await mcp.acknowledgeUnknown(); return ["acknowledged":true] }
+        if method == "connection.test" {
+            guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
+            let id = try identity(sessionID.map { JSON($0) } ?? p["sessionId"])
+            // Credentials are supplied by the native vault. No profile file,
+            // workspace instruction, skill or MCP connection participates.
+            let original = try Profile(p["profile"]), (profile, key) = try ProfileFiles.credentials(profile: original, supplied: p["apiKey"].text)
+            return try await ConnectionProbe.run(profile: profile, apiKey: key, sessionID: id, client: ProviderClient(traces: traces))
+        }
+        if method == "session.open" {
+            guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
+            let id=try identity(sessionID.map { JSON($0) } ?? p["sessionId"])
+            try await runtimeGate.acquire()
+            do {
+                if let existing=sessions[id] { await runtimeGate.release(); return await existing.snapshot() }
+                let original=try Profile(p["profile"]), (profile,key)=try ProfileFiles.credentials(profile:original,supplied:p["apiKey"].text)
+                let mode=p["toolMode"].text ?? "editing"; guard ["editing","read-only"].contains(mode) else { throw AgentError("tool_mode", "Unknown tool mode") }
+                try await ensureCapacity()
+                let titleTask = p["backgroundTask"].text == "session-title"
+                guard p["backgroundTask"].isNull || titleTask else { throw AgentError("invalid_params", "Unknown background task") }
+                let sessionResources = titleTask ? Resources(cwd: cwd, titleTask: true) : resources
+                let session=try AgentSession(id:id,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:titleTask || mode == "read-only",resources:sessionResources,client:ProviderClient(traces:traces),tools:titleTask || p["connectionTest"].flag == true ? DisabledTools() : nativeTools,traces:traces,editingGate:editingGate,resumePath:p["path"].text,autoCompaction:!titleTask,titleTask:titleTask,changed:notification())
+                sessions[id]=session; profiles[id]=(profile,key); touch(id)
+                if let handoff=p["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
+                await runtimeGate.release(); return await session.snapshot()
+            } catch { await runtimeGate.release(); throw error }
+        }
+        if method == "session.portable.preview" || method == "session.import.inspect" { return try portable(p) }
+        if method == "session.import.continue" || method == "session.import.recover" { throw AgentError("portable_handoff_required", "Pi journals are preserved read-only. Preview and explicitly create a native portable handoff rather than replaying incompatible provider state.") }
+        let id=try identity(sessionID.map { JSON($0) } ?? p["sessionId"])
+        if method.hasPrefix("debug.") { return try await traces.command(method,session:id,params:p) }
+        if method == "session.forget" {
+            if let existing=sessions[id] {
+                guard sideParents[id] == nil, !sideParents.values.contains(id), await existing.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
+                sessions.removeValue(forKey:id);profiles.removeValue(forKey:id);recency.removeAll{$0==id}
+            }
+            _=try await traces.command("debug.clear",session:id,params:[:]); return ["accepted":true]
+        }
+        guard let session=sessions[id] else { throw AgentError("session_missing", "Session runtime is not loaded") }; touch(id)
+        if method == "turn.stop" { await session.stop(); return ["accepted":true] }
+        if method == "session.status" { return await session.snapshot(["includeMessages":false]) }
+        if method == "session.snapshot" { return await session.snapshot(p) }
+        if method == "context.info" { return await session.inspectContext() }
+        if method == "context.preview" { return try await session.prepareContext(p) }
+        if method == "context.preview.read" { return try await session.readPreparedContext(p) }
+        if method == "context.preview.clear" { await session.clearPreparedContext(p["revision"].text); return ["accepted":true] }
+        if method == "session.history" { return await session.historyPage(before:p["before"].int) }
+        if method == "session.message.read" { return try await session.messageRead(id:required(p["messageId"],"message id"),field:p["field"].text ?? "text",offset:boundedInt(p["offset"],maximum:128*1024*1024)) }
+        if method == "session.content.search" { return try await session.contentSearch(p) }
+        if method == "session.content.page" { return try await session.contentPage(p) }
+        if method == "session.event-page" || method == "session.events" { return await session.eventPage(since:p["since"].int) }
+        if method == "session.fork" {
+            guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
+            let forkID=try identity(p["forkSessionId"])
+            try await runtimeGate.acquire()
+            do {
+                guard sessions[forkID] == nil, let (profile,key)=profiles[id] else { throw AgentError("session_conflict", "Fork identity is already in use") }
+                try await ensureCapacity(protect:id)
+                let result=try await session.fork(to:forkID)
+                let fork=try await AgentSession(id:forkID,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:session.readOnly,resources:resources,client:ProviderClient(traces:traces),tools:session.isConnectionTest ? DisabledTools() : nativeTools,traces:traces,editingGate:editingGate,resumePath:result["path"].text,changed:notification())
+                sessions[forkID]=fork; profiles[forkID]=(profile,key); touch(forkID)
+                _=try await traces.command("debug.mode",session:forkID,params:["mode":JSON(await traces.mode(id))])
+                await runtimeGate.release(); return result
+            } catch { await runtimeGate.release(); throw error }
+        }
+        if method == "side.open" {
+            guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
+            guard sideParents[id] == nil else { throw AgentError("nested_side", "Nested side chats are not supported") }
+            let sideID=try identity(p["sideSessionId"])
+            try await runtimeGate.acquire()
+            do {
+                if let existing=sideParents.first(where:{$0.value==id})?.key, let side=sessions[existing] { await runtimeGate.release(); return ["accepted":true,"sessionId":JSON(existing),"side":await side.snapshot()["side"],"ephemeral":true] }
+                guard sessions[sideID] == nil, let (profile,key)=profiles[id] else { throw AgentError("side_conflict", "Side identity is already in use") }
+                let seed=await session.sideSeed(); try await ensureCapacity(protect:id)
+                let side=try AgentSession(id:sideID,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:true,resources:resources,client:ProviderClient(traces:traces),tools:nativeTools,traces:traces,editingGate:editingGate,seed:seed.messages,parent:seed.info,changed:notification())
+                let saved=try await side.preserveSide()
+                sessions[sideID]=side; profiles[sideID]=(profile,key); touch(sideID)
+                _=try await traces.command("debug.mode",session:sideID,params:["mode":JSON(await traces.mode(id))])
+                await runtimeGate.release(); return ["accepted":true,"sessionId":JSON(sideID),"side":seed.info,"ephemeral":false,"path":saved["path"]]
+            } catch { await runtimeGate.release(); throw error }
+        }
+        if method == "side.keep" { let result=try await session.keep(whenFinished:p["whenFinished"].flag == true); if !(await session.isEphemeral) { sideParents.removeValue(forKey:id) }; return result }
+        if method == "side.close" {
+            let saved=try await session.preserveSide(); sideParents.removeValue(forKey:id)
+            // This closes presentation only. The durable runtime and any active
+            // work stay available as an ordinary saved child conversation.
+            return saved
+        }
+        guard !quiesced, !closing else { throw AgentError("closing", "Host is closing or quiesced") }
+        if method == "turn.submit" || method == "turn.steer" || method == "turn.edit" {
+            let text=p["text"].text ?? "", tools=await nativeTools.capabilityIDs(readOnly:session.readOnly)
+            let selected=try await resources.freeze(p["skills"].list,text:text,tools:tools)
+            let overrides=try Self.turnOverrides(p)
+            let input=Submission(commandID:commandID,turnID:try identity(p["clientTurnId"]),text:text,attachments:p["attachments"].list,skills:selected,model:overrides.model,thinkingLevel:overrides.thinkingLevel,contextWindow:overrides.contextWindow,maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit)
+            if method == "turn.edit" { return try await session.edit(fromMessageID:try identity(p["messageId"]),input:input) }
+            return try await session.submit(input,steer:method == "turn.steer")
+        }
+        if method == "queue.remove" { try await session.removeQueued(required(p["turnId"],"turn id")); return ["accepted":true] }
+        if method == "queue.reorder" {
+            let order=try p["turnIds"].list.map { try required($0,"turn id") }
+            try await session.reorderQueue(order); return ["accepted":true]
+        }
+        if method == "queue.update" { try await session.updateQueued(required(p["turnId"],"turn id"),text:p["text"].text ?? ""); return ["accepted":true] }
+        if method == "queue.steer" { try await session.steerQueued(required(p["turnId"],"turn id")); return ["accepted":true] }
+        if method == "queue.resume" { try await session.resumeQueue(); return ["accepted":true] }
+        if method == "queue.configure" { try await session.configureQueue(p); return ["accepted":true] }
+        if method == "context.compact" { try await session.compact(commandID:commandID); return ["accepted":true] }
+        if method == "mcp.invoke" { var args=p; args["action"]="invoke"; return try await mcp.perform(args,readOnly:session.readOnly) }
+        if method == "session.close" {
+            guard sideParents[id] == nil, !sideParents.values.contains(id), await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
+            sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); recency.removeAll{$0==id}; return ["accepted":true]
+        }
+        throw AgentError("unsupported_command", "Unsupported native host command: \(method)")
+    }
+    /// `roots` (1…16 absolute directories, primary first) or the legacy single
+    /// `cwd`. Duplicates collapse after canonicalization; order is preserved.
+    static func workspaceRoots(_ p: JSON) throws -> [URL] {
+        if p["roots"].isNull { return [canonical(try required(p["cwd"],"workspace"))] }
+        let list=p["roots"].list
+        guard !list.isEmpty, list.count <= 16 else { throw AgentError("invalid_params", "Workspace roots must list 1 to 16 directories") }
+        var result: [URL]=[], seen=Set<String>()
+        for item in list {
+            let path=try required(item,"workspace root")
+            guard path.hasPrefix("/") else { throw AgentError("invalid_params", "Workspace roots must be absolute paths") }
+            let url=canonical(path); if seen.insert(url.path).inserted { result.append(url) }
+        }
+        if let cwd=p["cwd"].text, !cwd.isEmpty, canonical(cwd) != result[0] { throw AgentError("invalid_params", "cwd must be the primary workspace root") }
+        return result
+    }
+    /// Optional per-turn model, thinking and model-specific capacity overrides.
+    static func turnOverrides(_ p: JSON) throws -> (model: String?, thinkingLevel: String?, contextWindow: Int?, maxOutputTokens: Int?, modelOutputLimit: Int?) {
+        var model: String?, level: String?
+        if !p["model"].isNull {
+            guard let text=p["model"].text, !text.isEmpty, text.utf8.count <= 200, !text.utf8.contains(where: { $0 < 32 || $0 == 127 }) else { throw AgentError("invalid_params", "Invalid model override") }
+            model=text
+        }
+        if !p["thinkingLevel"].isNull {
+            guard let text=p["thinkingLevel"].text, Profile.thinkingLevels.contains(text) else { throw AgentError("invalid_params", "Invalid thinking level override") }
+            level=text
+        }
+        func limit(_ name: String, maximum: Int) throws -> Int? {
+            if p[name].isNull { return nil }
+            guard let value=p[name].int, value > 0, value <= maximum else { throw AgentError("invalid_params", "Invalid turn \(name) override") }
+            return value
+        }
+        return (model,level,try limit("contextWindow",maximum:10_000_000),try limit("maxOutputTokens",maximum:1_000_000),try limit("modelOutputLimit",maximum:1_000_000))
+    }
+    private func portable(_ p:JSON) throws -> JSON {
+        let file=canonical(try required(p["path"],"session path")), data=try readBounded(file,maximum:128*1024*1024)
+        var records:[String:JSON]=[:], leaf:String?, header:JSON=[:]
+        guard data.last==10 else { throw AgentError("incomplete_history","History has an incomplete tail. Preserve and review it before making a portable handoff.") }
+        for (i,line) in data.split(separator:10).enumerated() {
+            let item=try JSON.parse(Data(line))
+            if i==0 { guard item["type"].text=="session" else { throw AgentError("invalid_history","Expected session header") };header=item;continue }
+            guard records.count<100000,let id=item["id"].text,records[id]==nil else { throw AgentError("invalid_history","Invalid or duplicate journal identity") }
+            if let parent=item["parentId"].text,records[parent]==nil { throw AgentError("invalid_history","Journal parent is missing") }
+            records[id]=item;leaf=id
+        }
+        var chain:[JSON]=[],cursor=leaf
+        while let id=cursor,let record=records[id] { chain.append(record);cursor=record["parentId"].text }
+        chain.reverse()
+        // Select the active leaf only, then replay compaction and branch
+        // boundaries in order so the preview shows the live context.
+        var active:[JSON]=[]
+        for item in chain {
+            if item["type"].text=="compaction" {
+                var kept:[JSON]=[]
+                if !item["nativeKeptIDs"].isNull {
+                    let ids=Set(item["nativeKeptIDs"].list.compactMap(\.text));kept=active.filter{ids.contains($0["id"].text ?? "")}
+                } else if let first=item["firstKeptEntryId"].text,let index=active.firstIndex(where:{$0["id"].text==first}) { kept=Array(active[index...]) }
+                active=[item]+kept
+            } else if item["type"].text=="branch" {
+                let ids=Set(item["keptIds"].list.compactMap(\.text));active=active.filter{ids.contains($0["id"].text ?? "")}
+            } else { active.append(item) }
+        }
+        var messages:[String]=[]
+        for item in active {
+            if item["type"].text=="message",let message=try? ChatMessage(id:item["id"].text ?? UUID().uuidString,pi:item["message"]) { messages.append("[\(message.role)]\n"+(message.displayText ?? message.text)) }
+            if item["type"].text=="compaction" { messages.append("[summary]\n"+(item["summary"].text ?? "")) }
+        }
+        let text=messages.suffix(40).joined(separator:"\n\n"),retained=preview(text,bytes:65536)
+        return ["path":JSON(file.path),"sessionId":header["id"],"nativeReplay":false,"damaged":false,"text":JSON(retained),"draft":JSON(retained),"truncated":JSON(retained.utf8.count<text.utf8.count || messages.count>40),"provenance":["sourcePath":JSON(file.path),"sourceSHA256":JSON(sha256(data)),"portable":true],"notice":"Portable text only, active branch and latest compaction. Opaque reasoning, executable state and permissions are not transferred. Original unchanged. Review before sending.","sha256":JSON(sha256(data))]
+    }
+    public func shutdown() async {
+        closing=true; flushTask?.cancel(); for t in tasks.values { t.cancel() }
+        for s in sessions.values { await s.stop() }; for s in sessions.values { await s.close() }; await mcp?.close(); sessions.removeAll(); profiles.removeAll(); flush()
+    }
+}

@@ -1,0 +1,18 @@
+{
+  "images": [
+    {
+      "idiom": "mac",
+      "scale": "1x",
+      "filename": "bello-agent-128.png"
+    },
+    {
+      "idiom": "mac",
+      "scale": "2x",
+      "filename": "bello-agent-256.png"
+    }
+  ],
+  "info": {
+    "author": "BelloWare",
+    "version": 1
+  }
+}

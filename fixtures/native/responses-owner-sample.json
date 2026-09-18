@@ -1,0 +1,36 @@
+{
+  "id": "resp_owner_sample",
+  "object": "response",
+  "status": "completed",
+  "model": "auto-router",
+  "router_model_name": "gpt-5.4-mini",
+  "output": [
+    {
+      "id": "rs_owner_sample",
+      "type": "reasoning",
+      "summary": [{"type": "summary_text", "text": "A short calculation."}],
+      "encrypted_content": "synthetic-opaque-fixture"
+    },
+    {
+      "id": "msg_owner_sample",
+      "type": "message",
+      "role": "assistant",
+      "status": "completed",
+      "phase": "final_answer",
+      "content": [{"type": "output_text", "text": "9.109996226", "annotations": []}]
+    }
+  ],
+  "usage": {
+    "input_tokens": 38,
+    "input_tokens_details": {
+      "audio_tokens": null,
+      "cached_tokens": 0,
+      "text_tokens": null,
+      "cache_write_tokens": 0
+    },
+    "output_tokens": 423,
+    "output_tokens_details": {"reasoning_tokens": 326, "text_tokens": null},
+    "total_tokens": 461,
+    "cost": null
+  }
+}
