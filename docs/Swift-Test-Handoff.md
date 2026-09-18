@@ -455,8 +455,8 @@ Codex/shared sources remain untouched.
 See the [0.1.4 acceptance record](validation/Bello-Agent-0.1.4-2026-09-16.md) for
 commands, logs, source scope and exact limitations. Current active requests are
 Responses-only; preserve historical Messages records/keys and explicit conversion.
-The selected architecture remains native SwiftUI/AppKit composers,
-React/TypeScript in WKWebView and the self-contained Swift helper; Node is build-only.
+The selected architecture is native SwiftUI/AppKit throughout (composers, the
+conversation page and, since 0.1.38, the terminal) with the self-contained Swift helper; there is no Node, React or WebKit.
 
 | Check | Result |
 | --- | --- |
@@ -528,7 +528,7 @@ python3 scripts/smoke-native-bundle.py \
   "$PI_BUILD_ROOT/native-tests/Build/Products/Debug/Bello Agent.app"
 ```
 
-Resolve compiler/integration failures with focused regressions; these commands are reproducible procedures, not a claim they all passed on an arbitrary checkout. Build-time Node for React is expected; shipped Node/node_modules/Pi SDK is not. Keep fixture testing separate from the authorized release workflow. Publish after affected checks and signing/notarization pass, then verify public artifacts. Skip installation/update rehearsals under the owner policy above. Fixtures and unsigned engineering artifacts are not distributable releases.
+Resolve compiler/integration failures with focused regressions; these commands are reproducible procedures, not a claim they all passed on an arbitrary checkout. No Node is involved in the build; shipped Node/node_modules/Pi SDK is not expected either. Keep fixture testing separate from the authorized release workflow. Publish after affected checks and signing/notarization pass, then verify public artifacts. Skip installation/update rehearsals under the owner policy above. Fixtures and unsigned engineering artifacts are not distributable releases.
 
 ## Mac regression matrix for subsequent changes
 
@@ -568,7 +568,7 @@ queries, debounce and return freshness, saved-default retries and early edits,
 canceled/obsolete query results, applied labels while filters are pending, and
 brush/paging races. `ReportMessageNavigationTests` cover stale linked-message
 loads and history navigation; `ReportNavigationTests` cover native responder, undo,
-selection, drafts, hidden sends and retained live WKWebView identity. The report
+selection, drafts, hidden sends and retained native transcript identity. The report
 refreshes on re-entry while preserving choices and cancels pending work when
 hidden. Actual chart dragging remains outside passed CUA scope.
 
@@ -592,6 +592,27 @@ xcodebuild test -project PiApp.xcodeproj -scheme PiApp -configuration Debug \
   -only-testing:PiAppTests/UIScreenshotTests CODE_SIGNING_ALLOWED=NO
 open "$PI_APP_UI_SCREENSHOT_ROOT/screenshots"
 ```
+
+## Performance baseline
+
+`PerformanceBaselineTests` prints `PERF …` timings for the paths that run
+most (Markdown parse, the streaming parse per delta, the highlighter, turn
+grouping, the terminal parser, opening a 300-row chat and a streaming
+delta's layout and display). It asserts nothing about time. Debug builds
+run these paths ten to twenty times slower than the shipped app, so the
+release record quotes a Release build:
+
+```sh
+xcodebuild build-for-testing -project PiApp.xcodeproj -scheme PiApp -configuration Release \
+  -destination 'platform=macOS,arch=arm64' -derivedDataPath "$PI_BUILD_ROOT/perf" \
+  CODE_SIGNING_ALLOWED=NO ENABLE_TESTABILITY=YES
+xcodebuild test-without-building -project PiApp.xcodeproj -scheme PiApp -configuration Release \
+  -destination 'platform=macOS,arch=arm64' -derivedDataPath "$PI_BUILD_ROOT/perf" \
+  -only-testing:PiAppTests/PerformanceBaselineTests CODE_SIGNING_ALLOWED=NO
+```
+
+`PI_PERF_REPEAT=40` (also as `TEST_RUNNER_PI_PERF_REPEAT`) streams the
+benchmark reply that many times, long enough to `sample` the test host.
 
 ## MCP fixture
 

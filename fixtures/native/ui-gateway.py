@@ -114,9 +114,14 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                         "connection test contains unrelated request settings")
             if requested_model == "fixture-fast" and any(name in body for name in ("reasoning", "thinking", "output_config")):
                 raise FixtureContractError("fixture-fast does not accept reasoning parameters")
+            # The mini model also serves utility requests (titles, suggestions) that ask for far less output
+            # than the catalog allows, so its limit is a ceiling; the conversation model's limit must match exactly.
+            limit_name = "max_output_tokens" if self.path.endswith("responses") else "max_tokens"
+            if requested_model == "fixture-fast" and not connection_test:
+                require(type(body.get(limit_name)) is int and 0 < body[limit_name] <= limits["fixture-fast"], "fixture-fast output limit must stay within its catalog ceiling")
             contract = validate_request("POST", self.path, self.headers, body,
                                         api_key="synthetic-loopback-only-key", model=requested_model,
-                                        max_output_tokens=body["max_output_tokens"] if connection_test else limits[requested_model], native_items="portable",
+                                        max_output_tokens=body["max_output_tokens"] if connection_test else (None if requested_model == "fixture-fast" else limits[requested_model]), native_items="portable",
                                         historical_tool_schemas=self.historical_tool_schemas)
         except (ValueError, FixtureContractError) as error:
             # Validation failures expose only a fixed contract explanation, not

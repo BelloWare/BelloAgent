@@ -21,6 +21,7 @@ struct VaultProfile: Codable, Sendable, Equatable {
     var headers: [String: String] = [:]
 }
 struct RuntimePreferences: Codable, Sendable, Equatable {
+    /// Kept for stored configurations; the app no longer limits how many projects run at once.
     var workspaceConcurrency = 2
     var idleGraceSeconds = 120
     var toolsPATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"

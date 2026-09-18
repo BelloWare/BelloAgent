@@ -1,9 +1,11 @@
 # Bello Agent
 
-Native macOS 14+ / Apple Silicon application with SwiftUI/AppKit composers,
-a React/TypeScript transcript in WKWebView, and a supervised, self-contained
-Swift helper. Node is used to build the transcript and is not shipped. Pi
-v0.85.1 remains a behavioral reference, not the current application runtime.
+Native macOS 14+ / Apple Silicon application, SwiftUI/AppKit throughout: the
+composers, the conversation page (Markdown, syntax colouring, diffs and usage
+drawn by the app itself) and a supervised, self-contained Swift helper. There
+is no web view, no JavaScript and no Node in the build or in the bundle; the
+only linked third-party code is Sparkle for updates. Pi v0.85.1 remains a
+behavioral reference, not the current application runtime.
 
 Open source under the [MIT License](LICENSE) at
 [github.com/BelloWare/BelloAgent](https://github.com/BelloWare/BelloAgent).
@@ -136,9 +138,10 @@ affected behavior passed the 54-case focused rerun; the final nine-case export
 and release-configuration check passed. The helper's full 138-case
 suite passed, followed by 12 focused queue/recovery cases, including two new
 regressions reproduced before the fix. Repeated cases are counted once.
-**29 transcript tests, TypeScript checking and 10 dependency-cache tests pass.**
-Four native tests exercise the packaged React page in WKWebView, including
-render rejection and recovery. Local HTTP/SSE fixtures validate requests, tools,
+Since 0.1.38 the transcript is native Swift: its grouping, accounting, Markdown,
+highlighting, copy scanning and page behaviour are covered by
+`TranscriptActivityTests`, `TranscriptMarkdownTests` and `NativeTranscriptTests`
+in the native suite. Local HTTP/SSE fixtures validate requests, tools,
 cancellation, compaction and capture; no deployed LiteLLM was used. No full
 screenshot gallery or Release performance matrix was run. Installation/update
 rehearsals were skipped by owner instruction.
@@ -154,13 +157,15 @@ The canonical product page is `/bello-agent.html`; both the new
 `bello_agent.appcast.xml` and legacy `pi_app.appcast.xml` advertise the same update.
 
 Build toolchain: Xcode 16.1 (16B40), Swift 6.0.2, XcodeGen 2.44.1.
-Native dependency: Sparkle 2.8.1, resolved revision committed with the project.
+The only dependency is Sparkle 2.8.1 (updates), resolved revision committed with
+the project. The terminal panel, the conversation page, Markdown and syntax
+colouring are the app's own code (`apps/macos/PiApp/Terminal`,
+`apps/macos/PiApp/Transcript`).
 
 ```sh
 export PI_BUILD_ROOT=/path/to/scratch
 swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests"
 python3 scripts/build-bundle.py
-./scripts/with-runtime.sh npm run typecheck
 python3 scripts/test-native-host.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
 python3 scripts/test-native-acceptance.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
 python3 -m unittest discover -s scripts/tests

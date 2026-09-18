@@ -463,6 +463,8 @@ struct PiSheet<Content: View, Actions: View, Footer: View>: View {
     @ViewBuilder var content: Content
     @ViewBuilder var actions: Actions
     @ViewBuilder var footer: Footer
+    @State private var badgeShown = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     init(_ title: String, subtitle: String? = nil, symbol: String? = nil, width: CGFloat? = nil, height: CGFloat? = nil, minWidth: CGFloat? = nil, minHeight: CGFloat? = nil, windowChrome: Bool = false,
          @ViewBuilder content: () -> Content, @ViewBuilder actions: () -> Actions = { EmptyView() }, @ViewBuilder footer: () -> Footer = { EmptyView() }) {
         self.title = title; self.subtitle = subtitle; self.symbol = symbol; self.width = width; self.height = height
@@ -474,7 +476,12 @@ struct PiSheet<Content: View, Actions: View, Footer: View>: View {
             ZStack(alignment: .leading) {
                 if windowChrome { PiWindowBar() }
                 HStack(alignment: .center, spacing: PiSpacing.md) {
-                    if let symbol { PiIconBadge(symbol: symbol, size: 30) }
+                    if let symbol {
+                        PiIconBadge(symbol: symbol, size: 30)
+                            .scaleEffect(badgeShown || reduceMotion ? 1 : 0.6).opacity(badgeShown || reduceMotion ? 1 : 0)
+                            .animation(reduceMotion ? nil : PiMotion.spring.delay(0.08), value: badgeShown)
+                            .onAppear { badgeShown = true }
+                    }
                     VStack(alignment: .leading, spacing: 3) {
                         Text(title).font(PiFont.title(17)).foregroundStyle(Color.piInk)
                         if let subtitle { Text(subtitle).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(2).textSelection(.enabled) }
@@ -537,12 +544,59 @@ struct PiKeyValue: View {
     }
 }
 
+// MARK: - Motion
+
+/// Motion tokens shared by every view: three eased durations for state
+/// changes and two springs for things that move. `piAnimation` applies them
+/// and drops the animation when the reader asked for reduced motion.
+enum PiMotion {
+    static let quick = Animation.easeOut(duration: 0.14)
+    static let base = Animation.easeOut(duration: 0.22)
+    static let slow = Animation.easeInOut(duration: 0.32)
+    /// A short spring with a small overshoot, for things that pop in.
+    static let spring = Animation.spring(response: 0.34, dampingFraction: 0.78)
+    /// A tighter spring for things that slide: a selection highlight, a panel.
+    static let glide = Animation.spring(response: 0.3, dampingFraction: 0.88)
+}
+private struct PiAnimated<Value: Equatable>: ViewModifier {
+    let animation: Animation
+    let value: Value
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View { content.animation(reduceMotion ? nil : animation, value: value) }
+}
+/// Fades and rises a view into place the first time it appears, `index` steps after its siblings.
+private struct PiStaggeredAppearance: ViewModifier {
+    let index: Int
+    @State private var shown = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown || reduceMotion ? 1 : 0)
+            .offset(y: shown || reduceMotion ? 0 : 8)
+            .animation(reduceMotion ? nil : PiMotion.base.delay(0.05 * Double(index)), value: shown)
+            .onAppear { shown = true }
+    }
+}
+extension View {
+    /// `animation(_:value:)` that honours Reduce Motion.
+    func piAnimation<Value: Equatable>(_ animation: Animation, value: Value) -> some View { modifier(PiAnimated(animation: animation, value: value)) }
+    /// The view appears a beat after the `index - 1` views before it, rising into place.
+    func piStaggered(_ index: Int) -> some View { modifier(PiStaggeredAppearance(index: index)) }
+}
+/// The namespace a list shares so its selection highlight glides from row to row.
+private struct PiSelectionNamespaceKey: EnvironmentKey { static var defaultValue: Namespace.ID? { nil } }
+extension EnvironmentValues {
+    var piSelectionNamespace: Namespace.ID? { get { self[PiSelectionNamespaceKey.self] } set { self[PiSelectionNamespaceKey.self] = newValue } }
+}
+
 // MARK: - Controls
 
-/// Pill segmented control.
+/// Pill segmented control. The selected capsule glides to the chosen tab.
 struct PiTabs<Tag: Hashable>: View {
     @Binding var selection: Tag
     let items: [(Tag, String)]
+    @Namespace private var glide
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         HStack(spacing: 2) {
             ForEach(items, id: \.0) { item in
@@ -550,15 +604,19 @@ struct PiTabs<Tag: Hashable>: View {
                     Text(item.1).font(.system(size: 12, weight: .medium))
                         .foregroundStyle(selection == item.0 ? Color.piInk : Color.piInkSecondary)
                         .padding(.horizontal, 11).padding(.vertical, 5)
-                        .background(selection == item.0 ? Color.piSurface : Color.clear, in: Capsule())
-                        .shadow(color: selection == item.0 ? Color.piShadow : .clear, radius: 3, y: 1)
+                        .background {
+                            if selection == item.0 {
+                                Capsule().fill(Color.piSurface).shadow(color: Color.piShadow, radius: 3, y: 1)
+                                    .matchedGeometryEffect(id: "selected", in: glide)
+                            }
+                        }
                         .contentShape(Capsule())
                 }.buttonStyle(.plain).piPointer()
             }
         }
         .padding(3)
         .background(Color.piFillStrong, in: Capsule())
-        .animation(.easeOut(duration: 0.16), value: selection)
+        .animation(reduceMotion ? nil : PiMotion.glide, value: selection)
     }
 }
 
@@ -748,15 +806,25 @@ struct PiSelectableRow<Content: View>: View {
     var doubleClick: (() -> Void)? = nil
     @ViewBuilder var content: Content
     @State private var hovering = false
+    @Environment(\.piSelectionNamespace) private var selectionNamespace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         Button(action: action) {
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10).padding(.vertical, 8)
-                .background(selected ? Color.piAccentSoft : hovering ? Color.piFill : Color.clear, in: RoundedRectangle(cornerRadius: PiRadius.sm, style: .continuous))
+                .background {
+                    let shape = RoundedRectangle(cornerRadius: PiRadius.sm, style: .continuous)
+                    if selected, let selectionNamespace {
+                        // One highlight per list: it slides to the row that was chosen.
+                        shape.fill(Color.piAccentSoft).matchedGeometryEffect(id: "pi-selection", in: selectionNamespace)
+                    } else {
+                        shape.fill(selected ? Color.piAccentSoft : hovering ? Color.piFill : Color.clear)
+                    }
+                }
                 .contentShape(RoundedRectangle(cornerRadius: PiRadius.sm, style: .continuous))
                 .animation(.easeOut(duration: 0.12), value: hovering)
-                .animation(.easeOut(duration: 0.18), value: selected)
+                .animation(reduceMotion ? nil : PiMotion.glide, value: selected)
         }
         .buttonStyle(.plain).piPointer()
         .simultaneousGesture(TapGesture(count: 2).onEnded { doubleClick?() })

@@ -11,10 +11,13 @@ FEED_NAME="bello_agent.appcast.xml"
 LEGACY_FEED_NAME="pi_app.appcast.xml"
 DOWNLOAD_PREFIX="${PI_DOWNLOAD_URL_PREFIX:-https://belloware.com/assets/}"
 
-# Publish only committed source that has reached its configured upstream.
+# Publish only committed source: no uncommitted or untracked file may differ
+# from the released commit. The source repository is pushed when the owner asks
+# for it, as one squashed commit, so a release never requires that this commit
+# has reached the remote; the website repository still must be in sync, since
+# pushing it is how the site deploys.
 test -z "$(git -C "$ROOT" status --porcelain)"
-SOURCE_UPSTREAM="$(git -C "$ROOT" rev-parse --abbrev-ref '@{upstream}')"
-test "$(git -C "$ROOT" rev-parse HEAD)" = "$(git -C "$ROOT" rev-parse "$SOURCE_UPSTREAM")"
+git -C "$ROOT" rev-parse --verify --quiet HEAD >/dev/null
 SITE_UPSTREAM="$(git -C "$SITE" rev-parse --abbrev-ref '@{upstream}')"
 # Keep a publication commit free of unrelated work. Do not reset or stash it.
 test -z "$(git -C "$SITE" status --porcelain)"

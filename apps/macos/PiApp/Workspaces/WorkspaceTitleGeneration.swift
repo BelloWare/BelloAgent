@@ -66,15 +66,32 @@ struct TitleGenerationPlan: Sendable {
         return result
     }
 
+    /// The title a reply carries: its first usable line, with the wrappers
+    /// models add (quotes, "Title:", bullets, emphasis, a closing period)
+    /// removed and a long line cut at a word boundary. Models that explain
+    /// themselves after the title, or answer at length, still yield a title.
     static func title(from messages: [TranscriptMessage]) -> String? {
         guard let answer = messages.last(where: { $0.role == "assistant" }),
               !["streaming", "error", "aborted", "failed", "cancelled", "interrupted"].contains(answer.state ?? ""), answer.truncated != true,
               answer.tools?.isEmpty != false else { return nil }
-        let text = answer.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”"))
-        guard !text.isEmpty, !text.contains("\n"), !text.contains("\u{0060}"),
-              !text.utf8.contains(where: { $0 < 32 || $0 == 127 }), text.count <= 80 else { return nil }
-        return text
+        for raw in answer.text.split(separator: "\n") {
+            var line = raw.trimmingCharacters(in: .whitespaces)
+            while let first = line.first, "-*•#>".contains(first) { line = String(line.dropFirst()).trimmingCharacters(in: .whitespaces) }
+            if let range = line.range(of: #"^\d+[.)]\s*"#, options: .regularExpression) { line.removeSubrange(range) }
+            if let range = line.range(of: #"^(?i)(session )?title\s*[:：]\s*"#, options: .regularExpression) { line.removeSubrange(range) }
+            line = line.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "\u{0060}", with: "")
+            line = line.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”‘’ "))
+            while line.hasSuffix(".") || line.hasSuffix("。") { line.removeLast() }
+            line = line.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty, !line.utf8.contains(where: { $0 < 32 || $0 == 127 }) else { continue }
+            if line.count > 80 {
+                let cut = line.prefix(80)
+                line = String(cut[..<(cut.lastIndex(of: " ") ?? cut.endIndex)]).trimmingCharacters(in: CharacterSet(charactersIn: " ,;:"))
+                guard line.count >= 3 else { continue }
+            }
+            return line
+        }
+        return nil
     }
 }
 
@@ -144,15 +161,32 @@ extension WorkspaceModel {
     /// independently of the user's selected chat. A task that failed earlier
     /// releases its claim so the next message can try again. Restore never
     /// calls this or resends saved work.
-    func scheduleTitleGeneration(sourceID: String, input: String) {
+    func scheduleTitleGeneration(sourceID: String, input: String, force: Bool = false) {
         guard titleGenerationTasks[sourceID] == nil, !installPreparing,
-              let source = record(sourceID), source.titleWasEdited != true, source.titleWasGenerated != true,
-              !source.imported, !source.isBackgroundTask, source.connectionTest != true,
+              let source = record(sourceID), force || (source.titleWasEdited != true && source.titleWasGenerated != true),
+              !source.imported, !source.isBackgroundTask, source.connectionTest != true, !source.isArchived,
               source.workspaceID != WorkspaceRecord.scratchID else { return }
         titleGenerationTasks[sourceID] = Task { [weak self] in
             guard let self else { return }
             defer { self.titleGenerationTasks[sourceID] = nil }
             await self.generateSessionTitle(sourceID: sourceID, input: input)
+        }
+    }
+
+    /// The chat's action menu asks for a title again, from the first message,
+    /// replacing an edited or earlier generated one; failures show in the footer.
+    func regenerateTitle(_ chatID: String) {
+        guard let item = record(chatID), !item.imported, !item.isArchived, !item.isBackgroundTask, item.connectionTest != true, let store else { return }
+        let text = displays[chatID]?.messages.first(where: { $0.role == "user" && $0.kind == nil })?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { displays[chatID]?.notice = "The title comes from the first message; send one first."; return }
+        Task {
+            if var current = record(chatID), current.titleWasEdited == true || current.titleWasGenerated == true {
+                current.titleWasEdited = nil; current.titleWasGenerated = nil
+                try? await store.put(current, kind: "chat", id: chatID)
+                if let index = chats.firstIndex(where: { $0.id == chatID }) { chats[index].titleWasEdited = nil; chats[index].titleWasGenerated = nil }
+            }
+            displays[chatID]?.notice = "Asking the mini model for a title…"
+            scheduleTitleGeneration(sourceID: chatID, input: text, force: true)
         }
     }
 
@@ -172,13 +206,18 @@ extension WorkspaceModel {
         let descriptors = catalogEntry(for: profile).descriptors
         guard TitleGenerationPlan.miniModel(profile: profile, descriptors: descriptors) != nil else {
             // Explain once per connection and launch; the chat keeps its first-message title.
+            displays[sourceID]?.notice = "Chat titles need a mini model for “\(profile.name)”; choose one in Settings."
             if !titleMiniModelNotified.contains(profile.id) {
                 titleMiniModelNotified.insert(profile.id)
                 error = "Chat titles need a mini model. Choose one for “\(profile.name)” in Settings, or use a catalog that marks one."
             }
             return
         }
-        guard let plan = TitleGenerationPlan(profile: profile, descriptors: descriptors, input: input) else { return }
+        guard let plan = TitleGenerationPlan(profile: profile, descriptors: descriptors, input: input) else {
+            // The one remaining reason a title is never asked for: the mini model's window cannot hold the request.
+            displays[sourceID]?.notice = "Chat title: the mini model's context window or output limit is too small for a title request; the first-message title was kept."
+            return
+        }
         let taskID = UUID().uuidString
         var item = ChatRecord(id: taskID, workspaceID: WorkspaceRecord.scratchID, title: TitleGenerationPlan.fixedTitle,
                               path: nil, profileID: profile.id, toolMode: "read-only", connectionTest: true,
@@ -224,10 +263,12 @@ extension WorkspaceModel {
                         chats[sourceIndex].applyOrganization(from: saved)
                     }
                     refresh(taskID)
+                    if displays[sourceID]?.notice.hasPrefix("Asking the mini model") == true || displays[sourceID]?.notice.hasPrefix("Chat title") == true { displays[sourceID]?.notice = "" }
                     return
                 }
-                if ["error", "failed", "cancelled", "interrupted", "paused"].contains(state) ||
-                    ["failed", "cancelled", "interrupted"].contains(receipt?["state"]?.string ?? "") {
+                // A task the app or the reader stopped is not a failure to report; a request that failed is.
+                if ["cancelled", "interrupted", "paused"].contains(state) || ["cancelled", "interrupted"].contains(receipt?["state"]?.string ?? "") { throw CancellationError() }
+                if ["error", "failed"].contains(state) || receipt?["state"]?.string == "failed" {
                     throw HostError.failure("Title generation did not complete. The original title was kept; nothing was retried.")
                 }
                 try await Task.sleep(for: .milliseconds(250))
@@ -237,6 +278,9 @@ extension WorkspaceModel {
             if let host, commandID != nil { _ = try? await host.request("turn.stop", sessionID: taskID) }
             display.loading = false
             display.notice = error is CancellationError ? "Title generation interrupted. Nothing was retried." : error.localizedDescription
+            // The chat itself says why its title did not change: in its footer and, once, in the banner.
+            displays[sourceID]?.notice = "Chat title: " + display.notice
+            if !(error is CancellationError) { self.error = "Chat title for “\(source.title)”: " + display.notice }
             if let index = chats.firstIndex(where: { $0.id == taskID }) {
                 chats[index].backgroundTaskNotice = String(display.notice.prefix(2_000))
                 try? await store.put(chats[index], kind: "chat", id: taskID)

@@ -48,6 +48,17 @@ extension VaultConfiguration {
         catalogSources = sources.isEmpty ? nil : sources
     }
 
+    /// A deleted connection leaves no catalog link behind: its own source is
+    /// dropped and connections that followed its catalog stand on their own,
+    /// since a link to a missing connection would fail the vault's validation
+    /// and the deletion with it.
+    mutating func forgetCatalogLinks(of id: String) {
+        guard var sources = catalogSources else { return }
+        sources.removeValue(forKey: id)
+        sources = sources.filter { $0.value != id }
+        catalogSources = sources.isEmpty ? nil : sources
+    }
+
     private static func sameCatalogAuthority(_ lhs: VaultProfile, _ rhs: VaultProfile) -> Bool {
         lhs.profile.api == rhs.profile.api && lhs.profile.baseUrl == rhs.profile.baseUrl &&
         lhs.apiKey == rhs.apiKey && lhs.headers == rhs.headers

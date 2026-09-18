@@ -109,6 +109,8 @@ import Combine
     @Published var before: String?
     @Published var hostBefore: Double?
     var loadingEarlier = false
+    /// Set once the first page has been checked to begin at a user message.
+    var pageStartEnsured = false
     @Published var loading = false
     var scrollAnchor: TranscriptAnchor?
     @Published var viewportRequest = 0
@@ -393,6 +395,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
         if revealInSidebar { revealProjectChat(item) } else { showArchivedSessions = item.isArchived }
         PerformanceProbe.shared.beginSelection(id, hasHistory: item.path != nil)
         selectedID = id; profileChoice = item.profileID
+        clearFailureMark(sessionID: id)
         // A chat outside any project never becomes the target for new chats.
         if item.workspaceID != WorkspaceRecord.scratchID { selectedWorkspaceID = item.workspaceID }
         focusedSessionID = id; page = .chats
@@ -428,8 +431,11 @@ enum WorkspacePage: String, Sendable { case chats, report }
                 }
                 view.browsingHistory = false
                 if let anchor = view.scrollAnchor, !anchor.followsBottom, !page.messages.contains(where: { $0.id == anchor.id }) { view.scrollAnchor = nil }
+                view.pageStartEnsured = false
                 view.messages = page.messages; view.before = page.before; view.notice = page.notice ?? (item.imported ? "Imported original · Read-only. Continue creates a separate managed copy." : "Saved history · Host unloaded")
                 if page.notice == nil, !opened.contains(id), view.lastSequence == historySequence { view.observeRetainedFailure(page.failureMessage) }
+                await ensurePageStartsAtTurn(sessionID: id)
+                guard selectedID == id else { return }
             }
             await refreshAccounting(view, workspaceID: item.workspaceID)
             if let profile = profiles.first(where: { $0.id == item.profileID }), profile.api != LiteLLMConfiguration.supportedAPI {
@@ -515,11 +521,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
         } else {
             guard configuration.workspaces.contains(workspace), workspace.trusted else { throw HostError.failure("Trust this project in the configuration vault before starting tools.") }
         }
-        let limit = configuration.runtime.workspaceConcurrency
-        if hosts.values.filter({ $0.isReady }).count >= limit {
-            if let idle = hosts.first(where: { !$0.value.isBusy && $0.key != workspace.id }) { idle.value.shutdown(); hosts.removeValue(forKey: idle.key); opened.subtract(chats.filter { $0.workspaceID == idle.key }.map(\.id)) }
-            else { throw HostError.failure("The configured project concurrency limit is in use. Stop another project or change Settings.") }
-        }
+        // Any number of projects and chats may be active at once; idle helpers
+        // leave on their own after the grace period.
         let host = hosts[workspace.id] ?? HostSupervisor(); hosts[workspace.id] = host
         host.onEvent = { [weak self] frame in
             guard let id = frame["sessionId"]?.string else { return }
@@ -609,6 +612,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
             return
         }
         guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), !item.isBackgroundTask, let view = displays[id], (!view.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !view.skills.isEmpty), !view.loading, !installPreparing, side(id)?.keeping != true else { return }
+        guard !item.isArchived else { view.notice = Self.archivedNotice; return }
         guard let store else { error = "Desktop storage is unavailable. Resolve the storage error before sending."; return }
         if resolveLeadingCommand(view, steer: steer) { return }
         guard view.draft.utf8.count <= 262_144 else { error = "The draft exceeds the 256 KiB submission limit"; return }
@@ -645,6 +649,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
                     }
                     scheduleTitleGeneration(sourceID: item.id, input: text)
                 }
+                // The new turn is what the reader wants to see, wherever they had scrolled.
+                view.scrollAnchor = .init(id: view.messages.last?.id ?? "", offset: 0, followsBottom: true); view.viewportRequest += 1; anchorChanged(view)
                 refresh(item.id)
             } catch {
                 // The failure sits in the conversation, under the messages, not in a fixed strip.
@@ -674,7 +680,9 @@ enum WorkspacePage: String, Sendable { case chats, report }
                     view.lastSequence = sequence
                     observeAssistantOutputs(sessionID: id, snapshot: result)
                     view.observeCompaction(result)
+                    let wasBusy = view.busy
                     view.observeRunState(result)
+                    if wasBusy, view.state == "error" { markRunFailed(sessionID: id) }
                     view.observeRetry(result)
                     let queue = result["queue"]?.array?.compactMap(\.object) ?? []; if view.queue != queue { view.queue = queue }
                     view.queueCount = Int(result["queueCount"]?.number ?? 0)
@@ -707,6 +715,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
                             // The next earlier page starts before the earliest row shown, not before the window.
                             let before = result["before"]?.number.map { $0 - Double(prepended) }.flatMap { $0 > 0 ? $0 : nil }
                             if view.hostBefore != before { view.hostBefore = before }
+                            if !view.pageStartEnsured, view.messages.first?.role != "user" { Task { await self.ensurePageStartsAtTurn(sessionID: id) } }
                         }
                     } else if !view.browsingHistory && view.projectionRevision != requestedRevision {
                         view.dirty = true // An intervening page change needs a fresh full projection.
@@ -750,8 +759,11 @@ enum WorkspacePage: String, Sendable { case chats, report }
             host.shutdown(); opened.subtract(chats.filter { $0.workspaceID == workspaceID }.map(\.id))
         }
     }
+    static let archivedNotice = "This chat is archived. Restore it to continue."
     func action(_ method: String, params: [String: WireValue] = [:], sessionID: String? = nil) {
         guard !installPreparing, let id = sessionID ?? selectedID, let item = record(id) else { return }
+        // Nothing runs in an archived chat; stopping is the one command it still takes.
+        guard !item.isArchived || method == "turn.stop" else { displays[id]?.notice = Self.archivedNotice; return }
         if method == "context.compact" { displays[id]?.compactionNotice = nil }
         let commandID = UUID().uuidString
         Task { do {
@@ -787,23 +799,40 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// place. The page asks for this as the reader nears the top; the header
     /// button asks explicitly. Live updates keep arriving underneath.
     func loadEarlier(sessionID: String? = nil) {
-        guard let id = sessionID ?? selectedID, let item = record(id), let view = displays[id], !view.loadingEarlier else { return }
+        Task { _ = await loadEarlierPage(sessionID: sessionID) }
+    }
+    /// A page that begins in the middle of a turn hides the question that
+    /// started it, which is exactly what a short chat with many tool calls
+    /// looks like; earlier pages are pulled in until a user message leads.
+    func ensurePageStartsAtTurn(sessionID id: String) async {
+        guard let view = displays[id], !view.pageStartEnsured else { return }
+        view.pageStartEnsured = true
+        var pages = 0
+        while pages < 4, let first = view.messages.first, first.role != "user", view.hostBefore != nil || view.before != nil, displays[id] === view {
+            guard await loadEarlierPage(sessionID: id) else { break }
+            pages += 1
+        }
+    }
+    /// One earlier page; true when rows were prepended.
+    func loadEarlierPage(sessionID: String? = nil) async -> Bool {
+        guard let id = sessionID ?? selectedID, let item = record(id), let view = displays[id], !view.loadingEarlier else { return false }
         view.loadingEarlier = true
-        Task { defer { view.loadingEarlier = false }; do {
+        defer { view.loadingEarlier = false }
+        do {
             var earlier: [TranscriptMessage] = []
             if opened.contains(item.id), let host = hosts[item.workspaceID] {
-                guard let before = view.hostBefore else { return }
+                guard let before = view.hostBefore else { return false }
                 let value = try await host.request("session.history", sessionID: item.id, params: ["before": .number(before)]).object ?? [:]
                 earlier = try JSONDecoder().decode([TranscriptMessage].self, from: JSONEncoder().encode(value["messages"] ?? .array([])))
-                guard displays[id] === view else { return }
+                guard displays[id] === view else { return false }
                 view.hostBefore = value["before"]?.number
             } else if let path = item.path, let before = view.before {
                 let page = try await history.read(path: path, before: before)
-                guard displays[id] === view else { return }
+                guard displays[id] === view else { return false }
                 earlier = page.messages; view.before = page.before
-            } else { return }
+            } else { return false }
             var prefix = TranscriptPaging.prefix(earlier: earlier, shown: view.messages)
-            guard !prefix.isEmpty else { return }
+            guard !prefix.isEmpty else { return false }
             for index in prefix.indices { prefix[index].accounting = view.messageAccounting[prefix[index].id] }
             // Keep the row that was first on screen where it is.
             if let first = view.messages.first {
@@ -813,7 +842,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
             view.messages = prefix + view.messages
             view.viewportRequest += 1; anchorChanged(view)
             await refreshAccounting(view, workspaceID: item.workspaceID)
-        } catch { self.error = error.localizedDescription } }
+            return true
+        } catch { self.error = error.localizedDescription; return false }
     }
     func latest(sessionID: String? = nil) { if let id = sessionID ?? selectedID {
         if let view = displays[id], let item = record(id) {

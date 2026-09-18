@@ -82,7 +82,10 @@ extension WorkspaceModel {
         Task { do { try await setSessionArchived(id, archived: !item.isArchived) } catch { self.error = error.localizedDescription } }
     }
     func setSessionArchived(_ id: String, archived: Bool) async throws {
+        // An archived chat runs nothing: a run in progress stops, and its queued follow-ups wait for a restore.
+        if archived, displays[id]?.busy == true { stop(sessionID: id) }
         try await changeSessionOrganization(id, change: .archived(archived))
+        if archived { updateDockBadge() }
         // A background session can be archived without changing current focus.
         guard selectedID == id || focusedSessionID == id, let item = record(id) else { return }
         if archived {

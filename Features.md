@@ -11,7 +11,7 @@ installer and product page together; retain the existing bundle identity,
 Keychain item, history locations and updater signing key for compatibility.
 The legacy Pi App update feed continues to receive the same signed release.
 
-Retain the existing SwiftUI/AppKit application, native composers, and React transcript inside WKWebView. Replace the shipped Node/Pi SDK host with the self-contained Swift helper in `packages/swift-host`. Node remains a build-time dependency for the transcript, not a shipped runtime. Do not switch to Rust, reintroduce bundled Pi, or implement a JavaScript compatibility runtime without a new architecture decision.
+Retain the existing SwiftUI/AppKit application and native composers; since 0.1.38 the transcript is native SwiftUI as well (no WKWebView, React or Node anywhere in the build). Replace the shipped Node/Pi SDK host with the self-contained Swift helper in `packages/swift-host`. Do not switch to Rust, reintroduce bundled Pi, or implement a JavaScript compatibility runtime without a new architecture decision.
 
 Pi `v0.85.1` is a behavioral reference, not a runtime dependency or a claim of full upstream parity. Arbitrary Pi extensions are excluded. Port selected useful extension behaviors as ordinary first-party tools, commands, or UI.
 

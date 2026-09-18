@@ -66,16 +66,22 @@ final class TitleGenerationTests: XCTestCase {
         XCTAssertNotNil(childTask, "Saved side chats are titled too")
     }
 
-    func testTitleParserRejectsPartialFailedToolAndMultilineOutput() {
+    func testTitleParserRejectsPartialFailedToolOutputAndCleansWhatModelsAdd() {
         func answer(_ text: String, state: String? = nil) -> TranscriptMessage {
             TranscriptMessage(id: "answer", role: "assistant", text: text, state: state)
         }
         XCTAssertEqual(TitleGenerationPlan.title(from: [answer("  “Improve the catalog picker” \n")]), "Improve the catalog picker")
         for message in [answer("unfinished", state: "streaming"), answer("failed", state: "error"),
-                        answer("cancelled", state: "aborted"), answer(""), answer("Two\nlines"),
-                        answer("\u{0060}title\u{0060}"), answer(String(repeating: "x", count: 81))] {
+                        answer("cancelled", state: "aborted"), answer(""), answer("\n \n")] {
             XCTAssertNil(TitleGenerationPlan.title(from: [message]))
         }
+        // What real mini models add around a title never loses the title.
+        XCTAssertEqual(TitleGenerationPlan.title(from: [answer("Harden the payment retry loop\n\nThis title summarizes the request.")]), "Harden the payment retry loop")
+        XCTAssertEqual(TitleGenerationPlan.title(from: [answer("Title: **Harden the retry loop**.")]), "Harden the retry loop")
+        XCTAssertEqual(TitleGenerationPlan.title(from: [answer("- \u{0060}Retry loop hardening\u{0060}")]), "Retry loop hardening")
+        XCTAssertEqual(TitleGenerationPlan.title(from: [answer("Sure! Here is a title:\nPayment retries with jitter")]), "Sure! Here is a title:")
+        XCTAssertEqual(TitleGenerationPlan.title(from: [answer(String(repeating: "word ", count: 30))])?.count ?? 0 <= 80, true)
+        XCTAssertEqual(TitleGenerationPlan.title(from: [answer(String(repeating: "x", count: 81))]), String(repeating: "x", count: 80))
         var truncated = answer("Truncated"); truncated.truncated = true
         XCTAssertNil(TitleGenerationPlan.title(from: [truncated]))
         var tool = answer("Tool response")

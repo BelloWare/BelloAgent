@@ -11,7 +11,52 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Bello Agent 0.1.37/build 41 is publicly released** at
+**Bello Agent 0.1.42/build 46 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `6b80619760c8328f9eb8a94e3f040cebfd82cc5c`
+and website `1e57c83b90df30187a0e5d1943f29ee7225d425e`. The DMG measures **7,137,493 bytes (6.81 MiB)**,
+SHA-256 `f3b8460af5c7ee378921ab8766fbf1cd8dade20921c995255c7b0b0874e0405c`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 11:35:50 UTC**.
+Read the [0.1.42 release record](validation/Bello-Agent-0.1.42-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.41/build 45 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `4bfa49e039c6206e12afbb4dac823af27620c9ef`
+and website `a11fb2989b9839061d6bb24f82dbb8e80876b072`. The DMG measures **7,115,515 bytes (6.79 MiB)**,
+SHA-256 `b9835306e36b9744258f1e50e41f5998c0438505d6676d6e01faea5c28bb58c4`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 10:33:48 UTC**.
+Read the [0.1.41 release record](validation/Bello-Agent-0.1.41-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.40/build 44 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `d2802278100ebaf6a414a0de139fc48a59cc7233`
+and website `65730b4432a1d089df7804d9b92365a2ab638b60`. The DMG measures **7,113,393 bytes (6.78 MiB)**,
+SHA-256 `b8e4036068f3e89eb7e462a7a44c4bb418e3c8f638e1b5d1204eb87833a03b4e`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 09:15:59 UTC**.
+Read the [0.1.40 release record](validation/Bello-Agent-0.1.40-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.39/build 43 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `a88bddbb4fbe0772bce8b182cf9116cda4309047`
+and website `a7d2d22d809962d5f123d6c0b1cfbcb2a2bbf49b`. The DMG measures **7,149,724 bytes (6.82 MiB)**,
+SHA-256 `1e93b8639cf4cd0ee12c20246f7ed331b929f1e925b62585ba2beab15de168f7`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 07:25:06 UTC**.
+Read the [0.1.39 release record](validation/Bello-Agent-0.1.39-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.38/build 42 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `bf04acfd3f41d2313d206052579091b94bf3966b`
+and website `7538ca1ce73000bc1d11ec04989caa9625db2500`. The DMG measures **7,128,652 bytes (6.80 MiB)**,
+SHA-256 `90ed4270a53955671d875cae58b946b27ac7f74b561525b6599298f79246150d`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 06:25:13 UTC**.
+Read the [0.1.38 release record](validation/Bello-Agent-0.1.38-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.37/build 41 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source `f803d904f7c3963cc0fd170a652ba15d836ea319`
 and website `4363262d41c79fb0fb2f2f6aa9162bfc4e0d18e1`. The DMG measures **7,336,336 bytes (7.00 MiB)**,
 SHA-256 `19801f32ec462a9cba321629802db2ee4eecb2a07907377fbbe8ed3428577a06`. Signing/notarization, packaged-catalog/helper smoke,
@@ -316,6 +361,109 @@ Read the [0.1.4 release record](validation/Bello-Agent-0.1.4-2026-09-16.md).
 The [0.1.3 evidence](validation/Bello-Agent-0.1.3-2026-09-16.md) is historical.
 
 ## Current implementation
+
+Version 0.1.42 fixes the connection deletion the owner reported as
+doing nothing. Editing a connection's API route saves a new connection and
+keeps the old one for its chats, recording the new one as the old route's
+model-catalog source (`catalogSources`); deleting either one then left a
+link to a missing connection, the vault's validation refused the save, and
+the reason appeared only in the sheet's small status line, so the three
+tabs stayed. `deleteProfile` now drops every catalog link of the deleted
+connection inside the same vault update, reads the vault back and treats a
+connection still listed as an error, reloads once when the list on screen is
+older than the vault, and logs each outcome to the system log (subsystem
+`com.belloware.PiApp`, category `vault`); the Settings footer reports a
+failed deletion in red and the window's banner repeats it. Saving a
+connection whose route changed keeps Settings open and explains that a new
+tab appeared and why the old one stays.
+See the [0.1.42 release record](validation/Bello-Agent-0.1.42-2026-09-18.md).
+
+Version 0.1.41 changes two things at the owner's request. Delete
+Connection works from the Settings footer itself: the button asks in place
+(no modal alert to miss), the question says what the deletion touches (the
+key leaves the Keychain item, which chats keep their history and will need
+another connection, how many runs will stop), and a run still going under
+the connection is stopped and its helper session closed instead of the
+deletion being refused; a vault revision conflict is retried once after a
+reload, and the footer then says that the connection was deleted, or why it
+was not. Motion, now that the whole app is native: one set of tokens
+(`PiMotion`, honouring Reduce Motion through `piAnimation`) drives a
+selection highlight that glides between sidebar rows, panes that cross over
+when the chat changes, tab strips that slide their selected pill, sheet
+badges that pop in, an empty chat's card that builds up line by line, title
+suggestions that arrive one after another, tool rows whose glyph bounces
+once as the call completes, footer figures that roll, unread dots that pop
+and a terminal that springs open. Nothing animates while a reply streams.
+See the [0.1.41 release record](validation/Bello-Agent-0.1.41-2026-09-18.md).
+
+Version 0.1.40 changes four things at the owner's request. Opening a
+saved chat shows the question that started its last turn: a page that
+began inside a reply's rows (what a short chat with many tool calls looks
+like through the sixty-row window) pulls earlier pages until the user
+message leads, and an idle chat whose last turn is taller than the window
+opens with that question at the top rather than at the bottom; a working
+chat, a remembered reading position and sending all behave as before.
+Connections can be deleted from Settings after a confirmation (their chats
+keep their history and ask for another connection; a chat still working or
+a side not yet kept refuses the deletion), and renaming one keeps its id,
+key, chats and model cache, which the settings row now says. Chat titles are
+read leniently, as models actually answer: the first usable line without
+labels, bullets, numbering, quotes, emphasis or a trailing period; a failed
+request says why in the chat's footer and the window's banner, and Generate
+Title in the chat's menu asks again. Performance across the app: the terminal
+takes program output about six times faster (printable runs print in one
+pass over the row, character widths are cached, the history trims in
+batches and the parser's hot state skips exclusivity checks), a streaming
+reply parses only the part still changing (the text is cut where a delta
+can no longer change how the parts parse and settled parts are remembered),
+and every Markdown run is dressed once instead of three times.
+See the [0.1.40 release record](validation/Bello-Agent-0.1.40-2026-09-18.md).
+
+Version 0.1.39 changes six things at the owner's request. Text no longer
+jumps while a reply streams: the page scrolls once per change, after the
+AppKit document has taken SwiftUI's new height, and nothing animates during
+a live turn; and every row is laid out exactly rather than lazily, so rows
+in view (and their buttons) stay put while a reply streams below them. A reply reads in
+the order things happened: what the model did comes first, under a small
+header naming the work with the chevron that folds it (reasoning, one row
+per tool call, the figures of each request), then the reply text, then the
+turn line. A run that fails while its chat is not in front marks the chat
+in the sidebar (a red dot when nothing new arrived) without bouncing the
+Dock or counting in its badge; opening the chat clears the mark. Archived
+chats are read-only until restored: sending, steering, editing, queue
+resume and commands other than Stop are refused with a notice, the composer
+gives way to a Restore footer, archiving a running chat stops it, and
+archived chats never count in the Dock badge. Project chat lists fold back
+with Show less. A chat's action menu can ask the mini model for a title
+again, replacing an edited one, and a title request that fails says why in
+the chat's footer.
+See the [0.1.39 release record](validation/Bello-Agent-0.1.39-2026-09-18.md).
+
+Version 0.1.38 makes the whole application native and leaves Sparkle as
+its only third-party code. The conversation page is SwiftUI
+(`apps/macos/PiApp/Transcript`): `TranscriptActivity` groups rows into
+replies and turns and sums their usage, `TranscriptMarkdown` turns
+Foundation's Markdown parse into blocks, `SyntaxHighlighter` colours code
+with its own scanners, `TranscriptCopy` finds section and code copy targets
+in the source, `TranscriptRows` draws the rows, and `TranscriptPage`
+owns scrolling (the reader's own scrolls decide whether the page follows,
+programmatic scrolls never do), anchors across chat switches and earlier
+pages, fresh-row motion and read receipts. The WKWebView, React,
+react-markdown, remark-gfm, highlight.js, esbuild, TypeScript, the old
+TypeScript host and Node itself are gone from the build and the bundle.
+The terminal panel is the app's own emulator (`apps/macos/PiApp/Terminal`):
+a pty-owning process runner, an xterm-style VT parser over a cell grid with
+scrollback, alternate screen, scroll regions, tab stops, DEC line drawing,
+16/256/true colour, bracketed paste and the replies programs ask for, and a
+CoreText view with keys, input methods, selection, copy, paste and wheel
+scrollback; SwiftTerm and its swift-argument-parser dependency are gone.
+Three behaviours changed at the owner's request: tool call rows and
+per-request figures stay in view after a turn (the chevron folds them),
+the working bar follows the session's run state rather than only a
+streaming row, so it stays up from send to settle including between
+requests, and any number of projects and chats can be active at once (the
+concurrent-projects setting and its eviction are gone).
+See the [0.1.38 release record](validation/Bello-Agent-0.1.38-2026-09-18.md).
 
 Version 0.1.37 removes the system title bar from every window. A strip
 of the app's own chrome (`PiWindowBar`) replaces it: it drags the window,
@@ -714,9 +862,10 @@ their reserved sidebar area while detail headers begin at the window top;
 dragging, double-click zoom/restore and retained composer/transcript state remain.
 
 F01–F21 have native implementations with the acceptance scope below. The selected
-architecture is SwiftUI/AppKit native composers, a React/TypeScript transcript
-inside WKWebView and a self-contained Swift helper. Node is build-only; the
-retired Pi v0.85.1 host remains a source/behavior reference and is not bundled.
+architecture is SwiftUI/AppKit native composers, a native SwiftUI transcript
+(since 0.1.38; a React page in WKWebView before) and a self-contained Swift
+helper. Node is gone; the retired Pi v0.85.1 host remains a behavior reference
+and is not bundled.
 Claude's latest dashboard changes in `0b3c255` were reviewed after its terminal
 turn ended at 2026-09-16T06:23:50.945Z with no remaining child work. The review
 found no blockers; gateway model conflicts retain all reported names and expose
@@ -764,6 +913,55 @@ an explicitly chosen seven days. Other custom retention values remain unchanged,
 and settings saved under the new policy retain deliberate off/seven-day choices.
 No capture-enable consent or body-reveal gate is added to these owner-authorized
 defaults. Export and destructive purge actions remain deliberate.
+
+## Verification of 0.1.42
+
+**453 native unit cases pass with 4 skipped, and the screenshot gallery
+and terminal capture cases pass with 42 light/dark captures**; the
+helper package (150) and the Python scripts (52), unchanged since
+0.1.38, were run again and pass, and the performance baseline ran again in
+a Release build. The optional acceptance class and installation/update
+rehearsals were not run. Details are in the
+[0.1.42 release record](validation/Bello-Agent-0.1.42-2026-09-18.md).
+
+## Verification of 0.1.41
+
+**452 native unit cases pass with 4 skipped, and the screenshot gallery
+and terminal capture cases pass with 42 light/dark captures**; the
+helper package (150) and the Python scripts (52), unchanged since
+0.1.38, were run again and pass, and the performance baseline ran again in
+a Release build. The optional acceptance class and installation/update
+rehearsals were not run. Details are in the
+[0.1.41 release record](validation/Bello-Agent-0.1.41-2026-09-18.md).
+
+## Verification of 0.1.40
+
+**452 native unit cases pass with 4 skipped, and the screenshot gallery
+and terminal capture cases pass with 42 light/dark captures**; the
+helper package (150) and the Python scripts (52), unchanged since
+0.1.38, were run again and pass, and the performance baseline ran in a
+Release build. The optional acceptance class and installation/update
+rehearsals were not run. Details are in the
+[0.1.40 release record](validation/Bello-Agent-0.1.40-2026-09-18.md).
+
+## Verification of 0.1.39
+
+**446 native unit cases pass with 4 skipped, and the screenshot gallery
+and terminal capture cases pass with 42 light/dark captures**; the
+helper package (150) and the Python scripts (52) are unchanged since
+0.1.38 and reuse that evidence. The optional acceptance class, the Release
+performance matrix and installation/update rehearsals were not run. Details
+are in the [0.1.39 release record](validation/Bello-Agent-0.1.39-2026-09-18.md).
+
+## Verification of 0.1.38
+
+**443 native unit cases pass with 4 skipped, the screenshot gallery and
+terminal capture cases pass with 42 light/dark captures, and 150
+helper cases pass**; the Python suite passes with 52 cases (the 10
+dependency-cache cases left with npm), and the former 149 transcript/host
+JavaScript cases are now native tests. The optional acceptance class, the
+Release performance matrix and installation/update rehearsals were not run.
+Details are in the [0.1.38 release record](validation/Bello-Agent-0.1.38-2026-09-18.md).
 
 ## Verification of 0.1.37
 
@@ -1269,7 +1467,22 @@ both event masks have native tests.
 
 ## Distribution and remaining limits
 
-- **0.1.37 distribution is complete.** Source `f803d90`, website `4363262`;
+- **0.1.42 distribution is complete.** Source `6b80619`, website `1e57c83`;
+  **7,137,493 bytes (6.81 MiB)**. Signing/notarization and public artifact checks pass.
+  No installation/update rehearsal.
+- **Historical 0.1.41 distribution is complete.** Source `4bfa49e`, website `a11fb29`;
+  **7,115,515 bytes (6.79 MiB)**. Signing/notarization and public artifact checks pass.
+  No installation/update rehearsal.
+- **Historical 0.1.40 distribution is complete.** Source `d280227`, website `65730b4`;
+  **7,113,393 bytes (6.78 MiB)**. Signing/notarization and public artifact checks pass.
+  No installation/update rehearsal.
+- **Historical 0.1.39 distribution is complete.** Source `a88bddb`, website `a7d2d22`;
+  **7,149,724 bytes (6.82 MiB)**. Signing/notarization and public artifact checks pass.
+  No installation/update rehearsal.
+- **Historical 0.1.38 distribution is complete.** Source `bf04acf`, website `7538ca1`;
+  **7,128,652 bytes (6.80 MiB)**. Signing/notarization and public artifact checks pass.
+  No installation/update rehearsal.
+- **Historical 0.1.37 distribution is complete.** Source `f803d90`, website `4363262`;
   **7,336,336 bytes (7.00 MiB)**. Signing/notarization and public artifact checks pass.
   No installation/update rehearsal.
 - **Historical 0.1.36 distribution is complete.** Source `e1836b3`, website `942d788`;
@@ -1417,7 +1630,7 @@ Read this file, `Features.md`, `Design.md`, the
 [parity document](Swift-Feature-Parity.md) and [test handoff](Swift-Test-Handoff.md).
 Preserve passing source and user history, fix actual failures with focused
 regressions, and use small reviewable commits on `master` with normal pushes.
-Preserve current 0.1.37 acceptance and the completed 0.1.36/0.1.35/0.1.34/0.1.33/0.1.32/0.1.31/0.1.30/0.1.29/0.1.28/0.1.27/0.1.26/0.1.25/0.1.24/0.1.23/0.1.22/0.1.21/0.1.20/0.1.19/0.1.12/0.1.11/0.1.10/0.1.9/0.1.8/0.1.7/0.1.6/0.1.5/0.1.4 historical
+Preserve current 0.1.42 acceptance and the completed 0.1.41/0.1.40/0.1.39/0.1.38/0.1.37/0.1.36/0.1.35/0.1.34/0.1.33/0.1.32/0.1.31/0.1.30/0.1.29/0.1.28/0.1.27/0.1.26/0.1.25/0.1.24/0.1.23/0.1.22/0.1.21/0.1.20/0.1.19/0.1.12/0.1.11/0.1.10/0.1.9/0.1.8/0.1.7/0.1.6/0.1.5/0.1.4 historical
 source/distribution records. Repeat validation when changed source or a concrete
 concern warrants it; install/update rehearsals still require a new explicit
 owner request. The [continuation prompt](Continue-Implementation-Prompt.md) carries the

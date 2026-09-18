@@ -49,7 +49,7 @@ struct MetricsFooter: View {
             Button { showContext = true } label: {
                 HStack(spacing: 7) {
                     ContextRing(fraction: contextFraction)
-                    Text(compactContext).lineLimit(1).monospacedDigit().fixedSize()
+                    Text(compactContext).lineLimit(1).monospacedDigit().fixedSize().contentTransition(.numericText()).piAnimation(PiMotion.base, value: compactContext)
                 }
             }.buttonStyle(.plain).piPointer().help(contextLabel + ". Explore instructions, messages, tool results, provider state and the prepared request.")
                 .accessibilityLabel("Explore context").accessibilityValue(contextLabel)
@@ -95,7 +95,11 @@ struct MetricsFooter: View {
     private var dot: some View { Circle().fill(Color.piHairlineStrong).frame(width: 3, height: 3) }
     private func stat(_ symbol: String, _ text: String, help: String) -> some View {
         Button(action: inspect) {
-            HStack(spacing: 4) { Image(systemName: symbol).font(.system(size: 10)).foregroundStyle(Color.piInkTertiary); Text(text).lineLimit(1).monospacedDigit().fixedSize() }
+            HStack(spacing: 4) {
+                Image(systemName: symbol).font(.system(size: 10)).foregroundStyle(Color.piInkTertiary)
+                // Figures roll to their new value rather than swapping.
+                Text(text).lineLimit(1).monospacedDigit().fixedSize().contentTransition(.numericText()).piAnimation(PiMotion.base, value: text)
+            }
         }.buttonStyle(.plain).piPointer().help(help)
     }
 

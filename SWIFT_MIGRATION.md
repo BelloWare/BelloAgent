@@ -4,7 +4,7 @@ Target branch: **master**. The repository's default branch may still be `main`; 
 
 Read [implementation status](docs/Implementation-Status.md), [Features.md](Features.md), [Design.md](Design.md), [feature parity](docs/Swift-Feature-Parity.md), and [test handoff](docs/Swift-Test-Handoff.md). A copyable continuation prompt is in [docs/Continue-Implementation-Prompt.md](docs/Continue-Implementation-Prompt.md).
 
-The recovered code replaces the shipped Node/Pi host with a native Swift helper and retains the existing native UI and React transcript. The old TypeScript source is a development reference, not a runtime fallback. Node remains a build dependency for React.
+The recovered code replaces the shipped Node/Pi host with a native Swift helper and retains the existing native UI. Since 0.1.38 the transcript is native SwiftUI too, the old TypeScript sources are gone, and Node is no longer a build dependency.
 
 This is a source/testing handoff, NOT a finished macOS release. The newest requirements still need work: deduplicated durable exact captures, a single Keychain configuration item, a percentile dashboard, LiteLLM-only configuration and reliable auto-router model identity. Custom endpoint/key support exists in the earlier profile implementation but has not been consolidated into the new vault.
 

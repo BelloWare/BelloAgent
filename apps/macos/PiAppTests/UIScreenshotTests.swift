@@ -148,6 +148,13 @@ final class UIScreenshotTests: XCTestCase {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.5)
             try capture(window, to: gallery.appendingPathComponent("01-main-\(name).png"))
         }
+        // The terminal panel: a live login shell in the app's own emulator under the conversation.
+        model.toggleTerminal(); try await settle(2.0)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("01b-terminal-\(name).png"))
+        }
+        model.toggleTerminal(); try await settle(0.5)
         // A second route in the same chat, so Session info and the report split speed and latency per model.
         await model.setModel("fixture-fast", for: main.id); try await settle(0.5)
         session.draft = "Summarize the plan in one line."
@@ -244,9 +251,9 @@ final class UIScreenshotTests: XCTestCase {
     }
 
     // Captures this process's windows in the given frame through the window
-    // server, which includes the out-of-process WKWebView transcript. The
-    // symbol is resolved dynamically so the SDK deprecation note does not fail
-    // the warnings-as-errors build; ScreenCaptureKit would need TCC consent.
+    // server. The symbol is resolved dynamically so the SDK deprecation note
+    // does not fail the warnings-as-errors build; ScreenCaptureKit would need
+    // TCC consent.
     @MainActor private func capture(_ window: NSWindow, to url: URL) throws {
         typealias ListImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage") else { throw XCTSkip("Window capture unavailable") }

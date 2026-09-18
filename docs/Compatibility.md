@@ -2,8 +2,9 @@
 
 ## M5 display and measurement boundaries
 
-The visible main transcript reuses one WKWebView when switching chats; its
-session identity resets scrolling, pending delivery and stale acknowledgements.
+The visible main transcript is a native SwiftUI page (since 0.1.38; it was one
+reused WKWebView before); switching chats resets its scrolling, fresh-row
+motion and stale acknowledgements through the session identity.
 Native composers remain distinct per session so Undo cannot pull text from a
 different chat. Three native indexes retain only bounded record offsets/parent
 links; device/inode/size/mtime/ctime validation invalidates edited or replaced
@@ -160,7 +161,7 @@ HTTP failure status alone does not mean a body has finished: memory eviction
 and attempt retention use explicit transport-active state. This prevents an
 in-flight 500 body from evicting its own retained prefix.
 
-## Packaged M0 runtime and transcript
+## Packaged M0 runtime and transcript (historical; removed in 0.1.38)
 
 React/React DOM and their types are pinned to 19.3.0; esbuild to 0.28.2.
 The app bundles compiled host JavaScript, production dependencies, Node and

@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import WebKit
 import XCTest
 @testable import PiApp
 
@@ -163,8 +162,8 @@ final class WindowPresentationTests: XCTestCase {
         try await waitFor({ self.descendants(WindowChromeView.self, in: hosted).count == 1 && self.descendants(ComposerTextView.self, in: hosted).count == 1 }, message: "The synthetic workspace did not finish its native layout")
         let chrome = try XCTUnwrap(descendants(WindowChromeView.self, in: hosted).first)
         let composer = try XCTUnwrap(descendants(ComposerTextView.self, in: hosted).first)
-        let webView = try XCTUnwrap(descendants(WKWebView.self, in: hosted).first)
-        try await waitFor({ !webView.isLoading && webView.url != nil }, message: "The synthetic transcript did not finish loading")
+        let marker = try XCTUnwrap(descendants(TranscriptSurfaceMarker.self, in: hosted).first)
+        let transcript = try XCTUnwrap(marker.enclosingScrollView, "The native transcript draws inside a scroll view")
         for (name, size, appearance) in [("chat-light", NSSize(width: 1240, height: 800), NSAppearance.Name.aqua), ("chat-compact-dark", NSSize(width: 920, height: 640), NSAppearance.Name.darkAqua)] {
             window.appearance = NSAppearance(named: appearance); window.setContentSize(size)
             try await Task.sleep(for: .milliseconds(80))
@@ -173,11 +172,11 @@ final class WindowPresentationTests: XCTestCase {
             // There is no conversation header: the transcript starts beside the
             // window controls, without an empty strip above it.
             XCTAssertTrue(descendants(ConversationHeaderMarkerView.self, in: hosted).isEmpty, "The chat pane has no header bar")
-            let webFrame = webView.convert(webView.bounds, to: nil)
-            XCTAssertEqual(webFrame.maxY, chromeFrame.maxY, accuracy: 1, "The transcript must start beside window controls, without an empty strip above it")
-            XCTAssertGreaterThanOrEqual(webFrame.minX, chromeFrame.maxX)
+            let transcriptFrame = transcript.convert(transcript.bounds, to: nil)
+            XCTAssertEqual(transcriptFrame.maxY, chromeFrame.maxY, accuracy: 1, "The transcript must start beside window controls, without an empty strip above it")
+            XCTAssertGreaterThanOrEqual(transcriptFrame.minX, chromeFrame.maxX)
             XCTAssertLessThanOrEqual(composer.convert(composer.bounds, to: nil).maxY, chromeFrame.minY)
-            try await captureIfRequested(window, name: name, transcript: webView)
+            try await captureIfRequested(window, name: name)
         }
         window.setContentSize(NSSize(width: 1240, height: 800)); window.appearance = NSAppearance(named: .aqua)
         XCTAssertTrue(window.makeFirstResponder(composer))
@@ -197,29 +196,9 @@ final class WindowPresentationTests: XCTestCase {
 
     /// Opt-in, own-window-only JPEGs keep visual evidence small and prevent a
     /// different application's window from entering the synthetic captures.
-    @MainActor private func captureIfRequested(_ window: NSWindow, name: String, transcript: WKWebView? = nil) async throws {
+    @MainActor private func captureIfRequested(_ window: NSWindow, name: String) async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let path = environment["PI_APP_CHROME_CAPTURE_ROOT"] ?? environment["TEST_RUNNER_PI_APP_CHROME_CAPTURE_ROOT"] else { return }
-        if let transcript {
-            _ = try await evaluateBool("window.__chromeCapturePaintQueued = false; window.__chromeCapturePaintReady = false; false", in: transcript)
-            var painted = false
-            for _ in 0..<80 {
-                painted = try await evaluateBool("""
-                (() => {
-                    if (!(document.body?.innerText ?? '').includes('The custom window header keeps the controls above the conversation.')) return false;
-                    if (!window.__chromeCapturePaintQueued) {
-                        window.__chromeCapturePaintQueued = true;
-                        requestAnimationFrame(() => requestAnimationFrame(() => { window.__chromeCapturePaintReady = true; }));
-                    }
-                    return window.__chromeCapturePaintReady === true;
-                })()
-                """, in: transcript)
-                if painted { break }
-                try await Task.sleep(for: .milliseconds(25))
-            }
-            XCTAssertTrue(painted, "The fixture transcript must render before capturing its window")
-            guard painted else { return }
-        }
         // Snapshot readiness is separate from the functional assertions. Let
         // SwiftUI's 0.24s page/appearance transition and the window compositor
         // finish only when optional visual evidence is being requested.
@@ -234,15 +213,6 @@ final class WindowPresentationTests: XCTestCase {
         let image = try XCTUnwrap(create(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber), options)?.takeRetainedValue())
         let jpeg = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.82]))
         try jpeg.write(to: folder.appendingPathComponent(name + ".jpg"), options: .atomic)
-    }
-
-    @MainActor private func evaluateBool(_ script: String, in webView: WKWebView) async throws -> Bool {
-        try await withCheckedThrowingContinuation { continuation in
-            webView.evaluateJavaScript(script) { value, error in
-                if let error { continuation.resume(throwing: error) }
-                else { continuation.resume(returning: value as? Bool ?? false) }
-            }
-        }
     }
 
     @MainActor func testPlainTypingRedirectsToTheComposerButShortcutsAndTextInputsDoNot() {

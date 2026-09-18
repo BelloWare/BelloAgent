@@ -1,0 +1,596 @@
+import Foundation
+
+// The transcript's reading of a conversation: which tool calls happened and
+// how they went, how replies group into blocks and turns, and how usage,
+// durations and clocks are written out. Pure functions over the message
+// projection, so every rule here is unit-tested without a view.
+
+enum ActionKind: String, Sendable { case command, read, write, search, list, mcp, other }
+
+struct ActionDescription: Equatable, Sendable {
+    let kind: ActionKind
+    let verb: String
+    let object: String
+    var path: String? = nil
+}
+
+/// Where a call stands, as the transcript reads it.
+enum ActionOutcome: String, Sendable { case running, done, failed, cancelled }
+
+enum ActivityState: String, Sendable { case running, failed, completed }
+
+struct DiffRow: Equatable, Sendable {
+    enum Kind: String, Sendable { case context, removed, added }
+    let kind: Kind
+    let text: String
+}
+
+/// Gateway-reported usage summed over a turn's (or a reply's) requests; a figure is nil when no request reported it.
+struct TurnAccounting: Equatable, Sendable {
+    var requests = 0
+    var input: Double? = nil, inputSamples = 0
+    var cached: Double? = nil, cachedSamples = 0
+    var uncached: Double? = nil, uncachedSamples = 0
+    var output: Double? = nil, outputSamples = 0
+    var reasoning: Double? = nil, reasoningSamples = 0
+    var total: Double? = nil, totalSamples = 0
+    var costUSD: Double? = nil, costSamples = 0
+    /// The last reported model name, and the request it came from, for the reply line's model link.
+    var model: String? = nil, modelMessageID: String? = nil
+}
+
+/// Everything the assistant did since the user's message, across every reply of the turn.
+struct TurnSummary: Equatable, Sendable {
+    var replies: Int
+    var tools: Int
+    var startedAt: Double?
+    var endedAt: Double?
+    var elapsedMs: Double?
+    var modelMs: Double
+    var toolMs: Double
+    var live: Bool
+    /// Distinct files that completed edits and writes touched.
+    var files: Int
+    /// True when the host's turn id shows the turn began before the loaded history.
+    var partial: Bool
+    var accounting: TurnAccounting
+    /// The turn's replies that carry gateway accounting, in order, for the expanded per-request rows.
+    var requests: [TranscriptMessage]
+    /// While live: the tool call under way, if any.
+    var current: ToolView?
+    /// While live: a status the host attached to the turn, such as a retry in progress.
+    var notice: String?
+}
+
+/// One prose reply and the work that produced it: the reasoning-only and
+/// tool-only replies before it, plus its own reasoning and tool calls. A
+/// trailing block with no prose holds work the turn ended on. Tool-result
+/// rows disappear; their output lives on the call.
+struct TranscriptBlock: Equatable, Sendable, Identifiable {
+    var id: String
+    /// Stays the id of the block's first row for its whole life, so the view keeps the block mounted (and open) as its reply arrives.
+    var key: String
+    /// The host's turn id for the block's rows, when the rows carry one.
+    var turnID: String?
+    var message: TranscriptMessage?
+    var activity: [TranscriptMessage]
+    var tools: [ToolView]
+    /// The block's own requests' usage: its activity replies plus its reply.
+    var accounting: TurnAccounting
+    var startedAt: Double?
+    var endedAt: Double?
+    var modelMs: Double
+    var toolMs: Double
+    var live: Bool
+    /// Set on the last block of every turn: the whole turn's figures, live ones included.
+    var turn: TurnSummary?
+    var replies: [TranscriptMessage] { activity + (message.map { [$0] } ?? []) }
+}
+
+enum TranscriptItem: Equatable, Sendable, Identifiable {
+    case message(TranscriptMessage)
+    case block(TranscriptBlock)
+    var id: String {
+        switch self {
+        case .message(let message): return message.id
+        case .block(let block): return block.key
+        }
+    }
+}
+
+extension TranscriptMessage {
+    var isStreaming: Bool { state == "streaming" || id.hasPrefix("stream:") }
+    /// A reply with no prose: only tool calls, exposed reasoning, or both. It folds into the next reply's block.
+    var isActivityOnly: Bool {
+        role == "assistant" && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (!(tools ?? []).isEmpty || !(thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+}
+
+enum TranscriptActivity {
+    // MARK: Tool descriptions
+
+    static func parseInput(_ input: String) -> [String: Any] {
+        guard let data = input.data(using: .utf8), let value = try? JSONSerialization.jsonObject(with: data), let object = value as? [String: Any] else { return [:] }
+        return object
+    }
+    static func shortPath(_ path: String) -> String {
+        let parts = path.split(separator: "/").filter { !$0.isEmpty }
+        return parts.count > 2 ? parts.suffix(2).joined(separator: "/") : path
+    }
+    static func firstLine(_ text: String, max: Int = 96) -> String {
+        let line = (text.split(separator: "\n", omittingEmptySubsequences: false).first.map(String.init) ?? "").trimmingCharacters(in: .whitespaces)
+        return line.count > max ? String(line.prefix(max - 1)) + "…" : line
+    }
+    private static func text(_ value: Any?) -> String? {
+        guard let string = value as? String, !string.isEmpty else { return nil }
+        return string
+    }
+    static func outcome(of tool: ToolView) -> ActionOutcome {
+        if ["running", "preparing", "prepared"].contains(tool.state) { return .running }
+        if tool.state == "cancelled" { return .cancelled }
+        if tool.state == "failed" { return .failed }
+        return .done
+    }
+    /// "Edited" once done, "Editing" under way, "Failed editing" or "Skipped editing" otherwise: the verb never claims work that did not happen.
+    private static func conjugate(_ done: String, _ doing: String, _ outcome: ActionOutcome) -> String {
+        switch outcome {
+        case .running: return doing.prefix(1).uppercased() + doing.dropFirst()
+        case .failed: return "Failed " + doing
+        case .cancelled: return "Skipped " + doing
+        case .done: return done
+        }
+    }
+    /// One verb-and-object line per tool call, like "Ran npm test", "Editing retry.swift" or "Failed reading notes.md".
+    static func describe(_ tool: ToolView) -> ActionDescription {
+        let input = parseInput(tool.input)
+        let path = text(tool.path) ?? text(input["path"])
+        let outcome = outcome(of: tool)
+        func verb(_ done: String, _ doing: String) -> String { conjugate(done, doing, outcome) }
+        switch tool.name {
+        case "bash":
+            let command = firstLine(text(input["command"]) ?? tool.input)
+            return ActionDescription(kind: .command, verb: verb("Ran", "running"), object: command.isEmpty ? "command" : command)
+        case "read": return ActionDescription(kind: .read, verb: verb("Read", "reading"), object: path.map(shortPath) ?? "file", path: path)
+        case "write":
+            let created = tool.added != nil && (tool.removed ?? 0) == 0
+            return ActionDescription(kind: .write, verb: verb(created ? "Created" : "Wrote", "writing"), object: path.map(shortPath) ?? "file", path: path)
+        case "edit": return ActionDescription(kind: .write, verb: verb("Edited", "editing"), object: path.map(shortPath) ?? "file", path: path)
+        case "ls": return ActionDescription(kind: .list, verb: verb("Listed", "listing"), object: path.map(shortPath) ?? "directory", path: path)
+        case "find", "grep": return ActionDescription(kind: .search, verb: verb("Searched", "searching"), object: text(input["pattern"]) ?? "files")
+        case "mcp":
+            // The meta-tool's action says what happened: a server list, schema loads or one invocation.
+            let action = text(input["action"]) ?? "invoke", server = text(input["server"])
+            if action == "list" { return ActionDescription(kind: .mcp, verb: verb("Listed", "listing"), object: server.map { "tools on \($0)" } ?? "MCP servers") }
+            if action == "describe" {
+                let count = (input["targets"] as? [Any])?.count ?? 0
+                return ActionDescription(kind: .mcp, verb: verb("Loaded", "loading"), object: count > 0 ? "\(count) tool \(count == 1 ? "schema" : "schemas")" : "tool schemas")
+            }
+            return ActionDescription(kind: .mcp, verb: verb("Called", "calling"), object: "\(server ?? "server") · \(text(input["tool"]) ?? "call")")
+        default: return ActionDescription(kind: .other, verb: verb("Used", "using"), object: tool.name)
+        }
+    }
+
+    /// A file's identity for counting: its path, else the call itself, so nothing is merged by guesswork.
+    private static func fileKey(_ description: ActionDescription, _ tool: ToolView) -> String { description.path ?? "\(description.object)#\(tool.id)" }
+    private static func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
+
+    /// The collapsed one-line summary of a run of tool calls: distinct files for
+    /// edits, reads and listings, counts for the rest, then what failed or was
+    /// skipped. Only completed calls count as work done; a running one waits.
+    static func summarize(_ tools: [ToolView]) -> String {
+        var writes = Set<String>(), reads = Set<String>(), lists = Set<String>()
+        var commands = 0, searches = 0, mcp = 0, other = 0, failed = 0, cancelled = 0
+        for tool in tools {
+            switch outcome(of: tool) {
+            case .failed: failed += 1; continue
+            case .cancelled: cancelled += 1; continue
+            case .running: continue
+            case .done: break
+            }
+            let description = describe(tool)
+            switch description.kind {
+            case .write: writes.insert(fileKey(description, tool))
+            case .read: reads.insert(fileKey(description, tool))
+            case .list: lists.insert(fileKey(description, tool))
+            case .command: commands += 1
+            case .search: searches += 1
+            case .mcp: mcp += 1
+            case .other: other += 1
+            }
+        }
+        var parts: [String] = []
+        if !writes.isEmpty { parts.append("edited " + plural(writes.count, "file", "files")) }
+        if commands > 0 { parts.append("ran " + plural(commands, "command", "commands")) }
+        if !reads.isEmpty { parts.append("read " + plural(reads.count, "file", "files")) }
+        if !lists.isEmpty { parts.append("listed " + plural(lists.count, "directory", "directories")) }
+        if searches > 0 { parts.append(searches == 1 ? "searched once" : "searched \(searches) times") }
+        if mcp > 0 { parts.append("called " + plural(mcp, "tool", "tools")) }
+        if other > 0 { parts.append("used " + plural(other, "tool", "tools")) }
+        if failed > 0 { parts.append(plural(failed, "call", "calls") + " failed") }
+        if cancelled > 0 { parts.append(plural(cancelled, "call", "calls") + " skipped") }
+        let joined = parts.joined(separator: ", ")
+        return joined.prefix(1).uppercased() + joined.dropFirst()
+    }
+    /// Distinct files that completed write or edit calls touched.
+    static func changedFiles(_ tools: [ToolView]) -> Int {
+        var files = Set<String>()
+        for tool in tools where outcome(of: tool) == .done {
+            let description = describe(tool)
+            if description.kind == .write { files.insert(fileKey(description, tool)) }
+        }
+        return files.count
+    }
+    static func state(of tools: [ToolView]) -> ActivityState {
+        if tools.contains(where: { ["running", "preparing", "prepared"].contains($0.state) }) { return .running }
+        if tools.contains(where: { ["failed", "cancelled"].contains($0.state) }) { return .failed }
+        return .completed
+    }
+    /// "Reasoned", "Read 1 file" or "Reasoned, read 1 file, ran 2 commands".
+    static func summarizeWork(_ tools: [ToolView], reasoned: Bool) -> String? {
+        let work: String? = tools.isEmpty ? nil : summarize(tools)
+        guard reasoned else { return work }
+        guard let work else { return "Reasoned" }
+        return "Reasoned, " + work.prefix(1).lowercased() + work.dropFirst()
+    }
+    static func blockReasoned(_ block: TranscriptBlock) -> Bool {
+        block.replies.contains { !($0.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    // MARK: Formatting
+
+    static func formatDuration(_ ms: Double) -> String {
+        guard ms.isFinite, ms >= 0 else { return "" }
+        if ms < 1_000 { return String(format: "%.1fs", ms / 1000) }
+        let seconds = Int((ms / 1000).rounded())
+        if seconds < 60 { return "\(seconds)s" }
+        let minutes = seconds / 60, rest = seconds % 60
+        if minutes < 60 { return rest > 0 ? "\(minutes)m \(rest)s" : "\(minutes)m" }
+        let hours = minutes / 60, restMinutes = minutes % 60
+        return restMinutes > 0 ? "\(hours)h \(restMinutes)m" : "\(hours)h"
+    }
+    /// "21:17:41" in local time, for hover stamps.
+    static func formatClock(_ ms: Double) -> String {
+        let parts = Calendar.current.dateComponents([.hour, .minute, .second], from: Date(timeIntervalSince1970: ms / 1000))
+        return [parts.hour ?? 0, parts.minute ?? 0, parts.second ?? 0].map { String(format: "%02d", $0) }.joined(separator: ":")
+    }
+    /// Digits grouped in threes, as en-US writes them: 1,234.
+    static func grouped(_ value: Double) -> String {
+        let whole = Int(value.rounded())
+        let digits = String(abs(whole))
+        var out = ""
+        for (index, digit) in digits.enumerated() {
+            if index > 0 && (digits.count - index) % 3 == 0 { out.append(",") }
+            out.append(digit)
+        }
+        return (whole < 0 ? "-" : "") + out
+    }
+    /// Tokens as counted: exact with grouping under ten thousand, compact above.
+    static func formatTokenCount(_ value: Double) -> String { value < 10_000 ? grouped(value) : formatCompactTokens(value) }
+    static func formatCompactTokens(_ value: Double) -> String {
+        if value < 1_000 { return "\(Int(value.rounded()))" }
+        if value < 10_000 {
+            var text = String(format: "%.1f", value / 1_000)
+            if text.hasSuffix(".0") { text.removeLast(2) }
+            return text + "k"
+        }
+        if value < 1_000_000 { return "\(Int((value / 1_000).rounded()))k" }
+        var text = String(format: "%.2f", value / 1_000_000)
+        while text.hasSuffix("0") { text.removeLast() }
+        if text.hasSuffix(".") { text.removeLast() }
+        return text + "M"
+    }
+    static func formatTurnCost(_ value: Double) -> String {
+        if value == 0 { return "$0" }
+        if value >= 1 { return String(format: "$%.2f", value) }
+        if value >= 0.01 { return String(format: "$%.3f", value) }
+        var text = String(format: "%.5f", value)
+        while text.hasSuffix("0") { text.removeLast() }
+        return "$" + text
+    }
+    /// The first sentence of exposed reasoning, bounded, for the reply line's teaser.
+    static func reasoningTeaser(_ text: String, max: Int = 90) -> String? {
+        let flat = text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+        guard !flat.isEmpty else { return nil }
+        var sentence = flat
+        let characters = Array(flat)
+        for (index, character) in characters.enumerated() where ".!?".contains(character) {
+            if index + 1 == characters.count || characters[index + 1].isWhitespace { sentence = String(characters[0...index]); break }
+        }
+        sentence = sentence.trimmingCharacters(in: .whitespaces)
+        guard sentence.count > max else { return sentence }
+        return String(sentence.prefix(max - 1)).trimmingCharacters(in: .whitespaces) + "…"
+    }
+
+    // MARK: Diffs
+
+    /// A line diff for an edit's old and new text: a bounded longest-common-subsequence, else a plain replace.
+    static func lineDiff(_ before: String, _ after: String, limit: Int = 300) -> [DiffRow] {
+        let a = before.components(separatedBy: "\n"), b = after.components(separatedBy: "\n")
+        if a.count > limit || b.count > limit { return a.map { DiffRow(kind: .removed, text: $0) } + b.map { DiffRow(kind: .added, text: $0) } }
+        var lengths = Array(repeating: Array(repeating: 0, count: b.count + 1), count: a.count + 1)
+        for i in stride(from: a.count - 1, through: 0, by: -1) {
+            for j in stride(from: b.count - 1, through: 0, by: -1) {
+                lengths[i][j] = a[i] == b[j] ? lengths[i + 1][j + 1] + 1 : max(lengths[i + 1][j], lengths[i][j + 1])
+            }
+        }
+        var rows: [DiffRow] = []
+        var i = 0, j = 0
+        while i < a.count && j < b.count {
+            if a[i] == b[j] { rows.append(DiffRow(kind: .context, text: a[i])); i += 1; j += 1 }
+            else if lengths[i + 1][j] >= lengths[i][j + 1] { rows.append(DiffRow(kind: .removed, text: a[i])); i += 1 }
+            else { rows.append(DiffRow(kind: .added, text: b[j])); j += 1 }
+        }
+        while i < a.count { rows.append(DiffRow(kind: .removed, text: a[i])); i += 1 }
+        while j < b.count { rows.append(DiffRow(kind: .added, text: b[j])); j += 1 }
+        return rows
+    }
+    /// The tool's edit as old and new text, when it is a file edit or write.
+    static func editTexts(_ tool: ToolView) -> (before: String, after: String)? {
+        guard let data = tool.input.data(using: .utf8), let value = try? JSONSerialization.jsonObject(with: data) else { return nil }
+        let input = value as? [String: Any] ?? [:]
+        if tool.name == "edit", let old = input["oldText"] as? String, let new = input["newText"] as? String { return (old, new) }
+        if tool.name == "write", let content = input["content"] as? String { return ("", content) }
+        return nil
+    }
+    static func parseCommand(_ input: String) -> String? { parseInput(input)["command"] as? String }
+
+    // MARK: Accounting
+
+    private static func reported(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+    /// Do not infer missing cache counters or subtract aggregates with different coverage.
+    static func uncachedInput(_ a: GatewayTotals) -> Double? {
+        if let samples = a.uncachedInputSamples {
+            return samples > 0 ? reported(a.uncachedInputReportedTokens) : nil
+        }
+        guard let tokens = a.tokens, let input = reported(tokens.input), let read = reported(a.cacheReadTokens),
+              tokens.inputSamples == a.requests, a.cacheReadSamples == a.requests, read <= input else { return nil }
+        return input - read
+    }
+    /// Sums only what each request reported; partial coverage stays visible through the sample counts.
+    static func aggregate(_ messages: [TranscriptMessage]) -> TurnAccounting {
+        var sum = TurnAccounting()
+        func add(_ field: WritableKeyPath<TurnAccounting, Double?>, _ samples: WritableKeyPath<TurnAccounting, Int>, _ value: Double?, _ count: Int) {
+            guard count > 0, let value = reported(value) else { return }
+            sum[keyPath: field] = (sum[keyPath: field] ?? 0) + value
+            sum[keyPath: samples] += count
+        }
+        for message in messages {
+            guard let a = message.accounting else { continue }
+            sum.requests += a.requests
+            add(\.input, \.inputSamples, a.tokens?.input, a.tokens?.inputSamples ?? 0)
+            add(\.output, \.outputSamples, a.tokens?.output, a.tokens?.outputSamples ?? 0)
+            add(\.reasoning, \.reasoningSamples, a.tokens?.reasoning, a.tokens?.reasoningSamples ?? 0)
+            add(\.total, \.totalSamples, a.tokens?.total, a.tokens?.samples ?? 0)
+            add(\.cached, \.cachedSamples, a.cacheReadTokens, a.cacheReadSamples)
+            if let uncached = uncachedInput(a) { add(\.uncached, \.uncachedSamples, uncached, a.uncachedInputSamples ?? a.requests) }
+            add(\.costUSD, \.costSamples, a.costUSD, a.costSamples)
+            if let name = a.models?.names.first { sum.model = name; sum.modelMessageID = message.id }
+        }
+        return sum
+    }
+    /// The tokens of a summary, preferring the reported total, else input plus output.
+    static func tokens(of a: TurnAccounting) -> Double? {
+        if let total = a.total { return total }
+        if a.input != nil || a.output != nil { return (a.input ?? 0) + (a.output ?? 0) }
+        return nil
+    }
+    /// "in 1,200 · 300 cached · 900 uncached · out 200 · 50 reasoning · $0.0041", each figure with its coverage when partial.
+    static func usageBreakdown(_ a: TurnAccounting) -> String {
+        func coverage(_ samples: Int) -> String { samples < a.requests ? " (\(samples)/\(a.requests))" : "" }
+        var parts: [String] = []
+        if let input = a.input { parts.append("in \(formatTokenCount(input))" + coverage(a.inputSamples)) }
+        if let cached = a.cached { parts.append("\(formatTokenCount(cached)) cached" + coverage(a.cachedSamples)) }
+        if let uncached = a.uncached { parts.append("\(formatTokenCount(uncached)) uncached" + coverage(a.uncachedSamples)) }
+        if let output = a.output { parts.append("out \(formatTokenCount(output))" + coverage(a.outputSamples)) }
+        if let reasoning = a.reasoning { parts.append("\(formatTokenCount(reasoning)) reasoning" + coverage(a.reasoningSamples)) }
+        if let cost = a.costUSD { parts.append(formatTurnCost(cost) + coverage(a.costSamples)) }
+        return parts.joined(separator: " · ")
+    }
+
+    // MARK: Per-request accounting line
+
+    struct AccountingPresentation: Equatable, Sendable {
+        var summary: String
+        var detail: String
+        var modelLabel: String?
+        var usage: String
+    }
+    private static func formatCost(_ value: Double) -> String {
+        if value == 0 { return "$0 USD" }
+        if value < 1e-8 {
+            // Three significant digits in exponent form, written as JavaScript does: 1.23e-9.
+            let exponent = Int(floor(log10(value)))
+            let mantissa = value / pow(10, Double(exponent))
+            return String(format: "$%.2fe%d USD", mantissa, exponent)
+        }
+        // Round the shortest decimal form half-up to eight places, as the gateway's
+        // figures were shown before: 0.000421875 reads $0.00042188, never …87.
+        var decimal = Decimal(string: "\(value)") ?? Decimal(value)
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &decimal, 8, .plain)
+        return "$" + NSDecimalNumber(decimal: rounded).stringValue + " USD"
+    }
+    private static func coverage(_ samples: Int, _ requests: Int) -> String { samples < requests ? " (\(samples)/\(requests))" : "" }
+    /// The line shows only what the gateway reported; unreported figures are left out rather than named.
+    static func accountingPresentation(_ a: GatewayTotals) -> AccountingPresentation {
+        let t = a.tokens
+        let input: String? = { guard let t, t.inputSamples > 0, let value = reported(t.input) else { return nil }; return "\(grouped(value)) in" + coverage(t.inputSamples, a.requests) }()
+        let reasoning: String? = { guard let t, (t.reasoningSamples ?? 0) > 0, let value = reported(t.reasoning) else { return nil }; return "\(grouped(value)) reasoning" + coverage(t.reasoningSamples ?? 0, a.requests) }()
+        let output: String? = { guard let t, t.outputSamples > 0, let value = reported(t.output) else { return nil }; return "\(grouped(value)) out" + coverage(t.outputSamples, a.requests) + (reasoning.map { " (\($0))" } ?? "") }()
+        let total: String? = { guard let t, t.samples > 0, let value = reported(t.total) else { return nil }; return "\(grouped(value)) total" + coverage(t.samples, a.requests) }()
+        let cached: String? = { guard a.cacheReadSamples > 0, let value = reported(a.cacheReadTokens) else { return nil }; return "\(grouped(value)) cached" + coverage(a.cacheReadSamples, a.requests) }()
+        let cost: String? = { guard a.costSamples > 0, let value = reported(a.costUSD) else { return nil }; return formatCost(value) + coverage(a.costSamples, a.requests) }()
+        let reasoningCost = (a.reasoningCostSamples ?? 0) > 0 && reported(a.reasoningCostUSD) != nil ? formatCost(a.reasoningCostUSD!) : "unavailable"
+        let uncached = uncachedInput(a)
+        let responseCache = [a.cacheHits > 0 ? "\(a.cacheHits) hit" : "", a.cacheMisses > 0 ? "\(a.cacheMisses) miss" : "",
+                             a.cacheUnreported > 0 ? "\(a.cacheUnreported) unreported" : "", a.cacheConflicts > 0 ? "\(a.cacheConflicts) invalid/conflicting" : ""]
+            .filter { !$0.isEmpty }.joined(separator: ", ")
+        let models = a.models
+        let modelLabel = models?.names.first
+        let modelDetail: String? = models.map { models in
+            [
+                "Reported model\(models.nameCount == 1 ? "" : "s"): \(models.names.isEmpty ? "unavailable" : models.names.joined(separator: ", "))\(models.nameCount > models.names.count ? "; \(models.nameCount - models.names.count) more (see Details)" : "").",
+                "The response body supplies the displayed name when available; older captures may retain a verified gateway name. Click the model to see response-body and header reports.",
+                "Resolved identity \(models.reportedRequests)/\(a.requests); unreported \(models.unreportedRequests), conflicting \(models.conflictingRequests), incomplete \(models.incompleteRequests). Displaying a body name does not change routing identity or accounting.",
+            ].joined(separator: " ")
+        }
+        let usage = [input, cached, output, total, cost].compactMap { $0 }.joined(separator: " · ")
+        let detail = [
+            modelDetail,
+            "Gateway-reported usage for \(a.requests) request\(a.requests == 1 ? "" : "s"). Each request appears once in the transcript. Details on the user message remain available.",
+            "Input includes cached tokens. Uncached input: \(uncached.map { grouped($0) + coverage(a.uncachedInputSamples ?? a.requests, a.requests) } ?? "unavailable"). Output includes reasoning tokens; they are not added again.",
+            "Reasoning: \(reasoning ?? "tokens unavailable") (\(t?.reasoningSamples ?? 0)/\(a.requests) requests reported). Reasoning cost: \(reasoningCost) (\(a.reasoningCostSamples ?? 0)/\(a.requests) reported), a per-request output-cost breakdown, never added to total cost. Its reporting coverage may differ.",
+            "Input \(t?.inputSamples ?? 0)/\(a.requests), output \(t?.outputSamples ?? 0)/\(a.requests), total \(t?.samples ?? 0)/\(a.requests), cost \(a.costSamples)/\(a.requests) requests reported. Partial totals include only reported requests.",
+            "Prompt-cache read \(a.cacheReadSamples > 0 && reported(a.cacheReadTokens) != nil ? grouped(a.cacheReadTokens!) : "unavailable") tokens (\(a.cacheReadSamples)/\(a.requests) reported); write \(a.cacheWriteSamples > 0 && reported(a.cacheWriteTokens) != nil ? grouped(a.cacheWriteTokens!) : "unavailable") tokens (\(a.cacheWriteSamples)/\(a.requests) reported).",
+            "Response cache: \(responseCache.isEmpty ? "unreported" : responseCache). Response-cache hits are separate from prompt-cache tokens.",
+        ].compactMap { $0 }.joined(separator: "\n")
+        return AccountingPresentation(summary: [modelLabel, usage.isEmpty ? nil : usage].compactMap { $0 }.joined(separator: " · "), detail: detail, modelLabel: modelLabel, usage: usage)
+    }
+    /// Accept only the bounded native identity projection, never arbitrary evidence.
+    static func validModelSummary(_ m: GatewayModelSummary, requests: Int) -> Bool {
+        let displayRequests = m.displayRequests ?? m.reportedRequests
+        let counts = [m.nameCount, m.reportedRequests, m.unreportedRequests, m.conflictingRequests, m.incompleteRequests]
+        guard counts.allSatisfy({ $0 >= 0 && $0 <= requests }),
+              m.reportedRequests + m.unreportedRequests + m.conflictingRequests + m.incompleteRequests == requests,
+              m.names.count == min(8, m.nameCount), Set(m.names).count == m.names.count,
+              m.names.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf8.count <= 256 && !$0.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F } }),
+              displayRequests >= 0, displayRequests <= requests else { return false }
+        return m.nameCount <= displayRequests && (displayRequests == 0) == (m.nameCount == 0)
+    }
+
+    // MARK: Blocks and turns
+
+    /// Groups replies into blocks: the reasoning-only and tool-only replies before a prose reply fold into it.
+    /// The items for `page` when it differs from `previous` only in the text or
+    /// reasoning of its last, still-arriving reply: the last block takes the
+    /// new row and nothing is regrouped. Nil when anything else changed.
+    static func patched(_ items: [TranscriptItem], from previous: [TranscriptMessage], to page: [TranscriptMessage]) -> [TranscriptItem]? {
+        guard page.count == previous.count, let old = previous.last, let new = page.last, old.id == new.id, new.role == "assistant", new.kind == nil,
+              case .block(var block) = items.last, old.isActivityOnly == new.isActivityOnly else { return nil }
+        var same = old; same.text = new.text; same.thinking = new.thinking
+        guard same == new else { return nil }
+        for index in 0..<(page.count - 1) where previous[index] != page[index] { return nil }
+        if block.message?.id == new.id { block.message = new }
+        else if let last = block.activity.indices.last, block.activity[last].id == new.id { block.activity[last] = new }
+        else { return nil }
+        var patched = items
+        patched[patched.count - 1] = .block(block)
+        return patched
+    }
+    static func blocks(of messages: [TranscriptMessage]) -> [TranscriptItem] {
+        var items: [TranscriptItem] = []
+        var lastAt: Double? = nil
+        var pending: TranscriptBlock? = nil
+        func open(_ id: String) -> TranscriptBlock {
+            TranscriptBlock(id: id, key: id, turnID: nil, message: nil, activity: [], tools: [], accounting: TurnAccounting(), startedAt: lastAt, endedAt: lastAt, modelMs: 0, toolMs: 0, live: false, turn: nil)
+        }
+        func flush() {
+            if var block = pending, block.message != nil || !block.activity.isEmpty {
+                block.accounting = aggregate(block.replies)
+                items.append(.block(block))
+            }
+            pending = nil
+        }
+        func observe(_ message: TranscriptMessage, _ block: inout TranscriptBlock) {
+            if let turn = message.turn, block.turnID == nil { block.turnID = turn }
+            if message.isStreaming { block.live = true }
+            // The host's own measurement of the request wins; the gap between rows is the fallback for older journals.
+            else if let modelMs = message.modelMs { block.modelMs += modelMs }
+            else if let at = message.at, let last = lastAt, at >= last { block.modelMs += at - last }
+            for tool in message.tools ?? [] { block.tools.append(tool); if let duration = tool.durationMs { block.toolMs += duration } }
+            if let at = message.at { lastAt = at; block.endedAt = at }
+        }
+        for message in messages {
+            if message.role == "tool" {
+                if let at = message.at { lastAt = at; pending?.endedAt = at }
+                continue
+            }
+            if message.role == "assistant" && message.kind == nil {
+                var block = pending ?? open("block:" + message.id)
+                if message.isActivityOnly { block.activity.append(message); observe(message, &block); pending = block; continue }
+                observe(message, &block)
+                block.message = message; block.id = message.id
+                pending = block
+                flush()
+                continue
+            }
+            flush()
+            items.append(.message(message))
+            if let at = message.at { lastAt = at }
+        }
+        flush()
+        attachTurns(&items)
+        // A status the host appended during a live turn (a retry in progress) belongs in the turn's live bar, not in a row of its own.
+        if items.count >= 2, case .message(let tail) = items[items.count - 1], tail.kind == "notice",
+           case .block(var before) = items[items.count - 2], before.turn?.live == true {
+            before.turn?.notice = tail.text
+            items[items.count - 2] = .block(before)
+            items.removeLast()
+        }
+        return items
+    }
+
+    /// A turn is the run of blocks since the user's message; its last block carries
+    /// the turn's totals. Blocks whose rows name a different host turn start a new
+    /// one. Status rows the host or app add mid-run (a compaction summary, a retry
+    /// notice, a failure) do not end the turn; only a user row or a plain system row does.
+    private static func attachTurns(_ items: inout [TranscriptItem]) {
+        var group: [Int] = []
+        var lastUser: String? = nil, groupUser: String? = nil
+        func block(_ index: Int) -> TranscriptBlock { if case .block(let block) = items[index] { return block }; fatalError("not a block") }
+        func close() {
+            defer { group = [] }
+            guard let firstIndex = group.first, let lastIndex = group.last else { return }
+            let blocks = group.map(block)
+            let first = blocks[0]
+            var last = block(lastIndex)
+            let partial = first.turnID != nil && first.turnID != groupUser
+            let requests = blocks.flatMap(\.replies).filter { $0.accounting != nil }
+            let live = blocks.contains { $0.live }
+            last.turn = TurnSummary(
+                replies: blocks.count,
+                tools: blocks.reduce(0) { $0 + $1.tools.count },
+                startedAt: first.startedAt, endedAt: last.endedAt,
+                elapsedMs: { if let s = first.startedAt, let e = last.endedAt, e >= s { return e - s }; return nil }(),
+                modelMs: blocks.reduce(0) { $0 + $1.modelMs },
+                toolMs: blocks.reduce(0) { $0 + $1.toolMs },
+                live: live,
+                files: changedFiles(blocks.flatMap(\.tools)),
+                partial: partial,
+                accounting: aggregate(requests),
+                requests: requests,
+                current: live ? last.tools.last(where: { ["running", "preparing", "prepared"].contains($0.state) }) : nil,
+                notice: nil)
+            items[lastIndex] = .block(last)
+            _ = firstIndex
+        }
+        for index in items.indices {
+            switch items[index] {
+            case .block(let current):
+                if let firstIndex = group.first, let firstTurn = block(firstIndex).turnID, let turn = current.turnID, firstTurn != turn { close() }
+                if group.isEmpty { groupUser = lastUser }
+                group.append(index)
+            case .message(let message):
+                if message.role == "user" || message.kind == nil {
+                    close()
+                    if message.role == "user" { lastUser = message.turn ?? message.id }
+                }
+            }
+        }
+        close()
+    }
+
+    // MARK: Read visibility
+
+    static func latestCompletedAssistant(_ messages: [TranscriptMessage]) -> String? {
+        messages.last { $0.role == "assistant" && !$0.isStreaming }?.id
+    }
+    /// Reaching the end of a long reply counts; merely seeing its first line does not.
+    static func replyEndIsVisible(top: Double, bottom: Double, height: Double, viewportHeight: Double) -> Bool {
+        [top, bottom, height, viewportHeight].allSatisfy(\.isFinite) && viewportHeight > 0 && height > 0 && top < viewportHeight && bottom > 0 && bottom <= viewportHeight + 1
+    }
+}

@@ -8,6 +8,8 @@ struct SessionReadState: Codable, Sendable, Equatable, Identifiable {
     var latestAssistantID: String?
     var unreadOutputs = 0
     var unreadTargetID: String?
+    /// The last run failed while the chat was out of view: shown as unread, never counted in the Dock badge.
+    var unreadFailure: Bool?
     var revision: Int64 = 0
 }
 
@@ -16,6 +18,26 @@ extension WorkspaceModel {
     func unreadOutputCount(sessionID: String) -> Int {
         guard let item = record(sessionID), item.connectionTest != true else { return 0 }
         return unreadStates[sessionID]?.unreadOutputs ?? 0
+    }
+    func unreadFailure(sessionID: String) -> Bool {
+        guard let item = record(sessionID), item.connectionTest != true else { return false }
+        return unreadStates[sessionID]?.unreadFailure == true
+    }
+    /// A run ended in an error while the chat was not in front: mark it so the
+    /// sidebar shows it, without bouncing the Dock or counting in its badge.
+    func markRunFailed(sessionID: String) {
+        guard let item = record(sessionID), item.connectionTest != true, !item.isArchived else { return }
+        guard !(page == .chats && (sessionID == selectedID || sides[selectedID ?? ""]?.id == sessionID) && NSApp.isActive) else { return }
+        var next = unreadStates[sessionID] ?? SessionReadState(id: sessionID, observedAssistantCount: 0, latestAssistantID: nil)
+        guard next.unreadFailure != true else { return }
+        next.unreadFailure = true
+        saveReadState(next)
+    }
+    /// Opening the chat shows the failure where the conversation stopped, which clears the mark.
+    func clearFailureMark(sessionID: String) {
+        guard var next = unreadStates[sessionID], next.unreadFailure == true else { return }
+        next.unreadFailure = nil
+        saveReadState(next)
     }
 
     func restoreReadStates() async throws {
@@ -49,14 +71,16 @@ extension WorkspaceModel {
         next.observedAssistantCount = count; next.latestAssistantID = latest
         // A reply that finished while another app is frontmost is easy to miss;
         // bounce the Dock icon once. The badge below carries the count.
-        if next.unreadOutputs > (unreadStates[sessionID]?.unreadOutputs ?? 0), !NSApp.isActive, NSClassFromString("XCTestCase") == nil {
+        // A failed run and an archived chat get the sidebar mark only, never the bounce.
+        if next.unreadOutputs > (unreadStates[sessionID]?.unreadOutputs ?? 0), !NSApp.isActive, NSClassFromString("XCTestCase") == nil,
+           snapshot["runStatus"]?.string != "failed", snapshot["state"]?.string != "error", !item.isArchived {
             NSApp.requestUserAttention(.informationalRequest)
         }
         saveReadState(next)
     }
 
-    /// Native WKWebView checks foreground/key-window/occlusion first; the page
-    /// reports only a completed reply whose bottom is actually in the viewport.
+    /// The page checks foreground, key window and occlusion first, and reports
+    /// only a completed reply whose bottom is actually in the viewport.
     func acknowledgeVisibleReply(sessionID: String, messageID: String) {
         guard page == .chats, sessionID == selectedID || sides[selectedID ?? ""]?.id == sessionID,
               let message = displays[sessionID]?.messages.first(where: { $0.id == messageID }), message.role == "assistant",
@@ -67,9 +91,13 @@ extension WorkspaceModel {
     }
 
     /// The Dock badge counts chats with unread replies, one per chat however
-    /// many replies each holds, matching the sidebar's per-chat dot.
+    /// many replies each holds. A chat whose run failed, and an archived chat,
+    /// keep their sidebar mark but never count here.
     func updateDockBadge() {
-        let total = unreadStates.values.filter { $0.unreadOutputs > 0 && record($0.id)?.connectionTest != true }.count
+        let total = unreadStates.values.filter { state in
+            guard state.unreadOutputs > 0, state.unreadFailure != true, let item = record(state.id), item.connectionTest != true, !item.isArchived else { return false }
+            return true
+        }.count
         let label = total > 0 ? String(total) : nil
         if NSApp.dockTile.badgeLabel != label { NSApp.dockTile.badgeLabel = label }
     }
@@ -77,8 +105,8 @@ extension WorkspaceModel {
     /// An explicit sidebar action can dismiss a reply abandoned by an edit.
     /// Automatic acknowledgements still require the exact visible target above.
     func markSessionRead(_ sessionID: String) {
-        guard record(sessionID) != nil, var next = unreadStates[sessionID], next.unreadOutputs > 0 else { return }
-        next.unreadOutputs = 0; next.unreadTargetID = nil
+        guard record(sessionID) != nil, var next = unreadStates[sessionID], next.unreadOutputs > 0 || next.unreadFailure == true else { return }
+        next.unreadOutputs = 0; next.unreadTargetID = nil; next.unreadFailure = nil
         saveReadState(next)
     }
 

@@ -34,12 +34,14 @@ struct RenameChatSheet: View {
                         .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
                 } else {
                     VStack(spacing: 4) {
-                        ForEach(suggestions, id: \.self) { suggestion in
+                        // The three titles arrive one after another.
+                        ForEach(Array(suggestions.enumerated()), id: \.element) { index, suggestion in
                             PiSelectableRow(selected: title == suggestion, action: { title = suggestion }) {
                                 HStack { Text(suggestion).font(PiFont.body).foregroundStyle(Color.piInk).lineLimit(2); Spacer() }
-                            }.accessibilityIdentifier("title-suggestion")
+                            }.accessibilityIdentifier("title-suggestion").piStaggered(index)
                         }
                     }
+                    .transition(.opacity)
                 }
                 PiStatusLine(text: notice, tone: .danger)
             }.padding(PiSpacing.xl)

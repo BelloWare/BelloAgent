@@ -138,15 +138,6 @@ final class SessionReadStateTests: XCTestCase {
         }
     }
 
-    func testReadReceiptUsesPaintedFrameWhenItsAcknowledgementDispatchesAnotherSnapshot() {
-        // JS posts rendered(8), then readReply(8). Handling rendered(8) can
-        // dispatch dirty snapshot 9 before readReply(8) reaches the native bridge.
-        XCTAssertTrue(TranscriptReadVisibility.receiptMatches(receiptSequence: 8, renderedSequence: 8, sentSequence: 9, receiptSession: "chat", currentSession: "chat"))
-        XCTAssertFalse(TranscriptReadVisibility.receiptMatches(receiptSequence: 7, renderedSequence: 8, sentSequence: 9, receiptSession: "chat", currentSession: "chat"), "An obsolete painted frame cannot acknowledge")
-        XCTAssertFalse(TranscriptReadVisibility.receiptMatches(receiptSequence: 9, renderedSequence: 8, sentSequence: 9, receiptSession: "chat", currentSession: "chat"), "An unpainted future frame is not proof")
-        XCTAssertFalse(TranscriptReadVisibility.receiptMatches(receiptSequence: 8, renderedSequence: 8, sentSequence: 9, receiptSession: "old-chat", currentSession: "chat"), "Session switches reject delayed receipts even when imported message IDs coincide")
-        XCTAssertFalse(TranscriptReadVisibility.receiptMatches(receiptSequence: 8, renderedSequence: -1, sentSequence: 9, receiptSession: "chat", currentSession: "chat"), "No frame is eligible until this session paints")
-    }
 
     @MainActor func testExplicitMarkReadClearsAbandonedReplyButFutureOutputRemainsUnread() async throws {
         let (model, root, _) = try await makeModel()
@@ -202,5 +193,48 @@ final class SessionReadStateTests: XCTestCase {
         let damaged = try await model.history.read(path: path.path)
         XCTAssertNotNil(damaged.notice); XCTAssertNil(damaged.assistantMessageCount, "Incomplete history is never authoritative read state")
         try await close(model, root: root)
+    }
+}
+
+extension SessionReadStateTests {
+    /// A failed run marks the chat, but the Dock badge counts only replies in chats that are neither failed nor archived.
+    @MainActor func testFailedRunsAndArchivedChatsAreMarkedButNeverCountedInTheDock() async throws {
+        let base = ProcessInfo.processInfo.environment["PI_BUILD_ROOT"] ?? NSTemporaryDirectory()
+        let root = URL(fileURLWithPath: base).appendingPathComponent("read-state-failure-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        var chat = ChatRecord(id: "chat", workspaceID: "workspace", title: "Saved chat", path: nil, profileID: "profile")
+        let other = ChatRecord(id: "other", workspaceID: "workspace", title: "Other chat", path: nil, profileID: "profile")
+        model.chats = [chat, other]; try await model.store?.put(chat, kind: "chat", id: chat.id); try await model.store?.put(other, kind: "chat", id: other.id)
+        let view = SessionDisplay(id: chat.id), otherView = SessionDisplay(id: other.id)
+        model.displays = [chat.id: view, other.id: otherView]; model.selectedID = other.id; model.selected = otherView; model.focusedSessionID = other.id
+        defer { model.shutdown() }
+        // The chat is not in front; its run fails without producing a reply.
+        model.markRunFailed(sessionID: "chat")
+        XCTAssertTrue(model.unreadFailure(sessionID: "chat")); XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0)
+        model.updateDockBadge(); XCTAssertNil(NSApp.dockTile.badgeLabel, "A failure is a sidebar mark, not a badge")
+        // A reply that did arrive before the failure stays unread but the badge still ignores the chat.
+        var failed = ["assistantMessageCount": WireValue.number(1), "latestAssistantMessageId": .string("a1"), "state": .string("error"), "runStatus": .string("failed")]
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: ["assistantMessageCount": .number(0), "latestAssistantMessageId": .null])
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: failed)
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1)
+        model.updateDockBadge(); XCTAssertNil(NSApp.dockTile.badgeLabel)
+        // Opening the chat clears the failure mark; the reply then counts as an ordinary unread reply.
+        await model.select("chat")
+        XCTAssertFalse(model.unreadFailure(sessionID: "chat"))
+        model.updateDockBadge(); XCTAssertEqual(NSApp.dockTile.badgeLabel, "1")
+        // Archiving takes the chat out of the badge and the bounce, and it refuses to run.
+        chat.archivedAt = Date(); model.chats[0] = chat; try await model.store?.put(chat, kind: "chat", id: chat.id)
+        model.updateDockBadge(); XCTAssertNil(NSApp.dockTile.badgeLabel)
+        view.draft = "hello"
+        model.send(sessionID: "chat")
+        XCTAssertEqual(view.notice, WorkspaceModel.archivedNotice); XCTAssertFalse(view.loading); XCTAssertTrue(model.hosts.isEmpty)
+        model.action("queue.resume", sessionID: "chat")
+        XCTAssertEqual(view.notice, WorkspaceModel.archivedNotice)
+        failed["assistantMessageCount"] = .number(2); failed["latestAssistantMessageId"] = .string("a2")
+        model.markSessionRead("chat")
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0); XCTAssertFalse(model.unreadFailure(sessionID: "chat"))
+        await model.flushReadStates(); await model.store?.close()
+        try FileManager.default.removeItem(at: root)
     }
 }

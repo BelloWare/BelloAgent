@@ -21,7 +21,10 @@ struct ProfileSettings: View {
     @State private var allowFallbacks = false
     @State private var loadedConnection: SettingsConnectionForm?
     @State private var message = ""
+    @State private var messageTone: PiTone = .neutral
     @State private var busy = false
+    /// The Delete button asked once; the footer shows what the deletion touches until Delete or Keep.
+    @State private var confirmingDelete = false
     @Environment(\.dismiss) private var dismiss
     private var isSaved: Bool { model.profiles.contains { $0.id == profile.id } }
     private var quotaMiB: Binding<Int64> { Binding(get: { preferences.capture.quotaBytes / 1_048_576 }, set: { preferences.capture.quotaBytes = $0 * 1_048_576 }) }
@@ -54,7 +57,7 @@ struct ProfileSettings: View {
                         PiIconButton(symbol: "arrow.clockwise", label: "Reload vault", size: 26) { Task { await reload() } }.help("Reload the configuration vault")
                     }
                     PiSettingsGroup(title: isSaved ? "Connection" : "New connection", footer: "Leave the key and headers empty to keep the saved values. The selected alias remains the requested model; a gateway's reported route may change between requests.") {
-                        PiRow(label: "Display name") { PiTextField(placeholder: "Team router", text: $profile.name) }
+                        PiRow(label: "Name", detail: "Rename freely: the connection keeps its id, key, chats and model cache.") { PiTextField(placeholder: "Team router", text: $profile.name) }
                         PiRow(label: "LiteLLM API") {
                             if profile.api == LiteLLMConfiguration.supportedAPI {
                                 Text("Responses").font(PiFont.body).foregroundStyle(Color.piInkSecondary)
@@ -130,7 +133,6 @@ struct ProfileSettings: View {
                         NativeCodeEditor(text: $advanced).frame(height: 130).padding(PiSpacing.sm)
                     }
                     PiSettingsGroup(title: "Runtime", footer: "PATH applies to newly started helpers. Provider credentials are never inherited by shell tools.") {
-                        PiRow(label: "Concurrent projects") { PiStepper(label: "\(preferences.runtime.workspaceConcurrency)", value: $preferences.runtime.workspaceConcurrency, range: 1...4) }
                         PiRow(label: "Idle helper grace") { PiStepper(label: "\(preferences.runtime.idleGraceSeconds) seconds", value: $preferences.runtime.idleGraceSeconds, range: 10...600, step: 10) }
                         PiRow(label: "Tools PATH", last: true) { PiTextField(placeholder: "/usr/bin:/bin", text: $preferences.runtime.toolsPATH, mono: true) }
                     }
@@ -151,19 +153,38 @@ struct ProfileSettings: View {
             Button("Cancel") { dismiss() }
         } footer: {
             HStack(spacing: PiSpacing.sm) {
-                Button { save(thenTest: true) } label: { Label("Test Connection…", systemImage: "bolt.horizontal") }.fixedSize()
-                    .disabled(!model.configurationLoaded || profile.api != LiteLLMConfiguration.supportedAPI || profile.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("Saves this configuration, then sends one test request in a saved chat outside any project.")
-                PiStatusLine(text: message).lineLimit(2)
-                Spacer(minLength: PiSpacing.md)
-                Button("Save") { save() }.buttonStyle(.piPrimary).fixedSize().disabled(!model.configurationLoaded)
-                    .help("Saves the connection and preferences, then closes Settings.")
-            }.disabled(busy)
+                if isSaved && confirmingDelete {
+                    // The question sits where the button was, in the sheet itself: no modal to miss.
+                    Text("Delete “\(profile.name.isEmpty ? "Unnamed" : profile.name)”? " + deletionSummary)
+                        .font(PiFont.caption).foregroundStyle(Color.piDanger).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("settings-delete-connection-question")
+                    Spacer(minLength: PiSpacing.md)
+                    Button("Keep") { withAnimation(PiMotion.quick) { confirmingDelete = false } }.buttonStyle(.piSecondaryCompact).fixedSize()
+                        .accessibilityIdentifier("settings-keep-connection")
+                    Button { deleteConnection() } label: { Label("Delete Connection", systemImage: "trash") }.buttonStyle(.piDanger).fixedSize()
+                        .accessibilityIdentifier("settings-confirm-delete-connection")
+                } else {
+                    if isSaved {
+                        Button { withAnimation(PiMotion.base) { confirmingDelete = true } } label: { Label("Delete Connection…", systemImage: "trash") }.buttonStyle(.piDanger).fixedSize()
+                            .help("Removes this connection and its key from the vault. Its chats keep their history and ask for another connection.")
+                            .accessibilityIdentifier("settings-delete-connection")
+                    }
+                    Button { save(thenTest: true) } label: { Label("Test Connection…", systemImage: "bolt.horizontal") }.fixedSize()
+                        .disabled(!model.configurationLoaded || profile.api != LiteLLMConfiguration.supportedAPI || profile.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .help("Saves this configuration, then sends one test request in a saved chat outside any project.")
+                    PiStatusLine(text: message, tone: messageTone).lineLimit(2)
+                    Spacer(minLength: PiSpacing.md)
+                    Button("Save") { save() }.buttonStyle(.piPrimary).fixedSize().disabled(!model.configurationLoaded)
+                        .help("Saves the connection and preferences, then closes Settings.")
+                }
+            }
+            .disabled(busy)
+            .piAnimation(PiMotion.base, value: confirmingDelete)
         }
         .task { await reload() }
     }
     private func select(_ value: ProfileRecord) {
-        profile = value; key = ""; headers = ""
+        profile = value; key = ""; headers = ""; confirmingDelete = false
         let form = SettingsConnectionForm.loaded(value, isSaved: isSaved), routing = form.routing
         advanced = form.advanced; replayPolicy = routing["replayPolicy"]?.string ?? "ask"
         expectedModel = routing["expectedModel"]?.string ?? ""; replayContract = routing["replayContract"]?.string ?? ""
@@ -172,13 +193,43 @@ struct ProfileSettings: View {
         cacheHeader = routing["cacheHeader"]?.string ?? ""
         allowFallbacks = form.allowFallbacks; loadedConnection = form
     }
+    /// What the deletion touches: the key, the chats that keep their history, the runs that stop.
+    private var deletionSummary: String {
+        let using = model.chats.filter { $0.profileID == profile.id && $0.connectionTest != true && !$0.isBackgroundTask }
+        let working = using.filter { model.displays[$0.id]?.hasWork == true }.count
+        var parts = ["Its key leaves the Keychain item."]
+        parts.append(using.isEmpty ? "No chat uses it." : using.count == 1 ? "One chat keeps its history and will need another connection."
+                     : "\(using.count) chats keep their history and will need another connection.")
+        if working > 0 { parts.append(working == 1 ? "One run will be stopped." : "\(working) runs will be stopped.") }
+        return parts.joined(separator: " ")
+    }
+    private func deleteConnection() {
+        let id = profile.id, name = profile.name.isEmpty ? "Unnamed" : profile.name
+        confirmingDelete = false
+        busy = true
+        Task {
+            defer { busy = false }
+            do {
+                try await model.deleteProfile(id)
+                preferences = model.configuration; revision = preferences.revision
+                select(model.profiles.first ?? ProfileRecord())
+                messageTone = .neutral
+                message = model.profiles.isEmpty ? "“\(name)” was deleted. Add a new connection to send messages." : "“\(name)” was deleted. \(model.profiles.count) connection\(model.profiles.count == 1 ? "" : "s") remain\(model.profiles.count == 1 ? "s" : "")."
+            } catch {
+                // In the footer and in the window's banner: a deletion that did not happen is never quiet.
+                messageTone = .danger
+                message = "“\(name)” was not deleted: " + error.localizedDescription
+                model.error = "Connection “\(name)” was not deleted: " + error.localizedDescription
+            }
+        }
+    }
     private func reload() async {
         busy = true; defer { busy = false }
         do {
             try await model.reloadConfiguration(); preferences = model.configuration; revision = preferences.revision
             select(model.profiles.first(where: { $0.id == profile.id }) ?? model.profiles.first ?? ProfileRecord())
-            message = "Vault revision \(revision). No connection test was sent."
-        } catch { message = error.localizedDescription }
+            message = "Vault revision \(revision). No connection test was sent."; messageTone = .neutral
+        } catch { message = error.localizedDescription; messageTone = .danger }
     }
     /// Saves everything on the sheet in one step and closes it on success. The
     /// connection is rewritten only when it changed, so an unchanged connection
@@ -192,11 +243,18 @@ struct ProfileSettings: View {
             do {
                 let savedID = try await form.save(to: model, comparedTo: loadedConnection, key: savedKey, headers: savedHeaders, preferences: savedPreferences, expectedRevision: expectedRevision)
                 preferences = model.configuration; revision = preferences.revision
+                let forked = savedID != loadedConnection.profile.id, previousName = loadedConnection.profile.name.isEmpty ? "Unnamed" : loadedConnection.profile.name
                 if let saved = model.profiles.first(where: { $0.id == savedID }) { select(saved) }
-                key = ""; headers = ""; message = "Saved in the configuration vault (revision \(revision))."
+                key = ""; headers = ""; messageTone = .neutral
                 if thenTest { model.testConnection(profileID: savedID) }
-                dismiss()
-            } catch { message = error.localizedDescription }
+                if forked {
+                    // A changed route is a new connection; the sheet stays open so the extra tab is explained, not a surprise.
+                    message = "Saved as a new connection because its API route changed. “\(previousName)” stays for its earlier chats; delete it in its tab if you no longer need it."
+                } else {
+                    message = "Saved in the configuration vault (revision \(revision))."
+                    dismiss()
+                }
+            } catch { message = error.localizedDescription; messageTone = .danger }
         }
     }
 }

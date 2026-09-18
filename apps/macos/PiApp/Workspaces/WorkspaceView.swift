@@ -1,5 +1,4 @@
 import SwiftUI
-import WebKit
 
 struct WorkspaceView: View {
     @ObservedObject var model: WorkspaceModel
@@ -24,6 +23,9 @@ struct WorkspaceView: View {
                         HStack(spacing: 0) {
                             ConversationPane(model: model, session: session, chat: chat)
                                 .frame(width: shownSide == nil ? region.size.width : (region.size.width / 2).rounded(.down))
+                                // Another chat rises into place while the last one fades.
+                                .id(chat.id)
+                                .transition(reduceMotion ? .identity : .asymmetric(insertion: .opacity.combined(with: .offset(y: 6)), removal: .opacity))
                             if let shown = shownSide {
                                 SidePane(model: model, session: shown.1, info: shown.0).id(shown.0.id)
                                     .frame(width: region.size.width - (region.size.width / 2).rounded(.down))
@@ -31,6 +33,7 @@ struct WorkspaceView: View {
                             }
                         }
                         .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.86), value: model.sides[chat.id]?.id)
+                        .animation(reduceMotion ? nil : PiMotion.base, value: chat.id)
                     } else if OnboardingState.shouldPresent(configurationLoaded: model.configurationLoaded, hasProfiles: !model.requestProfiles.isEmpty, hasChats: !model.chats.isEmpty) {
                         OnboardingView(model: model)
                     } else {
@@ -157,7 +160,7 @@ struct ConversationPageVisibility: NSViewRepresentable {
     private func hideNativeViews(in window: NSWindow, takeFocus: Bool) {
         guard let content = window.contentView else { return }
         func nativeViews(_ view: NSView) -> [NSView] {
-            if view is ComposerTextView || view is WKWebView { return [view] }
+            if view is ComposerTextView { return [view] }
             return view.subviews.flatMap { nativeViews($0) }
         }
         let views = nativeViews(content)
@@ -174,14 +177,14 @@ struct ConversationPageVisibility: NSViewRepresentable {
     }
     func restoreNativeViews(restoreFocus: Bool) {
         for hidden in hiddenViews { hidden.view?.isHidden = hidden.wasHidden }
-        let restoredTranscript = hiddenViews.contains { $0.view is WKWebView && !$0.wasHidden }
+        let restoredConversation = hiddenViews.contains { !$0.wasHidden }
         hiddenViews.removeAll()
         if restoreFocus, previousFocusIdentity == focusIdentity, let responder = previousResponder as? NSView,
            responder.window === window, !responder.isHiddenOrHasHiddenAncestor, window?.attachedSheet == nil {
             window?.makeFirstResponder(responder)
         } else if window?.firstResponder === self { window?.makeFirstResponder(nil) }
         previousResponder = nil; previousFocusIdentity = nil
-        if restoredTranscript { NotificationCenter.default.post(name: TranscriptReadVisibility.didRestoreNativeView, object: window) }
+        if restoredConversation { NotificationCenter.default.post(name: TranscriptReadVisibility.didRestoreNativeView, object: window) }
     }
     override func cancelOperation(_ sender: Any?) {
         if reportVisible { closeReport?() } else { super.cancelOperation(sender) }
@@ -245,6 +248,8 @@ private struct SidebarResizeHandle: View {
 private struct WorkspaceSidebar: View {
     @ObservedObject var model: WorkspaceModel
     @State private var filter = ""
+    /// One highlight for the whole list: it slides to the chat that was chosen.
+    @Namespace private var selectionGlide
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // No app name or icon up here; the Dock and the empty-chat card carry the mark.
@@ -267,6 +272,7 @@ private struct WorkspaceSidebar: View {
                     }
                 }.padding(.horizontal, PiSpacing.sm).padding(.bottom, PiSpacing.md)
             }
+            .environment(\.piSelectionNamespace, selectionGlide)
             .overlay {
                 if model.sidebarProjects.isEmpty {
                     VStack(spacing: 10) {
@@ -334,7 +340,7 @@ private struct ProjectSidebarGroup: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
                 Button {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { model.setProjectExpanded(project.id, expanded: !expanded) }
+                    withAnimation(reduceMotion ? nil : PiMotion.glide) { model.setProjectExpanded(project.id, expanded: !expanded) }
                 } label: {
                     HStack(spacing: 7) {
                         Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).rotationEffect(.degrees(expanded ? 90 : 0)).frame(width: 10)
@@ -374,12 +380,25 @@ private struct ProjectSidebarGroup: View {
                 ForEach(visibleChats) { entry in
                     chatRows(entry).transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
                 }
-                if hiddenRoots > 0 {
-                    Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { shownRoots += ProjectSidebarGroup.pageSize * 2 } } label: {
-                        Label("Show \(min(hiddenRoots, ProjectSidebarGroup.pageSize * 2)) more · \(hiddenRoots) hidden", systemImage: "chevron.down")
+                if hiddenRoots > 0 || shownRoots > ProjectSidebarGroup.pageSize {
+                    HStack(spacing: PiSpacing.md) {
+                        if hiddenRoots > 0 {
+                            Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { shownRoots += ProjectSidebarGroup.pageSize * 2 } } label: {
+                                Label("Show \(min(hiddenRoots, ProjectSidebarGroup.pageSize * 2)) more · \(hiddenRoots) hidden", systemImage: "chevron.down")
+                            }
+                            .buttonStyle(.plain).piPointer().foregroundStyle(Color.piAccent)
+                            .accessibilityIdentifier("sessionShowMore-" + project.id)
+                        }
+                        if shownRoots > ProjectSidebarGroup.pageSize {
+                            // Back to the first page; the selected chat stays in view because the page always includes it.
+                            Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { shownRoots = ProjectSidebarGroup.pageSize } } label: {
+                                Label("Show less", systemImage: "chevron.up")
+                            }
+                            .buttonStyle(.plain).piPointer().foregroundStyle(Color.piInkSecondary)
+                            .accessibilityIdentifier("sessionShowLess-" + project.id)
+                        }
                     }
-                    .buttonStyle(.plain).piPointer().font(PiFont.caption).foregroundStyle(Color.piAccent).padding(.leading, 23).padding(.vertical, 4)
-                    .accessibilityIdentifier("sessionShowMore-" + project.id)
+                    .font(PiFont.caption).padding(.leading, 23).padding(.vertical, 4)
                 }
                 if visibleChats.isEmpty {
                     Text(archived ? "No archived chats" : filter.isEmpty ? "No chats yet" : "No matching chats").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).padding(.leading, 48).padding(.vertical, 6)
@@ -459,9 +478,11 @@ private struct SessionOrganizationActions: View {
 /// A small accent dot marks a chat with replies the user has not viewed. The
 /// sidebar records only whether a chat is unread, never how many replies.
 struct UnreadDot: View {
+    /// A run that failed while you were away: marked, but never counted in the Dock badge.
+    var failure = false
     var body: some View {
-        Circle().fill(Color.piBrandOrange).frame(width: 7, height: 7)
-            .accessibilityLabel("Unread replies").help("New replies you have not viewed")
+        Circle().fill(failure ? Color.piDanger : Color.piBrandOrange).frame(width: 7, height: 7)
+            .accessibilityLabel(failure ? "Run failed" : "Unread replies").help(failure ? "The last run failed while you were away" : "New replies you have not viewed")
     }
 }
 
@@ -570,9 +591,9 @@ private struct ChatRow: View {
     }
     var body: some View {
         if let display = model.displays[chat.id] {
-            LiveChatRow(session: display, footer: display.footer, title: chat.title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: model.unreadOutputCount(sessionID: chat.id), hasSide: hasSide, expanded: expanded, toggle: toggle, pinned: chat.isPinned, archived: chat.isArchived, archive: archiveAction)
+            LiveChatRow(session: display, footer: display.footer, title: chat.title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: model.unreadOutputCount(sessionID: chat.id), unreadFailure: model.unreadFailure(sessionID: chat.id), hasSide: hasSide, expanded: expanded, toggle: toggle, pinned: chat.isPinned, archived: chat.isArchived, archive: archiveAction)
         } else {
-            ChatRowBody(stats: ChatRowStats(totals: model.chatStats[chat.id]), title: chat.title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: model.unreadOutputCount(sessionID: chat.id), hasSide: hasSide, expanded: expanded, toggle: toggle, pinned: chat.isPinned, archived: chat.isArchived, archive: archiveAction)
+            ChatRowBody(stats: ChatRowStats(totals: model.chatStats[chat.id]), title: chat.title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: model.unreadOutputCount(sessionID: chat.id), unreadFailure: model.unreadFailure(sessionID: chat.id), hasSide: hasSide, expanded: expanded, toggle: toggle, pinned: chat.isPinned, archived: chat.isArchived, archive: archiveAction)
         }
     }
 }
@@ -586,6 +607,7 @@ private struct LiveChatRow: View {
     let symbol: String
     let selected: Bool
     let unreadCount: Int
+    var unreadFailure = false
     let hasSide: Bool
     let expanded: Bool
     let toggle: () -> Void
@@ -605,7 +627,7 @@ private struct LiveChatRow: View {
         } else { row }
     }
     private var row: some View {
-        ChatRowBody(stats: stats, title: title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: unreadCount, hasSide: hasSide, expanded: expanded, toggle: toggle, pinned: pinned, archived: archived, archive: archive)
+        ChatRowBody(stats: stats, title: title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: unreadCount, unreadFailure: unreadFailure, hasSide: hasSide, expanded: expanded, toggle: toggle, pinned: pinned, archived: archived, archive: archive)
     }
 }
 
@@ -616,6 +638,7 @@ private struct ChatRowBody: View {
     let symbol: String
     let selected: Bool
     var unreadCount = 0
+    var unreadFailure = false
     var hasSide = false
     var expanded = true
     var toggle: () -> Void = {}
@@ -635,9 +658,10 @@ private struct ChatRowBody: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     Text(title).font(.system(size: 13, weight: selected || unreadCount > 0 ? .semibold : .regular)).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.tail)
+                        .contentTransition(.opacity).piAnimation(PiMotion.base, value: title)
                     if pinned { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(Color.piInkTertiary).accessibilityLabel("Pinned chat") }
                     Spacer(minLength: 4)
-                    if unreadCount > 0 { UnreadDot().transition(.scale.combined(with: .opacity)) }
+                    if unreadCount > 0 || unreadFailure { UnreadDot(failure: unreadFailure && unreadCount == 0).transition(.scale.combined(with: .opacity)) }
                     if let archive {
                         if confirmingArchive {
                             Button("Archive") { confirmingArchive = false; archive() }.buttonStyle(.piPrimaryCompact)
@@ -664,7 +688,7 @@ private struct ChatRowBody: View {
         .help(subtitle + (stats.requests > 0 ? " · \(stats.requests) requests · cache \(stats.cacheHits) hit / \(stats.cacheMisses) miss" : ""))
         .onHover { inside in hovering = inside; if !inside { confirmingArchive = false } }
         .animation(.easeInOut(duration: 0.2), value: stats)
-        .animation(.easeInOut(duration: 0.2), value: unreadCount)
+        .piAnimation(PiMotion.spring, value: unreadCount > 0 || unreadFailure)
         .animation(.easeInOut(duration: 0.15), value: confirmingArchive)
     }
     /// Cost, tokens and recency while they fit; a narrow sidebar drops tokens, then recency, rather than cutting words in half.
@@ -751,7 +775,6 @@ struct ConversationPane: View {
     let chat: ChatRecord
     var side: SideRecord? = nil
     var sideActions: SideActions? = nil
-    @State private var bridgeStatus = ""
     private var profile: ProfileRecord? { model.profiles.first { $0.id == chat.profileID } }
     private var projectAvailable: Bool { model.workspace(for: chat.workspaceID) != nil }
     /// A chat with nothing in it yet shows what it is connected to and where to start.
@@ -765,11 +788,17 @@ struct ConversationPane: View {
             // actions, and the live turn bar at the bottom shows what is going on.
             if side != nil { sideHeader; Rectangle().fill(Color.piHairline).frame(height: 1) }
             if session.uncertain && !session.busy && !session.recovered.isEmpty { recoveredBanner }
-            TranscriptView(messages: session.presentedMessages, bridgeStatus: $bridgeStatus, scrollAnchor: Binding(get: { session.scrollAnchor }, set: { session.scrollAnchor = $0; model.anchorChanged(session) }), sessionID: session.id, displayObservedAt: session.displayObservedAt, liveSession: session, onInspectRequests: { sessionID, messageID in model.showMessageDetail(sessionID, messageID: messageID) },
-                           onEditMessage: { sessionID, messageID in model.editMessage(messageID, sessionID: sessionID) },
-                           onReadReply: { sessionID, messageID in model.acknowledgeVisibleReply(sessionID: sessionID, messageID: messageID) },
-                           onLoadEarlier: { sessionID in model.loadEarlier(sessionID: sessionID) },
-                           onStop: { sessionID in model.stop(sessionID: sessionID) })
+            NativeTranscriptView(session: session, state: session.state,
+                                 actions: TranscriptActions(inspect: { model.showMessageDetail(session.id, messageID: $0) },
+                                                            edit: { model.editMessage($0, sessionID: session.id) },
+                                                            copyMessage: { id in
+                                                                guard let message = session.presentedMessages.first(where: { $0.id == id }) else { return }
+                                                                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string)
+                                                            },
+                                                            stop: { model.stop(sessionID: session.id) }),
+                                 onAnchorChanged: { anchor in session.scrollAnchor = anchor; model.anchorChanged(session) },
+                                 onReadReply: { sessionID, messageID in model.acknowledgeVisibleReply(sessionID: sessionID, messageID: messageID) },
+                                 onLoadEarlier: { sessionID in model.loadEarlier(sessionID: sessionID) })
                 .background(Color.piContent)
                 .overlay(alignment: .top) { if showsStarter { StarterPanel(model: model, chat: chat, session: session).padding(.top, PiSpacing.xl).transition(.opacity) } }
                 .overlay { if session.loading && session.messages.isEmpty { LoadingMark().transition(.opacity) } }
@@ -798,12 +827,12 @@ struct ConversationPane: View {
                         Button("Open source chat") { Task { await model.select(source) } }.buttonStyle(.piSecondaryCompact)
                     }
                 }.padding(PiSpacing.md)
-            } else if chat.imported { importedFooter } else { ComposerInput(model: model, session: session) }
+            } else if chat.isArchived { archivedFooter } else if chat.imported { importedFooter } else { ComposerInput(model: model, session: session) }
             MetricsFooter(model: model, session: session, contextWindow: chat.contextWindow ?? profile?.contextWindow, outputReserve: chat.maxOutputTokens ?? profile?.maxOutputTokens) { model.inspect(session.id) }
         }
         .animation(.easeInOut(duration: 0.22), value: session.queue.count)
         .animation(.easeInOut(duration: 0.22), value: session.recovered.count)
-        .animation(.easeInOut(duration: 0.24), value: model.terminalVisible)
+        .piAnimation(PiMotion.glide, value: model.terminalVisible)
         .background(Color.piContent)
         // HSplitView gives each pane its own native hosting surface. Remove
         // that surface's titlebar inset too, not only the outer window inset.
@@ -893,6 +922,21 @@ struct ConversationPane: View {
             .padding(.horizontal, PiSpacing.lg).padding(.bottom, PiSpacing.sm)
     }
 
+    /// An archived chat is read-only until it is restored; nothing can run in it.
+    private var archivedFooter: some View {
+        HStack(spacing: PiSpacing.sm) {
+            Image(systemName: "archivebox").foregroundStyle(Color.piInkSecondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Archived · Read-only").font(PiFont.heading)
+                Text("Restore the chat to send messages, steer or resume its queue.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+            }
+            Spacer()
+            Button("Restore Chat") { model.toggleSessionArchive(chat.id) }.buttonStyle(.piSecondaryCompact)
+                .accessibilityIdentifier("restoreArchivedChat")
+        }
+        .padding(PiSpacing.md)
+        .accessibilityElement(children: .contain).accessibilityLabel("Archived chat")
+    }
     private var importedFooter: some View {
         VStack(alignment: .leading, spacing: PiSpacing.sm) {
             HStack(spacing: 6) {
@@ -1018,7 +1062,10 @@ struct ConversationActionsMenu: View {
     let chat: ChatRecord
     var body: some View {
         Menu {
-            if !chat.isBackgroundTask { Button("Rename Chat…") { model.renameSession(chat.id) } }
+            if !chat.isBackgroundTask {
+                Button("Rename Chat…") { model.renameSession(chat.id) }
+                if !chat.imported, !chat.isArchived { Button("Generate Title") { model.regenerateTitle(chat.id) }.disabled(!model.titleSuggestionsAvailable(for: model.profiles.first { $0.id == chat.profileID } ?? ProfileRecord())) }
+            }
             if !model.isEphemeral(session.id) {
                 SessionOrganizationActions(model: model, chat: chat)
                 Divider()
@@ -1077,6 +1124,7 @@ struct StarterPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: PiSpacing.md) {
             HStack { Spacer(); Image("BelloAgentIcon").resizable().interpolation(.high).scaledToFit().frame(width: 48, height: 48).accessibilityLabel("Bello Agent"); Spacer() }
+                .piStaggered(0)
             HStack(spacing: PiSpacing.sm) {
                 PiIconBadge(symbol: "folder", tone: .accent, size: 28)
                 VStack(alignment: .leading, spacing: 2) {
@@ -1086,12 +1134,15 @@ struct StarterPanel: View {
                     }
                 }
             }
+            .piStaggered(1)
             HStack(spacing: PiSpacing.sm) {
                 PiBadge(text: profile?.name ?? "No connection", tone: profile == nil ? .danger : .neutral, icon: "antenna.radiowaves.left.and.right")
                 PiBadge(text: modelName, icon: "cpu")
                 PiBadge(text: chat.toolMode == "read-only" ? "Read-only tools" : "Editing tools", icon: chat.toolMode == "read-only" ? "eye" : "pencil")
             }
+            .piStaggered(2)
             Text("Type below to start. Your first message creates the chat.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                .piStaggered(3)
             PiFlow(spacing: PiSpacing.sm, rowSpacing: PiSpacing.sm) {
                 if model.side(session.id) == nil, chat.workspaceID != WorkspaceRecord.scratchID {
                     Button { model.showChanges(in: chat.workspaceID) } label: { Label("Changes", systemImage: "arrow.triangle.branch") }.buttonStyle(.piSecondaryCompact)
@@ -1100,6 +1151,7 @@ struct StarterPanel: View {
                 Button { model.inspectResources(session.id) } label: { Label("Skills", systemImage: "command") }.buttonStyle(.piSecondaryCompact)
                 if model.side(session.id) == nil { Button { model.openSide(parentID: session.id) } label: { Label("Open a side", systemImage: "arrow.triangle.branch") }.buttonStyle(.piSecondaryCompact).disabled(!model.canOpenSide(session.id)) }
             }
+            .piStaggered(4)
         }
         .padding(PiSpacing.lg).frame(maxWidth: 560, alignment: .leading)
         .background(Color.piSurface, in: RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous))

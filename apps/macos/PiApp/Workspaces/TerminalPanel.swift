@@ -1,55 +1,53 @@
 import SwiftUI
 import AppKit
-import SwiftTerm
 
 /// One shell per project, kept alive while hidden so a toggled panel returns
 /// to the same session. The view is re-parented when the panel shows again.
-@MainActor final class TerminalSession: NSObject, LocalProcessTerminalViewDelegate, ObservableObject {
+@MainActor final class TerminalSession: ObservableObject {
     let workspaceID: String
-    let view: LocalProcessTerminalView
+    let emulator = TerminalEmulator(columns: 100, rows: 24)
+    let view: TerminalView
+    let process = PseudoTerminal()
     @Published var title = "Terminal"
     @Published var exited = false
+    @Published var failure: String?
     private let directory: String
 
     init(workspaceID: String, directory: String) {
         self.workspaceID = workspaceID; self.directory = directory
-        view = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 240))
-        super.init()
-        view.processDelegate = self
-        view.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        applyColors()
+        view = TerminalView(emulator: emulator)
+        emulator.onOutput = { [weak self] data in self?.process.write(data) }
+        emulator.onTitleChange = { [weak self] title in self?.title = title.isEmpty ? "Terminal" : title }
+        emulator.onBell = { NSSound.beep() }
+        view.onInput = { [weak self] data in self?.process.write(data) }
+        view.onResize = { [weak self] columns, rows in self?.process.resize(columns: columns, rows: rows) }
+        process.onData = { [weak self] data in
+            guard let self else { return }
+            self.emulator.feed(data)
+            self.view.refresh()
+        }
+        process.onExit = { [weak self] _ in self?.exited = true; self?.view.refresh() }
         start()
     }
 
-    func applyColors() {
-        view.nativeBackgroundColor = NSColor(Color.piSurfaceSunken)
-        view.nativeForegroundColor = NSColor(Color.piInk)
-        view.caretColor = NSColor(Color.piBrandOrange)
-    }
-
     func start() {
-        exited = false
+        exited = false; failure = nil
         let shell = ProcessInfo.processInfo.environment["SHELL"].flatMap { $0.isEmpty ? nil : $0 } ?? "/bin/zsh"
         var environment = ProcessInfo.processInfo.environment
         environment["TERM"] = "xterm-256color"; environment["COLORTERM"] = "truecolor"; environment["LANG"] = environment["LANG"] ?? "en_US.UTF-8"
+        environment["TERM_PROGRAM"] = "BelloAgent"; environment["TERM_PROGRAM_VERSION"] = ReleaseConfiguration.current.version
         environment["BELLO_AGENT"] = "1"
         // Provider credentials never reach the shell; the app only passes its own login environment.
         for key in environment.keys where key.hasPrefix("LITELLM") || key.hasSuffix("_API_KEY") { environment.removeValue(forKey: key) }
-        let pairs = environment.map { "\($0.key)=\($0.value)" }
-        FileManager.default.changeCurrentDirectoryPath(directory)
-        view.startProcess(executable: shell, args: ["-l"], environment: pairs, execName: "-" + (shell as NSString).lastPathComponent)
+        do {
+            try process.start(executable: shell, arguments: ["-" + (shell as NSString).lastPathComponent, "-l"], environment: environment, directory: directory, columns: emulator.columns, rows: emulator.rows)
+        } catch {
+            failure = error.localizedDescription; exited = true
+        }
     }
 
     func focus() { view.window?.makeFirstResponder(view) }
-
-    nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
-    nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
-        Task { @MainActor in self.title = title.isEmpty ? "Terminal" : title }
-    }
-    nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-    nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
-        Task { @MainActor in self.exited = true }
-    }
+    func applyColors() { view.needsDisplay = true }
 }
 
 @MainActor final class TerminalRegistry {
@@ -62,7 +60,7 @@ import SwiftTerm
         return session
     }
     func restart(for workspace: WorkspaceRecord) -> TerminalSession {
-        sessions.removeValue(forKey: workspace.id)
+        if let old = sessions.removeValue(forKey: workspace.id) { old.process.terminate(); old.view.removeFromSuperview() }
         return session(for: workspace)
     }
 }
@@ -116,9 +114,8 @@ struct TerminalPanel: View {
                 }.zIndex(1)
             HStack(spacing: PiSpacing.sm) {
                 Image(systemName: "terminal").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.piInkSecondary)
-                Text(holder.session?.title ?? "Terminal").font(PiFont.caption.weight(.medium)).foregroundStyle(Color.piInk).lineLimit(1)
+                TerminalTitle(session: holder.session)
                 Text((workspace.path as NSString).lastPathComponent).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(1)
-                if holder.session?.exited == true { PiBadge(text: "Shell exited", tone: .warning) }
                 Spacer()
                 PiIconButton(symbol: "arrow.clockwise", label: "Restart the shell", size: 22) { holder.session = TerminalRegistry.shared.restart(for: workspace); holder.session?.focus() }
                 PiIconButton(symbol: "xmark", label: "Hide terminal (⌃`)", size: 22) { model.toggleTerminal() }
@@ -135,5 +132,22 @@ struct TerminalPanel: View {
         }
         .onChange(of: workspace.id) { _, _ in holder.session = TerminalRegistry.shared.session(for: workspace) }
         .accessibilityIdentifier("terminal-panel")
+    }
+}
+
+/// The shell's title and state, observed on the session itself so the panel
+/// header updates as the shell renames its window or exits.
+private struct TerminalTitle: View {
+    let session: TerminalSession?
+    var body: some View {
+        if let session { Observed(session: session) } else { Text("Terminal").font(PiFont.caption.weight(.medium)).foregroundStyle(Color.piInk) }
+    }
+    private struct Observed: View {
+        @ObservedObject var session: TerminalSession
+        var body: some View {
+            Text(session.title).font(PiFont.caption.weight(.medium)).foregroundStyle(Color.piInk).lineLimit(1)
+            if let failure = session.failure { PiBadge(text: failure, tone: .danger) }
+            else if session.exited { PiBadge(text: "Shell exited", tone: .warning) }
+        }
     }
 }

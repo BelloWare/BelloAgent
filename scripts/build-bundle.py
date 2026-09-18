@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Stage the native Swift host and browser assets; never bundle Node or Pi.
-Node remains a BUILD dependency for esbuild, not an application dependency.
-"""
+"""Stage the native Swift helper for the Xcode copy phase. Nothing else is
+built here: the app is Swift, the transcript is native, and no runtime or
+package manager is involved."""
 import json
 import os
 from pathlib import Path
 import platform
 import shutil
 import subprocess
-
-from build_dependencies import ensure_dependencies
 
 ROOT = Path(__file__).resolve().parent.parent
 if platform.system() != 'Darwin':
@@ -23,17 +21,12 @@ SCRATCH.mkdir(parents=True, exist_ok=True)
 BUNDLE = SCRATCH / 'bundle'
 if BUNDLE.exists():
     shutil.rmtree(BUNDLE)
-for name in ('Helpers', 'Host', 'Transcript'):
+for name in ('Helpers', 'Host'):
     (BUNDLE / name).mkdir(parents=True)
 
 def run(*args):
     subprocess.run([str(x) for x in args], cwd=ROOT, check=True)
 
-# Production runtime dependencies of the old host are never copied into BUNDLE.
-# The lockfile is still useful for the React build and old-engine reference tests.
-run('python3', ROOT / 'scripts/setup-runtime.py')
-ensure_dependencies(ROOT)
-run(ROOT / 'scripts/with-runtime.sh', 'node', 'scripts/build-assets.mjs')
 common = ['swift', 'build', '--package-path', str(ROOT / 'packages/swift-host'),
           '--scratch-path', str(SCRATCH / 'swift-host'), '--configuration', 'release', '--arch', 'arm64']
 run(*common, '--product', 'pi-native-host', '-Xswiftc', '-Osize')

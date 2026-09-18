@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 extension WorkspaceModel {
     func reloadConfiguration() async throws {
@@ -102,6 +103,62 @@ extension WorkspaceModel {
         }
         profileChoice = profile.id
     }
+    /// Removes a connection and its key from the vault. Its chats keep their
+    /// history and show that their connection is gone; nothing of theirs is
+    /// deleted, and a busy chat or an unkept side blocks the removal.
+    /// Removes a connection and its key. Its chats keep their history and ask
+    /// for another connection; a run still going under it is stopped and its
+    /// helper session closed first, so the deletion never waits on work; the
+    /// catalog links a route fork left behind go with it. The vault is read
+    /// back afterwards, so a deletion that did not take is an error, never a
+    /// list that quietly stays the same.
+    func deleteProfile(_ id: String) async throws {
+        try await ensureConfiguration()
+        guard let removed = configuration.profiles.first(where: { $0.profile.id == id }) else {
+            // The list on screen may be older than the vault: read it again before giving up.
+            try await reloadConfiguration()
+            guard configuration.profiles.contains(where: { $0.profile.id == id }) else {
+                throw HostError.failure("This connection is no longer in the vault; the list was reloaded.")
+            }
+            try await deleteProfile(id); return
+        }
+        let name = removed.profile.name.isEmpty ? "Unnamed" : removed.profile.name
+        let affected = chats.filter { $0.profileID == id }
+        Self.vaultLog.info("Deleting connection \(name, privacy: .public) (\(id, privacy: .public)) at vault revision \(self.configuration.revision): \(affected.count) chats, \(self.configuration.catalogSources?.count ?? 0) catalog links")
+        for item in affected {
+            let view = displays[item.id]
+            if opened.contains(item.id), let host = hosts[item.workspaceID] {
+                if view?.hasWork == true { _ = try? await host.request("turn.stop", sessionID: item.id) }
+                _ = try? await host.request("session.close", sessionID: item.id)
+                opened.remove(item.id)
+            }
+            if let view, view.hasWork || view.loading { view.state = "interrupted"; view.queue = []; view.queueCount = 0; view.loading = false }
+        }
+        let remove: @Sendable (inout VaultConfiguration) -> Void = { saved in
+            saved.profiles.removeAll { $0.profile.id == id }
+            saved.forgetCatalogLinks(of: id)
+        }
+        do {
+            do { try await updateConfiguration(remove) }
+            catch VaultError.conflict {
+                // Another save moved the vault on: read it again and delete from what is there now.
+                try await reloadConfiguration()
+                try await updateConfiguration(remove)
+            }
+            let stored = try await vault.load()
+            guard !stored.profiles.contains(where: { $0.profile.id == id }) else {
+                throw HostError.failure("The vault still lists “\(name)” after the save (revision \(stored.revision)). Reload Settings and try again.")
+            }
+        } catch {
+            Self.vaultLog.error("Deleting connection \(name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            throw error
+        }
+        Self.vaultLog.info("Deleted connection \(name, privacy: .public); vault revision \(self.configuration.revision), \(self.profiles.count) connections remain")
+        if profileChoice == id { profileChoice = profiles.first?.id ?? "" }
+        for item in affected { displays[item.id]?.notice = "This chat's connection was deleted. Choose another connection to continue." }
+    }
+    /// Vault outcomes, for `log show --predicate 'subsystem == "com.belloware.PiApp"'` when a report says nothing changed.
+    private static let vaultLog = Logger(subsystem: "com.belloware.PiApp", category: "vault")
     func savePreferences(_ preferences: VaultConfiguration, expectedRevision: Int64) async throws {
         try await updateConfiguration(expectedRevision: expectedRevision) {
             $0.runtime = preferences.runtime; $0.capture = preferences.capture

@@ -13,10 +13,9 @@ runtime and package caches survive subsequent runs; keep per-run logs/fixtures
 in separate subdirectories. Do not run concurrent writers against the same
 build or dependency directory. Versioned release directories stay immutable.
 
-App staging reuses npm dependencies when package/lock files, the pinned runtime,
-install configuration and installed package metadata still match. Missing or
-stale dependencies rerun `npm ci`; failed installs leave no reusable success
-stamp. Transcript assets still rebuild, and Swift builds remain incremental.
+App staging builds only the Swift helper: there is no package manager step,
+no downloaded runtime and no transcript asset build since 0.1.38. Swift builds
+remain incremental.
 
 The sibling BelloClipboardManager, BelloTracker and BelloBox scripts were inspected
 before implementing this flow. They use Developer ID team `43TXHV3TM3`, notarization,
@@ -25,7 +24,52 @@ committed/pushed to the sibling `belloware.com` repository (Cloudflare hosting).
 The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appcast.xml`.
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
-**Bello Agent 0.1.37/build 41 is publicly released** at
+**Bello Agent 0.1.42/build 46 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `6b80619760c8328f9eb8a94e3f040cebfd82cc5c`
+and website `1e57c83b90df30187a0e5d1943f29ee7225d425e`. The DMG measures **7,137,493 bytes (6.81 MiB)**,
+SHA-256 `f3b8460af5c7ee378921ab8766fbf1cd8dade20921c995255c7b0b0874e0405c`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 11:35:50 UTC**.
+Read the [0.1.42 release record](validation/Bello-Agent-0.1.42-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.41/build 45 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `4bfa49e039c6206e12afbb4dac823af27620c9ef`
+and website `a11fb2989b9839061d6bb24f82dbb8e80876b072`. The DMG measures **7,115,515 bytes (6.79 MiB)**,
+SHA-256 `b9835306e36b9744258f1e50e41f5998c0438505d6676d6e01faea5c28bb58c4`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 10:33:48 UTC**.
+Read the [0.1.41 release record](validation/Bello-Agent-0.1.41-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.40/build 44 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `d2802278100ebaf6a414a0de139fc48a59cc7233`
+and website `65730b4432a1d089df7804d9b92365a2ab638b60`. The DMG measures **7,113,393 bytes (6.78 MiB)**,
+SHA-256 `b8e4036068f3e89eb7e462a7a44c4bb418e3c8f638e1b5d1204eb87833a03b4e`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 09:15:59 UTC**.
+Read the [0.1.40 release record](validation/Bello-Agent-0.1.40-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.39/build 43 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `a88bddbb4fbe0772bce8b182cf9116cda4309047`
+and website `a7d2d22d809962d5f123d6c0b1cfbcb2a2bbf49b`. The DMG measures **7,149,724 bytes (6.82 MiB)**,
+SHA-256 `1e93b8639cf4cd0ee12c20246f7ed331b929f1e925b62585ba2beab15de168f7`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 07:25:06 UTC**.
+Read the [0.1.39 release record](validation/Bello-Agent-0.1.39-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.38/build 42 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `bf04acfd3f41d2313d206052579091b94bf3966b`
+and website `7538ca1ce73000bc1d11ec04989caa9625db2500`. The DMG measures **7,128,652 bytes (6.80 MiB)**,
+SHA-256 `90ed4270a53955671d875cae58b946b27ac7f74b561525b6599298f79246150d`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 06:25:13 UTC**.
+Read the [0.1.38 release record](validation/Bello-Agent-0.1.38-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.37/build 41 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source `f803d904f7c3963cc0fd170a652ba15d836ea319`
 and website `4363262d41c79fb0fb2f2f6aa9162bfc4e0d18e1`. The DMG measures **7,336,336 bytes (7.00 MiB)**,
 SHA-256 `19801f32ec462a9cba321629802db2ee4eecb2a07907377fbbe8ed3428577a06`. Signing/notarization, packaged-catalog/helper smoke,
@@ -203,9 +247,8 @@ affected behavior passed the 54-case focused rerun; the final nine-case export
 and release-configuration check passed. The helper's full 138-case
 suite passed, followed by 12 focused queue/recovery cases, including two new
 regressions reproduced before the fix. Repeated cases are counted once.
-**29 transcript tests, TypeScript checking and 10 dependency-cache tests pass.**
-Four native tests exercise the packaged React page in WKWebView, including
-render rejection and recovery. Local HTTP/SSE fixtures validate requests, tools,
+Since 0.1.38 the transcript is native Swift and its tests run inside the native
+suite. Local HTTP/SSE fixtures validate requests, tools,
 cancellation, compaction and capture; no deployed LiteLLM was used. No full
 screenshot gallery or Release performance matrix was run. Installation/update
 rehearsals were skipped by owner instruction.
@@ -228,13 +271,15 @@ contents are Bello Agent. Do not move or overwrite a user's installed app just
 to change that filename; verify its actual bundle version and signature.
 
 The native app ships the Swift helper, not the former approximately 184 MiB
-Node/Pi distribution. Since 0.1.28 the app links SwiftTerm 1.19.0 (MIT) for
-the terminal panel; its licence ships as `ThirdPartyNotices.txt` in the
-bundle's Resources, next to Sparkle's own framework licence. Since 0.1.22 the release script strips the app and helper
+Node/Pi distribution. Since 0.1.38 the terminal panel is the app's own
+emulator (`apps/macos/PiApp/Terminal`): SwiftTerm, linked from 0.1.28 to 0.1.37,
+is gone, and Sparkle is the only third-party code in the bundle;
+`ThirdPartyNotices.txt` in the bundle's Resources says so, next to Sparkle's own
+framework licence. Since 0.1.22 the release script strips the app and helper
 binaries before signing (the symbol table was more than half of the app binary)
 and keeps their dSYMs in the release directory for crash symbolication; nothing
-else about the bundle changes, and dead-code stripping remains off. The 0.1.37 DMG measures **7,336,336 bytes (7.00 MiB)**, SHA-256
-`19801f32ec462a9cba321629802db2ee4eecb2a07907377fbbe8ed3428577a06`.
+else about the bundle changes, and dead-code stripping remains off. The 0.1.42 DMG measures **7,137,493 bytes (6.81 MiB)**, SHA-256
+`f3b8460af5c7ee378921ab8766fbf1cd8dade20921c995255c7b0b0874e0405c`.
 The selected flat icon and its deterministic native resamples are included;
 [provenance](../assets/branding/icon-0.1.6-prompt.md) preserves the exact master
 and its opaque exterior margin. The earlier 2.94 MiB unsigned engineering image
@@ -261,7 +306,13 @@ signing-key ACLs or persistent signing policy.
    owner/update rehearsal for every release. Reuse passing results when their
    source, dependencies and toolchain are unchanged. Keep fixtures separate
    from release assets and record which checks ran versus were reused.
-3. Commit and push Bello Agent's intended source changes to its configured upstream.
+3. Commit Bello Agent's intended source changes. **Owner policy, 2026-09-18:
+   a release does not push the source repository.** `publish-release.sh`
+   therefore requires only a clean worktree and a committed `HEAD`, not that the
+   commit reached the remote. The repository is pushed when the owner asks for
+   it, as one squashed commit, so a validation record's source SHA names a local
+   commit until that push happens. The website repository is still pushed by
+   step 6, because pushing it is how the site deploys.
 4. The default download prefix is `https://belloware.com/assets/`. Run
    `PI_BUILD_ROOT=/scratch/path scripts/release.sh`.
    It signs nested Sparkle

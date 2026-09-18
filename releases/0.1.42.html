@@ -1,0 +1,5 @@
+<h2>Bello Agent 0.1.42</h2>
+<ul>
+  <li>Deleting a connection now works when the connection had been edited into a new route. Such an edit saves a new connection and keeps the old one for its chats, linked to the new one's model catalog; deleting either one used to fail the vault's checks, and the reason showed only in the small status line, so the tabs simply stayed. The link now goes with the deletion, the vault is read back to prove the connection is gone, and a deletion that does not happen says why in the footer and in the window's banner, and in the system log.</li>
+  <li>Saving a connection whose API route changed keeps Settings open and explains the extra tab: the previous connection stays for its earlier chats and can be deleted in its own tab.</li>
+</ul>

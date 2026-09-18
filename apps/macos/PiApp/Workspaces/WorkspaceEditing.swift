@@ -78,6 +78,7 @@ extension WorkspaceModel {
         guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), let view = displays[id], let messageID = view.editingMessageID, let store else { return }
         guard !view.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !view.skills.isEmpty, !view.loading, !installPreparing, side(id)?.keeping != true else { return }
         guard !item.imported, !isEphemeral(id) else { view.notice = "Continue or keep this chat before editing its messages."; return }
+        guard !item.isArchived else { view.notice = WorkspaceModel.archivedNotice; return }
         guard !view.busy, view.queue.isEmpty, view.queueCount == 0 else { view.notice = "Wait for the current run and queue to finish before resending an edited message."; return }
         guard view.draft.utf8.count <= 262_144 else { error = "The draft exceeds the 256 KiB submission limit"; return }
         if view.uncertain {

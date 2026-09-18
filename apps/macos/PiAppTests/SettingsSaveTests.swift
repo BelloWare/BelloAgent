@@ -165,3 +165,70 @@ final class SettingsSaveTests: XCTestCase {
         return root
     }
 }
+
+extension SettingsSaveTests {
+    /// Deleting a connection removes it and its key from the vault; its chats stay and say so, and a run still going under it is stopped rather than blocking.
+    @MainActor func testDeletingAConnectionStopsItsWorkAndKeepsItsChats() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("delete-connection-" + UUID().uuidString)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        try await model.reloadConfiguration()
+        var first = ProfileRecord(); first.name = "Team router"; first.baseUrl = "https://a.invalid"; first.modelId = "a"
+        var second = ProfileRecord(); second.name = "Backup"; second.baseUrl = "https://b.invalid"; second.modelId = "b"
+        try await model.saveProfile(first, key: "sk-first"); try await model.saveProfile(second, key: "sk-second")
+        XCTAssertEqual(model.profiles.count, 2)
+        let chat = ChatRecord(id: "chat", workspaceID: "w", title: "Uses the router", path: nil, profileID: first.id)
+        model.chats = [chat]; let view = SessionDisplay(id: chat.id); model.displays[chat.id] = view
+        view.state = "running"; view.queueCount = 2
+        model.profileChoice = first.id
+        try await model.deleteProfile(first.id)
+        XCTAssertEqual(view.state, "interrupted", "a run under the deleted connection is stopped, not a reason to refuse")
+        XCTAssertEqual(view.queueCount, 0)
+        XCTAssertEqual(model.profiles.map(\.name), ["Backup"])
+        XCTAssertEqual(model.profileChoice, second.id, "the choice moves to a remaining connection")
+        XCTAssertEqual(model.chats.first?.profileID, first.id, "the chat keeps its history and its former connection id")
+        XCTAssertTrue(view.notice.contains("connection was deleted"))
+        do { _ = try await model.credentials(for: first); XCTFail("no key remains") } catch { }
+        try await model.deleteProfile(second.id)
+        XCTAssertTrue(model.profiles.isEmpty); XCTAssertEqual(model.profileChoice, "")
+        // Renaming keeps the id: chats stay attached.
+        var renamed = ProfileRecord(); renamed.name = "Router"; renamed.baseUrl = "https://c.invalid"; renamed.modelId = "c"
+        try await model.saveProfile(renamed, key: "sk-c")
+        let saved = try XCTUnwrap(model.profiles.first)
+        var edited = saved; edited.name = "Router (renamed)"
+        try await model.saveProfile(edited, key: "")
+        XCTAssertEqual(model.profiles.first?.id, saved.id); XCTAssertEqual(model.profiles.first?.name, "Router (renamed)")
+        let kept = try await model.credentials(for: model.profiles[0])
+        XCTAssertEqual(kept["apiKey"]?.string, "sk-c", "the key survives a rename")
+    }
+
+    /// Editing a connection's route forks it and records catalog lineage between the two; deleting either must drop that link rather than fail the vault's validation.
+    @MainActor func testDeletingAForkedConnectionDropsItsCatalogLinks() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("delete-fork-" + UUID().uuidString)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        try await model.reloadConfiguration()
+        var original = ProfileRecord(); original.name = "Router"; original.baseUrl = "https://a.invalid"; original.modelId = "a"
+        try await model.saveProfile(original, key: "sk-a")
+        original = try XCTUnwrap(model.profiles.first)
+        var edited = original; edited.modelId = "b"
+        try await model.saveProfile(edited, key: "")
+        let fork = try XCTUnwrap(model.profiles.first { $0.id == model.profileChoice })
+        XCTAssertNotEqual(fork.id, original.id); XCTAssertEqual(model.profiles.count, 2)
+        XCTAssertEqual(model.configuration.catalogSources, [original.id: fork.id], "the fork is the old route's catalog authority")
+        // Deleting the authority: the old route stands on its own again.
+        try await model.deleteProfile(fork.id)
+        XCTAssertEqual(model.profiles.map(\.id), [original.id]); XCTAssertNil(model.configuration.catalogSources)
+        // Fork again, then delete the old route that follows the fork.
+        var again = original; again.modelId = "c"
+        try await model.saveProfile(again, key: "")
+        let second = try XCTUnwrap(model.profiles.first { $0.id == model.profileChoice })
+        XCTAssertEqual(model.configuration.catalogSources, [original.id: second.id])
+        try await model.deleteProfile(original.id)
+        XCTAssertEqual(model.profiles.map(\.id), [second.id]); XCTAssertNil(model.configuration.catalogSources)
+        let stored = try await model.vault.load()
+        XCTAssertEqual(stored.profiles.map(\.profile.id), [second.id], "the vault itself no longer lists the deleted connections")
+        // A stale list: deleting an id the vault no longer has reloads and says so.
+        do { try await model.deleteProfile(original.id); XCTFail("nothing to delete") } catch { XCTAssertTrue(error.localizedDescription.contains("no longer in the vault")) }
+    }
+}

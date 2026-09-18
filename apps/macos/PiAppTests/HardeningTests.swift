@@ -18,17 +18,6 @@ final class HardeningTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/node").path))
         try await host.shutdownAndWait()
     }
-    func testPaintClockUsesTheSmallestRoundTripAndIncludesItsUncertainty() {
-        var clock = PaintClockCalibration()
-        XCTAssertNil(clock.upperBound(web: 20))
-        clock.sample(sent: 1_000, received: 1_040, web: 100)
-        XCTAssertNil(clock.upperBound(web: 110)) // Too uncertain to claim a visible-paint measurement.
-        clock.sample(sent: 1_100, received: 1_104, web: 200)
-        XCTAssertEqual(clock.uncertainty, 2); XCTAssertEqual(clock.upperBound(web: 210), 1_114)
-        clock.sample(sent: 1_200, received: 1_250, web: 300)
-        clock.sample(sent: 1_300, received: 1_299, web: 400)
-        XCTAssertEqual(clock.upperBound(web: 210), 1_114); XCTAssertNil(clock.upperBound(web: .nan))
-    }
     func testArchiveProjectionBoundsToolCardsAndUnicodeByBytes() throws {
         let text = String(repeating: "🌍", count: 20_000)
         let tools = (0..<100).map { WireValue.object(["type": .string("toolCall"), "id": .string("t\($0)"), "name": .string("read"), "arguments": .object(["value": .string(text)])]) }
@@ -100,13 +89,13 @@ final class HardeningTests: XCTestCase {
         let first = SessionDisplay(id: "first"), second = SessionDisplay(id: "second")
         first.messages = [.init(id: "a", role: "user", text: "first")]
         second.messages = [.init(id: "b", role: "user", text: "second")]
-        let coordinator = TranscriptView(messages: [], bridgeStatus: .constant(""), sessionID: first.id).makeCoordinator()
-        coordinator.bind(first); XCTAssertEqual(coordinator.messages.first?.text, "first")
+        let page = TranscriptPage()
+        page.bind(first); XCTAssertEqual(page.snapshot?.messages.first?.text, "first")
         first.messages = [.init(id: "a", role: "assistant", text: "streamed")]
-        XCTAssertEqual(coordinator.messages.first?.text, "streamed")
-        XCTAssertTrue(coordinator.switchSession(second.id, anchor: nil)); coordinator.bind(second)
-        first.messages = []; XCTAssertEqual(coordinator.messages.first?.text, "second")
-        coordinator.unbind(); second.messages = []; XCTAssertEqual(coordinator.messages.first?.text, "second")
+        XCTAssertEqual(page.snapshot?.messages.first?.text, "streamed", "rows arrive through the transcript stream, not a shell layout pass")
+        page.bind(second)
+        first.messages = []; XCTAssertEqual(page.snapshot?.messages.first?.text, "second")
+        XCTAssertEqual(page.snapshot?.sessionID, "second"); XCTAssertTrue(page.snapshot?.fresh.isEmpty == true, "a switched-to page arrives settled")
     }
     @MainActor func testUnchangedSideMetadataDoesNotRepublishTheWorkspace() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("native-side-publication-\(UUID().uuidString)")
@@ -147,13 +136,6 @@ final class HardeningTests: XCTestCase {
         var offset = 0, result = ""
         while offset < text.length { let page = try UnicodePage.slice(text, offset: offset); result += page; offset += (page as NSString).length }
         XCTAssertEqual(result, text as String); XCTAssertFalse(result.contains("�")); XCTAssertThrowsError(try UnicodePage.slice(text, offset: 16_384))
-    }
-    @MainActor func testTranscriptAcceptsOnlyItsExactLocalMainDocument() {
-        let page = URL(string: "file:///bundle/Transcript/index.html")!
-        XCTAssertTrue(TranscriptView.trustedPage(URL(string: "file:///bundle/Transcript/index.html#viewId=fixture"), page: page))
-        for value in ["https://remote.example/bundle/Transcript/index.html", "file://remote.example/bundle/Transcript/index.html", "file:///bundle/Transcript/index.html?injected=1", "file:///private/secret"] {
-            XCTAssertFalse(TranscriptView.trustedPage(URL(string: value), page: page))
-        }
     }
     @MainActor func testLargePastePreservesExistingNativeDraft() {
         var draft = "original", notice = ""

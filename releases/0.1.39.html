@@ -1,0 +1,9 @@
+<h2>Bello Agent 0.1.39</h2>
+<ul>
+  <li>Text no longer jumps while a reply streams in: the page moves once per change, after the layout has settled, nothing animates during a live turn, and every row is laid out exactly, so when you scroll up while a reply is still arriving the rows in view stay where they are and their buttons can be clicked.</li>
+  <li>Replies now read in the order things happened: what the model did first (its reasoning, each tool call, the figures of each request), then what it wrote, then the turn line. The rows stay in view; the small header above them folds them.</li>
+  <li>A run that fails while you are elsewhere marks its chat in the sidebar without bouncing the Dock or counting in its badge; opening the chat clears the mark.</li>
+  <li>Archived chats are read-only until restored: they take no messages, steering, resumes or commands, archiving a running chat stops it, and archived chats never count in the Dock badge.</li>
+  <li>Project chat lists that were expanded with Show more fold back with Show less.</li>
+  <li>A chat's action menu can ask the mini model for a title again, and a title request that fails now says why in the chat's footer.</li>
+</ul>

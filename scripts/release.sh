@@ -16,10 +16,9 @@ WORK="$(mktemp -d "$PI_BUILD_ROOT/release.XXXXXX")"
 cd "$ROOT"
 python3 scripts/build-bundle.py
 xcodegen generate
-# SwiftTerm ships a build-tool plugin; validation is skipped for this pinned, exact version.
 xcodebuild build -project PiApp.xcodeproj -scheme PiApp -configuration Release \
   -destination 'platform=macOS,arch=arm64' -derivedDataPath "$PI_BUILD_ROOT/native-release" \
-  -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO >"$WORK/build.log" 2>&1
+  CODE_SIGNING_ALLOWED=NO >"$WORK/build.log" 2>&1
 APP="$WORK/Bello Agent.app"
 ditto "$PI_BUILD_ROOT/native-release/Build/Products/Release/Bello Agent.app" "$APP"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")"
@@ -39,7 +38,7 @@ ditto "$PI_BUILD_ROOT/pi-native-host.dSYM" "$OUT/pi-native-host.dSYM"
 xcrun strip "$APP/Contents/MacOS/Bello Agent"
 xcrun strip "$APP/Contents/Helpers/pi-native-host"
 SIGN_IDENTITY="$IDENTITY" bash "$ROOT/scripts/sign-app.sh" "$APP"
-"$ROOT/scripts/with-runtime.sh" node scripts/smoke-bundle.mjs "$APP" >"$WORK/host-proof.json"
+python3 "$ROOT/scripts/smoke-native-bundle.py" "$APP" >"$WORK/host-proof.json"
 
 # Notarize/staple the application too, so Finder extraction retains its ticket.
 ditto -c -k --keepParent "$APP" "$WORK/BelloAgent.zip"

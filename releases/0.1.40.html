@@ -1,0 +1,7 @@
+<h2>Bello Agent 0.1.40</h2>
+<ul>
+  <li>Opening a saved chat shows the question that started its last turn: the page no longer begins in the middle of a reply's tool calls, and when the last reply is taller than the window the chat opens at your question instead of at the bottom. Sending a message still jumps to the bottom.</li>
+  <li>Connections can be deleted from Settings. Their chats keep their history and ask for another connection; a connection whose chat is still working refuses until it stops. Renaming a connection keeps its key, chats and model cache.</li>
+  <li>Chat titles arrive as models actually write them: a reply with a label, quotes, a bullet or a second line is accepted, and a title request that fails says why in the chat's footer and the window's banner. Generate Title in the chat's menu asks again.</li>
+  <li>Faster: the terminal takes program output about six times faster, a streaming reply parses only the part still changing, and long replies render with less work per block.</li>
+</ul>
