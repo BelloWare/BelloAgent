@@ -26,9 +26,10 @@ final class SessionJournal {
     /// without timing a disk.
     private(set) var appends = 0, synchronizations = 0
     private let beforeAppend: @Sendable (JSON) throws -> Void
+    private let beforeSynchronize: @Sendable () throws -> Void
     let loaded: [JSON]
-    init(url: URL, id: String, cwd: URL, binding: JSON, create: Bool, beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }) throws {
-        self.url=url; self.beforeAppend=beforeAppend
+    init(url: URL, id: String, cwd: URL, binding: JSON, create: Bool, beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeSynchronize: @escaping @Sendable () throws -> Void = {}) throws {
+        self.url=url; self.beforeAppend=beforeAppend; self.beforeSynchronize=beforeSynchronize
         try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
         lockFD=open(url.path + ".lock",O_CREAT|O_RDWR|O_NOFOLLOW,0o600)
         guard lockFD >= 0 else { throw AgentError("session_lock", "Cannot create session writer lock") }
@@ -76,8 +77,9 @@ final class SessionJournal {
     }
     /// Forces everything appended so far to stable storage.
     func synchronize() throws {
-        guard unsynced, !poisoned else { return }
-        do { try handle.synchronize() } catch { poisoned=true; throw error }
+        guard !poisoned else { throw AgentError("session_damaged","A journal synchronization failed; recover a copy before continuing") }
+        guard unsynced else { return }
+        do { try beforeSynchronize(); try handle.synchronize() } catch { poisoned=true; throw error }
         unsynced=false; synchronizations += 1
     }
     func publish(to destination: URL) throws {

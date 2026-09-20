@@ -129,7 +129,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
   except Exception as e:
    self.send_error(400,str(e))
 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Gateway)
-with open(os.path.join(root,'ready.json'),'w') as f: json.dump({'port':server.server_port},f)
+with open(os.path.join(root,'ready.tmp'),'w') as f: json.dump({'port':server.server_port},f)
+os.replace(os.path.join(root,'ready.tmp'),os.path.join(root,'ready.json'))
 server.serve_forever()
 """#
 }

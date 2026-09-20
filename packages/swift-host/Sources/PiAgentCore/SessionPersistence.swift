@@ -20,7 +20,7 @@ extension AgentSession {
             let prepared=try SessionJournal(url:temporary,id:newID,cwd:cwd,binding:profile.binding,create:true)
             for record in source {
                 let kind=record["customType"].text ?? ""
-                if ["pi-app.native.v1", "pi-app.native.state.v1", "pi-app.side-origin.v1", "pi-app.fork-origin.v1"].contains(kind) { continue }
+                if ["pi-app.native.v1", "pi-app.native.state.v1", "pi-app.side-origin.v1", "pi-app.fork-origin.v1", "pi-app.context-recovery.v1"].contains(kind) { continue }
                 // Branch records can contain a queued edit. Preserve the branch
                 // and all message bytes, but never authorize its command twice.
                 try prepared.append(record.removing(["id","parentId","timestamp","nativeState"]),id:try identity(record["id"]))
@@ -54,11 +54,13 @@ extension AgentSession {
     }
     func append(_ message: ChatMessage, observedAt: Double? = nil, record extra: JSON = [:]) throws {
         var message=message; if message.timestamp == nil { message.timestamp=Date().timeIntervalSince1970*1000 }
+        if message.taskRootID == nil { message.taskRootID=taskRootID }
         if message.turn == nil, !currentTurnID.isEmpty { message.turn=currentTurnID }
         let observedAt = observedAt ?? displayClock()
         var record: JSON=["type":"message","message":message.pi]; for (key,value) in extra.map { record[key]=value }
         try journal?.append(record,id:message.id,flush:journalFlushesEachRecord)
         toolHistory.append(message, at: history.count); history.append(message); context.append(message); visible.append(message); currentContextCount=nil
+        if message.replayEligible { contextMutation &+= 1 }
         invalidateDisplay(message.id)
         if message.role == "toolResult", let callID=message.toolCallId, let owner=toolHistory.owners[callID] { invalidateDisplay(owner) }
         if message.role=="assistant" { assistantMessageCount += 1; latestAssistantMessageID=message.id }

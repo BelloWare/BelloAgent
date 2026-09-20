@@ -342,11 +342,22 @@ public actor NativeHostService {
             if item["type"].text=="compaction" {
                 var kept:[JSON]=[]
                 if !item["nativeKeptIDs"].isNull {
-                    let ids=Set(item["nativeKeptIDs"].list.compactMap(\.text));kept=active.filter{ids.contains($0["id"].text ?? "")}
+                    let ids=try CompactionCheckpoint.identities(item["nativeKeptIDs"])
+                    let candidates=active.filter { ["message","compaction"].contains($0["type"].text ?? "") }
+                    let messages=try candidates.map { record -> ChatMessage in
+                        if record["type"].text=="message" { return try ChatMessage(id:identity(record["id"]),pi:record["message"]) }
+                        var message=ChatMessage(role:"system",content:[textBlock(record["summary"].text ?? "")]); message.id=try identity(record["id"]); return message
+                    }
+                    _=try CompactionCheckpoint.restore(item,context:messages)
+                    let byID=Dictionary(candidates.map { ($0["id"].text ?? "",$0) },uniquingKeysWith:{_,b in b})
+                    kept=ids.compactMap { byID[$0] }
                 } else if let first=item["firstKeptEntryId"].text,let index=active.firstIndex(where:{$0["id"].text==first}) { kept=Array(active[index...]) }
                 active=[item]+kept
             } else if item["type"].text=="branch" {
                 let ids=Set(item["keptIds"].list.compactMap(\.text));active=active.filter{ids.contains($0["id"].text ?? "")}
+            } else if item["customType"].text=="pi-app.native.context.v1" {
+                let ids=try CompactionCheckpoint.identities(item["data"]["ids"])
+                active=try ids.map { id in guard let record=records[id] else { throw AgentError("session_damaged","Missing context reference") }; return record }
             } else { active.append(item) }
         }
         var messages:[String]=[]

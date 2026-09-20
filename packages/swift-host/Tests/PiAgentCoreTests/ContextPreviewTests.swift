@@ -17,7 +17,7 @@ final class ContextPreviewTests: XCTestCase {
         let body = try JSON.parse(Data(read["text"].text!.utf8))
         XCTAssertTrue(body["instructions"].text!.contains("Follow the fixture instructions."))
         XCTAssertEqual(body["input"].list.last?["content"].list.first?["text"].text,"An unsent question 🙂")
-        XCTAssertEqual(body["tools"].list.map { $0["name"].text! },["first","second"])
+        XCTAssertEqual(body["tools"].list.map { $0["name"].text! },["first","second","history_read"])
         let beforeCount = await client.count, beforeTools = await tools.calls, status = await session.snapshot()
         XCTAssertEqual(beforeCount,0); XCTAssertTrue(beforeTools.isEmpty); XCTAssertEqual(status["queueCount"].int,0)
         XCTAssertEqual(status["seq"].int,0); XCTAssertEqual(status["messages"].list.count,0)
@@ -25,7 +25,7 @@ final class ContextPreviewTests: XCTestCase {
         _ = try await session.submit(Submission(commandID:"send",turnID:"turn",text:"An unsent question 🙂",model:"selected-model",thinkingLevel:"low",contextWindow:16000,maxOutputTokens:2048),steer:false)
         try await eventually { !(await session.isRunning) }
         let requests = await client.requests, instructions = await client.instructions, profiles = await client.profiles
-        let actual = try ProviderClient.requestBody(profile:profiles[0],messages:requests[0],instructions:instructions[0],tools:await tools.definitions(readOnly:true),sessionID:"preview")
+        let actual = try ProviderClient.requestBody(profile:profiles[0],messages:requests[0],instructions:instructions[0],tools:await session.sessionDefinitions(),sessionID:"preview")
         XCTAssertEqual(body,actual,"Prepared inputs must follow the actual provider request builder, not transcript previews")
         await session.close()
     }

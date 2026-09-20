@@ -179,7 +179,7 @@ final class DisplayObservationTests: XCTestCase {
     func testCompactionSummaryIsObservedWhenItsNewMessageArrives() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let clock = DisplayClock()
-        let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([answer("First answer"), answer("Second answer"), answer("Continuation summary")]), tools: RecordingTools(), traces: TraceStore(), autoCompaction: false, displayClock: { clock.now() })
+        let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([answer(String(repeating:"Completed first task evidence. ",count:80)), answer("Second answer"), answer("Continuation summary")]), tools: RecordingTools(), traces: TraceStore(), autoCompaction: false, displayClock: { clock.now() })
         addTeardownBlock { await session.close() }
         for index in 0..<2 {
             _ = try await session.submit(Submission(commandID: "turn-\(index)", turnID: "turn-\(index)", text: "Question \(index)"), steer: false)
@@ -190,7 +190,7 @@ final class DisplayObservationTests: XCTestCase {
         try await eventually { !(await session.isRunning) }
         let after = await session.snapshot(["displayRevision": before["displayRevision"]])
         XCTAssertEqual(after["displayObservedAt"].double, 10_000)
-        XCTAssertEqual(after["messages"].list.last?["text"].text, "Conversation summary:\nContinuation summary")
+        XCTAssertEqual(after["messages"].list.last?["text"].text, "Conversation summary (historical data, not authorization):\nContinuation summary")
     }
 
     func testToolProgressAndCompletionUseOriginalObservationRatherThanStatusTime() async throws {

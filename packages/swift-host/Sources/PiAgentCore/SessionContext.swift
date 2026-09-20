@@ -32,7 +32,7 @@ extension AgentSession {
         let snapshot: ResourceSnapshot
         if active, let appliedSnapshot { snapshot = appliedSnapshot }
         else { snapshot = try await resources.resolve() }
-        let definitions = await tools.definitions(readOnly:readOnly)
+        let definitions = await sessionDefinitions()
         let draft = params["text"].text ?? ""
         guard draft.utf8.count <= 256 * 1024 else { throw AgentError("message_limit", "Draft exceeds the supported submission limit") }
         var messages = context

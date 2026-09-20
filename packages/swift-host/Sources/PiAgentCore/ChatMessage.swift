@@ -38,6 +38,14 @@ public struct ChatMessage: Codable, Sendable {
     /// Assistant rows: how long the model request that produced the row took,
     /// in milliseconds, measured by the host around the request.
     public var modelMs: Double? = nil
+    /// Independent of the turn/steering display identity. A delivered steering
+    /// message belongs to the original task, not a new compaction objective.
+    public var taskRootID: String? = nil
+    public var inputLane: String? = nil
+    /// Versioned checkpoint metadata also survives saved-side message records.
+    public var compaction: JSON? = nil
+    /// App-owned retained output file, never an arbitrary model-selected path.
+    public var retainedOutput: String? = nil
     public var text: String { content.filter { $0["type"].text == "text" }.compactMap { $0["text"].text }.joined() }
     public var thinking: String { content.filter { $0["type"].text == "thinking" }.compactMap { $0["thinking"].text }.joined() }
     public var pi: JSON {
@@ -45,6 +53,11 @@ public struct ChatMessage: Codable, Sendable {
         if let toolStats { value["nativeToolStats"] = toolStats }
         if let turn { value["nativeTurn"] = JSON(turn) }
         if let modelMs { value["nativeModelMs"] = JSON(modelMs) }
+        if let taskRootID { value["nativeTaskRoot"] = JSON(taskRootID) }
+        if let inputLane { value["nativeInputLane"] = JSON(inputLane) }
+        if let compaction { value["nativeCompaction"] = compaction }
+        if let retainedOutput { value["nativeRetainedOutput"] = JSON(retainedOutput) }
+        if let stopReason { value["nativeStopReason"] = JSON(stopReason) }
         if let providerItems { value["nativeProviderItems"] = .array(providerItems) }
         if let providerIdentity { value["nativeProviderIdentity"] = providerIdentity }
         if let providerBinding { value["nativeProviderBinding"] = providerBinding }
@@ -67,10 +80,14 @@ public struct ChatMessage: Codable, Sendable {
         providerBinding = pi["nativeProviderBinding"].isNull ? nil : pi["nativeProviderBinding"]
         toolCallId = pi["toolCallId"].text; toolName = pi["toolName"].text; isError = pi["isError"].flag ?? false
         replayEligible = pi["nativeReplayEligible"].flag ?? true; displayText = pi["nativeDisplayText"].text
+        if !pi["nativeCompaction"].isNull, pi["nativeCompaction"]["version"].int != 2 { throw AgentError("session_damaged","Unsupported inherited compaction metadata version") }
         requestAttemptIDs = pi["nativeRequestAttemptIds"].isNull ? nil : pi["nativeRequestAttemptIds"].list.compactMap(\.text)
         kind = pi["nativeKind"].text; detail = pi["nativeDetail"].text
         timestamp = pi["timestamp"].double; toolStats = pi["nativeToolStats"].isNull ? nil : pi["nativeToolStats"]
         turn = pi["nativeTurn"].text; modelMs = pi["nativeModelMs"].double
+        taskRootID=pi["nativeTaskRoot"].text; inputLane=pi["nativeInputLane"].text
+        compaction=pi["nativeCompaction"].isNull ? nil : pi["nativeCompaction"]
+        retainedOutput=pi["nativeRetainedOutput"].text; stopReason=pi["nativeStopReason"].text
     }
     public func view(toolStates: [String: JSON] = [:], state: String = "complete") -> JSON {
         let tools = content.filter { $0["type"].text == "toolCall" }.map { block -> JSON in

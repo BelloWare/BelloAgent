@@ -14,7 +14,9 @@ import Glibc
 public struct AgentError: Error, LocalizedError, Sendable {
     public let code: String
     public let message: String
-    public init(_ code: String, _ message: String) { self.code = code; self.message = message }
+    public let failure: ProviderFailure?
+    public let attemptID: String?
+    public init(_ code: String, _ message: String, failure: ProviderFailure? = nil, attemptID: String? = nil) { self.code = code; self.message = message; self.failure=failure; self.attemptID=attemptID }
     public var errorDescription: String? { message }
     public var json: JSON { ["code": JSON(code), "message": JSON(message)] }
 }

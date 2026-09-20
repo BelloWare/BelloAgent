@@ -21,6 +21,7 @@ extension AgentSession {
     public static let modelAttempts = 3
     static let retryDelays: [Double] = [1.0, 3.0]
     static func isRetryable(_ error: AgentError) -> Bool {
+        if let failure=error.failure, [.inputContextExceeded,.inputPlusOutputContextExceeded,.outputLimitInvalid,.requestBodyTooLarge,.authentication].contains(failure) { return false }
         switch error.code {
         case "provider_transport", "stream_backpressure": return true
         case "provider_http":
@@ -37,19 +38,19 @@ extension AgentSession {
         guard let range = message.range(of: #"HTTP (\d{3})"#, options: .regularExpression) else { return nil }
         return Int(message[range].dropFirst(5))
     }
-    func completeWithRetries(profile: Profile, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void, reset: () -> Void) async throws -> ModelReply {
+    func completeWithRetries(profile: Profile, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], turnID: String, purpose: String, operation: JSON = .null, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void, reset: () -> Void) async throws -> ModelReply {
         var attempt = 0
         while true {
             attempt += 1
             let generation=beginObservationGeneration()
             do {
-                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,turnID:turnID,purpose:purpose,onObservation:{ [weak self] observation in await self?.observe(observation,generation:generation) },onDelta:onDelta)
+                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,turnID:turnID,purpose:purpose,onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
                 retryInfo = .null
                 return reply
             } catch let error as AgentError {
                 guard attempt < Self.modelAttempts, Self.isRetryable(error), !Task.isCancelled else {
                     retryInfo = .null
-                    throw attempt > 1 ? AgentError(error.code, "Failed after \(attempt) attempts. " + error.message) : error
+                    throw attempt > 1 ? AgentError(error.code, "Failed after \(attempt) attempts. " + error.message,failure:error.failure,attemptID:error.attemptID) : error
                 }
                 reset()
                 retryInfo = ["attempt": JSON(attempt + 1), "of": JSON(Self.modelAttempts), "reason": JSON(error.message)]
@@ -59,6 +60,10 @@ extension AgentSession {
                 runStatus = "running"; event("state")
             }
         }
+    }
+    func observeOperation(_ observation: RequestObservation, generation: UInt64, operation: JSON) async {
+        observe(observation,generation:generation)
+        if observation.phase == "awaiting", !operation.isNull { await traces.operation(observation.attemptID,operation) }
     }
     func run(compactOnly: Bool) async {
         do {
@@ -80,7 +85,7 @@ extension AgentSession {
                     if let appliedSnapshot { resourceSnapshot=appliedSnapshot }
                     else { resourceSnapshot=try await resources.resolve(); appliedSnapshot=resourceSnapshot }
                     appliedRevision=resourceSnapshot.revision
-                    var definitions=await tools.definitions(readOnly:readOnly)
+                    var definitions=await sessionDefinitions()
                     var instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
                     var request=try ProviderClient.requestBody(profile:turnProfile,messages:context,instructions:instructions,tools:definitions,sessionID:id)
                     var count=try contextCounter.count(request:request,profile:turnProfile,baseline:contextBaseline)
@@ -90,25 +95,54 @@ extension AgentSession {
                     // request whose input fits the window is always sent, with its cap clipped
                     // to the room that is left. Only input that cannot fit at all stops a turn.
                     if !count.fits, autoCompaction, canCompact {
-                        try await compactContext()
+                        try await compactContext(reason:"threshold")
                         if !drained && !resumingFailedRequest { _ = try await drainSteering() }
                         resourceSnapshot=appliedSnapshot ?? resourceSnapshot
-                        definitions=await tools.definitions(readOnly:readOnly)
+                        definitions=await sessionDefinitions()
                         instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
                         request=try ProviderClient.requestBody(profile:turnProfile,messages:context,instructions:instructions,tools:definitions,sessionID:id)
                         count=try contextCounter.count(request:request,profile:turnProfile,baseline:contextBaseline); currentContextCount=count
                         guard count.inputFits else { throw AgentError("context_limit", "Current turn remains too large after compaction; use a new chat or smaller input") }
                     }
                     guard count.inputFits else { throw AgentError("context_limit", "Estimated request input plus the safety margin exceeds configured capacity; use a new chat or smaller input") }
-                    let dispatchProfile=try turnProfile.dispatching(count)
-                    partialID=UUID().uuidString; partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus="running"; modelActive=true; event("message_start")
-                    let modelStart=nowMS()
-                    let reply=try await completeWithRetries(profile:dispatchProfile,messages:context,instructions:instructions,tools:definitions,turnID:currentTurnID,purpose:titleTask ? "title" : "turn",onDelta:{ [weak self] delta in await self?.delta(delta) },reset:{
-                        // A retried request starts its reply over; the partial from the failed attempt is dropped.
-                        partialText=""; partialThinking=""; resetPartialRow()
-                        if let partialID { recordDisplayChange(partialID, at: displayClock()) }
-                    })
-                    let modelMs=nowMS()-modelStart; turnModelMs += modelMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, modelMs)
+                    var modelMs=0.0
+                    let operationID=UUID().uuidString
+                    var recovered=false, completed: ModelReply?
+                    while completed == nil {
+                        try Task.checkCancellation()
+                        let dispatchProfile=try turnProfile.dispatching(count)
+                        partialID=UUID().uuidString; partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus="running"; modelActive=true; event("message_start")
+                        let requestStart=nowMS()
+                        do {
+                            completed=try await completeWithRetries(profile:dispatchProfile,messages:context,instructions:instructions,tools:definitions,turnID:currentTurnID,purpose:titleTask ? "title" : "turn",operation:["logicalRequestId":JSON(operationID),"recovered":JSON(recovered),"recovery":recovered ? contextRecovery : .null],onDelta:{ [weak self] delta in await self?.delta(delta) },reset:{
+                                partialText=""; partialThinking=""; resetPartialRow()
+                                if let partialID { recordDisplayChange(partialID, at: displayClock()) }
+                            })
+                            modelMs += nowMS()-requestStart
+                        } catch let error as AgentError {
+                            modelMs += nowMS()-requestStart
+                            guard error.failure?.contextRejection == true, autoCompaction, !titleTask, !recovered, canCompact, !Task.isCancelled else { throw error }
+                            // Recovery surrounds only this failed model operation.
+                            // The completed tool batch is never entered a second time.
+                            if let partialID, !partialText.isEmpty || !partialThinking.isEmpty {
+                                var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]])
+                                partial.id=partialID; partial.replayEligible=false; partial.requestAttemptIDs=error.attemptID.map { [$0] }
+                                try append(partial)
+                            }
+                            partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); modelActive=false
+                            let recovery: JSON=["logicalRequestId":JSON(operationID),"consumed":true,"failedAttemptId":error.attemptID.map { JSON($0) } ?? .null,"failedFingerprint":JSON(count.requestFingerprint),"failure":JSON(error.failure!.rawValue)]
+                            try journal?.append(["type":"custom","customType":"pi-app.context-recovery.v1","data":recovery],flush:true)
+                            contextRecovery=recovery; recovered=true
+                            try await compactContext(reason:"context-rejection")
+                            try Task.checkCancellation()
+                            // Pending steering keeps its normal next-boundary admission.
+                            request=try ProviderClient.requestBody(profile:turnProfile,messages:context,instructions:instructions,tools:definitions,sessionID:id)
+                            count=try contextCounter.count(request:request,profile:turnProfile); currentContextCount=count
+                            guard count.inputFits else { throw AgentError("context_limit","Context recovery could not fit this request. Your conversation and tool results are retained.") }
+                        }
+                    }
+                    guard let reply=completed else { throw AgentError("provider_failed","No model response") }
+                    turnModelMs += modelMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, modelMs)
                     modelActive=false
                     var assistant=reply.message; assistant.id=partialID ?? assistant.id; assistant.modelMs=modelMs; partialID=nil; currentAttemptIDs=assistant.requestAttemptIDs ?? []
                     // A reply cut at the output budget is a complete row with a reason, not a failed run.
@@ -134,7 +168,7 @@ extension AgentSession {
                         catch {
                             let cancelled=Task.isCancelled || error is CancellationError
                             let text=cancelled ? "Tool interrupted. Effects may already have occurred; inspect before retrying. No automatic replay." : (error as? AgentError)?.message ?? "Tool failed; inspect its effects before retrying."
-                            try recordTool(call,result:resultText(text,error:true),started:start,state:cancelled ? "cancelled" : "failed")
+                            try recordTool(call,result:resultText(text,error:true),started:start,state:cancelled ? "cancelled" : "failed",uncertain:Self.isEditing(call))
                             if cancelled { for pending in reply.calls.dropFirst(i+1) { try recordTool(pending,result:resultText("Not executed: cancelled",error:true),started:nil,state:"cancelled") }; throw CancellationError() }
                         }
                     }
@@ -143,7 +177,7 @@ extension AgentSession {
                     // Pi 0.85.1: steering is consumed after a COMPLETE tool batch.
                     // Follow-ups are consulted only when the agent would stop.
                     if !steering.isEmpty { continue }
-                    if !reply.calls.isEmpty { continue }
+                    if !reply.truncated && !reply.calls.isEmpty { continue }
                     // A reply that stopped at the output budget ends the turn like any
                     // other: the row says so, and queued follow-ups go on.
                     if reply.truncated { event("output_limit") }

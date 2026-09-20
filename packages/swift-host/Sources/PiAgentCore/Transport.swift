@@ -221,6 +221,7 @@ public actor TraceStore {
         var wallTimestamp = Date().timeIntervalSince1970, dispatchWallTimestamp:Double?
         var sentEventIndices = 0, eventIndexError = false
         var identity: RoutingIdentity?
+        var operation: JSON = .null
         var gateway: GatewayTelemetry?
         var credentials = CaptureCredentials(headers: [:], configuredNames: [])
         var requestCaptureBytes = 0, credentialRedactions = 0, credentialOmitted = false
@@ -352,6 +353,15 @@ public actor TraceStore {
         t.transportOutcome=observation["transportOutcome"].text ?? "unobserved"
     }
     public func usage(_ id:String, _ usage:JSON) { traces[id]?.usage=usage }
+    public func operation(_ id:String, _ value:JSON) async {
+        guard let trace=traces[id] else { return }
+        trace.operation=value
+        // Semantic summary validation happens after HTTP completion. Persist
+        // its diagnosis too, including attempts that produced no checkpoint.
+        if trace.outcome != "running", !(await sink(["type":"metadata","metadata":metadata(trace).removing(["messageIds","outputMessageIds"])])) {
+            traces[id]?.persistenceError="Native recorder could not acknowledge compaction outcome metadata"
+        }
+    }
     public func finish(_ id:String, outcome:String, modelOutcome:String) async {
         await flushResponse(id)
         await flushEvents(id)
@@ -430,7 +440,7 @@ public actor TraceStore {
     }
     private func metadata(_ t:Trace)->JSON {
         ["attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
-         "outcome":JSON(t.outcome),"modelOutcome":JSON(t.modelOutcome),"transportOutcome":JSON(t.transportOutcome),"requestHeaders":t.requestHeaders,"responseHeaders":t.headers,"usage":t.usage,"gateway":t.gateway?.json ?? .null,
+         "outcome":JSON(t.outcome),"modelOutcome":JSON(t.modelOutcome),"transportOutcome":JSON(t.transportOutcome),"requestHeaders":t.requestHeaders,"responseHeaders":t.headers,"usage":t.usage,"gateway":t.gateway?.json ?? .null,"operation":t.operation,
          "identity":t.credentials.metadata(t.identity?.json ?? .null),"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"messageIds":.array(t.messageIDs.map { JSON($0) }),"outputMessageIds":.array(t.outputMessageIDs.map { JSON($0) }),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
          "rawEventsOmitted":JSON(t.rawEventsDropped),"eventIndexPersistenceError":JSON(t.eventIndexError),
          "request":bodyInfo(t,request:true),"response":bodyInfo(t,request:false),"metrics":metrics(t),"rawEventIndexCount":JSON(t.rawEvents.count),

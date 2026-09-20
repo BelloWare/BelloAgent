@@ -94,7 +94,7 @@ final class OutputCapDispatchTests: XCTestCase {
         _ = try await session.submit(Submission(commandID: "send", turnID: "send", text: text), steer: false)
         try await eventually { !(await session.isRunning) }
         let profiles = await client.profiles, requests = await client.requests, instructions = await client.instructions
-        let dispatched = try ProviderClient.requestBody(profile: XCTUnwrap(profiles.first), messages: XCTUnwrap(requests.first), instructions: XCTUnwrap(instructions.first), tools: await RecordingTools().definitions(readOnly: true), sessionID: "cap")
+        let dispatched = try ProviderClient.requestBody(profile: XCTUnwrap(profiles.first), messages: XCTUnwrap(requests.first), instructions: XCTUnwrap(instructions.first), tools: await session.sessionDefinitions(), sessionID: "cap")
         XCTAssertTrue(prepared == dispatched, "The prepared request must show the request that will actually be sent")
         await session.close()
     }

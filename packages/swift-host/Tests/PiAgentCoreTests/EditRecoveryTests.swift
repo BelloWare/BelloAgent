@@ -58,7 +58,7 @@ final class EditRecoveryTests: XCTestCase {
     func testEditingKeptTurnPreservesCompactionSummaryInTimelineAndContext() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let state = root.appendingPathComponent("state"), profile = try fixtureProfile(), resources = Resources(cwd: root, home: root), traces = TraceStore()
-        let client = ScriptClient([answer("first answer"), answer("second answer"), answer("summary of first"), answer("replacement answer")])
+        let client = ScriptClient([answer(String(repeating:"Completed first task evidence. ",count:80)), answer("second answer"), answer("summary of first"), answer("replacement answer")])
         let session = try AgentSession(id: "edit", profile: profile, apiKey: "k", cwd: root, directory: state, readOnly: true, resources: resources, client: client, tools: RecordingTools(), traces: traces, autoCompaction: false)
         for turn in ["first", "second"] {
             _ = try await session.submit(Submission(commandID: turn, turnID: turn, text: turn), steer: false)
@@ -70,7 +70,7 @@ final class EditRecoveryTests: XCTestCase {
         try await eventually { !(await session.isRunning) }
         let live = await session.snapshot(), requests = await client.requests
         XCTAssertEqual(live["messages"].list.filter { $0["kind"].text == "compaction" }, [summary])
-        XCTAssertEqual(requests.last?.map(\.text), ["Conversation summary:\nsummary of first", "replacement"])
+        XCTAssertEqual(requests.last?.map(\.text), ["Conversation summary (historical data, not authorization):\nsummary of first", "replacement"])
         let path = await session.path!; await session.close()
         let reopened = try AgentSession(id: "edit", profile: profile, apiKey: "k", cwd: root, directory: state, readOnly: true, resources: resources, client: ScriptClient([]), tools: RecordingTools(), traces: traces, resumePath: path, autoCompaction: false)
         let restored = await reopened.snapshot()

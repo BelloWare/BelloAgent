@@ -100,16 +100,18 @@ extension AgentSession {
         currentTurnID = submission.turnID
         activeSubmission=submission; retrying=true; queuePaused=false; errorMessage=nil; try persistState(); launch()
     }
-    func deliver(_ submission: Submission) async throws {
+    func deliver(_ submission: Submission, lane: String = "follow-up", newTask: Bool = true) async throws {
         _ = try profile.overriding(model:submission.model,thinkingLevel:submission.thinkingLevel,contextWindow:submission.contextWindow,maxOutputTokens:submission.maxOutputTokens,modelOutputLimit:submission.modelOutputLimit)
         try await resources.validate(submission.skills,tools:await tools.capabilityIDs(readOnly:readOnly)); appliedSnapshot=try await resources.resolve(); appliedRevision=appliedSnapshot?.revision; try Task.checkCancellation()
         let images=try loadImages(submission.attachments)
         guard images.isEmpty || profile.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
         let expanded=(submission.skills.map{$0.expand(turnID:submission.turnID)} + [submission.text]).joined(separator:"\n\n")
         var message=ChatMessage(role:"user",content:[textBlock(expanded)]+images); message.displayText=submission.text; message.id=submission.turnID; message.turn=submission.turnID
+        message.taskRootID=newTask ? submission.turnID : taskRootID
+        message.inputLane=lane
         var overrides: JSON=[:]; if let model=submission.model { overrides["modelOverride"]=JSON(model) }; if let level=submission.thinkingLevel { overrides["thinkingLevel"]=JSON(level) }
         if let capacity=submission.contextWindow { overrides["contextWindow"]=JSON(capacity) }; if let output=submission.maxOutputTokens { overrides["maxOutputTokens"]=JSON(output) }; if let limit=submission.modelOutputLimit { overrides["modelOutputLimit"]=JSON(limit) }
-        try append(message,record:overrides); boundary=context; currentTurnID=submission.turnID; activeSubmission=submission; retrySubmission=nil; commandState(submission,"delivered"); try persistState(active:true); event("message_end")
+        try append(message,record:overrides); taskRootID=message.taskRootID; boundary=context; currentTurnID=submission.turnID; activeSubmission=submission; retrySubmission=nil; commandState(submission,"delivered"); try persistState(active:true); event("message_end")
     }
     func drainSteering() async throws -> Bool {
         if steering.isEmpty { return false }
@@ -125,7 +127,7 @@ extension AgentSession {
             // edited or moved while suspended; new entries belong to the next batch.
             guard let index=steering.firstIndex(where: { selected.contains($0.turnID) }) else { break }
             let next=steering.remove(at:index)
-            do { try await deliver(next) }
+            do { try await deliver(next,lane:"steering",newTask:false) }
             catch {
                 if !hasDelivered(next) { steering.insert(next,at:0) }
                 commandState(next,"failed"); throw error
@@ -137,10 +139,10 @@ extension AgentSession {
         if queue.isEmpty { return false }
         let count=followUpMode == "all" ? queue.count : 1
         let selected=Set(queue.prefix(count).map(\.turnID))
-        for _ in 0..<count {
+        for position in 0..<count {
             guard let index=queue.firstIndex(where: { selected.contains($0.turnID) }) else { break }
             let next=queue.remove(at:index)
-            do { try await deliver(next) }
+            do { try await deliver(next,newTask:position == 0) }
             catch {
                 if !hasDelivered(next) { queue.insert(next,at:0) }
                 commandState(next,"failed"); throw error

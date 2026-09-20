@@ -12,12 +12,22 @@ public struct ToolCall: Sendable {
     public let arguments: JSON
     public init(id: String, name: String, arguments: JSON) { self.id=id; self.name=name; self.arguments=arguments }
 }
+public struct ModelTerminalOutcome: Sendable {
+    public let status: String?
+    public let incompleteReason: String?
+    public let refusal: Bool
+    public init(status: String?, incompleteReason: String? = nil, refusal: Bool = false) {
+        self.status=status; self.incompleteReason=incompleteReason; self.refusal=refusal
+    }
+    public var outputExhausted: Bool { status == "incomplete" && incompleteReason == "max_output_tokens" && !refusal }
+}
 public struct ModelReply: Sendable {
     public var message: ChatMessage
     public var calls: [ToolCall]
     public var usage: JSON
     public var truncated: Bool
-    public init(message: ChatMessage, calls: [ToolCall] = [], usage: JSON = [:], truncated: Bool = false) { self.message=message; self.calls=calls; self.usage=usage; self.truncated=truncated }
+    public var terminal: ModelTerminalOutcome?
+    public init(message: ChatMessage, calls: [ToolCall] = [], usage: JSON = [:], truncated: Bool = false, terminal: ModelTerminalOutcome? = nil) { self.message=message; self.calls=calls; self.usage=usage; self.truncated=truncated; self.terminal=terminal }
 }
 public enum StreamDelta: Sendable { case text(String), thinking(String), tool(String, String, String) }
 public protocol ModelClient: Sendable {

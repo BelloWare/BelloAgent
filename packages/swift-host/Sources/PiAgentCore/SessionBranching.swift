@@ -16,7 +16,22 @@ extension AgentSession {
         try validate(input,steer:false)
         guard let position=context.firstIndex(where:{$0.id == messageID}), context[position].role == "user" else { throw AgentError("edit_target", "Edit requires a user message in the current context") }
         guard let journal else { throw AgentError("session_closed", "Session runtime is unloaded") }
-        let keptIDs=context[..<position].map(\.id)
+        // A summary written before the replayed protected input can itself
+        // depend on that input. Editing it must also abandon that summary.
+        let byID=Dictionary(history.map { ($0.id,$0) },uniquingKeysWith:{_,b in b})
+        func dependsOnEditedInput(_ message: ChatMessage) -> Bool {
+            func dependencies(_ message: ChatMessage) -> [String] {
+                guard let metadata=message.compaction else { return [] }
+                return (metadata["dependencyIDs"].isNull ? metadata["sourceIDs"] : metadata["dependencyIDs"]).list.compactMap(\.text)
+            }
+            var pending=dependencies(message), seen=Set<String>()
+            while let id=pending.popLast() {
+                if id==messageID { return true }
+                if seen.insert(id).inserted, let source=byID[id] { pending += dependencies(source) }
+            }
+            return false
+        }
+        let keptIDs=context[..<position].filter { !dependsOnEditedInput($0) }.map(\.id)
         let oldCommands=commands
         queue.append(input); commandState(input,"queued")
         let markerID: String
@@ -35,6 +50,7 @@ extension AgentSession {
     func applyBranch(from messageID: String, keptIDs: Set<String>, markerID: String) {
         Self.branch(history:&history,context:&context,visible:&visible,from:messageID,keptIDs:keptIDs,markerID:markerID)
         invalidateDisplay(allRows: true)
+        contextMutation &+= 1; preparedContext=nil; contextRecovery = .null
         boundary=context; contextBaseline=nil; currentContextCount=nil; clearRequestObservation()
     }
     /// Shared by live edits and journal replay (the synchronous initializer

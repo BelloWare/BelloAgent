@@ -7,7 +7,7 @@ final class CompactionReceiptTests: XCTestCase {
     func testCompactionReceiptAndNativeResumePreserveSummary() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let state=root.appendingPathComponent("state"),profile=try fixtureProfile(),resources=Resources(cwd:root,home:root),traces=TraceStore()
-        let client=ScriptClient([answer("first answer"),answer("second answer"),answer("Summary: first task was completed.")])
+        let client=ScriptClient([answer(String(repeating:"Completed first task evidence. ",count:80)),answer("second answer"),answer("Summary: first task was completed.")])
         let s=try AgentSession(id:"compact-session",profile:profile,apiKey:"test",cwd:root,directory:state,readOnly:true,resources:resources,client:client,tools:RecordingTools(),traces:traces,autoCompaction:false)
         _=try await s.submit(Submission(commandID:"c1",turnID:"t1",text:"first question"),steer:false)
         try await eventually { !(await s.isRunning) }

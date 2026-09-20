@@ -92,18 +92,22 @@ final class TurnCapacityTests: XCTestCase {
         await session.close()
     }
 
-    func testCompactionCannotDispatchOversizedSourceToSmallerModel() async throws {
+    func testCompactionBoundsOversizedSourceBeforeDispatchToSmallerModel() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let client = ScriptClient([answer("old answer")])
+        let client = ScriptClient([answer("old answer"), answer("Bounded summary of previous work"), answer("continued")])
         let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore())
         _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 18000)), steer: false)
         try await eventually { !(await session.isRunning) }
         _ = try await session.submit(Submission(commandID: "small", turnID: "small", text: "continue", model: "small-model", contextWindow: 5000, maxOutputTokens: 1000), steer: false)
         try await eventually { !(await session.isRunning) }
         let count = await client.count, snapshot = await session.snapshot()
-        XCTAssertEqual(count, 1)
-        XCTAssertEqual(snapshot["state"].text, "error")
-        XCTAssertTrue(snapshot["preflightError"].text?.contains("Summary input plus output budget and safety margin exceeds") == true)
+        XCTAssertEqual(count, 3)
+        XCTAssertEqual(snapshot["state"].text, "idle",snapshot["preflightError"].encoded())
+        let requests=await client.requests, profiles=await client.profiles
+        let summaryBody=try ProviderClient.requestBody(profile:profiles[1],messages:requests[1],instructions:"",tools:[],sessionID:"compact")
+        var counter=RequestContextCounter()
+        XCTAssertTrue(try counter.count(request:summaryBody,profile:profiles[1]).fits)
+        XCTAssertTrue(requests[1][0].text.contains("EXCERPT"),"Oversized retained source is explicitly excerpted and recallable")
         await session.close()
     }
 

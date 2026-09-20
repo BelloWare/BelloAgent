@@ -69,6 +69,14 @@ public actor AgentSession {
     var turnModelMs=0.0, turnToolMs=0.0
     var cumulativeModelMs: Double? = 0, cumulativeToolMs: Double? = 0
     var contextBaseline: RequestUsageBaseline?
+    var contextMutation: UInt64 = 0
+    var taskRootID: String?
+    var contextRecovery: JSON = .null
+    var compactionState: JSON = .null
+    var compactionAttemptIDs: [String] = []
+    var compactionPhysicalAttempts = 0
+    var compactionProgressAt = 0.0
+    let compactionPolicy: CompactionPolicy
     var contextCounter = RequestContextCounter()
     var currentContextCount: RequestContextCount?
     var requestObservation: RequestObservation?
@@ -117,16 +125,17 @@ public actor AgentSession {
     // integer increment each, on paths that already build a page.
     var displayProjectionBuildCount = 0
     var displayRowProjectionCount = 0
-    public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
-        self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.editingGate=editingGate; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.displayClock=displayClock
+    public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
+        self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.editingGate=editingGate; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
             history=seed; context=seed; boundary=seed; visible=seed; toolHistory=ToolHistoryIndex(seed); parentInfo=parent; ephemeral=true
+            taskRootID=seed.last(where: { $0.role == "user" })?.taskRootID
             let assistants=seed.filter { $0.role=="assistant" }; assistantMessageCount=assistants.count; latestAssistantMessageID=assistants.last?.id
             return
         }
         let url=resumePath.map(canonical) ?? directory.appendingPathComponent(id + ".jsonl")
         guard within(url,canonical(directory.path)) else { throw AgentError("session_scope", "Writable sessions must be in the app-managed directory") }
-        let opened=try SessionJournal(url:url,id:id,cwd:cwd,binding:profile.binding,create:resumePath == nil,beforeAppend:beforeJournalAppend); journal=opened
+        let opened=try SessionJournal(url:url,id:id,cwd:cwd,binding:profile.binding,create:resumePath == nil,beforeAppend:beforeJournalAppend,beforeSynchronize:beforeJournalSynchronize); journal=opened
         var stateRecord: JSON?
         for item in opened.loaded {
             if item["type"].text == "message" {
@@ -134,26 +143,31 @@ public actor AgentSession {
                 if message.role=="assistant" { assistantMessageCount += 1; latestAssistantMessageID=message.id }
                 for attempt in message.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(message.id) }
             } else if item["type"].text == "compaction" {
-                let ids=Set(item["nativeKeptIDs"].list.compactMap(\.text)), kept=history.filter { ids.contains($0.id) }
-                var summary=ChatMessage(role:"system",content:[textBlock("Conversation summary:\n" + (item["summary"].text ?? ""))]); summary.id=item["id"].text ?? UUID().uuidString
-                summary.requestAttemptIDs=item["nativeRequestAttemptIds"].list.compactMap(\.text)
-                summary.kind="compaction"; summary.detail=compactionDetail(tokens:item["tokensBefore"].int,kept:kept.count)
+                let restored=try CompactionCheckpoint.restore(item,context:context)
+                let summary=restored.summary, kept=restored.kept
                 for attempt in summary.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(summary.id) }
                 context=[summary]+kept; history.append(summary); visible.append(summary)
+                compactionState=summary.compaction ?? .null
+                if let recovery=summary.compaction?["recovery"], !recovery.isNull { contextRecovery=recovery }
             } else if item["type"].text == "branch" {
                 // Replay an edit: the live context becomes exactly the kept ids and
                 // the abandoned tail leaves the displayed timeline, never the journal.
-                let ids=Set(item["keptIds"].list.compactMap(\.text))
-                guard ids.isSubset(of:Set(history.map(\.id))) else { throw AgentError("session_damaged","Branch references unknown messages") }
+                let ordered=try CompactionCheckpoint.identities(item["keptIds"]), ids=Set(ordered)
+                guard context.filter({ ids.contains($0.id) }).map(\.id)==ordered else { throw AgentError("session_damaged","Branch references missing, abandoned or reordered messages") }
                 Self.branch(history:&history,context:&context,visible:&visible,from:item["fromMessageId"].text ?? "",keptIDs:ids,markerID:try identity(item["id"]))
                 // New branches publish their replacement queue in the same
                 // durable record. A crash before delivery restores it paused.
                 if !item["nativeState"].isNull { stateRecord=item["nativeState"] }
             } else if item["customType"].text == "pi-app.native.state.v1" { stateRecord=item["data"] }
+            else if item["customType"].text == "pi-app.context-recovery.v1" { contextRecovery=item["data"] }
             else if item["customType"].text == "pi-app.native.context.v1" {
                 let byID=Dictionary(history.map { ($0.id,$0) },uniquingKeysWith:{_,b in b})
-                context=try item["data"]["ids"].list.map { guard let message=byID[$0.text ?? ""] else { throw AgentError("session_damaged","Unknown context reference") }; return message }
-            } else if ["pi-app.side-origin.v1", "pi-app.fork-origin.v1"].contains(item["customType"].text ?? "") { parentInfo=item["data"] }
+                let ids=try CompactionCheckpoint.identities(item["data"]["ids"])
+                context=try ids.map { guard let message=byID[$0] else { throw AgentError("session_damaged","Unknown context reference") }; return message }
+            } else if ["pi-app.side-origin.v1", "pi-app.fork-origin.v1"].contains(item["customType"].text ?? "") {
+                parentInfo=item["data"]
+                if item["customType"].text == "pi-app.fork-origin.v1" { contextRecovery = .null; compactionState = .null }
+            }
         }
         if let saved=stateRecord {
             queue=try JSONDecoder().decode([Submission].self,from:saved["queue"].data())
@@ -188,6 +202,7 @@ public actor AgentSession {
         // A durably delivered user identity must never be delivered a second time.
         queue.removeAll { deliveredIDs.contains($0.turnID) }; steering.removeAll { deliveredIDs.contains($0.turnID) }
         toolHistory=ToolHistoryIndex(history)
+        taskRootID=context.last(where: { $0.role == "user" })?.taskRootID
         boundary=context; state=runStatus == "failed" ? "error" : queuePaused ? "paused" : "idle"
     }
     public var isRunning: Bool { runTask != nil }
@@ -205,6 +220,7 @@ public actor AgentSession {
     }
     func apply(profile: Profile, apiKey: String) {
         self.profile = profile; self.apiKey = apiKey; pendingConfiguration = nil
+        contextMutation &+= 1
         // The count and its usage baseline described requests under the old settings.
         contextBaseline = nil; currentContextCount = nil; clearRequestObservation()
         event("configured")

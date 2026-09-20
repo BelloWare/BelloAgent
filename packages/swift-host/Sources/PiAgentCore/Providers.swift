@@ -11,7 +11,7 @@ public struct ProviderClient: ModelClient {
     static func safeFailure(_ error: AgentError, credentials: CaptureCredentials) -> AgentError {
         let safe = credentials.requestBody(Data(error.message.utf8))
         let message = safe.omitted ? "Provider error details exceeded the display safety limit." : String(decoding: safe.bytes, as: UTF8.self)
-        return AgentError(error.code, preview(message) + (message.utf8.count > 16_384 ? "\n[Error details truncated; inspect the retained request for more.]" : ""))
+        return AgentError(error.code, preview(message) + (message.utf8.count > 16_384 ? "\n[Error details truncated; inspect the retained request for more.]" : ""),failure:error.failure,attemptID:error.attemptID)
     }
     /// Profile custom headers can never replace transport, authentication or
     /// session/turn correlation headers.
@@ -192,7 +192,7 @@ public struct ProviderClient: ModelClient {
             }
             guard (200..<300).contains(status) else {
                 let detail = (try? JSON.parse(nonSSE)).map { ProviderAccumulator.failure($0).message }
-                throw AgentError("provider_http", "Provider returned HTTP \(status). " + Self.guidance(status: status, detail: detail, attempt: attempt))
+                throw AgentError("provider_http", "Provider returned HTTP \(status). " + Self.guidance(status: status, detail: detail, attempt: attempt),failure:ProviderFailure.classify((try? JSON.parse(nonSSE)) ?? .null,status:status))
             }
             if let providerFailure { throw providerFailure }
             if jsonBody {
@@ -220,8 +220,8 @@ public struct ProviderClient: ModelClient {
             await traces.transport(attempt,observation:await stream.endObservation())
             await traces.finish(attempt,outcome:cancelled ? "cancelled":"failed",modelOutcome:providerFailure != nil ? "failed":"interrupted")
             if cancelled { throw CancellationError() }
-            if let e=error as? AgentError { throw Self.safeFailure(e, credentials: credentials) }
-            throw AgentError("provider_transport", Self.transportGuidance(error, attempt: attempt))
+            if let e=error as? AgentError { throw Self.safeFailure(AgentError(e.code,e.message,failure:e.failure,attemptID:attempt), credentials: credentials) }
+            throw AgentError("provider_transport", Self.transportGuidance(error, attempt: attempt),failure:.transientTransport,attemptID:attempt)
         }
     }
     /// What to do about a gateway status, after the status itself: the
@@ -268,7 +268,7 @@ public struct ProviderAccumulator: Sendable {
         let detail = value["response"]["error"].isNull ? value["error"] : value["response"]["error"]
         let message = [detail["message"].text, detail.text, value["message"].text].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
         let code = [detail["code"].text, detail["type"].text, value["code"].text].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
-        return AgentError("provider_failed", (message ?? fallback) + (code.map { " (\($0))" } ?? ""))
+        return AgentError("provider_failed", (message ?? fallback) + (code.map { " (\($0))" } ?? ""),failure:ProviderFailure.classify(value))
     }
     public mutating func acceptJSON(_ value:JSON) throws {
         root=value;terminal=true
@@ -362,6 +362,9 @@ public struct ProviderAccumulator: Sendable {
         }
         guard Set(calls.map(\.id)).count==calls.count,calls.count<=64 else { throw AgentError("invalid_tool_calls","Duplicate tool identities or excessive tool calls") }
         let usage = UsageObservation.normalized(root["usage"], api: api)
-        return ModelReply(message:message,calls:calls,usage:usage,truncated:truncated)
+        let refusal=raw.contains { item in item["type"].text == "refusal" || item["content"].list.contains { $0["type"].text == "refusal" || !$0["refusal"].isNull } }
+        let outcome=ModelTerminalOutcome(status:api == "openai-responses" ? root["status"].text : (truncated ? "incomplete":"completed"),
+            incompleteReason:api == "openai-responses" ? root["incomplete_details"]["reason"].text : (truncated ? "max_output_tokens":nil),refusal:refusal)
+        return ModelReply(message:message,calls:calls,usage:usage,truncated:truncated,terminal:outcome)
     }
 }

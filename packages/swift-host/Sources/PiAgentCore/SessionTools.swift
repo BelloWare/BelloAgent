@@ -30,6 +30,7 @@ extension AgentSession {
     static let editingTools: Set<String> = ["write", "edit", "bash"]
     static func isEditing(_ call: ToolCall) -> Bool { editingTools.contains(call.name) || (call.name == "mcp" && call.arguments["action"].text == "invoke") }
     func invokeTool(_ call: ToolCall) async throws -> JSON {
+        if call.name == "history_read", !titleTask, !(tools is DisabledTools) { return try historyRead(call.arguments) }
         let update: @Sendable (JSON) async -> Void = { [weak self] update in await self?.toolUpdate(call.id,update) }
         guard !readOnly, Self.isEditing(call) else { return try await tools.invoke(call,readOnly:readOnly,onUpdate:update) }
         try await editingGate.acquire()
@@ -45,7 +46,7 @@ extension AgentSession {
         if view != previous { recordDisplayChange(toolStateOwners[id], at: observedAt) }
         event("tool_execution_update")
     }
-    func recordTool(_ call: ToolCall, result: JSON, started: Double?, state: String) throws {
+    func recordTool(_ call: ToolCall, result: JSON, started: Double?, state: String, uncertain: Bool = false) throws {
         let observedAt = displayClock()
         var blocks=result["content"].list
         if blocks.isEmpty { blocks=[textBlock(result.encoded())] }
@@ -53,18 +54,23 @@ extension AgentSession {
         if !result["structuredContent"].isNull { blocks.append(textBlock("Structured content:\n"+result["structuredContent"].encoded())) }
         var text=blocks.compactMap { $0["text"].text }.joined(separator:"\n")
         if text.isEmpty { text=result.encoded() }
+        var retained: String?
         if text.utf8.count > 65536 {
             let folder=directory.appendingPathComponent("tool-output"); try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
             let file=folder.appendingPathComponent(UUID().uuidString+".json"); let bytes=try result.data(); guard bytes.count <= 16*1024*1024 else { throw AgentError("tool_output_limit", "Tool result exceeds 16 MiB; remote effects may have completed") }
             try bytes.write(to:file); try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:file.path)
-            text=preview(text,bytes:32768)+"\n[Large result retained at \(file.path); use read to inspect. Invocation already completed.]"
+            retained=file.lastPathComponent
+            text=preview(text,bytes:32768)+"\n[Large result retained. Invocation already completed; use history_read with its retained reference for bounded pages.]"
         }
         var message=ChatMessage(role:"toolResult",content:[textBlock(text)]); message.toolCallId=call.id; message.toolName=call.name; message.isError=result["isError"].flag ?? false
+        message.retainedOutput=retained
+        if retained != nil { message.content.append(textBlock("Retained reference: "+CompactionSourceBuilder.reference(message))) }
         message.requestAttemptIDs=currentAttemptIDs
         let durationMs=started.map { nowMS()-$0 }
         if let durationMs { turnToolMs += durationMs; cumulativeToolMs = ObservedDuration.adding(cumulativeToolMs, durationMs) }
         let stats=result["stats"]
         message.toolStats=["durationMs":durationMs.map { JSON($0) } ?? .null,"path":stats["path"],"added":stats["added"],"removed":stats["removed"]]
+        message.toolStats?["outcome"]=JSON(uncertain || (state == "cancelled" && started != nil) ? "unknown" : started == nil ? "not_executed" : state)
         try append(message, observedAt: observedAt)
         setToolStateOwner(call.id)
         let fields=toolInputFields(call.arguments), keptOutput=encodedPreview(text,bytes:4096)

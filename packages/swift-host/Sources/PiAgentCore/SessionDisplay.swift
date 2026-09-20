@@ -179,6 +179,7 @@ extension AgentSession {
             value["requestObservation"]=publishedObservation
             value["lastRequestObservation"]=lastRequestObservation
         }
+        value["compaction"]=compactionPresentation(compactionState)
         // Page cursors describe a materialized projection only. A status-only
         // read must not build a hidden page merely to compute its byte limit.
         if let projection { value["before"]=projection.start>0 ? JSON(projection.start):.null }
@@ -186,7 +187,7 @@ extension AgentSession {
         // merely the end of a failed/cancelled attempt or a historical row.
         // Include it in status-only and unchanged-projection snapshots too.
         if let summary = context.last(where: { $0.kind == "compaction" }) {
-            value["latestSuccessfulCompaction"] = ["id": JSON(summary.id), "detail": summary.detail.map { JSON($0) } ?? .null]
+            value["latestSuccessfulCompaction"] = ["id": JSON(summary.id), "detail": summary.detail.map { JSON($0) } ?? .null,"operation":compactionPresentation(summary.compaction ?? .null)]
         } else { value["latestSuccessfulCompaction"] = .null }
         if includesMessages, let projection {
             // A reader that says it can apply row updates, and asks from

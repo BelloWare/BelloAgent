@@ -206,10 +206,10 @@ def validate_request(method, path, headers, body, *, api_key, model=None,
     require(set(calls) == set(results), "request contains a tool call without its completed result")
     if native_items == "portable":
         require(not opaque, "portable history leaked opaque provider items")
-    is_compaction = instructions == "Produce a factual, concise continuation summary. Do not claim unfinished actions succeeded."
+    is_compaction = bool(user_texts and user_texts[-1].startswith("Summarize the preceding historical data for compaction"))
     if is_compaction:
-        require(not tools and len(history) == 1 and len(user_texts) == 1, "compaction must be a single no-tools summary request")
-        require(user_texts[0].startswith("Summarize this conversation for continuation.") and "[user]\n" in user_texts[0], "compaction omitted source history or summary instructions")
+        require(not tools and len(history) == 2 and len(user_texts) == 2 and not instructions, "compaction must place its instruction after source history, with no tools")
+        require('"sourceMessageId"' in user_texts[0] or '"intermediateSummary"' in user_texts[0] or '"sourceFragment"' in user_texts[0], "compaction omitted structured source history")
     return {"api": "openai-responses" if responses else "anthropic-messages", "instructions": instructions,
             "latest_text": user_texts[-1] if user_texts else "", "user_texts": user_texts,
             "calls": calls, "results": results, "opaque": opaque, "tool_names": set(schemas),
