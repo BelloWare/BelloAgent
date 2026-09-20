@@ -65,7 +65,7 @@ final class ReportNavigationTests: XCTestCase {
         XCTAssertFalse(model.conversationCommandsEnabled)
         XCTAssertEqual(editor.string, "main unsent draft"); XCTAssertEqual(editor.selectedRange(), selectedRange)
         XCTAssertEqual(side.draft, "side unsent draft"); XCTAssertEqual(main.state, "running"); XCTAssertEqual(main.queueCount, 1); XCTAssertEqual(side.state, "running")
-        model.send(); model.send(steer: true); editor.send?()
+        model.send(); model.send(steer: true); editor.send?(.followUp)
         XCTAssertFalse(main.loading, "Neither global Send nor a stale native composer callback can submit a hidden draft")
         XCTAssertFalse(side.loading); XCTAssertTrue(model.hosts.isEmpty)
         let documents = transcripts.compactMap { $0.documentView as? TranscriptNativeDocument }

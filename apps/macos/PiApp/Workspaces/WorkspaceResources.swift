@@ -101,7 +101,8 @@ extension WorkspaceModel {
         let skills = resourceCatalogWorkspaceID == selectedWorkspaceID && resourceCatalogSessionID == view.id ? resourceCatalog.filter { $0.canSelect && $0.name.lowercased().hasPrefix(prefix) }.map { CommandCompletion(id: $0.id, name: $0.name, detail: $0.scope + " · " + $0.path + " · " + $0.policy, skill: $0) } : []
         return Array((builtins + skills).prefix(8))
     }
-    func completionKey(_ key: UInt16, view: SessionDisplay) -> Bool {
+    func completionKey(_ key: UInt16, modifiers: NSEvent.ModifierFlags = [], view: SessionDisplay) -> Bool {
+        guard modifiers.intersection([.command, .shift, .option, .control]).isEmpty else { return false }
         let choices = completions(view); guard view.completionVisible else { return false }
         if key == 53 { view.completionVisible = false; return true }
         if [36, 76].contains(key), let command = LeadingCommand.parse(view.draft, directInput: view.directCommand),

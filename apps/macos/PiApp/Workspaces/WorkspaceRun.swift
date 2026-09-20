@@ -4,6 +4,21 @@ import Foundation
 // asks the helper to do something to the conversation the reader is in.
 
 extension WorkspaceModel {
+    /// Snapshot the originating pane's intent synchronously, before any helper await.
+    func submitComposer(intent: ComposerSubmissionIntent, sessionID: String) {
+        guard page == .chats, let view = displays[sessionID], !view.loading, !installPreparing else { return }
+        if view.editingMessageID != nil { sendEdit(sessionID: sessionID); return }
+        // Bypassing the completion list with Command-Return is not a skill grant.
+        if let command = LeadingCommand.parse(view.draft, directInput: view.directCommand),
+           !LeadingCommand.reserved.contains(command.name) {
+            view.completionVisible = true
+            view.notice = "Select the skill with Tab or Return before submitting."
+            Task { await loadSkillCatalog(sessionID: sessionID) }
+            return
+        }
+        send(steer: intent == .steer && view.busy, sessionID: sessionID)
+    }
+
     func send(steer: Bool = false, sessionID: String? = nil) {
         // Global commands target the visible conversation. Explicit session
         // submissions already accepted by an asynchronous side flow continue.
@@ -69,7 +84,9 @@ extension WorkspaceModel {
                 refresh(item.id)
             } catch {
                 // The failure sits in the conversation, under the messages, not in a fixed strip.
-                view.sendFailure = error.localizedDescription
+                if case HostError.rejected(let code, _) = error, code == "not_running", steer {
+                    view.sendFailure = "The run finished. Press Return to send this as a new message."
+                } else { view.sendFailure = error.localizedDescription }
                 if case HostError.rejected(let code, _) = error { try? await store.remove(kind: "pending:\(item.id)", id: commandID); view.state = code == "connection_unavailable" ? "interrupted" : previousState }
                 else { view.uncertain = dispatched; view.state = dispatched ? "interrupted" : previousState }
             }

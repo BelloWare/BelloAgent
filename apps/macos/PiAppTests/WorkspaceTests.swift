@@ -149,7 +149,7 @@ final class WorkspaceTests: XCTestCase {
     }
     @MainActor func testNativeComposerEnterShiftEnterAndMarkedText() throws {
         let editor = ComposerTextView(); editor.allowsUndo = true; editor.isRichText = false
-        var sends = 0; editor.send = { sends += 1 }
+        var sends = 0; editor.send = { _ in sends += 1 }
         func enter(_ flags: NSEvent.ModifierFlags = []) -> NSEvent { NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36)! }
         editor.string = "hello"; editor.keyDown(with: enter()); XCTAssertEqual(sends, 1)
         editor.setSelectedRange(NSRange(location: 5, length: 0)); editor.keyDown(with: enter(.shift)); XCTAssertEqual(sends, 1); XCTAssertTrue(editor.string.contains("\n"))
@@ -159,7 +159,7 @@ final class WorkspaceTests: XCTestCase {
 
     @MainActor func testComposerModelRefreshDoesNotPublishTextOrCompletionsBackIntoViewUpdate() throws {
         var draft = "restored draft", writes = 0, completions = 0
-        let composer = NativeComposer(text:.init(get:{ draft },set:{ draft = $0; writes += 1 }),send:{},completion:{ _ in completions += 1 })
+        let composer = NativeComposer(text:.init(get:{ draft },set:{ draft = $0; writes += 1 }),send:{ _ in },completion:{ _ in completions += 1 })
         let coordinator = composer.makeCoordinator(), editor = ComposerTextView()
         editor.isRichText = false; editor.allowsUndo = true; editor.string = "previous draft"; editor.delegate = coordinator
         let window = NSWindow(contentRect:NSRect(x:0,y:0,width:400,height:150),styleMask:[.titled],backing:.buffered,defer:false)
@@ -180,7 +180,7 @@ final class WorkspaceTests: XCTestCase {
 
     @MainActor func testComposerFocusPublicationIsDeferredAndRejectsSupersededResponder() async throws {
         var focused = 0
-        let composer = NativeComposer(text:.constant(""),send:{},focused:{ focused += 1 })
+        let composer = NativeComposer(text:.constant(""),send:{ _ in },focused:{ focused += 1 })
         let coordinator = composer.makeCoordinator(), editor = ComposerTextView(), other = ComposerTextView()
         let container = NSView(frame:NSRect(x:0,y:0,width:400,height:150))
         editor.frame = NSRect(x:0,y:0,width:200,height:150); other.frame = NSRect(x:200,y:0,width:200,height:150)

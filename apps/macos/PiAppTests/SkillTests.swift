@@ -18,7 +18,7 @@ final class SkillTests: XCTestCase {
     }
     @MainActor func testCompletionKeyboardRespectsMarkedTextAndExplicitTypingOrigin() throws {
         let editor = ComposerTextView(); editor.isRichText = false
-        var origins = 0, selections = 0; editor.directSlash = { origins += 1 }; editor.completionKey = { if $0 == 48 { selections += 1; return true }; return false }
+        var origins = 0, selections = 0; editor.directSlash = { origins += 1 }; editor.completionKey = { key, _ in if key == 48 { selections += 1; return true }; return false }
         func key(_ code: UInt16, _ characters: String) -> NSEvent { NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)! }
         editor.keyDown(with: key(44, "/")); XCTAssertEqual(origins, 1)
         editor.keyDown(with: key(48, "\t")); XCTAssertEqual(selections, 1)

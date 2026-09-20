@@ -139,7 +139,7 @@ final class HardeningTests: XCTestCase {
     }
     @MainActor func testLargePastePreservesExistingNativeDraft() {
         var draft = "original", notice = ""
-        let composer = NativeComposer(text: .init(get: { draft }, set: { draft = $0 }), send: {}, inputRejected: { notice = $0 })
+        let composer = NativeComposer(text: .init(get: { draft }, set: { draft = $0 }), send: { _ in }, inputRejected: { notice = $0 })
         let coordinator = composer.makeCoordinator(), editor = NSTextView(); editor.string = draft
         XCTAssertFalse(coordinator.textView(editor, shouldChangeTextIn: NSRange(location: 0, length: 8), replacementString: String(repeating: "x", count: 1_048_576)))
         XCTAssertEqual(draft, "original"); XCTAssertTrue(notice.contains("256 KiB"))

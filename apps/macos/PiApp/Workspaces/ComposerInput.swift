@@ -23,13 +23,13 @@ struct ComposerInput: View {
     private var canSend: Bool { !((!draft.text.contains { !$0.isWhitespace } && session.skills.isEmpty) || session.loading || model.installPreparing || (editing && (session.busy || !session.queue.isEmpty))) }
     private var queues: Bool { !editing && (session.busy || !session.queue.isEmpty) }
     @State private var sendPulse = false
-    private func submit() {
+    private func submit(intent: ComposerSubmissionIntent = .followUp) {
         guard model.page == .chats else { return }
         // A short press-in and spring-back confirms the send under the pointer.
         // Uncancelled on purpose: 120 ms, writing only this view's own @State.
         sendPulse = true
         Task { try? await Task.sleep(for: .milliseconds(120)); sendPulse = false }
-        if editing { model.sendEdit(sessionID: session.id) } else { model.send(sessionID: session.id) }
+        model.submitComposer(intent: intent, sessionID: session.id)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: PiSpacing.sm) {
@@ -40,9 +40,9 @@ struct ComposerInput: View {
                     CompactionBanner(session: session) { session.compactionNotice = nil }.transition(AnyTransition.move(edge: .top).combined(with: .opacity))
                 }
                 if !session.attachments.isEmpty || !session.skills.isEmpty { chips.padding(.horizontal, PiSpacing.md).padding(.top, PiSpacing.md).transition(.opacity) }
-                NativeComposer(text: $draft.text, send: { submit() }, sessionID: session.id, completion: { _ in model.commandChanged(session) },
+                NativeComposer(text: $draft.text, send: { submit(intent: $0) }, sessionID: session.id, completion: { _ in model.commandChanged(session) },
                     directSlash: { session.directCommand = true }, pasted: { session.directCommand = false; session.completionVisible = false },
-                    completionKey: { model.completionKey($0, view: session) }, focused: { if model.focusedSessionID != session.id { model.focusedSessionID = session.id } }, accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer", inputRejected: { session.notice = $0 },
+                    completionKey: { model.completionKey($0, modifiers: $1, view: session) }, focused: { if model.focusedSessionID != session.id { model.focusedSessionID = session.id } }, accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer", inputRejected: { session.notice = $0 },
                     attachFiles: { model.attachImageFiles($0, sessionID: session.id) },
                     heightChanged: { height in if abs(contentHeight - height) >= 1 { contentHeight = height } }, focusToken: session.composerFocusRequest)
                     .id(session.id).frame(height: min(maximumHeight, max(minimumHeight, contentHeight)))
@@ -50,7 +50,7 @@ struct ComposerInput: View {
                     // The keyboard hints are the empty composer's placeholder; they leave once typing starts.
                     .overlay(alignment: .topLeading) {
                         if draft.text.isEmpty && session.skills.isEmpty {
-                            Text("Message… ↩ send · ⇧↩ new line · / skills").font(.system(size: 14)).foregroundStyle(Color.piInkTertiary)
+                            Text("Message… " + ComposerSubmissionIntent.hint(running: session.busy)).font(.system(size: 14)).foregroundStyle(Color.piInkTertiary)
                                 .padding(.leading, 15).padding(.top, 9).allowsHitTesting(false).accessibilityHidden(true)
                         }
                     }
@@ -123,7 +123,7 @@ struct ComposerInput: View {
     private var barForm: ComposerBarForm { metrics.form(fitting: ComposerBarMetrics.available(paneWidth: paneWidth)) }
     /// The line beside the steering button: what pressing Return will do.
     private var hint: String? {
-        if queues { return "Queue follow-up" }
+        if queues { return "↩ Queue · ⌘↩ Steer" }
         if editing { return session.busy || !session.queue.isEmpty ? "Wait for idle to resend" : "Resend from here" }
         return nil
     }
@@ -135,12 +135,12 @@ struct ComposerInput: View {
     @ViewBuilder private func runControlRow(_ form: ComposerRunControlsForm) -> some View {
         HStack(spacing: ComposerBarMetrics.spacing) {
             if session.busy && !editing {
-                Button { model.send(steer: true, sessionID: session.id) } label: {
+                Button { submit(intent: .steer) } label: {
                     if form.steerIsCompact { Image(systemName: "arrow.turn.up.right") }
                     else { Label("Steer run", systemImage: "arrow.turn.up.right") }
                 }
                 .buttonStyle(.piGhost).disabled(session.loading).fixedSize()
-                .help("Steer run · deliver this message to the current run after its tool batch")
+                .help("⌘↩ Steer run · deliver this message to the current run after its tool batch")
                 .accessibilityLabel("Steer run")
             }
             if form.showsHint, let hint {
@@ -180,7 +180,7 @@ struct ComposerInput: View {
                 }.buttonStyle(.plain).piPointer()
             }
             HStack {
-                Text(model.resourceLoading ? "Discovering skills…" : "↑↓ Choose · Tab or Return Select · Esc Dismiss").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
+                Text(model.resourceLoading ? "Discovering skills…" : "↑↓ Choose · Tab or Return Select · Select skills before ⌘↩ · Esc Dismiss").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
                 Spacer()
                 Button("All Skills…") { model.inspectResources(session.id) }.buttonStyle(.piGhost)
             }.padding(.horizontal, PiSpacing.sm).padding(.top, 4)

@@ -3,13 +3,13 @@ import AppKit
 
 struct NativeComposer: NSViewRepresentable {
     @Binding var text: String
-    var send: () -> Void
+    var send: (ComposerSubmissionIntent) -> Void
     /// The chat this composer belongs to, so typing anywhere in the window can find the right one.
     var sessionID = ""
     var completion: (String) -> Void = { _ in }
     var directSlash: () -> Void = {}
     var pasted: () -> Void = {}
-    var completionKey: (UInt16) -> Bool = { _ in false }
+    var completionKey: (UInt16, NSEvent.ModifierFlags) -> Bool = { _, _ in false }
     var focused: () -> Void = {}
     var accessibilityLabel = "Message composer"
     var inputRejected: (String) -> Void = { _ in }
@@ -39,7 +39,7 @@ struct NativeComposer: NSViewRepresentable {
         // teardown — keep that chat's transcript page in memory for the rest
         // of the session, so memory grew with every chat visited.
         let coordinator = context.coordinator
-        editor.send = { [weak coordinator] in coordinator?.parent.send() }
+        editor.send = { [weak coordinator] in coordinator?.parent.send($0) }
         editor.directSlash = { [weak coordinator] in coordinator?.parent.directSlash() }
         editor.pasted = { [weak coordinator] in coordinator?.parent.pasted() }
         editor.attachFiles = { [weak coordinator] in coordinator?.parent.attachFiles($0) }
@@ -50,7 +50,7 @@ struct NativeComposer: NSViewRepresentable {
         }
         editor.imageRejected = { [weak coordinator] in coordinator?.parent.inputRejected($0) }
         editor.registerForDraggedTypes([.fileURL, .png, .tiff])
-        editor.completionKey = { [weak coordinator] in coordinator?.parent.completionKey($0) ?? false }
+        editor.completionKey = { [weak coordinator] in coordinator?.parent.completionKey($0, $1) ?? false }
         editor.focused = { [weak editor, weak coordinator] in
             if let editor { coordinator?.focusChanged(editor) }
         }
@@ -200,10 +200,10 @@ struct ComposerEditMeasurement {
     /// The chat this editor belongs to (see `WindowPresentationController.redirectTyping`).
     var sessionID = ""
     private var measurement = ComposerEditMeasurement()
-    var send: (() -> Void)?
+    var send: ((ComposerSubmissionIntent) -> Void)?
     var directSlash: (() -> Void)?
     var pasted: (() -> Void)?
-    var completionKey: ((UInt16) -> Bool)?
+    var completionKey: ((UInt16, NSEvent.ModifierFlags) -> Bool)?
     var focused: (() -> Void)?
     var contentHeightChanged: ((CGFloat) -> Void)?
     private var reportedHeight: CGFloat = 0
@@ -327,10 +327,12 @@ struct ComposerEditMeasurement {
         }
         defer { measurement.end() }
         if !hasMarkedText(), event.characters == "/", selectedRange().location == 0 { directSlash?() }
-        if !hasMarkedText(), !event.modifierFlags.contains(.shift), completionKey?(event.keyCode) == true { return }
-        if (event.keyCode == 36 || event.keyCode == 76), !hasMarkedText(),
-           !event.modifierFlags.contains(.option), !event.modifierFlags.contains(.control) {
-            if event.modifierFlags.contains(.shift) { insertNewline(nil) } else { send?() }; return
+        if !hasMarkedText(), !event.modifierFlags.contains(.shift), completionKey?(event.keyCode, event.modifierFlags) == true { return }
+        if [36, 76].contains(event.keyCode), !hasMarkedText() {
+            if event.modifierFlags.contains(.shift) { insertNewline(nil); return }
+            if !event.modifierFlags.contains(.option), !event.modifierFlags.contains(.control) {
+                send?(event.modifierFlags.contains(.command) ? .steer : .followUp); return
+            }
         }
         // Page Up and Page Down, Home and End move the reader through the
         // conversation, not through a draft that already fits in the field.
