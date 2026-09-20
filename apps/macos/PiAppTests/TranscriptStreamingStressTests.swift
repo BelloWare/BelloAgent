@@ -860,7 +860,8 @@ final class TranscriptStreamingStressTests: XCTestCase {
         let session = SessionDisplay(id: "settle-fold")
         session.messages = Self.history(turns: 3)
         session.messages.append(TranscriptMessage(id: "u9", role: "user", text: "Run the whole thing.", at: 8_000, turn: "u9"))
-        var live = TranscriptMessage(id: "stream:a9", role: "assistant", text: "Part of the answer so far. ", at: 8_100, turn: "u9")
+        // Match the helper: provisional and durable rows have one opaque id.
+        var live = TranscriptMessage(id: "a9", role: "assistant", text: "Part of the answer so far. ", at: 8_100, turn: "u9")
         live.state = "streaming"
         live.thinking = "Working out the order. "
         live.tools = (0..<10).map { Self.toolCall($0) }

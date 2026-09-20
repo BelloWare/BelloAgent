@@ -159,7 +159,7 @@ struct ResourceInspector: View {
                     Text("Global → project root → working directory → explicitly approved additions").font(PiFont.heading)
                     PiKeyValue(key: "Root", value: snapshot["root"]?.string ?? "", mono: true)
                     PiKeyValue(key: "Codex home", value: snapshot["codexHome"]?.string ?? "", mono: true)
-                    PiKeyValue(key: "Included", value: "\(Int(snapshot["instructionBytes"]?.number ?? 0)) / \(Int(snapshot["instructionLimit"]?.number ?? 32768)) UTF-8 bytes")
+                    PiKeyValue(key: "Included", value: "\(snapshot["instructionBytes"]?.nonnegativeInteger.map(String.init) ?? "n/a") / \(snapshot["instructionLimit"]?.nonnegativeInteger.map(String.init) ?? "n/a") UTF-8 bytes")
                     PiKeyValue(key: "Applied revision", value: snapshot["appliedRevision"]?.string ?? "No turn yet", mono: true)
                 }
             }
@@ -174,8 +174,8 @@ struct ResourceInspector: View {
             .overlay { if (snapshot["sources"]?.array ?? []).isEmpty { Text("No instruction sources").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) } }
             .piInset()
             PiPager(previous: { sourceOffset = max(0, sourceOffset - 32); Task { await refresh() } }, next: { sourceOffset += 32; Task { await refresh() } },
-                    canPrevious: sourceOffset > 0, canNext: sourceOffset + 32 < Int(snapshot["sourceCount"]?.number ?? 0), previousLabel: "Previous Sources", nextLabel: "Next Sources") {
-                Text("\(Int(snapshot["sourceCount"]?.number ?? 0)) sources")
+                    canPrevious: sourceOffset > 0, canNext: sourceOffset + 32 < (snapshot["sourceCount"]?.nonnegativeInteger ?? 0), previousLabel: "Previous Sources", nextLabel: "Next Sources") {
+                Text("\(snapshot["sourceCount"]?.nonnegativeInteger.map(String.init) ?? "n/a") sources")
             }
             PiNote("A new user turn refreshes the chain. In-flight requests retain their revision. Descendant guidance is not injected indiscriminately into unrelated directories.")
         }
@@ -220,7 +220,7 @@ struct ResourceInspector: View {
     private func loadOptions() async {
         if let id = model.selectedWorkspaceID { options = (try? await model.editableResourceSettings(workspaceID: id)) ?? [:] }
         home = options["codexHome"]?.string ?? ""; fallbacks = options["fallbackNames"]?.array?.compactMap(\.string).joined(separator: ", ") ?? ""
-        byteLimit = Int(options["maxInstructionBytes"]?.number ?? 32768); overrideBudget = options["maxInstructionBytes"] != nil
+        byteLimit = options["maxInstructionBytes"]?.nonnegativeInteger ?? 32768; overrideBudget = options["maxInstructionBytes"] != nil
     }
     private func addPath(_ key: String) {
         let panel = NSOpenPanel(); panel.canChooseDirectories = key != "piInstructionPaths"; panel.canChooseFiles = true; panel.allowsMultipleSelection = true

@@ -1,5 +1,15 @@
 import Foundation
 
+/// Displayed durations must have a representable nonnegative millisecond
+/// count. Journal/wire numbers remain untouched; invalid observations are n/a.
+enum DurationObservation {
+    static func valid(_ milliseconds: Double?) -> Double? {
+        guard let milliseconds, milliseconds.isFinite, milliseconds >= 0,
+              milliseconds < Double(Int.max) else { return nil }
+        return milliseconds
+    }
+}
+
 // The transcript's reading of a conversation: which tool calls happened and
 // how they went, how replies group into blocks and turns, and how usage,
 // durations and clocks are written out. Pure functions over the message
@@ -92,14 +102,26 @@ enum TranscriptItem: Equatable, Sendable, Identifiable {
     case block(TranscriptBlock)
     var id: String {
         switch self {
-        case .message(let message): return message.id
+        case .message(let message): return TranscriptRenderIdentity.message(message.id).key
         case .block(let block): return block.key
         }
     }
 }
 
+/// Disjoint display namespaces. Journal ids stay opaque even if they contain
+/// old rendering prefixes. Escape the escape prefix too to keep this injective.
+enum TranscriptRenderIdentity {
+    case message(String), block(String)
+    var key: String {
+        switch self {
+        case .message(let id): return id.hasPrefix("block:") || id.hasPrefix("message:") ? "message:" + id : id
+        case .block(let id): return "block:" + id
+        }
+    }
+}
+
 extension TranscriptMessage {
-    var isStreaming: Bool { state == "streaming" || id.hasPrefix("stream:") }
+    var isStreaming: Bool { state == "streaming" }
     /// A reply with no prose: only tool calls, exposed reasoning, or both. It folds into the next reply's block.
     var isActivityOnly: Bool {
         role == "assistant" && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -289,7 +311,7 @@ enum TranscriptActivity {
     // MARK: Formatting
 
     static func formatDuration(_ ms: Double) -> String {
-        guard ms.isFinite, ms >= 0 else { return "" }
+        guard DurationObservation.valid(ms) != nil else { return "" }
         if ms < 1_000 { return String(format: "%.1fs", ms / 1000) }
         // Retained history can contain finite values outside Int's range.
         guard let seconds = Int(exactly: (ms / 1000).rounded()) else { return "" }
@@ -632,14 +654,8 @@ enum TranscriptActivity {
         patched[patched.count - 1] = .block(block)
         return patched
     }
-    /// A reply that is still arriving carries a provisional row id; the row the
-    /// host persists keeps the same identity without that marker. Blocks are
-    /// keyed by the settled form, so the row the reader folded — and the fold
-    /// itself, the reader's place and any selection in it — survive the reply
-    /// landing under its final id.
-    static func settledRowID(_ id: String) -> String {
-        id.hasPrefix("stream:") ? String(id.dropFirst("stream:".count)) : id
-    }
+    // The helper uses the eventual journal id while streaming. Explicit state
+    // says whether a row is provisional; historical ids are never normalized.
     static func blocks(of messages: [TranscriptMessage]) -> [TranscriptItem] {
         var items: [TranscriptItem] = []
         var lastAt: Double? = nil
@@ -669,7 +685,7 @@ enum TranscriptActivity {
                 continue
             }
             if message.role == "assistant" && message.kind == nil {
-                var block = pending ?? open("block:" + settledRowID(message.id))
+                var block = pending ?? open(TranscriptRenderIdentity.block(message.id).key)
                 if message.isActivityOnly { block.activity.append(message); observe(message, &block); pending = block; continue }
                 observe(message, &block)
                 block.message = message; block.id = message.id

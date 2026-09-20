@@ -8,8 +8,8 @@ final class HostTransport: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.belloware.PiApp.host", qos: .userInitiated)
     private var process: Process?
     private var input: HostPipeWriter?
-    private var output: FileHandle?
-    private var errorOutput: FileHandle?
+    private var output: HostPipeReader?
+    private var errorOutput: HostPipeReader?
     private var decoder = HostFrameDecoder()
     private let receive: @Sendable (TransportEvent) -> Void
     private let sendLock = NSLock()
@@ -34,20 +34,21 @@ final class HostTransport: @unchecked Sendable {
             input = HostPipeWriter(handle: stdin.fileHandleForWriting, queue: queue,
                                    completed: { [weak self] counted in self?.commandWritten(counted: counted) },
                                    failed: { [weak self] in self?.receive(.failed("The host connection was interrupted. No command was replayed.")) })
-            output = stdout.fileHandleForReading; errorOutput = stderr.fileHandleForReading
-            stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
-                // Drained on the handle's own thread and handed to the serial queue without
-                // waiting on it: a stdin write blocked on a full pipe must never stop stdout
-                // from being read, or both processes wait on each other forever.
-                let bytes = handle.availableData
-                if bytes.isEmpty { handle.readabilityHandler = nil }
-                self?.queue.async { [weak self] in self?.consume(bytes) }
-            }
+            output = HostPipeReader(handle: stdout.fileHandleForReading, queue: queue,
+                receive: { [weak self] in self?.consume($0) },
+                failed: { [weak self] in self?.receive(.failed("The host output pipe was interrupted.")) })
             // Never forward raw subprocess diagnostics to the UI or telemetry.
-            stderr.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
+            errorOutput = HostPipeReader(handle: stderr.fileHandleForReading, queue: queue, receive: { _ in }, failed: {})
             child.terminationHandler = { [weak self] child in
                 let status = child.terminationStatus
-                self?.queue.async { [weak self] in self?.stopping = true; self?.captureEnded(); self?.closeHandles(); self?.process = nil; self?.receive(.exited(status)) }
+                self?.queue.async { [weak self] in
+                    guard let self else { return }
+                    self.stopping = true
+                    // Drain bytes already in the pipes before publishing exit. Reads,
+                    // cancellation and descriptor closure share one serial owner.
+                    self.output?.finish(); self.errorOutput?.finish()
+                    self.captureEnded(); self.closeHandles(); self.process = nil; self.receive(.exited(status))
+                }
             }
             do { try child.run(); process = child }
             catch {
@@ -91,7 +92,7 @@ final class HostTransport: @unchecked Sendable {
     }
     private func consume(_ bytes: Data) {
         do {
-            if bytes.isEmpty { try decoder.finish(); output?.readabilityHandler = nil; return }
+            if bytes.isEmpty { try decoder.finish(); return }
             for frame in try decoder.append(bytes) {
                 if frame["kind"]?.string == "ready" { hostEpoch = frame["hostEpoch"]?.string }
                 if frame["kind"]?.string == "capture" { receiveCapture(frame) }
@@ -124,10 +125,52 @@ final class HostTransport: @unchecked Sendable {
         Task { await pending?.value; try? await capture(["type": .string("interrupted"), "hostEpoch": .string(epoch)]) }
     }
     private func closeHandles() {
-        output?.readabilityHandler = nil; errorOutput?.readabilityHandler = nil
-        input?.close(); try? output?.close(); try? errorOutput?.close()
+        input?.close(); output?.close(); errorOutput?.close()
         input = nil; output = nil; errorOutput = nil
     }
+}
+
+/// A descriptor has one serial owner. POSIX reads are nonblocking and bounded;
+/// cancellation closes only after any executing read callback returns. There
+/// is no legacy FileHandle read/close exception race and no queued Data backlog.
+/// The writer on this queue is nonblocking too, so stdin cannot prevent drain.
+final class HostPipeReader: @unchecked Sendable {
+    private var source: DispatchSourceRead?
+    private let fd: Int32
+    private let receive: @Sendable (Data) -> Void
+    private let failed: @Sendable () -> Void
+    private var ended = false
+    init(handle: FileHandle, queue: DispatchQueue, receive: @escaping @Sendable (Data) -> Void, failed: @escaping @Sendable () -> Void) {
+        fd = handle.fileDescriptor; self.receive = receive; self.failed = failed
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+        source.setEventHandler { [weak self] in self?.drain() }
+        source.setCancelHandler { try? handle.close() }
+        self.source = source; source.resume()
+    }
+    private func drain() {
+        guard !ended else { return }
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        // Yield after 256 KiB so commands, capture acknowledgments and exit
+        // deadlines get a turn even if a faulty child writes indefinitely.
+        for _ in 0..<4 {
+            let count = Darwin.read(fd, &buffer, buffer.count)
+            if count > 0 { receive(Data(buffer.prefix(count))) }
+            else if count == 0 { finishEOF(); return }
+            else if errno == EAGAIN || errno == EWOULDBLOCK { return }
+            else if errno != EINTR { failed(); finishEOF(); return }
+        }
+    }
+    func finish() { drain(); finishEOF() }
+    private func finishEOF() {
+        guard !ended else { return }
+        close(); receive(Data())
+    }
+    func close() {
+        guard !ended else { return }; ended = true
+        source?.cancel(); source = nil
+    }
+    deinit { source?.cancel() }
 }
 
 // The pipe may be full while the helper is busy or failing. A nonblocking

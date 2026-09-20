@@ -98,10 +98,10 @@ final class SessionReadStateTests: XCTestCase {
         try await close(third, root: root)
     }
 
-    @MainActor func testStreamingIDsMalformedCountersAndConnectionChecksDoNotCreateUnread() async throws {
+    @MainActor func testMalformedCountersAndConnectionChecksDoNotCreateUnread() async throws {
         let (model, root, _) = try await makeModel()
         model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(0, nil))
-        for invalid in [snapshot(1, "stream:partial"), snapshot(-1, "x"), snapshot(100001, "x"), snapshot(1, nil), ["assistantMessageCount": .number(1.5), "latestAssistantMessageId": .string("x")]] {
+        for invalid in [snapshot(1, ""), snapshot(-1, "x"), snapshot(100001, "x"), snapshot(1, nil), ["assistantMessageCount": .number(1.5), "latestAssistantMessageId": .string("x")]] {
             model.observeAssistantOutputs(sessionID: "chat", snapshot: invalid)
         }
         XCTAssertEqual(model.unreadCount, 0); XCTAssertEqual(model.unreadStates["chat"]?.observedAssistantCount, 0)
@@ -109,6 +109,20 @@ final class SessionReadStateTests: XCTestCase {
         model.observeAssistantOutputs(sessionID: "connection-test", snapshot: snapshot(0, nil))
         model.observeAssistantOutputs(sessionID: "connection-test", snapshot: snapshot(1, "test-answer"))
         XCTAssertNil(model.unreadStates["connection-test"])
+        try await close(model, root: root)
+    }
+
+    @MainActor func testCompletedLegacyIDIsOpaqueWhileExplicitStreamingStateCannotBeRead() async throws {
+        let (model, root, view) = try await makeModel()
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(0, nil))
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(1, "stream:historical"))
+        XCTAssertEqual(model.unreadCount, 1)
+        view.messages = [.init(id: "stream:historical", role: "assistant", text: "Answer", state: "streaming")]
+        model.acknowledgeVisibleReply(sessionID: "chat", messageID: "stream:historical")
+        XCTAssertEqual(model.unreadCount, 1)
+        view.messages[0].state = "completed"
+        model.acknowledgeVisibleReply(sessionID: "chat", messageID: "stream:historical")
+        XCTAssertEqual(model.unreadCount, 0)
         try await close(model, root: root)
     }
 

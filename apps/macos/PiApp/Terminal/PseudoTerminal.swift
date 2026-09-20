@@ -19,13 +19,16 @@ import Darwin
     private var generation = UUID()
     private var inputLifetime = TerminalInputLifetime()
     private var master: Int32 = -1
-    private let pending = PendingOutput()
-    private var reader: DispatchSourceRead?
+    private var pending = PendingOutput()
+    private var reader: TerminalReadControl?
     private var exitWatcher: DispatchSourceProcess?
     private let queue = DispatchQueue(label: "com.belloware.PiApp.pty", qos: .userInteractive)
     private let writeQueue = DispatchQueue(label: "com.belloware.PiApp.pty.input", qos: .userInitiated)
     var onData: ((Data) -> Void)?
     var onExit: ((Int32) -> Void)?
+    var onNotice: ((String) -> Void)?
+    var bufferedOutputBytes: Int { pending.count }
+    var bufferedInputBytes: Int { inputLifetime.retainedBytes }
 
     /// Starts `executable` with `arguments` (argv[0] included) in `directory`
     /// with exactly this environment, on a terminal of the given size.
@@ -52,18 +55,26 @@ import Darwin
         }
         guard pid > 0 else { throw Failure.spawn(errno) }
         let attempt = UUID(); generation = attempt; inputLifetime = TerminalInputLifetime()
-        pending.reset()
+        pending = PendingOutput()
         let pending = pending
         processID = pid; master = masterFD; running = true
         _ = fcntl(masterFD, F_SETFL, fcntl(masterFD, F_GETFL) | O_NONBLOCK)
         _ = fcntl(masterFD, F_SETFD, FD_CLOEXEC)
         let reader = DispatchSource.makeReadSource(fileDescriptor: masterFD, queue: queue)
+        let control = TerminalReadControl(source: reader)
         // DispatchSource's callback API does not infer Sendable here. Spell it
         // out so callbacks created on the main actor remain nonisolated when
         // Dispatch invokes them on the terminal queue.
         reader.setEventHandler { @Sendable [weak self, masterFD] in
             guard let self else { return }
-            var buffer = [UInt8](repeating: 0, count: 65_536)
+            guard pending.available > 0 else {
+                control.pause()
+                // MainActor may have drained between the capacity check and
+                // suspend; recheck so that race cannot lose the wakeup.
+                if pending.available > 0 { control.resume() }
+                return
+            }
+            var buffer = [UInt8](repeating: 0, count: min(65_536, pending.available))
             let count = read(masterFD, &buffer, buffer.count)
             if count > 0 {
                 // A pty hands back whatever the driver has, which under a fast
@@ -73,9 +84,7 @@ import Darwin
                 // arrival order, and no second delivery is scheduled.
                 guard pending.append(Data(buffer[0..<count])) else { return }
                 DispatchQueue.main.async { MainActor.assumeIsolated {
-                    let chunk = pending.take()
-                    guard self.generation == attempt, !chunk.isEmpty else { return }
-                    self.onData?(chunk)
+                    self.deliver(pending, attempt: attempt, control: control)
                 } }
             } else if count == 0 || (count < 0 && errno != EAGAIN && errno != EINTR) {
                 DispatchQueue.main.async { MainActor.assumeIsolated {
@@ -91,7 +100,7 @@ import Darwin
         }
         reader.setCancelHandler { @Sendable [masterFD] in close(masterFD) }
         reader.resume()
-        self.reader = reader
+        self.reader = control
         let watcher = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
         // The watcher retains this terminal until the child is reaped. A
         // restart can release its UI owner immediately after terminate().
@@ -115,24 +124,40 @@ import Darwin
         exitWatcher?.setEventHandler(handler: nil); exitWatcher?.cancel(); exitWatcher = nil
         pendingKill?.cancel(); pendingKill = nil
         // Drain what the child wrote before it exited, then close.
-        let oldReader = reader.map { TerminalReaderTransfer(source: $0) }, oldMaster = reader == nil ? -1 : master
+        let oldReader = reader, oldMaster = reader == nil ? -1 : master
         reader = nil; master = -1
+        let pending = pending
         queue.async { @Sendable [self] in
             var buffer = [UInt8](repeating: 0, count: 65_536)
-            var tail = Data()
-            while oldMaster >= 0 { let count = read(oldMaster, &buffer, buffer.count); if count <= 0 { break }; tail.append(contentsOf: buffer[0..<count]) }
-            oldReader?.source.cancel()
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard self.generation == attempt else { return }
-                    // Whatever was waiting for a delivery comes first, then the
-                    // last bytes the child wrote, then the exit.
-                    let queued = self.pending.take() + tail
-                    if !queued.isEmpty { self.onData?(queued) }
+            var drained = 0
+            let deadline = ProcessInfo.processInfo.systemUptime + 0.1
+            // A descendant may retain the slave and write after the shell exits.
+            // The final drain has the same byte cap; it cannot loop forever.
+            while oldMaster >= 0, pending.available > 0, drained < PendingOutput.byteLimit, ProcessInfo.processInfo.systemUptime < deadline {
+                let count = read(oldMaster, &buffer, min(buffer.count, pending.available, PendingOutput.byteLimit - drained))
+                if count <= 0 { break }
+                drained += count
+                _ = pending.append(Data(buffer.prefix(count)))
+            }
+            let capped = pending.available == 0 || drained == PendingOutput.byteLimit || ProcessInfo.processInfo.systemUptime >= deadline
+            oldReader?.cancel()
+            DispatchQueue.main.async { MainActor.assumeIsolated {
+                self.deliver(pending, attempt: attempt, control: nil) {
+                    if capped { self.onNotice?("Terminal output exceeded the final-drain limit after exit; the remaining output was not displayed.") }
                     self.onExit?(code)
                 }
-            }
+            } }
         }
+    }
+
+    private func deliver(_ pending: PendingOutput, attempt: UUID, control: TerminalReadControl?, completion: (() -> Void)? = nil) {
+        guard generation == attempt else { return }
+        let (chunk, more) = pending.take()
+        control?.resume()
+        if !chunk.isEmpty { onData?(chunk) }
+        if more {
+            DispatchQueue.main.async { [self] in deliver(pending, attempt: attempt, control: control, completion: completion) }
+        } else { completion?() }
     }
 
     func write(_ data: Data) {
@@ -140,11 +165,15 @@ import Darwin
         // A large paste must not prevent output draining, exit observation or
         // the forced-stop deadline. Own a duplicate so a delayed write cannot
         // hit a descriptor reused by a restarted terminal or another file.
-        let fd = fcntl(master, F_DUPFD_CLOEXEC, 0)
-        guard fd >= 0 else { return }
         let lifetime = inputLifetime
+        guard lifetime.reserve(data.count) else {
+            onNotice?("Terminal input queue is full. This paste was not sent; wait for the program to read input and try again.")
+            return
+        }
+        let fd = fcntl(master, F_DUPFD_CLOEXEC, 0)
+        guard fd >= 0 else { lifetime.release(data.count); return }
         writeQueue.async { @Sendable in
-            defer { close(fd) }
+            defer { close(fd); lifetime.release(data.count) }
             data.withUnsafeBytes { bytes in
                 guard let base = bytes.baseAddress else { return }
                 var offset = 0
@@ -182,41 +211,60 @@ import Darwin
     }
 }
 
-// A one-way transfer after the main actor clears `reader`: the terminal queue
-// drains its descriptor, then cancels this source. No actor accesses it again.
-private struct TerminalReaderTransfer: @unchecked Sendable {
-    let source: DispatchSourceRead
+/// Source suspension and cancellation are balanced under one lock. Descriptor
+/// closure remains in its queue's cancellation handler, after any read returns.
+private final class TerminalReadControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var source: DispatchSourceRead?
+    private var paused = false
+    init(source: DispatchSourceRead) { self.source = source }
+    func pause() { lock.lock(); defer { lock.unlock() }; if let source, !paused { paused = true; source.suspend() } }
+    func resume() { lock.lock(); defer { lock.unlock() }; if let source, paused { paused = false; source.resume() } }
+    func cancel() {
+        lock.lock(); defer { lock.unlock() }
+        if let source { if paused { source.resume() }; source.cancel() }
+        source = nil; paused = false
+    }
 }
 
-// Queued pastes relinquish their duplicated descriptors promptly on exit or
-// Stop, including when a surviving child still has the slave terminal open.
-// Bytes read from the terminal that have not reached the main actor yet. One
-// delivery is scheduled at a time; everything read meanwhile joins it in order.
-private final class PendingOutput: @unchecked Sendable {
+/// A bounded byte stream. Full buffers pause the PTY reader (kernel
+/// backpressure), not discard bytes in the middle of UTF-8 or escape sequences.
+final class PendingOutput: @unchecked Sendable {
+    static let byteLimit = 1_048_576
+    static let deliveryBytes = 65_536
     private let lock = NSLock()
     private var data = Data()
     private var scheduled = false
-    /// Adds bytes; true when the caller must schedule the delivery.
+    var count: Int { lock.lock(); defer { lock.unlock() }; return data.count }
+    var available: Int { Self.byteLimit - count }
     func append(_ bytes: Data) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        guard bytes.count <= Self.byteLimit - data.count else { return false }
         data.append(bytes)
         guard !scheduled else { return false }
         scheduled = true; return true
     }
-    /// Everything waiting, leaving nothing scheduled.
-    func take() -> Data {
+    func take() -> (Data, Bool) {
         lock.lock(); defer { lock.unlock() }
-        let value = data; data = Data(); scheduled = false
-        return value
+        let value = Data(data.prefix(Self.deliveryBytes)); data.removeFirst(value.count)
+        if data.isEmpty { scheduled = false }
+        return (value, !data.isEmpty)
     }
-    func reset() { lock.lock(); data = Data(); scheduled = false; lock.unlock() }
 }
 
-/// Whether the write this owns is still wanted. Set from the terminal queue,
-/// read from the main actor, and every access goes through the lock below.
-private final class TerminalInputLifetime: @unchecked Sendable {
+/// Admit complete pastes before duplicating a descriptor or queuing a closure.
+/// Backpressure never partially enqueues a paste or blocks MainActor.
+final class TerminalInputLifetime: @unchecked Sendable {
+    static let byteLimit = 2_097_152, frameLimit = 32
     private let lock = NSLock()
-    private var cancelled = false
+    private var cancelled = false, bytes = 0, frames = 0
     var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    var retainedBytes: Int { lock.lock(); defer { lock.unlock() }; return bytes }
+    func reserve(_ count: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !cancelled, count >= 0, count <= Self.byteLimit - bytes, frames < Self.frameLimit else { return false }
+        bytes += count; frames += 1; return true
+    }
+    func release(_ count: Int) { lock.lock(); bytes -= count; frames -= 1; lock.unlock() }
     func cancel() { lock.lock(); cancelled = true; lock.unlock() }
 }

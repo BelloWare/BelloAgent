@@ -15,7 +15,7 @@ struct MessageDetailView: View {
     @State private var nextOffset: Int?
     @Environment(\.dismiss) private var dismiss
     private var message: TranscriptMessage? { model.displays[sessionID]?.messages.first { $0.id == messageID } }
-    private var editable: Bool { message?.role == "user" && message?.kind == nil && !messageID.hasPrefix("stream:") && model.record(sessionID)?.imported != true }
+    private var editable: Bool { message?.role == "user" && message?.kind == nil && message?.isStreaming != true && model.record(sessionID)?.imported != true }
     var body: some View {
         PiSheet("Message details", subtitle: "Message \(PiFormat.shortID(messageID)) · session \(PiFormat.shortID(sessionID)) · app ↔ configured endpoint", symbol: "text.magnifyingglass", width: 960, height: 740) {
             ScrollView {
@@ -193,10 +193,13 @@ private struct AttemptCard: View {
     }
     private var bodyState: String {
         let state = bodyDescriptor["state"]?.string ?? (liveOnly ? "live" : "unknown")
-        let retained = Int(bodyDescriptor["retainedBytes"]?.number ?? 0)
+        let retained = bodyDescriptor["retainedBytes"]?.nonnegativeInteger.map(String.init) ?? "unavailable"
         return "\(state) · \(retained) bytes retained" + (liveOnly || durableReadable ? "" : " · reading live capture")
     }
-    private func tokens(_ value: Double?) -> String { value.map { Int($0).formatted(.number.grouping(.automatic)) } ?? "n/a" }
+    private func tokens(_ value: Double?) -> String {
+        guard let value, let tokens = Int(exactly: value), tokens >= 0 else { return "n/a" }
+        return tokens.formatted(.number.grouping(.automatic))
+    }
     private func milliseconds(_ value: WireValue?) -> String { value?.number.map { String(format: "%.0f ms", $0) } ?? "n/a" }
     /// Asked on a sheet, so nothing else in the app stops while it is up.
     private func confirm(_ title: String, _ detail: String) async -> Bool { await PiQuestion.shared.confirm(title, detail) }
@@ -206,11 +209,13 @@ private struct AttemptCard: View {
         let descriptor = attempt[kind]?.object ?? [:]
         if !liveOnly, MessageBodyReader.canReadRetained(descriptor["state"]?.string ?? "") {
             let data = try await model.traces.body(attemptID: attemptID, body: kind, offset: offset)
-            return (data, Int(descriptor["retainedBytes"]?.number ?? 0))
+            guard let length = descriptor["retainedBytes"]?.nonnegativeInteger else { throw TraceError.invalid }
+            return (data, length)
         }
         let value = try await model.debugRequest("debug.body", sessionID: ownerSession, params: ["attemptId": .string(attemptID), "body": .string(kind), "offset": .number(Double(offset))])
         guard MessageBodyReader.canReadRetained(value["state"]?.string ?? ""), let bytes = value["bytes"]?.string.flatMap({ Data(base64Encoded: $0) }) else { throw HostError.failure("This body was not captured or is no longer available.") }
-        return (bytes, Int(value["retainedBytes"]?.number ?? 0))
+        guard let length = value["retainedBytes"]?.nonnegativeInteger else { throw TraceError.invalid }
+        return (bytes, length)
     }
     private func assemble(_ kind: String, limit: Int) async throws -> Data? {
         let descriptor = attempt[kind]?.object ?? [:]
@@ -218,7 +223,7 @@ private struct AttemptCard: View {
         // compatibility API re-read this attempt's metadata blob and rescanned
         // all of its chunk references for every 32 KiB page.
         if !liveOnly, MessageBodyReader.canReadRetained(descriptor["state"]?.string ?? "") {
-            guard Int(descriptor["retainedBytes"]?.number ?? 0) <= limit else { return nil }
+            guard let length = descriptor["retainedBytes"]?.nonnegativeInteger, length <= limit else { return nil }
             return try await model.traces.completeBody(attemptID: attemptID, body: kind) { _, _ in }
         }
         return try await MessageBodyReader.assemble(limit: limit) { try await page(kind, at: $0) }

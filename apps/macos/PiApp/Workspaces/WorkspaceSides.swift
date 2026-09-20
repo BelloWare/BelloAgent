@@ -415,7 +415,7 @@ struct SideHandoff: View {
                 Button("Insert in Parent Draft") { insert(replace: false) }.buttonStyle(.piPrimary)
             }.disabled(text.isEmpty)
         }
-        .onAppear { text = session.messages.last(where: { $0.role == "assistant" && !$0.id.hasPrefix("stream:") })?.text ?? "" }
+        .onAppear { text = session.messages.last(where: { $0.role == "assistant" && !$0.isStreaming })?.text ?? "" }
     }
     private func insert(replace: Bool) { do { try model.bringBack(text, from: session.id, replace: replace); dismiss() } catch { self.error = error.localizedDescription } }
 }

@@ -30,6 +30,7 @@ struct TerminalCell: Equatable, Sendable {
     /// 1 for a normal cell, 2 for the leading half of a wide character, 0 for the trailing half.
     var width: UInt8 = 1
     var style = CellStyle.plain
+    var combiningTruncated = false
     static let blank = TerminalCell()
     var isBlank: Bool { width == 1 && text == " " }
 }
@@ -53,6 +54,7 @@ struct TerminalHistoryLine: Sendable {
     /// would merge two of them into one grapheme — a flag, or an emoji joined
     /// with a zero-width joiner. Nil for every ordinary line.
     let exact: [String]?
+    var retainedBytes: Int { text.utf8.count + styles.count * MemoryLayout<StyleRun>.stride + (exact?.reduce(0) { $0 + $1.utf8.count + MemoryLayout<String>.stride } ?? 0) + 128 }
 
     init(_ cells: ArraySlice<TerminalCell>) {
         // The text is built as bytes and decoded once: appending a hundred

@@ -45,9 +45,10 @@ import Combine
     func observeRetry(_ snapshot: [String: WireValue]) {
         let retry = snapshot["retry"]?.object
         let notice: String? = retry.flatMap { value in
-            guard let attempt = value["attempt"]?.number, let of = value["of"]?.number else { return nil }
+            guard let rawAttempt = value["attempt"]?.number, let rawOf = value["of"]?.number,
+                  let attempt = Int(exactly: rawAttempt), let of = Int(exactly: rawOf), attempt > 0, of >= attempt else { return nil }
             let reason = value["reason"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return "Retrying (attempt \(Int(attempt)) of \(Int(of)))" + (reason.isEmpty ? "…" : " after: " + reason)
+            return "Retrying (attempt \(attempt) of \(of))" + (reason.isEmpty ? "…" : " after: " + reason)
         }
         if retryNotice != notice { retryNotice = notice }
     }
@@ -92,7 +93,6 @@ import Combine
         var rows = messages
         for index in rows.indices where rows[index].isStreaming {
             rows[index].state = "aborted"
-            if rows[index].id.hasPrefix("stream:") { rows[index].id = "aborted:" + rows[index].id.dropFirst("stream:".count) }
         }
         messages = rows
     }

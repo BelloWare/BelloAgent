@@ -269,6 +269,17 @@ final class TranscriptNativeScrollView: NSScrollView {
         // Environment and independent native intrinsic-size/width updates
         // still reach every affected row through their own paths.
         guard self.snapshot?.sessionID != snapshot?.sessionID || self.snapshot?.sequence != snapshot?.sequence || self.environment != environment else { return }
+        let projected = snapshot?.items ?? []
+        guard Set(projected.map(\.id)).count == projected.count, Set(rows.map(\.itemID)).count == rows.count else {
+            let page = page, revision = page?.snapshot?.sequence
+            // This can run inside updateNSView. Publish after SwiftUI's update
+            // finishes, and do not attach an old failure to a newer page.
+            DispatchQueue.main.async { [weak page] in
+                guard let page, page.snapshot?.sequence == revision else { return }
+                page.projectionError = "Conflicting transcript row identities. The last valid page is retained; no history was deleted."
+            }
+            return
+        }
         contentReconciliationCount += 1
         contentChangedAt = ProcessInfo.processInfo.systemUptime
         // A different rendering environment changes every row's height.

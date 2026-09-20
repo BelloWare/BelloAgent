@@ -30,6 +30,8 @@ import AppKit
             self.view.refresh()
         }
         process.onExit = { [weak self] _ in self?.exited = true; self?.view.refresh() }
+        process.onNotice = { [weak self] in self?.failure = $0 }
+        emulator.onTextLimit = { [weak self] in self?.failure = "A terminal character exceeded the 64-byte combining-mark limit and was replaced with �." }
         start()
     }
 

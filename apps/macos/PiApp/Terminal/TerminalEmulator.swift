@@ -75,8 +75,8 @@ final class TerminalEmulator {
     @exclusivity(unchecked) private var charset = 0
 
     init(columns: Int = 80, rows: Int = 24, scrollbackLimit: Int = 10_000) {
-        self.columns = max(1, columns); self.rows = max(1, rows); self.scrollbackLimit = scrollbackLimit
-        screen = Array(repeating: Array(repeating: .blank, count: max(1, columns)), count: max(1, rows))
+        self.columns = max(2, columns); self.rows = max(1, rows); self.scrollbackLimit = max(0, scrollbackLimit)
+        screen = Array(repeating: Array(repeating: .blank, count: max(2, columns)), count: max(1, rows))
         scrollBottom = max(1, rows) - 1
         resetTabStops()
     }
@@ -472,6 +472,9 @@ final class TerminalEmulator {
         return width
     }
     private static let asciiText: [String] = (0..<128).map { String(Unicode.Scalar(UInt8($0))) }
+    static let cellTextByteLimit = 64
+    var onTextLimit: (() -> Void)?
+    private var reportedTextLimit = false
     private func print(_ scalar: Unicode.Scalar, width: Int) {
         lastPrinted = scalar
         if width == 0 {
@@ -480,6 +483,13 @@ final class TerminalEmulator {
             if x < 0 { return }
             if screen[cursor.y][x].width == 0 { x -= 1 }
             guard x >= 0 else { return }
+            guard !screen[cursor.y][x].combiningTruncated else { return }
+            guard screen[cursor.y][x].text.utf8.count + scalar.utf8.count <= Self.cellTextByteLimit else {
+                screen[cursor.y][x].text = "�"; screen[cursor.y][x].combiningTruncated = true
+                markDirty(cursor.y)
+                if !reportedTextLimit { reportedTextLimit = true; onTextLimit?() }
+                return
+            }
             screen[cursor.y][x].text.unicodeScalars.append(scalar); markDirty(cursor.y)
             return
         }
@@ -549,11 +559,14 @@ final class TerminalEmulator {
     /// is wide, so a very wide window would otherwise let ten thousand lines
     /// grow to hundreds of megabytes, once per project with a shell open.
     static let scrollbackCellLimit = 2_000_000
+    static let scrollbackByteLimit = 16 * 1024 * 1024
+    private(set) var scrollbackBytes = 0
     @exclusivity(unchecked) private var scrollbackCells = 0
     private func pushScrollback(_ line: [TerminalCell]) {
         var end = line.count
         while end > 0, line[end - 1].isBlank, line[end - 1].style == .plain { end -= 1 }
-        scrollback.append(TerminalHistoryLine(line[..<end]))
+        let history = TerminalHistoryLine(line[..<end])
+        scrollback.append(history); scrollbackBytes += history.retainedBytes
         scrollbackCells += end
         if scrollback.count > scrollbackLimit {
             // Shifting the whole history for every line would cost more than the line: the oldest go in batches.
@@ -566,13 +579,20 @@ final class TerminalEmulator {
             }
             dropOldest(excess)
         }
+        if scrollbackBytes > Self.scrollbackByteLimit {
+            var excess = 0, freed = 0
+            while excess < scrollback.count, freed < scrollbackBytes - Self.scrollbackByteLimit + Self.scrollbackByteLimit / 32 {
+                freed += scrollback[excess].retainedBytes; excess += 1
+            }
+            dropOldest(excess)
+        }
     }
-    private func clearScrollback() { scrollback.removeAll(); scrollbackCells = 0; trimmedLines = 0 }
+    private func clearScrollback() { scrollback.removeAll(); scrollbackCells = 0; scrollbackBytes = 0; trimmedLines = 0 }
     /// Gives up the oldest lines of the history, keeping the counts with them.
     private func dropOldest(_ count: Int) {
         let count = min(count, scrollback.count)
         guard count > 0 else { return }
-        for index in 0..<count { scrollbackCells -= scrollback[index].cellCount }
+        for index in 0..<count { scrollbackCells -= scrollback[index].cellCount; scrollbackBytes -= scrollback[index].retainedBytes }
         scrollback.removeFirst(count); trimmedLines += count
     }
     private func insertLines(_ count: Int) {
@@ -729,6 +749,7 @@ final class TerminalEmulator {
             var add = newRows - rows
             while add > 0, !alternateScreen, let line = scrollback.popLast() {
                 scrollbackCells -= line.cellCount
+                scrollbackBytes -= line.retainedBytes
                 screen.insert(Self.fit([line.cells], columns: columns, rows: 1)[0], at: 0); cursor.y += 1; add -= 1
             }
             while add > 0 { screen.append(Array(repeating: .blank, count: columns)); add -= 1 }

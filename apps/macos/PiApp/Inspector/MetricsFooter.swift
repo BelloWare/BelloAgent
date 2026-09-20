@@ -198,7 +198,7 @@ struct MetricsFooter: View {
     private var contextFraction: Double? { contextMeter.fraction }
     private var compactContext: String { contextMeter.fraction == nil && footer.preparingContext ? "Calculating context…" : contextMeter.compactLabel }
     private var contextLabel: String { contextMeter.detailLabel }
-    private func grouped(_ value: Double) -> String { Int(value).formatted(.number.grouping(.automatic)) }
+    private func grouped(_ value: Double) -> String { TranscriptActivity.grouped(value) }
     private func milliseconds(_ value: WireValue?) -> String { value?.number.map { String(format: "%.0f ms", $0) } ?? "n/a" }
 }
 
@@ -211,9 +211,9 @@ struct WorkSplit: Equatable {
     var turnToolMs: Double?
     init?(timing: [String: WireValue]) {
         guard let model = timing["sessionModelMs"]?.number, let tools = timing["sessionToolMs"]?.number,
-              model.isFinite, tools.isFinite, model >= 0, tools >= 0, model + tools > 0 else { return nil }
+              DurationObservation.valid(model) != nil, DurationObservation.valid(tools) != nil, model + tools > 0 else { return nil }
         sessionModelMs = model; sessionToolMs = tools
-        turnModelMs = timing["modelMs"]?.number; turnToolMs = timing["toolMs"]?.number
+        turnModelMs = DurationObservation.valid(timing["modelMs"]?.number); turnToolMs = DurationObservation.valid(timing["toolMs"]?.number)
     }
     var label: String { "model \(workDuration(sessionModelMs)) · tools \(workDuration(sessionToolMs))" }
     var turn: String? {
@@ -228,7 +228,7 @@ struct WorkSplit: Equatable {
 
 /// 0.4s · 12.3s · 1m 12s · 1h 2m, matching the transcript's turn headers.
 func workDuration(_ milliseconds: Double) -> String {
-    guard milliseconds.isFinite, milliseconds >= 0 else { return "n/a" }
+    guard DurationObservation.valid(milliseconds) != nil else { return "n/a" }
     let seconds = milliseconds / 1000
     if seconds < 60 { return String(format: "%.1fs", seconds) }
     let minutes = Int(seconds / 60), rest = Int(seconds) % 60
@@ -330,6 +330,14 @@ private struct DraftEstimate: View {
     private var skillEstimate: String {
         guard !skills.isEmpty else { return "" }
         guard skills.allSatisfy({ $0.sourceCharacters != nil }) else { return " · selected skills unavailable" }
-        return " + skills ≈\(skills.reduce(0) { $0 + ($1.sourceCharacters ?? 0) + ($1.arguments as NSString).length } / 4)"
+        var characters = 0
+        for skill in skills {
+            guard let count = skill.sourceCharacters, count >= 0 else { return " · selected skills unavailable" }
+            let (subtotal, overflow) = characters.addingReportingOverflow(count)
+            let (total, argumentsOverflow) = subtotal.addingReportingOverflow((skill.arguments as NSString).length)
+            guard !overflow, !argumentsOverflow else { return " · selected skills unavailable" }
+            characters = total
+        }
+        return " + skills ≈\(characters / 4)"
     }
 }

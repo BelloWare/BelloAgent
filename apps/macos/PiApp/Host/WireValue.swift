@@ -28,6 +28,9 @@ indirect enum WireValue: Codable, Sendable, Equatable {
     var bool: Bool? { if case .bool(let value) = self { value } else { nil } }
     var pretty: String { let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]; return (try? String(decoding: encoder.encode(self), as: UTF8.self)) ?? "Unavailable" }
     var number: Double? { if case .number(let value) = self { value } else { nil } }
+    var nonnegativeInteger: Int? {
+        guard let number, let value = Int(exactly: number), value >= 0 else { return nil }; return value
+    }
 }
 
 struct HostFrameDecoder {

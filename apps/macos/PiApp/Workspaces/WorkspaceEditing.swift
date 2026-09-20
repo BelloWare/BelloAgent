@@ -32,7 +32,7 @@ extension WorkspaceModel {
         guard let view = displays[sessionID], let item = record(sessionID) else { return }
         guard !item.imported else { error = "Imported originals are read-only. Continue as a separate chat before editing a message."; return }
         guard !isEphemeral(sessionID) else { view.notice = "Keep this side chat before editing its messages."; return }
-        guard let message = view.messages.first(where: { $0.id == messageID }), message.role == "user", message.kind == nil, !messageID.hasPrefix("stream:") else { return }
+        guard let message = view.messages.first(where: { $0.id == messageID }), message.role == "user", message.kind == nil, !message.isStreaming else { return }
         guard !view.loading, side(sessionID)?.keeping != true else { return }
         if message.truncated == true {
             view.loading = true

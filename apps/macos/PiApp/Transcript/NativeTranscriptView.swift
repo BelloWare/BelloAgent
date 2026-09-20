@@ -37,6 +37,7 @@ struct ContentGeometry: Equatable {
     }
 
     @Published private(set) var snapshot: Snapshot?
+    @Published var projectionError: String?
     @Published private(set) var liveTurn: TurnSummary?
     @Published private(set) var detached = false
     /// The session's run state; while it is busy the bar stays up even between rows.
@@ -163,6 +164,12 @@ struct ContentGeometry: Equatable {
             reset()
         }
         let page = Self.displayPage(messages)
+        let items = snapshot.flatMap { TranscriptActivity.patched($0.items, from: $0.messages, to: page) } ?? TranscriptActivity.blocks(of: page)
+        guard Set(page.map(\.id)).count == page.count, Set(items.map(\.id)).count == items.count else {
+            projectionError = "This conversation contains conflicting row identities. The last valid page is retained; inspect the session file to repair it. No history was deleted."
+            return
+        }
+        if projectionError != nil { projectionError = nil }
         if let current = snapshot, current.messages == page, initialized { return }
         var fresh: Set<String> = []
         for message in page {
@@ -181,7 +188,6 @@ struct ContentGeometry: Equatable {
         completedAssistant = completed
         firstRow = page.first?.id ?? ""
         // A delta to the reply that is arriving patches the last block; anything else regroups the page.
-        let items = snapshot.flatMap { TranscriptActivity.patched($0.items, from: $0.messages, to: page) } ?? TranscriptActivity.blocks(of: page)
         let ids = Set(items.map(\.id))
         frames = frames.filter { ids.contains($0.key) }
         sequence += 1
@@ -1134,6 +1140,7 @@ struct NativeTranscriptView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let error = page.projectionError { PiNote(error).padding(8) }
             TranscriptScrollSurface(snapshot: page.snapshot, page: page, actions: actions)
                 .overlay(alignment: .bottom) {
                     ZStack {

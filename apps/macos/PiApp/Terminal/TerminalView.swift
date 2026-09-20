@@ -11,7 +11,7 @@ import SwiftUI
     var onResize: ((Int, Int) -> Void)?
     /// The Option key sends ESC before the character, the way most shells expect Meta.
     var optionSendsMeta = true
-    var font: NSFont { didSet { measureFont(); lineCache.removeAll(); fitGrid(); needsDisplay = true } }
+    var font: NSFont { didSet { measureFont(); clearLineCache(); fitGrid(); needsDisplay = true } }
 
     struct Position: Equatable, Comparable, Sendable {
         var line: Int   // absolute: TerminalEmulator.trimmedLines + index into lines
@@ -32,6 +32,9 @@ import SwiftUI
     private var selectionAnchor: Position?
     private var markedText = ""
     private var lineCache: [LineKey: CTLine] = [:]
+    private(set) var lineCacheBytes = 0
+    static let lineCacheByteLimit = 8 * 1024 * 1024
+    private func clearLineCache() { lineCache.removeAll(keepingCapacity: true); lineCacheBytes = 0 }
     private var focused = false
 
     init(emulator: TerminalEmulator, font: NSFont = .monospacedSystemFont(ofSize: 12, weight: .regular)) {
@@ -95,7 +98,7 @@ import SwiftUI
     }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        lineCache.removeAll(); publishDefaultColors(); needsDisplay = true
+        clearLineCache(); publishDefaultColors(); needsDisplay = true
     }
 
     // MARK: Layout
@@ -228,8 +231,9 @@ import SwiftUI
         let typeface = style.bold && style.italic ? boldItalicFont : style.bold ? boldFont : style.italic ? italicFont : font
         let attributed = NSAttributedString(string: text, attributes: [.font: typeface, .foregroundColor: foreground(of: style)])
         let line = CTLineCreateWithAttributedString(attributed)
-        if lineCache.count > 4_096 { lineCache.removeAll(keepingCapacity: true) }
-        lineCache[key] = line
+        let cost = text.utf8.count + text.utf16.count * 32 + 256
+        if lineCache.count >= 4_096 || cost > Self.lineCacheByteLimit - lineCacheBytes { clearLineCache() }
+        if cost <= Self.lineCacheByteLimit { lineCache[key] = line; lineCacheBytes += cost }
         return line
     }
     private func drawCursor(in context: CGContext, firstVisible: Int) {

@@ -31,7 +31,7 @@ struct RetainedMessageViewer: View {
     @Environment(\.dismiss) private var dismiss
     private var pageLength: Int { (text as NSString).length }
     private var completedMessages: [TranscriptMessage] {
-        (model.displays[model.messageViewerSessionID ?? model.selectedID ?? ""]?.messages ?? []).filter { !$0.id.hasPrefix("stream:") && $0.role != "system" }
+        (model.displays[model.messageViewerSessionID ?? model.selectedID ?? ""]?.messages ?? []).filter { !$0.isStreaming && $0.role != "system" }
     }
     private var messages: [(String, String)] {
         [("", "Choose completed message")] + completedMessages.enumerated().map { index, message in

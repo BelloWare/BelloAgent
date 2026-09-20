@@ -62,7 +62,7 @@ extension WorkspaceModel {
               let rawCount = snapshot["assistantMessageCount"]?.number, rawCount.isFinite,
               rawCount.rounded() == rawCount, rawCount >= 0, rawCount <= 100_000 else { return }
         let latest = snapshot["latestAssistantMessageId"]?.string
-        guard latest.map({ !$0.isEmpty && $0.utf8.count <= 256 && !$0.hasPrefix("stream:") }) ?? (rawCount == 0) else { return }
+        guard latest.map({ !$0.isEmpty && $0.utf8.count <= 256 }) ?? (rawCount == 0) else { return }
         // A reply is unread only once the run has finished and reported back.
         // Tool-round messages appended mid-run wait for the idle snapshot, so
         // neither the sidebar dot nor the Dock badge appears while work continues.
@@ -91,7 +91,7 @@ extension WorkspaceModel {
     func acknowledgeVisibleReply(sessionID: String, messageID: String) {
         guard page == .chats, sessionID == selectedID || sides[selectedID ?? ""]?.id == sessionID,
               let message = displays[sessionID]?.messages.first(where: { $0.id == messageID }), message.role == "assistant",
-              message.state != "streaming", !message.id.hasPrefix("stream:"),
+              !message.isStreaming,
               var next = unreadStates[sessionID], next.unreadOutputs > 0, next.unreadTargetID == messageID else { return }
         next.unreadOutputs = 0; next.unreadTargetID = nil
         saveReadState(next)
