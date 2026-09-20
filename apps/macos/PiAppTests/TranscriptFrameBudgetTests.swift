@@ -296,12 +296,15 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         let session = Self.chat("delta-budget", rows: rows)
         let last = Self.lastUserID(rows: rows)
         let pane = Pane(session, state: "running"); defer { pane.close() }
-        // Compare actual per-delta layout with the pre-coalescing baseline;
-        // production cadence is exercised separately by the two-pane workload.
-        pane.page?.presentationInterval = 0
         let ready = await pane.waitForRow(last)
         XCTAssertTrue(ready)
         await pane.settleUntilExact()
+        // The page does not exist until the native hierarchy mounts. Disable
+        // coalescing only after that boundary, and check each presented prefix
+        // so the benchmark cannot mistake skipped work for faster layout.
+        // Production cadence is exercised separately by the two-pane workload.
+        let measuredPage = try XCTUnwrap(pane.page)
+        measuredPage.presentationInterval = 0
         let reply = (0..<40).map {
             "## Step \($0)\n\nHere is what changed in `file\($0).swift`: the handler now **retries** twice and logs the reason.\n\n1. First point with detail.\n2. Second point with more detail.\n\n```swift\nlet value = compute(index: \($0))\n```\n"
         }.joined(separator: "\n")
@@ -323,6 +326,9 @@ final class TranscriptFrameBudgetTests: XCTestCase {
             let frame = pane.frame(reset: deltas == 0) {
                 if deltas > 0 { session.messages[session.messages.count - 1] = row } else { session.messages.append(row) }
             }
+            XCTAssertEqual(measuredPage.snapshot?.messages.last?.text, text,
+                           "Every measured delta must reach the presented page")
+            XCTAssertEqual(measuredPage.pendingPresentationCount, 0)
             if frame.total > worst.total { worst = frame }
             durations.append(frame.total)
             roots.append(TranscriptLayoutClock.rootUpdateSeconds)
