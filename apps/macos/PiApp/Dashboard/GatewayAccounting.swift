@@ -14,17 +14,24 @@ struct GatewayObservation: Sendable, Equatable {
     var reasoningCostUSD: Double?
     var reasoningCostStatus = "unreported"
 
+    /// A status the gateway sent, if it is one this build knows; anything else,
+    /// a missing one included, reads as unreported rather than as itself.
+    private static func reported(_ status: String?, among known: [String]) -> String {
+        guard let status, known.contains(status) else { return "unreported" }
+        return status
+    }
+
     init(metadata: [String: WireValue]) {
         let gateway = metadata["gateway"]?.object ?? [:]
         let cost = gateway["cost"]?.object ?? [:]
         let cache = gateway["cache"]?.object ?? [:]
         if gateway["version"]?.number == 1 {
-            costStatus = ["reported", "unreported", "invalid", "conflict"].contains(cost["status"]?.string ?? "") ? cost["status"]!.string! : "unreported"
+            costStatus = Self.reported(cost["status"]?.string, among: ["reported", "unreported", "invalid", "conflict"])
             if costStatus == "reported", let value = cost["usd"]?.number, value.isFinite, value >= 0, value <= 1_000_000_000_000 { costUSD = value }
             else if costStatus == "reported" { costStatus = "invalid" }
-            cacheStatus = ["hit", "miss", "unreported", "invalid", "conflict"].contains(cache["status"]?.string ?? "") ? cache["status"]!.string! : "unreported"
+            cacheStatus = Self.reported(cache["status"]?.string, among: ["hit", "miss", "unreported", "invalid", "conflict"])
             let reasoning = gateway["costBreakdown"]?.object?["reasoning"]?.object ?? [:]
-            reasoningCostStatus = ["reported", "unreported", "invalid", "conflict"].contains(reasoning["status"]?.string ?? "") ? reasoning["status"]!.string! : "unreported"
+            reasoningCostStatus = Self.reported(reasoning["status"]?.string, among: ["reported", "unreported", "invalid", "conflict"])
             if reasoningCostStatus == "reported", let value = reasoning["usd"]?.number, value.isFinite, value >= 0, value <= 1_000_000_000_000 { reasoningCostUSD = value }
             else if reasoningCostStatus == "reported" { reasoningCostStatus = "invalid" }
         }
@@ -234,7 +241,7 @@ extension PayloadArchive {
 
     func gatewayAccounting(sessionID: String, workspaceID: String, messages: [TranscriptMessage], includeTiming: Bool = false) throws -> SessionGatewayAccounting {
         guard !sessionID.isEmpty, sessionID.utf8.count <= 128, !workspaceID.isEmpty, workspaceID.utf8.count <= 128,
-              messages.count <= 101, Set(messages.map(\.id)).count == messages.count,
+              messages.count <= 500, Set(messages.map(\.id)).count == messages.count,
               messages.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 256 }) else { throw CaptureFailure.unavailable }
         try reconcile()
         let db = try dashboardDatabase()
@@ -345,4 +352,25 @@ extension PayloadArchive {
         }
         return result
     }
+}
+
+/// The same cost, rounded for a headline. `gatewayUSD` keeps every reported
+/// digit because the inspector, the per-request rows and the exports are
+/// evidence; a stat tile is not. "$0.0101375 USD" as the biggest figure on the
+/// report reads as noise, and the digits that matter — the leading ones — are
+/// the hardest to find in it. The exact figure stays in the tile's caption.
+func headlineUSD(_ value: Double?) -> String {
+    guard let value, value.isFinite, value >= 0 else { return "Cost unavailable" }
+    if value == 0 { return "$0 USD" }
+    if value >= 1 { return String(format: "$%.2f USD", value) }
+    if value >= 0.0001 { return String(format: "$%.4f USD", value) }
+    return gatewayUSD(value)
+}
+/// True when the headline actually dropped something. A figure the headline
+/// can show in full — $0.005 — must not be captioned "exactly $0.005".
+func headlineUSDRounded(_ value: Double?) -> Bool {
+    guard let value, value.isFinite, value > 0 else { return false }
+    let shown = value >= 1 ? (value * 100).rounded() / 100
+        : value >= 0.0001 ? (value * 10_000).rounded() / 10_000 : value
+    return abs(shown - value) > value * 1e-9
 }

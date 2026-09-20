@@ -24,16 +24,20 @@ final class OutputBudgetTests: XCTestCase {
         XCTAssertEqual(manual.maxOutputTokens, 8_192)
     }
 
-    func testIndependentCeilingMayExceedContextButRequestedBudgetMayNot() throws {
+    func testIndependentCeilingMayExceedContextOrSitBelowTheBudget() throws {
         let records = try ModelCatalogEndpoint().parse(Data(#"[{"id":"wide-output","contextWindow":4096,"maxOutputTokens":8192}]"#.utf8))
         let selected = try XCTUnwrap(records.first).applying(to: profile())
         XCTAssertEqual(selected.modelOutputLimit, 8_192)
         XCTAssertEqual(selected.maxOutputTokens, 4_095)
         XCTAssertNoThrow(try LiteLLMConfiguration.validate(selected, headers: [:]))
-        for ceiling in [0, -1, 1_000_001, 8_191] {
+        for ceiling in [0, -1, 1_000_001] {
             var invalid = profile(); invalid.modelOutputLimit = ceiling
             XCTAssertThrowsError(try LiteLLMConfiguration.validate(invalid, headers: [:]))
         }
+        // The budget is a local reserve and the ceiling is what requests carry: a ceiling below the budget is fine.
+        var lower = profile(); lower.modelOutputLimit = 8_191
+        XCTAssertNoThrow(try LiteLLMConfiguration.validate(lower, headers: [:]))
+        XCTAssertEqual(lower.maxOutputTokens, 8_192)
     }
 
     func testOldExplicitProfileBudgetIsPreservedAndNewFieldsRoundTrip() throws {
@@ -48,10 +52,10 @@ final class OutputBudgetTests: XCTestCase {
     }
 
     func testLegacyChatCeilingMigratesOnceToConfiguredBudgetAndPersists() async throws {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory())
+        let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("output-budget-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = try MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
+        let store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         let raw = Data(#"{"id":"chat","workspaceID":"project","title":"Old chat","profileID":"connection","toolMode":"editing","imported":false,"model":"large","contextWindow":1048576,"maxOutputTokens":393216}"#.utf8)
         let legacy = try JSONDecoder().decode(ChatRecord.self, from: raw)
         XCTAssertNil(legacy.outputBudgetVersion)
@@ -64,7 +68,7 @@ final class OutputBudgetTests: XCTestCase {
         let wire = TurnOverrides.params(for: migrated)
         XCTAssertEqual(wire["maxOutputTokens"], .number(8_192)); XCTAssertEqual(wire["modelOutputLimit"], .number(393_216))
         await store.close()
-        let reopened = try MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
+        let reopened = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         var changed = configured; changed.maxOutputTokens = 1_024
         let retained = try await reopened.loadChats(profiles: [changed])
         XCTAssertEqual(retained.first, migrated, "Migration must not keep rewriting an established chat budget")
@@ -92,7 +96,7 @@ final class OutputBudgetTests: XCTestCase {
     }
 
     @MainActor func testConfigurationReloadMigratesPreviouslyUnavailableBudgetWithoutReplacingLiveChat() async throws {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory())
+        let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("output-budget-reload-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let configured = profile(), vault = ConfigurationVault(storage: MemoryVaultStorage())
@@ -114,7 +118,7 @@ final class OutputBudgetTests: XCTestCase {
     }
 
     @MainActor func testPickerPersistsConfiguredBudgetBesideCatalogCeilingAndSideRetainsBoth() async throws {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory())
+        let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("output-budget-picker-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

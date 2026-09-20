@@ -38,6 +38,24 @@ final class DesignContrastTests: XCTestCase {
         }
     }
 
+    /// The terminal has a canvas of its own so a shell does not read as more
+    /// conversation. Nothing accent-tinted is drawn on it — only shell text —
+    /// so what has to hold is that the shell's own ink stays readable, and
+    /// that the canvas is actually distinguishable from the transcript above.
+    @MainActor func testTerminalCanvasIsReadableAndDistinctFromTheTranscript() throws {
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            let appearance = try XCTUnwrap(NSAppearance(named: name))
+            let canvas = try resolved(.piTerminalSurface, appearance: appearance)
+            XCTAssertGreaterThanOrEqual(try resolved(.piInk, appearance: appearance).contrast(with: canvas), 7, "Shell text on \(name)")
+            // A ratio, not a difference: in dark appearance every absolute
+            // luminance is tiny and a difference says nothing about what the
+            // eye sees. The old sunken surface sat at about 1.03 here.
+            let transcript = try resolved(.piContent, appearance: appearance)
+            XCTAssertGreaterThanOrEqual(canvas.contrast(with: transcript), 1.12,
+                                        "The terminal must not look like the transcript it sits under, on \(name)")
+        }
+    }
+
     /// Primary pills are flat brand orange with bold white labels; the bold
     /// large-text threshold applies, including the hover and pressed shades.
     @MainActor func testPrimaryLabelsRetainContrastAcrossInteractionStates() throws {

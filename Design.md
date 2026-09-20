@@ -1,6 +1,6 @@
 # Bello Agent — Native Swift implementation and continuation design
 
-Updated: 2026-09-16. Work on `master`. Read [Features.md](Features.md), [implementation status](docs/Implementation-Status.md), and [test handoff](docs/Swift-Test-Handoff.md).
+Updated: 2026-09-19. Work on `main` in `BelloWare/BelloAgent`. Read [Features.md](Features.md), [implementation status](docs/Implementation-Status.md), and [test handoff](docs/Swift-Test-Handoff.md).
 
 **Sections 1–9 describe the native implementation and its acceptance boundaries.** The archived SDK-era design at `docs/archive/PiSDK-Design.md` is historical. Current source and [implementation status](docs/Implementation-Status.md) establish what exists; deterministic fixtures do not establish compatibility with an unspecified deployment or signed-release readiness.
 
@@ -42,13 +42,15 @@ The single-item Keychain vault is owned by the native app. The helper receives o
 
 | File under `packages/swift-host/Sources/PiAgentCore` | Responsibility |
 | --- | --- |
-| `Support.swift` | Typed JSON, profile validation, provider-item envelope, bounded IO, hashes and paging |
+| `JSON.swift`, `Support.swift`, `TextPreviews.swift` | The typed JSON value; errors, request-parameter validation, bounded IO and hashes; bounded text previews and paging |
+| `Profile.swift`, `ChatMessage.swift`, `ModelInterface.swift` | One connection and its per-turn overrides; one conversation row in journal and display form; the provider and tool-executor protocols |
+| `ToolInputDisplay.swift` | Cutting a tool call's arguments to a bound that still parses |
 | `Transport.swift` | URLSession body observation, incremental SSE, per-attempt in-memory capture and metrics |
 | `Providers.swift` | Active Responses request builder/accumulator; legacy Messages parser for retained compatibility |
 | `Resources.swift` | Codex instructions, skills, policy/hash checks and conservative YAML/TOML parsing |
 | `Tools.swift` | read/ls/find/grep/write/edit/bash, bounded output and image handling |
 | `MCP.swift` | stdio/HTTP JSON-RPC, initialization, discovery, schemas, serial invocation and unknown-outcome markers |
-| `Sessions.swift` | Locked journal, execution loop, steering/follow-ups, compaction, sides and recovery |
+| `Sessions.swift` and its `Session*.swift` extensions | One chat, split by concern: `SessionJournal` (the locked append-only record), `SessionPersistence` (saved state, appends, forks, keeping a side), `SessionBranching` (turn.edit), `SessionQueue` (follow-ups, steering, delivery), `SessionRun` (the run loop and retries), `SessionStreaming` (the partial row), `SessionTools` (execution and live cards), `SessionDisplay` (the projected page and snapshot), `SessionCompaction`, `SessionContext` (the prepared request), `SessionReads` (on-demand reads), `SessionTestSeams` |
 | `Profiles.swift` | Retired external profile authority; native vault configuration is authoritative |
 | `Routing.swift`, `GatewayTelemetry.swift` | Sourced model identity and gateway cost/cache metadata, explicit unknown/conflict states |
 | `CaptureCredentials.swift`, `CaptureDelivery.swift` | Masked header capture, request-body credential hashing and acknowledged transport-body delivery |
@@ -62,6 +64,33 @@ Handshake uses `{v:1,kind:"hello",major:1,minor:1}` and a ready reply with epoch
 
 Events are sequence-numbered invalidations coalesced around 16 ms; the frontend requests bounded snapshots. Footer presentation can update more slowly than telemetry capture. The command surface includes sessions/history, submit/steer/stop, queue remove/resume/configure, compact, side open/keep/close, resources, profiles, debugging and MCP.
 
+Status-only reads do not project or encode a hidden transcript. `displayRevision`
+is an opaque, runtime-scoped generation token; clients compare it for equality,
+not as a content hash. A changed visible snapshot materializes only the newest
+60 rows (plus a streaming reply) that fit the existing 300 KB page allowance,
+reusing unchanged row projections. `before` describes that materialized page and
+may be absent from an uncached status reply. Content, tool-state, branch,
+compaction, retry and cancellation mutations invalidate the relevant cached rows;
+reopening a session creates a new revision namespace. Raw HTTP capture remains
+independent of this display cache.
+
+The native supervisor admits 32 outstanding ordinary commands and queues up to
+128 more FIFO. Queue cancellation removes an unsent command; an acknowledgment
+timeout does not free its dispatched slot until a reply or host loss reconciles
+it. Stop bypasses ordinary admission, and neither Stop nor capture ACKs consume
+the ordinary pipe-write budget. No uncertain command is replayed. The UI inbox
+retains at most 64 legal frames (1 MiB each), coalescing session invalidations by
+ID; one project's valid 20-session snapshot burst must not kill its host.
+
+Cold callers share one project initialization through `workspace.open`, bound
+to the current connection UUID. Session callers share `session.open` through
+the capture-mode acknowledgment, including the durable journal-path write.
+Shutdown cancels shared startup and rejects work returning from credential
+reads. Connection switches cannot overtake an opening session. Durable capture
+ACKs wait for the archive actor, not UI accounting; presentation invalidations
+are scheduled afterward. Background accounting coalesces per session and updates
+totals/timing without rewriting hidden message attribution.
+
 The helper owns authoritative context, provider items and native journals. The app owns desktop index/drafts, current profile metadata/Keychain access and durable trace export. Never use rendered text to recreate model context. There is no runtime fallback to the old Node host.
 
 ## 4. Session behavior
@@ -74,7 +103,22 @@ Stop lives beside the send/queue controls inside each chat composer and cancels 
 
 Each native journal is append-only, exclusively locked and bounded. Its envelope supports existing history display, but native opaque state is not Pi SDK session compatibility. Additional backward migration is not a release goal. Preserve old user files rather than silently rewriting them.
 
-`/side` copies the latest complete context boundary into an independent session. Parent and side then evolve independently; a snapshot is not a filesystem snapshot. Side tools are read-only by default, but its composer stays usable. Publish the complete journal before exposing the side as saved. `/side` with no prompt opens it immediately. A chat can have several sides: the pane shows one at a time and takes exactly half of the content width; opening another side while one is shown swaps the pane, and clicking a saved child chat in the sidebar shows it in the pane (its context menu still opens it on its own). The replaced side keeps its display and any running work. `/fork` publishes a separate journal containing the same complete active context and provider/tool state, with independent future turns and no inherited pending commands. New sides are durable child sessions immediately; closing only hides their pane, and reopening or restarting restores them. Legacy unkept sides are retained through the existing keep recovery path. Sessions of one workspace run concurrently, including their model requests; only editing tool calls (write, edit, bash, MCP invoke) take turns on a per-workspace gate, so a chat never waits for another chat's whole run. There is no limit on how many projects or chats are active at once (the former concurrent-projects setting and its eviction are gone); idle helpers still leave after the grace period. An archived chat runs nothing: sending, steering, editing, queue resume and commands other than Stop are refused with a notice, the composer gives way to a Restore footer, archiving a running chat stops it (its queued follow-ups wait for a restore), and archived chats never count in the Dock badge. A run that fails while its chat is not in front marks the chat in the sidebar (a red dot when nothing new arrived) without bouncing the Dock or counting in the badge; opening the chat clears the mark. Project chat lists show five chats, Show more adds ten at a time and Show less folds back to the first page with the selected chat kept in view. Chat titles come from the connection's mini model once, on the first message; the chat's action menu can ask for a title again (replacing an edited one), and a request that fails says why in the chat's footer.
+`/side` copies the latest complete context boundary into an independent session. Parent and side then evolve independently; a snapshot is not a filesystem snapshot. Side tools are read-only by default, but its composer stays usable. Publish the complete journal before exposing the side as saved. `/side` with no prompt opens it immediately. A chat can have several sides: the pane shows one at a time and takes exactly half of the content width; opening another side while one is shown swaps the pane, and clicking a saved child chat in the sidebar shows it in the pane (its context menu still opens it on its own). The replaced side keeps its display and any running work. `/fork` publishes a separate journal containing the same complete active context and provider/tool state, with independent future turns and no inherited pending commands. New sides are durable child sessions immediately; closing only hides their pane, and reopening or restarting restores them. Legacy unkept sides are retained through the existing keep recovery path. Sessions of one workspace run concurrently, including their model requests; editing tool calls (write, edit, bash, MCP invoke) take turns on a per-workspace gate, so a chat never waits for another chat's whole run. There is no artificial active-project count setting or its former eviction; protocol, capture and OS resource budgets still apply. The verified target is twenty concurrent model streams. Idle helpers still leave after the grace period. An archived chat runs nothing: sending, steering, editing, queue resume and commands other than Stop are refused with a notice, the composer gives way to a Restore footer, archiving a running chat stops it (its queued follow-ups wait for a restore), and archived chats never count in the Dock badge. A run that fails while its chat is not in front marks the chat in the sidebar (a red dot when nothing new arrived) without bouncing the Dock or counting in the badge; opening the chat clears the mark. Project chat lists show five chats, Show more adds ten at a time and Show less folds back to the first page with the selected chat kept in view. Chat titles come from the connection's mini model once, on the first message; the chat's action menu can ask for a title again (replacing an edited one), and a request that fails says why in the chat's footer.
+
+Accounting presentation observes each chat independently. A changed retained
+total does not invalidate the workspace; only inserting, removing or replacing
+a live display changes the sidebar's retained/live binding. Native transcript
+reconciliation uses the page's own revision, and layout traverses mounted rows
+while preserving exact frames for detached history.
+
+A process-local geometry cache can reuse verified immutable row measurements
+across tab returns. Full content, session identity, freshness, rendering
+environment, width and backing scale must match. Live replies and rows with
+tool/reasoning/compaction disclosures are excluded. The cache retains values,
+not hidden views or animations, with a 1,000-entry/16 MiB payload budget and a
+256 KiB per-entry limit. Viewport rows validate actual native layout on mounting.
+See the [five-session performance review](docs/Five-Session-Performance-Review-2026-09-19.md)
+for measurements and qualification of cold versus warm history loading.
 
 ## 5. Context, tools and resources
 
@@ -112,6 +156,29 @@ Only one page per helper can be outstanding; recorder failure is explicit and
 never retries model/tool work. Metadata and message links are sent even with
 body capture off. The old polling retention path is removed. `TraceArchive` is
 used only for deliberate live-memory exports, not app-managed persistence.
+
+Concurrent producers suspend FIFO behind that page instead of failing when 16
+waiters are already present. A missing acknowledgment closes the capture channel
+at the first deadline and releases waiting producers; it cannot multiply the
+timeout by the session count. An ordinary negative acknowledgment remains local
+to its packet. The archive supports 64 simultaneous persisted attempts (128 body
+chunkers, at most 4 MiB of unpublished tails). The live memory budget also applies
+to active attempts: trim them to explicitly incomplete contiguous prefixes while
+durable delivery continues with original offsets and bytes. Do not append after
+a trimmed gap or mistake a memory prefix for the complete recorded body.
+
+The 20-session acceptance target uses per-session actors and independent async
+URLSession requests. Since 0.1.52, synchronous read/list/search jobs leave the
+`NativeTools` actor for a helper-wide bounded worker pool with up to four active
+jobs and 64 FIFO waiters. Separate OS threads can execute jobs concurrently;
+thread barriers verify this independently of networking concurrency. Permissions
+and argument shape are checked before admission. Cancellation removes queued work and
+signals running scans, which keep their slot until they exit; no worker thread
+is killed. Individual filesystem calls or regex matches can still take time.
+Editing tools retain the project gate. UI and storage keep their actor ownership;
+OS resources and gateway admission remain finite. See the historical
+[0.1.51 concurrency review](docs/Concurrency-Review-2026-09-19.md) and the current
+[TPS and worker review](docs/TPS-Workers-Review-2026-09-19.md).
 
 Timing version 2 records actual URLSession dispatch, first response-header observation, first decoded body byte, the body callback containing first nonempty content/text, the provider terminal event and HTTP task completion separately. TTFT is content minus dispatch; streaming span is terminal minus content; HTTP duration is task completion minus dispatch. Missing boundaries stay null. Full HTTP error bodies can be complete despite a failed model request. These are application observations, not socket/TLS or screen-paint timestamps. The native dashboard queries durable typed timing columns independently of payload retention.
 
@@ -390,7 +457,22 @@ headers, old/new line numbers and tinted rows, unified or side-by-side
 message text or hash prefix and by author, optionally across all branches,
 marks commits with their branch and tag badges, and a commit's file chips
 narrow its diff to one file. Reads never touch the index; every write is an
-explicit action. Sidebar totals load through one grouped archive query
+explicit action.
+
+Choosing a commit reads what it changed, not what it looks like: one `git show`
+returns the message and the changed paths, a second returns their line counts,
+and neither produces patch text, so the file list, "12 files · +340 −58" and
+the per-file counts appear from two cheap reads. The patch follows separately,
+read and parsed in the same background task so no diff text is ever parsed on
+the main thread, and never inside a view body. A commit of more than 30 files
+or 3,000 changed lines keeps its patch behind "Show the whole diff" and opens
+one file at a time instead. Each commit's metadata, patch and per-file patches
+are kept for the last 24 commits looked at, so going back to one costs nothing
+and starts no process, and choosing another commit terminates the reads of the
+last one rather than leaving them to finish into a discarded result. A file has
+its own history from either panel: "Show History of This File" filters the log
+to that path with `--follow`, and a chip above the list names it until it is
+cleared. Sidebar totals load through one grouped archive query
 instead of one query per chat.
 
 Errors live in the conversation, not in a strip pinned above it: a failed run
@@ -406,13 +488,22 @@ count. Cancelling during the wait cancels; nothing is replayed after a tool
 ran. The chat shows its newest page and loads earlier pages as the reader
 scrolls up (or with the header's Earlier button), prepending them under the
 reader's place; live updates keep merging underneath, and Latest returns to
-the tail. A page never opens in the middle of a turn: when the newest page
+the tail. The project helper keeps every opened chat and side loaded for as
+long as the app holds it open: there is no cap on live runtimes and no
+unloading of idle chats to make room (the three-runtime limit and its
+"Three runtimes are active or pinned by side chats" refusal are gone). A
+page never opens in the middle of a turn: when the newest page
 begins with a reply's rows, earlier pages are pulled in (four at most) until
 the user message that started the turn leads. An idle chat opens with that
 question at the top when the last turn is taller than the window, so the
 reader sees what they asked before the reply; a chat that is still working
 opens at the bottom, a remembered reading position is restored as it was, and
-sending a message returns to the bottom. Up to eight hidden chats keep their pages in memory. A new chat or
+sending a message returns to the bottom. Every scroll the page lands (to the
+bottom, back to an anchored row, or through SwiftUI's scroll proxy when a row
+has no frame yet) is deferred to the next run-loop turn: AppKit frame
+notifications and SwiftUI geometry callbacks arrive while the hosting scroll
+view is still mid-update, and driving the proxy from there trapped the app in
+0.1.47. Up to eight hidden chats keep their pages in memory. A new chat or
 an empty side exists only on screen until its first message: no record,
 draft, journal or helper session is written for it, an empty pending chat
 disappears when the user moves on, a second New Chat reuses it, a rename or
@@ -421,6 +512,70 @@ to the parent composer. The app has one window; the menu bar item and the
 Dock bring it forward instead of opening another view of the same chats. The
 sidebar opens 300 points wide.
 
+A reply that reaches the output limit is a complete row with `stopReason`
+"length", shown with a warning under it (ask the model to continue); the
+turn ends idle and queued follow-ups go on. The output budget is metadata:
+it is never sent as a limit and never fails a turn. A conversation request
+carries the model's catalog ceiling as `max_output_tokens`, clipped to the
+room the context estimate leaves in the window, or no limit at all when the
+catalog gives none; bounded tasks (connection test, title, compaction
+summary) send their own small caps. The budget only sizes the local reserve
+that decides when a chat compacts, and a request whose input fits the window
+is always sent. The helper's HTTP stream buffers without limit,
+so a consumer busy journaling or notifying the app never loses a chunk to a
+fixed buffer, and a `stream_backpressure` failure, should one ever occur,
+is retried like a transport failure. A run that failed or was stopped can be
+retried from its failure row ("Retry request", helper command `turn.retry`):
+the last user message, or the tool results after it, go to the model again
+with the chat's current model, reasoning effort and budgets, which the app
+sends with the retry (the pills as they stand when Retry is clicked, so a
+model switched after the failure is what retries; cleared pills retry with
+the connection's own defaults), the partial reply of the failed attempt
+stays in the transcript but is never replayed, and queued follow-ups go on
+after the turn; a completed turn has nothing to retry. Robustness rules the 0.1.48 pass added, each after a real or traced failure:
+the app never waits on its own host command queue from the stdout reader
+(a stdin write blocked on a full pipe would otherwise deadlock both
+processes); a host handshake watchdog belongs to one connection attempt and
+is dropped when the handshake lands, so a stale one cannot shoot down a
+later, healthy host; a terminal's delayed SIGKILL is dropped once the child
+is reaped, so a recycled pid is never signalled, and starting a running
+terminal is an error, not a trap; a damaged request archive (a missing or
+mistyped NOT NULL column) is a recoverable `corrupt` error, never a force
+unwrap; the captured-JSON outline writes its SwiftUI selection on the next
+run-loop turn, never from inside `reloadData`; the composer's scroller is an
+overlay, so a reply reaching the height clamp cannot rewrap, hide the
+scroller and rewrap again; and the slash-completion popup no longer forces
+the composer to re-render on every keystroke.
+
+Saving a connection never waits for its chats. A run that is going keeps
+the settings it started with; the helper takes the new profile and key when
+the run ends (`session.configure`, reported as `settingsPending` in the
+status until then), an idle chat or side takes them at once without being
+closed, and a chat whose run is still on the old settings shows a notice
+above its composer. Only a changed API route still forks the connection.
+Every confirmation the app asks for is asked in place: deleting or testing a
+connection in the Settings footer, removing a project in the Projects sheet,
+typing a model alias inside the catalog picker. No flow runs a system alert
+from a sheet. Gateway failures are worded for the reader by the helper
+(`ProviderClient.guidance` and `transportGuidance`): the provider's own
+detail when it sent one, then the likely cause with what to check (the API
+key for 401/403, the base URL and alias for 404, a rate limit for 429, the
+gateway itself for 5xx, the final URL for redirects; an unknown host, an
+unreachable gateway, a timeout or an untrusted certificate for transport
+failures), keeping the "Provider returned HTTP N." prefix the retry policy
+and the connection test read. Onboarding explains a disabled Continue
+(`OnboardingState.gatewayHint`), greets a returning user whose connection is
+saved, and names the last step "Start your first chat" once a project is
+ready; the welcome screen offers New Chat once a project and a connection
+exist. Settings edits connections through `ConnectionSettingsController`: every
+saved connection is a tab, each tab keeps its own draft so switching never
+discards an edit (a dot marks unsaved edits; Save writes every edited tab,
+the current one last; Discard drops an unsaved one), the API key sits right
+under the base URL, and the model picker lists for the draft as typed: the
+bundled catalog without a key, a custom catalog with the key typed above or
+the saved one, relisting when the URL fields change, and saying why when it
+cannot list. Saves use the vault's current revision and retry once after a
+conflict; a failed save stays on its tab with the reason in red.
 Connections are renamed in Settings by their name field alone: the id, key,
 chats and model cache stay. Delete Connection asks in the sheet's own footer,
 where the button was, and says what the deletion touches: the key leaves the
@@ -440,15 +595,43 @@ same.
 Motion follows one set of tokens (`PiMotion`: quick 140 ms, base 220 ms,
 slow 320 ms, a spring that pops and a spring that glides), and every use
 honours Reduce Motion through `piAnimation`. The sidebar's selection
-highlight glides from row to row; switching chats crosses the panes over,
-the next rising into place as the last fades; tab strips slide their
-selected pill; a sheet's icon badge pops in after the sheet lands; an empty
-chat's card builds up line by line and title suggestions arrive one after
-another; a tool row's glyph bounces once as the call completes and its
-status settles in place; the copy control swaps its glyph; footer figures
-roll to their new values; unread dots pop; the terminal springs open. The
-transcript keeps its rule: nothing animates while a reply streams, and rows
-in view never move under the reader.
+highlight glides independently of its usage labels; tab strips slide their
+selected pill; copy controls and buttons retain brief feedback. Starting in
+0.1.50, chat replacement and side/terminal/queue size changes apply their final
+geometry directly. `piStableLayout` prevents ancestor animations from
+interpolating the native composer and transcript. Typing height and live usage
+updates do not animate; starter/loading/error fades are confined to overlays,
+and starter appearance finishes within 200 ms. Report query results replace
+data without animating the entire list. Deliberate disclosure and decorative
+feedback can still animate locally. Reduce Motion disables those effects and
+stops otherwise static waiting/caret timers. The transcript keeps exact row
+geometry: streaming below the viewport must not move the reader's rows.
+Starting in 0.1.55, an AppKit scroll document retains the exact frames and row
+hosts, but attaches only the viewport and a small surrounding buffer. Selected
+native text stays attached outside that buffer so scrolling does not discard
+selection. Replies with at least 32 top-level Markdown blocks similarly limit
+attached block hosts without truncating content or copy targets. Native reflow
+preserves the visible row and pixel offset, including when an earlier disclosure
+changes height while scrolling. Full geometry is measured when content or width
+changes; scrolling reuses the cached geometry.
+
+What the reader has opened or closed in a conversation (a turn's work, one tool
+call's card, exposed reasoning, a compaction note) is conversation state, not
+view state (0.1.59). `TranscriptDisclosure`, owned by the session's display,
+keeps only the parts the reader changed, keyed by the turn's stable key rather
+than the id of its latest row, so a turn folded while it streams stays folded
+as it grows, and forgets the parts of rows that leave the conversation. Each
+row host reads its own slice as a plain value and compares it like content: a
+click records the change, rebuilds that one row, drops its measurements and
+lays the document out in the same pass, so the rows below move with the click
+instead of one or two run-loop turns later, and the row clips to its frame in
+between. The shared geometry cache is keyed by that value, so a height measured
+with a card open is never handed to the same row closed. Folding and unfolding
+do not animate: the AppKit frame snaps, and a 220 ms height animation only
+kept the whole tree re-measuring for the duration, which is what let text of
+neighbouring rows paint over each other. A folded turn keeps its list in the
+tree at zero height and clipped; tearing down sixty tool rows on a click and
+building them again on the next was most of the click's cost.
 
 A terminal panel (⌃`, View menu) opens under the conversation, as in VS Code:
 one login shell per project, kept alive while hidden, resizable by dragging
@@ -463,8 +646,14 @@ cut after a blank line outside any code fence, before a line at the margin
 that is not a list item, so fences, lists, quotes and tables stay whole; the
 settled parts are remembered by the Markdown cache and only the tail parses
 again on each delta, and every inline run is dressed once at parse time.
-`PerformanceBaselineTests` prints the timings of these paths in a Release
-build for each release record. Hiding it returns focus to the composer, and opening a chat
+`PerformanceBaselineTests` measures actual row layout after async binding,
+streaming with deferred UI work between deltas, and full attributed syntax
+coloring, in addition to parsing. Snapshot probe timings are labeled as
+snapshot application, not visible paint. Timings are observations rather than
+machine-dependent pass thresholds. Unchanged journal revisions reuse retained
+pages/drafts/anchors; automatic turn-boundary repair fetches only the missing
+start of the turn instead of successively adding unrelated older pages.
+Hiding the terminal returns focus to the composer, and opening a chat
 always focuses the composer. Double-clicking a chat renames it in a sheet
 that, when the connection has a mini model, suggests three titles from the
 conversation; each project lists five chats and a "Show more" row pages the
@@ -489,13 +678,20 @@ nearest active chat in its project. Projects open and are
 created without a trust confirmation, and no Trusted badge or "Editing tools"
 notice is shown; read-only and tool-less chats keep their footer notice. Historical TPS is summed reported output divided
 by summed dispatch-to-model-completion time for completed, retained, dispatched
-attempts with valid usage/timing. Existing TTFT plus streaming span reconstructs
-that duration without a schema migration. Include first-token latency and zero
-stream spans when total duration is positive, so buffered responses and opaque
-reasoning do not produce artificially high stream-only rates. Rates and sample
-counts are calculated overall and per requested/resolved model group. This
-request-average speed is separate from current live estimates and is not server
-decode speed.
+attempts with valid usage/timing. Since 0.1.52 a typed `request_ms` projection
+stores model completion minus dispatch independently of first visible content.
+Retained metadata is reprojected on migration, and expiry clears this field.
+TTFT/streaming observations remain independently nullable. Include first-token
+latency and zero stream spans when total duration is positive. Reported output
+already includes reasoning: never add that subset again or count streamed bytes.
+Rates and sample counts are calculated overall and per requested/resolved model
+group. The sidebar, footer and usage views show the actual latest completion and
+a duration-weighted average. A new in-progress request leaves that latest value
+steady; a completed request missing usage/duration is explicitly unavailable.
+Numeric layout stays stable and any local transition honors Reduce Motion.
+Activity protocol version 2 retains phase/model/tool/queue status and removes
+byte-derived token-rate fields. This is request-average throughput, not server
+decode speed or a fabricated instantaneous rate.
 
 The strict local gateway validates method/path, model, API-specific headers and
 body fields, token limits, tool schemas/call IDs/results, native-versus-portable
@@ -582,8 +778,10 @@ accept optional `model` (1…200 characters) and `thinkingLevel` (`default`,
 `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), plus optional integer
 `contextWindow` (1…10,000,000), `maxOutputTokens` (the requested budget, 1…1,000,000),
 and `modelOutputLimit` (the optional supported ceiling, 1…1,000,000). The effective
-context capacity must exceed the requested output budget, which must not exceed
-the supported ceiling. Preflight also reserves a separate safety margin. Invalid values fail
+context capacity must exceed the output budget; the ceiling is independent of
+the budget (either may be the larger) and is what the request carries as its
+output limit. Preflight reserves the budget and a separate safety margin only
+to decide when to compact. Invalid values fail
 at submit time with `invalid_params`, before queue or edit-branch mutation.
 The override is stored on the queued
 `Submission` (so it survives a paused restart) and applies to every request of
@@ -647,12 +845,110 @@ compaction, kept message count), reconstructed from the compaction record on
 load. The branch marker has `kind: "branch"`. Ordinary rows omit both fields;
 role, text, thinking and tools are unchanged.
 
+**Tool call input (H6).** A tool card's `input` is a *document*, not prose:
+the transcript parses it to show "Requested edit" with a diff. The host never
+cuts the encoded document at a byte offset, because that lands inside a string
+value and nothing parses. Long *string values* are cut individually and each
+carries the marker `…[truncated, N more bytes]`, so every key survives and
+`input` always parses at any argument size. Three fields describe it:
+
+- `input` — the bounded document, at most 4096 encoded bytes. This inline
+  preview rides along on every display snapshot.
+- `inputTruncated` — `true` when that document is a partial view of the
+  arguments. The legacy `truncated` flag stays `inputTruncated || output was
+  cut`, so an app that does not read the new fields is unaffected.
+- `inputBytes` — the full encoded size of the arguments, so the app can label
+  the preview and decide whether to fetch the rest.
+
+The inline preview stays small because the display page is re-sent whole on
+every streamed delta and the transport terminates the helper above a 1 MiB
+frame. The complete bounded document is fetched once, on demand:
+`session.tool.input {sessionId, messageId, callId}` returns
+`{id, messageId, name, input, inputTruncated, inputBytes, limit, streaming}`
+with `input` bounded to 65_536 bytes for tools whose arguments carry file
+content (`edit`, `write`, `apply_patch`, `multi_edit`, `str_replace`,
+`notebook_edit`, and any `*_edit`/`*_write`/`*_patch` name) and 8192 bytes for
+every other tool; the same per-value cutting applies there. A call that is
+still streaming returns `streaming: true` and the accumulating argument text,
+which is not yet a document. Unknown message or call ids fail with
+`message_missing` / `tool_call_missing`. The app reads this when a card is
+`inputTruncated` and it wants a full diff; the fields and the method are
+additive, so older journals and older app builds are unaffected. The helper
+advertises `tool-input` in its ready-frame capabilities.
+
+**Queued message text (H7).** A snapshot's `queue` rows carry a 1 KiB `text`
+preview beside `textBytes` (the whole submission's size) and `textTruncated`.
+An editor must never write that preview back: `queue.read {sessionId, turnId}`
+returns `{turnId, commandId, kind, text, textBytes}` with the complete text,
+bounded only by the 256 KiB submission limit, and `queue.update` takes the
+full text. The helper advertises `queue.read`.
+
+A projected assistant row shows at most 32 tool cards, streamed or durable,
+and sets the row's `truncated` when the reply announced more; a row is always
+admitted to a display page even when it is over the page budget, so its card
+count and every preview it carries are bounded by encoded, not source, bytes.
+
 Coverage: `ContractTests` (host package), `test-native-host.py` wire, journal
-and negative-probe cases, and the shared fixture contract's correlation checks.
+and negative-probe cases, the shared fixture contract's correlation checks,
+and `ToolInputDisplayTests` for the bounds above.
 
 ## 10. Project navigation and inspection follow-up (0.1.5)
 
 Project is the user-facing name for an existing workspace. Preserve its IDs, paths and helper ownership. Sidebar project disclosures and archive filters live in desktop metadata; session title/pin/archive edits carry independent revisions so delayed path/model writes cannot revert organization. All project rows retain billing caches. Capture metadata commits invalidate affected session totals even when the chat is unfocused; query generations prevent older reads from replacing newer billing.
+
+Project topics are local desktop records (`TopicRecord`, kind `topic`), with a
+stable ID, owning project, title, creation order and saved disclosure state.
+`ChatRecord.topicID` is optional so older chats remain at project level. Topic
+membership shares the chat's independent organization revision: delayed
+path/model writes cannot undo a move. Batch branch moves and topic removal are
+SQLite transactions; removal clears membership and retains a tombstone, never
+deleting journals, drafts, captures or queued work. Generic metadata writes
+normalize deleted/invalid group references to project level rather than block
+conversation persistence. Explicit moves validate all selected sessions and the
+destination before writing; another project's topic is never a valid target.
+
+Topics precede ungrouped chats in the native sidebar and keep independent chat
+paging and disclosure. Filtering opens matching groups without overwriting their
+saved disclosure preference. Selected chats reveal their group. A child whose
+parent is in another group remains visible as a root in its own group; moving a
+parent includes its same-project descendants with cycle protection. Pending
+sides inherit the parent's latest group when published. Forks and continued
+copies inherit their source's group. Native drag data uses a bounded,
+process-local session/project payload and routes through the same model command
+as Move to Topic. There is no filesystem move, host start or model request.
+
+Several rows can be marked for one action: Shift-click extends a range in the
+order the sidebar lists chats, Command-click adds or removes one row, and an
+ordinary click drops the marks and opens the chat (Control-click stays the
+context menu, as macOS expects). Marking is presentation only. A bar above the
+list says how many are marked and archives or restores them in one press, and
+a right-click on a marked row offers Archive, Restore, Pin, Unpin, Move to
+Topic and Mark as Read for the whole set, each through the same durable path
+as its single-chat menu item, one write per chat, with the marks spent by the
+action. A range covers rows inside a collapsed side or a folded page too, which
+is why the count is always shown before acting. Dragging a marked row carries
+every marked chat of that project in one payload, bounded like a bulk action
+and previewed as "N chats"; dragging an unmarked row still carries only itself.
+Marks never cross into a bulk delete: chats are still deleted one at a time.
+
+A chat row's press belongs to AppKit (0.1.59). SwiftUI's `.onDrag` on a row
+inside a `Button` never started a drag, because the button claims the press
+on macOS, so the sidebar showed no drag at all. Each draggable row now carries
+a transparent `TopicSessionDragSurfaceView` that claims only a plain left
+mouse-down (Control-click and the right button still reach the context menu;
+hover, tooltips and scrolling pass through), runs an event-tracking loop, and
+past four points begins a real dragging session with the row's pasteboard
+item and a rendered "N chats" image; a press that ends without travelling is
+the click the row always handled, decided in one place (`SidebarRowClick`)
+for both the pointer and keyboard activation. The row publishes the bounds of
+its own controls (archive, its confirm pair, the side chevron) so the surface
+declines those presses. The source offers move, copy and generic inside the
+application and nothing outside it, because the drop zones answer with copy.
+Those zones are the whole project group and the whole topic group, not their
+header strips: a chat dropped on a topic's rows lands in that topic and one
+dropped beside a project's rows returns to its root, with the header still
+highlighted to name the receiver. A draggable row shows an open hand instead
+of the pointing hand, pushed and popped exactly once.
 
 Retained HTTP capture defaults to plaintext bodies and masked headers for 30 days, subject to quota. Existing explicit settings and historical captures remain readable; the legacy seven-day default migrates once. Ordinary headers remain inspectable, authentication values retain only a short masked suffix, and credential echoes cannot restore full secrets. Body credentials remain explicitly hashed byte transformations. Inspector pages load bodies directly.
 
@@ -669,3 +965,148 @@ Only the header background starts native window dragging or double-click zoom;
 content, controls and attached sheets keep their own events. Zoom toggles the
 available-screen frame without animation. Window tests must include the real
 app-hosted SwiftUI scene after layout/resize, not only manually created NSWindows.
+
+## 11. Rules kept by the 0.1.59 audit
+
+Version 0.1.59 was a sweep for the bugs a passing suite had not found: six
+agents hosted the real views in real windows, drove them as a user would and
+fixed what they confirmed, keeping each reproduction as a test. The rules
+that came out of it are design, not history, and later work keeps them.
+
+Nothing stops the main thread to ask a question. `NSAlert.runModal()` and a
+modal open or save panel freeze every other chat's stream, its live bar and
+its timers, and re-enter AppKit's own window and application callbacks from
+inside the one that is running. A question is a sheet on the window that
+shows what it is about (`ChatPrompts` for a chat's own questions, `PiPrompt`
+for everything else, `GitDiscardConfirmation` in the Changes panel; the close
+refusal and the quit question the same way), one at a time, with the work
+continuing in the completion or resumed through a continuation; the
+application-modal form survives only where no window can host a sheet.
+`BlockingAlertTests` reads the converted sources and fails on a new
+`runModal()`.
+
+The sidebar answers a workspace change in one frame. Chat and side lookups,
+per-group buckets, entry lists, project groups and the keyboard order come
+from one `SidebarIndex`, rebuilt lazily once per change; every scan of
+`chats` per row was the O(chats²) the owner felt as a stutter. The metrics
+line under a chat measures its figure strings once and builds only the form
+that fits the width the sidebar passes down (a 600-case oracle against
+`ViewThatFits` agrees), truncating only as a last resort. What the reader
+folds or pages in the sidebar (side chats, "Show more") is model state and
+travels in the project-sidebar record. A Shift range covers exactly the rows
+the filter left listed. A press on a row is owned by AppKit and can never
+wedge the app: the tracking loop polls, gives up when the button is no
+longer down or the row has left its window, and acts on nothing after that.
+
+The transcript measures what the reader can see. The reading anchor is
+resolved once per layout, never per row (an O(rows²) walk made a pane-edge
+drag over 500 rows cost 729 ms a frame). During a live resize the document
+measures from the top of the page to the bottom of the viewport the reader
+will see and leaves the rows below standing, out of the view tree, at the
+height they had; the end of the drag (or a 200 ms grace timer) measures
+everything; a width change that is not a drag keeps the exact pass. Rows are
+laid out once per reflow, hover-only controls are built with the pointer
+(and offered as accessibility actions), a folded turn's list is not placed
+at all, and a block is keyed by the settled form of its reply id so a turn
+folded while it streams stays folded when it settles. Reasoning and
+compaction fold through the transcript's own header. An edit's diff is
+computed once per call, off the body, and refused past 4,000 lines. A tool
+card whose arguments were cut shows what arrived and fetches the whole
+document through `session.tool.input` when opened; a chat read from disk
+builds the same card as a live one.
+
+The helper never exits on a frame. Every preview bounds encoded bytes, not
+source bytes; a tool call's display input is a document that always parses
+(long values cut individually, keys kept, `inputTruncated`/`inputBytes` set);
+streamed cards are projected in arrival order, capped at 32; live tool cards
+retire oldest-first within 1 MiB; a queued message's whole text comes from
+`queue.read`, never from its preview.
+
+Storage tells the truth and stays off the main actor. The desktop database
+opens inside its actor on first use, not in the first `body`; journal paging
+resolves through the offset index and decodes a record once; id-less
+imported records are reachable; a read failure says it could not read, a
+missing journal says it is missing, a long conversation is browsable with a
+notice rather than "damaged", and chats the sidebar could not list are
+reported once. Capture work is priced per request, never against the whole
+archive: the retention deadline moves to the finishing request's own expiry,
+totals are kept in the actor, a page of attempts is two statements, a sweep
+is one transaction, and no view body decodes a captured payload. A stalled
+Keychain call admits bounded retries with an actionable message. The idle
+stop of a project helper never makes the next message fail: connect waits
+for the previous helper's exit. Quitting materialises a never-sent chat that
+has text. A chat record this build cannot decode is skipped everywhere, not
+only in the sidebar, so one bad row cannot disable topic moves.
+
+The Changes panel and the terminal keep the reader's place. The panel
+watches the working tree (FSEvents on the root and on the real git
+directory, HEAD/refs/index only inside `.git`, one refresh a second, root
+changes handled) and an automatic refresh never moves the selection, the
+ticks, the scroll or the whole-diff gate; a reader's own refresh always
+wins. Git paths travel in batches (Foundation raises past 4,096 arguments),
+reads wait on their own queue behind an eight-process gate, patches and file
+chips are lazy, and superseded reads are cancelled. Terminal output is
+delivered in whole chunks, the bell is coalesced, the history is text plus
+style runs with a cell ceiling, a scrolled-back reader holds their line as
+output arrives, and shells end with their projects and at shutdown.
+
+## 12. Rules kept by the 0.1.60 pass
+
+Version 0.1.60 raised the bar on how the app feels: performance, smoothness,
+an intuitive UI and code quality, each driven by an agent that measured in a
+Release build and kept its measurement as a test. The rules it established:
+
+The transcript shows the viewport first. Opening a chat measures the rows the
+reader can see (and the rows the anchor will show), estimates the rest from
+their typography for the scroll bar, keeps estimated rows out of the view
+tree, and measures the remainder in idle slices that never move the row being
+read. A row builds its SwiftUI tree when the reader reaches it (prepared a
+few screenfuls ahead in the direction of travel) and gives it back when they
+are pages away; the conversation pane is kept across chats, and rebinding
+releases everything the previous chat owned. A width change that is not a
+pane drag uses the same standing-rows mechanism. A row is sized once per
+measurement. A turn's tool calls draw through a viewport-culled native
+surface where a closed card is one line high, checked against the first
+cards that mount and never trusted.
+
+Motion is driven by the document from geometry measured once. A fold, a card,
+reasoning or a compaction summary measures its target exactly, rewinds to
+the old geometry, and eases the changed row's height over `PiMotion.base`
+while every row below shifts by the same amount and the document's height
+follows each tick; the region the two states do not share is masked and
+faded on the row's layer; a second click retargets from the interpolated
+geometry, streaming lands after the motion, Reduce Motion snaps. Nothing
+animates a height through SwiftUI. The shell's own motion (rows unfolding,
+panels sliding, the strip arriving, pills cross-fading, the live bar sliding
+into its slot) takes its slot in one step and moves inside it, so the reader's
+line never drags; a transition that costs more than it is worth (a cross-fade
+of a chat switch: one second) is left out.
+
+A streamed token costs its row. The helper sends the changed rows and the
+appended text (`messageDelta`, opt-in, any out-of-step read is a whole page),
+the app applies them off the main actor reusing untouched rows by identity,
+whole pages are read straight from the frame, the footer's figures travel
+only when they will be shown, and the journal is flushed once per settled
+run. A 0.1.59 helper and a 0.1.60 app still understand each other.
+
+The shell compares, it does not rebuild. Sidebar rows, headers and groups are
+comparable over the values they draw, with a staleness guard that asserts the
+picture changes for every change it should; the composer bar and the
+sidebar's metrics line measure their labels once and build the one form that
+fits (each with an oracle against the trial layouts they replaced); polls stop
+for views nobody can see; the status panel counts on change.
+
+Words a reader knows, affordances a reader can see. Run states are plain
+words; a marked row is outlined, the open chat highlighted; every draggable
+boundary has a grip; every pointer path has a keyboard path; a destructive
+action is quieter than the action beside it until confirmed; a figure that
+matters reads first; `docs/UX-Review-2026-09-19-0.1.60.md` is the ranked
+review the changes came from.
+
+Code is organised along its seams. No source file outside the transcript is
+over 800 lines; the session in the helper is thirteen extension files; one
+mechanism asks a question (`PiQuestion`), one table measures text
+(`PiTextWidth`), one file holds the test seams; no crash a request or a user
+can reach; every unchecked `Sendable` names its invariant. Absolute frame
+budgets in tests are Release claims (`PI_RELEASE_TESTS`); the shape assertions
+beside them hold in every configuration.

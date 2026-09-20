@@ -36,6 +36,7 @@ final class ContextGatewayTests: XCTestCase {
         let preparedBody = try JSON.parse(Data(try XCTUnwrap(page["text"].text).utf8))
         XCTAssertEqual(prepared["count"]["outputBudget"].int, 2048)
         XCTAssertEqual(prepared["count"]["modelOutputLimit"].int, 32768)
+        XCTAssertEqual(prepared["count"]["outputCap"].int, 32768, "the ceiling is what the request carries; the budget stays local")
         XCTAssertEqual(prepared["count"]["fits"].flag, true)
         XCTAssertEqual(prepared["count"]["countEndpointStatus"].text, "unverified-request-compatibility")
         XCTAssertEqual(prepared["credentialsRedacted"].flag, false)
@@ -159,7 +160,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             assert body['model'] == 'context-selected-model'
             assert body['stream'] is True and body['store'] is False
             assert body['disable_fallbacks'] is True
-            assert body['max_output_tokens'] == 2048
+            assert body['max_output_tokens'] == 32768
             assert body['metadata'] == {'session_id': 'context-gateway'}
             assert 'CONTEXT FIXTURE: preserve the selected model and tool schema.' in body['instructions']
             assert body['reasoning'] == {'effort': 'high', 'summary': 'auto'}

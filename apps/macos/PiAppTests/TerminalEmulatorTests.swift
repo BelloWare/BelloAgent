@@ -12,7 +12,7 @@ final class TerminalEmulatorTests: XCTestCase {
         let terminal = emulator(10, 3)
         terminal.feed("hello world!\r\nline two\r\nline three\r\nline four")
         XCTAssertEqual(rows(terminal), ["line two", "line three", "line four"])
-        XCTAssertEqual(terminal.scrollback.map(TerminalEmulator.text(of:)), ["hello worl", "d!"], "a wrapped line scrolls off in two pieces")
+        XCTAssertEqual(terminal.scrollback.map(\.text), ["hello worl", "d!"], "a wrapped line scrolls off in two pieces")
         XCTAssertEqual(terminal.cursor, TerminalCursor(x: 9, y: 2))
         terminal.feed("\u{1b}[?7l")
         terminal.feed("\r\nabcdefghijklmnop")
@@ -122,12 +122,43 @@ final class TerminalEmulatorTests: XCTestCase {
         XCTAssertEqual(terminal.text(ofRow: 0), String(repeating: "E", count: 20))
     }
 
+    func testHugeTabCountsStopAtScreenEdgesAndOversizedParametersRecover() {
+        let terminal = emulator(20, 2)
+        terminal.feed("\u{1b}[9999999999999999I")
+        XCTAssertEqual(terminal.cursor.x, 19)
+        terminal.feed("\u{1b}[9999999999999999Z")
+        XCTAssertEqual(terminal.cursor.x, 0)
+        terminal.feed("\u{1b}[38:" + String(repeating: "2:", count: 100_000) + "mOK")
+        XCTAssertEqual(terminal.text(ofRow: 0), "OK")
+        XCTAssertEqual(terminal.screen[0][0].style, .plain, "An oversized CSI must be ignored as one sequence")
+    }
+
+    @MainActor func testBlockedPasteDoesNotBlockExitOrKillAfterTheOwnerDropsTheTerminal() async throws {
+        var process: PseudoTerminal? = PseudoTerminal()
+        weak var observed = process
+        var output = Data(), exitCode: Int32?
+        process?.onData = { MainActor.assertIsolated(); output.append($0) }
+        process?.onExit = { MainActor.assertIsolated(); exitCode = $0 }
+        try process?.start(executable: "/bin/sh", arguments: ["sh", "-c", "trap '' HUP; stty raw -echo; printf READY; exec /bin/sleep 8"],
+                           environment: ["PATH": "/usr/bin:/bin", "TERM": "xterm-256color"], directory: NSTemporaryDirectory(), columns: 60, rows: 12)
+        for _ in 0..<100 where !String(decoding: output, as: UTF8.self).contains("READY") { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(String(decoding: output, as: UTF8.self).contains("READY"))
+        process?.write(Data(repeating: 65, count: 1_048_576))
+        try await Task.sleep(for: .milliseconds(100))
+        process?.terminate(); process = nil
+        XCTAssertNotNil(observed, "The exit watcher owns the child until reaping is complete")
+        for _ in 0..<350 where exitCode == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(exitCode, 128 + SIGKILL, "The kill deadline must run while input is backpressured, without the UI owner")
+        for _ in 0..<100 where observed != nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNil(observed, "Reaping must break the temporary lifetime retention")
+    }
+
     func testResizeKeepsContentAndReflowsHistory() {
         let terminal = emulator(10, 4)
         terminal.feed("one\r\ntwo\r\nthree\r\nfour\r\nfive")
         XCTAssertEqual(rows(terminal), ["two", "three", "four", "five"]); XCTAssertEqual(terminal.scrollback.count, 1)
         terminal.resize(columns: 8, rows: 2)
-        XCTAssertEqual(rows(terminal), ["four", "five"]); XCTAssertEqual(terminal.scrollback.map(TerminalEmulator.text(of:)), ["one", "two", "three"])
+        XCTAssertEqual(rows(terminal), ["four", "five"]); XCTAssertEqual(terminal.scrollback.map(\.text), ["one", "two", "three"])
         XCTAssertEqual(terminal.cursor, TerminalCursor(x: 4, y: 1))
         terminal.resize(columns: 8, rows: 5)
         XCTAssertEqual(rows(terminal), ["one", "two", "three", "four", "five"], "history comes back when the screen grows")
@@ -137,6 +168,35 @@ final class TerminalEmulatorTests: XCTestCase {
         XCTAssertEqual(rows(terminal), ["xyz", "", ""], "the alternate screen simply fits, dropping blank rows first")
         terminal.feed("\u{1b}[?1049l")
         XCTAssertEqual(terminal.rows, 3); XCTAssertEqual(terminal.columns, 6)
+    }
+
+    /// The history keeps lines as text and style runs, not as one cell per
+    /// column. What comes back must be exactly what left the screen.
+    func testAHistoryLineComesBackExactlyAsItLeftTheScreen() {
+        let terminal = TerminalEmulator(columns: 40, rows: 2, scrollbackLimit: 10)
+        terminal.feed("\u{1b}[31;1mred\u{1b}[0m 中文 🌍 e\u{301} \u{1b}[7minv\u{1b}[0m\u{1b}[44m bg\u{1b}[0m")
+        var expected = terminal.screen[0]
+        while let last = expected.last, last.isBlank, last.style == .plain { expected.removeLast() }
+        terminal.feed("\r\n\r\n")
+        XCTAssertEqual(terminal.scrollback.count, 1)
+        let line = terminal.scrollback[0]
+        XCTAssertNil(line.exact, "ordinary text keeps no per-cell copy")
+        XCTAssertEqual(line.cellCount, expected.count)
+        XCTAssertEqual(terminal.line(at: 0), expected, "every cell comes back with its text, width and style")
+        XCTAssertEqual(TerminalEmulator.text(of: terminal.line(at: 0)), "red 中文 🌍 é inv bg")
+        XCTAssertEqual(terminal.text(atLine: 0), "red 中文 🌍 é inv bg")
+        XCTAssertLessThan(line.styles.count, expected.count, "styles are kept as runs, not one per cell")
+
+        // A flag and a joined emoji would run together if the cells' text were
+        // simply concatenated, so those lines keep their pieces.
+        let joined = TerminalEmulator(columns: 30, rows: 2, scrollbackLimit: 10)
+        joined.feed("a👨‍👩‍👧b🇬🇧c")
+        var pieces = joined.screen[0]
+        while let last = pieces.last, last.isBlank, last.style == .plain { pieces.removeLast() }
+        joined.feed("\r\n\r\n")
+        XCTAssertNotNil(joined.scrollback[0].exact, "a joined emoji keeps the cells it was printed into")
+        XCTAssertEqual(joined.line(at: 0), pieces, "and comes back cell for cell")
+        XCTAssertEqual(TerminalEmulator.text(of: joined.line(at: 0)), "a👨‍👩‍👧b🇬🇧c")
     }
 
     func testKeysHonourApplicationModesAndModifiers() {
@@ -153,8 +213,8 @@ final class TerminalEmulatorTests: XCTestCase {
         let terminal = TerminalEmulator(columns: 60, rows: 12)
         let process = PseudoTerminal()
         var exitCode: Int32?
-        process.onData = { terminal.feed($0) }
-        process.onExit = { exitCode = $0 }
+        process.onData = { MainActor.assertIsolated(); terminal.feed($0) }
+        process.onExit = { MainActor.assertIsolated(); exitCode = $0 }
         try process.start(executable: "/bin/sh", arguments: ["sh", "-c", "tty >/dev/null && echo HASCTTY || echo NOCTTY; stty size; printf 'cwd=%s\\n' \"$PWD\"; exit 3"],
                           environment: ["PATH": "/usr/bin:/bin", "TERM": "xterm-256color"], directory: "/private/tmp", columns: 60, rows: 12)
         for _ in 0..<200 where exitCode == nil { try await Task.sleep(for: .milliseconds(25)) }
@@ -194,8 +254,6 @@ extension TerminalEmulatorTests {
         session.process.write(Data("print -r -- MARK1; print -r -- aliases=$(alias | wc -l | tr -d ' ') nvm=$(whence -w nvm 2>&1 | cut -c1-20) brew=$(whence -p brew 2>&1 | cut -c1-40) node=$(whence -p node 2>&1 | cut -c1-60); print -r -- MARK2\n".utf8))
         for _ in 0..<200 where !session.emulator.screenText.contains("MARK2") { try await Task.sleep(for: .milliseconds(25)) }
         let text = session.emulator.screenText
-        print("PROBE-RC", text.components(separatedBy: "\n").filter { $0.contains("aliases=") || $0.contains("nvm=") }.joined(separator: " | "))
-        print("PROBE-ENV SHELL=\(ProcessInfo.processInfo.environment["SHELL"] ?? "nil") HOME=\(ProcessInfo.processInfo.environment["HOME"] ?? "nil")")
         session.process.write(Data("exit\n".utf8))
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertTrue(text.contains("MARK2"), text)
@@ -221,6 +279,6 @@ extension TerminalEmulatorTests {
         XCTAssertLessThanOrEqual(history.scrollback.count, 100, "the history never exceeds its limit")
         XCTAssertGreaterThanOrEqual(history.scrollback.count, 96, "and gives up the oldest in small batches")
         XCTAssertEqual(history.scrollback.count + history.trimmedLines, 399, "every line that left the screen is kept or counted")
-        XCTAssertEqual(TerminalEmulator.text(of: history.scrollback.last ?? []), "line 398")
+        XCTAssertEqual(history.scrollback.last?.text, "line 398")
     }
 }

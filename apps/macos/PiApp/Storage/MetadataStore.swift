@@ -3,29 +3,83 @@ import SQLite3
 
 enum StoreError: Error, Equatable, LocalizedError {
     case unavailable, invalidRecord, staleRevision
+    /// A conversation file could not be read. Distinct from `invalidRecord`,
+    /// which is about writing desktop metadata: reporting a read failure with a
+    /// write message told the user a save had failed when nothing was saved.
+    case unreadableRecord
+    case missingJournal(String)
     var errorDescription: String? {
         switch self {
         case .unavailable: "Desktop storage is unavailable."
         case .invalidRecord: "The desktop record could not be saved."
         case .staleRevision: "A newer version of this desktop record has already been saved."
+        case .unreadableRecord: "This conversation file could not be read. Its bytes were left untouched."
+        case .missingJournal(let path): "The conversation file is no longer at \(path). Nothing was written in its place."
         }
     }
+}
+
+/// Owned only by MetadataStore. SQLite calls remain actor-isolated; the wrapper
+/// also releases the handle when initialization throws or the actor is dropped.
+private final class MetadataDatabase {
+    private(set) var handle: OpaquePointer?
+    init(url: URL) throws {
+        var opened: OpaquePointer?
+        let result = sqlite3_open_v2(url.path, &opened, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil)
+        guard result == SQLITE_OK, let opened else {
+            if let opened { sqlite3_close_v2(opened) }
+            throw StoreError.unavailable
+        }
+        handle = opened
+        do {
+            guard sqlite3_exec(opened, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=3000; CREATE TABLE IF NOT EXISTS records(kind TEXT NOT NULL,id TEXT NOT NULL,value BLOB NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(kind,id));", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch { close(); throw error }
+    }
+    func close() {
+        guard let handle else { return }
+        self.handle = nil
+        sqlite3_close_v2(handle)
+    }
+    deinit { close() }
 }
 
 // Native is SQLite's only writer. JSON documents are small desktop metadata;
 // authoritative conversation messages and raw capture bodies never enter this database.
 actor MetadataStore {
-    private var database: OpaquePointer?
+    private let url: URL
+    private var connection: MetadataDatabase?
+    private var attempted = false
     private var lastReservedRevision: Int64 = 0
-    init(url: URL) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        guard sqlite3_open_v2(url.path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { throw StoreError.unavailable }
-        guard sqlite3_exec(database, "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=3000; CREATE TABLE IF NOT EXISTS records(kind TEXT NOT NULL,id TEXT NOT NULL,value BLOB NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(kind,id));", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    /// Chats the last listing could not show: rows this build cannot decode
+    /// plus rows past the listing limit. The sidebar used to drop them in
+    /// silence, so a chat could vanish with its file still on disk.
+    private(set) var unlistedChats = 0
+    /// Test seam: full `ChatRecord` decodes performed. Tests pin how much of
+    /// the database an operation has to materialise; grouping used to
+    /// materialise all of it. One addition per decode when nothing reads it.
+    private(set) var decodedChats = 0
+    /// Cheap and non-throwing. Opening SQLite runs WAL recovery, which used to
+    /// happen on whichever thread built the model — for the app, the main actor
+    /// during its first `body`. The database opens inside the actor instead, on
+    /// first use or when `open()` asks for it.
+    init(url: URL) { self.url = url }
+    /// Opens the database now and reports why it could not be opened, for the
+    /// caller that needs to know there is no storage at all.
+    func open() throws { _ = try ready() }
+    private func ready() throws -> OpaquePointer {
+        if !attempted {
+            attempted = true
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            connection = try? MetadataDatabase(url: url)
+        }
+        guard let database = connection?.handle else { throw StoreError.unavailable }
+        return database
     }
     /// Reserve before an asynchronous debounce. Persisted revisions, rather
     /// than the wall clock alone, keep edits ordered across clock corrections.
     func reserveRevision(kind: String, id: String) throws -> Int64 {
+        let database = try ready()
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "SELECT revision FROM records WHERE kind=? AND id=?", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
@@ -40,20 +94,44 @@ actor MetadataStore {
         return lastReservedRevision
     }
     func put<T: Encodable & Sendable>(_ value: T, kind: String, id: String, revision: Int64? = nil, releasingTitleClaim: Bool = false) throws {
-        let revision = try revision ?? reserveRevision(kind: kind, id: id)
+        let database = try ready()
+        let savedRevision: Int64
+        if kind == TopicRecord.recordKind {
+            // Topic callers carry their own persisted revision. Reserving a new
+            // one here would let a delayed snapshot overwrite a newer rename.
+            guard let topic = value as? TopicRecord, topic.id == id, topic.isValid, topic.revision > 0,
+                  revision == nil || revision == topic.revision,
+                  try get(Int64.self, kind: TopicRecord.deletedRecordKind, id: id) == nil else { throw StoreError.invalidRecord }
+            if let previous = try get(TopicRecord.self, kind: kind, id: id) {
+                guard previous.workspaceID == topic.workspaceID, previous.createdAt == topic.createdAt else { throw StoreError.invalidRecord }
+                guard topic.revision > previous.revision || topic == previous else { throw StoreError.staleRevision }
+            }
+            savedRevision = topic.revision
+        } else { savedRevision = try revision ?? reserveRevision(kind: kind, id: id) }
         let data: Data
-        if kind == "chat", var chat = value as? ChatRecord, let previous = try get(ChatRecord.self, kind: kind, id: id) {
-            // Path/model/turn updates can finish after a rename, pin or archive.
-            // Those unrelated writes must not restore a stale organization state.
-            if (previous.organizationRevision ?? 0) > (chat.organizationRevision ?? 0) { chat.applyOrganization(from: previous) }
-            if chat.sidebarOrder == nil { chat.sidebarOrder = previous.sidebarOrder }
-            if chat.parentSessionID == nil { chat.parentSessionID = previous.parentSessionID }
-            // Only the explicit release path may drop a title claim; other
-            // writes that omit it keep the running task's claim intact.
-            if chat.titleTaskSessionID == nil, !releasingTitleClaim { chat.titleTaskSessionID = previous.titleTaskSessionID }
-            if previous.isBackgroundTask {
-                chat.title = previous.title; chat.backgroundTask = previous.backgroundTask; chat.sourceSessionID = previous.sourceSessionID
-                if chat.backgroundTaskNotice == nil { chat.backgroundTaskNotice = previous.backgroundTaskNotice }
+        if kind == "chat", var chat = value as? ChatRecord {
+            if let previous = try get(ChatRecord.self, kind: kind, id: id) {
+                // Path/model/turn updates can finish after a rename, pin,
+                // archive or topic move. They must not restore stale grouping.
+                if (previous.organizationRevision ?? 0) > (chat.organizationRevision ?? 0) { chat.applyOrganization(from: previous) }
+                if chat.sidebarOrder == nil { chat.sidebarOrder = previous.sidebarOrder }
+                if chat.parentSessionID == nil { chat.parentSessionID = previous.parentSessionID }
+                // Only the explicit release path may drop a title claim; other
+                // writes that omit it keep the running task's claim intact.
+                if chat.titleTaskSessionID == nil, !releasingTitleClaim { chat.titleTaskSessionID = previous.titleTaskSessionID }
+                if previous.isBackgroundTask {
+                    chat.title = previous.title; chat.backgroundTask = previous.backgroundTask; chat.sourceSessionID = previous.sourceSessionID
+                    if chat.backgroundTaskNotice == nil { chat.backgroundTaskNotice = previous.backgroundTaskNotice }
+                }
+            }
+            if let topicID = chat.topicID {
+                let topic = try get(TopicRecord.self, kind: TopicRecord.recordKind, id: topicID)
+                if topic?.workspaceID != chat.workspaceID || topic?.isValid != true
+                    || chat.workspaceID == WorkspaceRecord.scratchID || chat.isBackgroundTask || chat.connectionTest == true {
+                    // A send/fork can finish after its group is removed. Keep
+                    // the durable path/model write and leave that chat ungrouped.
+                    chat.topicID = nil
+                }
             }
             data = try JSONEncoder().encode(chat)
         } else { data = try JSONEncoder().encode(value) }
@@ -64,7 +142,7 @@ actor MetadataStore {
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         sqlite3_bind_text(statement, 1, kind, -1, transient); sqlite3_bind_text(statement, 2, id, -1, transient)
         _ = data.withUnsafeBytes { sqlite3_bind_blob(statement, 3, $0.baseAddress, Int32(data.count), transient) }
-        sqlite3_bind_int64(statement, 4, revision)
+        sqlite3_bind_int64(statement, 4, savedRevision)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.unavailable }
         guard sqlite3_changes(database) == 1 else { throw StoreError.staleRevision }
         if kind.hasPrefix("receipt:") { try prune(kind: kind, keeping: 128) }
@@ -73,6 +151,7 @@ actor MetadataStore {
     /// Later metadata writes (renaming, opening or changing a model) cannot move
     /// a chat unexpectedly. This only migrates desktop metadata, never journals.
     func loadChats(profiles: [ProfileRecord] = []) throws -> [ChatRecord] {
+        let database = try ready()
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "SELECT value,revision FROM records WHERE kind='chat' ORDER BY revision DESC,id ASC LIMIT 10000", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         var values: [(ChatRecord, Int64)] = []
@@ -83,23 +162,43 @@ actor MetadataStore {
                 let size = Int(sqlite3_column_bytes(statement, 0))
                 // One oversized or undecodable row (a record shape written by
                 // another version) must not hide every other chat.
-                if size <= 524_288, let bytes = sqlite3_column_blob(statement, 0),
-                   let chat = try? JSONDecoder().decode(ChatRecord.self, from: Data(bytes: bytes, count: size)) {
-                    values.append((chat, sqlite3_column_int64(statement, 1)))
+                if size <= 524_288, let bytes = sqlite3_column_blob(statement, 0) {
+                    decodedChats += 1
+                    if let chat = try? JSONDecoder().decode(ChatRecord.self, from: Data(bytes: bytes, count: size)) {
+                        values.append((chat, sqlite3_column_int64(statement, 1)))
+                    }
                 }
                 result = sqlite3_step(statement)
             }
             guard result == SQLITE_DONE else { throw StoreError.unavailable }
         }
+        unlistedChats = max(0, try count(kind: "chat") - values.count)
+        var upgraded: [(ChatRecord, Int64)] = []
         for index in values.indices {
             let previous = values[index].0
             if values[index].0.sidebarOrder == nil { values[index].0.sidebarOrder = values[index].1 }
             if let profile = profiles.first(where: { $0.id == values[index].0.profileID }) {
                 values[index].0.migrateOutputBudget(profile: profile)
             }
-            if values[index].0 != previous { try put(values[index].0, kind: "chat", id: values[index].0.id, revision: values[index].1) }
+            if values[index].0 != previous { upgraded.append((values[index].0, values[index].1)) }
+        }
+        // The upgrade commits once. Per-chat commits cost one fsync each
+        // (synchronous=FULL), which the first launch after an upgrade pays
+        // before a single row of the sidebar can render.
+        if !upgraded.isEmpty {
+            try transaction { for (chat, revision) in upgraded { try put(chat, kind: "chat", id: chat.id, revision: revision) } }
         }
         return values.map(\.0).sorted(by: ChatRecord.sidebarPrecedes)
+    }
+    private func count(kind: String) throws -> Int {
+        let database = try ready()
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "SELECT COUNT(*) FROM records WHERE kind=?", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 1, kind, -1, transient)
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw StoreError.unavailable }
+        return Int(sqlite3_column_int64(statement, 0))
     }
     func updateChatOrganization(id: String, change: ChatOrganizationChange, now: Date = Date()) throws -> ChatRecord {
         guard var chat = try get(ChatRecord.self, kind: "chat", id: id) else { throw StoreError.invalidRecord }
@@ -110,11 +209,164 @@ actor MetadataStore {
         case .pinned(let pinned): chat.pinnedAt = pinned ? (chat.pinnedAt ?? now) : nil
         case .archived(let archived): chat.archivedAt = archived ? (chat.archivedAt ?? now) : nil
         }
-        chat.organizationRevision = (chat.organizationRevision ?? 0) + 1
+        chat.organizationRevision = try nextOrganizationRevision(chat)
         try put(chat, kind: "chat", id: id)
         return chat
     }
+    private func nextOrganizationRevision(_ chat: ChatRecord) throws -> Int64 {
+        let revision = chat.organizationRevision ?? 0
+        guard revision >= 0, revision < Int64.max else { throw StoreError.invalidRecord }
+        return revision + 1
+    }
+
+    func listTopics() throws -> [TopicRecord] {
+        try list(TopicRecord.self, kind: TopicRecord.recordKind).filter { $0.isValid && $0.revision > 0 }.sorted(by: TopicRecord.sidebarPrecedes)
+    }
+
+    /// IDs are never reused after deletion: a delayed create or sidebar write
+    /// cannot resurrect a removed topic, including across a process restart.
+    func createTopic(_ proposed: TopicRecord) throws -> TopicRecord {
+        try transaction {
+            var topic = proposed
+            topic.title = try TopicRecord.normalizedTitle(topic.title)
+            guard topic.isValid, topic.revision == 0,
+                  try get(TopicRecord.self, kind: TopicRecord.recordKind, id: topic.id) == nil,
+                  try get(Int64.self, kind: TopicRecord.deletedRecordKind, id: topic.id) == nil else { throw StoreError.invalidRecord }
+            topic.revision = try reserveRevision(kind: TopicRecord.recordKind, id: topic.id)
+            try put(topic, kind: TopicRecord.recordKind, id: topic.id, revision: topic.revision)
+            return topic
+        }
+    }
+
+    func renameTopic(id: String, title: String) throws -> TopicRecord {
+        try transaction {
+            guard var topic = try get(TopicRecord.self, kind: TopicRecord.recordKind, id: id), topic.isValid else { throw StoreError.invalidRecord }
+            let normalized = try TopicRecord.normalizedTitle(title)
+            guard topic.title != normalized else { return topic }
+            topic.title = normalized
+            topic.revision = try reserveRevision(kind: TopicRecord.recordKind, id: id)
+            try put(topic, kind: TopicRecord.recordKind, id: id, revision: topic.revision)
+            return topic
+        }
+    }
+
+    func setTopicExpanded(id: String, expanded: Bool) throws -> TopicRecord {
+        try transaction {
+            guard var topic = try get(TopicRecord.self, kind: TopicRecord.recordKind, id: id), topic.isValid else { throw StoreError.invalidRecord }
+            guard topic.expanded != expanded else { return topic }
+            topic.expanded = expanded
+            topic.revision = try reserveRevision(kind: TopicRecord.recordKind, id: id)
+            try put(topic, kind: TopicRecord.recordKind, id: id, revision: topic.revision)
+            return topic
+        }
+    }
+
+    /// Validate the whole drag selection before changing any membership. A
+    /// cross-project drop never changes a chat's working directory or tools.
+    func moveChatsToTopic(ids: Set<String>, workspaceID: String, topicID: String?) throws -> [ChatRecord] {
+        try transaction {
+            guard !ids.isEmpty, TopicRecord.isValidIdentifier(workspaceID), workspaceID != WorkspaceRecord.scratchID else { throw StoreError.invalidRecord }
+            if let topicID {
+                guard let topic = try get(TopicRecord.self, kind: TopicRecord.recordKind, id: topicID),
+                      topic.isValid, topic.workspaceID == workspaceID else { throw StoreError.invalidRecord }
+            }
+            var selected: [String: ChatRecord] = [:]
+            for id in ids.sorted() {
+                guard let chat = try get(ChatRecord.self, kind: "chat", id: id), chat.workspaceID == workspaceID,
+                      !chat.isBackgroundTask, chat.connectionTest != true else { throw StoreError.invalidRecord }
+                selected[id] = chat
+            }
+            // A kept side can commit just before its UI row is published.
+            // Discover the durable family inside the same transaction, rather
+            // than relying on a sidebar snapshot of the caller's descendants.
+            var children: [String: [String]] = [:]
+            for row in try organizationRows() where row.workspaceID == workspaceID && row.groupable {
+                guard let parentID = row.parentSessionID else { continue }
+                children[parentID, default: []].append(row.id)
+            }
+            var pending = ids.sorted()
+            while let parentID = pending.popLast() {
+                for childID in children[parentID] ?? [] where selected[childID] == nil {
+                    // Only the descendants actually being moved are read in full.
+                    guard let child = try get(ChatRecord.self, kind: "chat", id: childID) else { continue }
+                    selected[childID] = child
+                    pending.append(childID)
+                }
+            }
+            var chats = selected.values.sorted { $0.id < $1.id }
+            for index in chats.indices where chats[index].topicID != topicID {
+                chats[index].topicID = topicID
+                chats[index].organizationRevision = try nextOrganizationRevision(chats[index])
+            }
+            for chat in chats { try put(chat, kind: "chat", id: chat.id) }
+            return chats
+        }
+    }
+
+    /// Removing a group returns its sessions to the project. Journals, drafts,
+    /// archives, pin order, parent links and running work are never deleted.
+    func removeTopic(id: String) throws -> [ChatRecord] {
+        try transaction {
+            guard let topic = try get(TopicRecord.self, kind: TopicRecord.recordKind, id: id), topic.isValid else { throw StoreError.invalidRecord }
+            var members = try organizationRows().filter { $0.topicID == id }.compactMap { try get(ChatRecord.self, kind: "chat", id: $0.id) }
+            for index in members.indices {
+                members[index].topicID = nil
+                members[index].organizationRevision = try nextOrganizationRevision(members[index])
+            }
+            let revision = try reserveRevision(kind: TopicRecord.recordKind, id: id)
+            for chat in members { try put(chat, kind: "chat", id: chat.id) }
+            try put(revision, kind: TopicRecord.deletedRecordKind, id: id, revision: revision)
+            try remove(kind: TopicRecord.recordKind, id: id)
+            return members
+        }
+    }
+
+    private func transaction<T>(_ operation: () throws -> T) throws -> T {
+        let database = try ready()
+        guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        do {
+            let result = try operation()
+            guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            return result
+        } catch { sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+    }
+
+    /// Just enough of every chat to decide membership: id, project, group and
+    /// parent link. Grouping used to materialise every full ChatRecord in the
+    /// database on every drop, which is most of what a drag costs.
+    private struct OrganizationRow: Decodable {
+        var id: String; var workspaceID: String; var topicID: String?; var parentSessionID: String?
+        var backgroundTask: String?; var connectionTest: Bool?
+        var isBackgroundTask: Bool { backgroundTask != nil }
+        var groupable: Bool { !isBackgroundTask && connectionTest != true }
+    }
+    /// Organization must inspect every member, even when history exceeds the
+    /// sidebar's list limit. Rows this build cannot read are skipped, exactly
+    /// as `loadChats` skips them, so one of them cannot disable grouping.
+    private func organizationRows() throws -> [OrganizationRow] {
+        let database = try ready()
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "SELECT value FROM records WHERE kind='chat' ORDER BY id", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        var values: [OrganizationRow] = []
+        var result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
+            let size = Int(sqlite3_column_bytes(statement, 0))
+            // A row this build cannot decode is not listed in the sidebar
+            // either, so it has no group membership to preserve. Failing here
+            // instead broke every drag into a topic and every topic deletion,
+            // for every project, with no way to reach the offending chat.
+            if size <= 524_288, let bytes = sqlite3_column_blob(statement, 0),
+               let row = try? JSONDecoder().decode(OrganizationRow.self, from: Data(bytes: bytes, count: size)) {
+                values.append(row)
+            }
+            result = sqlite3_step(statement)
+        }
+        guard result == SQLITE_DONE else { throw StoreError.unavailable }
+        return values
+    }
     func list<T: Decodable & Sendable>(_ type: T.Type, kind: String) throws -> [T] {
+        let database = try ready()
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "SELECT value FROM records WHERE kind=? ORDER BY revision DESC LIMIT 10000", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
@@ -131,6 +383,7 @@ actor MetadataStore {
         return values
     }
     func get<T: Decodable & Sendable>(_ type: T.Type, kind: String, id: String) throws -> T? {
+        let database = try ready()
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "SELECT value FROM records WHERE kind=? AND id=?", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
@@ -141,9 +394,27 @@ actor MetadataStore {
         guard result == SQLITE_ROW else { throw StoreError.unavailable }
         let size = Int(sqlite3_column_bytes(statement, 0))
         guard size <= 524_288, let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
+        if type == ChatRecord.self { decodedChats += 1 }
         return try JSONDecoder().decode(type, from: Data(bytes: bytes, count: size))
     }
+    /// Everything opening a chat needs from this database, answered in one
+    /// actor hop. Three sequential round-trips used to sit between a click and
+    /// the chat's own journal read, each one a separate suspension of the main
+    /// actor; the answers do not depend on each other.
+    struct SelectionMetadata: Sendable {
+        var draft: DraftRecord?
+        var anchor: TranscriptAnchor?
+        var recovered: [CommandIntent] = []
+    }
+    func selectionMetadata(id: String, draft wantsDraft: Bool, anchor wantsAnchor: Bool) throws -> SelectionMetadata {
+        var value = SelectionMetadata()
+        if wantsDraft { value.draft = try get(DraftRecord.self, kind: "draft", id: id) }
+        if wantsAnchor { value.anchor = try get(TranscriptAnchor.self, kind: "anchor", id: id) }
+        value.recovered = try list(CommandIntent.self, kind: "pending:" + id)
+        return value
+    }
     func remove(kind: String, id: String) throws {
+        let database = try ready()
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "DELETE FROM records WHERE kind=? AND id=?", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
@@ -151,9 +422,10 @@ actor MetadataStore {
         sqlite3_bind_text(statement, 1, kind, -1, transient); sqlite3_bind_text(statement, 2, id, -1, transient)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.unavailable }
     }
-    func close() { sqlite3_close(database); database = nil }
+    func close() { attempted = true; connection?.close(); connection = nil }
     func removeAll(kind: String) throws { try prune(kind: kind, keeping: 0) }
     func prune(kind: String, keeping: Int) throws {
+        let database = try ready()
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "DELETE FROM records WHERE kind=? AND id NOT IN (SELECT id FROM records WHERE kind=? ORDER BY revision DESC LIMIT ?)", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
@@ -166,15 +438,31 @@ actor MetadataStore {
         guard var intent = try get(CommandIntent.self, kind: kind, id: commandID) else { return }
         intent.state = "acknowledged"; try put(intent, kind: kind, id: commandID)
     }
-    func commitKeptSide(_ chat: ChatRecord, draft: DraftRecord) throws {
+    @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord) throws -> ChatRecord {
+        let database = try ready()
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
         do {
+            var chat = proposed
+            if let existing = try get(ChatRecord.self, kind: "chat", id: chat.id) {
+                // Replaying a keep receipt must preserve an independent rename
+                // or topic move made after this child was first retained.
+                chat.applyOrganization(from: existing)
+            } else if let parentID = chat.parentSessionID {
+                // Whichever commits first, moving a parent and publishing a new
+                // side agree on the parent's current durable group. A fork has
+                // no parentSessionID and keeps its captured topic instead.
+                let parent = try get(ChatRecord.self, kind: "chat", id: parentID)
+                chat.topicID = parent?.workspaceID == chat.workspaceID ? parent?.topicID : nil
+            }
             try put(chat, kind: "chat", id: chat.id); try put(draft, kind: "draft", id: chat.id); try remove(kind: "side-keep", id: chat.id)
+            guard let saved = try get(ChatRecord.self, kind: "chat", id: chat.id) else { throw StoreError.invalidRecord }
             guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            return saved
         } catch { sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
     }
     /// A handoff must never reappear as an empty chat after a partial write.
     func commitPortableHandoff(_ chat: ChatRecord, draft: DraftRecord, provenance: WireValue?) throws {
+        let database = try ready()
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
         do {
             try put(chat, kind: "chat", id: chat.id)
@@ -186,6 +474,7 @@ actor MetadataStore {
     /// Current and future chat choices commit together. A storage failure must
     /// not leave the picker and next-chat defaults disagreeing after restart.
     func saveChatModelChoice(_ chat: ChatRecord) throws {
+        let database = try ready()
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
         do {
             try put(chat, kind: "chat", id: chat.id)
@@ -197,6 +486,7 @@ actor MetadataStore {
     /// Claim one title job atomically so rapid submissions/restarts cannot
     /// duplicate an auxiliary request. Creating a record never resends work.
     func createTitleTask(_ task: ChatRecord, sourceID: String) throws -> ChatRecord? {
+        let database = try ready()
         guard task.id != sourceID, !task.id.isEmpty, task.id.utf8.count <= 128,
               task.backgroundTask == "session-title", task.sourceSessionID == sourceID,
               task.workspaceID == WorkspaceRecord.scratchID, task.title == TitleGenerationPlan.fixedTitle,
@@ -235,7 +525,7 @@ actor MetadataStore {
               let task = try get(ChatRecord.self, kind: "chat", id: taskID),
               task.backgroundTask == "session-title", task.sourceSessionID == sourceID else { return nil }
         source.title = try ChatRecord.normalizedTitle(title); source.titleWasGenerated = true
-        source.organizationRevision = (source.organizationRevision ?? 0) + 1
+        source.organizationRevision = try nextOrganizationRevision(source)
         try put(source, kind: "chat", id: source.id)
         return source
     }
@@ -289,6 +579,8 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var backgroundTaskNotice: String?
     var isBackgroundTask: Bool { backgroundTask != nil }
     var organizationRevision: Int64?
+    /// Optional for existing sessions; topics never change project ownership.
+    var topicID: String?
     /// Saved side conversations keep their parent relationship across restarts.
     /// Independent forks and ordinary chats have no parent.
     var parentSessionID: String?
@@ -315,7 +607,7 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
         return String(trimmed.prefix(120))
     }
     mutating func applyOrganization(from other: ChatRecord) {
-        pinnedAt = other.pinnedAt; archivedAt = other.archivedAt
+        pinnedAt = other.pinnedAt; archivedAt = other.archivedAt; topicID = other.topicID
         titleWasEdited = other.titleWasEdited; titleWasGenerated = other.titleWasGenerated; organizationRevision = other.organizationRevision
         if other.titleWasEdited == true || other.titleWasGenerated == true { title = other.title }
     }

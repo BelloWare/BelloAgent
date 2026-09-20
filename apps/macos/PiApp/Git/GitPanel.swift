@@ -1,174 +1,6 @@
 import SwiftUI
 import AppKit
 
-/// State for the Changes sheet: which folder, its status, the selected file's
-/// diff, the commit history and the selected commit. Reads run on GitService;
-/// stage, unstage and commit are the only writes.
-@MainActor final class GitController: ObservableObject {
-    enum Panel: String, CaseIterable, Hashable { case changes, history
-        var title: String { self == .changes ? "Changes" : "History" }
-    }
-    struct Selection: Equatable { let path: String; let staged: Bool }
-
-    @Published var roots: [String] = []
-    @Published var root: String? { didSet { if root != oldValue { Task { await refresh() } } } }
-    @Published var repositoryRoot: String?
-    @Published var panel = Panel.changes
-    @Published private(set) var status = GitRepositoryStatus()
-    @Published private(set) var loading = false
-    @Published private(set) var notice = ""
-    @Published var selection: Selection? { didSet { if selection != oldValue { Task { await loadSelectedDiff() } } } }
-    @Published private(set) var diff: [GitDiffFile] = []
-    @Published private(set) var diffLoading = false
-    @Published private(set) var commits: [GitCommit] = []
-    @Published private(set) var historyExhausted = false
-    @Published var selectedCommit: GitCommit? { didSet { if selectedCommit != oldValue { Task { await loadCommitDetail() } } } }
-    @Published private(set) var detail: GitCommitDetail?
-    @Published var commitMessage = ""
-    @Published private(set) var lastCommit: String?
-    /// Files ticked for the next commit (IntelliJ's changelist checkboxes).
-    @Published var checked: Set<String> = []
-    @Published var amend = false { didSet { if amend, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Task { await prefillHeadMessage() } } } }
-    @Published private(set) var branches: [String] = []
-    @Published private(set) var stashes: [GitStashEntry] = []
-    @Published var logFilter = GitLogFilter() { didSet { if logFilter != oldValue { Task { await reloadHistory() } } } }
-    @Published var detailFile: String? { didSet { if detailFile != oldValue { Task { await loadCommitDetail() } } } }
-    @Published private(set) var detailFileDiff: [GitDiffFile] = []
-    @Published var splitDiff = false
-    @Published private(set) var busy = false
-    private let service: GitService
-    private var generation = 0
-
-    init(roots: [String], service: GitService = .shared) {
-        self.service = service; self.roots = roots; self.root = roots.first
-    }
-
-    var displayRoot: String { (root as NSString?)?.lastPathComponent ?? "" }
-    var staged: [GitStatusEntry] { status.entries.filter(\.staged) }
-    var unstaged: [GitStatusEntry] { status.entries.filter(\.unstaged) }
-
-    func refresh() async {
-        guard let root else { return }
-        generation += 1; let generation = generation
-        loading = true; notice = ""
-        defer { if self.generation == generation { loading = false } }
-        let top = await service.repositoryRoot(of: root)
-        guard self.generation == generation else { return }
-        repositoryRoot = top
-        guard let top else { status = GitRepositoryStatus(); diff = []; commits = []; selection = nil; selectedCommit = nil; detail = nil; return }
-        do {
-            let status = try await service.status(in: top)
-            guard self.generation == generation else { return }
-            self.status = status
-            let paths = Set(status.entries.map(\.path))
-            checked = checked.isEmpty && status.entries.isEmpty ? [] : (checked.isEmpty ? paths : checked.intersection(paths))
-            if let selection, !status.entries.contains(where: { $0.path == selection.path && ($0.staged == selection.staged || $0.unstaged == !selection.staged) }) { self.selection = nil }
-            else if selection == nil, let first = status.entries.first { selection = Selection(path: first.path, staged: !first.unstaged && first.staged) }
-            else { await loadSelectedDiff() }
-            async let branchList = service.branches(in: top)
-            async let stashList = service.stashes(in: top)
-            branches = (try? await branchList) ?? []; stashes = (try? await stashList) ?? []
-            await reloadHistory(generation: generation)
-        } catch { notice = error.localizedDescription }
-    }
-
-    private func reloadHistory(generation: Int? = nil) async {
-        guard let repositoryRoot else { return }
-        let generation = generation ?? self.generation
-        do {
-            let commits = try await service.log(in: repositoryRoot, limit: 50, filter: logFilter)
-            guard self.generation == generation else { return }
-            self.commits = commits; historyExhausted = commits.count < 50
-            if let selectedCommit, !commits.contains(where: { $0.hash == selectedCommit.hash }) { self.selectedCommit = nil }
-        } catch { notice = error.localizedDescription }
-    }
-
-    func loadMoreHistory() async {
-        guard let repositoryRoot, !historyExhausted else { return }
-        do {
-            let more = try await service.log(in: repositoryRoot, limit: 50, skip: commits.count, filter: logFilter)
-            commits += more.filter { commit in !commits.contains(where: { $0.hash == commit.hash }) }
-            historyExhausted = more.count < 50
-        } catch { notice = error.localizedDescription }
-    }
-
-    private func prefillHeadMessage() async {
-        guard let repositoryRoot, let message = try? await service.headMessage(in: repositoryRoot) else { return }
-        if amend, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { commitMessage = message }
-    }
-
-    private func perform(_ what: String, _ work: () async throws -> Void) async {
-        busy = true; notice = ""
-        defer { busy = false }
-        do { try await work() } catch { notice = "\(what): \(error.localizedDescription)" }
-        await refresh()
-    }
-    func checkout(_ branch: String) async { guard let root = repositoryRoot else { return }; await perform("Switch") { try await service.checkout(branch, in: root) } }
-    func createBranch(_ name: String) async { guard let root = repositoryRoot else { return }; await perform("New branch") { try await service.createBranch(name, in: root) } }
-    func stash(message: String) async { guard let root = repositoryRoot else { return }; await perform("Stash") { try await service.stashPush(message: message, in: root) } }
-    func popStash(_ name: String? = nil) async { guard let root = repositoryRoot else { return }; await perform("Pop stash") { try await service.stashPop(name, in: root) } }
-    func fetch() async { guard let root = repositoryRoot else { return }; await perform("Fetch") { try await service.fetch(in: root) } }
-    func pull() async { guard let root = repositoryRoot else { return }; await perform("Pull") { try await service.pull(in: root) } }
-    func push() async { guard let root = repositoryRoot else { return }; await perform("Push") { try await service.push(in: root) } }
-    func discard(_ entries: [GitStatusEntry]) async { guard let root = repositoryRoot else { return }; await perform("Discard") { try await service.discard(entries, in: root) } }
-    /// Commits the checked files (their working-tree state), or the staged index when nothing is checked.
-    func commitChecked() async {
-        guard let root = repositoryRoot else { return }
-        let paths = status.entries.filter { checked.contains($0.path) }.map(\.path)
-        await perform("Commit") {
-            lastCommit = try await service.commit(message: commitMessage, in: root, paths: paths, amend: amend)
-            commitMessage = ""; amend = false
-        }
-    }
-
-    private func loadSelectedDiff() async {
-        guard let repositoryRoot, let selection else { diff = []; return }
-        diffLoading = true; defer { diffLoading = false }
-        let entry = status.entries.first { $0.path == selection.path }
-        do {
-            let text = try await service.diff(in: repositoryRoot, path: selection.path, staged: selection.staged, untracked: entry?.untracked == true)
-            guard self.selection == selection else { return }
-            diff = GitDiffParser.parse(text)
-        } catch { notice = error.localizedDescription; diff = [] }
-    }
-
-    private func loadCommitDetail() async {
-        guard let repositoryRoot, let selectedCommit else { detail = nil; detailFileDiff = []; return }
-        diffLoading = true; defer { diffLoading = false }
-        do {
-            if detail?.commit.hash != selectedCommit.hash {
-                let value = try await service.commitDetail(in: repositoryRoot, commit: selectedCommit)
-                guard self.selectedCommit == selectedCommit else { return }
-                detail = value; detailFile = nil; detailFileDiff = []
-            }
-            if let detailFile {
-                let text = try await service.commitDiff(in: repositoryRoot, commit: selectedCommit, path: detailFile)
-                guard self.detailFile == detailFile else { return }
-                detailFileDiff = GitDiffParser.parse(text)
-            } else { detailFileDiff = [] }
-        } catch { notice = error.localizedDescription; detail = nil }
-    }
-
-    func stage(_ paths: [String]) async {
-        guard let repositoryRoot else { return }
-        do { try await service.stage(paths, in: repositoryRoot) } catch { notice = error.localizedDescription }
-        await refresh()
-    }
-    func unstage(_ paths: [String]) async {
-        guard let repositoryRoot else { return }
-        do { try await service.unstage(paths, in: repositoryRoot) } catch { notice = error.localizedDescription }
-        await refresh()
-    }
-    func commit() async {
-        guard let repositoryRoot else { return }
-        do {
-            lastCommit = try await service.commit(message: commitMessage, in: repositoryRoot)
-            commitMessage = ""
-        } catch { notice = error.localizedDescription }
-        await refresh()
-    }
-}
-
 /// The Changes sheet, laid out like IntelliJ's Git tool window: a branch
 /// menu with fetch, pull, push and stash controls; a changelist with
 /// checkboxes, amend and discard; the history with filters and ref badges;
@@ -181,6 +13,10 @@ struct GitPanelView: View {
     @State private var showNewBranch = false
     @State private var stashMessage = ""
     @State private var showStash = false
+    @State private var panelWindow: NSWindow?
+    /// The panel's own asker, so a question about discarding is only ever
+    /// refused by another question about discarding.
+    @StateObject private var questions = PiQuestion()
 
     init(model: WorkspaceModel, roots: [String]) {
         self.model = model
@@ -207,7 +43,9 @@ struct GitPanelView: View {
             PiIconButton(symbol: "arrow.clockwise", label: "Refresh changes", size: 28) { Task { await controller.refresh() } }
             Button("Done") { dismiss() }.buttonStyle(.piSecondary)
         }
+        .background(GitPanelWindowReader { panelWindow = $0 })
         .task { await controller.refresh() }
+        .onDisappear { controller.stop(); questions.cancel() }
         .accessibilityIdentifier("git-panel")
     }
 
@@ -272,16 +110,37 @@ struct GitPanelView: View {
         Task { await controller.createBranch(name) }
     }
 
+    /// Fetch, pull and push carried no words: three arrows in a row, and the
+    /// one that sends your commits to a shared remote looked exactly like the
+    /// two that only read. They are named wherever the toolbar has room, and
+    /// keep their counts and help when it does not.
     private var remoteControls: some View {
-        HStack(spacing: 2) {
-            PiIconButton(symbol: "arrow.down.to.line", label: "Fetch", size: 26) { Task { await controller.fetch() } }.help("Fetch from every remote and prune")
-            PiIconButton(symbol: "arrow.down.circle", label: "Pull", size: 26) { Task { await controller.pull() } }
-                .help(controller.status.behind > 0 ? "Pull \(controller.status.behind) new commits (fast-forward only)" : "Pull (fast-forward only)")
-                .overlay(alignment: .topTrailing) { counter(controller.status.behind) }
-            PiIconButton(symbol: "arrow.up.circle", label: "Push", size: 26) { Task { await controller.push() } }
-                .help(controller.status.ahead > 0 ? "Push \(controller.status.ahead) commits to \(controller.status.upstream ?? "the upstream")" : "Push")
-                .overlay(alignment: .topTrailing) { counter(controller.status.ahead) }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 4) {
+                remoteButton("Fetch", symbol: "arrow.down.to.line", count: 0, help: "Fetch from every remote and prune") { await controller.fetch() }
+                remoteButton("Pull", symbol: "arrow.down.circle", count: controller.status.behind,
+                             help: controller.status.behind > 0 ? "Pull \(controller.status.behind) new commits (fast-forward only)" : "Pull (fast-forward only)") { await controller.pull() }
+                remoteButton("Push", symbol: "arrow.up.circle", count: controller.status.ahead,
+                             help: controller.status.ahead > 0 ? "Push \(controller.status.ahead) commits to \(controller.status.upstream ?? "the upstream")" : "Push") { await controller.push() }
+            }
+            HStack(spacing: 2) {
+                PiIconButton(symbol: "arrow.down.to.line", label: "Fetch", size: 26) { Task { await controller.fetch() } }.help("Fetch from every remote and prune")
+                PiIconButton(symbol: "arrow.down.circle", label: "Pull", size: 26) { Task { await controller.pull() } }
+                    .help(controller.status.behind > 0 ? "Pull \(controller.status.behind) new commits (fast-forward only)" : "Pull (fast-forward only)")
+                    .overlay(alignment: .topTrailing) { counter(controller.status.behind) }
+                PiIconButton(symbol: "arrow.up.circle", label: "Push", size: 26) { Task { await controller.push() } }
+                    .help(controller.status.ahead > 0 ? "Push \(controller.status.ahead) commits to \(controller.status.upstream ?? "the upstream")" : "Push")
+                    .overlay(alignment: .topTrailing) { counter(controller.status.ahead) }
+            }
         }.disabled(controller.busy)
+    }
+    private func remoteButton(_ title: String, symbol: String, count: Int, help: String, run: @escaping () async -> Void) -> some View {
+        Button { Task { await run() } } label: {
+            Label(count > 0 ? "\(title) \(count)" : title, systemImage: symbol)
+        }
+        .buttonStyle(.piSecondaryCompact).fixedSize().help(help)
+        .accessibilityLabel(count > 0 ? "\(title), \(count) commits" : title)
+        .accessibilityIdentifier("git-remote-" + title.lowercased())
     }
     @ViewBuilder private func counter(_ value: Int) -> some View {
         if value > 0 {
@@ -339,11 +198,11 @@ struct GitPanelView: View {
                         Text("No changes. The working tree matches HEAD.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary).padding(PiSpacing.lg)
                     }
                     if !controller.staged.isEmpty {
-                        section("Staged · \(controller.staged.count)", entries: controller.staged, action: ("Unstage all", { Task { await controller.unstage(controller.staged.map(\.path)) } }))
+                        section("Staged · \(controller.staged.count)", paths: controller.stagedPaths, action: ("Unstage all", { Task { await controller.unstage(controller.staged.map(\.path)) } }))
                         ForEach(controller.staged) { entry in fileRow(entry, staged: true) }
                     }
                     if !controller.unstaged.isEmpty {
-                        section("Changes · \(controller.unstaged.count)", entries: controller.unstaged, action: ("Stage all", { Task { await controller.stage(controller.unstaged.map(\.path)) } }))
+                        section("Changes · \(controller.unstaged.count)", paths: controller.unstagedPaths, action: ("Stage all", { Task { await controller.stage(controller.unstaged.map(\.path)) } }))
                         ForEach(controller.unstaged) { entry in fileRow(entry, staged: false) }
                     }
                 }.padding(PiSpacing.sm)
@@ -353,8 +212,7 @@ struct GitPanelView: View {
         }
     }
 
-    private func section(_ title: String, entries: [GitStatusEntry], action: (String, () -> Void)) -> some View {
-        let paths = Set(entries.map(\.path))
+    private func section(_ title: String, paths: Set<String>, action: (String, () -> Void)) -> some View {
         let all = paths.isSubset(of: controller.checked)
         return HStack(spacing: PiSpacing.sm) {
             checkbox(on: all, mixed: !all && !paths.isDisjoint(with: controller.checked), label: all ? "Uncheck \(title)" : "Check \(title)") {
@@ -401,22 +259,23 @@ struct GitPanelView: View {
             if staged { Button("Unstage") { Task { await controller.unstage([entry.path]) } } } else { Button("Stage") { Task { await controller.stage([entry.path]) } } }
             Button(entry.untracked ? "Delete Untracked File…" : "Discard Changes…") { confirmDiscard([entry]) }
             Divider()
+            if !entry.untracked {
+                Button("Show History of This File", systemImage: "clock.arrow.circlepath") { controller.showFileHistory(entry.path) }
+                    .accessibilityIdentifier("git-file-history-" + entry.path)
+            }
             Button("Reveal in Finder") { if let root = controller.repositoryRoot { NSWorkspace.shared.selectFile((root as NSString).appendingPathComponent(entry.path), inFileViewerRootedAtPath: root) } }
             Button("Copy Path") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(entry.path, forType: .string) }
         }
         .accessibilityIdentifier("git-file-" + entry.path)
     }
 
-    /// Discard is the one irreversible action here, so it always confirms.
+    /// Discard is the one irreversible action here, so it always confirms — on
+    /// a sheet over the panel, never by stopping the main thread in a modal
+    /// loop while git, the terminal and every other window wait.
     private func confirmDiscard(_ entries: [GitStatusEntry]) {
-        let alert = NSAlert()
-        alert.messageText = entries.count == 1 ? "Discard changes to \((entries[0].path as NSString).lastPathComponent)?" : "Discard changes to \(entries.count) files?"
-        alert.informativeText = "Tracked files revert to HEAD and untracked files are deleted. Git keeps no copy of these changes."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Discard").hasDestructiveAction = true
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        Task { await controller.discard(entries) }
+        GitDiscard.ask(questions, discarding: entries, in: panelWindow) { entries in
+            Task { await controller.discard(entries) }
+        }
     }
 
     private func badgeColor(_ badge: String) -> Color {
@@ -424,7 +283,7 @@ struct GitPanelView: View {
     }
 
     private var commitBox: some View {
-        let checkedCount = controller.status.entries.filter { controller.checked.contains($0.path) }.count
+        let checkedCount = controller.checkedCount
         let message = controller.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         let nothing = checkedCount == 0 && controller.staged.isEmpty && !controller.amend
         return VStack(alignment: .leading, spacing: PiSpacing.sm) {
@@ -442,8 +301,11 @@ struct GitPanelView: View {
                 }
             }
             HStack(spacing: PiSpacing.sm) {
-                Text(checkedCount > 0 ? "\(checkedCount) of \(controller.status.entries.count) files" : controller.staged.isEmpty ? (controller.amend ? "Reword only" : "Check files to commit") : "Staged index")
-                    .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(1)
+                // A disabled Commit used to say only how many files were
+                // ticked; the reader was left to guess that the empty message
+                // was what stopped it. The line now names the missing step.
+                Text(commitHint(checkedCount: checkedCount, message: message, nothing: nothing))
+                    .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Button { Task { await controller.commitChecked() } } label: { Label(controller.amend ? "Amend" : "Commit", systemImage: "checkmark.circle") }
                     .buttonStyle(.piPrimaryCompact).fixedSize()
@@ -451,6 +313,15 @@ struct GitPanelView: View {
                     .accessibilityIdentifier("git-commit")
             }
         }.padding(PiSpacing.md)
+    }
+
+    /// What the commit box is waiting for, in the order the reader has to
+    /// supply it: something to commit, then a message.
+    private func commitHint(checkedCount: Int, message: String, nothing: Bool) -> String {
+        if nothing { return controller.amend ? "Reword the last commit" : "Tick the files to commit" }
+        let what = checkedCount > 0 ? "\(checkedCount) of \(controller.status.entries.count) files"
+            : controller.amend ? "Reword only" : "Staged index"
+        return message.isEmpty ? what + " · write a message to commit" : what
     }
 
     // MARK: History
@@ -464,6 +335,18 @@ struct GitPanelView: View {
                     PiTextField(placeholder: "Author", text: Binding(get: { controller.logFilter.author }, set: { controller.logFilter.author = $0 }), icon: "person")
                     checkbox(on: controller.logFilter.allBranches, label: "Show all branches") { controller.logFilter.allBranches.toggle() }
                     Text("All branches").font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize()
+                }
+                if let path = controller.logFilter.path {
+                    HStack(spacing: 6) {
+                        Image(systemName: "clock.arrow.circlepath").font(.system(size: 10)).foregroundStyle(Color.piAccent)
+                        Text((path as NSString).lastPathComponent).font(PiFont.caption).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.middle).help(path)
+                        Text("history · follows renames").font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(1)
+                        Spacer(minLength: 2)
+                        Button("All files") { controller.clearFileHistory() }.buttonStyle(.piGhost).accessibilityIdentifier("git-history-all-files")
+                    }
+                    .padding(.horizontal, PiSpacing.sm).padding(.vertical, 4)
+                    .background(Color.piAccentSoft, in: RoundedRectangle(cornerRadius: PiRadius.sm, style: .continuous))
+                    .accessibilityIdentifier("git-history-path")
                 }
             }.padding(PiSpacing.sm)
             Rectangle().fill(Color.piHairline).frame(height: 1)
@@ -504,6 +387,10 @@ struct GitPanelView: View {
         .contextMenu {
             Button("Copy Hash") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(commit.hash, forType: .string) }
             Button("Copy Subject") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(commit.subject, forType: .string) }
+            if controller.logFilter.path != nil {
+                Divider()
+                Button("Show All Files Again", systemImage: "clock.arrow.circlepath") { controller.clearFileHistory() }
+            }
         }
         .accessibilityIdentifier("git-commit-" + commit.shortHash)
     }
@@ -513,7 +400,8 @@ struct GitPanelView: View {
     @ViewBuilder private var detailPane: some View {
         if controller.panel == .changes {
             if let selection = controller.selection {
-                DiffView(files: controller.diff, title: selection.path, subtitle: selection.staged ? "Staged · index versus HEAD" : "Working tree versus index", loading: controller.diffLoading, split: $controller.splitDiff)
+                DiffView(files: controller.diff, title: selection.path, subtitle: selection.staged ? "Staged · index versus HEAD" : "Working tree versus index",
+                         identity: GitController.diffIdentity(path: selection.path, staged: selection.staged), loading: controller.diffLoading, split: $controller.splitDiff, expanded: $controller.wholeDiffShown)
             } else {
                 placeholder("Select a file to see its changes.")
             }
@@ -528,10 +416,28 @@ struct GitPanelView: View {
                             Text(detail.message.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
                                 .font(PiFont.body).foregroundStyle(Color.piInkSecondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                         }
-                        if !detail.files.isEmpty { commitFiles(detail) }
+                        if !detail.files.isEmpty {
+                            HStack(spacing: 8) {
+                                Text(detail.summary).font(PiFont.micro.monospacedDigit()).foregroundStyle(Color.piInkSecondary)
+                                if detail.commit.parents.count > 1 { PiBadge(text: "Merge · first parent", tone: .info, icon: "arrow.triangle.merge") }
+                            }.accessibilityIdentifier("git-commit-summary")
+                            GitCommitFileChips(detail: detail, selected: $controller.detailFile, shown: $controller.commitFilesShown,
+                                               showHistory: { controller.showFileHistory($0) })
+                        }
                     }.padding(.horizontal, PiSpacing.lg).padding(.top, PiSpacing.lg)
-                    DiffView(files: controller.detailFile == nil ? GitDiffParser.parse(detail.diff) : controller.detailFileDiff,
-                             title: controller.detailFile, subtitle: controller.detailFile == nil ? nil : "In \(detail.commit.shortHash)", loading: controller.diffLoading, embedded: true, split: $controller.splitDiff)
+                    if controller.detailDiffDeferred {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("This commit changes \(detail.summary). Its files are listed above; open one to read its diff.")
+                                .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
+                            Button("Show the whole diff") { controller.loadDeferredCommitDiff() }
+                                .buttonStyle(.piSecondaryCompact).accessibilityIdentifier("git-commit-load-diff")
+                        }.padding(.horizontal, PiSpacing.lg)
+                    } else {
+                        DiffView(files: controller.detailFile == nil ? controller.detailDiff : controller.detailFileDiff,
+                                 title: controller.detailFile, subtitle: controller.detailFile == nil ? nil : "In \(detail.commit.shortHash)",
+                                 identity: GitController.diffIdentity(commit: detail.commit.hash, file: controller.detailFile), loading: controller.diffLoading, embedded: true,
+                                 split: $controller.splitDiff, expanded: $controller.wholeDiffShown)
+                    }
                 }
             }
         } else if controller.diffLoading {
@@ -541,146 +447,44 @@ struct GitPanelView: View {
         }
     }
 
-    /// The commit's files as chips; one narrows the diff to that file, "All" widens it again.
-    private func commitFiles(_ detail: GitCommitDetail) -> some View {
-        PiFlow {
-            PiChip(text: "All \(detail.files.count) files", icon: controller.detailFile == nil ? "checkmark" : nil) { controller.detailFile = nil }
-            ForEach(detail.files) { file in
-                Button { controller.detailFile = controller.detailFile == file.path ? nil : file.path } label: {
-                    PiBadge(text: "\(file.badge) \((file.path as NSString).lastPathComponent)",
-                            tone: controller.detailFile == file.path ? .accent : file.badge == "D" ? .danger : file.badge == "A" ? .success : .neutral)
-                }.buttonStyle(.plain).piPointer().help(file.path)
-                .accessibilityIdentifier("git-commit-file-" + file.path)
-            }
-        }
-    }
-
     private func placeholder(_ text: String) -> some View {
         Text(text).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
-/// Unified or side-by-side diff rendered as file cards with hunk headers,
-/// old/new line numbers and tinted added/removed rows.
-struct DiffView: View {
-    let files: [GitDiffFile]
-    let title: String?
-    let subtitle: String?
-    var loading = false
-    var embedded = false
-    @Binding var split: Bool
-    @State private var wrap = false
-    private static let rowLimit = 1_500
-    @State private var showAll = false
-
-    var body: some View {
-        Group {
-            if embedded { content } else { ScrollView { content } }
+/// The one irreversible action in the panel, and the question it asks first.
+/// It goes on a sheet over the panel through the app's single sheet-question
+/// mechanism, so a second right-click while it is up is dropped rather than
+/// stacked and nothing stops the main thread.
+@MainActor enum GitDiscard {
+    static func ask(_ questions: PiQuestion, discarding entries: [GitStatusEntry], in window: NSWindow?,
+                    then act: @escaping ([GitStatusEntry]) -> Void) {
+        guard !entries.isEmpty, let window else { return }
+        questions.ask(alert(for: entries), over: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            act(entries)
         }
-        .background(Color.piContent)
     }
 
-    private var content: some View {
-        VStack(alignment: .leading, spacing: PiSpacing.md) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    if let title { Text(title).font(PiFont.heading).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.middle).textSelection(.enabled) }
-                    if let subtitle { Text(subtitle).font(PiFont.micro).foregroundStyle(Color.piInkTertiary) }
-                }
-                Spacer()
-                if loading { ProgressView().controlSize(.small) }
-                PiTabs(selection: $split, items: [(false, "Unified"), (true, "Split")]).accessibilityIdentifier("git-diff-layout")
-                Toggle("Wrap", isOn: $wrap).toggleStyle(.switch).controlSize(.mini).font(PiFont.micro)
-            }.padding(.horizontal, PiSpacing.lg).padding(.top, embedded ? 0 : PiSpacing.lg)
-            if files.isEmpty && !loading {
-                Text("No textual changes.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary).padding(.horizontal, PiSpacing.lg)
-            }
-            ForEach(files) { file in fileCard(file) }
-            if files.reduce(0, { $0 + $1.hunks.reduce(0) { $0 + $1.lines.count } }) > Self.rowLimit && !showAll {
-                Button("Show the whole diff") { showAll = true }.buttonStyle(.piSecondaryCompact).padding(.horizontal, PiSpacing.lg)
-            }
-        }.padding(.bottom, PiSpacing.lg)
+    static func alert(for entries: [GitStatusEntry]) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = entries.count == 1 ? "Discard changes to \((entries[0].path as NSString).lastPathComponent)?" : "Discard changes to \(entries.count) files?"
+        alert.informativeText = "Tracked files revert to HEAD and untracked files are deleted. Git keeps no copy of these changes."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Discard").hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel")
+        return alert
     }
+}
 
-    private func fileCard(_ file: GitDiffFile) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: PiSpacing.sm) {
-                Image(systemName: "doc.text").font(.system(size: 11)).foregroundStyle(Color.piInkSecondary)
-                Text(file.renamed ? "\(file.oldPath) → \(file.newPath)" : file.path).font(PiFont.mono).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                Spacer()
-                if file.added > 0 { Text("+\(file.added)").font(PiFont.micro.monospacedDigit()).foregroundStyle(Color.piSuccess) }
-                if file.removed > 0 { Text("−\(file.removed)").font(PiFont.micro.monospacedDigit()).foregroundStyle(Color.piDanger) }
-            }.padding(.horizontal, PiSpacing.md).padding(.vertical, 7).background(Color.piSurfaceSunken)
-            ForEach(file.notes, id: \.self) { note in
-                Text(note).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).padding(.horizontal, PiSpacing.md).padding(.vertical, 4)
-            }
-            let budget = showAll ? Int.max : Self.rowLimit
-            var shown = 0
-            ForEach(file.hunks) { hunk in
-                if shown < budget {
-                    Text(hunk.header).font(PiFont.mono).foregroundStyle(Color.piInfo).lineLimit(1)
-                        .padding(.horizontal, PiSpacing.md).padding(.vertical, 3).frame(maxWidth: .infinity, alignment: .leading).background(Color.piInfo.opacity(0.06))
-                    if split {
-                        ForEach(hunk.splitRows) { row in
-                            let _ = { shown += 1 }()
-                            if shown <= budget { splitRow(row) }
-                        }
-                    } else {
-                        ForEach(hunk.lines) { line in
-                            let _ = { shown += 1 }()
-                            if shown <= budget { diffRow(line) }
-                        }
-                    }
-                }
-            }
-        }
-        .overlay(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous).stroke(Color.piHairline, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous))
-        .padding(.horizontal, PiSpacing.lg)
-    }
-
-    private func tint(_ kind: GitDiffLine.Kind) -> Color {
-        switch kind { case .added: .piSuccess; case .removed: .piDanger; case .context, .note: .clear }
-    }
-
-    private func diffRow(_ line: GitDiffLine) -> some View {
-        let tint = tint(line.kind)
-        let marker = switch line.kind { case .added: "+"; case .removed: "−"; case .context: " "; case .note: "\\" }
-        return HStack(alignment: .top, spacing: 0) {
-            Text(line.oldNumber.map(String.init) ?? "").frame(width: 44, alignment: .trailing)
-            Text(line.newNumber.map(String.init) ?? "").frame(width: 44, alignment: .trailing).padding(.trailing, 8)
-            Text(marker).frame(width: 12, alignment: .center).foregroundStyle(line.kind == .context ? Color.piInkTertiary : tint)
-            Text(line.text.isEmpty ? " " : line.text).lineLimit(wrap ? nil : 1).truncationMode(.tail).textSelection(.enabled)
-                .foregroundStyle(line.kind == .note ? Color.piInkTertiary : Color.piInk)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .font(PiFont.mono)
-        .foregroundStyle(Color.piInkTertiary)
-        .padding(.vertical, 1).padding(.horizontal, PiSpacing.sm)
-        .background(line.kind == .context || line.kind == .note ? Color.clear : tint.opacity(0.10))
-    }
-
-    /// Old text on the left, new text on the right; a blank half is a line that exists only on the other side.
-    private func splitRow(_ row: GitSplitRow) -> some View {
-        HStack(alignment: .top, spacing: 0) {
-            splitHalf(row.left, number: row.left?.oldNumber, blank: row.left == nil)
-            Rectangle().fill(Color.piHairline).frame(width: 1)
-            splitHalf(row.right, number: row.right?.newNumber, blank: row.right == nil)
-        }
-        .font(PiFont.mono)
-        .padding(.vertical, 1)
-    }
-
-    private func splitHalf(_ line: GitDiffLine?, number: Int?, blank: Bool) -> some View {
-        let kind = line?.kind ?? .context
-        let tint = tint(kind)
-        return HStack(alignment: .top, spacing: 0) {
-            Text(number.map(String.init) ?? "").frame(width: 40, alignment: .trailing).padding(.trailing, 8).foregroundStyle(Color.piInkTertiary)
-            Text(line.map { $0.text.isEmpty ? " " : $0.text } ?? " ").lineLimit(wrap ? nil : 1).truncationMode(.tail).textSelection(.enabled)
-                .foregroundStyle(kind == .note ? Color.piInkTertiary : Color.piInk)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, PiSpacing.sm)
-        .background(blank ? Color.piFill.opacity(0.5) : kind == .context || kind == .note ? Color.clear : tint.opacity(0.10))
+/// Hands the panel the window it is in, so a confirmation can be a sheet on it.
+private struct GitPanelWindowReader: NSViewRepresentable {
+    let found: (NSWindow?) -> Void
+    func makeNSView(context: Context) -> Reader { let view = Reader(); view.found = found; return view }
+    func updateNSView(_ view: Reader, context: Context) { view.found = found; found(view.window) }
+    @MainActor final class Reader: NSView {
+        var found: ((NSWindow?) -> Void)?
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); found?(window) }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }

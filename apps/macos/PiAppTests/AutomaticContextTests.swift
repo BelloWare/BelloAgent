@@ -248,7 +248,7 @@ final class AutomaticContextTests: XCTestCase {
          "draftIncluded": .bool(true), "mode": .string("next-request"), "dispatched": .bool(false)]
     }
     private func scratch() throws -> URL {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()).appendingPathComponent("automatic-context-\(UUID().uuidString)")
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("automatic-context-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }

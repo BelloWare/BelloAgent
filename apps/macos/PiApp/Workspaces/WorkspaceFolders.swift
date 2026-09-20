@@ -9,11 +9,10 @@ extension WorkspaceModel {
     static let maximumRoots = 16
 
     /// Directory picker; symlinks are resolved so duplicates compare by real path.
-    static func chooseFolders(message: String, multiple: Bool) -> [String] {
+    static func chooseFolders(message: String, multiple: Bool) async -> [String] {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = false
         panel.allowsMultipleSelection = multiple; panel.message = message
-        guard panel.runModal() == .OK else { return [] }
-        return panel.urls.map { $0.resolvingSymlinksInPath().path }
+        return await PiQuestion.shared.open(panel).map { $0.resolvingSymlinksInPath().path }
     }
 
     /// Rejects relative, missing, duplicate or overlong root lists before they reach the vault.
@@ -116,6 +115,8 @@ extension WorkspaceModel {
         guard workspaces.contains(where: { $0.id == workspaceID }) else { throw HostError.failure("This project is no longer configured.") }
         let count = chatCount(workspaceID: workspaceID)
         guard count == 0 else { throw HostError.failure("Delete its \(count == 1 ? "chat" : "\(count) chats") before removing this project.") }
+        guard topics(in: workspaceID).isEmpty else { throw HostError.failure("Remove this project's topics before removing the project. Removing a topic keeps its chats.") }
+        guard topicOperationsInFlight == 0 else { throw HostError.failure("Wait for topic changes to finish before removing the project.") }
         try requireIdle(workspaceID)
         workspaceChangesInFlight.insert(workspaceID)
         defer { workspaceChangesInFlight.remove(workspaceID) }
@@ -124,12 +125,13 @@ extension WorkspaceModel {
             config.workspaces.removeAll { $0.id == workspaceID }
             config.resources.removeValue(forKey: workspaceID); config.mcp.removeValue(forKey: workspaceID)
         }
+        TerminalRegistry.shared.close(workspaceID: workspaceID)
         if selectedWorkspaceID == workspaceID { selectedWorkspaceID = workspaces.first?.id }
     }
 
     /// Open panel + durable update, for the manager sheet and onboarding.
     func addFoldersInteractively(to workspaceID: String) async throws {
-        let folders = Self.chooseFolders(message: "Choose additional folders for this project.", multiple: true)
+        let folders = await Self.chooseFolders(message: "Choose additional folders for this project.", multiple: true)
         guard !folders.isEmpty else { return }
         try await addFolders(folders, to: workspaceID)
     }

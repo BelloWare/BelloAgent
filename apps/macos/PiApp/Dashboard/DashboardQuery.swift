@@ -179,15 +179,15 @@ struct DashboardSnapshot: Sendable {
 extension PayloadArchive {
     static func prepareDashboardSchema(_ db: CaptureDatabase, migrate: Bool) throws {
         let names = Set(try db.rows("PRAGMA table_info(attempts)").compactMap { $0["name"]?.string })
-        let required: Set<String> = ["dispatch", "ttft_ms", "stream_ms", "http_ms", "cost_usd", "cache_read_tokens", "cache_write_tokens", "input_tokens", "output_tokens", "reasoning_tokens", "reasoning_cost_usd", "identity_status", "cost_status", "cache_status", "reasoning_cost_status", "reported_models", "response_model"]
-        let projectionVersion = Data([6])
+        let required: Set<String> = ["dispatch", "ttft_ms", "stream_ms", "request_ms", "http_ms", "cost_usd", "cache_read_tokens", "cache_write_tokens", "input_tokens", "output_tokens", "reasoning_tokens", "reasoning_cost_usd", "identity_status", "cost_status", "cache_status", "reasoning_cost_status", "reported_models", "response_model"]
+        let projectionVersion = Data([7])
         let savedProjection = try db.rows("SELECT value FROM archive_info WHERE name='dashboard-projection'").first?["value"]?.data
         let needsProjection = migrate || !required.isSubset(of: names) || savedProjection != projectionVersion
         // Invalidate before the first ALTER. A process loss after the final
         // column or any committed batch must resume projection on next open.
         if needsProjection { try db.execute("DELETE FROM archive_info WHERE name='dashboard-projection'") }
         var added = false
-        for name in ["dispatch", "ttft_ms", "stream_ms", "http_ms", "cost_usd", "cache_read_tokens", "cache_write_tokens", "input_tokens", "output_tokens", "reasoning_tokens", "reasoning_cost_usd"] where !names.contains(name) {
+        for name in ["dispatch", "ttft_ms", "stream_ms", "request_ms", "http_ms", "cost_usd", "cache_read_tokens", "cache_write_tokens", "input_tokens", "output_tokens", "reasoning_tokens", "reasoning_cost_usd"] where !names.contains(name) {
             try db.execute("ALTER TABLE attempts ADD COLUMN \(name) REAL"); added = true
         }
         if !names.contains("identity_status") {
@@ -222,7 +222,8 @@ extension PayloadArchive {
                         try projectDashboard(value, id: id, db: db)
                     }
                 }
-                after = rows.last!["id"]!.string!
+                guard let next = rows.last?["id"]?.string else { throw CaptureFailure.corrupt }
+                after = next
             }
             try db.execute("INSERT OR REPLACE INTO archive_info(name,value) VALUES('dashboard-projection',?)", [.blob(projectionVersion)])
         }
@@ -259,8 +260,9 @@ extension PayloadArchive {
         // Reusing existing bounded metadata also restores labels after body
         // expiry, without rereading or reconstructing HTTP payloads per refresh.
         let responseModel = GatewayModelIdentity(metadata: metadata).response?.name
-        try db.execute("UPDATE attempts SET dispatch=?,ttft_ms=?,stream_ms=?,http_ms=?,wall=COALESCE(?,wall),identity_status=?,reported_models=?,response_model=? WHERE id=? AND metrics_retained=1", [
+        try db.execute("UPDATE attempts SET dispatch=?,ttft_ms=?,stream_ms=?,request_ms=?,http_ms=?,wall=COALESCE(?,wall),identity_status=?,reported_models=?,response_model=? WHERE id=? AND metrics_retained=1", [
             dispatch.map(CaptureSQLValue.real) ?? .null, span(dispatch, observed("firstContent")), span(observed("firstContent"), observed("modelComplete")),
+            span(dispatch, observed("modelComplete")),
             span(dispatch, observed("httpEnd")), dispatch != nil ? wall.map(CaptureSQLValue.real) ?? .null : .null, .text(identityStatus), reportedColumn,
             responseModel.map(CaptureSQLValue.text) ?? .null, .text(id)
         ])

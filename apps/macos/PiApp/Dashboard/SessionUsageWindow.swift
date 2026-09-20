@@ -87,12 +87,22 @@ private struct SessionUsageWindowContent: View {
         }.store(in: &observations)
     }
 
+    /// A minimised or fully covered Session Info window has nothing to show,
+    /// and kept re-reading the archive every ten seconds for it.
+    func windowDidMiniaturize(_ notification: Notification) { guard !isClosed else { return }; usage.setVisible(false) }
+    func windowDidDeminiaturize(_ notification: Notification) { guard !isClosed else { return }; usage.setVisible(isOnScreen) }
+    func windowDidChangeOcclusionState(_ notification: Notification) { guard !isClosed else { return }; usage.setVisible(isOnScreen) }
+    private var isOnScreen: Bool {
+        guard let window else { return false }
+        return window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)
+    }
+
     func windowWillClose(_ notification: Notification) {
         guard !isClosed else { return }
         isClosed = true
         usage.setVisible(false)
         observations.removeAll()
-        window?.contentView = nil
+        DispatchQueue.main.async { [weak self] in self?.window?.contentView = nil }
         let closed = onClose; onClose = nil
         closed?()
     }

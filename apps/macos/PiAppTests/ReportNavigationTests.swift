@@ -11,6 +11,7 @@ final class ReportNavigationTests: XCTestCase {
         configuration.workspaces = [WorkspaceRecord(id: "w", path: root.path, trusted: true)]
         configuration.profiles = [VaultProfile(profile: profile, apiKey: "fixture-key")]
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
+        registerWorkspaceFixtureTeardown(model, root: root)
         try await model.reloadConfiguration()
         let chat = ChatRecord(id: "main", workspaceID: "w", title: "Main", path: nil, profileID: profile.id)
         let main = SessionDisplay(id: chat.id), side = SessionDisplay(id: "side")
@@ -37,14 +38,13 @@ final class ReportNavigationTests: XCTestCase {
     }
 
     @MainActor func testReportResignsNativeFocusAndPreservesMountedConversationSurfaces() async throws {
-        let (model, root) = try await model()
+        let (model, _) = try await model()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let hosted = NSHostingView(rootView: WorkspaceView(model: model))
         window.contentView = hosted
         defer {
-            model.report.suspend(); model.shutdown(); window.contentView = nil; window.close()
-            try? FileManager.default.removeItem(at: root)
+            model.report.suspend(); window.contentView = nil; window.close()
         }
         hosted.layoutSubtreeIfNeeded()
         try await waitFor { self.descendants(ComposerTextView.self, in: hosted).count == 2 && self.descendants(TranscriptSurfaceMarker.self, in: hosted).count == 2 }
@@ -79,8 +79,7 @@ final class ReportNavigationTests: XCTestCase {
     }
 
     @MainActor func testSelectingAnExistingSideAndNewChatLeaveReport() async throws {
-        let (model, root) = try await model()
-        defer { model.report.suspend(); model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try await model()
         model.openReport()
         await model.selectSide("side")
         XCTAssertEqual(model.page, .chats); XCTAssertEqual(model.selectedID, "main"); XCTAssertEqual(model.focusedSessionID, "side")
@@ -94,8 +93,7 @@ final class ReportNavigationTests: XCTestCase {
     }
 
     @MainActor func testGlobalSendCannotResendAnEditHiddenByReport() async throws {
-        let (model, root) = try await model()
-        defer { model.report.suspend(); model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try await model()
         let main = try XCTUnwrap(model.selected)
         main.editingMessageID = "u1"; main.draftBeforeEdit = DraftRecord(id: main.id, text: "original draft")
         model.openReport(); model.send(); model.send(steer: true)

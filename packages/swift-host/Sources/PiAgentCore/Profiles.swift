@@ -1,11 +1,10 @@
 import Foundation
 
 /// LiteLLM credentials are delivered by the native vault owner over private IPC.
-/// This is deliberately not an import/migration path for Pi credential files.
+/// This is deliberately not an import/migration path for Pi credential files:
+/// there is no discovery command, and a file, shell or environment credential
+/// is refused here rather than read.
 public enum ProfileFiles {
-    public static func discover(path: String) throws -> JSON {
-        throw AgentError("profiles_retired", "Configure LiteLLM in the native Keychain settings. Pi models/auth files are not an active configuration authority.")
-    }
     public static func credentials(profile: Profile, supplied: String?) throws -> (Profile, String) {
         guard profile.provider == "litellm", profile.raw["source"].isNull,
               profile.raw["apiKeyEnv"].isNull, profile.raw["authHeader"].isNull else {

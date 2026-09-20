@@ -65,7 +65,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             output = encoded({'jsonrpc': '2.0', 'id': body['id'], 'result': result})
             self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Mcp-Session-Id', 'fixture-session'); self.end_headers(); self.wfile.write(output); return
         try:
-            expected_output = 2048 if isinstance(body, dict) and body.get('model') == 'limited-tool' else 4096
+            # limited-tool submits with a 2,048 ceiling; other profiles may carry their catalog ceiling or no limit at all.
+            expected_output = 2048 if isinstance(body, dict) and body.get('model') == 'limited-tool' else None
             semantic = CONTRACT.validate_request('POST', self.path, dict(self.headers), body,
                                                  api_key='fixture-secret', max_output_tokens=expected_output)
             record['validated'] = True
@@ -373,7 +374,8 @@ class NativeIntegration(unittest.TestCase):
     def tearDown(self):
         self.peer.close();self.temp.cleanup()
     def open(self, api='openai-responses', model='text', session='s', routing=None, profile_headers=None, fail=False, **extra):
-        profile={'id':'p','revision':'1','providerId':'litellm','modelId':model,'api':api,'baseUrl':self.base+'/v1','contextWindow':100000,'maxOutputTokens':4096,'reasoning':True,'thinkingLevel':'default','routing': routing if routing is not None else {'replayPolicy':'portable'}}
+        # The catalog ceiling (modelOutputLimit) is what requests carry; maxOutputTokens is the local reserve.
+        profile={'id':'p','revision':'1','providerId':'litellm','modelId':model,'api':api,'baseUrl':self.base+'/v1','contextWindow':100000,'maxOutputTokens':4096,'modelOutputLimit':4096,'reasoning':True,'thinkingLevel':'default','routing': routing if routing is not None else {'replayPolicy':'portable'}}
         if profile_headers: profile['headers'] = profile_headers
         return self.peer.command('session.open',{'profile':profile,'apiKey':'fixture-secret','toolMode':'editing',**extra},session,fail=fail)
     def submit(self, session='s', text='question'):
@@ -382,7 +384,8 @@ class NativeIntegration(unittest.TestCase):
         deadline=time.monotonic()+12
         while time.monotonic()<deadline:
             value=self.peer.command('session.snapshot',session=session)
-            if value['state'] in ('idle','paused'):
+            # Since 0.1.45 a failed run settles as 'error' (retryable from the failure row); a stop settles as 'paused'.
+            if value['state'] in ('idle','paused','error'):
                 return value
             time.sleep(.01)
         self.fail('Session did not settle')
@@ -445,7 +448,7 @@ class NativeIntegration(unittest.TestCase):
         for api in ['openai-responses']:
             session = 'limits-'+api; self.open(api=api,model='text',session=session)
             turn = str(uuid.uuid4())
-            self.peer.command('turn.submit',{'clientTurnId':turn,'text':'read the file','model':'limited-tool','thinkingLevel':'high','contextWindow':16000,'maxOutputTokens':2048},session)
+            self.peer.command('turn.submit',{'clientTurnId':turn,'text':'read the file','model':'limited-tool','thinkingLevel':'high','contextWindow':16000,'maxOutputTokens':2048,'modelOutputLimit':2048},session)
             value = self.settled(session); self.assertEqual(value['state'],'idle',value.get('preflightError'))
             attempts = self.peer.command('debug.list',session=session)['attempts']; self.assertEqual(len(attempts),2)
             for attempt in attempts:
@@ -498,7 +501,7 @@ class NativeIntegration(unittest.TestCase):
         for api, model in cases:
             session = api + model
             self.open(api,model=model,session=session); self.submit(session)
-            self.assertEqual(self.settled(session)['state'],'paused' if model == 'failed-terminal' else 'idle')
+            self.assertEqual(self.settled(session)['state'],'error' if model == 'failed-terminal' else 'idle')
             attempt = self.peer.command('debug.list',session=session)['attempts'][0]
             self.assertIsNotNone(attempt['timings']['firstContent']); self.assertIsNotNone(attempt['timings']['firstText'])
             self.assertIsNotNone(attempt['timings']['modelComplete'])
@@ -695,7 +698,7 @@ class NativeIntegration(unittest.TestCase):
     def test_strict_gateway_request_selected_error_and_cancellation_do_not_replay(self):
         for api in ['openai-responses']:
             session='strict-errors-'+api; self.strict_open(api,session)
-            self.submit(session,'fixture: error'); self.assertEqual(self.settled(session)['state'],'paused')
+            self.submit(session,'fixture: error'); self.assertEqual(self.settled(session)['state'],'error')
             attempt=self.peer.command('debug.list',session=session)['attempts'][0]
             self.assertEqual(attempt['status'],429); self.assertEqual(attempt['gateway']['cost']['status'],'unreported')
             sent=self.captured_body(session,attempt,'request'); record=next(r for r in reversed(Fixture.requests) if r['body']==sent)
@@ -847,12 +850,12 @@ class NativeIntegration(unittest.TestCase):
         attempts = self.peer.command('debug.list', session='s')['attempts']; self.assertEqual(len(attempts), 2)
         self.assertTrue(all(a['persistenceError'] for a in attempts))
     def test_http_error_and_incomplete_stream_are_not_completed(self):
-        self.open(model='error');self.submit();value=self.settled();self.assertEqual(value['state'],'paused')
+        self.open(model='error');self.submit();value=self.settled();self.assertEqual(value['state'],'error')
         latest=self.peer.command('debug.list',session='s')['attempts'][0];self.assertEqual(latest['status'],400)
         self.assertEqual(latest['response']['state'],'complete'); self.assertEqual(latest['transportOutcome'],'eof')
         self.assertIsNone(latest['timings']['modelComplete']); self.assertIsNone(latest['metrics']['observedTTFTms'])
         self.peer.command('session.close',session='s')
-        self.open(model='incomplete',session='other');self.submit('other');value=self.settled('other');self.assertEqual(value['state'],'paused')
+        self.open(model='incomplete',session='other');self.submit('other');value=self.settled('other');self.assertEqual(value['state'],'error')
         self.assertIn('partial',json.dumps(value['messages']))
     def test_cancellation_keeps_queued_message_paused(self):
         self.open(model='slow');self.submit();time.sleep(.1)

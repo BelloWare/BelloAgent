@@ -14,19 +14,40 @@ struct RequestContextCount: Sendable {
     let source: String
     let warnings: [String]
     let contextWindow: Int
+    /// The output budget: a local reserve, never a cap on the wire.
     let outputBudget: Int
     let modelOutputLimit: Int?
-    var safetyMargin: Int { min(1024, max(1, contextWindow / 100)) }
+    /// The output limit the request carries: a bounded task's explicit cap as
+    /// is, the model ceiling clipped to the room the input leaves, or nothing.
+    let outputCap: Int?
+    static func safetyMargin(contextWindow: Int) -> Int { min(1024, max(1, contextWindow / 100)) }
+    var safetyMargin: Int { Self.safetyMargin(contextWindow: contextWindow) }
     var inputBudget: Int { max(0, contextWindow - outputBudget - safetyMargin) }
+    /// The reserve says the reply may not fit beside this input: compact first when possible.
     var fits: Bool { tokens <= inputBudget }
+    /// The input itself fits the window; only when it does not is a turn stopped.
+    var inputFits: Bool { tokens + safetyMargin <= contextWindow }
+    /// Room for the reply once the input and the safety margin are in the window.
+    var replyRoom: Int { max(1, contextWindow - tokens - safetyMargin) }
     var json: JSON {
         ["tokens":JSON(tokens), "method":JSON(method), "requestedModel":JSON(requestedModel),
          "countedModel":countedModel.map { JSON($0) } ?? .null, "requestFingerprint":JSON(requestFingerprint),
          "estimated":true, "source":JSON(source), "warnings":.array(warnings.map { JSON($0) }),
          "contextWindow":JSON(contextWindow), "outputBudget":JSON(outputBudget), "outputReserve":JSON(outputBudget),
-         "modelOutputLimit":modelOutputLimit.map { JSON($0) } ?? .null, "safetyMargin":JSON(safetyMargin),
-         "inputBudget":JSON(inputBudget), "fits":JSON(fits), "percent":JSON(Double(tokens) / Double(contextWindow) * 100),
+         "modelOutputLimit":modelOutputLimit.map { JSON($0) } ?? .null, "outputCap":outputCap.map { JSON($0) } ?? .null,
+         "safetyMargin":JSON(safetyMargin), "inputBudget":JSON(inputBudget), "fits":JSON(fits), "inputFits":JSON(inputFits),
+         "percent":JSON(Double(tokens) / Double(contextWindow) * 100),
          "countEndpointStatus":"unverified-request-compatibility"]
+    }
+}
+
+extension Profile {
+    /// The profile a conversation request is sent with: the model ceiling
+    /// clipped to the room the estimate leaves, so a long chat never asks for
+    /// more output than its window can hold. Explicit task caps are kept.
+    func dispatching(_ count: RequestContextCount) throws -> Profile {
+        guard let cap = count.outputCap, cap != wireOutputLimit else { return self }
+        return try capped(cap)
     }
 }
 
@@ -76,14 +97,18 @@ struct RequestContextCounter: Sendable {
             warnings.append("The next routed model is not fixed. This estimate cannot establish capacity for every possible backend.")
         }
         if profile.api == "openai-responses", request["max_output_tokens"].isNull {
-            warnings.append("The gateway compatibility setting omits the output limit. The configured output budget is reserved locally but is not sent as a server-enforced cap.")
+            warnings.append(profile.raw["compat"]["supportsMaxOutputTokens"].flag == false
+                ? "The gateway compatibility setting omits the output limit; the gateway decides where the reply stops. The output budget is a local reserve and is not sent as a server-enforced cap."
+                : "The model catalog gave no output ceiling for this model, so no output limit is sent; the gateway decides where the reply stops. The output budget is a local reserve and is not sent as a server-enforced cap.")
         }
         warnings += counter.warnings
         warnings.append("LiteLLM counting endpoints are not used without a request-compatible counting and routing contract.")
+        let room = max(1, profile.contextWindow - tokens - RequestContextCount.safetyMargin(contextWindow: profile.contextWindow))
+        let outputCap = profile.wireOutputLimit.map { profile.outputCap != nil ? $0 : min($0, room) }
         let result = RequestContextCount(tokens:tokens, method:method, requestedModel:profile.model, countedModel:countedModel,
             requestFingerprint:fingerprint,
             source:method == "usage-baseline" ? "Gateway-reported input for an unchanged prefix, plus an estimate of newly replayed request items" : "Prepared request UTF-8/3 estimate, including actual instructions, tools and replayed items",
-            warnings:warnings, contextWindow:profile.contextWindow, outputBudget:profile.maxOutput, modelOutputLimit:profile.modelOutputLimit)
+            warnings:warnings, contextWindow:profile.contextWindow, outputBudget:profile.maxOutput, modelOutputLimit:profile.modelOutputLimit, outputCap:outputCap)
         cache = cache.filter { now.timeIntervalSince($0.value.at) < 300 }
         if cache.count >= 32, let oldest = cache.min(by: { $0.value.at < $1.value.at })?.key { cache.removeValue(forKey:oldest) }
         cache[cacheKey] = Cached(value:result,at:now)

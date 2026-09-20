@@ -64,13 +64,33 @@ struct GitLogFilter: Equatable, Sendable {
     var allBranches = false
     var text = ""
     var author = ""
+    /// History of one path only ("file history"), cleared from the chip above the list.
+    var path: String?
 }
 
+/// Line counts for one changed path, from `--numstat`. A binary file reports no counts.
+struct GitDiffStat: Equatable, Sendable {
+    let added: Int
+    let removed: Int
+    let binary: Bool
+}
+
+/// What a commit changed, without its patch: the message, the changed paths and
+/// their line counts. The patch is read separately and only when it is shown,
+/// so selecting a commit never waits for megabytes of diff text.
 struct GitCommitDetail: Equatable, Sendable {
     let commit: GitCommit
     let message: String
     let files: [GitStatusEntry]
-    let diff: String
+    var stats: [String: GitDiffStat] = [:]
+    var insertions: Int { stats.values.reduce(0) { $0 + $1.added } }
+    var deletions: Int { stats.values.reduce(0) { $0 + $1.removed } }
+    /// Big commits keep their patch off screen until it is asked for.
+    var isLarge: Bool { files.count > 30 || insertions + deletions > 3_000 }
+    var summary: String {
+        let files = files.count == 1 ? "1 file" : "\(files.count) files"
+        return "\(files) · +\(insertions) −\(deletions)"
+    }
 }
 
 struct GitFailure: LocalizedError, Equatable {
@@ -96,32 +116,141 @@ actor GitService {
         var value: Data { lock.lock(); defer { lock.unlock() }; return data }
     }
 
-    func run(_ arguments: [String], in root: String, timeout: TimeInterval = 20) async throws -> Output {
-        let executable = executable
-        let environment = ["PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory(), "LANG": "en_US.UTF-8", "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"]
-        return try await Task.detached(priority: .userInitiated) { () throws -> Output in
-            let process = Process()
-            process.executableURL = executable
-            process.arguments = ["-c", "core.quotepath=off", "-c", "color.ui=never"] + arguments
-            process.currentDirectoryURL = URL(fileURLWithPath: root, isDirectory: true)
-            process.environment = environment
-            let stdout = Pipe(), stderr = Pipe()
-            process.standardOutput = stdout; process.standardError = stderr; process.standardInput = FileHandle.nullDevice
-            let errors = Sink()
-            stderr.fileHandleForReading.readabilityHandler = { handle in
-                let bytes = handle.availableData
-                if bytes.isEmpty { handle.readabilityHandler = nil } else { errors.append(bytes) }
+    /// The running process, so a read whose result is no longer wanted is
+    /// actually stopped. Clicking through history must not leave a queue of
+    /// `git show` processes computing patches nobody will read.
+    private final class RunningProcess: @unchecked Sendable {
+        private let lock = NSLock()
+        private var process: Process?
+        private var stopped = false
+        var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
+        /// False when the read was already cancelled, so nothing is launched.
+        func adopt(_ value: Process) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard !stopped else { return false }
+            process = value; return true
+        }
+        func stop() {
+            lock.lock(); let running = process; stopped = true; lock.unlock()
+            if running?.isRunning == true { running?.terminate() }
+        }
+    }
+
+    private static let environment = ["PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory(), "LANG": "en_US.UTF-8",
+                                      "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"]
+
+    private nonisolated static func execute(_ executable: URL, _ arguments: [String], in root: String,
+                                            timeout: TimeInterval, handle: RunningProcess) throws -> Output {
+        let process = Process()
+        process.executableURL = executable
+        let all = ["-c", "core.quotepath=off", "-c", "color.ui=never"] + arguments
+        // Foundation raises an uncaught Objective-C exception past its own
+        // 4096-argument limit, which no `catch` can stop: refuse first.
+        guard all.count <= 4_000 else { throw GitFailure(message: "Too many paths for one git command.") }
+        process.arguments = all
+        process.currentDirectoryURL = URL(fileURLWithPath: root, isDirectory: true)
+        process.environment = environment
+        let stdout = Pipe(), stderr = Pipe()
+        process.standardOutput = stdout; process.standardError = stderr; process.standardInput = FileHandle.nullDevice
+        let errors = Sink()
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            let bytes = handle.availableData
+            if bytes.isEmpty { handle.readabilityHandler = nil } else { errors.append(bytes) }
+        }
+        guard handle.adopt(process) else { throw CancellationError() }
+        do { try process.run() } catch { throw GitFailure(message: "git could not start: \(error.localizedDescription)") }
+        let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
+        let output = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        watchdog.cancel()
+        stderr.fileHandleForReading.readabilityHandler = nil
+        errors.append(stderr.fileHandleForReading.readDataToEndOfFile())
+        if handle.isStopped { throw CancellationError() }
+        return Output(stdout: output, stderr: String(decoding: errors.value, as: UTF8.self), status: process.terminationStatus)
+    }
+
+    /// Git's own threads. Waiting for a process is a blocking call, and a
+    /// blocking call on Swift's cooperative pool takes one of its few threads
+    /// out of circulation: a handful of concurrent reads would stall every
+    /// other task in the app, the gateway and the transcript included. These
+    /// waits happen on a queue of their own, where blocking is expected.
+    private static let processQueue = DispatchQueue(label: "com.belloware.PiApp.git", qos: .userInitiated, attributes: .concurrent)
+
+    /// How many git processes may run at once. Reads are cancelled when they
+    /// are superseded, but a panel in a bad state — a repository that answers
+    /// slowly, a reader clicking faster than git replies — must not be able to
+    /// fork without bound. Waiting for a place is asynchronous, so a task that
+    /// waits holds no thread.
+    static let concurrentProcesses = 8
+    private var runningProcesses = 0
+    private var waitingForProcess: [CheckedContinuation<Void, Never>] = []
+    /// Processes running now, for the test that holds the gate shut.
+    var processesRunning: Int { runningProcesses }
+    private func acquireProcess() async {
+        if runningProcesses < Self.concurrentProcesses { runningProcesses += 1; return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            waitingForProcess.append(continuation)
+        }
+    }
+    private func releaseProcess() {
+        if waitingForProcess.isEmpty { runningProcesses -= 1 }
+        else { waitingForProcess.removeFirst().resume() }
+    }
+
+    /// Runs git off the actor and turns its output into `T` on that same
+    /// background thread, so a large patch is parsed before it crosses back and
+    /// never as text on the main thread.
+    private func detached<T: Sendable>(_ arguments: [String], in root: String, timeout: TimeInterval,
+                                       _ transform: @escaping @Sendable (Output) throws -> T) async throws -> T {
+        let executable = executable, handle = RunningProcess()
+        await acquireProcess()
+        defer { releaseProcess() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, any Error>) in
+                Self.processQueue.async {
+                    do { continuation.resume(returning: try transform(try Self.execute(executable, arguments, in: root, timeout: timeout, handle: handle))) }
+                    catch { continuation.resume(throwing: error) }
+                }
             }
-            do { try process.run() } catch { throw GitFailure(message: "git could not start: \(error.localizedDescription)") }
-            let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
-            let output = stdout.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            watchdog.cancel()
-            stderr.fileHandleForReading.readabilityHandler = nil
-            errors.append(stderr.fileHandleForReading.readDataToEndOfFile())
-            return Output(stdout: output, stderr: String(decoding: errors.value, as: UTF8.self), status: process.terminationStatus)
-        }.value
+        } onCancel: { handle.stop() }
+    }
+
+    /// Foundation raises an uncaught Objective-C exception above 4096 arguments
+    /// and fails the spawn above ARG_MAX bytes, so a path list is always split
+    /// into runs git can actually be given. "Stage all" in a repository with
+    /// thousands of changed files must not take the app down with it.
+    static func batches(of paths: [String], prefix: [String]) -> [[String]] {
+        let countLimit = 512, byteLimit = 128 * 1024
+        var batches: [[String]] = [], current: [String] = [], bytes = prefix.reduce(0) { $0 + $1.utf8.count + 1 }
+        let base = bytes
+        for path in paths {
+            let size = path.utf8.count + 1
+            if !current.isEmpty, current.count >= countLimit || bytes + size > byteLimit {
+                batches.append(current); current = []; bytes = base
+            }
+            current.append(path); bytes += size
+        }
+        if !current.isEmpty { batches.append(current) }
+        return batches
+    }
+    /// A NUL-separated pathspec file for the commands that cannot be split.
+    static func writePathspec(_ paths: [String]) throws -> URL {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("pi-pathspec-" + UUID().uuidString)
+        var data = Data()
+        for path in paths { data.append(contentsOf: path.utf8); data.append(0) }
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+    /// Runs one git command per batch of paths, stopping at the first failure.
+    private func runBatched(_ prefix: [String], paths: [String], in root: String, _ what: String) async throws {
+        for batch in Self.batches(of: paths, prefix: prefix) {
+            _ = try require(await run(prefix + batch, in: root), what)
+        }
+    }
+
+    func run(_ arguments: [String], in root: String, timeout: TimeInterval = 20) async throws -> Output {
+        try await detached(arguments, in: root, timeout: timeout) { $0 }
     }
 
     private func require(_ output: Output, _ what: String) throws -> Output {
@@ -188,26 +317,15 @@ actor GitService {
         return status
     }
 
-    /// Unified diff of one path (or everything) against the index or HEAD.
-    /// Untracked files diff against nothing so they read as additions.
-    func diff(in root: String, path: String? = nil, staged: Bool, untracked: Bool = false) async throws -> String {
-        if untracked, let path {
-            let output = try await run(["diff", "--no-index", "--no-ext-diff", "-U3", "--", "/dev/null", path], in: root)
-            guard output.status <= 1 else { throw GitFailure(message: output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            return output.text
-        }
-        var arguments = ["diff", "--no-ext-diff", "-U3", "--find-renames"]
-        if staged { arguments.append("--cached") }
-        if let path { arguments += ["--", path] }
-        return try require(await run(arguments, in: root), "Reading the diff").text
-    }
-
     func log(in root: String, limit: Int = 50, skip: Int = 0, path: String? = nil, filter: GitLogFilter = GitLogFilter()) async throws -> [GitCommit] {
         var arguments = ["log", "--format=%H%x00%h%x00%an%x00%aI%x00%s%x00%P%x00%D%x1e", "-n", String(limit), "--skip", String(skip)]
         if filter.allBranches { arguments.append("--all") }
         let text = filter.text.trimmingCharacters(in: .whitespaces), author = filter.author.trimmingCharacters(in: .whitespaces)
         if !text.isEmpty { arguments += ["-i", "--grep=" + text] }
         if !author.isEmpty { arguments += ["-i", "--author=" + author] }
+        // One path's history follows renames, so a file keeps its story.
+        let path = path ?? filter.path
+        if path != nil { arguments.append("--follow") }
         if let path { arguments += ["--", path] }
         let output = try await run(arguments, in: root)
         if output.status != 0 {
@@ -239,11 +357,84 @@ actor GitService {
         }
     }
 
+    /// The message, the changed paths and their line counts. Both reads are
+    /// cheap and run together: neither asks git to produce any patch text.
     func commitDetail(in root: String, commit: GitCommit) async throws -> GitCommitDetail {
-        let message = try require(await run(["show", "--no-patch", "--format=%B", commit.hash], in: root), "Reading the commit").text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let names = try require(await run(["show", "--format=", "--name-status", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root), "Reading changed files").stdout
-        let diff = try require(await run(["show", "--format=", "--no-ext-diff", "-U3", "--find-renames", "-m", "--first-parent", commit.hash], in: root), "Reading the commit diff").text
-        return GitCommitDetail(commit: commit, message: message, files: Self.parseNameStatus(names), diff: diff)
+        async let named = run(["show", "--format=%B", "--name-status", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
+        async let counted = run(["show", "--format=", "--numstat", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
+        let names = try require(await named, "Reading the commit")
+        let numbers = try? require(await counted, "Reading the commit stats")
+        let (message, files) = Self.parseMessageAndNameStatus(names.stdout)
+        return GitCommitDetail(commit: commit, message: message, files: files,
+                               stats: numbers.map { Self.parseNumstat($0.stdout) } ?? [:])
+    }
+
+    /// `%B` followed by the NUL-separated name-status records of one `git show`.
+    static func parseMessageAndNameStatus(_ data: Data) -> (String, [GitStatusEntry]) {
+        guard let separator = data.firstIndex(of: 0) else {
+            return (String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), [])
+        }
+        let message = String(decoding: data[..<separator], as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (message, parseNameStatus(Data(data[data.index(after: separator)...])))
+    }
+
+    /// `--numstat -z`: "added\tremoved\tpath" per record, and for a rename the
+    /// counts field ends after its tabs with the old and new paths following.
+    static func parseNumstat(_ data: Data) -> [String: GitDiffStat] {
+        var stats: [String: GitDiffStat] = [:]
+        let fields = data.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }
+        var index = 0
+        while index < fields.count {
+            var record = fields[index]; index += 1
+            while record.first == "\n" || record.first == "\r" { record.removeFirst() }
+            guard !record.isEmpty else { continue }
+            let parts = record.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count >= 2 else { continue }
+            let binary = parts[0] == "-" || parts[1] == "-"
+            var path = parts.count >= 3 ? parts[2...].joined(separator: "\t") : ""
+            if path.isEmpty {
+                guard index + 1 < fields.count else { break }
+                index += 1                      // the old path of a rename or copy
+                path = fields[index]; index += 1
+            }
+            guard !path.isEmpty else { continue }
+            stats[path] = GitDiffStat(added: Int(parts[0]) ?? 0, removed: Int(parts[1]) ?? 0, binary: binary)
+        }
+        return stats
+    }
+
+    /// The patch of one commit, or of one path inside it, already parsed.
+    func commitDiffFiles(in root: String, commit: GitCommit, path: String? = nil) async throws -> [GitDiffFile] {
+        var arguments = ["show", "--format=", "--no-ext-diff", "-U3", "--find-renames", "-m", "--first-parent", commit.hash]
+        if let path { arguments += ["--", path] }
+        return try await detached(arguments, in: root, timeout: 20) { output in
+            guard output.status == 0 else {
+                let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw GitFailure(message: detail.isEmpty ? "Reading the commit diff failed." : detail)
+            }
+            return GitDiffParser.parse(output.text)
+        }
+    }
+
+    /// The working-tree or staged patch of one path, already parsed. A renamed
+    /// file is asked for under both its names: given only the new one, git has
+    /// nothing to match against and reports the whole file as added.
+    func diffFiles(in root: String, paths: [String] = [], staged: Bool, untracked: Bool = false) async throws -> [GitDiffFile] {
+        var arguments: [String]
+        if untracked, let path = paths.last { arguments = ["diff", "--no-index", "--no-ext-diff", "-U3", "--", "/dev/null", path] }
+        else {
+            arguments = ["diff", "--no-ext-diff", "-U3", "--find-renames"]
+            if staged { arguments.append("--cached") }
+            if !paths.isEmpty { arguments += ["--"] + paths }
+        }
+        let allowed: Int32 = untracked ? 1 : 0
+        return try await detached(arguments, in: root, timeout: 20) { output in
+            guard output.status <= allowed else {
+                let detail = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw GitFailure(message: detail.isEmpty ? "Reading the diff failed." : detail)
+            }
+            return GitDiffParser.parse(output.text)
+        }
     }
 
     static func parseNameStatus(_ data: Data) -> [GitStatusEntry] {
@@ -251,7 +442,8 @@ actor GitService {
         var entries: [GitStatusEntry] = []
         var index = 0
         while index < fields.count {
-            let code = fields[index]; index += 1
+            // `git show` writes a newline between its header and the records.
+            let code = fields[index].trimmingCharacters(in: .newlines); index += 1
             guard let state = code.first, index < fields.count else { break }
             if state == "R" || state == "C" {
                 let original = fields[index]; index += 1
@@ -303,22 +495,19 @@ actor GitService {
     /// Throws away the working-tree and index changes of the given paths; untracked files are deleted.
     func discard(_ entries: [GitStatusEntry], in root: String) async throws {
         let tracked = entries.filter { !$0.untracked }.map(\.path), untracked = entries.filter(\.untracked).map(\.path)
-        if !tracked.isEmpty { _ = try require(await run(["restore", "--staged", "--worktree", "--"] + tracked, in: root), "Discarding changes") }
-        if !untracked.isEmpty { _ = try require(await run(["clean", "-f", "--"] + untracked, in: root), "Removing untracked files") }
+        if !tracked.isEmpty { try await runBatched(["restore", "--staged", "--worktree", "--"], paths: tracked, in: root, "Discarding changes") }
+        if !untracked.isEmpty { try await runBatched(["clean", "-f", "--"], paths: untracked, in: root, "Removing untracked files") }
     }
-    /// Per-file diff of one commit, for a selected file in its detail.
-    func commitDiff(in root: String, commit: GitCommit, path: String) async throws -> String {
-        try require(await run(["show", "--format=", "--no-ext-diff", "-U3", "--find-renames", "-m", "--first-parent", commit.hash, "--", path], in: root), "Reading the file diff").text
-    }
-
     func stage(_ paths: [String], in root: String) async throws {
         guard !paths.isEmpty else { return }
-        _ = try require(await run(["add", "-A", "--"] + paths, in: root), "Staging")
+        try await runBatched(["add", "-A", "--"], paths: paths, in: root, "Staging")
     }
     func unstage(_ paths: [String], in root: String) async throws {
         guard !paths.isEmpty else { return }
-        let output = try await run(["restore", "--staged", "--"] + paths, in: root)
-        if output.status != 0 { _ = try require(await run(["reset", "-q", "HEAD", "--"] + paths, in: root), "Unstaging") }
+        for batch in Self.batches(of: paths, prefix: ["restore", "--staged", "--"]) {
+            let output = try await run(["restore", "--staged", "--"] + batch, in: root)
+            if output.status != 0 { _ = try require(await run(["reset", "-q", "HEAD", "--"] + batch, in: root), "Unstaging") }
+        }
     }
     /// Commits the staged index, or only the given paths (their working-tree
     /// state, as IntelliJ's checked files), optionally amending HEAD.
@@ -327,9 +516,18 @@ actor GitService {
         guard !trimmed.isEmpty else { throw GitFailure(message: "Enter a commit message.") }
         var arguments = ["commit", "-q", "-m", trimmed]
         if amend { arguments.append("--amend") }
+        var pathspecFile: URL?
+        defer { if let pathspecFile { try? FileManager.default.removeItem(at: pathspecFile) } }
         if !paths.isEmpty {
-            _ = try require(await run(["add", "-A", "--"] + paths, in: root), "Staging")
-            arguments += ["--only", "--"] + paths
+            try await stage(paths, in: root)
+            // One commit cannot be split, so a path list too long for argv is
+            // handed to git in a file instead.
+            if Self.batches(of: paths, prefix: arguments + ["--only", "--"]).count > 1, let file = try? Self.writePathspec(paths) {
+                pathspecFile = file
+                arguments += ["--only", "--pathspec-from-file=" + file.path, "--pathspec-file-nul"]
+            } else {
+                arguments += ["--only", "--"] + paths
+            }
         }
         _ = try require(await run(arguments, in: root), "Committing")
         return try require(await run(["rev-parse", "--short", "HEAD"], in: root), "Reading HEAD").text.trimmingCharacters(in: .whitespacesAndNewlines)

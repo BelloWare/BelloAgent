@@ -20,7 +20,7 @@ enum MarkdownAlignment: Sendable, Equatable { case left, center, right }
 
 /// How inline text is dressed: the base size, whether soft line breaks stay
 /// as typed (user messages) or become spaces (prose), and the palette.
-struct MarkdownStyle: Sendable {
+struct MarkdownStyle: Sendable, Equatable {
     /// Names the style in the parse cache key.
     var id = "prose"
     var baseSize: CGFloat = 14.5

@@ -65,7 +65,11 @@ typealias SessionUsageLoader = @MainActor (SessionUsageScope, Date, Int) async t
                     if offset > 0 && value.models.isEmpty {
                         self.offset = 0; self.snapshot = nil; self.restart(); return
                     }
-                    self.snapshot = value; self.loading = false; self.notice = ""
+                    // The fallback poll re-reads the same archive rows; only a
+                    // change may redraw the charts and the model table.
+                    if self.snapshot != value { self.snapshot = value }
+                    if self.loading { self.loading = false }
+                    if !self.notice.isEmpty { self.notice = "" }
                 } catch is CancellationError { return }
                 catch {
                     guard !Task.isCancelled, let self, self.generation == generation else { return }
@@ -158,7 +162,7 @@ struct SessionInfoTiming: Equatable {
         let ttfts = history.samples.compactMap(\.ttftMilliseconds)
         latestTTFT = history.latest?.ttftMilliseconds
         medianTTFT = Self.median(ttfts); ttftSamples = ttfts.count
-        if let latest = history.latest, let ttft = latest.ttftMilliseconds, let streaming = latest.streamingMilliseconds { latestDurationMs = ttft + streaming }
+        latestDurationMs = history.latest?.requestMilliseconds
         latestRate = history.latest?.outputTokensPerSecond
         averageRate = history.historicalRate.tokensPerSecond
         if let split = WorkSplit(timing: work) {
@@ -283,7 +287,7 @@ struct SessionUsageView: View {
                     .accessibilityIdentifier("session-usage-historical-tps")
                 PiStatTile(title: "Requests", value: "\(totals.requests)", caption: "\(snapshot.modelGroups) model \(snapshot.modelGroups == 1 ? "group" : "groups")", symbol: "arrow.up.arrow.down", tone: .accent)
                 PiStatTile(title: "Tokens consumed", value: menuBarTokens(tokens.total), caption: coverageCaption(tokens.samples, totals.requests, complete: "input plus output, reported by every request"), symbol: "number", tone: .accent)
-                PiStatTile(title: "Reported cost", value: gatewayUSD(totals.costUSD), caption: coverageCaption(totals.costSamples, totals.requests, complete: "gateway-reported, every request"), symbol: "dollarsign.circle", tone: .success)
+                PiStatTile(title: "Reported cost", value: headlineUSD(totals.costUSD), caption: (headlineUSDRounded(totals.costUSD) ? "exactly \(gatewayUSD(totals.costUSD).replacingOccurrences(of: " USD", with: "")) · " : "") + coverageCaption(totals.costSamples, totals.requests, complete: "gateway-reported, every request"), symbol: "dollarsign.circle", tone: .success)
             }
             if snapshot.costUnreported + snapshot.costInvalid + snapshot.costConflicts > 0 {
                 Text("\(snapshot.costUnreported) costs unreported · \(snapshot.costInvalid) invalid · \(snapshot.costConflicts) conflicting")

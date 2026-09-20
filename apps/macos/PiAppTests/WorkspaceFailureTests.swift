@@ -19,7 +19,7 @@ final class WorkspaceFailureTests: XCTestCase {
     }
 
     @MainActor func testRetainedFailureLoadsWithoutAHelperAndAppearsAsErrorInActivity() async throws {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()).appendingPathComponent("workspace-failure-" + UUID().uuidString)
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("workspace-failure-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("failed.jsonl"), message = "Provider returned HTTP 429.\nRate limit reached (rate_limit_exceeded)"

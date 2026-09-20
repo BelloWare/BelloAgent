@@ -1,27 +1,22 @@
 # Swift host parity and intentional differences
 
-Updated 2026-09-17. **Bello Agent 0.1.19/build 23** is publicly released on
-`master`, source `9b94e4d`, website `d37b885`. Final evidence is
-394 unique native and 140 unique helper passes, six optional native skips,
-29 transcript tests, TypeScript checking and 10 dependency-cache tests.
-Signing/notarization, packaged smoke and public artifact checks pass.
-Installation/update rehearsals were skipped.
-The historical **0.1.6/build 10** and earlier releases retain verified public
-artifacts and actual-update evidence. Pi `v0.85.1` remains a behavioral reference;
-`packages/swift-host` is the selected implementation, with SwiftUI/AppKit
-composers and a React/TypeScript WKWebView transcript. The retired Pi host is not bundled.
+Updated 2026-09-19. Read [Implementation-Status.md](Implementation-Status.md)
+for the current public release and versioned acceptance records. Earlier test
+counts and release notes below are historical evidence, not fresh checks.
 
-This documents Bello Agent's contract, not complete Pi compatibility. Read
-[Implementation-Status.md](Implementation-Status.md) and the
-[0.1.19 acceptance record](validation/Bello-Agent-0.1.19-2026-09-17.md) for current
-scope. Checks not repeated in this release remain explicitly historical in the
-[0.1.6 record](validation/Bello-Agent-0.1.6-2026-09-16.md) and subsequent versioned
-records; the current acceptance record identifies all checks run for 0.1.19.
+Since 0.1.38 the transcript and composers are native SwiftUI/AppKit, with the
+self-contained Swift helper in `packages/swift-host`. React, WKWebView and Node
+are no longer in the build. Pi `v0.85.1` remains a behavioral reference, not a
+runtime dependency or a claim of complete upstream compatibility.
+
+The [0.1.52 throughput/worker review](TPS-Workers-Review-2026-09-19.md) supersedes
+older live-byte estimates and the serialized read-tool limitation. Read the
+latest acceptance record for actual native, helper and distribution coverage.
 
 | Area | Current implementation | Difference / obligation |
 | --- | --- | --- |
 | Durable recovery | Monotonic metadata revisions; quit save failures keep the app open; atomic handoffs; independent side recovery; queue checkpoint recovery preserves one delivered user message | Explicitly stale writes fail. Mutating command tombstones prevent replay after ledger eviction; a rare collision refuses conservatively. |
-| Transcript recovery | Only successful React commits acknowledge painting/read state; new snapshots can reset a failed render boundary; WebKit reload resets delivery and calibration | Native packaged-page fixtures inject failures and invoke the termination callback; no OS-induced process crash is claimed. |
+| Transcript recovery | Native transcript rendering and visibility determine read receipts; historical WebKit checks below are retired | Current native rendering and lifecycle checks are recorded in versioned acceptance, with large-history layout limits explicit. |
 | Capture and accounting review | Known response credential echoes are masked across chunk boundaries with metadata disclosure; paired input/cache observations retain coverage; archive reads reuse the next maintenance deadline | Parsing receives original bytes. Existing historical captures are not rewritten. Finite archive limits and unverified billing provenance remain. |
 | Agent loop | Complete assistant/tool turns, tool results, usage, cancellation | First-party subset, not line-for-line Pi or an identical system prompt. |
 | Steering | Consumed after full current tool batch | Does not cancel the HTTP response or skip remaining tools. |
@@ -29,11 +24,11 @@ records; the current acceptance record identifies all checks run for 0.1.19.
 | Context | Ring, inspector, preflight and compaction share the provider-built request count, with method, fingerprint, model, budget and warning provenance. Idle selection and draft changes debounce/cancel safely; counts cache by request/configuration and baseline evidence | A local heuristic or matching pinned-model usage-input baseline is still estimated. Previous output is not added wholesale. Tools, instructions, images and replay follow the actual request. No compatible remote counter/routing contract is enabled; see Context-Accounting.md. Captured HTTP remains separate. |
 | Compaction | Complete-boundary summary and recent turns, native resume; composer strip shows progress and the latest successful summary from authoritative active context | Fast/background completion and historical baselines are independent of transcript scrollback. Failed/cancelled attempts cannot reuse an old success; abandoned branches cannot supply the notice. No recursive overflow recovery or automatic retry. |
 | Streaming | Responses text/exposed reasoning/tool arguments, live shell output, jump-to-latest control, streaming caret and resize follow | New Messages dispatch is rejected; historical records remain readable. Opaque reasoning stays opaque and display batching is separate from byte capture. |
-| Native tools | read/ls/find/grep/write/edit/bash | Exact edit, bounded UTF-8 reads/search; not all Pi options. |
+| Native tools | read/ls/find/grep use four bounded blocking worker threads per helper; write/edit/bash/MCP preserve project coordination | Exact edit, bounded UTF-8 reads/search; cooperative cancellation between filesystem/regex calls. Not all Pi options. |
 | `/side` and `/fork` | `/side` + Enter immediately creates a durable child from the complete context boundary; closing preserves history, pending work and draft. `/fork` creates an independent session with the same completed context | No model call is needed to open either. Provider items, tools, compaction and branch selections survive; queues and identity are independent. Side tool policy is read-only, not OS filesystem isolation. Legacy ephemeral sides are saved when closed. |
 | Multiple project roots | Primary-first trusted roots, native manager and matching host tool/resource resolution | Relative paths use the primary root or an unambiguous existing path under another root. Workspace changes guard affected active/loading/queued sessions; this is not OS filesystem isolation. |
 | Project sidebar | All projects have independent persisted disclosure/archive filters; session rename, pin, archive/restore and child relationships persist | Organization revisions prevent late host/model writes from undoing edits. Orphaned historical project groups remain readable without restoring trust. Archive does not delete or interrupt work. Explicit deletion requires idle work and closed parent/child side panes. |
-| Background accounting | Capture metadata invalidates session totals regardless of focus; all project groups retain cost caches and running rows show fresh estimated output TPS | Query generations reject stale reads and late final billing survives display eviction. Session consumption is separate from the context estimate. |
+| Background accounting | Capture metadata invalidates session totals regardless of focus; all project groups retain cost caches and running rows keep the latest completed reported output TPS stable | Query generations reject stale reads and late final billing survives display eviction. Session consumption is separate from the context estimate. |
 | Native window and copying | Native traffic lights keep reserved sidebar space; chat/report headers start at the window top without a blank full-width strip. Dragging, double-click zoom/restore and exact code/Markdown-section copy remain | Top safe-area handling belongs on the split detail child. UTF-16/stale-copy validation, native-control exclusions and focus/draft preservation remain. |
 | Output budgets | Requested output budget is distinct from model catalog output ceiling, clamped to supported limits and propagated through chats, queues, sides, titles and preflight; safety margin is explicit | Catalog selection does not raise the requested budget to the theoretical maximum. Legacy per-chat catalog ceilings migrate once; old explicit profile budgets are preserved because their provenance is unknown. |
 | Model and effort selection | Searchable native model popover plus effort actions; per-chat overrides and deliberate choices/limits remembered per connection for new chats across projects/restarts | Profile and Model default remain distinct. Incompatible effort resets on model selection; manual aliases remain explicit and are not injected into catalog rows. |
@@ -60,7 +55,7 @@ records; the current acceptance record identifies all checks run for 0.1.19.
 | LiteLLM auto-router | Requested alias retained, bounded sourced identity, explicit portable/fixed-route native-state replay | Gateway-reported model/provenance/unknown/conflict states implemented, with every conflicting name retained and expandable in request details; deployment contract verification remains external. |
 | LiteLLM cost/cache/reasoning | Per-message/session/report cost and token accounting, cache-write tokens, reasoning tokens and reported reasoning cost, with sample coverage | Reasoning is a subset of output, never an extra total. Final JSON headers can supply cost when body cost is null; provisional streaming headers cannot. No local price estimates or inferred zero. Response-cache state is distinct from provider prompt-cache tokens; see the pinned accounting contract. |
 | Inline request attribution | One inline accounting owner per attempt, moving from user input to assistant response. The status line shows one literal response-body model with other body/header reports on click | Body aliases are not verified upstream identity. Unknown/conflicting/incomplete identity stays in details; raw evidence never enters the transcript bridge. User Details and compaction attribution remain. |
-| Status bar Activity / Usage | Usage opens first with time scopes, historical output TPS and requested/resolved models. Activity shows only running work and a separate combined live output estimate | Historical rates use output divided by summed valid dispatch-to-completion duration, with completed-sample coverage. Live estimates exclude opaque reasoning and tool output. Unread/waiting/paused rows are omitted from this panel. Physical menu clicks remain outside CUA coverage. |
+| Status bar Activity / Usage | Usage opens first with time scopes, historical output TPS and requested/resolved models. Activity shows only running work; byte-derived live output estimates have been removed | Historical rates use reported output divided by summed valid dispatch-to-completion duration, with completed-sample coverage. Reasoning is included once, and first-content timing is not required. Unread/waiting/paused rows are omitted from this panel. Physical menu clicks remain outside CUA coverage. |
 | Session distributions and titles | Resizable native usage windows show tokens/cache/TPS and group requested/resolved models and reported costs; scope persists across chat changes. Separate selected/catalog-recommended mini model generates titles in retained background sessions | Whole-scope shares and null coverage stay truthful. Title tasks have fixed labels, independent capture/cost, no tools/resources, manual-rename protection and durable no-retry claims; hidden until revealed. No mini choice means no auxiliary model call. |
 | First-launch setup | Persistent setup, retry-safe identity, trusted workspace and a real selected-model Test & Start request through the packaged helper/scoped vault/capture path | Probe has no tools/history/resources, output ≤256, cancellation and timeout. Empty/error/stale/cancelled results cannot finish setup; no probe chat/journal is created. Discovery alone is not connection verification. |
 | Unread replies | Durable unread state baselines old history, reconciles offline journals and survives restart; the sidebar shows a dot rather than a count; explicit Mark as Read remains | Only the latest completed reply visibly painted in a foreground chat clears automatically. Status-panel unread rows are omitted. Background/report/scrollback and stale receipts cannot clear newer output. Existing CUA limits remain. |

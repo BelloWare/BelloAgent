@@ -154,20 +154,36 @@ final class RequestContextTests: XCTestCase {
         XCTAssertEqual(count.json["outputReserve"], 2048)
     }
 
-    func testOmittedGatewayOutputLimitKeepsLocalReserveAndExplainsItIsNotEnforced() throws {
-        let bounded = try pinnedProfile()
+    func testTheBudgetIsALocalReserveAndOnlyTheModelCeilingReachesTheWire() throws {
+        let unknown = try pinnedProfile()
+        var withCeiling = unknown.raw; withCeiling["modelOutputLimit"] = 32_768
+        let bounded = try Profile(withCeiling)
         var raw = bounded.raw; raw["compat"]["supportsMaxOutputTokens"] = false
         let unbounded = try Profile(raw)
         var counter = RequestContextCounter()
-        let boundedBody = try request(bounded), unboundedBody = try request(unbounded)
+        let boundedBody = try request(bounded), unboundedBody = try request(unbounded), unknownBody = try request(unknown)
         let sent = try counter.count(request: boundedBody, profile: bounded)
         let omitted = try counter.count(request: unboundedBody, profile: unbounded)
-        XCTAssertEqual(boundedBody["max_output_tokens"].int, bounded.maxOutput)
-        XCTAssertTrue(unboundedBody["max_output_tokens"].isNull)
-        XCTAssertEqual(omitted.outputBudget, unbounded.maxOutput)
+        let unlisted = try counter.count(request: unknownBody, profile: unknown)
+        XCTAssertEqual(boundedBody["max_output_tokens"].int, 32_768, "the ceiling, not the budget, is the cap")
+        XCTAssertNotEqual(boundedBody["max_output_tokens"].int, bounded.maxOutput)
+        XCTAssertTrue(unboundedBody["max_output_tokens"].isNull); XCTAssertTrue(unknownBody["max_output_tokens"].isNull)
+        XCTAssertEqual(omitted.outputBudget, unbounded.maxOutput); XCTAssertEqual(sent.outputBudget, bounded.maxOutput)
+        XCTAssertEqual(sent.outputCap, 32_768); XCTAssertNil(omitted.outputCap); XCTAssertNil(unlisted.outputCap)
+        XCTAssertEqual(sent.json["outputCap"].int, 32_768); XCTAssertTrue(unlisted.json["outputCap"].isNull); XCTAssertEqual(sent.json["inputFits"].flag, true)
         XCTAssertNotEqual(omitted.requestFingerprint, sent.requestFingerprint)
         XCTAssertFalse(sent.warnings.contains { $0.contains("not sent as a server-enforced cap") })
-        XCTAssertTrue(omitted.warnings.contains { $0.contains("not sent as a server-enforced cap") })
+        XCTAssertTrue(omitted.warnings.contains { $0.contains("compatibility setting omits") && $0.contains("not sent as a server-enforced cap") })
+        XCTAssertTrue(unlisted.warnings.contains { $0.contains("no output ceiling") && $0.contains("not sent as a server-enforced cap") })
+        // Near the end of the window the ceiling is clipped to the room the input leaves.
+        var small = withCeiling; small["contextWindow"] = 6_000; small["maxOutputTokens"] = 1_000
+        let crowded = try Profile(small)
+        let crowdedBody = try request(crowded, messages: [ChatMessage(role: "user", content: [textBlock(String(repeating: "x", count: 9_000))])])
+        let clipped = try counter.count(request: crowdedBody, profile: crowded)
+        XCTAssertEqual(clipped.outputCap, clipped.replyRoom); XCTAssertEqual(clipped.replyRoom, 6_000 - clipped.tokens - 60)
+        XCTAssertLessThan(try XCTUnwrap(clipped.outputCap), 32_768)
+        XCTAssertEqual(try crowded.dispatching(clipped).wireOutputLimit, clipped.outputCap)
+        XCTAssertEqual(try bounded.dispatching(sent).raw, bounded.raw, "nothing changes when the ceiling already fits")
     }
 
     func testSameRequestIsStableAndNewBaselineEvidenceInvalidatesTheCachedCount() throws {

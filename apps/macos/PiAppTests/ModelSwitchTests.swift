@@ -1,14 +1,35 @@
+import AppKit
 import XCTest
 import SQLite3
 @testable import PiApp
 
 final class ModelSwitchTests: XCTestCase {
     private func scratch() throws -> URL {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()).appendingPathComponent("native-model-switch-\(UUID().uuidString)")
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("native-model-switch-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); return root
     }
     private func profile(id: String = "p") -> ProfileRecord {
         var profile = ProfileRecord(); profile.id = id; profile.modelId = "router/default"; profile.baseUrl = "https://gateway.example/v1"; return profile
+    }
+
+    /// The pill over the composer has to say whose default is in force. "Effort
+    /// · default" left the reader asking "default of what?", and "Effort ·
+    /// model" read as the name of a model rather than as who decides. Both are
+    /// pinned here because they are the words the reader sees most often, and
+    /// because the pill has to be wide enough to hold the longest of them.
+    @MainActor func testTheEffortPillNamesWhoseDefaultIsInForce() throws {
+        XCTAssertEqual(ThinkingLevel.profileDefault.pillLabel, "Effort · connection default")
+        XCTAssertEqual(ThinkingLevel.default.pillLabel, "Effort · model decides")
+        XCTAssertEqual(ThinkingLevel.medium.pillLabel, "Effort · medium")
+        XCTAssertEqual(ThinkingLevel.xhigh.pillLabel, "Effort · xhigh")
+        // Every label fits the pill it is drawn in, so none is truncated down
+        // the middle into something like "Effort · con…default".
+        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        for level in ThinkingLevel.allCases {
+            let width = (level.pillLabel as NSString).size(withAttributes: [.font: font]).width
+            XCTAssertLessThanOrEqual(width, ModelSwitchPills.effortLabelWidth,
+                                     "“\(level.pillLabel)” needs \(Int(width.rounded())) points and the pill offers \(Int(ModelSwitchPills.effortLabelWidth))")
+        }
     }
 
     func testChatRecordDecodesWithoutOverridesAndRoundTripsThem() throws {
@@ -198,6 +219,126 @@ final class ModelSwitchTests: XCTestCase {
         XCTAssertTrue(gateway.requests[1].hasPrefix("GET /revised-catalog "))
         XCTAssertTrue(gateway.requests[1].lowercased().contains("authorization: bearer synthetic-new-key"))
         XCTAssertFalse(gateway.requests[1].contains("synthetic-old-key"))
+        await model.store?.close(); try await model.traces.close()
+    }
+
+    /// A connection nobody has listed yet has a blank catalog entry. Treating
+    /// that as "this model is not offered here" dropped the chat's model on the
+    /// first switch to any connection in a session, and the user had to pick it
+    /// again. A catalog that was actually read and does not list it still wins.
+    @MainActor func testSwitchingConnectionsKeepsAModelTheTargetHasSimplyNotListedYet() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let gateway = try ModelListGateway { request in
+            if request.hasPrefix("GET /shared ") { return .json(#"[{"id":"gpt-5"},{"id":"router/other"}]"#) }
+            if request.hasPrefix("GET /narrow ") { return .json(#"[{"id":"router/other"}]"#) }
+            return ModelListGateway.Reply(bytes: Data("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8))
+        }
+        defer { gateway.stop() }
+        let base = try await gateway.start()
+        var shared = profile(id: "shared"); shared.baseUrl = base; shared.catalogUrl = base + "/shared"
+        var narrow = profile(id: "narrow"); narrow.baseUrl = base; narrow.catalogUrl = base + "/narrow"
+        var broken = profile(id: "broken"); broken.baseUrl = base; broken.catalogUrl = base + "/broken"
+        var saved = VaultConfiguration()
+        saved.profiles = [shared, narrow, broken].map { VaultProfile(profile: $0, apiKey: "synthetic-only") }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(saved))))
+        defer { model.shutdown() }
+        try await model.reloadConfiguration()
+        let chat = ChatRecord(id: "chat", workspaceID: "w", title: "Chat", path: nil, profileID: "narrow", model: "gpt-5", outputBudgetVersion: 1)
+        try await model.store?.put(chat, kind: "chat", id: chat.id); model.chats = [chat]
+
+        // Nothing has listed "shared" this session: the chat keeps its model.
+        XCTAssertTrue(model.modelCatalog.entry(for: shared).descriptors.isEmpty)
+        await model.setConnection("shared", for: "chat")
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.chats.first?.model, "gpt-5", "a catalog nobody has read is not evidence that a model is gone")
+
+        // A catalog that was read and does not list it still drops it.
+        await model.setConnection("narrow", for: "chat")
+        XCTAssertNil(model.error)
+        XCTAssertNil(model.chats.first?.model, "a catalog that was actually read and does not list the model wins")
+
+        // A catalog that could not be read keeps whatever the chat has.
+        model.chats[0].model = "gpt-5"
+        try await model.store?.put(model.chats[0], kind: "chat", id: "chat")
+        await model.setConnection("broken", for: "chat")
+        XCTAssertNil(model.error)
+        XCTAssertNotNil(model.modelCatalog.entry(for: broken).error)
+        XCTAssertEqual(model.chats.first?.model, "gpt-5", "a failed listing is not evidence either")
+        await model.store?.close(); try await model.traces.close()
+    }
+
+    /// Every other rejection explains itself. A run that starts while the
+    /// pending model/effort writes drain used to make the pill do nothing.
+    @MainActor func testAConnectionSwitchBlockedAfterItsAwaitsSaysSo() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        model.profiles = [profile(id: "p"), profile(id: "q")]
+        let chat = ChatRecord(id: "chat", workspaceID: "w", title: "Chat", path: nil, profileID: "p", outputBudgetVersion: 1)
+        try await model.store?.put(chat, kind: "chat", id: chat.id); model.chats = [chat]
+        // A turn starts while the switch is waiting on the pending model/effort
+        // writes it must let land first.
+        let view = SessionDisplay(id: "chat"); model.displays["chat"] = view
+        XCTAssertNil(model.connectionSwitchBlocker(for: "chat"))
+        model.overrideWrites["p"] = (UUID(), Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(80))
+            view.state = "running"
+        })
+        await model.setConnection("q", for: "chat")
+        XCTAssertEqual(model.chats.first?.profileID, "p", "a blocked switch changes nothing")
+        XCTAssertNotNil(model.error, "and says why instead of doing nothing at all")
+        await model.store?.close(); try await model.traces.close()
+    }
+
+    /// A deleted connection's model list used to outlive it for the rest of
+    /// the session, so a new connection created with the same id would open on
+    /// the deleted one's models.
+    @MainActor func testDeletingAConnectionDropsItsCachedModelList() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let gateway = try ModelListGateway { _ in .json(#"[{"id":"deleted-only-model"}]"#) }
+        defer { gateway.stop() }
+        let base = try await gateway.start()
+        var doomed = profile(id: "doomed"); doomed.baseUrl = base; doomed.catalogUrl = base + "/catalog"
+        let keeper = profile(id: "keeper")
+        var saved = VaultConfiguration()
+        saved.profiles = [doomed, keeper].map { VaultProfile(profile: $0, apiKey: "synthetic-only") }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(saved))))
+        defer { model.shutdown() }
+        try await model.reloadConfiguration()
+        _ = await model.listModels(for: doomed)
+        _ = await model.listModels(for: keeper)
+        XCTAssertEqual(model.modelCatalog.entry(for: doomed).models, ["deleted-only-model"])
+        XCTAssertFalse(model.modelCatalog.entry(for: keeper).models.isEmpty)
+
+        try await model.deleteProfile("doomed")
+
+        XCTAssertTrue(model.modelCatalog.entry(for: doomed.id).models.isEmpty, "the deleted connection's list goes with it")
+        XCTAssertNil(model.modelCatalog.entry(for: doomed.id).fetchedAt)
+        XCTAssertFalse(model.modelCatalog.entry(for: keeper).models.isEmpty, "every other connection keeps its list")
+        // A connection that reuses the id starts from nothing, not from the
+        // list the deleted one had.
+        var reused = profile(id: "doomed"); reused.baseUrl = base; reused.catalogUrl = nil
+        XCTAssertTrue(model.modelCatalog.entry(for: reused).models.isEmpty)
+        await model.store?.close(); try await model.traces.close()
+    }
+
+    /// Cancelling an in-flight listing clears its slot outright; it must never
+    /// leave the picker showing a message about an action nobody took.
+    @MainActor func testInvalidatingAnInFlightListingLeavesNoStaleEntry() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        let connection = profile(id: "p")
+        let listing = Task { await model.modelCatalog.load(profile: connection) { "synthetic-only" } }
+        var spins = 0
+        while !model.modelCatalog.entry(for: connection.id).loading, spins < 2000 { await Task.yield(); spins += 1 }
+        XCTAssertTrue(model.modelCatalog.entry(for: connection.id).loading, "the fixture must actually catch the listing in flight")
+        model.modelCatalog.invalidate(profileID: connection.id)
+        _ = await listing.value
+        let entry = model.modelCatalog.entry(for: connection.id)
+        XCTAssertTrue(entry.models.isEmpty); XCTAssertNil(entry.fetchedAt)
+        XCTAssertNil(entry.error, "a dropped listing reports nothing, rather than reporting itself as cancelled")
+        XCTAssertFalse(entry.loading)
         await model.store?.close(); try await model.traces.close()
     }
 

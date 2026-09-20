@@ -43,6 +43,9 @@ struct MessageDetailView: View {
     }
     private func openInspector() {
         dismiss()
+        // Uncancelled on purpose: this sheet is already going away, and the
+        // wait is for its dismissal to finish before the next one opens over
+        // the same window. The model it wakes outlives every sheet.
         Task { try? await Task.sleep(for: .milliseconds(350)); model.inspect(sessionID, messageID: messageID) }
     }
     private func load(older: Bool = false) async {
@@ -96,6 +99,9 @@ private struct MessageCard: View {
                     Button {
                         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(message.text, forType: .string)
                         withAnimation(.easeOut(duration: 0.15)) { copied = true }
+                        // Uncancelled on purpose: a second and a bit of "Copied",
+                        // then back. It only writes this view's own @State, which
+                        // is harmless once the view is gone.
                         Task { try? await Task.sleep(for: .seconds(1.2)); withAnimation { copied = false } }
                     } label: { Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc") }
                         .buttonStyle(.piSecondaryCompact).disabled(message.text.isEmpty)
@@ -126,7 +132,6 @@ private struct AttemptCard: View {
     let attempt: [String: WireValue]
     let liveOnly: Bool
     @State private var tab = "request"
-    @State private var text = ""
     @State private var notice = ""
     @State private var loadRevision = 0
     private var attemptID: String { attempt["attemptId"]?.string ?? "" }
@@ -142,7 +147,7 @@ private struct AttemptCard: View {
             VStack(alignment: .leading, spacing: PiSpacing.sm) {
                 HStack(spacing: PiSpacing.sm) {
                     Text(attempt["purpose"]?.string ?? "request").font(PiFont.heading).foregroundStyle(Color.piInk)
-                    Text("attempt \(Int(attempt["ordinal"]?.number ?? 0)) · \(attempt["api"]?.string ?? "")").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                    Text(InspectorAttemptLabel.ordinal(attempt["ordinal"]?.number) + " · " + (attempt["api"]?.string ?? "")).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                     if liveOnly { PiBadge(text: "live capture", tone: .info, icon: "record.circle") }
                     if ownerSession != sessionID { Text("from \(ownerSession)").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).lineLimit(1).truncationMode(.middle) }
                     Spacer()
@@ -175,7 +180,7 @@ private struct AttemptCard: View {
                 }
                 CapturedHeadersView(headers: attempt[tab + "Headers"]?.object ?? [:])
                 CapturedBodyView(model: model, sessionID: ownerSession, attemptID: attemptID, kind: tab,
-                                 retained: !liveOnly && durableReadable, revision: loadRevision, displayedText: $text)
+                                 retained: !liveOnly && durableReadable, revision: loadRevision)
                     .frame(height: 340)
                 PiStatusLine(text: notice, tone: .warning)
             }
@@ -193,10 +198,8 @@ private struct AttemptCard: View {
     }
     private func tokens(_ value: Double?) -> String { value.map { Int($0).formatted(.number.grouping(.automatic)) } ?? "n/a" }
     private func milliseconds(_ value: WireValue?) -> String { value?.number.map { String(format: "%.0f ms", $0) } ?? "n/a" }
-    private func confirm(_ title: String, _ detail: String) -> Bool {
-        let alert = NSAlert(); alert.messageText = title; alert.informativeText = detail
-        alert.addButton(withTitle: "Continue"); alert.addButton(withTitle: "Cancel"); return alert.runModal() == .alertFirstButtonReturn
-    }
+    /// Asked on a sheet, so nothing else in the app stops while it is up.
+    private func confirm(_ title: String, _ detail: String) async -> Bool { await PiQuestion.shared.confirm(title, detail) }
     /// Read retained prefixes as well as complete bodies. Their descriptor
     /// still identifies partial/truncated/interrupted captures after restart.
     private func page(_ kind: String, at offset: Int) async throws -> (Data, Int) {
@@ -210,11 +213,20 @@ private struct AttemptCard: View {
         return (bytes, Int(value["retainedBytes"]?.number ?? 0))
     }
     private func assemble(_ kind: String, limit: Int) async throws -> Data? {
-        try await MessageBodyReader.assemble(limit: limit) { try await page(kind, at: $0) }
+        let descriptor = attempt[kind]?.object ?? [:]
+        // Whole-body reads walk the ordered manifest once. The paged
+        // compatibility API re-read this attempt's metadata blob and rescanned
+        // all of its chunk references for every 32 KiB page.
+        if !liveOnly, MessageBodyReader.canReadRetained(descriptor["state"]?.string ?? "") {
+            guard Int(descriptor["retainedBytes"]?.number ?? 0) <= limit else { return nil }
+            return try await model.traces.completeBody(attemptID: attemptID, body: kind) { _, _ in }
+        }
+        return try await MessageBodyReader.assemble(limit: limit) { try await page(kind, at: $0) }
     }
     private func copyBody(_ kind: String) {
-        guard confirm("Copy retained body text?", "The clipboard may be read by other applications and clipboard history tools. This copies the retained body as UTF-8 text, including sensitive content. Partial or truncated captures contain only the retained prefix.") else { return }
-        Task { do {
+        Task {
+            guard await confirm("Copy retained body text?", "The clipboard may be read by other applications and clipboard history tools. This copies the retained body as UTF-8 text, including sensitive content. Partial or truncated captures contain only the retained prefix.") else { return }
+            do {
             guard let bytes = try await assemble(kind, limit: 8 * 1024 * 1024) else { notice = "The \(kind) body exceeds the 8 MiB copy limit. Export it from the request inspector instead."; return }
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(String(decoding: bytes, as: UTF8.self), forType: .string)
             notice = "Copied \(bytes.count) retained \(kind) bytes as UTF-8 text."

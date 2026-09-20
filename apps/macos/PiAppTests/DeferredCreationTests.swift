@@ -5,7 +5,7 @@ import XCTest
 /// record, draft, journal or helper session is written for it.
 final class DeferredCreationTests: XCTestCase {
     private func scratch() throws -> URL {
-        let base = ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()
+        let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("deferred-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root

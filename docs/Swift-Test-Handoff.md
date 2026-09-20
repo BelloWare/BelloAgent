@@ -28,13 +28,158 @@ installation results below remain historical evidence, not future release gates.
 The matrices and commands below are available coverage, not a requirement to
 execute every suite for every change. This policy supersedes older blanket gates.
 
-Updated 2026-09-17. **Use branch `master`.** Bello Agent **0.1.19/build 23**
-is publicly released, source `9b94e4d`, website `d37b885`.
-Read the [0.1.19 acceptance record](validation/Bello-Agent-0.1.19-2026-09-17.md) and
-[deep review](Deep-Review-2026-09-17.md) for exact checks and limitations.
-Installation/update rehearsals were skipped by owner instruction.
+Updated 2026-09-19. **Use `main` in `BelloWare/BelloAgent`.** See the
+[implementation status](Implementation-Status.md) for the current public release,
+and the [latest deep review](Deep-Review-2026-09-19.md) for the crash/lifecycle audit.
+Current release records take precedence over the historical matrices below.
+Installation/update rehearsals remain skipped by owner instruction.
 
-## Current 0.1.19 acceptance
+## Current 0.1.57 concurrent-session responsiveness acceptance
+
+Version 0.1.57 isolates per-chat usage notifications, skips hidden helper transcript
+projection, rejects stale refresh replies and reuses verified immutable native row
+geometry. In the five-session fixture, background content/billing work fell from
+12.51 ms to 7.24 ms mean, with zero whole-workspace notifications. A return to the
+initially mounted chat took 629.11 ms to readiness plus 68.76 ms deferred settlement;
+the original readiness-only baseline was 1,421.23 ms. Repeated helper status reads
+fell 98.0%. Acceptance covers 118 distinct native passes, 41 helper passes and three
+request-aware concurrent gateway scenarios (162 distinct passes), with two native
+interactive checks skipped. The final shipping-source selection passed 23/23;
+unchanged checks reuse the earlier successful selections, excluding four discarded
+experimental tests. Twenty simultaneous requests completed tools and exact capture.
+A shared Markdown-block cache was rejected after it slowed long-answer scrolling.
+Rich foreground layout still has spikes (54.46 ms mean, 124.57 ms maximum), and cold
+large-history loading remains expensive. Physical trackpad/VoiceOver smoothness is
+unverified on this inactive desktop. Installation and actual update rehearsals stay
+skipped under the owner’s policy.
+
+The signed/notarized release and public feeds/archive are verified. Read the
+[five-session performance review](Five-Session-Performance-Review-2026-09-19.md) and
+[0.1.57 acceptance record](validation/Bello-Agent-0.1.57-2026-09-19.md). Installation/update rehearsals
+remain skipped under the standing owner policy.
+
+## Historical 0.1.56 topics acceptance
+
+Version 0.1.56 adds project topics: collapsible, named groups for related
+sessions, with New Chat, rename, removal that keeps chats, and drag-and-drop
+between topics or back to the project header. Move to Topic is also available
+in session menus. New chats inherit the focused topic, sides/forks inherit
+the source group, and moving a parent includes its saved side descendants.
+Atomic metadata updates preserve active work, drafts, history and session IDs;
+regressions cover side publication, late writes and concurrent deletion.
+Topics and their disclosure state persist across restart.
+
+The native Release selection passed 90 tests with no failures or skips; a
+final seven-test subset also passed after checking the packaged drag-type
+declaration. Unchanged helper/gateway/scrolling evidence was reused. Physical
+pointer drag/drop, context-menu interaction and VoiceOver remain unverified
+on the inactive remote desktop; real item-provider dispatch and hosted native
+sidebar layout passed. Installation/update rehearsals remain skipped.
+
+The signed/notarized release and public feeds/archive are verified. Read the
+[topics review](Topics-Review-2026-09-19.md) and
+[0.1.56 acceptance record](validation/Bello-Agent-0.1.56-2026-09-19.md). Installation/update rehearsals
+remain skipped under the standing owner policy.
+
+## Historical 0.1.55 scrolling acceptance
+
+Version 0.1.55 keeps only nearby native transcript rows and Markdown blocks
+attached while retaining complete content, exact geometry and selected text.
+The 300-message fixture drops from 85.7 to 9.6 ms per native scroll step on
+average; the 88 KiB answer drops from 44.6 to 13.0 ms. These are comparable
+layout/display stress measurements, not physical display FPS. Initial loading
+of every retained row still requires an up-front geometry pass.
+The affected Release XCTest run executed 78 cases: 76 passed and two interactive
+pointer checks were explicitly skipped on the inactive remote desktop. A final
+four-case Markdown/scroll rerun passed after fixing Copy/Copied layout feedback.
+Unchanged provider/helper/gateway/worker and website-staging acceptance is
+reused; physical trackpad and VoiceOver checks are not claimed. Single enormous
+Markdown blocks and selection at the streaming renderer threshold remain
+qualified in the scrolling review. Installation/update rehearsals are skipped
+under the owner’s standing instruction.
+
+The signed/notarized release and public feeds/archive are verified. Read the
+[scrolling review](Scrolling-Review-2026-09-19.md) and
+[0.1.55 acceptance record](validation/Bello-Agent-0.1.55-2026-09-19.md). Installation/update rehearsals
+remain skipped under the standing owner policy.
+
+## Historical 0.1.54 session-reference acceptance
+
+Version 0.1.54 adds Copy Session ID and Copy Session Reference to session right-click and conversation “…” menus. References include the authoritative local JSONL path and a shell-quoted read command, without switching chats, loading history or starting helpers. Empty chats and imported identities are explicit. All 27 focused native tests and 12 site-staging tests pass, including executable Bash quoting and complete retained-history reads. The release-page template now preserves native-transcript and reported-throughput wording. Existing helper, gateway, concurrency and rendering evidence is reused. Physical menu/VoiceOver and install/update rehearsals were not repeated.
+
+The signed/notarized release and public feeds/archive are verified. Read the
+[session-reference review](Session-Reference-Review-2026-09-19.md) and
+[0.1.54 acceptance record](validation/Bello-Agent-0.1.54-2026-09-19.md). Installation/update rehearsals
+remain skipped under the standing owner policy.
+
+## Historical 0.1.53 responsiveness acceptance
+
+Version 0.1.53 uses Bello-styled selection panels and disables the system window tab strip. Exact row-layout caches isolate retained transcript text from streaming updates; ownership-scoped accounting avoids repeated history reads. Comparable native rendering fixtures open about 37% faster and reduce per-update layout/display work by 85.4% (61 rows) and 91.7% (300 rows); these are stress measurements, not a 60 fps guarantee. Final focused evidence contains 191 distinct native passes and four explicit interactive-desktop skips. The native/helper/gateway fixture completed 20 concurrent sessions and tool round trips with 80 exact retained bodies. Unchanged helper/provider/worker evidence is reused from 0.1.52. Pointer/popover and VoiceOver behavior are not claimed as verified on this remote desktop. Installation/update rehearsals remain skipped under the standing owner policy.
+
+The signed/notarized release and public feeds/archive are verified. Read the
+[responsiveness review](Responsiveness-Review-2026-09-19.md) and
+[0.1.53 acceptance record](validation/Bello-Agent-0.1.53-2026-09-19.md). Installation/update rehearsals
+remain skipped under the standing owner policy.
+
+## Historical 0.1.52 throughput and worker acceptance
+
+Final evidence: **140 native passes, 2 optional skips, 188 helper passes and 29 packaged gateway/process passes**.
+The signed/notarized release and public feeds/archive are verified.
+Read the [throughput/worker review](TPS-Workers-Review-2026-09-19.md) and
+[0.1.52 acceptance record](validation/Bello-Agent-0.1.52-2026-09-19.md).
+Rate migration/expiry, hidden reasoning, stable and narrow native metric layouts,
+bounded OS-thread execution and the full twenty-session path are covered.
+
+## Historical 0.1.51 concurrency acceptance
+
+Final evidence: **137 native, 176 helper, 29 packaged gateway/process cases pass**.
+The signed/notarized release and public feeds/archive are verified.
+
+The twenty-session target covers overlapping model streams within one project
+and across projects, exact durable capture, tool round trips, isolated Stop/error
+handling, cold project/session initialization and accounting bursts. Read the
+[concurrency review](Concurrency-Review-2026-09-19.md) and
+[0.1.51 acceptance record](validation/Bello-Agent-0.1.51-2026-09-19.md) for the
+current results and concurrency boundaries.
+
+After staging the changed helper, run the deterministic wire pressure scenarios:
+
+```sh
+python3 scripts/test-concurrent-native-host.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
+```
+
+Relevant native suites are `WorkspaceConcurrencyTests`, `HostSupervisorTests`,
+`HostTransportTests`, `HostInboxTests`, `PayloadArchiveTests`,
+`CaptureMacIntegrationTests`, `LiveAccountingTests` and the affected workspace
+lifecycle/context/connection suites. Run Xcode writers serially against the
+shared DerivedData. The helper's `CaptureConcurrencyTests` and
+`ConcurrentSessionsTests` exercise capture pressure and session/editing-gate
+isolation. Do not mistake a twenty-request network barrier for twenty dedicated
+threads or unrestricted parallel file mutations.
+
+## Historical 0.1.50 acceptance
+
+Version 0.1.50 improves warm chat loading, trims unnecessary initial history,
+keeps native text geometry stable during transitions, speeds up code coloring,
+and preserves scrolling while new output arrives. Focused Release checks cover
+195 passing native cases and one opt-in skip, with no failures. Unchanged helper,
+gateway and release-tool evidence is reused from 0.1.49. Large rich histories
+still have expensive native layout; this release does not establish a universal
+frame-rate target. See the [performance review](Performance-Review-2026-09-19.md)
+and [0.1.50 acceptance record](validation/Bello-Agent-0.1.50-2026-09-19.md).
+
+## Historical 0.1.49 acceptance
+
+Version 0.1.49 reviews Claude's completed 0.1.48 work and fixes confirmed
+queue, crash-recovery, transcript, inspector, transport and storage defects.
+It also coordinates context previews and connection removal across suspended
+operations, preserving drafts and readable context snapshots. All 498 native
+cases completed: 491 passed and 7 opt-in cases skipped. The helper's 170 tests,
+52 Python checks and 24 local gateway checks passed. See the
+[deep review](Deep-Review-2026-09-19.md) and
+[0.1.49 acceptance record](validation/Bello-Agent-0.1.49-2026-09-19.md).
+
+## Historical 0.1.19 acceptance
 
 Version 0.1.19 completes a deeper review of Claude's recent changes and the
 Settings-to-existing-chat catalog flow. It fixes clock-correction write loss,
@@ -97,8 +242,9 @@ tools and replayed input. Gateway-reported input is reused only for a matching
 prefix and an explicitly pinned, reported model; previous output is not added
 wholesale. Counts carry method, request fingerprint, model and uncertainty.
 Safe idle tabs and draft edits refresh through a shared debounce/cache; pending
-counts do not display stale conversation totals. Output budgets are separate
-from catalog model ceilings, with a distinct safety margin. Reported usage,
+counts do not display stale conversation totals. Output budgets are a local
+reserve, separate from catalog model ceilings (which are what requests carry as
+their output limit), with a distinct safety margin. Reported usage,
 request context and estimated live output activity remain separate measurements.
 
 **129 unique native tests and 132 unique helper tests have a final
@@ -550,14 +696,14 @@ deployed-gateway limits explicit.
 10. After F15, validate counts/percentiles on known samples, nulls, outliers, errors/cancelled/in-flight, time windows and filters. Do not average p99 across buckets. Confirm metrics remain after body retention expires and route aliases/effective-model groups are separate.
 11. After F17, simulate route changes across requests, an alias echoed in model, explicit actual-model evidence, late/missing/conflicting metadata and both streaming/nonstreaming bodies. Unknown must stay unknown. Verify opaque replay across route changes is not assumed safe.
 12. After F18, validate final streamed and JSON cost, null body cost with final JSON headers, provisional SSE headers, reported zero versus missing/invalid/conflicting data, request-keyed cache hit/miss and separate provider cache tokens/cache writes. Verify reasoning tokens and reported reasoning cost stay subsets of output; do not add classifier/other components to totals. Check one inline accounting owner as user input becomes an assistant response, persistent user Details links, compaction attribution, session/report deduplication, filtering, retained metrics after body purge and crash-resumable projection. Use the strict local request oracle; do not infer real gateway compatibility from it.
-13. After F19, open the persistent native status panel with either mouse button, including with no main window. Activity must precede Usage. Check model/tool/compaction phases, active/paused chats, pending follow-ups, unread replies and fresh combined estimated output speed; opaque reasoning, tool execution output and historical rates are excluded. A silent tool must still update its phase. In Usage, switch between last 24 hours, seven days and retained history. Check all-workspace token consumption, input/output and cost coverage, cache states and activity. Alias/model groups must include auto-router, reported models and unreported/conflict/incomplete states. Total tokens include provider cache once and require both input and output; requests, tools and compaction must not be counted again through message links. Check half-open date boundaries, pagination, schema/backfill/restart, metric expiry and cancellation of polling when the panel hides. Open Report from the menu.
+13. After F19, open the persistent native status panel with either mouse button, including with no main window. Usage opens first; Activity lists running model/tool/compaction work and omits unread/waiting/paused rows. Check completed reported output rates; reasoning is already included in output, and no streamed-byte estimate is displayed. A silent tool must still update its phase. In Usage, switch between last 24 hours, seven days and retained history. Check all-workspace token consumption, input/output and cost coverage, cache states and activity. Alias/model groups must include auto-router, reported models and unreported/conflict/incomplete states. Total tokens include provider cache once and require both input and output; requests, tools and compaction must not be counted again through message links. Check half-open date boundaries, pagination, schema/backfill/restart, metric expiry and cancellation of polling when the panel hides. Open Report from the menu.
 14. After F20, first launch must retain setup until a chat is saved, require project trust, preserve profile identity across retries and reject duplicate completion. Test & Start must call the selected Responses model once with its fixed short prompt, no tools/history/skills/project instructions, output ≤256 and scoped credentials/capture. Discovery alone cannot verify a connection. Verify timeout/cancellation, empty/error/truncated responses, post-cleanup settings races, default capture with its privacy/retention explanation and no probe chat/journal. No extra capture-consent gate is required. Compare both bodies against independent gateway observations. Test bounded model discovery with endpoint prefixes, manual alias entry, cancellation, timeout and redirect refusal. Check the native icon and Bello Agent name while retaining bundle ID, Keychain item, history paths and update signing continuity.
 15. Old journals remain intact/read-only; portable handoff is deliberate. For future releases, use the sibling apps' Developer ID flow, measure the complete signed/notarized DMG, retain `/bello-agent.html` and matching canonical/legacy appcasts, and verify public bytes/signatures. Do not perform installation or Sparkle update rehearsals unless explicitly requested again. The released `BelloAgent-0.1.6.dmg` and actual 0.1.5-to-0.1.6 update remain historical baseline evidence: all 75 installed files/links match, history and drafts are retained, and Keychain revision 0 is unchanged. One empty draft was re-encoded with JSON key order only; do not claim all state bytes were identical.
 16. For the reviewed model/catalog/edit batch, validate active Responses against requested aliases, explicit effort omission and selected context/output limits through tool rounds and compaction; retain historical Messages readability and explicit dispatch rejection. Check override persistence, side inheritance, catalog revision/cancellation races, anonymous external catalogs and redirect refusal. Exercise actual model/effort menu actions, edit/cancel/restart drafts, atomic branch recovery and offline visible history. Add/remove workspace roots only when affected sessions permit it. Chart-filter tests do not establish an actual chart-drag interaction.
 
 17. After F21, verify old-history baselines, offline journal reconciliation, durable counts across restart, foreground latest-reply visibility and explicit Mark as Read. Report/background/scrollback/hidden windows must not clear unread state; stale or pre-paint receipts must not clear newer replies. Check sidebar and Activity badges, abandoned branches, bounded quit/install flush and no probe-related unread entry.
 
-18. For the 0.1.5 project/sidebar follow-up, show every project in a persistent expandable group, with saved archive filters and stable internal workspace IDs/paths. Rename/pin/archive/restore must preserve history, active work and focus/navigation; delayed unrelated model/path saves cannot revert these fields. Check saved children and independent forks, pinned/archived child-parent mismatches, and restored groups after restart. Session costs must update after background capture commits without focus changes, including evicted/unloaded session caches; stale queries cannot overwrite newer totals. Running rows show only fresh estimated output TPS. Remove gateway/API/model-ID/editing title badges. Copy original code and Markdown-section source through the native bridge, with stale/oversize/forged copy requests rejected. Open the context ring and verify a bounded, paged provider-built preview of authoritative instructions/messages/tools, stale-snapshot rejection and clear separation from historical captures. Actual custom-header double-click must zoom to the available screen and restore its previous frame without content overlap, preserving native traffic-light behavior. Use focused unit tests for changed updater handoff logic to preserve main/saved-child drafts, edit targets and displaced original drafts; do not perform an installation or actual update/relaunch rehearsal.
+18. For the 0.1.5 project/sidebar follow-up, show every project in a persistent expandable group, with saved archive filters and stable internal workspace IDs/paths. Rename/pin/archive/restore must preserve history, active work and focus/navigation; delayed unrelated model/path saves cannot revert these fields. Check saved children and independent forks, pinned/archived child-parent mismatches, and restored groups after restart. Session costs must update after background capture commits without focus changes, including evicted/unloaded session caches; stale queries cannot overwrite newer totals. Running rows keep the latest completed reported TPS stable; a newer completion without usage displays unavailable, and a new chat waits for usage. Remove gateway/API/model-ID/editing title badges. Copy original code and Markdown-section source through the native bridge, with stale/oversize/forged copy requests rejected. Open the context ring and verify a bounded, paged provider-built preview of authoritative instructions/messages/tools, stale-snapshot rejection and clear separation from historical captures. Actual custom-header double-click must zoom to the available screen and restore its previous frame without content overlap, preserving native traffic-light behavior. Use focused unit tests for changed updater handoff logic to preserve main/saved-child drafts, edit targets and displaced original drafts; do not perform an installation or actual update/relaunch rehearsal.
 
 19. For the 0.1.6 follow-up, require a configured catalog to be the sole source, cache it for one hour and retain the last list plus error after failure. Verify no gateway fallback and no credentials sent to external catalogs. Requests must send `disable_fallbacks: true` unless explicitly allowed. Settings preferences-only saves must preserve untouched active and retained Messages connections; changed invalid fields stay open without partial saves. Test Connection must save first, retain a native composer in No project and submit only to its own saved chat despite selection changes; its tools stay disabled and sides/edit promotion remain unavailable. Verify fast/background and historical compaction summaries from authoritative active context without reusing old results after failure/cancellation. Confirm requested/final model columns, pointer/hover affordances, explicit idle archive deletion and open-child guards. Keep the exact selected flat icon and provenance.
 

@@ -105,8 +105,10 @@ def validate_request(method, path, headers, body, *, api_key, model=None,
     require(model is None or body["model"] == model, "model alias changed on the wire")
     require(body.get("stream") is True, "stream must be true")
     limit_name = "max_output_tokens" if responses else "max_tokens"
-    require(type(body.get(limit_name)) is int and body[limit_name] > 0, "output token limit must be positive")
-    require(max_output_tokens is None or body[limit_name] == max_output_tokens, "output token limit differs from the profile")
+    # A conversation request carries the model's catalog ceiling when one is known and nothing otherwise;
+    # the app's output budget is a local reserve that never reaches the wire.
+    require(limit_name not in body or (type(body.get(limit_name)) is int and body[limit_name] > 0), "output token limit must be positive when present")
+    require(max_output_tokens is None or body.get(limit_name) == max_output_tokens, "output token limit differs from the model ceiling")
     instructions = body.get("instructions" if responses else "system")
     require(isinstance(instructions, str), "native instructions must use the correct API field")
     require(not set(body).intersection({"messages", "system", "max_tokens"} if responses else {"input", "instructions", "max_output_tokens", "store", "parallel_tool_calls"}), "request mixes the two provider formats")

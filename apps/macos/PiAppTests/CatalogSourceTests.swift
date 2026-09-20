@@ -315,7 +315,7 @@ final class CatalogSourceTests: XCTestCase {
     }
 
     private func scratch() throws -> URL {
-        let parent = ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()
+        let parent = scratchBase()
         let root = URL(fileURLWithPath: parent).appendingPathComponent("catalog-sources-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root

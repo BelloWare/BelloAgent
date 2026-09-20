@@ -15,14 +15,37 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertEqual(delayed?.handler, 19_995)
         XCTAssertNil(measurement.draw(at: 41_005))
     }
-    func testStalledCredentialWorkerTimesOutWithoutQueuingMoreBlockedOperations() async throws {
-        let worker = KeychainWorker(timeout: .milliseconds(30)), gate = DispatchSemaphore(value: 0)
+    /// A Security call that never answers cannot be killed, so it keeps its
+    /// place on the one serial queue. It must not, however, refuse every later
+    /// operation for the rest of the session with a message that says nothing
+    /// the user can act on.
+    func testStalledCredentialWorkerKeepsRetriesBoundedAndActionable() async throws {
+        let worker = KeychainWorker(timeout: .milliseconds(40)), gate = DispatchSemaphore(value: 0)
         let finished = expectation(description: "Security operation ended")
-        do { let _: String = try await worker.perform { gate.wait(); finished.fulfill(); return "synthetic" }; XCTFail("Expected timeout") }
-        catch { XCTAssertTrue(error.localizedDescription.contains("Keychain did not respond")) }
-        do { let _: String = try await worker.perform { XCTFail("A second blocked worker must not be queued"); return "unexpected" }; XCTFail("Expected capacity rejection") }
-        catch { XCTAssertTrue(error.localizedDescription.contains("earlier operation")) }
-        gate.signal(); await fulfillment(of: [finished], timeout: 1)
+        let ran = SecurityCallCounter()
+        do { let _: String = try await worker.perform { gate.wait(); ran.increment(); finished.fulfill(); return "synthetic" }; XCTFail("Expected timeout") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Keychain did not respond"), error.localizedDescription) }
+        // Retries are admitted, but nothing else touches Security while the
+        // stalled call still owns the queue.
+        for _ in 0..<3 {
+            do { let _: String = try await worker.perform { ran.increment(); return "unexpected" }; XCTFail("Expected timeout behind the stalled call") }
+            catch { XCTAssertTrue(error.localizedDescription.contains("Keychain did not respond"), error.localizedDescription) }
+        }
+        XCTAssertEqual(ran.value, 0, "no second Security call may run while the first is still blocked")
+        // Past the bound the refusal says what to do about it.
+        do { let _: String = try await worker.perform { return "unexpected" }; XCTFail("Expected capacity rejection") }
+        catch {
+            XCTAssertTrue(error.localizedDescription.contains("has not answered"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("reopen Bello Agent"), error.localizedDescription)
+        }
+        gate.signal(); await fulfillment(of: [finished], timeout: 2)
+        // Once it drains, the worker is usable again.
+        var recovered = false
+        for _ in 0..<200 where !recovered {
+            if (try? await worker.perform { 7 }) == 7 { recovered = true; break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(recovered, "the worker must recover once the stalled call returns")
     }
     @MainActor func testConnectionTestChatIsSavedOutsideAnyProject() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
@@ -44,12 +67,12 @@ final class WorkspaceTests: XCTestCase {
     }
 
     private func scratch() throws -> URL {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()).appendingPathComponent("native-fixture-\(UUID().uuidString)")
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("native-fixture-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); return root
     }
     func testSQLiteKeepsIndependentQueuedIntentsAndRejectsStaleDraftWrites() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let store = try MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
+        let store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         try await store.put(DraftRecord(id: "chat", text: "new 🌍"), kind: "draft", id: "chat", revision: 2)
         do { try await store.put(DraftRecord(id: "chat", text: "old"), kind: "draft", id: "chat", revision: 1); XCTFail("A rejected write must report that it did not save") }
         catch { XCTAssertEqual(error as? StoreError, .staleRevision) }
@@ -57,7 +80,7 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertEqual(draft?.text, "new 🌍")
         for id in ["first", "followup"] { try await store.put(CommandIntent(id: id, sessionID: "chat", turnID: id, text: id, state: "intent", epoch: "epoch"), kind: "pending:chat", id: id) }
         await store.close()
-        let reopened = try MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
+        let reopened = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         let intents = try await reopened.list(CommandIntent.self, kind: "pending:chat")
         XCTAssertEqual(Set(intents.map(\.id)), ["first", "followup"])
         await reopened.close()
@@ -356,4 +379,13 @@ private final class DelayedWorkspaceVaultStorage: VaultStorage, @unchecked Senda
         guard gate.wait(timeout: .now() + 5) == .success else { throw VaultError.busy }
         try storage.replace(expected: expected, with: replacement)
     }
+}
+
+
+/// Counts Security closures that actually executed, across threads.
+private final class SecurityCallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }

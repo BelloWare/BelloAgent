@@ -163,9 +163,12 @@ struct CapturedBodyDocument: Sendable {
         format == .combined ? combinedResponse?.json : format == .json ? structured : nil
     }
 
-    func displayedText(format: CapturedBodyFormat, hex: String = "") -> String {
+    /// `plain` is the retained bytes decoded as UTF-8, decoded once off the
+    /// main actor by the view. Decoding here meant decoding a body of up to
+    /// 64 MiB on every render that read this.
+    func displayedText(format: CapturedBodyFormat, hex: String = "", plain: String = "") -> String {
         if format == .hex { return hex }
-        return structured(format: format)?.formatted ?? String(decoding: bytes, as: UTF8.self)
+        return structured(format: format)?.formatted ?? plain
     }
 
     static func parse(bytes: Data, metadata: CapturedBodyMetadata) throws -> Self {
@@ -290,13 +293,17 @@ struct CapturedBodyView: View {
     let kind: String
     let retained: Bool
     var revision = 0
-    @Binding var displayedText: String
+    /// Only the request inspector consumes this (Copy View and redaction).
+    /// A card that ignores it must not be handed a second full copy of the body.
+    var displayedText: Binding<String>? = nil
     @StateObject private var controller = CapturedBodyController()
     @State private var format = CapturedBodyFormat.combined
     @State private var selection = ""
     @State private var expandRevision = 0
     @State private var expandAll = false
     @State private var hex = ""
+    /// The retained bytes decoded as UTF-8, once per document.
+    @State private var utf8 = ""
     private struct Selection: Equatable {
         let session: String, attempt: String, kind: String
         let retained: Bool
@@ -335,7 +342,7 @@ struct CapturedBodyView: View {
                          : "Events appear in captured order. Expand a frame and its data to inspect JSON. This is a formatted view; UTF-8, Hex and exports preserve the retained bytes.")
                         .font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
                 } else {
-                    PagedTextView(text: activeFormat == .hex ? hex : String(decoding: document.bytes, as: UTF8.self), accessibilityLabel: "Complete retained HTTP body")
+                    PagedTextView(text: activeFormat == .hex ? hex : utf8, accessibilityLabel: "Complete retained HTTP body")
                         .piInset(sunken: true)
                     if activeFormat == .json { Text("Not a JSON document or UTF-8 event stream · showing retained UTF-8.").font(PiFont.micro).foregroundStyle(Color.piInkTertiary) }
                 }
@@ -353,7 +360,7 @@ struct CapturedBodyView: View {
             }
         }
         .task(id: identity) {
-            displayedText = ""; selection = ""; hex = ""; expandAll = false; expandRevision = 0
+            displayedText?.wrappedValue = ""; selection = ""; hex = ""; utf8 = ""; expandAll = false; expandRevision = 0
             let source = retained ? CapturedBodySource.archive(model.traces, attemptID: attemptID, kind: kind) : CapturedBodySource.live(model, sessionID: sessionID, attemptID: attemptID, kind: kind)
             await controller.load(kind: kind, source: source)
             guard !Task.isCancelled else { return }
@@ -362,6 +369,7 @@ struct CapturedBodyView: View {
         .task(id: FormatSelection(format: activeFormat, document: controller.document?.id)) {
             selection = ""; expandAll = false; expandRevision = 0
             await updateHexIfNeeded()
+            await updateUTF8IfNeeded()
             updateDisplayedText()
         }
         .onChange(of: controller.loading) { _, loading in
@@ -371,8 +379,21 @@ struct CapturedBodyView: View {
         .accessibilityIdentifier("captured-body-view")
     }
     private func updateDisplayedText() {
-        guard let document = controller.document else { displayedText = ""; return }
-        displayedText = document.displayedText(format: activeFormat, hex: hex)
+        guard let displayedText else { return }
+        guard let document = controller.document else { displayedText.wrappedValue = ""; return }
+        displayedText.wrappedValue = document.displayedText(format: activeFormat, hex: hex, plain: utf8)
+    }
+    /// The retained bytes as UTF-8, decoded once per document on a detached
+    /// task. This used to run inside `body`, so every progress tick, poll,
+    /// hover or resize re-decoded the whole payload on the main thread.
+    private func updateUTF8IfNeeded() async {
+        guard activeFormat != .hex, utf8.isEmpty, let document = controller.document,
+              document.structured(format: activeFormat) == nil, !document.bytes.isEmpty else { return }
+        let identity = identity, bytes = document.bytes, requested = activeFormat
+        let decoding = Task.detached(priority: .userInitiated) { String(decoding: bytes, as: UTF8.self) }
+        let value = await withTaskCancellationHandler(operation: { await decoding.value }, onCancel: { decoding.cancel() })
+        guard !Task.isCancelled, identity == self.identity, activeFormat == requested else { return }
+        utf8 = value
     }
     private func updateHexIfNeeded() async {
         guard activeFormat == .hex, hex.isEmpty, let bytes = controller.document?.bytes else { return }
@@ -387,18 +408,20 @@ struct CapturedBodyView: View {
 }
 
 enum CapturedBodyHex {
+    /// One byte buffer for the whole dump. `String(format:)` per sixteen bytes
+    /// meant four million formatter calls, and as many intermediate strings,
+    /// for a large body.
     static func render(_ bytes: Data) throws -> String {
-        var result = ""
-        result.reserveCapacity(bytes.count * 4)
         let digits = Array("0123456789abcdef".utf8)
+        var out = [UInt8](); out.reserveCapacity(bytes.count * 4 + 16)
         for start in stride(from: 0, to: bytes.count, by: 16) {
             if start % 32_768 == 0 { try Task.checkCancellation() }
-            result += String(format: "%08x  ", start)
-            var line = [UInt8]()
-            for byte in bytes[start..<min(start + 16, bytes.count)] { line += [digits[Int(byte >> 4)], digits[Int(byte & 15)], 32] }
-            result += String(decoding: line, as: UTF8.self) + "\n"
+            for shift in stride(from: 28, through: 0, by: -4) { out.append(digits[(start >> shift) & 15]) }
+            out.append(32); out.append(32)
+            for byte in bytes[start..<min(start + 16, bytes.count)] { out.append(digits[Int(byte >> 4)]); out.append(digits[Int(byte & 15)]); out.append(32) }
+            out.append(10)
         }
-        return result
+        return String(decoding: out, as: UTF8.self)
     }
 }
 
@@ -419,9 +442,10 @@ enum CapturedBodyHex {
         if let frame = value as? CapturedEventFrame {
             let (key, value) = frame.entry(index)
             result = JSONOutlineNode(key: key, value: value)
-        } else if let values = value as? [String: Any] { result = JSONOutlineNode(key: keys[index], value: values[keys[index]]!) }
+        } else if let values = value as? [String: Any] { result = JSONOutlineNode(key: keys[index], value: values[keys[index]] ?? NSNull()) }
         else {
-            let value = (value as! [Any])[index]
+            let list = value as? [Any] ?? []
+            let value: Any = list.indices.contains(index) ? list[index] : NSNull()
             result = JSONOutlineNode(key: (value as? CapturedEventFrame)?.label ?? "[\(index)]", value: value)
         }
         children[index] = result
@@ -489,14 +513,21 @@ struct JSONOutlineView: NSViewRepresentable {
             else { outline.collapseItem(nil, collapseChildren: true); outline.expandItem(coordinator.root) }
         }
     }
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.cancelPendingSelection()
+        guard let outline = scroll.documentView as? NSOutlineView else { return }
+        outline.delegate = nil; outline.dataSource = nil
+    }
     @MainActor final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
         var root: JSONOutlineNode?
         var documentID: UUID?
         var revision = 0
         var selection: Binding<String>
+        private var selectionRevision = 0
         init(selection: Binding<String>) { self.selection = selection }
+        func cancelPendingSelection() { selectionRevision += 1 }
         func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int { (item as? JSONOutlineNode)?.count ?? (root == nil ? 0 : 1) }
-        func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any { (item as? JSONOutlineNode)?.child(index) ?? root! }
+        func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any { (item as? JSONOutlineNode)?.child(index) ?? root ?? JSONOutlineNode(key: "", value: [String: Any]()) }
         func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { ((item as? JSONOutlineNode)?.count ?? 0) > 0 }
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
             guard let node = item as? JSONOutlineNode else { return nil }
@@ -510,11 +541,21 @@ struct JSONOutlineView: NSViewRepresentable {
         }
         func outlineViewSelectionDidChange(_ notification: Notification) {
             guard let outline = notification.object as? NSOutlineView else { return }
-            guard let node = outline.item(atRow: outline.selectedRow) as? JSONOutlineNode,
-                  node.count == 0 || node === root || node.value is CapturedEventFrame else {
-                selection.wrappedValue = ""; return
+            // reloadData and collapseItem post this synchronously from updateNSView; the
+            // SwiftUI binding is written on the next turn, never inside that update.
+            // Read only the final selection, and discard work from a replaced body
+            // or a dismantled outline before it can repopulate the cleared detail.
+            selectionRevision += 1
+            let revision = selectionRevision, documentID = documentID, root = root
+            DispatchQueue.main.async { [weak self, weak outline] in
+                guard let self, let outline, outline.delegate === self,
+                      self.selectionRevision == revision, self.documentID == documentID,
+                      self.root === root else { return }
+                let detail: String
+                if let node = outline.item(atRow: outline.selectedRow) as? JSONOutlineNode,
+                   node.count == 0 || node === root || node.value is CapturedEventFrame { detail = node.detail } else { detail = "" }
+                if self.selection.wrappedValue != detail { self.selection.wrappedValue = detail }
             }
-            selection.wrappedValue = node.detail
         }
     }
 }

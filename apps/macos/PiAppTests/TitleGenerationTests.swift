@@ -4,7 +4,7 @@ import Network
 
 final class TitleGenerationTests: XCTestCase {
     private func scratch() throws -> URL {
-        let base = ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()
+        let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("title-generation-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
@@ -43,7 +43,7 @@ final class TitleGenerationTests: XCTestCase {
 
     func testFailedTitleTaskReleasesItsClaimSoTheNextMessageRetries() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let store = try MetadataStore(url: root.appendingPathComponent("metadata.sqlite"))
+        let store = MetadataStore(url: root.appendingPathComponent("metadata.sqlite"))
         let source = ChatRecord(id: "source", workspaceID: "project", title: "Question", path: nil, profileID: "profile")
         try await store.put(source, kind: "chat", id: source.id)
         let background = task("title")
@@ -93,7 +93,7 @@ final class TitleGenerationTests: XCTestCase {
     func testTitleTaskClaimIsAtomicAndSurvivesRestartWithoutAnotherClaim() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("metadata.sqlite")
-        let store = try MetadataStore(url: url)
+        let store = MetadataStore(url: url)
         let source = ChatRecord(id: "source", workspaceID: "project", title: "First message", path: nil, profileID: "profile")
         try await store.put(source, kind: "chat", id: source.id)
         let firstTask = task("first"), secondTask = task("second")
@@ -106,7 +106,7 @@ final class TitleGenerationTests: XCTestCase {
         let claimed = try XCTUnwrap(all.first { $0.id == source.id }?.titleTaskSessionID)
         XCTAssertEqual(all.first(where: \.isBackgroundTask)?.id, claimed)
         await store.close()
-        let reopened = try MetadataStore(url: url)
+        let reopened = MetadataStore(url: url)
         let repeated = try await reopened.createTitleTask(task("repeated"), sourceID: source.id)
         XCTAssertNil(repeated)
         let restored = try await reopened.loadChats()
@@ -116,7 +116,7 @@ final class TitleGenerationTests: XCTestCase {
 
     func testInvalidTaskCannotReplaceSourceAndFailureNoticeSurvivesUnrelatedWrites() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let store = try MetadataStore(url: root.appendingPathComponent("metadata.sqlite"))
+        let store = MetadataStore(url: root.appendingPathComponent("metadata.sqlite"))
         let source = ChatRecord(id: "source", workspaceID: "project", title: "Question", path: nil, profileID: "profile")
         try await store.put(source, kind: "chat", id: source.id)
         for invalid in [task(source.id), task("wrong-source", source: "other")] {
@@ -139,7 +139,7 @@ final class TitleGenerationTests: XCTestCase {
 
     func testGeneratedTitleCannotOverwriteManualRenameOrBeRevertedByStaleMetadata() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let store = try MetadataStore(url: root.appendingPathComponent("metadata.sqlite"))
+        let store = MetadataStore(url: root.appendingPathComponent("metadata.sqlite"))
         let source = ChatRecord(id: "source", workspaceID: "project", title: "First message", path: nil, profileID: "profile")
         try await store.put(source, kind: "chat", id: source.id)
         _ = try await store.createTitleTask(task("title"), sourceID: source.id)

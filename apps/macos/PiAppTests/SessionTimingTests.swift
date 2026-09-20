@@ -7,7 +7,7 @@ import XCTest
 final class SessionTimingTests: XCTestCase {
     private let until = Date(timeIntervalSince1970: 1_000_000)
     private func folder() throws -> URL {
-        let base = ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()
+        let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("session-timing-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
@@ -37,7 +37,7 @@ final class SessionTimingTests: XCTestCase {
     }
     private func sample(_ id: String, ttft: Double? = 200, duration: Double? = 1_000, output: Double? = 100) -> SessionTimingSample {
         SessionTimingSample(id: id, wall: until, ttftMilliseconds: ttft,
-                            streamingMilliseconds: duration.flatMap { value in ttft.map { value - $0 } }, outputTokens: output)
+                            streamingMilliseconds: duration.flatMap { value in ttft.map { value - $0 } }, outputTokens: output, requestMilliseconds: duration)
     }
 
     func testLatestAndWeightedSessionAverageRemainScopedAndDistinct() async throws {
@@ -93,6 +93,58 @@ final class SessionTimingTests: XCTestCase {
         try await archive.close()
     }
 
+    func testRequestDurationMigrationCountsHiddenReasoningWithoutFirstContentAndExpiresCleanly() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = try await configured(root)
+        var hidden = metadata(wall: 999_993, ttft: nil, duration: 2_403, output: 302)
+        hidden["usage"] = .object(["output": .number(302), "reasoning": .number(253)])
+        let hiddenID = try await Self.save(archive, hidden)
+        let zeroID = try await Self.save(archive, metadata(wall: 999_994, ttft: nil, duration: 1_000, output: 0))
+        let zeroDurationID = try await Self.save(archive, metadata(wall: 999_995, ttft: nil, duration: 0, output: 500))
+        let missingEndID = try await Self.save(archive, metadata(wall: 999_996, ttft: nil, duration: nil, output: 500))
+        let missingUsageID = try await Self.save(archive, metadata(wall: 999_997, ttft: nil, duration: 1_000, output: nil))
+        var noDispatch = metadata(wall: 999_998, ttft: nil, duration: 1_000, output: 500)
+        noDispatch["timings"] = .object(["modelComplete": .number(1_100)])
+        try await Self.save(archive, noDispatch)
+        var expired = metadata(wall: 999_800, ttft: nil, duration: 1_000, output: 99_999)
+        expired["attemptId"] = .string(UUID().uuidString)
+        let expiredID = try await Self.save(archive, expired)
+        try await archive.close()
+        // Recreate the previous projection: the source metadata has the real
+        // endpoints, but old columns could not express a silent completion.
+        do {
+            let db = try CaptureDatabase(url: root.appendingPathComponent("requests.sqlite"))
+            try db.execute("ALTER TABLE attempts DROP COLUMN request_ms")
+            try db.execute("UPDATE archive_info SET value=? WHERE name='dashboard-projection'", [.blob(Data([6]))])
+        }
+        let migrated = try await configured(root)
+        try await migrated.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 100)
+        let history = try await migrated.sessionTimingHistory(sessionID: "session", workspaceID: "project", until: until)
+        let silent = try XCTUnwrap(history.samples.first { $0.id == hiddenID })
+        XCTAssertNil(silent.ttftMilliseconds); XCTAssertNil(silent.streamingMilliseconds)
+        XCTAssertEqual(silent.requestMilliseconds, 2_403)
+        XCTAssertEqual(try XCTUnwrap(silent.outputTokensPerSecond), 302.0 / 2.403, accuracy: 1e-9, "Reasoning is already inside gateway output; no visible text estimate participates")
+        XCTAssertEqual(history.samples.first { $0.id == zeroID }?.outputTokensPerSecond, 0)
+        XCTAssertNil(history.samples.first { $0.id == zeroDurationID }?.outputTokensPerSecond)
+        XCTAssertNil(history.samples.first { $0.id == missingEndID }?.requestMilliseconds)
+        XCTAssertEqual(history.latest?.id, missingUsageID)
+        XCTAssertEqual(SessionRatePresentation(history: history).label, "Usage unavailable")
+        let expected = HistoricalOutputRate(outputTokens: 302, generationMilliseconds: 3_403, samples: 2)
+        XCTAssertEqual(history.historicalRate, expected)
+        let menu = try await migrated.menuBarMetrics(period: .retained, until: until)
+        let session = try await migrated.sessionMetrics(sessionID: "session", workspaceID: "project", until: until)
+        XCTAssertEqual(menu.historicalRate, expected); XCTAssertEqual(session.historicalRate, expected)
+        let info = SessionInfoTiming(history: SessionTimingHistory(samples: [silent]), work: [:])
+        XCTAssertEqual(info.latestDurationMs, 2_403); XCTAssertEqual(info.latestRate, silent.outputTokensPerSecond)
+        try await migrated.update(expired)
+        try await migrated.close()
+        let db = try CaptureDatabase(url: root.appendingPathComponent("requests.sqlite"))
+        let retired = try db.rows("SELECT request_ms,metrics_retained FROM attempts WHERE id=?", [.text(expiredID)]).first
+        XCTAssertNil(retired?["request_ms"]?.double, "Neither expiry nor a late metadata update may retain or resurrect duration")
+        XCTAssertEqual(retired?["metrics_retained"]?.number, 0)
+        XCTAssertEqual(try db.rows("SELECT value FROM archive_info WHERE name='dashboard-projection'").first?["value"]?.data, Data([7]))
+    }
+
     func testHistoryIsBoundedChronologicalAndUsesTheSessionIndex() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await configured(root)
@@ -137,9 +189,11 @@ final class SessionTimingTests: XCTestCase {
     func testInvalidAndBufferedTimingValuesRemainHonest() {
         XCTAssertEqual(sample("buffered", ttft: 2_000, duration: 2_000, output: 100).outputTokensPerSecond, 50)
         XCTAssertNil(sample("zero-duration", ttft: 0, duration: 0).outputTokensPerSecond)
-        XCTAssertNil(sample("negative-stream", ttft: 2_000, duration: 1_000).outputTokensPerSecond)
+        XCTAssertEqual(sample("negative-stream", ttft: 2_000, duration: 1_000).outputTokensPerSecond, 100, "Invalid first-content observations do not erase a separately valid request duration")
         XCTAssertNil(sample("negative-tokens", output: -1).outputTokensPerSecond)
-        XCTAssertNil(sample("missing-ttft", ttft: nil).outputTokensPerSecond)
+        XCTAssertEqual(sample("missing-ttft", ttft: nil).outputTokensPerSecond, 100)
+        XCTAssertNil(sample("missing-duration", duration: nil).outputTokensPerSecond)
+        XCTAssertNil(sample("negative-duration", duration: -1).outputTokensPerSecond)
         XCTAssertNil(sample("nan", output: .nan).outputTokensPerSecond)
         XCTAssertNil(sample("infinite", duration: .infinity).outputTokensPerSecond)
         let overflow = SessionTimingSample(id: "overflow", wall: until, ttftMilliseconds: .greatestFiniteMagnitude,
@@ -170,7 +224,7 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(display.footer.timing.historicalRate.samples, 1, "Pending work must not change the completed average")
         let completed = metadata(id: id, wall: now - 1, ttft: 300, duration: 2_000, output: 50)
         try await model.traces.finish(completed)
-        model.captureDidPersist(["type": .string("finish"), "metadata": .object(completed)], workspaceID: "project")
+        await model.captureDidPersist(["type": .string("finish"), "metadata": .object(completed)], workspaceID: "project")
         for _ in 0..<200 where !model.accountingTasks.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertTrue(model.accountingTasks.isEmpty)
         XCTAssertEqual(display.footer.timing.latest?.id, id)
@@ -255,8 +309,68 @@ final class SessionTimingTests: XCTestCase {
         session.footer.timing.samples.append(sample("missing", output: nil))
         session.footer.timing.completedRequests = 3
         let missing = try await renderedText(window, filename: "session-timing-footer-missing.jpg")
-        XCTAssertTrue(missing.contains("latest n/a"), "Missing latest usage must not reuse either the preceding rate or the session average. OCR: \(missing)")
+        XCTAssertTrue(missing.contains("usage unavailable"), "Missing latest usage must not reuse either the preceding rate or the session average. OCR: \(missing)")
         XCTAssertTrue(missing.contains("avg 40"), missing)
+    }
+
+    @MainActor func testSidebarRateSlotKeepsItsGeometryForAwaitingReportedAndUnavailableUsage() {
+        let variants = [SessionTimingHistory(),
+                        SessionTimingHistory(samples: [sample("reported", output: 8_000)]),
+                        SessionTimingHistory(samples: [sample("zero", output: 0)]),
+                        SessionTimingHistory(samples: [sample("missing", output: nil)])]
+        for reduced in [false, true] {
+            let hosted = NSHostingView(rootView: AnyView(SidebarReportedRate(history: variants[0], sessionTitle: "Fixture").piStableLayout(reduceMotion: reduced)))
+            var sizes: [NSSize] = []
+            for history in variants {
+                hosted.rootView = AnyView(SidebarReportedRate(history: history, sessionTitle: "Fixture").piStableLayout(reduceMotion: reduced))
+                hosted.layoutSubtreeIfNeeded()
+                sizes.append(hosted.fittingSize)
+            }
+            XCTAssertGreaterThan(sizes[0].width, 0); XCTAssertGreaterThan(sizes[0].height, 0)
+            for size in sizes.dropFirst() {
+                XCTAssertEqual(size.width, sizes[0].width, accuracy: 0.5, "A completed or missing usage sample must not move neighboring metrics")
+                XCTAssertEqual(size.height, sizes[0].height, accuracy: 0.5)
+            }
+        }
+    }
+
+    @MainActor func testNarrowSidebarKeepsStateCostAndRateVisibleWithoutOverflow() async throws {
+        // At sidebar widths 300/200, list padding (16), root indentation
+        // (14), row padding (20), and icon/spacing (24) leave 226/126pt.
+        // A first-level child leaves another 14pt less: 112pt.
+        let cases: [(state: String, output: Double?)] = [("idle", 100), ("paused", 100), ("stopping", 100), ("stopping", nil)]
+        let hosted = NSHostingView(rootView: AnyView(EmptyView()))
+        let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 250, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        var wideHeights: [String: CGFloat] = [:]
+        // The sidebar tells the line its width, so the shipped path chooses its
+        // form by measuring the figures; a line told nothing still lays the
+        // forms out to find one that fits. Both must keep everything readable.
+        for told in [false, true] {
+        for width in [CGFloat(226), CGFloat(126), CGFloat(112)] {
+            for item in cases {
+                let id = item.state + (item.output == nil ? "-missing" : "") + (told ? "-told" : "")
+                var stats = ChatRowStats(totals: nil, timing: SessionTimingHistory(samples: [sample(id, output: item.output)]))
+                stats.requests = 1; stats.costUSD = 12.34
+                stats.updateActivity(state: item.state, loading: false, activity: [:])
+                hosted.rootView = AnyView(ChatRowMetrics(stats: stats, title: "Fixture", available: told ? width : .infinity)
+                    .frame(width: width, alignment: .leading).fixedSize(horizontal: false, vertical: true).padding(12))
+                window.setContentSize(NSSize(width: width + 24, height: 80))
+                let rendered = try await renderedText(window, filename: "sidebar-metrics-\(Int(width))-\(id).jpg")
+                XCTAssertEqual(hosted.bounds.width, width + 24, accuracy: 0.5)
+                XCTAssertTrue(rendered.contains("12.34"), "Cost must remain visible at \(width)pt: \(rendered)")
+                XCTAssertTrue(rendered.contains(item.output == nil ? "usage unavailable" : "latest 100"), "The complete rate label must remain visible at \(width)pt: \(rendered)")
+                if item.state != "idle" { XCTAssertTrue(rendered.contains(item.state), rendered) }
+                let height = hosted.fittingSize.height
+                if width == 226 { wideHeights[id] = height }
+                else {
+                    XCTAssertGreaterThan(height, try XCTUnwrap(wideHeights[id]) + 8,
+                                         "The narrow row must wrap the rate below state/cost; a fixed outer width alone can conceal overflowing children")
+                }
+            }
+        }
+        }
     }
 
     @MainActor private func renderedText(_ window: NSWindow, filename: String) async throws -> String {
@@ -267,8 +381,7 @@ final class SessionTimingTests: XCTestCase {
         let create = unsafeBitCast(symbol, to: ListImage.self)
         let image = try XCTUnwrap(create(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber),
                                         CGWindowImageOption.boundsIgnoreFraming.rawValue)?.takeRetainedValue())
-        let environment = ProcessInfo.processInfo.environment
-        if let path = environment["PI_APP_USAGE_CAPTURE_ROOT"] ?? environment["TEST_RUNNER_PI_APP_USAGE_CAPTURE_ROOT"] {
+        if let path = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") {
             let folder = URL(fileURLWithPath: path, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let jpeg = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.82]))
@@ -281,16 +394,16 @@ final class SessionTimingTests: XCTestCase {
     }
 
     @MainActor func testOptionalNativeTimingChartPreview() async throws {
-        guard let directory = ProcessInfo.processInfo.environment["PI_APP_USAGE_CAPTURE_ROOT"] ?? ProcessInfo.processInfo.environment["TEST_RUNNER_PI_APP_USAGE_CAPTURE_ROOT"] else { return }
+        guard let directory = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") else { return }
         let output = URL(fileURLWithPath: directory); try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let samples = (0..<16).map { index in
             SessionTimingSample(id: "request-\(index)", wall: Date(timeIntervalSince1970: 1_789_535_000 + Double(index * 60)),
                                 ttftMilliseconds: index == 7 ? nil : Double(250 + (index * 113) % 1300), streamingMilliseconds: 1_200,
-                                outputTokens: index == 9 ? nil : Double(60 + (index * 11) % 70))
+                                outputTokens: index == 9 ? nil : Double(60 + (index * 11) % 70), requestMilliseconds: Double(1450 + (index * 113) % 1300))
         }
         let observed = samples.filter { $0.outputTokensPerSecond != nil }
         let average = HistoricalOutputRate(outputTokens: observed.compactMap(\.outputTokens).reduce(0, +),
-                                           generationMilliseconds: observed.reduce(0) { $0 + ($1.ttftMilliseconds ?? 0) + ($1.streamingMilliseconds ?? 0) }, samples: observed.count)
+                                           generationMilliseconds: observed.reduce(0) { $0 + ($1.requestMilliseconds ?? 0) }, samples: observed.count)
         let history = SessionTimingHistory(samples: samples, historicalRate: average, completedRequests: samples.count)
         let hosted = NSHostingView(rootView: SessionTimingHistoryView(history: history, sessionTitle: "Gateway timing review", close: {}))
         let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 430, height: 570), styleMask: [.titled, .closable], backing: .buffered, defer: false)

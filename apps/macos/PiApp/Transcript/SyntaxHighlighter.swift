@@ -161,11 +161,16 @@ enum SyntaxHighlighter {
         result.font = .system(size: size, design: .monospaced)
         result.foregroundColor = TranscriptPalette.text
         guard let name, let language = language(named: name), code.utf8.count <= limit else { return result }
-        let scalars = Array(code.unicodeScalars)
+        // Tokens arrive in scalar order. Walk forward once instead of rebuilding
+        // and counting the entire source prefix for every coloured run. Large
+        // code fences used to spend quadratic time here before their first draw.
+        var cursor = result.startIndex
+        var scalarOffset = 0
         for token in tokens(code, language: language) {
-            let text = String(String.UnicodeScalarView(scalars[token.range]))
-            guard let lower = result.characters.index(result.startIndex, offsetBy: prefixLength(scalars, token.range.lowerBound), limitedBy: result.endIndex) else { continue }
-            guard let upper = result.characters.index(lower, offsetBy: text.count, limitedBy: result.endIndex) else { continue }
+            guard token.range.lowerBound >= scalarOffset,
+                  let lower = result.unicodeScalars.index(cursor, offsetBy: token.range.lowerBound - scalarOffset, limitedBy: result.endIndex),
+                  let upper = result.unicodeScalars.index(lower, offsetBy: token.range.count, limitedBy: result.endIndex) else { continue }
+            cursor = upper; scalarOffset = token.range.upperBound
             let range = lower..<upper
             switch token.kind {
             case .keyword: result[range].foregroundColor = TranscriptPalette.keyword
@@ -177,9 +182,5 @@ enum SyntaxHighlighter {
             }
         }
         return result
-    }
-    /// Characters (grapheme clusters) before a scalar offset, so token ranges land on the attributed string's character indices.
-    private static func prefixLength(_ scalars: [Unicode.Scalar], _ offset: Int) -> Int {
-        String(String.UnicodeScalarView(scalars[0..<offset])).count
     }
 }

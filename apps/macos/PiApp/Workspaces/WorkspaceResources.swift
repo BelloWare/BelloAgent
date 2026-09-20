@@ -91,7 +91,8 @@ extension WorkspaceModel {
         if view.completionIndex != 0 { view.completionIndex = 0 }
         let visible = view.directCommand && view.draft.hasPrefix("/") && !view.draft.contains(where: \.isWhitespace)
         if view.completionVisible != visible { view.completionVisible = visible }
-        if view.completionVisible { view.objectWillChange.send(); Task { await loadSkillCatalog(sessionID: view.id) } }
+        // The composer re-renders with every draft change already; the catalog load returns at once when it is current.
+        if view.completionVisible { Task { await loadSkillCatalog(sessionID: view.id) } }
     }
     func completions(_ view: SessionDisplay) -> [CommandCompletion] {
         guard view.completionVisible else { return [] }
@@ -156,9 +157,10 @@ extension WorkspaceModel {
         send(steer: steer, sessionID: view.id); return true
     }
     func editSkillArguments(_ chip: SkillChip, view: SessionDisplay) {
-        let alert = NSAlert(); alert.messageText = "Arguments for /\(chip.name)"
-        let field = NSTextField(string: chip.arguments); field.frame = NSRect(x: 0, y: 0, width: 480, height: 28); alert.accessoryView = field
-        alert.addButton(withTitle: "Save Arguments"); alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn, field.stringValue.utf8.count <= 16384, let index = view.skills.firstIndex(where: { $0.id == chip.id }) { view.skills[index].arguments = field.stringValue; draftChanged(view) }
+        if !questions.askText("Arguments for /\(chip.name)", value: chip.arguments, action: "Save Arguments", limit: 16384, about: view.id, entered: { [weak self] text in
+            guard let self, let index = view.skills.firstIndex(where: { $0.id == chip.id }) else { return }
+            view.skills[index].arguments = text
+            self.draftChanged(view)
+        }) { view.notice = PiQuestion.busyNotice }
     }
 }

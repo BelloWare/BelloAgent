@@ -30,9 +30,12 @@ extension WorkspaceModel {
     func supportsImages(_ id: String) -> Bool { profiles.first(where: { $0.id == record(id)?.profileID })?.configuration["input"]?.array?.contains(.string("image")) == true }
     func attachImages(sessionID: String? = nil) {
         guard let id = sessionID ?? selectedID, supportsImages(id), displays[id] != nil else { return }
-        let panel = NSOpenPanel(); panel.allowedContentTypes = [.png, .jpeg, .gif, .webP]; panel.allowsMultipleSelection = true; panel.canChooseDirectories = false
-        guard panel.runModal() == .OK else { return }
-        attachImageFiles(panel.urls, sessionID: id)
+        // A sheet on the chat's window: choosing a file must not stop the run
+        // that is streaming into it.
+        if !questions.chooseImageFiles(about: id, { [weak self] urls in
+            guard let self, !urls.isEmpty else { return }
+            self.attachImageFiles(urls, sessionID: id)
+        }) { displays[id]?.notice = PiQuestion.busyNotice }
     }
     /// Shared by the file panel, paste and drag-and-drop.
     func attachImageFiles(_ urls: [URL], sessionID: String? = nil) {

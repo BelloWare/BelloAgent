@@ -11,6 +11,7 @@ final class ReportPageTests: XCTestCase {
     @MainActor private func makeModel() throws -> (WorkspaceModel, URL) {
         let root = try folder()
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
         return (model, root)
     }
 
@@ -20,7 +21,7 @@ final class ReportPageTests: XCTestCase {
     }
 
     @MainActor func testReportIsAPageThatPreservesChatSelectionAndDraft() async throws {
-        let (model, root) = try makeModel(); defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let (model, root) = try makeModel()
         let workspace = WorkspaceRecord(id: "w", path: root.path, trusted: true)
         var profile = ProfileRecord(); profile.baseUrl = "https://gateway.example.com"; profile.modelId = "alias"
         let connection = VaultProfile(profile: profile, apiKey: "k")
@@ -52,11 +53,11 @@ final class ReportPageTests: XCTestCase {
         XCTAssertEqual(model.page, .chats, "Choosing a chat returns to the chat page")
         model.openReport(); model.newChat()
         XCTAssertEqual(model.page, .chats, "New chat returns to the chat page")
-        model.report.suspend(); try await model.traces.close(); await model.store?.close()
+        model.report.suspend()
     }
 
     @MainActor func testActiveFilterChipsResetAndSelectionFollowTheController() async throws {
-        let (model, root) = try makeModel(); defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try makeModel()
         let report = model.report
         XCTAssertEqual(report.activeFilterCount, 0)
         report.preferences.status = "failed"
@@ -98,11 +99,11 @@ final class ReportPageTests: XCTestCase {
         XCTAssertEqual(report.activeFilterCount, 0)
         XCTAssertEqual(report.preferences.metricRetentionDays, 42, "Reset keeps the retention setting")
         XCTAssertNil(report.brush); XCTAssertEqual(report.window.preset, .day)
-        report.suspend(); try await model.traces.close(); await model.store?.close()
+        report.suspend()
     }
 
     @MainActor func testPrepareQueriesTheArchiveAndBrushNarrowsTheActiveSnapshot() async throws {
-        let (model, root) = try makeModel(); defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try makeModel()
         try await model.reloadConfiguration()
         try await model.traces.configure(key: Data(repeating: 0x29, count: 32), quota: 1_048_576, bodyRetention: 100, metricRetention: 100_000)
         let report = model.report
@@ -131,11 +132,11 @@ final class ReportPageTests: XCTestCase {
         for _ in 0..<50 where report.loading { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertEqual(report.snapshot?.selectedRequests, 0, "No failed requests")
         XCTAssertEqual(report.snapshot?.scopeCounts.dispatched, 1, "Counts still cover every status")
-        report.suspend(); try await model.traces.close(); await model.store?.close()
+        report.suspend()
     }
 
     @MainActor func testClosingDuringFilterDebounceReappliesChangesOnReturnAndGuardsPaging() async throws {
-        let (model, root) = try makeModel(); defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try makeModel()
         try await model.reloadConfiguration(); try await record(model)
         let probe = ReportQueryProbe(), report = ReportController { archive, filter, offset in try await probe.run(archive, filter, offset) }
         report.attach(model); await report.prepare()
@@ -152,11 +153,11 @@ final class ReportPageTests: XCTestCase {
         XCTAssertFalse(report.filtersPending); XCTAssertEqual(report.snapshot?.filter.status, "failed")
         XCTAssertEqual(report.snapshot?.selectedRequests, 0)
         XCTAssertEqual(report.activeFilters(workspaces: [], chats: []).map(\.kind), [.status])
-        report.suspend(); try await model.traces.close(); await model.store?.close()
+        report.suspend()
     }
 
     @MainActor func testReturningToReportRefreshesRequestsWithoutResettingChoices() async throws {
-        let (model, root) = try makeModel(); defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try makeModel()
         try await model.reloadConfiguration(); try await record(model)
         let report = model.report
         await report.prepare(); report.advancedOpen = true; report.detailsOpen = true; report.chartMetric = "Cost"
@@ -166,28 +167,30 @@ final class ReportPageTests: XCTestCase {
         XCTAssertEqual(report.snapshot?.selectedRequests, 2)
         XCTAssertEqual(report.preferences.requestedAlias, "alias")
         XCTAssertTrue(report.advancedOpen); XCTAssertTrue(report.detailsOpen); XCTAssertEqual(report.chartMetric, "Cost")
-        report.suspend(); try await model.traces.close(); await model.store?.close()
+        report.suspend()
     }
 
     @MainActor func testConfigurationFailureRetriesSavedDefaultsInsteadOfQueryingFallbacks() async throws {
-        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let root = try folder()
         var saved = VaultConfiguration(); saved.dashboard.status = "failed"; saved.dashboard.windowHours = 168
         let storage = ReportTestVaultStorage(bytes: try JSONEncoder().encode(saved), failFirst: true)
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: storage)); defer { model.shutdown() }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: storage))
+        registerWorkspaceFixtureTeardown(model, root: root)
         let report = model.report
         await report.prepare()
         XCTAssertNotNil(report.failure); XCTAssertNil(report.snapshot); XCTAssertFalse(report.loading)
         await report.refresh()
         XCTAssertNil(report.failure); XCTAssertEqual(report.snapshot?.filter.status, "failed")
         XCTAssertEqual(report.appliedWindow.preset, .week); XCTAssertEqual(storage.reads, 2)
-        report.suspend(); try await model.traces.close(); await model.store?.close()
+        report.suspend()
     }
 
     @MainActor func testConcurrentPrepareCoalescesAndDoesNotReplaceAnEarlyFilterEdit() async throws {
-        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let root = try folder()
         var saved = VaultConfiguration(); saved.dashboard.status = "failed"
         let gate = ReportReadGate(), storage = ReportTestVaultStorage(bytes: try JSONEncoder().encode(saved), gate: gate)
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: storage)); defer { model.shutdown() }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: storage))
+        registerWorkspaceFixtureTeardown(model, root: root)
         let report = model.report
         let first = Task { await report.prepare() }
         for _ in 0..<200 where !gate.entered { try await Task.sleep(for: .milliseconds(5)) }
@@ -198,14 +201,15 @@ final class ReportPageTests: XCTestCase {
         XCTAssertEqual(storage.reads, 1)
         XCTAssertEqual(report.preferences.status, "cancelled"); XCTAssertEqual(report.snapshot?.filter.status, "cancelled")
         XCTAssertFalse(report.filtersPending); XCTAssertFalse(report.loading)
-        report.suspend(); try await model.traces.close(); await model.store?.close()
+        report.suspend()
     }
 
     @MainActor func testCancelledFirstVisitDoesNotLoadAndLaterVisitKeepsEarlierEdits() async throws {
-        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let root = try folder()
         var saved = VaultConfiguration(); saved.dashboard.status = "failed"
         let storage = ReportTestVaultStorage(bytes: try JSONEncoder().encode(saved))
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: storage)); defer { model.shutdown() }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: storage))
+        registerWorkspaceFixtureTeardown(model, root: root)
         let report = model.report
         report.preferences.status = "cancelled"
         let obsolete = Task { await report.prepare() }
@@ -215,11 +219,11 @@ final class ReportPageTests: XCTestCase {
         XCTAssertEqual(storage.reads, 1)
         XCTAssertEqual(report.snapshot?.filter.status, "cancelled", "First defaults must not overwrite edits made before prepare begins")
         XCTAssertFalse(report.filtersPending)
-        report.suspend(); try await model.traces.close(); await model.store?.close()
+        report.suspend()
     }
 
     @MainActor func testLateFailureAfterSuspendCannotReplaceReopenedResults() async throws {
-        let (model, root) = try makeModel(); defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try makeModel()
         try await model.reloadConfiguration(); try await record(model)
         let probe = ReportQueryProbe(), report = ReportController { archive, filter, offset in try await probe.run(archive, filter, offset) }
         report.attach(model); await report.prepare()
@@ -233,11 +237,11 @@ final class ReportPageTests: XCTestCase {
         await probe.release(); await obsolete.value
         XCTAssertEqual(report.snapshot?.selectedRequests, 2); XCTAssertEqual(report.snapshot?.filter.requestedAlias, "alias")
         XCTAssertNil(report.failure); XCTAssertFalse(report.loading)
-        report.suspend(); try await model.traces.close(); await model.store?.close()
+        report.suspend()
     }
 
     @MainActor func testBrushPublishesOnlyItsOwnResultsAndCannotRacePagingOrClearing() async throws {
-        let (model, root) = try makeModel(); defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try makeModel()
         try await model.reloadConfiguration(); try await record(model)
         let probe = ReportQueryProbe(), report = ReportController { archive, filter, offset in try await probe.run(archive, filter, offset) }
         report.attach(model); await report.prepare()
@@ -256,11 +260,11 @@ final class ReportPageTests: XCTestCase {
         XCTAssertEqual(report.snapshot?.selectedRequests, 1); XCTAssertNil(report.failure)
         await report.page(offset: 0)
         let calls = await probe.calls; XCTAssertEqual(calls.last?.filter.from, brush.from); XCTAssertEqual(calls.last?.filter.until, brush.until)
-        report.suspend(); try await model.traces.close(); await model.store?.close()
+        report.suspend()
     }
 
     @MainActor func testInvalidPendingFilterKeepsHonestAppliedLabelsUntilRetrySucceeds() async throws {
-        let (model, root) = try makeModel(); defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try makeModel()
         try await model.reloadConfiguration(); try await record(model)
         let report = model.report; await report.prepare()
         let original = try XCTUnwrap(report.snapshot)
@@ -271,11 +275,11 @@ final class ReportPageTests: XCTestCase {
         report.preferences.status = "failed"; await report.refresh()
         XCTAssertNil(report.failure); XCTAssertFalse(report.filtersPending)
         XCTAssertEqual(report.snapshot?.filter.status, "failed"); XCTAssertEqual(report.activeFilterCount, 1)
-        report.suspend(); try await model.traces.close(); await model.store?.close()
+        report.suspend()
     }
 
     @MainActor func testExpandedSessionsReloadAfterRefreshAndCanceledExpansionCannotReappear() async throws {
-        let (model, root) = try makeModel(); defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try makeModel()
         try await model.reloadConfiguration(); try await record(model)
         let probe = ReportQueryProbe()
         let report = ReportController(query: { try await probe.run($0, $1, $2) }); report.attach(model)
@@ -294,11 +298,11 @@ final class ReportPageTests: XCTestCase {
         await report.prepare()
         for _ in 0..<200 where report.sessionRequests["s"] == nil { try await Task.sleep(for: .milliseconds(5)) }
         XCTAssertEqual(report.sessionRequests["s"]?.selectedRequests, 2)
-        report.suspend(); try await model.traces.close(); await model.store?.close()
+        report.suspend()
     }
 
     @MainActor func testObsoleteSessionPageErrorCannotReplaceNewerPageOrHiddenReport() async throws {
-        let (model, root) = try makeModel(); defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try makeModel()
         try await model.reloadConfiguration(); try await record(model)
         let gate = ReportQueryProbe()
         let report = ReportController(sessionQuery: { archive, filter, offset in
@@ -314,7 +318,6 @@ final class ReportPageTests: XCTestCase {
         let hidden = Task { await report.reloadSessions() }; await gate.waitForBlock()
         report.suspend(); await gate.release(); await hidden.value
         XCTAssertNil(report.failure, "A hidden query cannot publish errors")
-        try await model.traces.close(); await model.store?.close()
     }
 }
 
@@ -369,7 +372,7 @@ private final class ReportTestVaultStorage: VaultStorage, @unchecked Sendable {
 
 extension ReportPageTests {
     @MainActor func testRevealMessageOpensTheChatOrExplainsWhyItCannot() async throws {
-        let (model, root) = try makeModel(); defer { try? FileManager.default.removeItem(at: root) }
+        let (model, root) = try makeModel()
         let workspace = WorkspaceRecord(id: "w", path: root.path, trusted: true)
         var profile = ProfileRecord(); profile.baseUrl = "https://gateway.example.com"; profile.modelId = "alias"
         let connection = VaultProfile(profile: profile, apiKey: "k")
@@ -408,7 +411,7 @@ extension ReportPageTests {
     }
 
     @MainActor func testNewChatRequiresAWorkspaceAndGroupingStateFollowsTheController() async throws {
-        let (model, root) = try makeModel(); defer { try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try makeModel()
         try await model.reloadConfiguration()
         XCTAssertTrue(model.workspaces.isEmpty)
         model.newChat()

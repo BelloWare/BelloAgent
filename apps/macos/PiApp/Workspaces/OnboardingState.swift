@@ -19,6 +19,8 @@ import Combine
     @Published private(set) var listing = false
     @Published private(set) var listError = ""
     private var resumed = false
+    /// True when a saved connection was found at launch: the copy greets rather than introduces.
+    @Published private(set) var resumedFromSaved = false
     private var storedProfile: ProfileRecord?
     private var discoveryGeneration = UUID()
     private typealias Listing = (models: [String], descriptors: [ModelDescriptor], note: String)
@@ -49,8 +51,20 @@ import Combine
         resumed = true
         let supported = profiles.filter { $0.api == LiteLLMConfiguration.supportedAPI }
         if let saved = supported.first(where: { $0.id == preferredID }) ?? supported.first {
-            profile = saved; storedProfile = saved; step = .workspace
+            profile = saved; storedProfile = saved; step = .workspace; resumedFromSaved = true
         }
+    }
+    /// Why Continue is not yet available, in the reader's terms; empty once it is.
+    var gatewayHint: String {
+        let base = profile.baseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.isEmpty { return "Enter your gateway's URL to continue." }
+        if (try? GatewayModelDiscovery.modelsURL(base: base, api: profile.api)) == nil {
+            return base.lowercased().hasPrefix("http") ? "Use the gateway's base URL, such as https://litellm.example.com; only localhost may use http://."
+                : "Start the URL with https:// (http:// only for localhost)."
+        }
+        if key.isEmpty { return hasStoredKey ? "" : "Enter the API key to continue. It is stored in your Keychain and sent only to this gateway." }
+        if !GatewayModelDiscovery.validKey(key) { return "The API key contains characters a request header cannot carry; paste it again." }
+        return ""
     }
 
     func invalidateModelList() {
@@ -135,7 +149,7 @@ import Combine
             let saved = try await persist(candidate, key)
             profile = saved; storedProfile = saved; key = ""
             invalidateModelList()
-            step = .workspace; message = "Saved in the configuration vault. Choose a trusted project to continue."
+            step = .workspace; message = "Saved to your Keychain. Choose a project folder to continue."
             return true
         } catch { message = error.localizedDescription; return false }
     }

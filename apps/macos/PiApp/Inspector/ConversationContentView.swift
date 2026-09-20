@@ -19,7 +19,9 @@ struct ConversationContentView: View {
             VStack(alignment: .leading, spacing: PiSpacing.md) {
                 HStack(spacing: PiSpacing.sm) {
                     PiTextField(placeholder: "Find in retained conversation", text: $query, icon: "magnifyingglass", onSubmit: { search() })
-                    Button("Search") { search() }.buttonStyle(.piPrimary).disabled(busy || query.count > 256)
+                    // Return in the field already runs the search; the one
+                    // primary on this sheet is the thing it is named for.
+                    Button("Search") { search() }.buttonStyle(.piSecondaryCompact).disabled(busy || query.count > 256)
                     if busy { ProgressView().controlSize(.small) }
                 }
                 ScrollView {
@@ -107,9 +109,12 @@ struct ConversationContentView: View {
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText, .plainText]
         panel.nameFieldStringValue = (model.record(sessionID)?.title ?? "Conversation").replacingOccurrences(of: "/", with: "-") + ".md"
         panel.message = "Save the retained conversation as Markdown text."
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        busy = true; notice = "Reading retained text…"
-        Task { defer { busy = false }; do {
+        Task {
+            guard let url = await PiQuestion.shared.save(panel) else { return }
+            busy = true
+            notice = "Reading retained text…"
+            defer { busy = false }
+            do {
             let bytes = try await collect(first: 1, last: result.total, limit: 64 * 1024 * 1024, failure: "This conversation exceeds 64 MiB. Copy explicit ranges instead. No file was written.")
             try bytes.write(to: url, options: .atomic)
             notice = "Exported \(result.total) messages (\(bytes.count) UTF-8 bytes) to \(url.lastPathComponent)."

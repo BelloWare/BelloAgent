@@ -3,10 +3,11 @@ import XCTest
 
 final class SessionReadStateTests: XCTestCase {
     @MainActor private func makeModel(root: URL? = nil) async throws -> (WorkspaceModel, URL, SessionDisplay) {
-        let base = ProcessInfo.processInfo.environment["PI_BUILD_ROOT"] ?? NSTemporaryDirectory()
+        let base = testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()
         let root = root ?? URL(fileURLWithPath: base).appendingPathComponent("read-state-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
         let chat = ChatRecord(id: "chat", workspaceID: "workspace", title: "Saved chat", path: nil, profileID: "profile")
         model.chats = [chat]; try await model.store?.put(chat, kind: "chat", id: chat.id)
         let view = SessionDisplay(id: chat.id)
@@ -17,7 +18,7 @@ final class SessionReadStateTests: XCTestCase {
         ["assistantMessageCount": .number(Double(count)), "latestAssistantMessageId": id.map(WireValue.string) ?? .null]
     }
     @MainActor private func close(_ model: WorkspaceModel, root: URL, remove: Bool = true) async throws {
-        model.shutdown(); await model.flushReadStates(); await model.store?.close()
+        model.shutdown(); await model.flushReadStates(); try await model.traces.close(); await model.store?.close()
         if remove { try FileManager.default.removeItem(at: root) }
     }
 
@@ -199,16 +200,16 @@ final class SessionReadStateTests: XCTestCase {
 extension SessionReadStateTests {
     /// A failed run marks the chat, but the Dock badge counts only replies in chats that are neither failed nor archived.
     @MainActor func testFailedRunsAndArchivedChatsAreMarkedButNeverCountedInTheDock() async throws {
-        let base = ProcessInfo.processInfo.environment["PI_BUILD_ROOT"] ?? NSTemporaryDirectory()
+        let base = testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()
         let root = URL(fileURLWithPath: base).appendingPathComponent("read-state-failure-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
         var chat = ChatRecord(id: "chat", workspaceID: "workspace", title: "Saved chat", path: nil, profileID: "profile")
         let other = ChatRecord(id: "other", workspaceID: "workspace", title: "Other chat", path: nil, profileID: "profile")
         model.chats = [chat, other]; try await model.store?.put(chat, kind: "chat", id: chat.id); try await model.store?.put(other, kind: "chat", id: other.id)
         let view = SessionDisplay(id: chat.id), otherView = SessionDisplay(id: other.id)
         model.displays = [chat.id: view, other.id: otherView]; model.selectedID = other.id; model.selected = otherView; model.focusedSessionID = other.id
-        defer { model.shutdown() }
         // The chat is not in front; its run fails without producing a reply.
         model.markRunFailed(sessionID: "chat")
         XCTAssertTrue(model.unreadFailure(sessionID: "chat")); XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0)
@@ -234,7 +235,6 @@ extension SessionReadStateTests {
         failed["assistantMessageCount"] = .number(2); failed["latestAssistantMessageId"] = .string("a2")
         model.markSessionRead("chat")
         XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0); XCTAssertFalse(model.unreadFailure(sessionID: "chat"))
-        await model.flushReadStates(); await model.store?.close()
-        try FileManager.default.removeItem(at: root)
+        await model.flushReadStates()
     }
 }

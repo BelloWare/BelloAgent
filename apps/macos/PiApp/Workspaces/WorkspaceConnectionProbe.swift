@@ -93,3 +93,47 @@ extension WorkspaceModel {
         }
     }
 }
+
+extension WorkspaceModel {
+    /// Sends one small request in a saved test chat. Settings confirms in its own
+    /// footer and passes `confirmed`; other callers get the system prompt.
+    func testConnection(profileID: String, confirmed: Bool = false) {
+        guard requestProfiles.contains(where: { $0.id == profileID }) else { error = LiteLLMConfiguration.unsupportedAPIMessage; return }
+        if confirmed {
+            Task { do {
+                let item = try await createConnectionTestChat(profileID: profileID)
+                submitConnectionTestChat(item.id)
+            } catch { self.error = error.localizedDescription } }
+            return
+        }
+        let question = ChatQuestion(title: "Test this profile's connection?",
+                                    detail: "Send a real API request to the configured LiteLLM gateway. Its upstream provider may charge for it. The test runs in a saved chat with tools disabled, outside any project, so you can inspect it later.",
+                                    action: "Send Test Request")
+        if !questions.ask(question, answered: { [weak self] send in
+            guard let self, send else { return }
+            Task { do {
+                let item = try await self.createConnectionTestChat(profileID: profileID)
+                self.submitConnectionTestChat(item.id)
+            } catch { self.error = error.localizedDescription } }
+        }) { error = PiQuestion.busyNotice }
+    }
+    /// Selection can change while the saved test chat loads. Its submission
+    /// always belongs to that chat, never to the newly selected conversation.
+    func submitConnectionTestChat(_ id: String) {
+        guard let view = displays[id], record(id)?.connectionTest == true else { return }
+        view.draft = "Reply with OK to confirm this API connection."
+        send(sessionID: id)
+    }
+    /// Connection tests need no project: the chat is saved under the scratch
+    /// workspace so its request and reply stay inspectable in the sidebar and report.
+    @discardableResult
+    func createConnectionTestChat(profileID: String) async throws -> ChatRecord {
+        guard requestProfiles.contains(where: { $0.id == profileID }) else { throw HostError.failure(LiteLLMConfiguration.unsupportedAPIMessage) }
+        guard let store else { throw HostError.failure("Desktop storage is unavailable. Resolve the storage error before testing a connection.") }
+        let item = ChatRecord(id: UUID().uuidString, workspaceID: WorkspaceRecord.scratchID, title: "Connection test", path: nil, profileID: profileID, toolMode: "read-only", connectionTest: true)
+        try await store.put(item, kind: "chat", id: item.id); chats.insert(item, at: 0)
+        page = .chats
+        await select(item.id)
+        return item
+    }
+}

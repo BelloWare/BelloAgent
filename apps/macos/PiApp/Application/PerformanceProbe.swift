@@ -1,21 +1,6 @@
 import Foundation
 import AppKit
 
-struct PaintClockCalibration {
-    private(set) var uncertainty = Double.infinity
-    private var offset = 0.0
-    mutating func sample(sent: Double, received: Double, web: Double) {
-        guard sent.isFinite, received.isFinite, web.isFinite, received >= sent else { return }
-        let half = (received - sent) / 2
-        guard half < uncertainty else { return }
-        uncertainty = half; offset = (sent + received) / 2 - web
-    }
-    func upperBound(web: Double) -> Double? {
-        guard uncertainty <= 10, web.isFinite else { return nil }
-        return web + offset + uncertainty
-    }
-}
-
 // Opt-in fixture instrumentation. It records durations/counts only, never chat
 // text, requests, credentials or filesystem contents. Normal releases are inert.
 @MainActor final class PerformanceProbe {
@@ -56,13 +41,13 @@ struct PaintClockCalibration {
         if visibleSince.count > 128 { visibleSince.removeAll() }
         if hasHistory { selections[id] = Self.now }; visibleSince[id] = Self.now
     }
-    func viewport(_ id: String, deltaAt: Double?, paintedAt: Double? = nil) {
+    /// Called when the native transcript applies a snapshot, before SwiftUI's
+    /// deferred layout/display work. It is deliberately not a paint metric.
+    func transcriptSnapshotApplied(_ id: String, deltaAt: Double?) {
         guard enabled else { return }
-        if let start = selections.removeValue(forKey: id) { observe("chatSelectionToPaintMs", milliseconds: Self.now - start) }
+        if let start = selections.removeValue(forKey: id) { observe("chatSelectionToSnapshotMs", milliseconds: Self.now - start) }
         if let deltaAt, deltaAt >= (visibleSince[id] ?? 0) {
-            // Preserve the conservative acknowledgment measurement separately.
-            observe("oldestForegroundDeltaToPaintMs", milliseconds: Self.now - deltaAt)
-            if let paintedAt { observe("oldestForegroundDeltaToVisiblePaintMs", milliseconds: paintedAt - deltaAt) }
+            observe("oldestForegroundDeltaToSnapshotMs", milliseconds: Self.now - deltaAt)
         }
     }
     func flush() {
@@ -78,7 +63,7 @@ struct PaintClockCalibration {
             return ["retainedSamples": Double(sorted.count), "p50": percentile(0.5), "p95": percentile(0.95), "p99": percentile(0.99), "max": sorted.last ?? 0]
         }
         let value: [String: Any] = ["pid": pid, "build": build, "version": version,
-                                   "metrics": reports, "samples": snapshot, "totalSamples": totals, "method": "Native edit event timestamp to NSTextView draw (Send is excluded); oldest unsent host delta to calibrated WebKit post-paint task upper bound (best of 5 clock samples, uncertainty <=10ms); original native acknowledgment timing retained separately. Paint opportunity, not physical scanout. Bounded off-main statistics; no content logged."]
+                                   "metrics": reports, "samples": snapshot, "totalSamples": totals, "method": "Native edit event timestamp to NSTextView draw (Send is excluded); chat selection and oldest unsent host delta to native transcript snapshot application. Snapshot metrics end before deferred SwiftUI layout/display and must not be treated as visible paint. Native draw is a paint opportunity, not physical scanout. Bounded off-main statistics; no content logged."]
         guard let bytes = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]) else { return }
         try? bytes.write(to: output, options: .atomic); try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: output.path)
           }.value

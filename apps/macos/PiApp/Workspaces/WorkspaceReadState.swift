@@ -19,6 +19,13 @@ extension WorkspaceModel {
         guard let item = record(sessionID), item.connectionTest != true else { return 0 }
         return unreadStates[sessionID]?.unreadOutputs ?? 0
     }
+    /// Whether a collapsed group has to show its dot. Driven from the unread
+    /// states, which are few, rather than from every chat of the project.
+    func projectHasUnread(_ projectID: String) -> Bool {
+        unreadStates.contains { id, state in
+            (state.unreadOutputs > 0 || state.unreadFailure == true) && record(id).map { $0.workspaceID == projectID && $0.connectionTest != true } == true
+        }
+    }
     func unreadFailure(sessionID: String) -> Bool {
         guard let item = record(sessionID), item.connectionTest != true else { return false }
         return unreadStates[sessionID]?.unreadFailure == true

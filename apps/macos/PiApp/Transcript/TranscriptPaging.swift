@@ -17,3 +17,33 @@ enum TranscriptPaging {
         return earlier.filter { !known.contains($0.id) }
     }
 }
+
+/// A test seam, off in the app. When a fixture turns it on, the native
+/// transcript adds up what its own reconciliation, measurement and layout
+/// passes cost inside a frame, so the frame can be split into the model
+/// update, SwiftUI's update, the document's work and the display pass.
+@MainActor enum TranscriptLayoutClock {
+    static var recording = false
+    static var updateSeconds = 0.0
+    static var layoutSeconds = 0.0
+    static var measureSeconds = 0.0
+    static var measuredRows = 0
+    static var mountedRows = 0
+    static var markdownUpdateSeconds = 0.0
+    static var markdownLayoutSeconds = 0.0
+    static var markdownBlocksMeasured = 0
+    static var workListCardsMeasured = 0
+    /// How many times SwiftUI has been asked to size or lay a row's tree out,
+    /// and what those passes cost. A row whose content changed should cost
+    /// exactly one.
+    static var rowSizingPasses = 0
+    static var rowSizingSeconds = 0.0
+    static var mountSeconds = 0.0
+    static var rowLoopSeconds = 0.0
+    static var now: Double { ProcessInfo.processInfo.systemUptime }
+    static func reset() {
+        updateSeconds = 0; layoutSeconds = 0; measureSeconds = 0; measuredRows = 0; mountedRows = 0
+        markdownUpdateSeconds = 0; markdownLayoutSeconds = 0; markdownBlocksMeasured = 0; workListCardsMeasured = 0
+        mountSeconds = 0; rowLoopSeconds = 0; rowSizingPasses = 0; rowSizingSeconds = 0
+    }
+}

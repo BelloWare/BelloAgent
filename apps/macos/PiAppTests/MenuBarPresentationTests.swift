@@ -5,7 +5,7 @@ import SwiftUI
 
 final class MenuBarPresentationTests: XCTestCase {
     @MainActor func testRunningPresentationExcludesQuietChatsWithoutChangingUnreadOrQueuedWork() throws {
-        let base = ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()
+        let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("menu-presentation-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -58,8 +58,7 @@ final class MenuBarPresentationTests: XCTestCase {
     /// Optional visual evidence uses only this synthetic window, never the
     /// desktop or a user's project, archive, credentials, or gateway.
     @MainActor func testCaptureDefaultUsagePanelWhenRequested() async throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard let path = environment["PI_APP_USAGE_CAPTURE_ROOT"] ?? environment["TEST_RUNNER_PI_APP_USAGE_CAPTURE_ROOT"] else {
+        guard let path = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") else {
             throw XCTSkip("Set PI_APP_USAGE_CAPTURE_ROOT for the optional menu preview")
         }
         func totals(requests: Int, input: Double, output: Double, cost: Double) -> GatewayTotals {
@@ -69,6 +68,7 @@ final class MenuBarPresentationTests: XCTestCase {
         }
         let models = [
             MenuBarModelDistribution(api: "openai-responses", requestedAlias: "auto-router", resolvedModel: "openai/gpt-5.4-mini", identityStatus: "reported", gateway: totals(requests: 6, input: 15_000, output: 1_200, cost: 0.0096), allRequests: 10, historicalRate: HistoricalOutputRate(outputTokens: 1_200, generationMilliseconds: 25_000, samples: 6), costShare: 0.384),
+            MenuBarModelDistribution(api: "openai-responses", requestedAlias: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0-extended-thinking-router", resolvedModel: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0", identityStatus: "reported", gateway: totals(requests: 3, input: 9_000, output: 900, cost: 0.0210), allRequests: 10, historicalRate: HistoricalOutputRate(outputTokens: 900, generationMilliseconds: 12_000, samples: 3)),
             MenuBarModelDistribution(api: "openai-responses", requestedAlias: "auto-router", resolvedModel: "openai/gpt-5.4", identityStatus: "reported", gateway: totals(requests: 4, input: 5_000, output: 800, cost: 0.0154), allRequests: 10, historicalRate: HistoricalOutputRate(outputTokens: 800, generationMilliseconds: 25_000, samples: 4), costShare: 0.616)
         ]
         let until = Date(timeIntervalSince1970: 1_000_000)
@@ -123,6 +123,21 @@ final class MenuBarPresentationTests: XCTestCase {
         let folder = URL(fileURLWithPath: path, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try jpeg.write(to: folder.appendingPathComponent("menu-bar-usage.jpg"), options: .atomic)
+        // A second capture scrolled to the model distribution, where the long id lives.
+        var pending: [NSView] = [hosted], scrolls: [NSScrollView] = []
+        while let view = pending.popLast() {
+            if let scroll = view as? NSScrollView { scrolls.append(scroll) }
+            for child in view.subviews { pending.append(child) }
+        }
+        if let scroll = scrolls.first, let document = scroll.documentView {
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, document.bounds.height - scroll.contentView.bounds.height)))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            try await Task.sleep(for: .milliseconds(300))
+            hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            let scrolled = try XCTUnwrap(create(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber), CGWindowImageOption.boundsIgnoreFraming.rawValue)?.takeRetainedValue())
+            let models = try XCTUnwrap(NSBitmapImageRep(cgImage: scrolled).representation(using: .jpeg, properties: [.compressionFactor: 0.82]))
+            try models.write(to: folder.appendingPathComponent("menu-bar-models.jpg"), options: .atomic)
+        }
     }
 }
 

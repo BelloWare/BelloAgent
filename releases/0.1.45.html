@@ -1,0 +1,10 @@
+<h2>Bello Agent 0.1.45</h2>
+<ul>
+  <li>Gateway failures now say what to check. A rejected key reads “The gateway rejected the API key or this model's access; check the key in Settings”, a missing route or model points at the base URL and alias, an unreachable host or an untrusted certificate is named as such, and rate limits and gateway-side failures say to try again. The provider's own detail, when it sent one, comes first.</li>
+  <li>Onboarding explains a disabled Continue (the URL, its scheme, the key) instead of leaving you guessing, greets a returning user whose connection is saved, and calls the last step “Start your first chat” once a project is ready.</li>
+  <li>The welcome screen offers New Chat as soon as a project and a connection exist, next to Projects and Connections.</li>
+  <li>The test request in Settings, removing a project, and typing a model alias for a chat are confirmed or entered in place, in the sheet or popover you are already in, instead of in system alerts.</li>
+  <li>A reply that stops at the output budget no longer fails the run. The reply stays, a warning under it says it stopped at the budget and what to do, the turn ends normally and queued follow-ups go on.</li>
+  <li>A streaming reply can no longer be cancelled because the app was momentarily slower than the gateway (“Consumer could not keep up; stream cancelled”). The stream now buffers every byte, and should that ever fail it is retried like any other transport failure, up to three attempts.</li>
+  <li>A failed request can be retried from the chat. The failure row now carries Retry request, which sends the turn again from where it stopped, without retyping anything; queued follow-ups continue after it. Transient failures are still retried automatically up to three times first.</li>
+</ul>

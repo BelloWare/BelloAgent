@@ -177,7 +177,7 @@ final class HardeningTests: XCTestCase {
     func testReceiptIndexPrunesAndDeletesOnlyItsOwnChat() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("native-receipts-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = try MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
+        let store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         for n in 0..<140 { try await store.put("receipt", kind: "receipt:chat", id: String(n), revision: Int64(n)) }
         try await store.put("other", kind: "receipt:other", id: "one")
         let items = try await store.list(String.self, kind: "receipt:chat"); XCTAssertEqual(items.count, 128)

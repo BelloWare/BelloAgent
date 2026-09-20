@@ -60,39 +60,6 @@ extension View {
     }
 }
 
-/// Stat tile with a ring gauge for the response-cache hit ratio.
-struct DashboardCacheTile: View {
-    let totals: GatewayTotals
-    private var ratio: Double? { totals.cacheHitRatio }
-    private var value: String { ratio.map { String(format: "%.0f%%", $0 * 100) } ?? "—" }
-    private var caption: String {
-        var parts = ["\(totals.cacheHits) hit · \(totals.cacheMisses) miss · \(totals.cacheUnreported) unreported"]
-        if totals.cacheConflicts > 0 { parts.append("\(totals.cacheConflicts) invalid/conflicting") }
-        parts.append(totals.tokenCacheLabel)
-        return parts.joined(separator: " · ")
-    }
-    var body: some View {
-        PiCard(padding: PiSpacing.md) {
-            HStack(alignment: .top, spacing: PiSpacing.md) {
-                PiRing(fraction: ratio ?? 0, size: 34, tone: ratio == nil ? .piInkTertiary : .piSuccess)
-                    .overlay { if ratio == nil { Image(systemName: "questionmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Color.piInkTertiary) } }
-                    .padding(.top, 2)
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "memorychip").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.piInfo)
-                        Text("Cache hit ratio").font(PiFont.micro).foregroundStyle(Color.piInkSecondary).textCase(.uppercase).tracking(0.4)
-                    }
-                    Text(value).font(.system(size: 20, weight: .semibold)).foregroundStyle(Color.piInk).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
-                        .contentTransition(.numericText())
-                    Text(caption).font(PiFont.caption).foregroundStyle(Color.piInkTertiary).lineLimit(2)
-                }
-            }
-        }
-        .help("Response-cache hits over reported outcomes (hits ÷ hits + misses). Unreported requests are excluded from the ratio and counted separately; provider prompt-cache tokens are separate.")
-        .animation(.easeOut(duration: 0.2), value: totals)
-    }
-}
-
 /// Badge for a request's LiteLLM response-cache state.
 struct DashboardCacheBadge: View {
     let status: String

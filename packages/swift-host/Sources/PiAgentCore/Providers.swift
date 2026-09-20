@@ -39,7 +39,10 @@ public struct ProviderClient: ModelClient {
             // LiteLLM would otherwise answer a failing route from a fallback model;
             // the app wants the requested model or a visible error.
             if p.raw["compat"]["allowFallbacks"].flag != true { body["disable_fallbacks"]=true }
-            if p.raw["compat"]["supportsMaxOutputTokens"].flag != false { body["max_output_tokens"]=JSON(p.maxOutput) }
+            // The cap on the wire is the model's own ceiling (or a bounded task's
+            // explicit cap), never the output budget: a reply runs as far as the
+            // model can take it.
+            if let cap=p.wireOutputLimit { body["max_output_tokens"]=JSON(cap) }
             var input:[JSON]=[]
             for message in history {
                 if message.role=="assistant", let items=try replayItems(message,profile:p) { input += items; continue }
@@ -75,7 +78,8 @@ public struct ProviderClient: ModelClient {
                 }
             }
         } else {
-            body["max_tokens"]=JSON(p.maxOutput);body["system"]=JSON(instructions)
+            let messagesCap=p.outputCap ?? p.modelOutputLimit ?? p.maxOutput
+            body["max_tokens"]=JSON(messagesCap);body["system"]=JSON(instructions)
             body["messages"] = .array(try history.compactMap { message -> JSON? in
                 if message.role=="toolResult" { return ["role":"user","content":[["type":"tool_result","tool_use_id":JSON(message.toolCallId ?? ""),"content":JSON(message.text),"is_error":JSON(message.isError)]]] }
                 let blocks: [JSON]
@@ -97,9 +101,9 @@ public struct ProviderClient: ModelClient {
                     body["output_config"]=["effort":p.raw["thinkingLevelMap"][level].text.map { JSON($0) } ?? JSON(level)]
                     body=body.removing(["temperature","top_p"])
                 } else {
-                    guard p.maxOutput>1024 else { throw AgentError("thinking_budget","Messages thinking requires max output greater than 1024") }
+                    guard messagesCap>1024 else { throw AgentError("thinking_budget","Messages thinking requires max output greater than 1024") }
                     let budgets=["minimal":1024,"low":2048,"medium":4096,"high":8192,"xhigh":16384,"max":32768]
-                    body["thinking"]=["type":"enabled","budget_tokens":JSON(min(p.maxOutput-1,budgets[level] ?? 4096))]
+                    body["thinking"]=["type":"enabled","budget_tokens":JSON(min(messagesCap-1,budgets[level] ?? 4096))]
                     body=body.removing(["temperature","top_p"])
                 }
             }
@@ -135,7 +139,8 @@ public struct ProviderClient: ModelClient {
         do {
             try Task.checkCancellation()
             let parts = stream.start(request)
-            await traces.dispatched(attempt, at: stream.observation()["dispatch"].double!, wall: stream.observation()["dispatchWallTimestamp"].double!)
+            let dispatch = stream.observation()
+            await traces.dispatched(attempt, at: dispatch["dispatch"].double ?? nowMS(), wall: dispatch["dispatchWallTimestamp"].double ?? Date().timeIntervalSince1970)
             for try await part in parts {
                 try Task.checkCancellation()
                 switch part {
@@ -179,7 +184,7 @@ public struct ProviderClient: ModelClient {
             }
             guard (200..<300).contains(status) else {
                 let detail = (try? JSON.parse(nonSSE)).map { ProviderAccumulator.failure($0).message }
-                throw AgentError("provider_http", "Provider returned HTTP \(status). " + (detail ?? "Inspect request \(attempt) for the captured body."))
+                throw AgentError("provider_http", "Provider returned HTTP \(status). " + Self.guidance(status: status, detail: detail, attempt: attempt))
             }
             if let providerFailure { throw providerFailure }
             if jsonBody {
@@ -206,8 +211,41 @@ public struct ProviderClient: ModelClient {
             await traces.finish(attempt,outcome:cancelled ? "cancelled":"failed",modelOutcome:providerFailure != nil ? "failed":"interrupted")
             if cancelled { throw CancellationError() }
             if let e=error as? AgentError { throw Self.safeFailure(e, credentials: credentials) }
-            throw AgentError("provider_transport","The provider request failed or its stream was malformed. Inspect request \(attempt).")
+            throw AgentError("provider_transport", Self.transportGuidance(error, attempt: attempt))
         }
+    }
+    /// What to do about a gateway status, after the status itself: the
+    /// provider's own detail when it sent one, then the likely cause in the
+    /// reader's terms, then where the captured body is when nothing else helps.
+    public static func guidance(status: Int, detail: String?, attempt: String) -> String {
+        let hint: String
+        switch status {
+        case 401, 403: hint = "The gateway rejected the API key or this model's access; check the key in Settings."
+        case 404: hint = "The gateway has no such route or model; check the base URL and the model alias in Settings."
+        case 429: hint = "The gateway is rate limiting or out of quota; try again shortly."
+        case 300...399: hint = "The gateway redirected the request; use its final Responses URL in Settings."
+        case 500...599: hint = "The gateway failed on its side; try again, and check the gateway if it keeps failing."
+        default: hint = ""
+        }
+        var parts: [String] = []
+        if let detail, !detail.isEmpty { parts.append(detail.hasSuffix(".") ? detail : detail + ".") }
+        if !hint.isEmpty { parts.append(hint) }
+        if detail == nil || detail?.isEmpty == true { parts.append("Inspect request \(attempt) for the captured body.") }
+        return parts.joined(separator: " ")
+    }
+    /// A transport failure named by its cause: an unknown host, a refused
+    /// connection, a timeout or an untrusted certificate, each with what to check.
+    public static func transportGuidance(_ error: Error, attempt: String) -> String {
+        let cause: String
+        switch (error as? URLError)?.code {
+        case .cannotFindHost?, .dnsLookupFailed?: cause = "The gateway's host could not be found; check the base URL in Settings."
+        case .cannotConnectToHost?, .networkConnectionLost?, .notConnectedToInternet?: cause = "The gateway could not be reached; check the base URL, that the gateway is running, and your network."
+        case .timedOut?: cause = "The gateway did not answer in time."
+        case .secureConnectionFailed?, .serverCertificateUntrusted?, .serverCertificateHasBadDate?, .serverCertificateHasUnknownRoot?, .serverCertificateNotYetValid?:
+            cause = "The gateway's TLS certificate was not trusted; check the URL and the certificate."
+        default: cause = "The provider request failed or its stream was malformed."
+        }
+        return cause + " Inspect request \(attempt)."
     }
 }
 
@@ -241,7 +279,7 @@ public struct ProviderAccumulator: Sendable {
                 let index=value["output_index"].int ?? items.first(where:{$0.value["id"]==value["item_id"]})?.key
                 guard let index,let item=items[index] else { throw AgentError("invalid_stream","Tool argument delta preceded its item") }
                 let delta=value["delta"].text ?? "";arguments[index,default:""] += delta
-                guard arguments[index]!.utf8.count<=2*1024*1024 else { throw AgentError("tool_argument_limit","Tool arguments exceed 2 MiB") }
+                guard (arguments[index]?.utf8.count ?? 0) <= 2*1024*1024 else { throw AgentError("tool_argument_limit","Tool arguments exceed 2 MiB") }
                 return [.tool(item["call_id"].text ?? "",item["name"].text ?? "",delta)]
             case "response.completed","response.incomplete": try acceptJSON(value["response"])
             default:break
@@ -262,7 +300,7 @@ public struct ProviderAccumulator: Sendable {
                 if kind=="signature_delta" { block["signature"]=JSON((block["signature"].text ?? "")+(delta["signature"].text ?? ""));items[index]=block }
                 if kind=="input_json_delta" {
                     let t=delta["partial_json"].text ?? "";arguments[index,default:""] += t
-                    guard arguments[index]!.utf8.count<=2*1024*1024 else { throw AgentError("tool_argument_limit","Tool arguments exceed 2 MiB") }
+                    guard (arguments[index]?.utf8.count ?? 0) <= 2*1024*1024 else { throw AgentError("tool_argument_limit","Tool arguments exceed 2 MiB") }
                     return [.tool(block["id"].text ?? "",block["name"].text ?? "",t)]
                 }
             case "content_block_stop":

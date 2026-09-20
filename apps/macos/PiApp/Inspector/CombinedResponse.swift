@@ -117,7 +117,7 @@ private struct ResponseCombination {
                 item.value["name"] = name
             }
             if item.arguments == nil { item.arguments = ResponseCombinedText(initial: item.value["arguments"] as? String ?? "") }
-            if !item.arguments!.receive(text, done: done) { hasIssue = true }
+            if item.arguments?.receive(text, done: done) == false { hasIssue = true }
             return
         }
 
@@ -126,8 +126,9 @@ private struct ResponseCombination {
         let indexKey = summary ? "summary_index" : "content_index"
         guard let partIndex = validIndex(event[indexKey]) else { hasIssue = true; return }
         guard reservePart(&item, collection: collection, index: partIndex) else { return }
-        var part = item.parts[collection]!.removeValue(forKey: partIndex)!
-        defer { item.parts[collection]![partIndex] = part }
+        // `reservePart` above has just made this slot exist.
+        guard var part = item.parts[collection]?.removeValue(forKey: partIndex) else { hasIssue = true; return }
+        defer { item.parts[collection]?[partIndex] = part }
 
         if type == "response.content_part.added" || type == "response.content_part.done"
             || type == "response.reasoning_summary_part.added" || type == "response.reasoning_summary_part.done" {
@@ -254,7 +255,7 @@ private struct ResponseCombination {
             guard reserveSlots(max(0, index + 1 - previousMaximum)) else { return nil }
             items[index] = ResponseCombinedItem(value: id.map { ["id": $0] } ?? [:])
         }
-        if let id { itemIndices[id] = index; items[index]!.value["id"] = id }
+        if let id { itemIndices[id] = index; items[index]?.value["id"] = id }
         return index
     }
 
@@ -270,10 +271,10 @@ private struct ResponseCombination {
             }
             item.parts[collection] = parts
         }
-        if item.parts[collection]![index] == nil {
-            let previousMaximum = item.parts[collection]!.keys.max().map { $0 + 1 } ?? 0
+        if item.parts[collection]?[index] == nil {
+            let previousMaximum = item.parts[collection]?.keys.max().map { $0 + 1 } ?? 0
             guard reserveSlots(max(0, index + 1 - previousMaximum)) else { return false }
-            item.parts[collection]![index] = ResponseCombinedPart(value: [:])
+            item.parts[collection]?[index] = ResponseCombinedPart(value: [:])
         }
         return true
     }

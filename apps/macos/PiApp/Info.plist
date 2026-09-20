@@ -13,6 +13,11 @@
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSHumanReadableCopyright</key><string>Copyright © 2026 BelloWare</string>
+  <key>UTExportedTypeDeclarations</key><array><dict>
+    <key>UTTypeIdentifier</key><string>com.belloware.belloagent.project-session</string>
+    <key>UTTypeDescription</key><string>Bello Agent session reference</string>
+    <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+  </dict></array>
   <key>SUFeedURL</key><string>https://belloware.com/assets/bello_agent.appcast.xml</string>
   <key>SUPublicEDKey</key><string>slSJ7z2j8RDa266+E/7To5AOOloc2YtiMUZUVEIhwNA=</string>
   <key>SUEnableAutomaticChecks</key><true/>

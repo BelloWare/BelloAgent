@@ -1,7 +1,8 @@
 # Implementation status and remaining work
 
-Updated 2026-09-18. Repository `BelloWare/BelloAgent`, branch **main**, continued
-from `da6028153bea8d0b94a4b9a5bbae11158a64030d`. Do not use the old `main` branch.
+Updated 2026-09-19. Repository `BelloWare/BelloAgent`, branch **main**. The original
+`BelloWare/pi-app` implementation continued from `da6028153bea8d0b94a4b9a5bbae11158a64030d`
+before the repository migration; do not reset the current repository to that archived history.
 
 **Current owner workflow, after 0.1.6:** shorten release cycles with focused
 tests, reuse passing evidence for unchanged code, run independent checks in
@@ -11,7 +12,186 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Bello Agent 0.1.42/build 46 is publicly released** at
+**Bello Agent 0.1.60/build 64 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `ce252bcabe542efc58d87774f16bbe09b4a646d8`
+and website `4ceb9e8773b605931d15eceaf04b0e4947f6f2c7`. The DMG measures **7,824,296 bytes (7.46 MiB)**,
+SHA-256 `0cf92ca649e56a4293a404fa98a9d8fcbe547d2ee9a97222a04be124e1cc81c7`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-19 23:24:08 UTC**.
+Read the [0.1.60 release record](validation/Bello-Agent-0.1.60-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed.
+
+**Bello Agent 0.1.59/build 63 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `f24e92d0649ceba066ad62e0a9ba439a0e07aacc`
+and website `25f67c4a683c0927981df5940388b4f3f1759fa6`. The DMG measures **7,658,997 bytes (7.30 MiB)**,
+SHA-256 `27f4680d1e1181880309f17250328f8b93c39cb6a7db09407e2fae9f01d668ab`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-19 09:00:47 UTC**.
+Read the [0.1.59 release record](validation/Bello-Agent-0.1.59-2026-09-19.md).
+
+**Bello Agent 0.1.58/build 62 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `998411e757bddfe419d4afdd3e578f299689ad60`
+and website `fa044232670ca60292baf2de3744526aed86f3ff`. The DMG measures **7,593,537 bytes (7.24 MiB)**,
+SHA-256 `be36e9bbfe783c3463038fca6337ad19fc9808aa17334c28bd567fc7fafb979d`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-19 02:56:13 UTC**.
+Read the [0.1.58 release record](validation/Bello-Agent-0.1.58-2026-09-19.md).
+
+**Bello Agent 0.1.57/build 61 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `dbbf3421a7143e606768659be8e688ba64d8ac59`
+and website `eaaa9f647ff410dacc4126d3e370ea7249357264`. The DMG measures **7,538,829 bytes (7.19 MiB)**,
+SHA-256 `f82811cec97b217385e2d58b9fb6a1ac62b3a6a8c8fa725e937a08afe00b5f3b`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-19 01:00:09 UTC**.
+Cloudflare check **105810946636** succeeded.
+Read the [0.1.57 release record](validation/Bello-Agent-0.1.57-2026-09-19.md) and
+[five-session performance review](Five-Session-Performance-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+**Bello Agent 0.1.56/build 60 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `bb114ef07a69ef6e1cb33c60e733564e930a8a27`
+and website `3fe37bb891f544f6ed464a1f82d9e60d4c7a1b08`. The DMG measures **7,478,445 bytes (7.13 MiB)**,
+SHA-256 `e19097bbaaf6c2eaa3fcc69ba9db2d1427ffaf299f03761546266c2d57fd822b`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 23:34:17 UTC**.
+Cloudflare check **105796177570** succeeded.
+Read the [0.1.56 release record](validation/Bello-Agent-0.1.56-2026-09-19.md) and
+[topics review](Topics-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+**Bello Agent 0.1.55/build 59 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `f42d237efe30c298523a47b62dd23c35fdda107e`
+and website `5c1aec57e1c8e9a69ef44cbbd053715280db3e01`. The DMG measures **7,357,293 bytes (7.02 MiB)**,
+SHA-256 `031ec071db485f796e9dc2e66c9b8b24f13da443778877db54a1f35d8f1955db`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 22:58:16 UTC**.
+Cloudflare check **105788774388** succeeded.
+Read the [0.1.55 release record](validation/Bello-Agent-0.1.55-2026-09-19.md) and
+[scrolling review](Scrolling-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+**Bello Agent 0.1.54/build 58 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `49ed3c95e7fe53605bfb31b7ad8c0c8595ed0f4d`
+and website `8170e23d0ef7b0f9284c37679aa4895108b679d0`. The DMG measures **7,335,665 bytes (7.00 MiB)**,
+SHA-256 `f97d207d8f18ed7c0d2a12f7898d04b70463598c3067cce3590b2076e35b0a83`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 22:03:23 UTC**.
+Cloudflare check **105776630049** succeeded.
+Read the [0.1.54 release record](validation/Bello-Agent-0.1.54-2026-09-19.md) and
+[session-reference review](Session-Reference-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+**Bello Agent 0.1.53/build 57 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `feb9df30c02c21e38ccb95d378ac619688062e49`
+and website `5d43a239e2fdc8665e5782976ba8e3ec7c9cd352`. The DMG measures **7,329,401 bytes (6.99 MiB)**,
+SHA-256 `6354391322a03c8bc408b8db57e2edddc0fa1eb15cdece0f68c29edd30ae9c24`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 21:30:15 UTC**.
+Cloudflare check **105767983479** succeeded.
+Read the [0.1.53 release record](validation/Bello-Agent-0.1.53-2026-09-19.md) and
+[responsiveness review](Responsiveness-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+**Bello Agent 0.1.52/build 56 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `78e7b8f80a89e497978d915908f97b080a751512`
+and website `f188c0db312da614df13b97a6f113b899b87932a`. The DMG measures **7,269,703 bytes (6.93 MiB)**,
+SHA-256 `39037ef81f15ef1c3c28be59c1c142b258f5b967372df03ceec71cb534887c4a`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 20:13:40 UTC**.
+Read the [0.1.52 release record](validation/Bello-Agent-0.1.52-2026-09-19.md)
+and [throughput/worker review](TPS-Workers-Review-2026-09-19.md). Installation/update
+rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.51/build 55 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `1eb8f9ea3b801aa50d380b5ae9627f337aa45189`
+and website `fdcde0b40f8cc99d50bcc5ad2de74911912e33de`. The DMG measures **7,254,854 bytes (6.92 MiB)**,
+SHA-256 `4674b23636b513802ebbca323bed9e02794f129936f2b851528fc95c30fa3e40`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 19:40:46 UTC**.
+Read the [0.1.51 release record](validation/Bello-Agent-0.1.51-2026-09-19.md)
+and [concurrency review](Concurrency-Review-2026-09-19.md). Installation/update
+rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.50/build 54 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `0969ad030f769aadf1761d9e18869ca85130c031`
+and website `178662a9abad8bd567553ed5f3dcf899d3f265b4`. The DMG measures **7,232,970 bytes (6.90 MiB)**,
+SHA-256 `e3e5b43e042fa435a691819e6d30918c7915e7bd6298c3b5c8298f8c65e67e30`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 18:56:46 UTC**.
+Read the [0.1.50 release record](validation/Bello-Agent-0.1.50-2026-09-19.md)
+and [performance review](Performance-Review-2026-09-19.md). Installation/update
+rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.49/build 53 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `b59a34a63bc4f174fddb2cd5c4ae5068ba6c834d`
+and website `69520c61e62bc4e4b3152296ced8ebfbee6c72d8`. The DMG measures **7,222,143 bytes (6.89 MiB)**,
+SHA-256 `e10cf9b7e2df730192801124b942e51138b92c269ebcb25e891c8d2628938aae`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 18:10:02 UTC**.
+Read the [0.1.49 release record](validation/Bello-Agent-0.1.49-2026-09-19.md)
+and [deep review](Deep-Review-2026-09-19.md). Installation/update rehearsals
+were skipped under the standing owner policy.
+
+**Bello Agent 0.1.48/build 52 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `c52a3d197553c32c7ef0e8dfa2230f16cff68066`
+and website `67e1eb1414622f013abafc3e27f05462e9c64b93`. The DMG measures **7,203,566 bytes (6.87 MiB)**,
+SHA-256 `5b74ee2fded4a7ca8305a157d85db95a979b842ee6ab66624d1f1b14af129bd4`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 17:12:05 UTC**.
+Read the [0.1.48 release record](validation/Bello-Agent-0.1.48-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.47/build 51 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `a093b4df18176df0df411d842475cbaff9efc43e`
+and website `4580f6b23af1dafecd459cc47b96cfcbc1923781`. The DMG measures **7,186,673 bytes (6.85 MiB)**,
+SHA-256 `8b718ddd7b93de0626328383f7344b1c078f1c81aebbae6980fe435219922f0f`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 16:14:07 UTC**.
+Read the [0.1.47 release record](validation/Bello-Agent-0.1.47-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.46/build 50 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `3fcb762c54d6dc8a4681b846a1b339d5d56ae6d8`
+and website `def13c36778eefc98fb6d61ecd8959b71a3fb7b8`. The DMG measures **7,180,448 bytes (6.85 MiB)**,
+SHA-256 `789fc8ab3a3b313b9d3e7c658e7e2f55394139cfd4c4559e73a0437347f0a259`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 15:20:46 UTC**.
+Read the [0.1.46 release record](validation/Bello-Agent-0.1.46-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.45/build 49 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `9af946daf435d696d0cab53ac402c21b70966912`
+and website `d52e8ac9c8435cbac619812b54893764bdc12766`. The DMG measures **7,179,717 bytes (6.85 MiB)**,
+SHA-256 `11d923809f4d6c4b7f524c280805372068b39ebe2f74e61d547db082f4082b0d`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 14:45:05 UTC**.
+Read the [0.1.45 release record](validation/Bello-Agent-0.1.45-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.44/build 48 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `a0cc15e3386cef9b6a044504191c72134a514f35`
+and website `7199c735eb1ed977d187286b73b892f37dc538c4`. The DMG measures **7,160,116 bytes (6.83 MiB)**,
+SHA-256 `4d890fc163a3df16e5e9aad37fc781bc969297f12e6a2ab105ecc547f3879337`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 13:25:46 UTC**.
+Read the [0.1.44 release record](validation/Bello-Agent-0.1.44-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.43/build 47 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `b3491f8c2fe62250896c918c9624d0f79a2991e3`
+and website `8008e13ec2ce0bf447d1f4f80c58f12df760d7a4`. The DMG measures **7,161,822 bytes (6.83 MiB)**,
+SHA-256 `f30b09b90f84f0ce25c72314352f74b4ad36f4f04ea5917656543e677f408ce1`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 13:13:16 UTC**.
+Read the [0.1.43 release record](validation/Bello-Agent-0.1.43-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+**Bello Agent 0.1.42/build 46 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source `6b80619760c8328f9eb8a94e3f040cebfd82cc5c`
 and website `1e57c83b90df30187a0e5d1943f29ee7225d425e`. The DMG measures **7,137,493 bytes (6.81 MiB)**,
 SHA-256 `f3b8460af5c7ee378921ab8766fbf1cd8dade20921c995255c7b0b0874e0405c`. Signing/notarization, packaged-catalog/helper smoke,
@@ -361,6 +541,528 @@ Read the [0.1.4 release record](validation/Bello-Agent-0.1.4-2026-09-16.md).
 The [0.1.3 evidence](validation/Bello-Agent-0.1.3-2026-09-16.md) is historical.
 
 ## Current implementation
+
+Version 0.1.60 is the pass the owner asked for after 0.1.59: performance,
+a smooth experience, an intuitive UI and good code, each driven by an agent
+that measured before and after in a Release build and kept its measurement as
+a test.
+
+Streaming. A streamed token cost the helper a quadratic preview rebuild
+(74 µs per token on a 4,000-token reply, now 0.6 µs), put the whole 250 KB
+display page on the wire (now the changed rows and the appended text, about
+3 KB), and made the app decode, re-encode and re-decode that page three times
+per token; the app now applies row updates to the page it holds, reusing
+untouched rows by identity, so a token reaches the transcript in 0.7 ms
+instead of 4.9 and the first token of a reply lands inside one frame. The
+footer's figures travel only when the app will show them, the journal is
+flushed once per settled run instead of once per record, and the helper's
+event ring no longer shifts 4,096 entries per event. A 0.1.59 helper and a
+0.1.60 app still understand each other: the row-update form is opt-in and
+any out-of-step read is a whole page.
+
+UI and UX. A review of every screen, in both appearances and at narrow and
+wide sizes, is in `docs/UX-Review-2026-09-19-0.1.60.md`. From it: run states
+are words a reader knows ("Paused", "Waiting to send · 1", never the wire
+word); a marked sidebar row is outlined rather than wearing the open chat's
+highlight; the composer keeps the model's name and drops the effort label
+first when the pane narrows; the sidebar's rate abbreviates ("Latest 123k
+tok/s") instead of being cut mid-number; the footer's notice can say its
+whole sentence; Settings no longer shouts its destructive action; fetch,
+pull and push are named, and a disabled Commit says what is missing; skill
+policies, request attempts and offsets read as words; the report's headline
+cost is a readable figure with the exact one in the caption; tab labels
+never wrap inside their pill; and the terminal's surface reads as a terminal
+in both appearances.
+
+The app shell. Every sidebar group and row observed the whole workspace
+model, so one unread dot or one click rebuilt every visible row's press
+surface, context menu and drag overlay: the rows and headers now compare the
+values they draw, a selection change rebuilds two rows of the fifteen on
+screen and a streamed delta rebuilds none, and the same change over 540 chats
+costs 6 ms instead of 14. The composer's text view captured its coordinator
+strongly, so every chat the reader had opened stayed in memory with its whole
+transcript until quit (50 of 50 pages alive after visiting 50 chats; now the
+model's own eight). At launch the sidebar painted every chat under a
+"Retained chats" placeholder until the Keychain answered; the vault and the
+chat list load together, the rest of configuration finishes after the first
+paint, and the first sidebar row paints at about 110 ms with 400 chats.
+Opening a chat made three database round-trips before its history read;
+they are one, and the composer takes focus before the transcript finishes
+loading. Polls that ran for views nobody could see (the inspector over a
+minimised window, Session info while occluded) stop, and identical snapshots
+are no longer republished at 1 Hz. The status panel counts on change rather
+than once a second; draft writes and accounting rows clean up after
+themselves; Settings builds only the groups that fit; asking whether a
+draft is a command no longer copies the draft; and the bundled catalog is
+read off the main actor.
+
+The transcript. Opening a 300-row chat laid every row out before the reader
+saw a word: 3.8 s frozen, 7,658 views attached. The document now measures
+the rows the reader can see (plus what the anchor will show), estimates the
+rest from their typography for the scroll bar, keeps estimated rows out of
+the view tree, and measures the remainder in idle slices that never move the
+row being read: first paint in about 180 ms with five rows mounted and 139
+views, and a return to a chat already read measures nothing (300 heights
+come from the shared cache). A row was measured twice per delta; once now.
+Folding a long turn kept re-measuring its sixty tool rows; the measured
+height lives on the row container, keyed as strictly as the geometry cache,
+so a fold is a frame change. Scrolling a 2,000-row page stays inside a
+120 Hz frame on all but two of 11,908 wheel steps. Visiting fifty long chats
+does not grow the process. A row builds its SwiftUI tree when the reader
+reaches it and gives it back when they are pages away, and the conversation
+pane is kept across chats instead of thrown away on every sidebar click:
+returning to a 300-row chat takes about 90 ms and switching to one not yet
+read about 160 ms, with ten trees built instead of 300. A turn's tool calls
+draw through a viewport-culled native surface (a closed card is one line
+high whatever it says, checked, never trusted), so folding a 60-tool turn
+costs 2 ms and unfolding 8. Page Up and Down, Home and End page the
+conversation from the composer, and the reading position no longer slides
+when the conversation leaves the titlebar's inset.
+
+Smoothness. The three draggable boundaries (sidebar edge, terminal top,
+the chat/side split) had no visible affordance and the split could not be
+dragged at all; each now carries a grip that strengthens under the pointer,
+and the split remembers its fraction. Every pointer-only action has a
+keyboard path: sidebar width, Archive, Pin, Move to Topic and Mark as Read
+on the focused chat, and folding the turn the reader is on. The error strip
+took its room from the conversation's column instead of floating over the
+sidebar and the first lines, in both appearances at full strength, with
+Dismiss reading as a control. A chat switch arrives settled in one drawn
+frame; the reading position holds through the composer growing, the
+follow-up panel, the strip, the terminal, the side pane and window and
+sidebar resizes; a wheel move holds through streamed deltas; hover answers
+from the pointer's own frame with no workspace publication; Reduce Motion
+goes through one decision for every animated surface. Closing the request
+inspector aborted the app (a state write from inside SwiftUI's teardown) and
+does not now. The composer bar laid out nine candidate forms on every pass
+(three pill forms inside three run-control forms); it measures its labels
+once and builds the one form that fits (3.1 ms to 0.12 ms a pass, an oracle
+of 2,725 cases against the trial layouts agreeing to within two points).
+Across the shell, a project or topic unfolds its rows out from under its
+header, "Show more" rows arrive with them, a chat moving up on activity
+slides past its neighbours, the marked-rows strip pushes the list, the
+follow-up panel and the terminal slide up and down, the error strip comes
+down over the column, and the composer's pills cross-fade between forms,
+each under 2 ms a frame, each holding the reader's line; a cross-fade of a
+chat switch was built, measured at a second of extra latency, and left out.
+
+Code quality, behaviour-preserving. In the helper, the 1,311-line session
+file is thirteen extension files named for what they hold (journal,
+persistence, branching, queue, run loop, streaming, tools, display,
+compaction, context, reads, test seams); `Support.swift` is six files; every
+force unwrap, `try!` and crash on a path a request can reach now reports an
+error with a message instead; every `@unchecked Sendable` carries the
+invariant that makes it safe and every `Task {}` says who owns it; the test
+seams are grouped and documented; dead state and two unreachable branches
+are gone; a queued-message test that failed on every Release run was a race
+in the test and is deterministic.
+
+Motion. The owner asked for transitions that feel as good as the app is
+fast: "it's fast, but it doesn't feel right." The 0.1.59 rule against
+animating a row's height came from SwiftUI re-measuring the tree every
+frame; the rule now is that motion is driven by the document from geometry
+measured once. A fold or unfold measures its target exactly, rewinds to the
+old geometry and eases the changed row's height over 220 ms while every row
+below shifts by the same amount, the document's height and scroll bar
+follow each tick, the folding list slides out under its clip and fades on
+its native layer, the chevron turns on the same curve, a second click
+carries on from where the motion is, streaming lands after it, and Reduce
+Motion snaps as before: 0.11 ms of document work per tick over 300 rows,
+rows contiguous at every sampled point. A tool card, exposed reasoning and
+the compaction summary move on the same curve, with the region the two
+states do not share masked and faded on the row's layer; the live turn bar
+slides up into its slot when a run starts and down when it settles, the
+slot itself changing the conversation's height exactly once. A row is sized
+once per measurement instead of twice, and a side pane opening measures the
+rows the reader can see (12 ms over 120 rows, from 450) and lets the rest
+stand until the slices reach them. The kept pane retained the chat the
+reader left; rebinding now releases everything the previous chat owned,
+and visiting fifty chats keeps exactly the eight pages the model caches.
+
+Code quality in the app. Nine files over 800 lines (the workspace view and
+model, the Git panel, the terminal emulator, the design system, the report
+page and three test files) are forty-two files named for what they hold,
+moved verbatim and verified statement by statement; three sheet-question
+mechanisms are one (`PiQuestion`), two text-measurement caches are one
+(`PiTextWidth`), the environment reader, the release-budget seam and the
+scratch-root helper live in one `TestSeams.swift`; dead code, dead branches
+(the two on a `keepError` the helper never sends) and every force unwrap on
+a reachable path are gone; every unchecked `Sendable` names its invariant;
+and the rendered UI before and after differs by less than the gallery's own
+run-to-run noise.
+See the [0.1.60 release record](validation/Bello-Agent-0.1.60-2026-09-19.md).
+
+Version 0.1.59 fixes the two things the owner reported after 0.1.58.
+
+Folding and unfolding a turn's work went wrong on long turns: a click on a
+turn with dozens of tool calls was slow, rows painted over their neighbours
+while the height caught up, and a fold sometimes did not take. The open or
+closed state of a turn's work, a tool card, exposed reasoning or a compaction
+note was SwiftUI view state inside a row, so the AppKit document that owns row
+heights learned about a click only when the hosting view happened to
+invalidate its intrinsic size, one or two run-loop turns later; in between the
+row kept its old frame and its content drew outside it. The state was keyed by
+a block's latest row id, which changes as a turn grows, so a fold could reopen
+on the next delta, and a 220 ms height animation kept the whole tree
+re-measuring for its duration. Now that state lives with the conversation
+(`TranscriptDisclosure`), keyed by the turn's stable key, each row reads its
+own slice as a plain value and compares it like content, and a click records
+the change, rebuilds that one row, drops its measurements and lays the whole
+document out in the same pass; rows clip to their frames; the shared geometry
+cache is keyed by the disclosure value so a height measured open is never
+reused closed; the fold does not animate; and a folded turn keeps its list in
+the tree at zero height and clipped instead of tearing sixty rows down and
+building them again on the next click.
+
+Dragging a chat in the sidebar never started: SwiftUI's `.onDrag` sat on a
+row inside a `Button`, which claims the press on macOS, so nothing followed
+the pointer. Each draggable row now carries a transparent AppKit surface that
+takes only a plain left press, begins a real dragging session past four
+points with a "N chats" image, and hands any other press (Control-click, the
+row's own archive and side-chevron buttons, hover, scrolling) straight back to
+the row; a press that ends without travelling is the click the row always
+handled. Drop zones are the whole project and topic groups, not their header
+strips. The first audit pass then found that the surface's tracking loop
+could park the main thread for the rest of the session if a press never got
+its release (window closed under it, a sheet taking the event stream); the
+loop now polls and gives up when the button is no longer down, the row has
+left its window, or a minute of silence passes.
+
+The owner then asked for the bugs nobody had found. Six agents drove the real
+views in real windows, area by area, and fixed what they confirmed; every
+fix keeps its reproduction as a test.
+
+Helper. A reply with many parallel tool calls produced a display snapshot
+nine times over the helper's frame limit, and the helper exited mid-turn;
+streamed tool cards are now projected in arrival order, capped at 32, with
+constant memory beyond the cap. Every edit over about 4 KB showed raw JSON
+instead of "Requested edit" because the arguments document was cut at a byte
+offset; long string values are now cut individually with an explicit marker,
+every card's input parses, `inputTruncated`/`inputBytes` say when it is
+partial, and `session.tool.input` returns the full document (64 KiB for
+edit-style tools) on demand. Editing a queued message longer than 1 KB saved
+back its 1 KB preview; `queue.read` returns the whole text. Live tool cards
+retired in lexicographic order (a running card could be dropped while a
+finished one stayed) and had no memory bound; they now retire oldest-first
+within 1 MiB.
+
+Core. Every chat lookup was a scan of the whole list, called several times
+per sidebar row per redraw, so the sidebar was O(chats²): 22.8 ms per redraw
+over 400 chats, now 2.1 ms through an id index. The app's own idle stop of a
+project helper made the next message fail with "Project host is stopping";
+connect now waits for the previous helper to exit and starts a fresh one.
+Quitting with text in a never-sent chat threw the text away for good. One
+unreadable chat record disabled every topic move and topic deletion in every
+project. Closing the last window or quitting during a run ran a blocking
+modal alert inside AppKit's own decision (both new tests hang against the old
+code); both now ask in a sheet. Capture was priced against the size of the
+whole archive on every request (a full retention sweep per finished request,
+a sum of every chunk per published chunk); the request inspector threw away
+"Older Attempts" one second later; a local migration failure disabled
+Settings permanently. The second pass fixed journal paging that decoded the
+record once per 16 KiB page, id-less imported records that could never be
+opened, a topic drop that decoded every chat in the database, SQLite opened
+synchronously on the main actor during the first body, storage errors that
+said "could not be saved" for read failures and "damaged" for a merely long
+conversation, a stalled Keychain call that disabled credentials for the
+session, an N+1 attempt listing polled at 1 Hz, a retention sweep that
+committed once per row, a captured body decoded inside a view body on every
+render, a connection switch that dropped the chat's model whenever the target
+catalog had not been listed yet, a Settings sheet that stayed live during a
+save, silent failed saves, a conflict retry that reverted another writer's
+preferences, and a catalog fetch whose 8 s budget counted the whole transfer.
+
+Sidebar. A Shift range under an active filter marked, and archived, chats the
+filter had hidden. Folding a chat's side chats was forgotten whenever the
+group was rebuilt, as was "Show 10 more"; both now live in the model and
+travel in the existing project-sidebar record, so they survive a relaunch.
+One unread dot or one selection cost three frames of main-thread work over
+540 chats (44 and 41 ms); a sidebar index answers every group's lookup once
+per change and the same events now cost 12 and 15 ms. The marked-rows bar
+broke "Archive" across three lines at the sidebar's minimum width; project
+names truncated in the middle ("be…ent") and the header kept three buttons
+below 240 pt; Escape could not leave the rename sheet, or nine other sheets,
+which `PiSheet` now handles for all of them; a chat deleted while a bulk
+action ran was reported as a failure. The cursor pushed by a hovered row was
+stranded app-wide when the window closed under it. The metrics line under a
+chat laid out four candidate forms per row on every pass to find the one
+that fits; it now measures its figures once and builds only the form that
+fits (a 600-case oracle against the old view agrees everywhere), which took
+3.9 ms off a frame on a workspace where every chat has run.
+
+Git and terminal. "Stage all", "Discard All" and Commit on a repository with
+thousands of changed files crashed the app: one argv held every path and
+Foundation raised past 4,096 arguments; paths now go in batches and a commit
+uses a pathspec file. A handful of git reads stalled every other task in the
+app for seconds because the waits ran on Swift's cooperative pool; they run
+on their own queue, at most eight processes at a time. A 20,000-line patch
+took 23 s to open unified and three and a half minutes side by side (every
+row built eagerly, every line walked, the split rows re-paired per redraw);
+it opens in 85 ms and 143 ms. A commit touching 3,000 files froze the panel
+for fifty seconds (one chip per file in a non-lazy layout); files list 200 at
+a time. CRLF files showed their whole diff as one row (Swift reads "
+" as
+one Character); a renamed file showed as entirely added; clicking down the
+file list left one `git diff` process per file; unticking every file was
+undone by the next refresh; "Show the whole diff" followed the reader to the
+next file. The panel now notices the working tree changing through FSEvents
+(a saved file appears in about 300 ms, a burst of writes costs one refresh,
+git's own writes cause none) and an automatic refresh never moves the reader.
+In the terminal, scrolling back lost the reader's place as output arrived;
+one streaming command cost 22,000 hops to the main thread (now 222); `cat`
+on a binary file rang the system alert thousands of times; switching
+projects stacked terminals in the panel and left the keyboard nowhere; a
+shell per project lived for the app's whole life; the scrollback had no
+memory ceiling (a 2,000-column window could hold 610 MB) and is now text and
+style runs: four terminals of 10,000 dense lines cost the process 236 MB
+before and 11 MB after.
+
+Composer and run lifecycle. Typing into a long draft cost about 11 ms per
+keystroke (the coordinator compared the whole document against the editor's
+string on every edit, the footer re-rendered on every keystroke through an
+observer it never read, `canSend` copied the draft to trim it); a keystroke
+in a 200 KB draft is now 3 ms, most of it TextKit's own insert. The composer
+bar stacked "Steer run" one letter per line in a 460-point pane. After the
+helper died mid-turn the live bar and its Stop button stayed up for ever and
+Stop did nothing; interrupted rows are now settled, the bar leaves, and the
+next send starts a fresh helper. Stray typing walked the whole window's view
+tree per keystroke to find the composer. Rewriting a queued follow-up clipped
+the panel; editing a queued message over 1 KB saved its 1 KB preview back
+(`queue.read` now supplies the whole text and the field waits for it);
+pasting a 4000×3000 screenshot froze the window for 115 ms (PNG bytes now go
+through untouched, other formats convert off the main thread); a long
+gateway error was cut off with no way to read it (the strip opens, scrolls
+and copies). "Previous command outcome is uncertain", "Delete this chat?",
+the skill-arguments prompt, the image chooser, the connection test, keeping
+a side and enabling editing all ran an application-modal loop that froze
+every other chat's stream; each is now a sheet on the window showing that
+chat, one at a time, with the work continuing in the completion.
+
+Transcript. A turn folded while it ran sprang open when its reply settled
+(blocks were keyed by the reply's provisional stream id, so the settled row
+was a different row). A settled turn kept its "just arrived" accent for ever.
+Every row was laid out natively three times per reflow, and every row built
+three hover-only action pills and a copy control that only a pointer can
+reveal: opening a 300-row chat to exact geometry took 2.3 s, now 1.2 s;
+folding a 60-tool turn 30 ms, now 14. Dragging a pane's edge over a long
+chat cost 729 ms a frame: resolving the reading anchor walked the whole page
+for every row's frame (O(rows²)), and every row was re-measured on every
+frame of the drag. The anchor is resolved once, and during a live resize the
+document measures only from the top of the page to the bottom of the
+viewport the reader will see, leaving the rows below standing at their old
+height and out of the view tree, then measures everything when the drag
+ends: 9 ms a frame over 500 rows, with a full read of the document after
+the drag proving every row exact. The edit diff ran its O(n²) algorithm
+inside a SwiftUI body on every redraw of an open card; it runs once per call
+and refuses past 4,000 lines. The reasoning and compaction disclosures were
+stock `DisclosureGroup`s and are now the transcript's own header. A run that
+started as the pane opened never showed its live bar (the task wrote the
+state captured when the view was built). A card whose arguments were cut
+showed the raw fragment; it shows what arrived, fetches the whole document
+through `session.tool.input` when opened, and a chat read from disk builds
+the same card as a live one.
+See the [0.1.59 release record](validation/Bello-Agent-0.1.59-2026-09-19.md).
+
+Version 0.1.58 answers two owner requests. The sidebar now selects several
+chats at once: Shift-click extends a range in the order the list shows,
+Command-click adds or removes one row, and an ordinary click drops the marks
+and opens the chat. A bar above the list says how many are marked and archives
+or restores them in one press; a right-click on a marked row archives,
+restores, pins, unpins, moves to a topic or marks read for the whole set, each
+through the same durable per-chat path as its single-chat menu item. Dragging a
+marked row carries every marked chat of that project in one bounded payload,
+previewed as "N chats", and drops into a topic or a project root exactly as one
+chat already did. Chats are still deleted one at a time.
+
+Git history browsing was rebuilt around what a click actually needs. Choosing a
+commit ran three git processes in a row, the last one producing the whole patch,
+and the app then parsed that patch on the main thread inside a view body, so it
+was re-parsed on every redraw and nothing appeared until all of it finished. Now
+two cheap reads return the message, the changed paths and their line counts
+without any patch text, so the file list and a "12 files · +340 −58" summary
+appear first; the patch is read and parsed in one background task and never
+crosses the main thread as text. Each commit's metadata, patch and per-file
+patches are kept for the last 24 commits, so returning to one starts no process
+at all, and choosing another commit terminates the reads of the one before it.
+A commit of more than 30 files or 3,000 changed lines keeps its patch behind
+"Show the whole diff" and opens one file at a time. Any file has its own
+history through "Show History of This File", which follows renames, with a chip
+naming the filtered path until it is cleared.
+See the [0.1.58 release record](validation/Bello-Agent-0.1.58-2026-09-19.md).
+
+<!-- release-summary:0.1.57 -->
+Version 0.1.57 isolates per-chat usage notifications, skips hidden helper transcript
+projection, rejects stale refresh replies and reuses verified immutable native row
+geometry. In the five-session fixture, background content/billing work fell from
+12.51 ms to 7.24 ms mean, with zero whole-workspace notifications. A return to the
+initially mounted chat took 629.11 ms to readiness plus 68.76 ms deferred settlement;
+the original readiness-only baseline was 1,421.23 ms. Repeated helper status reads
+fell 98.0%. Acceptance covers 118 distinct native passes, 41 helper passes and three
+request-aware concurrent gateway scenarios (162 distinct passes), with two native
+interactive checks skipped. The final shipping-source selection passed 23/23;
+unchanged checks reuse the earlier successful selections, excluding four discarded
+experimental tests. Twenty simultaneous requests completed tools and exact capture.
+A shared Markdown-block cache was rejected after it slowed long-answer scrolling.
+Rich foreground layout still has spikes (54.46 ms mean, 124.57 ms maximum), and cold
+large-history loading remains expensive. Physical trackpad/VoiceOver smoothness is
+unverified on this inactive desktop. Installation and actual update rehearsals stay
+skipped under the owner’s policy.
+<!-- /release-summary:0.1.57 -->
+
+<!-- release-summary:0.1.56 -->
+Version 0.1.56 adds project topics: collapsible, named groups for related
+sessions, with New Chat, rename, removal that keeps chats, and drag-and-drop
+between topics or back to the project header. Move to Topic is also available
+in session menus. New chats inherit the focused topic, sides/forks inherit
+the source group, and moving a parent includes its saved side descendants.
+Atomic metadata updates preserve active work, drafts, history and session IDs;
+regressions cover side publication, late writes and concurrent deletion.
+Topics and their disclosure state persist across restart.
+
+The native Release selection passed 90 tests with no failures or skips; a
+final seven-test subset also passed after checking the packaged drag-type
+declaration. Unchanged helper/gateway/scrolling evidence was reused. Physical
+pointer drag/drop, context-menu interaction and VoiceOver remain unverified
+on the inactive remote desktop; real item-provider dispatch and hosted native
+sidebar layout passed. Installation/update rehearsals remain skipped.
+<!-- /release-summary:0.1.56 -->
+
+<!-- release-summary:0.1.55 -->
+Version 0.1.55 keeps only nearby native transcript rows and Markdown blocks
+attached while retaining complete content, exact geometry and selected text.
+The 300-message fixture drops from 85.7 to 9.6 ms per native scroll step on
+average; the 88 KiB answer drops from 44.6 to 13.0 ms. These are comparable
+layout/display stress measurements, not physical display FPS. Initial loading
+of every retained row still requires an up-front geometry pass.
+The affected Release XCTest run executed 78 cases: 76 passed and two interactive
+pointer checks were explicitly skipped on the inactive remote desktop. A final
+four-case Markdown/scroll rerun passed after fixing Copy/Copied layout feedback.
+Unchanged provider/helper/gateway/worker and website-staging acceptance is
+reused; physical trackpad and VoiceOver checks are not claimed. Single enormous
+Markdown blocks and selection at the streaming renderer threshold remain
+qualified in the scrolling review. Installation/update rehearsals are skipped
+under the owner’s standing instruction.
+<!-- /release-summary:0.1.55 -->
+
+<!-- release-summary:0.1.54 -->
+Version 0.1.54 adds Copy Session ID and Copy Session Reference to session right-click and conversation “…” menus. References include the authoritative local JSONL path and a shell-quoted read command, without switching chats, loading history or starting helpers. Empty chats and imported identities are explicit. All 27 focused native tests and 12 site-staging tests pass, including executable Bash quoting and complete retained-history reads. The release-page template now preserves native-transcript and reported-throughput wording. Existing helper, gateway, concurrency and rendering evidence is reused. Physical menu/VoiceOver and install/update rehearsals were not repeated.
+<!-- /release-summary:0.1.54 -->
+
+<!-- release-summary:0.1.53 -->
+Version 0.1.53 uses Bello-styled selection panels and disables the system window tab strip. Exact row-layout caches isolate retained transcript text from streaming updates; ownership-scoped accounting avoids repeated history reads. Comparable native rendering fixtures open about 37% faster and reduce per-update layout/display work by 85.4% (61 rows) and 91.7% (300 rows); these are stress measurements, not a 60 fps guarantee. Final focused evidence contains 191 distinct native passes and four explicit interactive-desktop skips. The native/helper/gateway fixture completed 20 concurrent sessions and tool round trips with 80 exact retained bodies. Unchanged helper/provider/worker evidence is reused from 0.1.52. Pointer/popover and VoiceOver behavior are not claimed as verified on this remote desktop. Installation/update rehearsals remain skipped under the standing owner policy.
+<!-- /release-summary:0.1.53 -->
+
+Version 0.1.49 reviews Claude's completed 0.1.48 work and fixes confirmed
+queue, crash-recovery, transcript, inspector, transport and storage defects.
+It also coordinates context previews and connection removal across suspended
+operations, preserving drafts and readable context snapshots. All 498 native
+cases completed: 491 passed and 7 opt-in cases skipped. The helper's 170 tests,
+52 Python checks and 24 local gateway checks passed. See the
+[deep review](Deep-Review-2026-09-19.md) and
+[0.1.49 acceptance record](validation/Bello-Agent-0.1.49-2026-09-19.md).
+
+Version 0.1.48 fixes the crash the owner reported in 0.1.47 and hardens
+the app after it. The transcript page drove SwiftUI's scroll proxy from an
+AppKit frame-change notification that fired while the hosting scroll view
+was still mid-update, which trapped the app; every scroll the page lands is
+now deferred to the next run-loop turn. Settings can be saved while a
+connection's chats are working: the helper's new `session.configure` command
+hands the saved profile and key to open sessions, a run that is going keeps
+the settings it started with and switches when it ends, and an idle chat
+takes them at once, so nothing is closed or blocked. Editing an earlier
+message no longer re-anchors the page on every frame of the composer's
+resize, and the slash-completion popup no longer forces a composer
+re-render per keystroke. A code audit for the same classes of failure fixed
+a host pipe deadlock (the stdout reader waited on the command queue while
+a stdin write could block on a full pipe), a stale handshake watchdog that
+could kill a later healthy host, a delayed terminal SIGKILL that could reach
+a recycled pid, a `precondition` in the terminal, force unwraps on archive
+rows that would trap on a damaged database, and AppKit calls made from
+inside SwiftUI updates in the captured-JSON outline, the paged text view,
+the page-visibility background and the session usage window.
+See the [0.1.48 release record](validation/Bello-Agent-0.1.48-2026-09-18.md).
+
+Version 0.1.47 changes three things the owner asked for. Retry request
+now sends the chat's current model and reasoning effort: the app passes the
+pills as they stand to `turn.retry`, and the helper builds the retried
+request from them (cleared pills retry with the connection's defaults), so a
+model switched after a failure is what retries. The output budget is
+metadata only: it is never sent as `max_output_tokens` and never fails a
+turn. A conversation request carries the model's catalog ceiling as its
+output limit, clipped to the room the context estimate leaves in the window,
+or no limit when the catalog gives none; the connection test, chat titles
+and compaction summaries keep their own small caps. The budget only sizes
+the reserve that decides when a chat compacts, and a request whose input
+fits the window is always sent. The Usage menu's model distribution keeps
+its layout with very long model ids: axis labels and the per-model rows are
+cut in the middle, and the bars and figures keep their columns.
+See the [0.1.47 release record](validation/Bello-Agent-0.1.47-2026-09-18.md).
+
+Version 0.1.46 fixes the retry the owner found wrong: Retry request re-ran
+the failed turn with the connection's default model and effort, because the
+helper cleared the turn's submission (which carries the chat's model,
+reasoning effort and budgets) when the run ended, and the retried run built
+its request from the bare profile. The helper now keeps the failed or
+stopped turn's submission and restores it for the retry, so the retried
+request uses the same model, effort and budgets as the request that failed
+and completes the same command receipt.
+See the [0.1.46 release record](validation/Bello-Agent-0.1.46-2026-09-18.md).
+
+Version 0.1.45 walks the first-run and everyday paths after the owner
+asked for a smooth, self-explaining experience. Gateway failures are worded
+for the reader by the helper: the provider's own detail first, then the
+likely cause with what to check (the API key for 401/403, the base URL and
+alias for 404, a rate limit for 429, the gateway for 5xx, the final URL for
+redirects; an unknown host, an unreachable gateway, a timeout or an
+untrusted certificate for transport failures), keeping the
+"Provider returned HTTP N." prefix the retry policy and the connection test
+read. Onboarding explains a disabled Continue (the URL, its scheme, the
+key), greets a returning user whose connection is saved, and names the last
+step "Start your first chat" once a project is ready. The welcome screen
+offers New Chat once a project and a connection exist. The test request in
+Settings, removing a project and typing a model alias for a chat are
+confirmed or entered in place, in the sheet or popover already open, so no
+flow runs a system alert from a sheet. Two run failures the owner met are
+gone: a reply the model cuts at the output budget is a complete row with
+`stopReason` "length" and a warning under it, the turn ends idle and queued
+follow-ups go on (before, the run failed with "Response reached its output
+limit"); and the helper's HTTP stream buffers without limit, so a consumer
+busy journaling or notifying the app never loses a chunk to a fixed buffer
+(before, a 128-part buffer cancelled the stream with "Consumer could not
+keep up"), with `stream_backpressure` retried like a transport failure
+should it ever occur. A run that failed or was stopped can be retried from
+its failure row: "Retry request" sends the turn again from where it stopped
+(helper command `turn.retry`), the partial reply stays but is not replayed,
+and queued follow-ups go on after the turn.
+See the [0.1.45 release record](validation/Bello-Agent-0.1.45-2026-09-18.md).
+
+Version 0.1.44 removes the cap on live chats at the owner's request. The
+project helper kept at most three chat runtimes loaded per project, unloaded
+an idle one to make room and refused a fourth with "Three runtimes are active
+or pinned by side chats; close or keep a side first" when every loaded chat
+was busy or pinned by a side. `HostService.ensureCapacity` and its three
+call sites (opening a chat, opening a side, forking a side) are gone: every
+opened chat and side stays loaded for as long as the app holds it open, and
+nothing is unloaded to make room. The app's handling of a `session.unloaded`
+event stays for older helpers.
+See the [0.1.44 release record](validation/Bello-Agent-0.1.44-2026-09-18.md).
+
+Version 0.1.43 reworks the connection flow in Settings after the owner
+found it off in every step. The sheet's state moved into
+`ConnectionSettingsController`, so it could be driven by a test the way a
+person drives it. A new connection lists models before it is saved: the API
+key now sits right under the base URL, the included Bello catalog lists
+without a key, and a gateway's own catalog lists with the key typed above
+(or the saved one), relisting when the base URL or catalog URL changes and
+saying why when it cannot list; before, the picker was disabled until the
+connection was saved and its list ignored edited URLs. Each tab keeps its
+own draft, so switching tabs no longer discards edits; a dot marks unsaved
+edits, Save writes every edited tab (the current one last), and Discard
+drops an unsaved one. Saves use the vault's current revision rather than
+the sheet's snapshot and retry once after a conflict, so a write made
+elsewhere while Settings was open no longer fails the save quietly; a save
+that fails keeps its edits on their tab with the reason in red.
+See the [0.1.43 release record](validation/Bello-Agent-0.1.43-2026-09-18.md).
 
 Version 0.1.42 fixes the connection deletion the owner reported as
 doing nothing. Editing a connection's API route saves a new connection and
@@ -913,6 +1615,77 @@ an explicitly chosen seven days. Other custom retention values remain unchanged,
 and settings saved under the new policy retain deliberate off/seven-day choices.
 No capture-enable consent or body-reveal gate is added to these owner-authorized
 defaults. Export and destructive purge actions remain deliberate.
+
+## Verification of 0.1.49
+
+Version 0.1.49 reviews Claude's completed 0.1.48 work and fixes confirmed
+queue, crash-recovery, transcript, inspector, transport and storage defects.
+It also coordinates context previews and connection removal across suspended
+operations, preserving drafts and readable context snapshots. All 498 native
+cases completed: 491 passed and 7 opt-in cases skipped. The helper's 170 tests,
+52 Python checks and 24 local gateway checks passed. See the
+[deep review](Deep-Review-2026-09-19.md) and
+[0.1.49 acceptance record](validation/Bello-Agent-0.1.49-2026-09-19.md).
+
+## Verification of 0.1.48
+
+**458 native unit cases pass with 4 skipped, and the screenshot gallery
+and terminal capture cases pass with 42 light/dark captures**; the
+changed helper package passes its 161 cases, the Python fixtures (52),
+unchanged since 0.1.47, pass again, and the performance baseline ran again
+in a Release build. The optional acceptance class and installation/update
+rehearsals were not run. Details are in the
+[0.1.48 release record](validation/Bello-Agent-0.1.48-2026-09-18.md).
+
+## Verification of 0.1.47
+
+**457 native unit cases pass with 4 skipped, and the screenshot gallery
+and terminal capture cases pass with 42 light/dark captures**; the
+changed helper package passes its 159 cases, the Python fixtures (52),
+whose contract changed in this version, pass, and the performance baseline ran again
+in a Release build. The optional acceptance class and installation/update
+rehearsals were not run. Details are in the
+[0.1.47 release record](validation/Bello-Agent-0.1.47-2026-09-18.md).
+
+## Verification of 0.1.46
+
+**457 native unit cases pass with 4 skipped, and the screenshot gallery
+and terminal capture cases pass with 42 light/dark captures**; the
+changed helper package passes its 154 cases, the Python scripts (52),
+unchanged since 0.1.38, pass again, and the performance baseline ran again
+in a Release build. The optional acceptance class and installation/update
+rehearsals were not run. Details are in the
+[0.1.46 release record](validation/Bello-Agent-0.1.46-2026-09-18.md).
+
+## Verification of 0.1.45
+
+**457 native unit cases pass with 4 skipped, and the screenshot gallery
+and terminal capture cases pass with 42 light/dark captures**; the
+changed helper package passes its 154 cases, the Python scripts (52),
+unchanged since 0.1.38, pass again, and the performance baseline ran again
+in a Release build. The optional acceptance class and installation/update
+rehearsals were not run. Details are in the
+[0.1.45 release record](validation/Bello-Agent-0.1.45-2026-09-18.md).
+
+## Verification of 0.1.44
+
+**455 native unit cases pass with 4 skipped, and the screenshot gallery
+and terminal capture cases pass with 42 light/dark captures**; the
+changed helper package passes its 151 cases, the Python scripts (52),
+unchanged since 0.1.38, pass again, and the performance baseline ran again
+in a Release build. The optional acceptance class and installation/update
+rehearsals were not run. Details are in the
+[0.1.44 release record](validation/Bello-Agent-0.1.44-2026-09-18.md).
+
+## Verification of 0.1.43
+
+**455 native unit cases pass with 4 skipped, and the screenshot gallery
+and terminal capture cases pass with 42 light/dark captures**; the
+helper package (150) and the Python scripts (52), unchanged since
+0.1.38, were run again and pass, and the performance baseline ran again in
+a Release build. The optional acceptance class and installation/update
+rehearsals were not run. Details are in the
+[0.1.43 release record](validation/Bello-Agent-0.1.43-2026-09-18.md).
 
 ## Verification of 0.1.42
 
@@ -1467,7 +2240,25 @@ both event masks have native tests.
 
 ## Distribution and remaining limits
 
-- **0.1.42 distribution is complete.** Source `6b80619`, website `1e57c83`;
+- **0.1.48 distribution is complete.** Source `c52a3d1`, website `67e1eb1`;
+  **7,203,566 bytes (6.87 MiB)**. Signing/notarization and public artifact checks pass.
+  No installation/update rehearsal.
+- **Historical 0.1.47 distribution is complete.** Source `a093b4d`, website `4580f6b`;
+  **7,186,673 bytes (6.85 MiB)**. Signing/notarization and public artifact checks pass.
+  No installation/update rehearsal.
+- **Historical 0.1.46 distribution is complete.** Source `3fcb762`, website `def13c3`;
+  **7,180,448 bytes (6.85 MiB)**. Signing/notarization and public artifact checks pass.
+  No installation/update rehearsal.
+- **Historical 0.1.45 distribution is complete.** Source `9af946d`, website `d52e8ac`;
+  **7,179,717 bytes (6.85 MiB)**. Signing/notarization and public artifact checks pass.
+  No installation/update rehearsal.
+- **Historical 0.1.44 distribution is complete.** Source `a0cc15e`, website `7199c73`;
+  **7,160,116 bytes (6.83 MiB)**. Signing/notarization and public artifact checks pass.
+  No installation/update rehearsal.
+- **Historical 0.1.43 distribution is complete.** Source `b3491f8`, website `8008e13`;
+  **7,161,822 bytes (6.83 MiB)**. Signing/notarization and public artifact checks pass.
+  No installation/update rehearsal.
+- **Historical 0.1.42 distribution is complete.** Source `6b80619`, website `1e57c83`;
   **7,137,493 bytes (6.81 MiB)**. Signing/notarization and public artifact checks pass.
   No installation/update rehearsal.
 - **Historical 0.1.41 distribution is complete.** Source `4bfa49e`, website `a11fb29`;
@@ -1630,7 +2421,7 @@ Read this file, `Features.md`, `Design.md`, the
 [parity document](Swift-Feature-Parity.md) and [test handoff](Swift-Test-Handoff.md).
 Preserve passing source and user history, fix actual failures with focused
 regressions, and use small reviewable commits on `master` with normal pushes.
-Preserve current 0.1.42 acceptance and the completed 0.1.41/0.1.40/0.1.39/0.1.38/0.1.37/0.1.36/0.1.35/0.1.34/0.1.33/0.1.32/0.1.31/0.1.30/0.1.29/0.1.28/0.1.27/0.1.26/0.1.25/0.1.24/0.1.23/0.1.22/0.1.21/0.1.20/0.1.19/0.1.12/0.1.11/0.1.10/0.1.9/0.1.8/0.1.7/0.1.6/0.1.5/0.1.4 historical
+Preserve current 0.1.48 acceptance and the completed 0.1.47/0.1.46/0.1.45/0.1.44/0.1.43/0.1.42/0.1.41/0.1.40/0.1.39/0.1.38/0.1.37/0.1.36/0.1.35/0.1.34/0.1.33/0.1.32/0.1.31/0.1.30/0.1.29/0.1.28/0.1.27/0.1.26/0.1.25/0.1.24/0.1.23/0.1.22/0.1.21/0.1.20/0.1.19/0.1.12/0.1.11/0.1.10/0.1.9/0.1.8/0.1.7/0.1.6/0.1.5/0.1.4 historical
 source/distribution records. Repeat validation when changed source or a concrete
 concern warrants it; install/update rehearsals still require a new explicit
 owner request. The [continuation prompt](Continue-Implementation-Prompt.md) carries the

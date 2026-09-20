@@ -1,0 +1,115 @@
+import XCTest
+@testable import PiAgentCore
+
+/// The output budget is metadata: a local reserve that decides when a chat
+/// compacts and never a cap on the wire. A conversation request carries the
+/// model's catalog ceiling, clipped to the room the window leaves; bounded
+/// tasks carry their own small caps; only input that cannot fit stops a turn.
+final class OutputCapDispatchTests: XCTestCase {
+    private func session(_ client: ScriptClient, profile: Profile, root: URL, autoCompaction: Bool = false, titleTask: Bool = false) throws -> AgentSession {
+        try AgentSession(id: "cap", profile: profile, apiKey: "synthetic-cap-fixture-secret", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                         resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: autoCompaction, titleTask: titleTask)
+    }
+    private func body(_ profile: Profile) throws -> JSON {
+        try ProviderClient.requestBody(profile: profile, messages: [], instructions: "", tools: [], sessionID: "cap")
+    }
+
+    func testAConversationTurnSendsTheModelCeilingNotTheBudget() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var raw = try fixtureProfile().raw; raw["modelOutputLimit"] = 65_536   // the budget stays at 4,096
+        let client = ScriptClient([answer("long reply")])
+        let session = try session(client, profile: try Profile(raw), root: root)
+        _ = try await session.submit(Submission(commandID: "a", turnID: "a", text: "write a lot"), steer: false)
+        try await eventually { !(await session.isRunning) }
+        let profiles = await client.profiles; let sent = try XCTUnwrap(profiles.first)
+        XCTAssertEqual(sent.maxOutput, 4_096, "the budget travels as metadata")
+        XCTAssertEqual(sent.wireOutputLimit, 65_536, "the ceiling is the cap")
+        XCTAssertEqual(try body(sent)["max_output_tokens"].int, 65_536)
+        let context = await session.contextInfo()
+        XCTAssertEqual(context["outputCap"].int, 65_536); XCTAssertEqual(context["outputBudget"].int, 4_096)
+        await session.close()
+    }
+
+    func testWithoutACeilingNoCapIsSentAndTheBudgetStillIsNot() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = ScriptClient([answer("reply")], holdFirst: true)
+        let session = try session(client, profile: try fixtureProfile(), root: root)
+        _ = try await session.submit(Submission(commandID: "a", turnID: "a", text: "hello"), steer: false)
+        try await eventually { await client.count == 1 }
+        // The live count, inspected while the request is held, is the one the dispatch used.
+        let context = await session.inspectContext()["context"]
+        XCTAssertTrue(context["outputCap"].isNull)
+        XCTAssertTrue(context["warnings"].list.contains { $0.text?.contains("no output ceiling") == true }, context["warnings"].encoded())
+        await client.release(); try await eventually { !(await session.isRunning) }
+        let profiles = await client.profiles; let sent = try XCTUnwrap(profiles.first)
+        XCTAssertNil(sent.wireOutputLimit); XCTAssertTrue(try body(sent)["max_output_tokens"].isNull)
+        await session.close()
+    }
+
+    func testTheCapIsClippedToTheRoomTheWindowLeavesAndTheReserveNeverStopsATurn() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var raw = try fixtureProfile().raw; raw["contextWindow"] = 6_000; raw["maxOutputTokens"] = 2_500; raw["modelOutputLimit"] = 5_000
+        let client = ScriptClient([answer("fits")], holdFirst: true)
+        let session = try session(client, profile: try Profile(raw), root: root)   // no automatic compaction
+        // About 4,000 tokens of input: beside a 2,500 reserve it would not fit, on its own it does.
+        _ = try await session.submit(Submission(commandID: "a", turnID: "a", text: String(repeating: "x", count: 12_000)), steer: false)
+        try await eventually { await client.count == 1 }
+        let context = await session.inspectContext()["context"]
+        await client.release(); try await eventually { !(await session.isRunning) }
+        let snapshot = await session.snapshot()
+        XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
+        let profiles = await client.profiles; let sent = try XCTUnwrap(profiles.first)
+        XCTAssertEqual(context["fits"].flag, false); XCTAssertEqual(context["inputFits"].flag, true)
+        let cap = try XCTUnwrap(sent.wireOutputLimit), tokens = try XCTUnwrap(context["tokens"].int)
+        XCTAssertEqual(cap, context["outputCap"].int)
+        XCTAssertEqual(cap, 6_000 - tokens - 60, "the ceiling is clipped to what the window still holds")
+        XCTAssertLessThan(cap, 5_000); XCTAssertGreaterThan(cap, 0)
+        XCTAssertEqual(try body(sent)["max_output_tokens"].int, cap)
+        await session.close()
+    }
+
+    func testInputThatCannotFitTheWindowStillStopsTheTurnBeforeAnyRequest() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var raw = try fixtureProfile().raw; raw["contextWindow"] = 4_000; raw["maxOutputTokens"] = 1_000; raw["modelOutputLimit"] = 5_000
+        let client = ScriptClient([answer("never")])
+        let session = try session(client, profile: try Profile(raw), root: root)
+        _ = try await session.submit(Submission(commandID: "a", turnID: "a", text: String(repeating: "x", count: 15_000)), steer: false)
+        try await eventually { !(await session.isRunning) }
+        let snapshot = await session.snapshot(); let requests = await client.count
+        XCTAssertEqual(snapshot["state"].text, "error"); XCTAssertEqual(requests, 0)
+        XCTAssertTrue(snapshot["preflightError"].text?.contains("exceeds configured capacity") == true, snapshot["preflightError"].encoded())
+        await session.close()
+    }
+
+    func testPreparedRequestUsesTheSameClippedCeilingAsDispatch() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var raw = try fixtureProfile().raw; raw["contextWindow"] = 6000; raw["maxOutputTokens"] = 2500; raw["modelOutputLimit"] = 5000
+        let client = ScriptClient([answer("fits")])
+        let session = try session(client, profile: Profile(raw), root: root)
+        let text = String(repeating: "x", count: 12000)
+        let preview = try await session.prepareContext(["text": JSON(text)])
+        let page = try await session.readPreparedContext(["revision": preview["revision"], "section": "request"])
+        let prepared = try JSON.parse(Data(try XCTUnwrap(page["text"].text).utf8))
+        XCTAssertEqual(prepared["max_output_tokens"], preview["count"]["outputCap"], "The displayed full request and its count must name the same output cap")
+        _ = try await session.submit(Submission(commandID: "send", turnID: "send", text: text), steer: false)
+        try await eventually { !(await session.isRunning) }
+        let profiles = await client.profiles, requests = await client.requests, instructions = await client.instructions
+        let dispatched = try ProviderClient.requestBody(profile: XCTUnwrap(profiles.first), messages: XCTUnwrap(requests.first), instructions: XCTUnwrap(instructions.first), tools: await RecordingTools().definitions(readOnly: true), sessionID: "cap")
+        XCTAssertTrue(prepared == dispatched, "The prepared request must show the request that will actually be sent")
+        await session.close()
+    }
+
+    func testATitleTaskSendsItsSmallBudgetAsItsCap() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        var raw = try fixtureProfile().raw; raw["modelOutputLimit"] = 16_000
+        let client = ScriptClient([answer("A short title")])
+        let session = try session(client, profile: try Profile(raw), root: root, titleTask: true)
+        var submission = Submission(commandID: "t", turnID: "t", text: "Summarize"); submission.model = "mini-fixture"; submission.contextWindow = 16_000; submission.maxOutputTokens = 512
+        _ = try await session.submit(submission, steer: false)
+        try await eventually { !(await session.isRunning) }
+        let profiles = await client.profiles; let sent = try XCTUnwrap(profiles.first)
+        XCTAssertEqual(sent.wireOutputLimit, 512, "a bounded task keeps its explicit cap")
+        XCTAssertEqual(try body(sent)["max_output_tokens"].int, 512)
+        await session.close()
+    }
+}

@@ -51,10 +51,18 @@ actor TraceArchive {
     func persist(_ metadata: [String: WireValue], destination: URL? = nil,
                  read: @Sendable (String, Int) async throws -> [String: WireValue],
                  verify: @Sendable () async throws -> [String: WireValue]) async throws -> URL {
+        try Task.checkCancellation()
         guard !writing else { throw TraceError.budget }; try reconcile(); writing = true; defer { writing = false }
         let version = generation
         guard let id = metadata["attemptId"]?.string, UUID(uuidString: id) != nil else { throw TraceError.invalid }
-        let retained = ["request", "response"].reduce(Int64(0)) { $0 + Int64(metadata[$1]?.object?["retainedBytes"]?.number ?? 0) }
+        var lengths: [String: Int] = [:]
+        for body in ["request", "response"] {
+            let value = metadata[body]?.object?["retainedBytes"] ?? .number(0)
+            guard let number = value.number, number.isFinite, number >= 0,
+                  number <= 67_108_864, number.rounded() == number else { throw TraceError.invalid }
+            lengths[body] = Int(number)
+        }
+        let retained = lengths.values.reduce(Int64(0)) { $0 + Int64($1) }
         guard retained >= 0, retained <= 67_108_864 else { throw TraceError.invalid }
         if destination == nil { try reconcile(reserving: retained + 65_536) }
         let base = destination ?? root
@@ -69,7 +77,7 @@ actor TraceArchive {
         manifest["transformations"] = .array([.string("Authentication headers are masked; historical headers may contain labeled SHA-256 fingerprints. Request credential hashing and response credential-echo masking, if any, are declared in each body's transformations/byteExact. Other retained body bytes are unchanged transport observations.")])
         for body in ["request", "response"] {
             let descriptor = metadata[body]?.object
-            let expected = Int(descriptor?["retainedBytes"]?.number ?? 0)
+            let expected = lengths[body] ?? 0
             if descriptor == nil || ["credential-omitted", "not-captured", "not-retained", "unavailable", "purged", "expired"].contains(descriptor?["state"]?.string ?? "") {
                 guard expected == 0 else { throw TraceError.invalid }
                 // Absence is not an empty original body, including when
@@ -84,8 +92,9 @@ actor TraceArchive {
             do {
                 while offset < expected {
                     let page = try await read(body, offset)
+                    try Task.checkCancellation()
                     guard let base64 = page["bytes"]?.string, let data = Data(base64Encoded: base64), !data.isEmpty, data.count <= 32_768,
-                          Int(page["retainedBytes"]?.number ?? -1) == expected, offset + data.count <= expected else { throw TraceError.changed }
+                          page["retainedBytes"]?.number == Double(expected), offset + data.count <= expected else { throw TraceError.changed }
                     try handle.write(contentsOf: data); hasher.update(data: data); offset += data.count
                 }
                 try handle.synchronize(); try handle.close()
@@ -96,6 +105,7 @@ actor TraceArchive {
         }
         guard version == generation else { throw TraceError.changed }
         let after = try await verify()
+        try Task.checkCancellation()
         guard version == generation else { throw TraceError.changed }
         for body in ["request", "response"] {
             guard after[body + "Hash"] == metadata[body + "Hash"], after[body] == metadata[body] else { throw TraceError.changed }

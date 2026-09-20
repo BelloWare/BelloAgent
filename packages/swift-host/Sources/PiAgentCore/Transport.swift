@@ -39,6 +39,13 @@ public struct SSEParser: Sendable {
 public enum HTTPPart: Sendable { case head(Int, [String: String]), bytes(Data, Double) }
 
 /// One delegate/URLSession per request. No global URL interception and no unbounded tee.
+///
+/// Concurrency: `@unchecked` because URLSession calls its delegate from its own
+/// queue. The invariant is that every mutable property except `continuation` is
+/// read and written only while `lock` is held, and `continuation` is assigned
+/// once inside `start` — before `task.resume()` makes any callback possible —
+/// and thereafter only read, on a type that is itself thread-safe. `ended` is
+/// entered exactly once in `start` and left exactly once on completion.
 final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private let ended = DispatchGroup()
@@ -47,7 +54,10 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
     private var session: URLSession?
     private var continuation: AsyncThrowingStream<HTTPPart, Error>.Continuation?
     func start(_ request: URLRequest) -> AsyncThrowingStream<HTTPPart, Error> {
-        AsyncThrowingStream(bufferingPolicy: .bufferingOldest(128)) { continuation in
+        // Unbounded: a reply's bytes are bounded by the provider, and a consumer
+        // busy journaling or notifying the app must never lose a chunk to a
+        // fixed buffer. A drop can no longer happen; the guard below stays.
+        AsyncThrowingStream(bufferingPolicy: .unbounded) { continuation in
             self.continuation=continuation
             continuation.onTermination = { [weak self] _ in self?.cancel() }
             let config = URLSessionConfiguration.ephemeral
@@ -120,13 +130,17 @@ public actor TraceStore {
         var gateway: GatewayTelemetry?
         var credentials = CaptureCredentials(headers: [:], configuredNames: [])
         var requestCaptureBytes = 0, credentialRedactions = 0, credentialOmitted = false
+        var requestMemoryLimited = false, responseMemoryLimited = false
         var responseMasker = CaptureCredentials.ResponseMasker(CaptureCredentials(headers: [:], configuredNames: []))
         var responseCaptureBytes = 0, responseCredentialRedactions = 0
     }
     private var traces:[String:Trace]=[:], order:[String]=[], modes:[String:String]=[:], droppedMetadata=0
     public static let perBodyLimit=8*1024*1024, totalLimit=128*1024*1024
+    private let memoryLimit: Int
     private let sink: @Sendable (JSON) async -> Bool
-    public init(sink: @escaping @Sendable (JSON) async -> Bool = { _ in true }) { self.sink = sink }
+    public init(memoryLimit: Int = TraceStore.totalLimit, sink: @escaping @Sendable (JSON) async -> Bool = { _ in true }) {
+        self.memoryLimit = max(0, min(Self.totalLimit, memoryLimit)); self.sink = sink
+    }
     public func mode(_ session:String)->String { modes[session] ?? "memory" }
     public func begin(session:String, turn:String, profile:Profile, purpose:String, body:Data, headers:[String:String], messageIDs: [String] = []) async ->String {
         let id=UUID().uuidString, mode=mode(session)
@@ -140,7 +154,7 @@ public actor TraceStore {
         if t.credentials.contains(t.url.removingPercentEncoding ?? t.url) { t.url = CaptureCredentials.fingerprint(t.url) }
         t.identity=RoutingIdentity(profile:profile); t.gateway=GatewayTelemetry(profile:profile); t.requestedModel=profile.model; t.messageIDs=Array(Set(messageIDs)).sorted()
         traces[id]=t; order.append(id); trim()
-        if !(await sink(["type":"begin", "metadata":metadata(t).removing(["messageIds", "outputMessageIds"])])) { traces[id]?.persistenceError="Native request recorder was unavailable at dispatch" }
+        if !(await sink(["type":"begin", "metadata":metadata(traces[id] ?? t).removing(["messageIds", "outputMessageIds"])])) { traces[id]?.persistenceError="Native request recorder was unavailable at dispatch" }
         else { await deliverLinks(id, field: "messageIds", ids: t.messageIDs) }
         if mode == "persist" { await deliverBytes(id, kind:"request", offset:0, bytes:captured.bytes) }
         return id
@@ -180,10 +194,10 @@ public actor TraceStore {
         let captured = t.mode == "off" ? Data() : t.responseMasker.feed(data)
         let offset = t.responseCaptureBytes
         t.responseCaptureBytes += captured.count; t.responseCredentialRedactions = t.responseMasker.replacements
-        if t.mode != "off" { t.response.append(captured.prefix(max(0,Self.perBodyLimit-t.response.count))) }
+        if t.mode != "off", !t.responseMemoryLimited { t.response.append(captured.prefix(max(0,Self.perBodyLimit-t.response.count))) }
         traces[id]=t; trim()
         if t.mode == "persist" {
-            await publishResponseTransformation(t, previousRedactions: previousRedactions)
+            await publishResponseTransformation(traces[id] ?? t, previousRedactions: previousRedactions)
             await deliverBytes(id, kind:"response", offset:offset, bytes:captured)
         }
     }
@@ -192,10 +206,10 @@ public actor TraceStore {
         let previousRedactions = t.responseCredentialRedactions
         let captured = t.responseMasker.feed(Data(), final: true), offset = t.responseCaptureBytes
         t.responseCaptureBytes += captured.count; t.responseCredentialRedactions = t.responseMasker.replacements
-        t.response.append(captured.prefix(max(0, Self.perBodyLimit - t.response.count)))
+        if !t.responseMemoryLimited { t.response.append(captured.prefix(max(0, Self.perBodyLimit - t.response.count))) }
         traces[id] = t; trim()
         if t.mode == "persist" {
-            await publishResponseTransformation(t, previousRedactions: previousRedactions)
+            await publishResponseTransformation(traces[id] ?? t, previousRedactions: previousRedactions)
             await deliverBytes(id, kind: "response", offset: offset, bytes: captured)
         }
     }
@@ -245,18 +259,42 @@ public actor TraceStore {
     }
     private func trim() {
         var retained=traces.values.reduce(0) { $0+$1.request.count+$1.response.count }
-        while order.count>64 || retained>Self.totalLimit {
+        while order.count>64 || retained>memoryLimit {
             guard let index=order.firstIndex(where:{ traces[$0]?.outcome != "running" }) else { break }
             let id=order.remove(at:index); if let old=traces.removeValue(forKey:id) { retained -= old.request.count+old.response.count; droppedMetadata += 1 }
+        }
+        // Running attempts cannot lose their metadata or durable recorder
+        // state. Trim their memory bodies instead, retaining only prefixes.
+        // Keep at most one inspector page when trimming a large body, avoiding
+        // repeated multi-MiB copies as subsequent network chunks arrive.
+        func prefix(_ data: Data, excess: Int) -> Data {
+            let count = min(32_768, max(0, data.count - excess))
+            guard count > 0 else { return Data() }
+            return Data(data.prefix(count))
+        }
+        for id in order where retained > memoryLimit {
+            guard var trace = traces[id] else { continue }
+            if !trace.response.isEmpty {
+                let kept = prefix(trace.response, excess: retained - memoryLimit)
+                retained -= trace.response.count - kept.count
+                trace.response = kept; trace.responseMemoryLimited = true
+            }
+            if retained > memoryLimit, !trace.request.isEmpty {
+                let kept = prefix(trace.request, excess: retained - memoryLimit)
+                retained -= trace.request.count - kept.count
+                trace.request = kept; trace.requestMemoryLimited = true
+            }
+            traces[id] = trace
         }
     }
     private func bodyInfo(_ t:Trace, request:Bool)->JSON {
         let observed=request ? t.requestObserved:t.responseObserved, retained=request ? t.request.count:t.response.count
         let captured = request ? t.requestCaptureBytes : t.responseCaptureBytes
         let omitted = request && t.credentialOmitted, redactions = request ? t.credentialRedactions : t.responseCredentialRedactions
+        let memoryLimited = request ? t.requestMemoryLimited : t.responseMemoryLimited
         let redacted = redactions > 0
         let state=t.mode=="off" ? "not-captured":omitted ? "credential-omitted":retained<captured ? "truncated":!request && (t.transportOutcome != "eof" || captured < observed) ? "partial":redacted ? (request ? "credential-hashed" : "credential-masked"):"complete"
-        var result:JSON = ["state":JSON(state),"observedBytes":JSON(observed),"retainedBytes":JSON(retained),"reason": t.mode=="off" ? "Capture was disabled" : omitted ? "Credential replacement exceeded capture safety limits; request body was not retained." : retained<captured ? "8 MiB per-body limit" : .null]
+        var result:JSON = ["state":JSON(state),"observedBytes":JSON(observed),"retainedBytes":JSON(retained),"reason": t.mode=="off" ? "Capture was disabled" : omitted ? "Credential replacement exceeded capture safety limits; request body was not retained." : retained<captured ? (memoryLimited ? "Workspace memory limit; retained prefix only. Durable capture is independent." : "8 MiB per-body limit") : .null]
         if request {
             result["captureBytes"] = JSON(captured); result["credentialRedactions"] = JSON(t.credentialRedactions); result["byteExact"] = JSON(!redacted && !omitted)
             result["transformations"] = .array(omitted ? ["Request body omitted because credential replacement exceeded capture safety limits. No request-body bytes were retained."] : redacted ? ["Known authentication credential bytes replaced by labeled SHA-256 fingerprints. Offsets and hashes describe retained transformed bytes, not the submitted wire body."] : [])
@@ -268,14 +306,22 @@ public actor TraceStore {
     }
     private func metrics(_ t:Trace)->JSON {
         func span(_ start: Double?, _ end: Double?) -> JSON {
-            guard let start, let end, end >= start else { return .null }; return JSON(end-start)
+            guard let start, let end, start.isFinite, end.isFinite, end >= start, (end-start).isFinite else { return .null }; return JSON(end-start)
         }
         let requestMS = span(t.dispatch, t.completed).double, output=t.usage["output"].double
+        var outputRate: JSON = .null
+        // Only the gateway's completed usage is a token count. Reported output
+        // already includes its reasoning subset, even with no visible prose.
+        if t.outcome == "completed", t.modelOutcome == "completed",
+           let requestMS, requestMS > 0, let output, output.isFinite, output >= 0 {
+            let seconds = requestMS / 1000
+            if seconds > 0, (output / seconds).isFinite { outputRate = JSON(output / seconds) }
+        }
         return ["observedTTFTms":span(t.dispatch,t.firstContent), "firstTextMs":span(t.dispatch,t.firstText),
                 "streamDurationMs":span(t.firstContent,t.completed), "httpDurationMs":span(t.dispatch,t.eof),
-                "outputTokensPerSecond":(requestMS != nil && requestMS!>0 && output != nil) ? JSON(output!/(requestMS!/1000)):.null,
+                "outputTokensPerSecond":outputRate,
                 "inputIncludingCache":t.usage["inputIncludingCache"],"completeness":t.modelOutcome=="completed" ? "complete":"partial",
-                "rateSource":"provider output / request dispatch-to-model-terminal; not decode speed","liveTokenRate":.null]
+                "rateSource":"Gateway-reported output tokens / request dispatch-to-model-terminal; not decode speed","liveTokenRate":.null]
     }
     private func metadata(_ t:Trace)->JSON {
         ["attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
@@ -302,7 +348,7 @@ public actor TraceStore {
         if method=="debug.list" {
             let all=order.reversed().compactMap{traces[$0]}.filter{$0.session==session}, offset=try boundedInt(p["offset"])
             let page=Array(all.dropFirst(offset).prefix(64))
-            return ["attempts":.array(page.map(metadata)),"total":JSON(all.count),"next":offset+page.count<all.count ? JSON(offset+page.count):.null,"mode":JSON(mode(session)),"boundary":boundary,"workspaceRetainedBytes":JSON(traces.values.reduce(0){$0+$1.request.count+$1.response.count}),"limits":["bodyBytes":JSON(Self.perBodyLimit),"workspaceBytes":JSON(Self.totalLimit)],"droppedMetadata":JSON(droppedMetadata)]
+            return ["attempts":.array(page.map(metadata)),"total":JSON(all.count),"next":offset+page.count<all.count ? JSON(offset+page.count):.null,"mode":JSON(mode(session)),"boundary":boundary,"workspaceRetainedBytes":JSON(traces.values.reduce(0){$0+$1.request.count+$1.response.count}),"limits":["bodyBytes":JSON(Self.perBodyLimit),"workspaceBytes":JSON(memoryLimit)],"droppedMetadata":JSON(droppedMetadata)]
         }
         guard let id=p["attemptId"].text,let t=traces[id],t.session==session else { throw AgentError("capture_unavailable","Attempt is unavailable or belongs to another session") }
         if method=="debug.attempt" { var v=metadata(t); v["boundary"]=boundary;v["requestHash"]=t.mode=="off" ? .null:["sha256":JSON(sha256(t.request)),"scope":"retained bytes"];v["responseHash"]=t.mode=="off" ? .null:["sha256":JSON(sha256(t.response)),"scope":"retained bytes"]; return v }

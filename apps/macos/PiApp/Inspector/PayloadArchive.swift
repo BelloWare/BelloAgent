@@ -6,6 +6,10 @@ import Darwin
 // stream bounded byte pages. New bodies are plaintext; only the compatibility
 // reader for existing encrypted bodies receives their original native-vault key.
 actor PayloadArchive {
+    // Two bounded chunkers belong to each persisted attempt. This supports
+    // 20 live chats plus their utility requests while retaining at most 4 MiB
+    // of unpublished chunk tails across 64 simultaneous attempts.
+    private static let maximumBodyWriters = 128
     let root: URL
     private var database: CaptureDatabase?
     private var ownership: WorkspaceLock?
@@ -27,6 +31,12 @@ actor PayloadArchive {
     }
     private var writers: [String: Writer] = [:]
     private var leases: Set<String> = []
+    /// Running totals for the two tables whose size is checked on every write.
+    /// Recomputing them per chunk and per event page made each write cost a
+    /// full scan of the whole archive, so capture slowed down as it filled.
+    /// Seeded on demand and dropped whenever rows are removed.
+    private var chunkTotals: (count: Int64, bytes: Int64)?
+    private var eventIndexCount: Int64?
     init(root: URL, now: @escaping @Sendable () -> Date = { Date() }, beforeChunkWrite: @escaping @Sendable () throws -> Void = {}, exportDidReadPage: @escaping @Sendable () async -> Void = { await Task.yield() }, didReconcile: @escaping @Sendable () -> Void = {}) {
         self.root = root; self.now = now; self.beforeChunkWrite = beforeChunkWrite; self.exportDidReadPage = exportDidReadPage
         self.didReconcile = didReconcile
@@ -99,14 +109,27 @@ actor PayloadArchive {
         guard UUID(uuidString: id) != nil, let row = try db.rows("SELECT * FROM attempts WHERE id=?", [.text(id)]).first else { throw CaptureFailure.unavailable }
         return row
     }
+    /// Resolve the owner plus output links on at most two 500-row visible
+    /// pages. Final metadata omits link arrays; never materialize the attempt's
+    /// entire retained context or scan unrelated sessions to route its update.
+    func accountingTarget(attemptID: String, workspaceID: String, visibleMessageIDs: Set<String> = []) throws -> (sessionID: String, outputMessageIDs: Set<String>)? {
+        guard UUID(uuidString: attemptID) != nil else { return nil }
+        guard visibleMessageIDs.count <= 1000 else { throw CaptureFailure.unavailable }
+        let db = try ready()
+        guard let session = try db.rows("SELECT session FROM attempts WHERE id=? AND workspace=?", [.text(attemptID), .text(workspaceID)]).first?["session"]?.string else { return nil }
+        guard !visibleMessageIDs.isEmpty else { return (session, []) }
+        let placeholders = Array(repeating: "?", count: visibleMessageIDs.count).joined(separator: ",")
+        let rows = try db.rows("SELECT message FROM message_links INDEXED BY accounting_outputs WHERE role='output' AND attempt=? AND message IN (\(placeholders))", [.text(attemptID)] + visibleMessageIDs.map(CaptureSQLValue.text))
+        return (session, Set(rows.compactMap { $0["message"]?.string }))
+    }
     func begin(_ metadata: [String: WireValue], workspace: String) throws {
         let db = try ready()
         guard let id = metadata["attemptId"]?.string, UUID(uuidString: id) != nil,
               let session = metadata["sessionId"]?.string, !session.isEmpty, session.utf8.count <= 128,
-              let turn = metadata["turnId"]?.string, turn.utf8.count <= 128, workspace.utf8.count <= 128,
-              writers.count < 32 else { throw CaptureFailure.unavailable }
+              let turn = metadata["turnId"]?.string, turn.utf8.count <= 128, workspace.utf8.count <= 128 else { throw CaptureFailure.unavailable }
         let mode = metadata["mode"]?.string ?? "off"
         guard ["persist", "memory", "off"].contains(mode), try db.rows("SELECT id FROM attempts WHERE id=?", [.text(id)]).isEmpty else { throw CaptureFailure.sequence }
+        guard mode != "persist" || writers.count + 2 <= Self.maximumBodyWriters else { throw CaptureFailure.quota }
         let encoded = try JSONEncoder().encode(metadata)
         guard encoded.count <= 262_144 else { throw CaptureFailure.unavailable }
         try reconcile()
@@ -136,7 +159,7 @@ actor PayloadArchive {
         guard ["request", "response"].contains(kind), !bytes.isEmpty, bytes.count <= 32_768,
               var writer = writers[key], writer.failure == nil, offset == writer.observed,
               offset + bytes.count <= (kind == "request" ? 33_554_432 : 67_108_864) else { throw CaptureFailure.sequence }
-        let row = try record(attempt), scope = CaptureContent.scope(session: row["session"]!.string!)
+        let row = try record(attempt), scope = CaptureContent.scope(session: try archiveText(row, "session"))
         writer.observed += bytes.count
         do {
             let chunks = writer.chunker.feed(bytes)
@@ -144,9 +167,10 @@ actor PayloadArchive {
             try db.execute("UPDATE bodies SET observed=? WHERE attempt=? AND kind=?", [.integer(Int64(writer.observed)), .text(attempt), .text(kind)])
             writers[key] = writer
         } catch {
-            writer.failure = error is CaptureFailure ? error.localizedDescription : "Capture disk write failed"
+            let reason = error is CaptureFailure ? error.localizedDescription : "Capture disk write failed"
+            writer.failure = reason
             writers[key] = writer
-            try? db.execute("UPDATE bodies SET state='partial',reason=?,observed=? WHERE attempt=? AND kind=?", [.text(writer.failure!), .integer(Int64(writer.observed)), .text(attempt), .text(kind)])
+            try? db.execute("UPDATE bodies SET state='partial',reason=?,observed=? WHERE attempt=? AND kind=?", [.text(reason), .integer(Int64(writer.observed)), .text(attempt), .text(kind)])
             throw error
         }
     }
@@ -177,16 +201,34 @@ actor PayloadArchive {
         }
         var hasher = writer.hasher; hasher.update(data: bytes)
         let digest = Data(hasher.finalize())
+        let stored = existing == nil
         try db.transaction {
             try db.execute("INSERT OR IGNORE INTO chunks(scope,id,length,bytes,storage) VALUES(?,?,?,?,'plaintext-v2')", [.text(scope), .text(id), .integer(Int64(bytes.count)), .integer(Int64(bytes.count))])
             try db.execute("INSERT INTO refs VALUES(?,?,?,?,?,?,?)", [.text(attempt), .text(kind), .integer(Int64(writer.ordinal)), .text(scope), .text(id), .integer(Int64(writer.length)), .integer(Int64(bytes.count))])
             try db.execute("UPDATE bodies SET length=?,digest=? WHERE attempt=? AND kind=?", [.integer(Int64(writer.length + bytes.count)), .blob(digest), .text(attempt), .text(kind)])
         }
+        if stored, let totals = chunkTotals { chunkTotals = (totals.count + 1, totals.bytes + Int64(bytes.count)) }
         writer.hasher.update(data: bytes); writer.length += bytes.count; writer.ordinal += 1
     }
     func finish(_ metadata: [String: WireValue]) throws {
         guard let id = metadata["attemptId"]?.string else { throw CaptureFailure.unavailable }
-        let db = try ready(), row = try record(id), scope = CaptureContent.scope(session: row["session"]!.string!)
+        let db = try ready(), row = try record(id), scope = CaptureContent.scope(session: try archiveText(row, "session"))
+        guard row["session"]?.string == metadata["sessionId"]?.string else { throw CaptureFailure.sequence }
+        // Validate both descriptors before publishing tails or dropping either
+        // writer. Off/memory captures and repeated finishes need the same bounds.
+        for kind in ["request", "response"] {
+            let source = metadata[kind]?.object ?? [:]
+            for field in ["observedBytes", "captureBytes"] {
+                guard let value = source[field] else { continue }
+                guard let number = value.number, number.isFinite, number >= 0,
+                      number <= 1_073_741_824, number.rounded() == number else { throw CaptureFailure.sequence }
+            }
+            if kind == "request", source["state"]?.string == "credential-omitted",
+               let writer = writers[writerKey(id, kind)] {
+                guard writer.length == 0, writer.observed == 0,
+                      (source["captureBytes"]?.number ?? source["observedBytes"]?.number ?? 0) == 0 else { throw CaptureFailure.sequence }
+            }
+        }
         for kind in ["request", "response"] {
             let key = writerKey(id, kind)
             if var writer = writers.removeValue(forKey: key) {
@@ -196,9 +238,6 @@ actor PayloadArchive {
                 let source = metadata[kind]?.object ?? [:]
                 let reportedObserved = source["observedBytes"]?.number ?? 0
                 let reportedCapture = source["captureBytes"]?.number
-                guard reportedObserved >= 0, reportedObserved <= 1_073_741_824,
-                      reportedObserved.rounded() == reportedObserved,
-                      reportedCapture.map({ $0 >= 0 && $0 <= 1_073_741_824 && $0.rounded() == $0 }) ?? true else { throw CaptureFailure.sequence }
                 // Credential hashes can be longer than the submitted key.
                 // Keep wire size separate from the transformed capture size.
                 let observed = reportedCapture == nil ? max(writer.observed, Int(reportedObserved)) : Int(reportedObserved)
@@ -209,7 +248,6 @@ actor PayloadArchive {
                     ? "Known authentication credentials were replaced with SHA-256 hashes; retained bytes differ from the submitted body"
                     : "Known authentication credential echoes were masked; retained bytes differ from the received body"
                 let credentialOmitted = kind == "request" && source["state"]?.string == "credential-omitted"
-                guard !credentialOmitted || (writer.length == 0 && writer.observed == 0 && captureLength == 0) else { throw CaptureFailure.sequence }
                 let complete = writer.failure == nil && writer.length == captureLength && (kind == "request" ||
                     (captureLength == observed && (metadata["transportOutcome"]?.string.map { $0 == "eof" } ?? (metadata["outcome"]?.string == "completed"))))
                 let digest = Data(writer.hasher.finalize())
@@ -222,15 +260,25 @@ actor PayloadArchive {
     }
     func update(_ metadata: [String: WireValue]) throws {
         let db = try ready()
-        guard let id = metadata["attemptId"]?.string, try record(id)["session"]?.string == metadata["sessionId"]?.string else { throw CaptureFailure.sequence }
+        guard let id = metadata["attemptId"]?.string else { throw CaptureFailure.sequence }
+        let existing = try record(id)
+        guard existing["session"]?.string == metadata["sessionId"]?.string else { throw CaptureFailure.sequence }
         let encoded = try JSONEncoder().encode(metadata); guard encoded.count <= 262_144 else { throw CaptureFailure.unavailable }
         try db.transaction {
             try db.execute("UPDATE attempts SET outcome=?,model=?,updated=?,metadata=? WHERE id=?", [.text(metadata["outcome"]?.string ?? "interrupted"), metadata["identity"]?.object?["effectiveModel"]?.string.map(CaptureSQLValue.text) ?? .null, .real(now().timeIntervalSince1970), .blob(encoded), .text(id)])
             try link(metadata, id: id, db: db)
             try Self.projectDashboard(metadata, id: id, db: db)
         }
-        // Completed/interrupted requests become eligible for retention now.
-        if metadata["outcome"]?.string != "running" { nextReconciliation = -Double.infinity }
+        // A finished request becomes eligible when its own retention deadline
+        // arrives, which for a request that just ended is weeks away. Forcing a
+        // sweep here made the next dispatched request re-read every manifest,
+        // reference and chunk in the archive, so capture slowed down as the
+        // archive filled. An older request finishing late still lowers it.
+        if metadata["outcome"]?.string != "running" {
+            if let wall = existing["wall"]?.double {
+                nextReconciliation = min(nextReconciliation, wall + min(bodyRetention, metricRetention))
+            } else { nextReconciliation = -Double.infinity }
+        }
     }
     func accept(_ packet: [String: WireValue], workspace: String) throws {
         switch packet["type"]?.string {
@@ -255,7 +303,7 @@ actor PayloadArchive {
                   let number = packet["offset"]?.number, number >= 0, number.rounded() == number,
                   let events = packet["events"]?.array, events.count <= 128, number + Double(events.count) <= 4096,
                   (try db.rows("SELECT COUNT(*) AS n FROM event_indices WHERE attempt=?", [.text(id)]).first?["n"]?.number ?? 0) == Int64(number),
-                  (try db.rows("SELECT COUNT(*) AS n FROM event_indices").first?["n"]?.number ?? 0) + Int64(events.count) <= 100_000 else { throw CaptureFailure.quota }
+                  try eventIndexCountNow() + Int64(events.count) <= 100_000 else { throw CaptureFailure.quota }
             try db.transaction {
                 for (offset, value) in events.enumerated() {
                     guard let event = value.object, Set(event.keys) == ["type", "start", "end", "observedAt"],
@@ -265,10 +313,11 @@ actor PayloadArchive {
                     try db.execute("INSERT INTO event_indices VALUES(?,?,?)", [.text(id), .integer(Int64(number) + Int64(offset)), .blob(try JSONEncoder().encode(value))])
                 }
             }
+            if let count = eventIndexCount { eventIndexCount = count + Int64(events.count) }
         case "interrupted":
             let db = try ready()
             for row in try db.rows("SELECT id FROM attempts WHERE workspace=? AND outcome='running'", [.text(workspace)]) {
-                let id = row["id"]!.string!
+                let id = try archiveText(row, "id")
                 var metadata = try self.metadata(attempt: id)
                 guard metadata["hostEpoch"] == packet["hostEpoch"] else { continue }
                 metadata["outcome"] = .string("interrupted"); metadata["modelOutcome"] = .string("interrupted")
@@ -279,18 +328,29 @@ actor PayloadArchive {
     }
     func metadata(attempt id: String) throws -> [String: WireValue] {
         let db = try ready(), row = try record(id)
+        return try metadata(row: row, bodies: try db.rows("SELECT * FROM bodies WHERE attempt=?", [.text(id)]))
+    }
+    /// Projects one already-fetched attempt row and its already-fetched body
+    /// descriptors. Listing a page used to re-query both per row.
+    private func metadata(row: [String: CaptureSQLValue], bodies: [[String: CaptureSQLValue]]) throws -> [String: WireValue] {
+        let id = try archiveText(row, "id")
+        guard UUID(uuidString: id) != nil else { throw CaptureFailure.corrupt }
         guard let bytes = row["metadata"]?.data else { throw CaptureFailure.corrupt }
         var value = try JSONDecoder().decode([String: WireValue].self, from: bytes)
-        value["workspaceId"] = .string(row["workspace"]!.string!); value["outcome"] = .string(row["outcome"]!.string!)
+        value["workspaceId"] = .string(try archiveText(row, "workspace")); value["outcome"] = .string(try archiveText(row, "outcome"))
         value["storageVersion"] = .number(5); value["metricsRetained"] = .bool(row["metrics_retained"]?.number == 1)
-        for body in try db.rows("SELECT * FROM bodies WHERE attempt=?", [.text(id)]) {
-            let kind = body["kind"]!.string!
+        for body in bodies {
+            let kind = try archiveText(body, "kind")
+            guard ["request", "response"].contains(kind) else { throw CaptureFailure.corrupt }
             var descriptor = value[kind]?.object ?? [:]
             guard let storage = body["storage"]?.string.flatMap(CaptureStorageFormat.init(rawValue:)) else { throw CaptureFailure.corrupt }
-            descriptor["state"] = .string(body["state"]!.string!)
+            descriptor["state"] = .string(try archiveText(body, "state"))
             descriptor["reason"] = .string(body["reason"]?.string ?? "")
-            descriptor["observedBytes"] = .number(Double(body["observed"]!.number!))
-            descriptor["retainedBytes"] = .number(Double(body["length"]!.number!))
+            let observed = try archiveNumber(body, "observed"), length = try archiveNumber(body, "length")
+            guard observed >= 0, observed <= 1_073_741_824,
+                  length >= 0, length <= (kind == "request" ? 33_554_432 : 67_108_864) else { throw CaptureFailure.corrupt }
+            descriptor["observedBytes"] = .number(Double(observed))
+            descriptor["retainedBytes"] = .number(Double(length))
             descriptor["storage"] = .string(storage.rawValue)
             value[kind] = .object(descriptor)
             if let stored = body["digest"]?.data {
@@ -320,13 +380,28 @@ actor PayloadArchive {
         if messageID != nil, let workspaceID { sql = "SELECT id FROM attempts WHERE workspace=?"; values = [.text(workspaceID)] }
         if let messageID { sql += " AND id IN (SELECT attempt FROM message_links WHERE message=?)"; values.append(.text(messageID)) }
         sql += " ORDER BY wall DESC,id DESC LIMIT 128 OFFSET ?"; values.append(.integer(Int64(offset)))
-        return try db.rows(sql, values).map { try metadata(attempt: $0["id"]!.string!) }
+        // Two statements for the page, not two per row: the inspector polls
+        // this once a second, and 128 ids used to cost 257 statements and a
+        // re-read of every attempt's metadata blob.
+        let rows = try db.rows(sql.replacingOccurrences(of: "SELECT id FROM attempts", with: "SELECT * FROM attempts"), values)
+        guard !rows.isEmpty else { return [] }
+        let ids = try rows.map { try archiveText($0, "id") }
+        let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+        var descriptors: [String: [[String: CaptureSQLValue]]] = [:]
+        for body in try db.rows("SELECT * FROM bodies WHERE attempt IN (\(placeholders))", ids.map { CaptureSQLValue.text($0) }) {
+            descriptors[try archiveText(body, "attempt"), default: []].append(body)
+        }
+        return try zip(rows, ids).map { try metadata(row: $0, bodies: descriptors[$1] ?? []) }
     }
     func eventIndices(attemptID: String, offset: Int) throws -> [String: WireValue] {
         let db = try ready(); _ = try record(attemptID)
         guard offset >= 0, offset <= 4096 else { throw CaptureFailure.sequence }
         let rows = try db.rows("SELECT value FROM event_indices WHERE attempt=? AND ordinal>=? ORDER BY ordinal LIMIT 128", [.text(attemptID), .integer(Int64(offset))])
-        return ["events": .array(try rows.map { try JSONDecoder().decode(WireValue.self, from: $0["value"]!.data!) }),
+        return ["events": .array(try rows.map {
+                    guard let data = $0["value"]?.data,
+                          let value = try? JSONDecoder().decode(WireValue.self, from: data) else { throw CaptureFailure.corrupt }
+                    return value
+                }),
                 "total": .number(Double(try db.rows("SELECT COUNT(*) AS n FROM event_indices WHERE attempt=?", [.text(attemptID)]).first?["n"]?.number ?? 0)),
                 "boundary": .string("SSE byte offsets into the original response. Indices are bounded to 4096 per request / 100000 globally and expire with bodies; omitted counts are in request metadata.")]
     }
@@ -350,7 +425,7 @@ actor PayloadArchive {
         let db = try ready(); _ = try record(attemptID)
         guard offset >= 0, offset <= 100_000 else { throw CaptureFailure.sequence }
         let rows = try db.rows("SELECT message,role FROM message_links WHERE attempt=? ORDER BY role,message LIMIT 128 OFFSET ?", [.text(attemptID), .integer(Int64(offset))])
-        return ["links": .array(rows.map { .object(["messageId": .string($0["message"]!.string!), "relationship": .string($0["role"]!.string!)]) }),
+        return ["links": .array(try rows.map { .object(["messageId": .string(try archiveText($0, "message")), "relationship": .string(try archiveText($0, "role"))]) }),
                 "total": .number(Double(try db.rows("SELECT COUNT(*) AS n FROM message_links WHERE attempt=?", [.text(attemptID)]).first?["n"]?.number ?? 0))]
     }
     private func readChunk(scope: String, id: String, count: Int) throws -> Data {
@@ -382,15 +457,18 @@ actor PayloadArchive {
     func body(attemptID: String, body: String, offset: Int) throws -> Data {
         let db = try ready(); _ = try record(attemptID)
         guard ["request", "response"].contains(body), let descriptor = try db.rows("SELECT * FROM bodies WHERE attempt=? AND kind=?", [.text(attemptID), .text(body)]).first,
-              let length = descriptor["length"]?.number, offset >= 0, offset <= length,
               !["expired", "purged", "not-retained", "credential-omitted"].contains(descriptor["state"]?.string ?? "") else { throw CaptureFailure.unavailable }
+        let length = try archiveNumber(descriptor, "length")
+        guard length >= 0, length <= (body == "request" ? 33_554_432 : 67_108_864) else { throw CaptureFailure.corrupt }
+        guard offset >= 0, offset <= length else { throw CaptureFailure.unavailable }
         let end = min(Int(length), offset + 32_768)
         var output = Data(), position = offset
         for ref in try db.rows("SELECT * FROM refs WHERE attempt=? AND kind=? AND offset<? AND offset+length>? ORDER BY ordinal", [.text(attemptID), .text(body), .integer(Int64(end)), .integer(Int64(offset))]) {
-            let start = Int(ref["offset"]!.number!), count = Int(ref["length"]!.number!)
-            guard start <= position, start + count > position else { throw CaptureFailure.corrupt }
+            let start = Int(try archiveNumber(ref, "offset")), count = Int(try archiveNumber(ref, "length"))
+            guard start >= 0, start <= position, count > 0, count <= CaptureChunker.maximum,
+                  count <= Int(length) - start, start + count > position else { throw CaptureFailure.corrupt }
             let bytes: Data
-            do { bytes = try readChunk(scope: ref["scope"]!.string!, id: ref["chunk"]!.string!, count: count) }
+            do { bytes = try readChunk(scope: try archiveText(ref, "scope"), id: try archiveText(ref, "chunk"), count: count) }
             catch {
                 try? db.execute("UPDATE bodies SET state='corrupt',reason='Chunk integrity failed; no repair attempted' WHERE attempt=? AND kind=?", [.text(attemptID), .text(body)])
                 throw error
@@ -455,38 +533,58 @@ actor PayloadArchive {
         for id in ids { try evict(id, state: "purged") }; try collectGarbage()
     }
     func purge(attemptID: String) throws { _ = try record(attemptID); try evict(attemptID, state: "purged"); try collectGarbage() }
+    private func eventIndexCountNow() throws -> Int64 {
+        if let eventIndexCount { return eventIndexCount }
+        let value = try ready().rows("SELECT COUNT(*) AS n FROM event_indices").first?["n"]?.number ?? 0
+        eventIndexCount = value
+        return value
+    }
     private func evict(_ id: String, state: String) throws {
         let db = try ready(); guard !leases.contains(id), writers[writerKey(id, "request")] == nil, writers[writerKey(id, "response")] == nil else { throw CaptureFailure.busy }
         try db.transaction {
             try db.execute("DELETE FROM refs WHERE attempt=?", [.text(id)])
             try db.execute("DELETE FROM event_indices WHERE attempt=?", [.text(id)])
+            eventIndexCount = nil
             try db.execute("UPDATE bodies SET state=?,reason='Body retention ended; request metrics retained',length=0,digest=NULL WHERE attempt=?", [.text(state), .text(id)])
         }
     }
+    private func chunkTotalsNow() throws -> (count: Int64, bytes: Int64) {
+        if let chunkTotals { return chunkTotals }
+        let row = try ready().rows("SELECT COUNT(*) AS n, COALESCE(SUM(bytes),0) AS stored FROM chunks").first
+        let value = (row?["n"]?.number ?? 0, row?["stored"]?.number ?? 0)
+        chunkTotals = value
+        return value
+    }
     private func reserve(_ bytes: Int64) throws {
         let db = try ready()
-        guard (try db.rows("SELECT COUNT(*) AS n FROM chunks").first?["n"]?.number ?? 0) < 100_000 else { throw CaptureFailure.quota }
-        func used() throws -> Int64 { try db.rows("SELECT COALESCE(SUM(bytes),0) AS n FROM chunks").first?["n"]?.number ?? 0 }
-        if try used() + bytes <= quota { return }
+        guard try chunkTotalsNow().count < 100_000 else { throw CaptureFailure.quota }
+        if try chunkTotalsNow().bytes + bytes <= quota { return }
         for row in try db.rows("SELECT id FROM attempts WHERE outcome!='running' AND id IN (SELECT attempt FROM refs) ORDER BY wall") {
-            let id = row["id"]!.string!; if leases.contains(id) { continue }
+            let id = try archiveText(row, "id"); if leases.contains(id) { continue }
             try evict(id, state: "expired"); try collectGarbage()
-            if try used() + bytes <= quota { return }
+            if try chunkTotalsNow().bytes + bytes <= quota { return }
         }
         throw CaptureFailure.quota
     }
     func reconcile() throws {
         let db = try ready(), time = now().timeIntervalSince1970
         guard time > nextReconciliation else { return }
+        // One commit for the whole sweep. Each eviction and each expiry used to
+        // be its own transaction, which under synchronous=FULL is one fsync per
+        // row: an overdue sweep of a large archive froze the app for minutes.
+        // Ids first, bodies per row, so the expiring set is never materialised
+        // with its metadata blobs at once.
+        try db.transaction {
         for row in try db.rows("SELECT id FROM attempts WHERE outcome!='running' AND wall<? AND id IN (SELECT attempt FROM refs)", [.real(time - bodyRetention)]) {
-            let id = row["id"]!.string!; if !leases.contains(id) { try evict(id, state: "expired") }
+            let id = try archiveText(row, "id"); if !leases.contains(id) { try evict(id, state: "expired") }
         }
-        for row in try db.rows("SELECT id,session,turn,purpose,api,alias,metadata FROM attempts WHERE outcome!='running' AND metrics_retained=1 AND wall<?", [.real(time - metricRetention)]) {
-            let id = row["id"]!.string!
+        for expiring in try db.rows("SELECT id FROM attempts WHERE outcome!='running' AND metrics_retained=1 AND wall<?", [.real(time - metricRetention)]) {
+            let id = try archiveText(expiring, "id")
             guard !leases.contains(id) else { continue }
+            let row = try record(id)
             // Keep the relationship after metrics expire. Old chat messages
             // resolve to an explicit tombstone, never an invented HTTP body.
-            var tombstone: [String: WireValue] = ["attemptId": .string(id), "sessionId": .string(row["session"]!.string!), "turnId": .string(row["turn"]!.string!), "purpose": .string(row["purpose"]!.string!), "api": .string(row["api"]!.string!), "requestedModel": .string(row["alias"]!.string!), "metricsExpired": .bool(true), "notice": .string("Request metrics retention expired; payload availability and original message relationships are retained independently.")]
+            var tombstone: [String: WireValue] = ["attemptId": .string(id), "sessionId": .string(try archiveText(row, "session")), "turnId": .string(try archiveText(row, "turn")), "purpose": .string(try archiveText(row, "purpose")), "api": .string(try archiveText(row, "api")), "requestedModel": .string(try archiveText(row, "alias")), "metricsExpired": .bool(true), "notice": .string("Request metrics retention expired; payload availability and original message relationships are retained independently.")]
             // These describe the retained body, not request telemetry. Keep
             // credential transformations visible for the body's own lifetime.
             if let data = row["metadata"]?.data {
@@ -496,7 +594,8 @@ actor PayloadArchive {
                     if !annotations.isEmpty { tombstone[kind] = .object(annotations) }
                 }
             }
-            try db.execute("UPDATE attempts SET metrics_retained=0,dispatch=NULL,ttft_ms=NULL,stream_ms=NULL,http_ms=NULL,model=NULL,identity_status='expired',reported_models=NULL,response_model=NULL,cost_usd=NULL,cost_status='unreported',cache_read_tokens=NULL,cache_write_tokens=NULL,input_tokens=NULL,output_tokens=NULL,reasoning_tokens=NULL,reasoning_cost_usd=NULL,reasoning_cost_status='unreported',cache_status='unreported',metadata=? WHERE id=?", [.blob(try JSONEncoder().encode(tombstone)), .text(id)])
+            try db.execute("UPDATE attempts SET metrics_retained=0,dispatch=NULL,ttft_ms=NULL,stream_ms=NULL,request_ms=NULL,http_ms=NULL,model=NULL,identity_status='expired',reported_models=NULL,response_model=NULL,cost_usd=NULL,cost_status='unreported',cache_read_tokens=NULL,cache_write_tokens=NULL,input_tokens=NULL,output_tokens=NULL,reasoning_tokens=NULL,reasoning_cost_usd=NULL,reasoning_cost_status='unreported',cache_status='unreported',metadata=? WHERE id=?", [.blob(try JSONEncoder().encode(tombstone)), .text(id)])
+        }
         }
         try collectGarbage()
         let nextBody = try db.rows("SELECT MIN(wall) AS wall FROM attempts WHERE outcome!='running' AND id IN (SELECT attempt FROM refs)").first?["wall"]?.double.map { $0 + bodyRetention }
@@ -511,12 +610,13 @@ actor PayloadArchive {
         let db = try ready()
         for row in try db.rows("SELECT scope,id FROM chunks WHERE NOT EXISTS (SELECT 1 FROM refs WHERE refs.scope=chunks.scope AND refs.chunk=chunks.id)") {
             guard let scope = row["scope"]?.string, let id = row["id"]?.string, scope.count == 64, id.count == 64, scope.allSatisfy(\.isHexDigit), id.allSatisfy(\.isHexDigit) else { throw CaptureFailure.corrupt }
-            let file = root.appendingPathComponent("chunks/" + row["scope"]!.string! + "/" + row["id"]!.string!)
+            let file = try root.appendingPathComponent("chunks/" + archiveText(row, "scope") + "/" + archiveText(row, "id"))
             if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
         }
         try db.execute("DELETE FROM chunks WHERE NOT EXISTS (SELECT 1 FROM refs WHERE refs.scope=chunks.scope AND refs.chunk=chunks.id)")
+        chunkTotals = nil
         guard scanOrphans else { return }
-        let valid = Set(try db.rows("SELECT scope,id FROM chunks").map { $0["scope"]!.string! + "/" + $0["id"]!.string! })
+        let valid = Set(try db.rows("SELECT scope,id FROM chunks").map { try archiveText($0, "scope") + "/" + archiveText($0, "id") })
         let folder = root.appendingPathComponent("chunks", isDirectory: true)
         if FileManager.default.fileExists(atPath: folder.path) { guard (try folder.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true else { throw CaptureFailure.corrupt } }
         guard let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { return }
@@ -554,6 +654,11 @@ actor PayloadArchive {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staging.appendingPathComponent("manifest.json").path)
         try FileManager.default.moveItem(at: staging, to: final); published = true; return final
     }
+    /// Full-scan rows this archive's database has visited so far (tests only).
+    func scannedRows() throws -> Int { try ready().scannedRows }
+    /// Statements prepared and top-level transactions opened (tests only).
+    func statementCount() throws -> Int { try ready().statements }
+    func commitCount() throws -> Int { try ready().commits }
     func statistics() throws -> [String: Int64] {
         let db = try ready()
         return ["chunks": try db.rows("SELECT COUNT(*) AS n FROM chunks").first?["n"]?.number ?? 0,
@@ -566,5 +671,17 @@ actor PayloadArchive {
     func close() throws {
         guard leases.isEmpty else { throw CaptureFailure.busy }
         writers.removeAll(); database = nil; ownership = nil; legacyCipher = nil; nextReconciliation = -Double.infinity
+        chunkTotals = nil; eventIndexCount = nil
     }
+}
+
+/// A NOT NULL column that is missing or mistyped means the archive is damaged:
+/// a recoverable error for the caller, never a trap in a release build.
+private func archiveText(_ row: [String: CaptureSQLValue], _ key: String) throws -> String {
+    guard let value = row[key]?.string else { throw CaptureFailure.corrupt }
+    return value
+}
+private func archiveNumber(_ row: [String: CaptureSQLValue], _ key: String) throws -> Int64 {
+    guard let value = row[key]?.number else { throw CaptureFailure.corrupt }
+    return value
 }

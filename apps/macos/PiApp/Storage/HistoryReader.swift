@@ -2,15 +2,38 @@ import Foundation
 import Darwin
 
 struct HistoryPage: Sendable {
-    var messages: [TranscriptMessage]; var before: String?; var total: Int; var notice: String?
+    var messages: [TranscriptMessage]; var before: String?; var total: Int
+    /// The journal is damaged or truncated: Continue and search need an
+    /// explicit validation or recovery first.
+    var notice: String?
+    /// The journal is intact but longer than one index can hold. Browsing,
+    /// search and copying all work on the part that was indexed; this says so.
+    var limitNotice: String? = nil
     var assistantMessageCount: Int? = nil
     var latestAssistantMessageID: String? = nil
     var failureMessage: String? = nil
+    var revision: HistoryRevision? = nil
+}
+
+/// The journal identity used for a retained display, including replacements
+/// with the same path, length and modification time. It never retains bodies.
+struct HistoryRevision: Equatable, Sendable {
+    let path: String
+    let stamp: String
 }
 
 // Read-only archive browsing does not launch Node or construct a Pi runtime.
 // First index record offsets and parent links; decode only the requested page.
 actor HistoryReader {
+    /// A journal that is no longer where its chat says it is must say so. The
+    /// caller's "original files were preserved" is a false claim about a file
+    /// that is not there.
+    private func open(_ path: String) throws -> FileHandle {
+        do { return try FileHandle(forReadingFrom: URL(fileURLWithPath: path)) }
+        catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            throw StoreError.missingJournal(path)
+        }
+    }
     private struct Ref {
         var id: String; var parent: String?; var offset: UInt64; var length: Int; var type: String?
         var fromMessageID: String?; var keptIDs: [String]?
@@ -67,24 +90,62 @@ actor HistoryReader {
     private struct Stamp: Equatable {
         var device: Int32; var inode: UInt64; var size: Int64; var modified: Int; var modifiedNS: Int; var changed: Int; var changedNS: Int
     }
-    private struct Index { var stamp: Stamp; var branch: [Ref]; var assistantCount: Int; var latestAssistantID: String?; var sessionID: String?; var automaticContextSafe: Bool; var failureMessage: String? }
+    private struct Index { var stamp: Stamp; var branch: [Ref]; var assistantCount: Int; var latestAssistantID: String?; var sessionID: String?; var automaticContextSafe: Bool; var failureMessage: String?; var truncated: Bool }
     private var indexes: [String: Index] = [:]
-    private var recency: [String] = [] // At most three bounded offset indexes; no full history bodies.
+    // As many bounded offset indexes as the workspace keeps transcript pages, so
+    // cycling between open chats does not re-index a large journal each time.
+    // Offsets and parent links only; no history bodies.
+    private static let retainedIndexes = 8
+    private var recency: [String] = []
+    /// Paging a large record used to decode it again for every 16 KiB page, and
+    /// `message()` rescanned the whole journal on top of that. One slot is
+    /// enough: every caller pages one record to its end before moving on.
+    private struct RecordKey: Equatable { var path: String; var stamp: Stamp; var id: String; var field: String }
+    private var decoded: (key: RecordKey, text: NSString)?
+    // MARK: Test seams
+    //
+    // What a read cost, in decodes and retained indexes, and the one knob that
+    // lowers a bound so a test can reach it. Each is an addition or a stored
+    // integer; none of them does anything when nothing reads it.
+
+    /// Journal records fully decoded for paging. Tests pin paging cost with it:
+    /// one page used to cost a full decode of its record, and `message()` a
+    /// full decode of every record in the file before it.
+    private(set) var decodedRecords = 0
+    /// Journals whose offset index is currently retained.
+    var retainedIndexCount: Int { recency.count }
+    /// Records one offset index holds. Lowered in tests to reach the bound
+    /// without writing a hundred thousand records.
+    private var indexRecordLimit = 100_000
+    func setIndexRecordLimit(_ value: Int) { indexRecordLimit = max(1, value); indexes.removeAll(); recency.removeAll() }
+    /// The projection each caller asks for, from one decoded journal record.
+    private static func projection(_ value: [String: WireValue], field: String) -> String {
+        let content = value["message"]?.object?["content"], blocks = content?.array ?? []
+        if field != "thinking", value["type"]?.string == "branch" { return branchText }
+        if field != "thinking", value["type"]?.string == "compaction" { return "Conversation summary:\n" + (value["summary"]?.string ?? "") }
+        if field == "thinking" { return blocks.compactMap { $0.object?["type"]?.string == "thinking" ? $0.object?["thinking"]?.string : nil }.joined() }
+        return content?.string ?? blocks.compactMap { $0.object?["type"]?.string == "text" ? $0.object?["text"]?.string : nil }.joined()
+    }
     private func revision(_ stamp: Stamp) -> String { "\(stamp.device):\(stamp.inode):\(stamp.size):\(stamp.modified):\(stamp.modifiedNS):\(stamp.changed):\(stamp.changedNS)" }
     private func content(_ ref: Ref, file: FileHandle) throws -> String {
         if ref.type == "branch" { return "## Edit\n\n" + Self.branchText + "\n\n" }
+        decodedRecords += 1
         try file.seek(toOffset: ref.offset)
-        guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.invalidRecord }
+        guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
         return ConversationContent.text(try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:])
     }
     func searchContent(path: String, query: String, start: Int) throws -> ContentSearch {
-        guard query.count <= 256, start >= 0 else { throw StoreError.invalidRecord }
+        guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
         let page = try read(path: path)
         guard page.notice == nil, let index = indexes[path] else { throw HostError.failure("Validate or recover damaged history before searching it") }
-        let file = try FileHandle(forReadingFrom: URL(fileURLWithPath: path)); defer { try? file.close() }
-        guard try stamp(file) == index.stamp else { throw StoreError.invalidRecord }
+        let file = try open(path); defer { try? file.close() }
+        guard try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
+        // A query that matches nothing used to decode every record in the
+        // conversation before answering. Stop after a bounded window and let the
+        // caller continue from `next`, exactly as a full page of hits does.
+        let limit = min(index.branch.count, min(start, index.branch.count) + 5_000)
         var hits: [ContentHit] = [], cursor = min(start, index.branch.count)
-        while cursor < index.branch.count && hits.count < 100 {
+        while cursor < limit && hits.count < 100 {
             let ref = index.branch[cursor], text = try content(ref, file: file)
             if query.isEmpty { hits.append(.init(id: ref.id, position: cursor + 1, preview: String(text.prefix(240)))) }
             else if let range = text.range(of: query, options: [.caseInsensitive]) {
@@ -93,27 +154,31 @@ actor HistoryReader {
             }
             cursor += 1
         }
-        guard try stamp(file) == index.stamp else { throw StoreError.invalidRecord }
+        guard try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
         return .init(hits: hits, total: index.branch.count, next: cursor < index.branch.count ? cursor : nil, revision: revision(index.stamp))
     }
     func copyContentPage(path: String, first: Int, last: Int, cursor: ContentCursor, revision expected: String) throws -> ContentPage {
-        let file = try FileHandle(forReadingFrom: URL(fileURLWithPath: path)); defer { try? file.close() }
+        let file = try open(path); defer { try? file.close() }
         guard let index = indexes[path], try stamp(file) == index.stamp, revision(index.stamp) == expected else { throw HostError.failure("History changed. Refresh the range before copying") }
-        guard first >= 1, last >= first, last <= index.branch.count, cursor.index >= first, cursor.index <= last else { throw StoreError.invalidRecord }
-        let full = try content(index.branch[cursor.index - 1], file: file) as NSString
+        guard first >= 1, last >= first, last <= index.branch.count, cursor.index >= first, cursor.index <= last else { throw StoreError.unreadableRecord }
+        let ref = index.branch[cursor.index - 1]
+        let key = RecordKey(path: path, stamp: index.stamp, id: ref.id, field: "conversation")
+        let full: NSString
+        if let decoded, decoded.key == key { full = decoded.text }
+        else { full = try content(ref, file: file) as NSString; decoded = (key, full) }
         let text = try UnicodePage.slice(full, offset: cursor.offset), end = cursor.offset + (text as NSString).length
-        guard try stamp(file) == index.stamp else { throw StoreError.invalidRecord }
+        guard try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
         return .init(text: text, next: end < full.length ? .init(index: cursor.index, offset: end) : cursor.index < last ? .init(index: cursor.index + 1, offset: 0) : nil)
     }
     private func stamp(_ file: FileHandle) throws -> Stamp {
-        var value = stat(); guard fstat(file.fileDescriptor, &value) == 0 else { throw StoreError.invalidRecord }
+        var value = stat(); guard fstat(file.fileDescriptor, &value) == 0 else { throw StoreError.unreadableRecord }
         return Stamp(device: value.st_dev, inode: value.st_ino, size: value.st_size, modified: value.st_mtimespec.tv_sec, modifiedNS: value.st_mtimespec.tv_nsec, changed: value.st_ctimespec.tv_sec, changedNS: value.st_ctimespec.tv_nsec)
     }
     func validateIdentity(path: String, id: String) throws {
-        let file = try FileHandle(forReadingFrom: URL(fileURLWithPath: path)); defer { try? file.close() }
-        guard let bytes = try file.read(upToCount: 65_536), let newline = bytes.firstIndex(of: 10) else { throw StoreError.invalidRecord }
+        let file = try open(path); defer { try? file.close() }
+        guard let bytes = try file.read(upToCount: 65_536), let newline = bytes.firstIndex(of: 10) else { throw StoreError.unreadableRecord }
         let header = try JSONDecoder().decode(WireValue.self, from: bytes[..<newline]).object ?? [:]
-        guard header["type"]?.string == "session", header["id"]?.string == id, header["version"]?.number == 3, try read(path: path).notice == nil else { throw StoreError.invalidRecord }
+        guard header["type"]?.string == "session", header["id"]?.string == id, header["version"]?.number == 3, try read(path: path).notice == nil else { throw StoreError.unreadableRecord }
     }
     /// Auto context must not open a runtime that would repair an interrupted
     /// tool call or restore pending work. Explicit inspection/recovery remains
@@ -124,39 +189,66 @@ actor HistoryReader {
         return index.automaticContextSafe
     }
     func message(path: String, id: String, field: String, offset: Int) throws -> (String, Int) {
-        let file = try FileHandle(forReadingFrom: URL(fileURLWithPath: path)); defer { try? file.close() }
-        guard try file.seekToEnd() <= 134_217_728 else { throw StoreError.invalidRecord }; try file.seek(toOffset: 0)
-        var pending = Data()
+        let file = try open(path); defer { try? file.close() }
+        let identity = try stamp(file)
+        let key = RecordKey(path: path, stamp: identity, id: id, field: field)
+        if let decoded, decoded.key == key { return (try UnicodePage.slice(decoded.text, offset: offset), decoded.text.length) }
+        guard try file.seekToEnd() <= 134_217_728 else { throw StoreError.unreadableRecord }
+        // The stamped index already knows where this record starts and how long
+        // it is. Rescanning and decoding the whole journal per page made editing
+        // one large message cost one full decode of the file for every page.
+        if let index = indexes[path], index.stamp == identity, let ref = index.branch.first(where: { $0.id == id }) {
+            try file.seek(toOffset: ref.offset)
+            guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length,
+                  let value = try? JSONDecoder().decode(WireValue.self, from: bytes).object else { throw StoreError.unreadableRecord }
+            guard try stamp(file) == identity else { throw StoreError.unreadableRecord }
+            decodedRecords += 1
+            let text = Self.projection(value, field: field) as NSString
+            decoded = (key, text)
+            return (try UnicodePage.slice(text, offset: offset), text.length)
+        }
+        try file.seek(toOffset: 0)
+        var pending = Data(), position: UInt64 = 0
         while let chunk = try file.read(upToCount: 65_536), !chunk.isEmpty {
             var start = chunk.startIndex
             for index in chunk.indices where chunk[index] == 10 {
-                pending.append(chunk[start..<index]); guard pending.count <= 33_554_432 else { throw StoreError.invalidRecord }
-                let value = try JSONDecoder().decode(WireValue.self, from: pending).object ?? [:]
-                if value["id"]?.string == id {
-                    let content = value["message"]?.object?["content"], blocks = content?.array ?? []
-                    let text: String
-                    if field != "thinking", value["type"]?.string == "branch" { text = Self.branchText }
-                    else if field != "thinking", value["type"]?.string == "compaction" { text = "Conversation summary:\n" + (value["summary"]?.string ?? "") }
-                    else { text = field == "thinking" ? blocks.compactMap { $0.object?["type"]?.string == "thinking" ? $0.object?["thinking"]?.string : nil }.joined() :
-                        content?.string ?? blocks.compactMap { $0.object?["type"]?.string == "text" ? $0.object?["text"]?.string : nil }.joined() }
-                    let utf16 = text as NSString
-                    return (try UnicodePage.slice(utf16, offset: offset), utf16.length)
+                pending.append(chunk[start..<index]); guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }
+                // A damaged neighbour must not hide a readable message, and a
+                // record written without an id is addressed by its offset — the
+                // same identity the page that displayed it was given.
+                if let value = try? JSONDecoder().decode(WireValue.self, from: pending).object,
+                   value["type"]?.string != "session", (value["id"]?.string ?? "record-\(position)") == id {
+                    decodedRecords += 1
+                    let text = Self.projection(value, field: field) as NSString
+                    decoded = (key, text)
+                    return (try UnicodePage.slice(text, offset: offset), text.length)
                 }
-                pending.removeAll(keepingCapacity: true); start = chunk.index(after: index)
+                position += UInt64(pending.count + 1); pending.removeAll(keepingCapacity: true); start = chunk.index(after: index)
             }
-            pending.append(chunk[start...]); guard pending.count <= 33_554_432 else { throw StoreError.invalidRecord }
+            pending.append(chunk[start...]); guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }
         }
         throw HostError.failure("The retained message is unavailable")
     }
+    /// Returning to an already loaded chat should keep its page and reading
+    /// position. A cheap descriptor stamp works even after its offset index was
+    /// evicted; an appended/replaced/edited journal still takes the full reader.
+    func readIfChanged(path: String, since previous: HistoryRevision?) throws -> HistoryPage? {
+        if let previous, previous.path == path {
+            let file = try open(path); defer { try? file.close() }
+            if revision(try stamp(file)) == previous.stamp { return nil }
+        }
+        return try read(path: path)
+    }
     func read(path: String, before: String? = nil, around: String? = nil) throws -> HistoryPage {
-        let file = try FileHandle(forReadingFrom: URL(fileURLWithPath: path)); defer { try? file.close() }
+        let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file)
         let size = try file.seekToEnd(); try file.seek(toOffset: 0)
-        guard size <= 134_217_728 else { throw StoreError.invalidRecord }
+        guard size <= 134_217_728 else { throw StoreError.unreadableRecord }
         var branch: [Ref] = [], notice: String?, assistantCount = 0, latestAssistantID: String?, failureMessage: String?
+        var truncated = false
         if let cached = indexes[path], cached.stamp == identity {
             branch = cached.branch; assistantCount = cached.assistantCount; latestAssistantID = cached.latestAssistantID
-            failureMessage = cached.failureMessage
+            failureMessage = cached.failureMessage; truncated = cached.truncated
         }
         else {
         indexes.removeValue(forKey: path)
@@ -167,7 +259,7 @@ actor HistoryReader {
         while let chunk = try file.read(upToCount: 65_536), !chunk.isEmpty {
             var start = chunk.startIndex
             for index in chunk.indices where chunk[index] == 10 {
-                pending.append(chunk[start..<index]); guard pending.count <= 33_554_432 else { throw StoreError.invalidRecord }
+                pending.append(chunk[start..<index]); guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }
                 do {
                     let value = try JSONDecoder().decode(IndexRecord.self, from: pending)
                     if value.type == "session", offset == 0, value.version == 3 { sessionID = value.id }
@@ -175,10 +267,14 @@ actor HistoryReader {
                     if let work = value.pendingWork { pendingWork = work.exists; failureMessage = work.failure }
                     if value.type != "session" {
                         let id = value.id ?? "record-\(offset)"
-                        guard refs.count < 100_000, refs[id] == nil else { throw StoreError.invalidRecord }
+                        guard refs[id] == nil else { throw StoreError.unreadableRecord }
+                        // Being longer than one index can hold is not damage.
+                        // Reporting it as damage blocked search, copying and
+                        // Continue on a conversation whose bytes are all intact.
+                        if refs.count >= indexRecordLimit { truncated = true; break }
                         let parent = value.id == nil ? leaf : value.parentId
                         if value.id == nil || parent != leaf { linear = false }
-                        if let parent, refs[parent] == nil { throw StoreError.invalidRecord }
+                        if let parent, refs[parent] == nil { throw StoreError.unreadableRecord }
                         refs[id] = Ref(id: id, parent: parent, offset: offset, length: pending.count, type: value.type,
                                        fromMessageID: value.fromMessageId, keptIDs: value.keptIds); leaf = id
                         // Replay only the active context's compact tool metadata.
@@ -211,10 +307,10 @@ actor HistoryReader {
                 } catch { notice = "Damaged history record preserved. Continue requires validation or an explicit recovered copy."; break }
                 offset += UInt64(pending.count + 1); pending.removeAll(keepingCapacity: true); start = chunk.index(after: index)
             }
-            if notice != nil { break }
-            pending.append(chunk[start...]); guard pending.count <= 33_554_432 else { throw StoreError.invalidRecord }
+            if notice != nil || truncated { break }
+            pending.append(chunk[start...]); guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }
         }
-        if !pending.isEmpty && notice == nil { notice = "Incomplete tail preserved. No repair was performed." }
+        if !pending.isEmpty && notice == nil && !truncated { notice = "Incomplete tail preserved. No repair was performed." }
         var cursor = leaf
         while let id = cursor, let ref = refs[id] { branch.append(ref); cursor = ref.parent }
         branch.reverse()
@@ -236,14 +332,14 @@ actor HistoryReader {
             } else if ref.type == "message" || ref.type == "compaction" { visible.append(ref); history[ref.id] = ref }
         }
         branch = visible
-        guard try stamp(file) == identity else { throw StoreError.invalidRecord }
+        guard try stamp(file) == identity else { throw StoreError.unreadableRecord }
         let activeCalls = Set(contextIDs.flatMap { contextMessages[$0]?.calls ?? [] })
         let activeResults = Set(contextIDs.compactMap { contextMessages[$0]?.result })
         if notice == nil { indexes[path] = Index(stamp: identity, branch: branch, assistantCount: assistantCount, latestAssistantID: latestAssistantID,
-                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage) }
+                                               sessionID: sessionID, automaticContextSafe: !truncated && native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, truncated: truncated) }
         }
         recency.removeAll { $0 == path }; recency.append(path)
-        while recency.count > 3 { indexes.removeValue(forKey: recency.removeFirst()) }
+        while recency.count > Self.retainedIndexes { indexes.removeValue(forKey: recency.removeFirst()) }
         let anchorIndex = around.flatMap { target in branch.firstIndex { $0.id == target } }
         let end = before.flatMap { target in branch.firstIndex { $0.id == target } } ?? branch.count
         var messages: [TranscriptMessage] = [], index = anchorIndex ?? end, bytes = 0
@@ -251,7 +347,7 @@ actor HistoryReader {
         // forward. A byte-limited reverse page could otherwise omit the anchor.
         while (anchorIndex != nil ? index < branch.count : index > 0) && messages.count < 60 {
             let ref = branch[anchorIndex != nil ? index : index - 1]; try file.seek(toOffset: ref.offset)
-            guard let data = try file.read(upToCount: ref.length) else { throw StoreError.invalidRecord }
+            guard let data = try file.read(upToCount: ref.length) else { throw StoreError.unreadableRecord }
             let value = try JSONDecoder().decode(WireValue.self, from: data).object ?? [:]
             let message: TranscriptMessage
             if value["type"]?.string == "branch" { message = .init(id: ref.id, role: "system", text: Self.branchText, kind: "branch") }
@@ -269,9 +365,12 @@ actor HistoryReader {
             if anchorIndex != nil { messages.append(message); index += 1 }
             else { messages.insert(message, at: 0); index -= 1 }
         }
-        guard try stamp(file) == identity else { indexes.removeValue(forKey: path); throw StoreError.invalidRecord }
+        guard try stamp(file) == identity else { indexes.removeValue(forKey: path); throw StoreError.unreadableRecord }
         let start = anchorIndex ?? index
         return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? branch[start].id : nil, total: branch.count, notice: notice,
-                           assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil, failureMessage: notice == nil ? failureMessage : nil)
+                           limitNotice: truncated ? "This conversation is longer than Bello Agent indexes at once. Its first \(branch.count) messages are shown, searchable and copyable; the rest stay in the file untouched." : nil,
+                           assistantMessageCount: notice == nil && !truncated ? assistantCount : nil, latestAssistantMessageID: notice == nil && !truncated ? latestAssistantID : nil,
+                           failureMessage: notice == nil ? failureMessage : nil,
+                           revision: notice == nil ? HistoryRevision(path: path, stamp: revision(identity)) : nil)
     }
 }

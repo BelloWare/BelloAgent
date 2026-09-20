@@ -1,0 +1,7 @@
+<h2>Bello Agent 0.1.48</h2>
+<ul>
+  <li>Fixes a crash: the transcript could ask SwiftUI to scroll while the window was still mid-layout (for example when the composer grew to hold an edited message), which trapped the app. Every scroll the page lands is now deferred until layout is done.</li>
+  <li>Settings can be saved while a connection's chats are working. A run that is going keeps the settings it started with and switches to the saved ones when it ends; an idle chat takes them at once. Nothing is closed or blocked.</li>
+  <li>Editing an earlier message in a long chat no longer re-anchors the page on every animation frame while the composer resizes, and the slash-completion popup no longer forces the composer to re-render on every keystroke.</li>
+  <li>A robustness pass after the crash: a host pipe deadlock that could hang every turn, a stale handshake watchdog that could kill a healthy host after a failed connect, a delayed terminal kill that could reach a recycled process, a damaged request archive that would trap the app at launch, and several AppKit-during-SwiftUI-update hazards in the inspector and windows are fixed.</li>
+</ul>

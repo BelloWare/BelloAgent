@@ -252,9 +252,9 @@ public actor Resources {
         latest = snapshot; return snapshot
     }
     public func inspect(_ params: JSON, applied: String? = nil, tools: [String] = []) throws -> JSON {
-        let s = params["refresh"].flag == true || latest == nil ? try resolve() : latest!
+        let snapshot = try (params["refresh"].flag == true ? nil : latest) ?? resolve()
         let offset = try boundedInt(params["offset"], maximum: 512), sourceOffset = try boundedInt(params["sourceOffset"], maximum: 4096)
-        return ["revision": JSON(s.revision), "appliedRevision": applied.map { JSON($0) } ?? .null, "stale": JSON(applied != nil && applied != s.revision), "cwd": JSON(s.cwd), "root": JSON(s.root), "roots": .array(s.roots.map { JSON($0) }), "codexHome": JSON(s.codexHome), "diagnostics": .array(s.diagnostics.map { JSON($0) }), "instructionLimit": JSON(s.limit), "instructionBytes": JSON(s.includedBytes), "sources": .array(Array(s.sources.dropFirst(sourceOffset).prefix(32))), "sourceCount": JSON(s.sources.count), "skills": .array(s.skills.dropFirst(offset).prefix(32).map { skill in var v = skill.removing(["body"]); v["sourceCharacters"] = JSON((skill["body"].text ?? "").utf16.count); v["missingDependencies"] = .array(skill["dependencies"].list.filter { !Self.dependencyAvailable($0,tools:tools) }); return v }), "next": offset + 32 < s.skills.count ? JSON(offset + 32) : .null, "total": JSON(s.skills.count)]
+        return ["revision": JSON(snapshot.revision), "appliedRevision": applied.map { JSON($0) } ?? .null, "stale": JSON(applied != nil && applied != snapshot.revision), "cwd": JSON(snapshot.cwd), "root": JSON(snapshot.root), "roots": .array(snapshot.roots.map { JSON($0) }), "codexHome": JSON(snapshot.codexHome), "diagnostics": .array(snapshot.diagnostics.map { JSON($0) }), "instructionLimit": JSON(snapshot.limit), "instructionBytes": JSON(snapshot.includedBytes), "sources": .array(Array(snapshot.sources.dropFirst(sourceOffset).prefix(32))), "sourceCount": JSON(snapshot.sources.count), "skills": .array(snapshot.skills.dropFirst(offset).prefix(32).map { skill in var v = skill.removing(["body"]); v["sourceCharacters"] = JSON((skill["body"].text ?? "").utf16.count); v["missingDependencies"] = .array(skill["dependencies"].list.filter { !Self.dependencyAvailable($0,tools:tools) }); return v }), "next": offset + 32 < snapshot.skills.count ? JSON(offset + 32) : .null, "total": JSON(snapshot.skills.count)]
     }
     public func readSkill(_ id: String, offset: Int) throws -> JSON { let s = try latest ?? resolve(); guard let skill = s.skills.first(where: { $0["id"].text == id }) else { throw AgentError("skill_unavailable", "Refresh the skill catalog") }; return try textPage(skill["body"].text ?? "", offset: offset) }
     public func freeze(_ selections: [JSON], text: String, tools: [String]) throws -> [FrozenSkill] {
@@ -266,7 +266,11 @@ public actor Resources {
             guard ["picker", "leading-command"].contains(selection["intent"].text), let skill = snapshot.skills.first(where: { $0["id"] == selection["id"] }), ["implicitAllowed", "explicitOnly"].contains(skill["policy"].text), skill["contentHash"] == selection["contentHash"], skill["metadataHash"] == selection["metadataHash"] else { throw AgentError("skill_changed", "Selected skill is unavailable or changed. Refresh and select it explicitly.") }
             for dep in skill["dependencies"].list { guard Self.dependencyAvailable(dep,tools:tools) else { throw AgentError("skill_dependency", "This skill requires a dependency not exposed by this session") } }
             let arguments = selection["arguments"].text ?? ""; guard arguments.utf8.count <= 16384 else { throw AgentError("invalid_skills", "Skill arguments exceed the limit") }
-            return FrozenSkill(id: skill["id"].text!, name: skill["name"].text!, path: skill["path"].text!, baseDir: skill["baseDir"].text!, body: skill["body"].text!, contentHash: skill["contentHash"].text!, metadataHash: skill["metadataHash"].text!, arguments: arguments)
+            guard let id = skill["id"].text, let name = skill["name"].text, let path = skill["path"].text, let baseDir = skill["baseDir"].text,
+                  let body = skill["body"].text, let contentHash = skill["contentHash"].text, let metadataHash = skill["metadataHash"].text else {
+                throw AgentError("skill_changed", "Selected skill is unavailable or changed. Refresh and select it explicitly.")
+            }
+            return FrozenSkill(id: id, name: name, path: path, baseDir: baseDir, body: body, contentHash: contentHash, metadataHash: metadataHash, arguments: arguments)
         }
     }
     private static func dependencyAvailable(_ dep: JSON, tools: [String]) -> Bool {

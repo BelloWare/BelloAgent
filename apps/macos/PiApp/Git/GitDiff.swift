@@ -23,11 +23,25 @@ struct GitDiffFile: Identifiable, Equatable, Sendable {
     let binary: Bool
     let hunks: [GitDiffHunk]
     let notes: [String]
+    /// Counted once while parsing: a file card must not re-scan every line each
+    /// time the diff is drawn.
+    let added: Int
+    let removed: Int
+    let lineCount: Int
+    init(oldPath: String, newPath: String, binary: Bool, hunks: [GitDiffHunk], notes: [String]) {
+        self.oldPath = oldPath; self.newPath = newPath; self.binary = binary; self.hunks = hunks; self.notes = notes
+        var added = 0, removed = 0, lines = 0
+        for hunk in hunks {
+            lines += hunk.lines.count
+            for line in hunk.lines {
+                if line.kind == .added { added += 1 } else if line.kind == .removed { removed += 1 }
+            }
+        }
+        self.added = added; self.removed = removed; self.lineCount = lines
+    }
     var id: String { newPath.isEmpty ? oldPath : newPath }
     var path: String { newPath == "/dev/null" || newPath.isEmpty ? oldPath : newPath }
     var renamed: Bool { !oldPath.isEmpty && !newPath.isEmpty && oldPath != newPath && oldPath != "/dev/null" && newPath != "/dev/null" }
-    var added: Int { hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .added }.count } }
-    var removed: Int { hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .removed }.count } }
 }
 
 enum GitDiffParser {
@@ -48,7 +62,9 @@ enum GitDiffParser {
             if !oldPath.isEmpty || !newPath.isEmpty { files.append(GitDiffFile(oldPath: oldPath, newPath: newPath, binary: binary, hunks: hunks, notes: notes)) }
             oldPath = ""; newPath = ""; binary = false; notes = []; hunks = []
         }
-        var rawLines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        // Swift reads "\r\n" as one Character, so splitting on "\n" alone leaves
+        // every line of a file with Windows endings joined into one row.
+        var rawLines = text.split(omittingEmptySubsequences: false) { $0 == "\n" || $0 == "\r\n" }
         // A trailing newline is a terminator, not an empty context line.
         if rawLines.last?.isEmpty == true { rawLines.removeLast() }
         for raw in rawLines {
@@ -128,8 +144,13 @@ struct GitSplitRow: Identifiable, Equatable, Sendable {
 }
 
 extension GitDiffHunk {
-    var splitRows: [GitSplitRow] {
+    /// Pairs the hunk's lines, stopping once `limit` rows exist. The limit is
+    /// what the card is about to draw: pairing every line of a 20,000-line
+    /// patch on every pass over the view's body is work nobody sees.
+    func splitRows(limit: Int = .max) -> [GitSplitRow] {
+        guard limit > 0 else { return [] }
         var rows: [GitSplitRow] = []
+        rows.reserveCapacity(min(limit, lines.count))
         var removed: [GitDiffLine] = [], added: [GitDiffLine] = []
         func flush() {
             for index in 0..<max(removed.count, added.count) {
@@ -143,8 +164,9 @@ extension GitDiffHunk {
             case .added: added.append(line)
             case .context, .note: flush(); rows.append(GitSplitRow(id: rows.count, left: line, right: line))
             }
+            if rows.count >= limit { return Array(rows.prefix(limit)) }
         }
         flush()
-        return rows
+        return rows.count > limit ? Array(rows.prefix(limit)) : rows
     }
 }

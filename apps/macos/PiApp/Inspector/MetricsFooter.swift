@@ -6,34 +6,44 @@ struct MetricsFooter: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var session: SessionDisplay
     @ObservedObject var footer: SessionMetrics
-    @ObservedObject private var draft: ComposerDraft
     let selectedContextWindow: Int?
     let selectedOutputReserve: Int?
+    /// A side conversation shares the window with the chat it was opened from,
+    /// and its own status bar repeated every figure of that chat's. The
+    /// compact form keeps what belongs to this conversation alone: how much
+    /// context it holds and what it has cost.
+    let compact: Bool
     let inspect: () -> Void
     @State private var expanded = false
     @State private var showContext = false
-    init(model: WorkspaceModel, session: SessionDisplay, contextWindow: Int? = nil, outputReserve: Int? = nil, inspect: @escaping () -> Void) {
-        self.model = model; self.session = session; self.footer = session.footer; self.draft = session.composerDraft; self.selectedContextWindow = contextWindow; self.selectedOutputReserve = outputReserve; self.inspect = inspect
+    init(model: WorkspaceModel, session: SessionDisplay, contextWindow: Int? = nil, outputReserve: Int? = nil,
+         compact: Bool = false, inspect: @escaping () -> Void) {
+        self.model = model; self.session = session; self.footer = session.footer; self.selectedContextWindow = contextWindow
+        self.selectedOutputReserve = outputReserve; self.compact = compact; self.inspect = inspect
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Wide: one row. Narrower: the timing on a second row. Narrower still: the
             // timing without the work split, then the bar alone; Session info keeps every figure.
-            ViewThatFits(in: .horizontal) {
-                bar(full: true)
-                VStack(alignment: .leading, spacing: PiSpacing.xs) {
-                    bar(full: false)
-                    timingLine
+            Group {
+                if compact { compactBar } else {
+                    ViewThatFits(in: .horizontal) {
+                        bar(full: true)
+                        VStack(alignment: .leading, spacing: PiSpacing.xs) {
+                            bar(full: false)
+                            timingLine
+                        }
+                        VStack(alignment: .leading, spacing: PiSpacing.xs) {
+                            bar(full: false)
+                            timing
+                        }
+                        bar(full: false)
+                    }
                 }
-                VStack(alignment: .leading, spacing: PiSpacing.xs) {
-                    bar(full: false)
-                    timing
-                }
-                bar(full: false)
             }
             .font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
             .padding(.horizontal, PiSpacing.lg).padding(.top, 2).padding(.bottom, 6)
-            if expanded { details.transition(AnyTransition.move(edge: .bottom).combined(with: .opacity)) }
+            if expanded && !compact { details.transition(AnyTransition.move(edge: .bottom).combined(with: .opacity)) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .clipped()
@@ -41,35 +51,59 @@ struct MetricsFooter: View {
         .sheet(isPresented: $showContext) { ContextInspector(model: model, session: session) }
         .task(id: model.automaticContextActivation(session)) { model.scheduleAutomaticContext(session.id) }
         .onDisappear { model.cancelAutomaticContext(session.id) }
-        .help("Completed output rates use gateway-reported tokens over end-to-end request time, including startup latency. Live rates are estimates. The context ring uses the helper's matching request count; inspect it for its method, model and uncertainty.")
+        .help(SessionRatePresentation.explanation + " The context ring uses the helper's matching request count; inspect it for its method, model and uncertainty.")
     }
 
+    /// The two figures a side conversation owns, and — when there is one —
+    /// the one line that tells the reader what to do next.
+    private var compactBar: some View {
+        HStack(spacing: PiSpacing.md) {
+            contextControl
+            dot
+            costControl
+            Spacer(minLength: PiSpacing.sm)
+            if !session.notice.isEmpty { noticeLine }
+        }.accessibilityIdentifier("compactMetricsFooter")
+    }
+    private var contextControl: some View {
+        Button { showContext = true } label: {
+            HStack(spacing: 7) {
+                ContextRing(fraction: contextFraction)
+                Text(compactContext).lineLimit(1).monospacedDigit().fixedSize().contentTransition(.numericText()).piAnimation(PiMotion.base, value: compactContext)
+            }
+        }.buttonStyle(.plain).piPointer().help(contextLabel + ". Explore instructions, messages, tool results, provider state and the prepared request.")
+            .accessibilityLabel("Explore context").accessibilityValue(contextLabel)
+    }
+    @ViewBuilder private var costControl: some View {
+        if let chat = model.record(session.id) {
+            SessionUsageButton(model: model, chat: chat, footer: footer, costLabel: compactCost)
+        } else {
+            stat("dollarsign.circle", compactCost, help: footer.gateway.costLabel)
+        }
+    }
+    // A notice is the one line here that tells the reader what to do next
+    // ("Run cancelled. Pending messages are paused; resume below"). Capped at
+    // 300 points it was cut mid-word on every pane width, so the instruction
+    // never arrived. It now takes whatever the bar has left, and the whole
+    // text is selectable in Session info and in the help.
+    private var noticeLine: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "info.circle").font(.system(size: 10.5))
+            Text(session.notice).lineLimit(1).truncationMode(.tail).layoutPriority(1)
+        }.frame(maxWidth: 640, alignment: .trailing).help(session.notice)
+            .accessibilityLabel(session.notice)
+    }
     private func bar(full: Bool) -> some View {
         HStack(spacing: PiSpacing.md) {
-            Button { showContext = true } label: {
-                HStack(spacing: 7) {
-                    ContextRing(fraction: contextFraction)
-                    Text(compactContext).lineLimit(1).monospacedDigit().fixedSize().contentTransition(.numericText()).piAnimation(PiMotion.base, value: compactContext)
-                }
-            }.buttonStyle(.plain).piPointer().help(contextLabel + ". Explore instructions, messages, tool results, provider state and the prepared request.")
-                .accessibilityLabel("Explore context").accessibilityValue(contextLabel)
+            contextControl
             if full {
                 dot
                 timingLine
             }
             dot
-            if let chat = model.record(session.id) {
-                SessionUsageButton(model: model, chat: chat, footer: footer, costLabel: compactCost)
-            } else {
-                stat("dollarsign.circle", compactCost, help: footer.gateway.costLabel)
-            }
+            costControl
             Spacer(minLength: PiSpacing.sm)
-            if full && !session.notice.isEmpty {
-                HStack(spacing: 5) {
-                    Image(systemName: "info.circle").font(.system(size: 10.5))
-                    Text(session.notice).lineLimit(1).truncationMode(.tail)
-                }.frame(maxWidth: 300, alignment: .trailing).help(session.notice)
-            }
+            if full && !session.notice.isEmpty { noticeLine }
             Button(action: inspect) {
                 PiBadge(text: full ? (session.captureAvailable ? "" : "Next: ") + captureTitle : "", tone: captureTone, icon: session.captureAvailable ? "record.circle.fill" : "record.circle")
             }.buttonStyle(.plain).piPointer().help("Capture: " + captureTitle + ". Bounded HTTP-body capture; the inspector shows coverage and retained traces")
@@ -119,7 +153,7 @@ struct MetricsFooter: View {
             Text(reasoningUsageSummary(footer.gateway)).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             if !footer.gatewayNotice.isEmpty { PiNote(footer.gatewayNotice) }
-            Text("Completed TPS is an end-to-end request average, not provider decode speed. Live TPS estimates exposed output only. Draft and skill estimates are chars/4, exclude wrappers and images, and are not the context count.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
+            Text(SessionRatePresentation.explanation + " Draft and skill estimates are chars/4, exclude wrappers and images, and are not the context count.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
         }
         .padding(PiSpacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -231,7 +265,7 @@ struct ContextMeterPresentation {
         return "Requested \(requested) · counted \(counted)"
     }
     var budgetLabel: String? {
-        let fields: [(String, String)] = [("inputBudget", "Input budget"), ("outputBudget", "requested output"), ("safetyMargin", "safety margin"), ("modelOutputLimit", "model output ceiling")]
+        let fields: [(String, String)] = [("inputBudget", "Input budget"), ("outputBudget", "output reserve"), ("safetyMargin", "safety margin"), ("modelOutputLimit", "model output ceiling"), ("outputCap", "limit sent")]
         let parts = fields.compactMap { key, label -> String? in
             guard let value = context[key]?.number, value.isFinite, value >= 0 else { return nil }
             return label + " " + value.formatted(.number.precision(.fractionLength(0)))
@@ -265,7 +299,7 @@ struct ContextMeterPresentation {
 
 struct ContextRing: View {
     let fraction: Double?
-    private var bounded: Double { min(1, max(0, fraction?.isFinite == true ? fraction! : 0)) }
+    private var bounded: Double { min(1, max(0, fraction.map { $0.isFinite ? $0 : 0 } ?? 0)) }
     private var tint: Color { bounded >= 0.95 ? .piDanger : bounded >= 0.8 ? .piWarning : .piAccent }
     var body: some View {
         ZStack {

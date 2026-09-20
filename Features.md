@@ -1,6 +1,6 @@
 # Bello Agent — Native Swift feature contract
 
-Updated: 2026-09-16. Target branch: `master`.
+Updated: 2026-09-19. Repository: `BelloWare/BelloAgent`, target branch: `main`.
 
 **Status: native initial version implemented; UI redesigned on 2026-09-15.** Read [implementation status](docs/Implementation-Status.md) first, then [Design.md](Design.md) and [test handoff](docs/Swift-Test-Handoff.md). F13–F18 have implementations and deterministic Mac tests. Current request-aware loopback fixtures exercise Responses; earlier two-API checks remain historical evidence. These fixtures are not a deployed LiteLLM server. The owner selected Clipboard's ordinary macOS Keychain and profile-free Developer ID distribution; the native UI redesign landed on 2026-09-15 and plaintext settings remain deferred.
 
@@ -41,6 +41,15 @@ instruction. SDK-era requirements remain in `docs/archive/PiSDK-Features.md`.
 
 ## 2. Required features and honest implementation status
 
+Session right-click and conversation “…” menus offer **Copy Session ID** and
+**Copy Session Reference**. A reference contains the app session ID and actual
+retained JSONL path, with a shell-quoted read command for local inspection from
+another session. Copying does not select, open, export or modify the conversation.
+An unsaved chat reports that it has no journal yet; imported originals distinguish
+the app ID from the file's original identity. References describe the full retained
+journal, including branch metadata, rather than claiming to be the current context
+or to include unsaved drafts and in-flight streamed output.
+
 “Present” means source and targeted tests exist. Read the validation records for actual Mac/UI coverage; fixture success does not establish signing, publication or compatibility with an unspecified gateway deployment.
 
 | ID | Required behavior | Current state / acceptance boundary |
@@ -51,7 +60,7 @@ instruction. SDK-era requirements remain in `docs/archive/PiSDK-Features.md`.
 | F04 | `/side` | Open directly with `/side` and Enter, without an initial message. Save an independent complete-boundary context snapshot as a child of the parent session; closing hides it without discarding its history or draft. `/fork` creates an independent session with the same completed context. Discussion-only permissions must not disable the composer. A snapshot is not a filesystem copy. |
 | F05 | Codex skills, `/a-skill-here`, explicit-only selection | Codex/shared skill discovery, native command chips, policy/content hashes, dependencies and source inspection present. Pasted/model/history text is not user authorization. Conservative metadata parser, not arbitrary YAML/TOML compatibility. |
 | F06 | Codex `AGENTS.md` | Global and project-root-to-cwd resolution, overrides, fallbacks, byte budget and source inspection present. No recursive global injection of every descendant file. |
-| F07 | Tokens/sec and time to first token | Per-request client-observed TTFT, first visible text, and provider output divided by request duration present. Rate is request average, not server decode speed; missing usage stays unavailable. Chat TTFT/TPS show the latest completed request alongside weighted session-average TPS; both rates remain visible in narrow panes. Hover reveals per-session history charts and click keeps them open. |
+| F07 | Tokens/sec and time to first token | Per-request client-observed TTFT, first visible text, and provider output divided by request duration present. Rate is request average, not server decode speed; missing usage stays unavailable. Chat TTFT/TPS show the latest completed request alongside weighted session-average TPS; both rates remain visible in narrow panes. Count reported output including its reasoning subset once; do not infer tokens from visible bytes. Use dispatch-to-model-completion duration even if first visible content was never observed. Keep metric layout stable and transitions local, honoring Reduce Motion. Hover reveals per-session history charts and click keeps them open. |
 | F08 | Responses API | Native HTTP/SSE, function calls/results, usage and opaque reasoning item replay present. Custom endpoint and key supported. Explicit route/replay policy and gateway identity are covered by F17. |
 | F09 | Historical Messages compatibility | Active Messages requests are disabled by owner decision. Preserve saved credentials, journals, captures and metrics; retain legacy parsing tests. Explicitly create/convert to a Responses connection for new work. |
 | F10 | Exact request/response debugger | Submitted request and observed decoded response bytes, offsets, hashes, errors and compaction requests. Authentication header values are masked in request captures, with known credentials hashed in request bodies and masked in response echoes; any replacement is labeled as a byte-exactness exception. F13 stores new bodies unencrypted; retention remains finite. |
@@ -63,7 +72,7 @@ instruction. SDK-era requirements remain in `docs/archive/PiSDK-Features.md`.
 | F16 | Custom LiteLLM endpoint and API key | LiteLLM-only native settings, Keychain credentials, Responses endpoint validation and retirement of Pi-file/environment credentials are **implemented**. Deterministic compatibility checks and native fixture UI pass; actual deployment verification is separate. |
 | F17 | Auto-router actual-model visibility | **Implemented with deterministic and native UI evidence.** Requested alias and gateway-reported model remain distinct, with sourced evidence and unreported/conflict/incomplete states. Deployment IDs remain separate. Portable versus fixed-route native reasoning replay is explicit; original native items remain in history. The deployed gateway contract still requires authorized verification. |
 | F18 | LiteLLM cost and cache visibility | **Implemented with core, native accounting and fixture UI checks.** Gateway-reported USD cost and response-cache state appear per message, session and dashboard, with evidence and sample coverage. Final streamed `usage.cost` is separate from provisional cost headers. Provider prompt-cache tokens are separate. Tool rounds and compaction count once in session/report totals; each attempt appears once inline, moving from user input to its assistant answer; user Details stays accessible. Reasoning tokens and reported reasoning cost are subsets of output, never added again to totals. Missing/invalid/conflicting data remains explicit. See the [accounting contract](docs/LiteLLM-Accounting-Contract.md). |
-| F19 | Menu bar activity and usage | Left or right click opens a native panel with Usage first: tokens, reported costs, historical output TPS and requested/resolved model distribution. Activity shows running model/tool/compaction work and combined live estimated output speed. Omit unread, waiting and paused sessions from this panel. Historical TPS uses completed requests with reported output and valid dispatch-to-completion timing; never add historical rates to current throughput. |
+| F19 | Menu bar activity and usage | Left or right click opens a native panel with Usage first: tokens, reported costs, historical output TPS and requested/resolved model distribution. Activity shows running model/tool/compaction work; TPS comes only from completed gateway-reported output divided by measured request duration. Omit unread, waiting and paused sessions from this panel. Historical TPS uses completed requests with reported output and valid dispatch-to-completion timing; never add historical rates to current throughput. |
 | F20 | Onboarding gateway check | Before onboarding completes, send one small tools-disabled Responses request with the chosen model and scoped credentials. Empty/error/cancelled responses do not count as success. Preserve exact capture, no implicit retry, and no workspace instruction/skill/file content in the ping. |
 | F21 | Unread replies | Mark new durable assistant outputs unread until their latest reply is actually visible in a foreground chat window. Report/background/scrollback cannot mark read. Persist read state across app restarts, preserve upgrade baselines, and expose unread badges in the sidebar. The status panel omits unread sessions by owner choice. |
 
@@ -72,12 +81,28 @@ instruction. SDK-era requirements remain in `docs/archive/PiSDK-Features.md`.
 Usage Report is a dedicated page inside the main window. Its default view is a
 small summary, time range, chart and request list; filters and detailed timings
 expand on demand. Active narrowing remains visible when filters are collapsed.
+In-app selection controls use Bello-styled choice panels for connections,
+reasoning effort, catalog sources, settings and report filters. Preserve keyboard
+navigation, explicit selection, disabled choices and Escape dismissal. App windows
+disable the macOS tab strip so it cannot overlap the custom navigation.
 Returning to Chats preserves the selected conversation, native composer and
 transcript, drafts, selection, scroll and any running work. Hidden composers
 cannot receive input or send drafts. Keep New Chat as an accessible icon action,
 compact sidebar spacing and short transitions that respect Reduce Motion.
 
-Show every project in the sidebar, with persistent expand/collapse controls. Use “Project” in user-facing labels while preserving existing internal workspace IDs, storage paths and host ownership. Allow session renaming, pinning, archiving and restoring without deleting history or stopping work. Refresh session cost without focus changes and show fresh estimated output tokens per second while running.
+Show every project in the sidebar, with persistent expand/collapse controls. Use “Project” in user-facing labels while preserving existing internal workspace IDs, storage paths and host ownership. Allow session renaming, pinning, archiving and restoring without deleting history or stopping work. Refresh session cost without focus changes. Keep the latest completed reported TPS steady while another request runs; show pending or unavailable usage explicitly instead of estimating tokens from streamed bytes.
+
+Projects contain optional named **topics**, one level of collapsible session
+groups. Create, rename and remove topics; removal returns chats to the project
+without deleting history. Create chats directly in a topic. Ordinary New Chat
+inherits the focused chat's topic, while the project's own New Chat starts at
+its top level. Drag sessions between topics or back onto their project header,
+with a Move to Topic menu as an alternative. Moves stay within the project and
+include saved side descendants, preserving session IDs, drafts, context, tools,
+running work, pin/archive state and unread markers. Group membership and
+disclosure survive restarts. Missing topic metadata must never hide history.
+Filtering finds topic names and chat titles; choosing a chat reveals its topic.
+Topics are organization metadata, not filesystem folders or permission scopes.
 
 Expose each session's model and cost distribution from its header and cost
 total in a resizable native window, reusing that session's window and keeping
@@ -113,6 +138,18 @@ blocks and Markdown sections can be copied as their original source. Omit the
 LiteLLM/API/model-ID/editing badges from the conversation title.
 
 Normal Send while busy means Queue follow-up; Steer is separate and explicit. Both queues default to one-at-a-time delivery. Cancellation is not proof that a tool had no effects. Pending work pauses after failure, cancellation or restart; it is not silently resent. Main and side have independent conversation/cancellation state. Editing sessions share a workspace execution gate.
+
+Support at least 20 concurrent session model streams, both within one project
+and across projects. Bursts of startup, snapshot and capture work must not lose
+captures, reject ordinary commands prematurely or make one session's Stop/error
+interrupt another. Shared project startup and each session's capture preference
+must settle before that session can send. Keep memory and command queues bounded,
+and expose actual persistence failures. This is asynchronous concurrency, not a
+promise of one OS thread per session: UI and archive mutation retain their actor
+ownership and editing tools serialize per project. Read/list/search jobs execute
+on a bounded pool of worker threads, outside the project tool actor. Gateway limits still apply. See the
+[20-session concurrency review](docs/Concurrency-Review-2026-09-19.md) and
+[worker-thread review](docs/TPS-Workers-Review-2026-09-19.md).
 
 Native journals have a Pi-compatible display envelope but a distinct provider-state contract. One writer owns each journal. Do not let Pi CLI append to a native journal. Old Pi sessions remain read-only; an explicit portable draft is available, not lossless SDK replay. The owner does not require additional legacy migration work before release.
 

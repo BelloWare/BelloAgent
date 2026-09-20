@@ -7,7 +7,7 @@ final class AccountingScaleTests: XCTestCase {
     private let recordCount = 100_000
 
     private func folder() throws -> URL {
-        let base = ProcessInfo.processInfo.environment["PI_BUILD_ROOT"] ?? NSTemporaryDirectory()
+        let base = testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()
         let root = URL(fileURLWithPath: base).appendingPathComponent("accounting-scale-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root

@@ -3,7 +3,7 @@ import XCTest
 
 final class ProjectSidebarTests: XCTestCase {
     private func scratch() throws -> URL {
-        let base = ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()
+        let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("project-sidebar-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
@@ -124,6 +124,67 @@ final class ProjectSidebarTests: XCTestCase {
         XCTAssertEqual(model.chats.count, 1); XCTAssertTrue(model.hosts.isEmpty)
         XCTAssertNil(try storage.read(), "Reading orphan history must not recreate or rewrite the configuration vault")
         await model.flushProjectSidebarState(); await model.store?.close()
+    }
+
+    /// Folded side chats and an opened page are sidebar state like the
+    /// disclosure beside them: they go into the project's own record and come
+    /// back with it on the next launch, without a store kind of their own.
+    @MainActor func testFoldedSidesAndOpenedPagesSurviveARelaunchInTheProjectRecord() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        let first = WorkspaceRecord(id: "first", path: "/project/first", trusted: true)
+        let second = WorkspaceRecord(id: "second", path: "/project/second", trusted: true)
+        model.workspaces = [first, second]
+        model.topics = [TopicRecord(id: "topic", workspaceID: first.id, title: "Billing")]
+        model.chats = [ChatRecord(id: "a", workspaceID: first.id, title: "A", path: nil, profileID: "p"),
+                       ChatRecord(id: "b", workspaceID: first.id, title: "B", path: nil, profileID: "p"),
+                       ChatRecord(id: "elsewhere", workspaceID: second.id, title: "Elsewhere", path: nil, profileID: "p")]
+
+        model.setSidebarSideFolded("a", folded: true)
+        model.setSidebarSideFolded("elsewhere", folded: true)
+        model.setSidebarShownRoots("topic", to: 15, in: first.id)
+        model.setSidebarShownRoots(second.id, to: 25, in: second.id)
+        XCTAssertEqual(model.sidebarShownRoots("topic"), 15)
+        XCTAssertEqual(model.sidebarShownRoots("nobody"), SidebarSessionPresentation.pageSize, "An untouched group is on its first page")
+        let saved = await model.flushProjectSidebarState()
+        XCTAssertTrue(saved)
+
+        // Each project carries only its own folds; nothing crosses over.
+        XCTAssertEqual(model.projectSidebarStates[first.id]?.collapsedSides, ["a"])
+        XCTAssertEqual(model.projectSidebarStates[second.id]?.collapsedSides, ["elsewhere"])
+        XCTAssertEqual(model.projectSidebarStates[first.id]?.shownRoots, ["topic": 15])
+
+        // Relaunch.
+        model.projectSidebarStates = [:]; model.collapsedSidebarSides = []; model.sidebarPageSizes = [:]
+        try await model.restoreProjectSidebarStates()
+        XCTAssertEqual(model.collapsedSidebarSides, ["a", "elsewhere"])
+        XCTAssertEqual(model.sidebarShownRoots("topic"), 15)
+        XCTAssertEqual(model.sidebarShownRoots(second.id), 25)
+
+        // Unfolding and going back to the first page are durable too.
+        model.setSidebarSideFolded("a", folded: false)
+        model.setSidebarShownRoots("topic", to: SidebarSessionPresentation.pageSize, in: first.id)
+        let savedAgain = await model.flushProjectSidebarState()
+        XCTAssertTrue(savedAgain)
+        model.projectSidebarStates = [:]; model.collapsedSidebarSides = []; model.sidebarPageSizes = [:]
+        try await model.restoreProjectSidebarStates()
+        XCTAssertEqual(model.collapsedSidebarSides, ["elsewhere"])
+        XCTAssertEqual(model.sidebarShownRoots("topic"), SidebarSessionPresentation.pageSize)
+        await model.store?.close()
+    }
+
+    /// Nothing read back from the vault is trusted to be the size it was written.
+    @MainActor func testAnOversizedSidebarRecordIsCutDownBeforeItReachesTheSidebar() throws {
+        var hostile = ProjectSidebarState(id: "project")
+        hostile.collapsedSides = (0..<(ProjectSidebarState.maximumPresentationEntries + 500)).map { "chat\($0)" } + ["", String(repeating: "x", count: 600)]
+        hostile.shownRoots = ["good": 12, "": 5, "zero": 0, "huge": ProjectSidebarState.maximumShownRoots + 1,
+                              String(repeating: "y", count: 600): 4]
+        let clean = hostile.sanitized
+        XCTAssertEqual(clean.collapsedSides?.count, ProjectSidebarState.maximumPresentationEntries)
+        XCTAssertFalse(clean.collapsedSides?.contains("") ?? true)
+        XCTAssertEqual(clean.shownRoots, ["good": 12])
+        XCTAssertEqual(ProjectSidebarState(id: "project").sanitized, ProjectSidebarState(id: "project"))
     }
 
     @MainActor func testFocusedSideArchiveAndReselectionKeepItsProjectArchiveVisible() async throws {

@@ -83,10 +83,10 @@ struct GatewayTelemetry: Sendable {
             let observations=componentCosts[component] ?? [], values=Set(observations.compactMap { $0["usd"].double })
             let observedState=invalidComponents.contains(component) ? "invalid" : values.count>1 ? "conflict" : values.isEmpty ? "unreported" : "reported"
             let state=streaming ? "unreported":observedState
-            breakdown[component]=["status":JSON(state),"usd":state=="reported" ? JSON(values.first!) : .null,
+            breakdown[component]=["status":JSON(state),"usd":state=="reported" ? values.first.map { JSON($0) } ?? .null : .null,
                                   "source":streaming || observations.isEmpty ? .null : JSON(observations.compactMap { $0["source"].text }.sorted().joined(separator:", ")),
                                   "evidence":.array(streaming ? []:observations),
-                                  "streamingHeaderUSD":streaming && observedState=="reported" ? JSON(values.first!) : .null,
+                                  "streamingHeaderUSD":streaming && observedState=="reported" ? values.first.map { JSON($0) } ?? .null : .null,
                                   "streamingHeaderStatus":streaming ? JSON(observedState):.null]
         }
         if var reasoning=breakdown["reasoning"], reasoning["status"].text=="reported", let amount=reasoning["usd"].double {
@@ -99,7 +99,7 @@ struct GatewayTelemetry: Sendable {
             }
         }
         return ["version":1,
-                "cost":["usd":costState == "reported" ? JSON(amounts.first!) : .null,"status":JSON(costState),"source":evidence.isEmpty ? .null : JSON(evidence.compactMap { $0["source"].text }.sorted().joined(separator:", ")),"evidence":.array(evidence),"streamingHeaderUSD":streaming ? headerCost : .null],
+                "cost":["usd":costState == "reported" ? amounts.first.map { JSON($0) } ?? .null : .null,"status":JSON(costState),"source":evidence.isEmpty ? .null : JSON(evidence.compactMap { $0["source"].text }.sorted().joined(separator:", ")),"evidence":.array(evidence),"streamingHeaderUSD":streaming ? headerCost : .null],
                 "cache":["status":JSON(cacheState),"source":cacheState == "unreported" ? .null : cacheHeader.map { JSON("header:" + $0) } ?? .null],
                 "costBreakdown":.object(breakdown),
                 "callId":callID.map { JSON($0) } ?? .null,"gatewayVersion":version.map { JSON($0) } ?? .null,

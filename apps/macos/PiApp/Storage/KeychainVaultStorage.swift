@@ -43,7 +43,13 @@ struct KeychainVaultStorage: VaultStorage {
         try Self.validateIdentity()
         try FileManager.default.createDirectory(at: lockURL.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let fd = Darwin.open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        guard fd >= 0 else { throw VaultError.busy }
+        // Only a lock another writer holds is "busy". A full disk, a read-only
+        // or missing state directory used to report the same thing, so the user
+        // retried forever on a problem retrying could never clear.
+        guard fd >= 0 else {
+            let reason = String(cString: strerror(errno))
+            throw VaultError.invalid("The configuration lock at \(lockURL.path) could not be opened: \(reason)")
+        }
         defer { _ = flock(fd, LOCK_UN); Darwin.close(fd) }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw VaultError.busy }
         guard try read() == expected else { throw VaultError.conflict }

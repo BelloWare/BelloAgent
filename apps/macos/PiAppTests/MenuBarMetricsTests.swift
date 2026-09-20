@@ -120,7 +120,7 @@ final class MenuBarMetricsTests: XCTestCase {
 
     private let until = Date(timeIntervalSince1970: 1_000_000)
     private func folder() throws -> URL {
-        let base = ProcessInfo.processInfo.environment["PI_BUILD_ROOT"] ?? NSTemporaryDirectory()
+        let base = testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()
         let root = URL(fileURLWithPath: base).appendingPathComponent("menu-metrics-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
@@ -187,12 +187,6 @@ final class MenuBarMetricsTests: XCTestCase {
         for duration in unavailableDurations {
             try await save(archive, value(usage: ["output": .number(500)], generationMilliseconds: duration))
         }
-        // Both components must exist and be nonnegative. In particular, a
-        // missing/negative TTFT cannot be hidden by a positive stream interval.
-        let unavailableTTFTs: [Double?] = [nil, -1, 2_000]
-        for ttft in unavailableTTFTs {
-            try await save(archive, value(usage: ["output": .number(500)], generationMilliseconds: 1_000, ttftMilliseconds: ttft))
-        }
         try await save(archive, value(usage: ["output": .number(500)], generationMilliseconds: 0, ttftMilliseconds: 0))
         try await save(archive, value(generationMilliseconds: 1_000))
         try await save(archive, value(usage: ["output": .number(-1)], generationMilliseconds: 1_000))
@@ -204,17 +198,17 @@ final class MenuBarMetricsTests: XCTestCase {
         try await save(archive, prepared)
         let badDuration = try await save(archive, value(usage: ["output": .number(500)], generationMilliseconds: 1_000))
         let badOutput = try await save(archive, value(usage: ["output": .number(500)], generationMilliseconds: 1_000))
-        let badTTFT = try await save(archive, value(usage: ["output": .number(500)], generationMilliseconds: 1_000))
-        let overflowingDuration = try await save(archive, value(usage: ["output": .number(500)], generationMilliseconds: 1_000))
+        let negativeDuration = try await save(archive, value(usage: ["output": .number(500)], generationMilliseconds: 1_000))
+        let missingDuration = try await save(archive, value(usage: ["output": .number(500)], generationMilliseconds: 1_000))
         try await archive.close()
         // JSON metadata rejects nonfinite values, but historical typed columns
         // must remain safe if an older/corrupted projection contains one.
         do {
             let db = try CaptureDatabase(url: root.appendingPathComponent("requests.sqlite"))
-            try db.execute("UPDATE attempts SET stream_ms=? WHERE id=?", [.real(.infinity), .text(badDuration)])
+            try db.execute("UPDATE attempts SET request_ms=? WHERE id=?", [.real(.infinity), .text(badDuration)])
             try db.execute("UPDATE attempts SET output_tokens=? WHERE id=?", [.real(.infinity), .text(badOutput)])
-            try db.execute("UPDATE attempts SET ttft_ms=? WHERE id=?", [.real(.infinity), .text(badTTFT)])
-            try db.execute("UPDATE attempts SET ttft_ms=?,stream_ms=? WHERE id=?", [.real(.greatestFiniteMagnitude), .real(.greatestFiniteMagnitude), .text(overflowingDuration)])
+            try db.execute("UPDATE attempts SET request_ms=? WHERE id=?", [.real(-1), .text(negativeDuration)])
+            try db.execute("UPDATE attempts SET request_ms=NULL WHERE id=?", [.text(missingDuration)])
         }
         let reopened = try await configured(root)
         let snapshot = try await reopened.menuBarMetrics(period: .retained, until: until)
@@ -489,7 +483,7 @@ final class MenuBarMetricsTests: XCTestCase {
         let db = try CaptureDatabase(url: root.appendingPathComponent("requests.sqlite"))
         let row = try XCTUnwrap(db.rows("SELECT input_tokens,output_tokens FROM attempts WHERE id=?", [.text(id)]).first)
         XCTAssertNil(row["input_tokens"]?.double); XCTAssertNil(row["output_tokens"]?.double)
-        XCTAssertEqual(try db.rows("SELECT value FROM archive_info WHERE name='dashboard-projection'").first?["value"]?.data, Data([6]))
+        XCTAssertEqual(try db.rows("SELECT value FROM archive_info WHERE name='dashboard-projection'").first?["value"]?.data, Data([7]))
     }
 
     func testInterruptedTokenBackfillResumesAcrossBatchBoundary() async throws {

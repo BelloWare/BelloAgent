@@ -44,6 +44,7 @@ final class WindowPresentationTests: XCTestCase {
         XCTAssertTrue(window.titlebarAppearsTransparent, file: file, line: line)
         XCTAssertEqual(window.titlebarSeparatorStyle, .none, file: file, line: line)
         XCTAssertNil(window.toolbar, file: file, line: line)
+        XCTAssertEqual(window.tabbingMode, .disallowed, "App-owned navigation must not gain a second macOS tab strip", file: file, line: line)
         XCTAssertEqual(frame.height, WindowChrome.height, accuracy: 0.5, file: file, line: line)
         XCTAssertEqual(frame.minX, contentFrame.minX, accuracy: 0.5, file: file, line: line)
         XCTAssertEqual(frame.width, sidebarOnly ? WindowChrome.sidebarWidth : contentFrame.width, accuracy: 0.5, file: file, line: line)
@@ -136,7 +137,7 @@ final class WindowPresentationTests: XCTestCase {
     }
 
     @MainActor func testWorkspaceHeaderReservesSpaceAcrossChatReportAndWindowSizes() async throws {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory())
+        let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("window-chrome-" + UUID().uuidString)
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         try await model.reloadConfiguration()
@@ -197,8 +198,7 @@ final class WindowPresentationTests: XCTestCase {
     /// Opt-in, own-window-only JPEGs keep visual evidence small and prevent a
     /// different application's window from entering the synthetic captures.
     @MainActor private func captureIfRequested(_ window: NSWindow, name: String) async throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard let path = environment["PI_APP_CHROME_CAPTURE_ROOT"] ?? environment["TEST_RUNNER_PI_APP_CHROME_CAPTURE_ROOT"] else { return }
+        guard let path = testEnvironment("PI_APP_CHROME_CAPTURE_ROOT") else { return }
         // Snapshot readiness is separate from the functional assertions. Let
         // SwiftUI's 0.24s page/appearance transition and the window compositor
         // finish only when optional visual evidence is being requested.

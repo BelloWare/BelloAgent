@@ -43,8 +43,6 @@ struct MenuBarActivitySnapshot: Equatable, Sendable {
     var queuedChats: Int { rows.filter { $0.phase == "queued" }.count }
     var paused: Int { rows.filter { $0.phase == "paused" }.count }
     var pending: Int { rows.reduce(0) { $0 + $1.followUps + $1.steering } }
-    /// The sidebar's live rate label still explains its estimate with this text.
-    static let rateExplanation = "Estimate from exposed text, reasoning and tool arguments over the last 2 seconds (UTF-8 bytes ÷ 4). Opaque reasoning and tool execution output are excluded. This is not billing usage or server decode speed. Stale samples are excluded."
 }
 
 extension WorkspaceModel {

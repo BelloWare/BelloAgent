@@ -295,7 +295,7 @@ final class ModelCatalogEndpointTests: XCTestCase {
         }
         defer { endpoint.stop() }
         let base = try await endpoint.start()
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory())
+        let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("picker-catalog-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         var profile = ProfileRecord(); profile.id = "visible"; profile.baseUrl = "https://gateway.invalid"; profile.modelId = "manual-router"
@@ -353,7 +353,7 @@ final class ModelCatalogEndpointTests: XCTestCase {
         }
         defer { endpoint.stop() }
         let base = try await endpoint.start()
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory())
+        let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("picker-refresh-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         var profile = ProfileRecord(); profile.id = "refresh"; profile.modelId = "old-model"
@@ -400,7 +400,7 @@ final class ModelCatalogEndpointTests: XCTestCase {
         }
         defer { endpoint.stop() }
         let base = try await endpoint.start()
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory())
+        let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("legacy-picker-repair-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         var original = ProfileRecord(); original.id = "original"; original.name = "Original connection"
@@ -452,7 +452,7 @@ final class ModelCatalogEndpointTests: XCTestCase {
         }
         defer { gateway.stop() }
         let base = try await gateway.start()
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory())
+        let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("bundled-picker-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let storage = CatalogCredentialReadSpy()
@@ -493,7 +493,7 @@ final class ModelCatalogEndpointTests: XCTestCase {
         }
         defer { endpoint.stop() }
         let base = try await endpoint.start()
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory())
+        let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("live-picker-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
@@ -549,8 +549,7 @@ final class ModelCatalogEndpointTests: XCTestCase {
         let create = unsafeBitCast(symbol, to: ListImage.self)
         let image = try XCTUnwrap(create(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber),
                                         CGWindowImageOption.boundsIgnoreFraming.rawValue)?.takeRetainedValue())
-        let environment = ProcessInfo.processInfo.environment
-        if let path = environment["PI_APP_USAGE_CAPTURE_ROOT"] ?? environment["TEST_RUNNER_PI_APP_USAGE_CAPTURE_ROOT"] {
+        if let path = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") {
             let folder = URL(fileURLWithPath: path, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let jpeg = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.82]))

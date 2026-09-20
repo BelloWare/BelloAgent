@@ -7,6 +7,22 @@ import SwiftUI
 /// so a slower machine never fails the suite; the release record quotes them
 /// from a Release build, where they are what the shipped app does.
 final class PerformanceBaselineTests: XCTestCase {
+    @MainActor private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
+        (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants(type, in: $0) }
+    }
+
+    /// Mounting an NSHostingView does not run its async .task. Wait for actual
+    /// row geometry before calling this a loaded transcript, not an empty shell.
+    @MainActor private func waitForRows(_ hosted: NSView, window: NSWindow, lastID: String) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 30
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            if let page = descendants(TranscriptSurfaceMarker.self, in: hosted).first?.page,
+               page.rowFrame(of: lastID) != nil || page.rowFrame(of: "block:" + lastID) != nil { return }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        XCTFail("Transcript did not lay out its last row")
+    }
     private func clock<T>(_ label: String, _ work: () throws -> T) rethrows -> T {
         let start = ProcessInfo.processInfo.systemUptime
         let value = try work()
@@ -37,6 +53,7 @@ final class PerformanceBaselineTests: XCTestCase {
         print(String(format: "PERF streaming parse per delta (11 KB reply, %d deltas): whole %.2f ms, settled parts + tail %.2f ms", deltas, whole * 1000 / Double(deltas), cut * 1000 / Double(deltas)))
         let code = String(repeating: "let value = compute(index: 42) // trailing comment\nif value > 0 { print(\"ok\") } else { throw Failure.bad }\n", count: 150)
         _ = clock("highlighter 16 KB swift") { SyntaxHighlighter.tokens(code, language: .swift) }
+        _ = clock("attributed highlighter 16 KB swift, cold") { SyntaxHighlighter.attributed(code + "\n// cold", language: "swift") }
         _ = clock("copy targets 14 KB") { TranscriptCopy.targets(in: long) }
         let messages = (0..<500).map { index -> TranscriptMessage in
             var message = TranscriptMessage(id: "m\(index)", role: index % 2 == 0 ? "user" : "assistant", text: paragraph, turn: "m\(index - index % 2)")
@@ -60,9 +77,19 @@ final class PerformanceBaselineTests: XCTestCase {
     }
 
     @MainActor func testOpeningALongChatAndStreamingDeltaBaselines() async throws {
+        try await measureOpeningAndStreaming(rowCount: 300)
+    }
+
+    @MainActor func testOpeningANormalHistoryPageAndStreamingDeltaBaselines() async throws {
+        // The newest60 plus the preceding user needed to complete its turn.
+        try await measureOpeningAndStreaming(rowCount: 61)
+    }
+
+    @MainActor private func measureOpeningAndStreaming(rowCount: Int) async throws {
         let paragraph = "Some **bold** text with `code`, a [link](https://example.com) and a list:\n\n- one\n- two\n\n```swift\nfunc charge(_ order: Order) async throws -> Receipt { for attempt in 1...3 { } }\n```\n\n"
-        let session = SessionDisplay(id: "perf")
-        session.messages = (0..<300).map { index in
+        let session = SessionDisplay(id: "perf-\(rowCount)")
+        let lastUserID = "m\(rowCount - (rowCount.isMultiple(of: 2) ? 2 : 1))"
+        session.messages = (0..<rowCount).map { index in
             var message = TranscriptMessage(id: "m\(index)", role: index % 2 == 0 ? "user" : "assistant", text: paragraph + "Row \(index).", turn: "m\(index - index % 2)")
             message.at = Double(index) * 1000
             return message
@@ -75,29 +102,89 @@ final class PerformanceBaselineTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         hosted.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
-        print(String(format: "PERF open 300 rows (mount, layout, first display): %.1f ms", (ProcessInfo.processInfo.systemUptime - start) * 1000))
+        print(String(format: "PERF mount transcript shell (\(rowCount) rows): %.1f ms", (ProcessInfo.processInfo.systemUptime - start) * 1000))
+        try await waitForRows(hosted, window: window, lastID: lastUserID)
+        print(String(format: "PERF open \(rowCount) rows (mount through actual row layout): %.1f ms", (ProcessInfo.processInfo.systemUptime - start) * 1000))
         var classes: [String: Int] = [:]
         func walk(_ view: NSView) { classes[String(describing: type(of: view)), default: 0] += 1; for child in view.subviews { walk(child) } }
         walk(hosted)
-        print("PERF NSViews in the hosted transcript: \(classes.values.reduce(0, +)) \(classes.sorted { $0.value > $1.value }.prefix(8).map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
+        print("PERF NSViews in the hosted transcript (\(rowCount) rows): \(classes.values.reduce(0, +)) \(classes.sorted { $0.value > $1.value }.prefix(8).map { "\($0.key)=\($0.value)" }.joined(separator: " "))")
         try await Task.sleep(for: .milliseconds(300))
         let bytes = Array(Self.reply.utf8)
         var deltas = 0
         // PI_PERF_REPEAT streams the reply again that many times, long enough to sample the process.
-        let repeats = Int(ProcessInfo.processInfo.environment["PI_PERF_REPEAT"] ?? "") ?? 1
+        let repeats = Int(testEnvironment("PI_PERF_REPEAT") ?? "") ?? 1
         let deltaStart = ProcessInfo.processInfo.systemUptime
         for _ in 0..<repeats {
             var offset = 300
             while offset <= bytes.count {
                 let text = String(decoding: bytes[0..<offset], as: UTF8.self)
                 // One change per delta, as a helper snapshot arrives: the streaming row is replaced in place.
-                let row = TranscriptMessage(id: "stream:x", role: "assistant", text: text, state: "streaming", turn: "m298")
+                let row = TranscriptMessage(id: "stream:x", role: "assistant", text: text, state: "streaming", turn: lastUserID)
                 if deltas > 0 { session.messages[session.messages.count - 1] = row } else { session.messages.append(row) }
+                hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                // Let SwiftUI process deferred observation/layout/scroll work
+                // between frames, as real network deltas do.
+                await Task.yield()
                 hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
                 deltas += 1; offset += 300
             }
         }
-        print(String(format: "PERF streaming delta (layout + display, 11 KB reply in a 300-row chat, %d deltas): %.1f ms each", deltas, (ProcessInfo.processInfo.systemUptime - deltaStart) * 1000 / Double(deltas)))
+        print(String(format: "PERF streaming delta (layout + display, 11 KB reply in a \(rowCount)-row chat, %d deltas): %.1f ms each", deltas, (ProcessInfo.processInfo.systemUptime - deltaStart) * 1000 / Double(deltas)))
         window.contentView = nil; window.close()
+    }
+
+    /// Editing the first message of a long chat through the real conversation
+    /// pane: the composer takes the text, then every keystroke is a layout and
+    /// display pass. The transcript's rows must not be rebuilt for either.
+    @MainActor func testEditingAnEarlyMessageInALongChatBaseline() async throws {
+        let scratch = testEnvironment("PI_APP_SCRATCH_ROOT") ?? NSTemporaryDirectory()
+        let root = URL(fileURLWithPath: scratch).appendingPathComponent("perf-edit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())); defer { model.shutdown() }
+        let workspace = WorkspaceRecord(id: "perf-project", path: root.path, trusted: true)
+        let chat = ChatRecord(id: "perf-edit", workspaceID: workspace.id, title: "Perf", path: nil, profileID: "profile")
+        let paragraph = "Some **bold** text with `code`, a [link](https://example.com) and a list:\n\n- one\n- two\n\n```swift\nfunc charge(_ order: Order) async throws -> Receipt { for attempt in 1...3 { } }\n```\n\n"
+        let session = SessionDisplay(id: chat.id)
+        session.messages = (0..<300).map { index in
+            var message = TranscriptMessage(id: "m\(index)", role: index % 2 == 0 ? "user" : "assistant", text: paragraph + "Row \(index).", turn: "m\(index - index % 2)")
+            message.at = Double(index) * 1000
+            return message
+        }
+        model.workspaces = [workspace]; model.chats = [chat]; model.displays[chat.id] = session
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let hosted = NSHostingView(rootView: ConversationPane(model: model, session: session, chat: chat, paneWidth: 900))
+        window.contentView = hosted
+        window.makeKeyAndOrderFront(nil)
+        hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        try await waitForRows(hosted, window: window, lastID: "m298")
+        try await Task.sleep(for: .milliseconds(300))
+        hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let first = session.messages[0].id
+        var start = ProcessInfo.processInfo.systemUptime
+        model.editMessage(first, sessionID: chat.id)
+        hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        print(String(format: "PERF begin editing the first message of a 300-row chat (layout + display): %.1f ms", (ProcessInfo.processInfo.systemUptime - start) * 1000))
+        XCTAssertEqual(session.editingMessageID, first)
+        try await Task.sleep(for: .milliseconds(100))
+        hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let keystrokes = 40
+        start = ProcessInfo.processInfo.systemUptime
+        for index in 0..<keystrokes {
+            session.draft += index % 8 == 7 ? "\n" : "x"
+            hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        }
+        print(String(format: "PERF typing while editing (%d keystrokes, layout + display each): %.2f ms per keystroke", keystrokes, (ProcessInfo.processInfo.systemUptime - start) * 1000 / Double(keystrokes)))
+        start = ProcessInfo.processInfo.systemUptime
+        model.cancelEdit(sessionID: chat.id)
+        hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        print(String(format: "PERF cancel editing (layout + display): %.1f ms", (ProcessInfo.processInfo.systemUptime - start) * 1000))
+        XCTAssertNil(session.editingMessageID)
+        window.contentView = nil; window.close()
+        model.shutdown()
+        try await model.flushDrafts()
+        await model.flushReadStates(); await model.flushProjectSidebarState()
+        try await model.traces.close(); await model.store?.close()
     }
 }

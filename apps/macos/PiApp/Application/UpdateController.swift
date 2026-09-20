@@ -44,9 +44,11 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
 
     func checkForUpdates() {
         guard !hasActiveWork() else {
+            // A sheet, not a modal loop: an update check must not be able to
+            // stop the run that is being waited on.
             let alert = NSAlert()
             alert.messageText = "Finish or stop active work before updating."
-            alert.runModal()
+            PiQuestion.shared.ask(alert, over: nil) { _ in }
             return
         }
         controller?.checkForUpdates(nil)

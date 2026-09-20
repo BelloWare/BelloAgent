@@ -51,6 +51,162 @@ final class PayloadArchiveTests: XCTestCase {
         while result.count < count { result.append(try await archive.body(attemptID: id, body: "request", offset: result.count)) }
         return result
     }
+    /// Every published chunk checked the archive's total stored size, and every
+    /// event page its total event count, by summing the whole table. Capture
+    /// then cost more the fuller the archive was: the same answer that streamed
+    /// smoothly on day one crawled after a few weeks of use.
+    func testPublishingABodyDoesNotScanTheWholeArchivePerChunk() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: 1_073_741_824, bodyRetention: 86400, metricRetention: 604800)
+        // Fill the archive with distinct bodies so `chunks` holds many rows.
+        for index in 0..<16 { _ = try await save(archive, bytes: fixture(512 * 1024 + index), session: "fill-\(index)") }
+        let stored = try await archive.statistics()["chunks"] ?? 0
+        XCTAssertGreaterThan(stored, 500, "the fixture must actually fill the chunk table")
+
+        let before = try await archive.scannedRows()
+        let attempt = try await save(archive, bytes: fixture(512 * 1024 + 99), session: "measured")
+        let publishScan = try await archive.scannedRows() - before
+        print("PERF publishing a 512 KiB body into an archive of \(stored) chunks scanned \(publishScan) rows")
+        XCTAssertLessThan(publishScan, 64, "one body must not re-read the whole archive, let alone once per chunk")
+
+        // The SSE event index is checked the same way, once per arriving page.
+        let indexed = try await archive.scannedRows()
+        for page in 0..<8 {
+            try await archive.accept(["type": .string("events"), "attemptId": .string(attempt), "offset": .number(Double(page * 32)),
+                                      "events": .array((0..<32).map { offset in
+                                          .object(["type": .string("delta"), "start": .number(Double(offset)), "end": .number(Double(offset + 1)), "observedAt": .number(1)])
+                                      })], workspace: "workspace")
+        }
+        let eventScan = try await archive.scannedRows() - indexed
+        print("PERF indexing 8 event pages scanned \(eventScan) rows")
+        XCTAssertLessThan(eventScan, 2_000, "an event page must not count every event in the archive")
+        try await archive.close()
+    }
+
+    /// The request inspector lists a page of attempts once a second while it is
+    /// open. Each of the 128 ids used to cost its own metadata query plus its
+    /// own body query, and a re-read of its metadata blob.
+    func testListingAPageOfAttemptsCostsTwoStatementsNotTwoPerRow() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: 1_073_741_824, bodyRetention: 86400, metricRetention: 604800)
+        for index in 0..<40 { _ = try await save(archive, bytes: fixture(2048 + index), session: "session") }
+        _ = try await archive.list(sessionID: "session")
+        let before = try await archive.statementCount()
+        let page = try await archive.list(sessionID: "session")
+        let used = try await archive.statementCount() - before
+        print("PERF listing \(page.count) attempts used \(used) statements")
+        XCTAssertEqual(page.count, 40)
+        XCTAssertNotNil(page.first?["request"]?.object?["state"]?.string, "the page still carries its body descriptors")
+        XCTAssertLessThanOrEqual(used, 4, "a page is two queries plus the retention check, not two per row")
+        try await archive.close()
+    }
+
+    /// An overdue retention sweep committed one transaction per expiring row.
+    /// Under synchronous=FULL that is one fsync each, so changing the retention
+    /// setting on a large archive froze everything that awaits the archive.
+    func testAnOverdueRetentionSweepCommitsOnceForTheWholePass() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let clock = ArchiveTestClock()
+        let archive = PayloadArchive(root: folder, now: { clock.read() })
+        try await archive.configure(quota: 1_073_741_824, bodyRetention: 10, metricRetention: 100)
+        var ids: [String] = []
+        for index in 0..<24 { ids.append(try await save(archive, bytes: fixture(2048 + index), session: "session-\(index)")) }
+        clock.advance(200)
+        let before = try await archive.commitCount()
+        _ = try await archive.list(sessionID: "session-0")
+        let commits = try await archive.commitCount() - before
+        print("PERF sweeping \(ids.count) expired attempts committed \(commits) transactions")
+        XCTAssertLessThanOrEqual(commits, 2, "one commit for the sweep, not one per row")
+        for id in ids {
+            let expired = try await archive.metadata(attempt: id)
+            XCTAssertEqual(expired["request"]?.object?["state"]?.string, "expired")
+            XCTAssertEqual(expired["metricsRetained"]?.bool, false)
+        }
+        try await archive.close()
+    }
+
+    /// "Copy raw request/response" used to walk the paged compatibility API,
+    /// which re-reads the attempt's metadata blob and rescans all of its chunk
+    /// references for every 32 KiB page. Whole-body reads walk the manifest once.
+    func testReadingAWholeBodyCostsFarLessThanPagingIt() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: 1_073_741_824, bodyRetention: 86400, metricRetention: 604800)
+        let body = fixture(2 * 1024 * 1024)
+        let id = try await save(archive, bytes: body, session: "session")
+        let beforePaged = try await archive.statementCount()
+        let paged = try await read(archive, id: id, count: body.count)
+        let pagedStatements = try await archive.statementCount() - beforePaged
+        let beforeWhole = try await archive.statementCount()
+        let whole = try await archive.completeBody(attemptID: id, body: "request")
+        let wholeStatements = try await archive.statementCount() - beforeWhole
+        print("PERF reading a 2 MiB body: paged \(pagedStatements) statements, whole \(wholeStatements) statements")
+        XCTAssertEqual(paged, body); XCTAssertEqual(whole, body)
+        XCTAssertLessThan(wholeStatements + 100, pagedStatements, "the whole-body reader must not be priced per page")
+        try await archive.close()
+    }
+
+    func testAccountingOwnershipLookupIsScopedAndSurvivesRestartWithoutBodies() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder), id = UUID().uuidString
+        try await archive.configure(quota: 1_048_576, bodyRetention: 86400, metricRetention: 604800)
+        try await archive.begin(metadata(id: id, session: "original-session", mode: "off"), workspace: "workspace")
+        let owner = try await archive.accountingTarget(attemptID: id, workspaceID: "workspace")
+        let otherWorkspace = try await archive.accountingTarget(attemptID: id, workspaceID: "other")
+        let missing = try await archive.accountingTarget(attemptID: UUID().uuidString, workspaceID: "workspace")
+        let invalid = try await archive.accountingTarget(attemptID: "not-an-attempt", workspaceID: "workspace")
+        XCTAssertEqual(owner?.sessionID, "original-session"); XCTAssertNil(otherWorkspace); XCTAssertNil(missing); XCTAssertNil(invalid)
+        try await archive.finish(metadata(id: id, session: "original-session", mode: "off", outcome: "completed"))
+        try await archive.close()
+        try await archive.configure(quota: 1_048_576, bodyRetention: 86400, metricRetention: 604800)
+        let restored = try await archive.accountingTarget(attemptID: id, workspaceID: "workspace", visibleMessageIDs: ["output-message", "input-message"])
+        XCTAssertEqual(restored?.sessionID, "original-session")
+        XCTAssertEqual(restored?.outputMessageIDs, ["output-message"], "Context links are not output attribution")
+        let offscreen = try await archive.accountingTarget(attemptID: id, workspaceID: "workspace", visibleMessageIDs: ["other-message"])
+        XCTAssertEqual(offscreen?.outputMessageIDs, [], "Only requested visible identities are returned")
+        try await archive.close()
+    }
+
+    func testTwentyChatsAndTheirUtilityRequestsRetainInterleavedBodiesAcrossRestart() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder), requestBytes = fixture(4097), responseBytes = Data(fixture(8193).reversed())
+        try await archive.configure(quota: 4_194_304, bodyRetention: 86400, metricRetention: 604800)
+        let entries = (0..<40).map { metadata(session: "concurrent-session-\($0)") }
+        // None finishes before all 20 user requests and 20 tools-disabled
+        // utility requests have begun and accepted request/response data.
+        for (index, entry) in entries.enumerated() {
+            try await archive.accept(["type": .string("begin"), "metadata": .object(entry)], workspace: "workspace-\(index % 4)")
+        }
+        for (kind, bytes) in [("request", requestBytes), ("response", responseBytes)] {
+            for offset in stride(from: 0, to: bytes.count, by: 2048) {
+                let page = bytes.subdata(in: offset..<min(offset + 2048, bytes.count))
+                for (index, entry) in entries.enumerated() {
+                    try await archive.accept(["type": .string("bytes"), "attemptId": entry["attemptId"]!, "body": .string(kind),
+                                              "offset": .number(Double(offset)), "bytes": .string(page.base64EncodedString())], workspace: "workspace-\(index % 4)")
+                }
+            }
+        }
+        for (index, entry) in entries.enumerated() {
+            var finished = entry; finished["outcome"] = .string("completed"); finished["transportOutcome"] = .string("eof")
+            finished["request"] = .object(["observedBytes": .number(Double(requestBytes.count))])
+            finished["response"] = .object(["observedBytes": .number(Double(responseBytes.count))])
+            try await archive.accept(["type": .string("finish"), "metadata": .object(finished)], workspace: "workspace-\(index % 4)")
+        }
+        try await archive.close()
+        try await archive.configure(quota: 4_194_304, bodyRetention: 86400, metricRetention: 604800)
+        for entry in entries {
+            let id = try XCTUnwrap(entry["attemptId"]?.string), metadata = try await archive.metadata(attempt: id)
+            for (kind, expected) in [("request", requestBytes), ("response", responseBytes)] {
+                XCTAssertEqual(metadata[kind]?.object?["state"]?.string, "complete")
+                let body = try await archive.completeBody(attemptID: id, body: kind)
+                XCTAssertEqual(body, expected)
+            }
+        }
+        try await archive.close()
+    }
+
     func testSidebarPollingDoesNotSweepArchiveBeforeExpiryAndPolicyChangesApplyImmediately() async throws {
         let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
         let clock = ArchiveTestClock(), passes = ArchiveMaintenanceCounter()
@@ -449,5 +605,70 @@ final class PayloadArchiveTests: XCTestCase {
         try await archive.purge(attemptID: id)
         let after = try await archive.eventIndices(attemptID: id, offset: 0); XCTAssertEqual(after["total"]?.number, 0)
         let retainedLinks = try await archive.messageLinks(attemptID: id, offset: 0); XCTAssertEqual(retainedLinks["total"]?.number, 2)
+    }
+
+    func testDamagedEventBlobAndBodyLengthsThrowInsteadOfTrapping() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: 1_048_576, bodyRetention: 86400, metricRetention: 604800)
+        let id = try await save(archive, bytes: Data("body".utf8))
+        try await archive.close()
+        do {
+            let db = try CaptureDatabase(url: folder.appendingPathComponent("requests.sqlite"))
+            // SQLite affinity permits a damaged NOT NULL BLOB to contain TEXT.
+            try db.execute("INSERT INTO event_indices VALUES(?,0,'not a blob')", [.text(id)])
+            try db.execute("UPDATE bodies SET length=? WHERE attempt=? AND kind='request'", [.integer(Int64.max), .text(id)])
+        }
+        try await archive.configure(quota: 1_048_576, bodyRetention: 86400, metricRetention: 604800)
+        do { _ = try await archive.eventIndices(attemptID: id, offset: 0); XCTFail("Mistyped event data must fail") }
+        catch { guard case CaptureFailure.corrupt = error else { return XCTFail("Unexpected error: \(error)") } }
+        do { _ = try await archive.metadata(attempt: id); XCTFail("Stored lengths must be bounded before conversion for exports") }
+        catch { guard case CaptureFailure.corrupt = error else { return XCTFail("Unexpected error: \(error)") } }
+        do { _ = try await archive.body(attemptID: id, body: "request", offset: Int.max); XCTFail("A damaged length must not overflow page arithmetic") }
+        catch { guard case CaptureFailure.corrupt = error else { return XCTFail("Unexpected error: \(error)") } }
+        try await archive.close()
+    }
+
+    func testDamagedChunkRangeCannotOverflowBeforeIntegrityValidation() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: 1_048_576, bodyRetention: 86400, metricRetention: 604800)
+        let id = try await save(archive, bytes: Data("body".utf8))
+        try await archive.close()
+        do {
+            let db = try CaptureDatabase(url: folder.appendingPathComponent("requests.sqlite"))
+            try db.execute("UPDATE refs SET offset=1,length=? WHERE attempt=? AND kind='request'", [.integer(Int64.max), .text(id)])
+        }
+        try await archive.configure(quota: 1_048_576, bodyRetention: 86400, metricRetention: 604800)
+        do { _ = try await archive.body(attemptID: id, body: "request", offset: 1); XCTFail("The chunk range must be checked before adding its offset and length") }
+        catch { guard case CaptureFailure.corrupt = error else { return XCTFail("Unexpected error: \(error)") } }
+        try await archive.close()
+    }
+
+    func testInvalidFinishCountsDoNotConsumeWritersOrMutateCaptureOffMetrics() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: 1_048_576, bodyRetention: 86400, metricRetention: 604800)
+        for mode in ["persist", "memory", "off"] {
+            let id = UUID().uuidString
+            try await archive.begin(metadata(id: id, mode: mode), workspace: "workspace")
+            if mode == "persist" { try await archive.append(attempt: id, kind: "request", offset: 0, bytes: Data("pre".utf8)) }
+            for invalid in [-1.0, 1.5, 1e30, Double.infinity, Double.nan] {
+                var finish = metadata(id: id, mode: mode, outcome: "completed", observed: 3)
+                finish["response"] = .object(["observedBytes": .number(invalid)])
+                do { try await archive.finish(finish); XCTFail("Invalid counts must be rejected in \(mode) mode") }
+                catch { guard case CaptureFailure.sequence = error else { return XCTFail("Unexpected error: \(error)") } }
+            }
+            let rejected = try await archive.metadata(attempt: id)
+            XCTAssertEqual(rejected["outcome"]?.string, "running")
+            XCTAssertEqual(rejected["request"]?.object?["state"]?.string, mode == "persist" ? "recording" : "not-retained")
+            if mode == "persist" { try await archive.append(attempt: id, kind: "request", offset: 3, bytes: Data("fix".utf8)) }
+            try await archive.finish(metadata(id: id, mode: mode, outcome: "completed", observed: 6))
+            if mode == "persist" {
+                let body = try await archive.completeBody(attemptID: id, body: "request")
+                XCTAssertEqual(body, Data("prefix".utf8), "A rejected finish must preserve the writer's pending tail")
+            }
+        }
+        try await archive.close()
     }
 }

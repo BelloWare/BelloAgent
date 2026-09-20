@@ -46,6 +46,36 @@ final class SettingsSaveTests: XCTestCase {
         XCTAssertNoThrow(try LiteLLMConfiguration.validate(profile, headers: [:]))
     }
 
+    /// A failure migrating local chat limits used to report the vault itself as
+    /// unloaded, which disables Save, Test Connection and the model catalog —
+    /// and "Reload vault" repeated the same failure, so Settings became
+    /// unusable with no way out inside the app.
+    @MainActor func testAFailedChatMigrationLeavesTheLoadedVaultUsable() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = ConfigurationVault(storage: MemoryVaultStorage())
+        var profile = ProfileRecord(); profile.baseUrl = "https://gateway.example"; profile.modelId = "router"
+        let connection = VaultProfile(profile: profile, apiKey: "sk-fixture")
+        _ = try await vault.update(expectedRevision: 0) { $0.profiles = [connection] }
+        let model = WorkspaceModel(stateRoot: root, vault: vault); defer { model.shutdown() }
+        let store = try XCTUnwrap(model.store)
+        // A chat from before output budgets were separated: the migration reads
+        // the local store to finish it.
+        var legacy = ChatRecord(id: "legacy", workspaceID: "w", title: "Legacy", path: nil, profileID: profile.id)
+        legacy.outputBudgetVersion = nil; legacy.maxOutputTokens = 8_000
+        model.chats = [legacy]
+        await store.close()
+
+        try await model.reloadConfiguration()
+
+        XCTAssertTrue(model.configurationLoaded, "a local store failure is not a vault failure")
+        XCTAssertEqual(model.profiles.map(\.id), [profile.id])
+        XCTAssertNotNil(model.error, "the migration failure is still reported")
+        let controller = ConnectionSettingsController(model: model)
+        await controller.load(discardingDrafts: false)
+        XCTAssertTrue(controller.loaded, "Settings must still be able to save")
+        try await model.traces.close()
+    }
+
     @MainActor func testPreferencesPreserveUntouchedLegacyConnectionAndCredentials() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         var profile = ProfileRecord(); profile.api = "anthropic-messages"
@@ -84,21 +114,26 @@ final class SettingsSaveTests: XCTestCase {
         let baseline = SettingsConnectionForm.loaded(profile, isSaved: true)
         var preferences = model.configuration; preferences.runtime.workspaceConcurrency = 3
 
+        // A running chat never blocks a save: the vault takes the edit, the run keeps going on its own settings.
         var changed = baseline; changed.allowFallbacks = true
-        do {
-            _ = try await changed.save(to: model, comparedTo: baseline, key: "", headers: "", preferences: preferences, expectedRevision: preferences.revision)
-            XCTFail("Actual routing edits must still require the connection to be idle")
-        } catch { XCTAssertTrue(error.localizedDescription.contains("Stop this connection's work")) }
-        XCTAssertEqual(storage.writes, 1)
+        _ = try await changed.save(to: model, comparedTo: baseline, key: "", headers: "", preferences: preferences, expectedRevision: preferences.revision)
+        XCTAssertEqual(storage.writes, 2)
+        let edited = try await vault.load()
+        XCTAssertEqual(edited.profiles.first?.profile.id, profile.id, "an option edit keeps the connection's identity")
+        XCTAssertTrue(edited.profiles.first?.profile.advancedJSON?.contains("allowFallbacks") == true, edited.profiles.first?.profile.advancedJSON ?? "")
+        XCTAssertTrue(display.hasWork); XCTAssertEqual(display.state, "running"); XCTAssertEqual(display.draft, "Keep this draft")
+        XCTAssertTrue(model.opened.contains(chat.id), "no host is attached here, so nothing was closed")
+        let editedBaseline = SettingsConnectionForm.loaded(try XCTUnwrap(model.profiles.first { $0.id == profile.id }), isSaved: true)
+        var preferencesAgain = model.configuration; preferencesAgain.runtime.workspaceConcurrency = 3
 
-        var form = baseline; form.advanced = " { \n } "
-        _ = try await form.save(to: model, comparedTo: baseline, key: "", headers: "", preferences: preferences, expectedRevision: preferences.revision)
+        var form = editedBaseline; form.advanced = editedBaseline.advanced.isEmpty ? " { \n } " : editedBaseline.advanced + " "
+        _ = try await form.save(to: model, comparedTo: editedBaseline, key: "", headers: "", preferences: preferencesAgain, expectedRevision: preferencesAgain.revision)
 
         let saved = try await vault.load()
-        XCTAssertEqual(saved.profiles, [connection], "Pretty-printing the compact onboarding JSON is not a connection edit")
+        XCTAssertEqual(saved.profiles, edited.profiles, "Reformatting the JSON is not a connection edit")
         XCTAssertEqual(saved.runtime.workspaceConcurrency, 3)
         XCTAssertTrue(display.hasWork); XCTAssertEqual(display.draft, "Keep this draft")
-        XCTAssertTrue(model.opened.contains(chat.id)); XCTAssertEqual(storage.writes, 2)
+        XCTAssertTrue(model.opened.contains(chat.id)); XCTAssertEqual(storage.writes, 3, "the initial connection, the edit, then the preferences")
         try await model.traces.close(); await model.store?.close()
     }
 
@@ -160,13 +195,186 @@ final class SettingsSaveTests: XCTestCase {
     }
 
     private func scratch() throws -> URL {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()).appendingPathComponent("settings-save-\(UUID().uuidString)")
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("settings-save-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }
 }
 
 extension SettingsSaveTests {
+    @MainActor private func deletionFixture(baseURL: String = "http://127.0.0.1:1") async throws -> (WorkspaceModel, ChatRecord, ProfileRecord, URL) {
+        let root = try scratch()
+        let vault = ConfigurationVault(storage: MemoryVaultStorage())
+        var draft = ProfileRecord(); draft.baseUrl = baseURL; draft.modelId = "fixture"
+        let profile = draft, project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
+        _ = try await vault.update(expectedRevision: 0) {
+            $0.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-only")]
+            $0.workspaces = [project]
+        }
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault)
+        try await model.reloadConfiguration()
+        let chat = ChatRecord(id: "deletion-chat", workspaceID: project.id, title: "Retained", path: nil, profileID: profile.id, connectionTest: true)
+        model.chats = [chat]; model.displays[chat.id] = SessionDisplay(id: chat.id)
+        model.displays[chat.id]?.draft = "Keep this draft"
+        try await model.store?.put(chat, kind: "chat", id: chat.id)
+        return (model, chat, profile, root)
+    }
+
+    @MainActor func testDeletingConnectionStopsHelperWorkEvenWhenTheDisplayIsIdle() async throws {
+        let requested = expectation(description: "local request is held open")
+        requested.assertForOverFulfill = false
+        let gateway = try ModelListGateway { _ in requested.fulfill(); return nil }
+        let url = try await gateway.start(); defer { gateway.stop() }
+        let (model, chat, profile, root) = try await deletionFixture(baseURL: url)
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let host = try await model.open(chat)
+        host.onEvent = nil // The display has not received the helper's running event.
+        _ = try await host.request("turn.submit", sessionID: chat.id, params: ["text": .string("Held locally"), "clientTurnId": .string("active")])
+        await fulfillment(of: [requested], timeout: 3)
+        _ = try await host.request("turn.submit", sessionID: chat.id, params: ["text": .string("Do not start this follow-up"), "clientTurnId": .string("queued")])
+        XCTAssertFalse(try XCTUnwrap(model.displays[chat.id]).hasWork)
+        let active = try await host.request("session.status", sessionID: chat.id)
+        XCTAssertEqual(active.object?["state"]?.string, "running")
+
+        try await model.deleteProfile(profile.id)
+
+        do {
+            let stopped = try await host.request("session.status", sessionID: chat.id)
+            XCTAssertTrue(["stopping", "paused", "interrupted"].contains(stopped.object?["state"]?.string ?? ""))
+            XCTAssertEqual(stopped.object?["queuePaused"]?.bool, true)
+            XCTAssertTrue(model.opened.contains(chat.id), "A busy close rejection must retain runtime tracking")
+        } catch HostError.rejected(let code, _) { XCTAssertEqual(code, "session_missing") }
+        XCTAssertEqual(gateway.requests.count, 1, "The queued request must not start after deleting its connection")
+        XCTAssertEqual(model.displays[chat.id]?.draft, "Keep this draft")
+        let saved = try await model.vault.load(); XCTAssertFalse(saved.profiles.contains { $0.profile.id == profile.id })
+        try await host.shutdownAndWait(); try await model.traces.close(); await model.store?.close()
+    }
+
+    @MainActor func testStopFailurePreservesVaultAndRevokesAlreadyWaitingOperations() async throws {
+        let (model, chat, profile, root) = try await deletionFixture()
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let lease = try model.connectionLease(for: chat)
+        model.hosts[chat.workspaceID] = HostSupervisor(); model.opened.insert(chat.id)
+        let before = try await model.vault.load()
+
+        do { try await model.deleteProfile(profile.id); XCTFail("A failed Stop must not claim the connection was deleted") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Host is unavailable")) }
+
+        let after = try await model.vault.load(); XCTAssertEqual(after, before)
+        XCTAssertTrue(model.profiles.contains { $0.id == profile.id })
+        XCTAssertEqual(model.displays[chat.id]?.draft, "Keep this draft")
+        XCTAssertThrowsError(try model.requireConnection(lease), "An operation waiting before deletion must not resume after the failed teardown")
+        XCTAssertNoThrow(try model.connectionLease(for: chat), "A new operation may use the retained connection after failure")
+        try await model.traces.close(); await model.store?.close()
+    }
+
+    @MainActor func testSuspendedDispatchCannotUseARecreatedConnection() async throws {
+        let (model, chat, profile, root) = try await deletionFixture()
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let host = try await model.open(chat), lease = try model.connectionLease(for: chat)
+        let waiting = expectation(description: "command preparation suspended")
+        let gate = SettingsConnectionGate(entered: waiting)
+        defer { gate.release() }
+        let operation = Task {
+            await gate.hold()
+            try model.requireConnection(lease)
+            _ = try await host.request("turn.submit", sessionID: chat.id, params: ["text": .string("Must never dispatch"), "clientTurnId": .string("revoked")])
+        }
+        await fulfillment(of: [waiting], timeout: 2)
+        try await model.deleteProfile(profile.id)
+        try await model.saveProfile(profile, key: "synthetic-only")
+        _ = try await model.open(try XCTUnwrap(model.chats.first))
+        gate.release()
+        do { try await operation.value; XCTFail("A recreated profile must not revive a previously prepared command") }
+        catch HostError.rejected(let code, _) { XCTAssertEqual(code, "connection_unavailable") }
+        let snapshot = try await host.request("session.snapshot", sessionID: chat.id)
+        XCTAssertTrue(snapshot.object?["messages"]?.array?.isEmpty == true)
+        XCTAssertEqual(model.displays[chat.id]?.draft, "Keep this draft")
+        try await host.shutdownAndWait(); try await model.traces.close(); await model.store?.close()
+    }
+
+    @MainActor func testLateSuccessfulOpenIsClosedWithoutResurrectingLostHostTracking() async throws {
+        for loseHost in [false, true] {
+            let (model, chat, profile, root) = try await deletionFixture()
+            defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+            let host = try await model.host(for: XCTUnwrap(model.workspace(for: chat.workspaceID)))
+            let lease = try model.connectionLease(for: chat)
+            let waiting = expectation(description: "open acknowledgment suspended")
+            let gate = SettingsConnectionGate(entered: waiting)
+            defer { gate.release() }
+            let opening = Task {
+                try await model.withConnectionOpen(chat, lease: lease, host: host) {
+                    _ = try await host.request("session.open", sessionID: chat.id,
+                                               params: ["profile": profile.wire, "apiKey": .string("synthetic-only"), "connectionTest": .bool(true)])
+                    await gate.hold()
+                }
+            }
+            await fulfillment(of: [waiting], timeout: 2)
+            XCTAssertFalse(model.opened.contains(chat.id))
+            try await model.deleteProfile(profile.id)
+            if loseHost { try await host.shutdownAndWait() }
+            gate.release()
+            do { try await opening.value; XCTFail("A late open must reject its deleted connection") }
+            catch HostError.rejected(let code, _) { XCTAssertEqual(code, "connection_unavailable") }
+            XCTAssertFalse(model.opened.contains(chat.id), "Cleanup must not add a phantom session after host loss")
+            if !loseHost {
+                do { _ = try await host.request("session.status", sessionID: chat.id); XCTFail("The late runtime must be closed") }
+                catch HostError.rejected(let code, _) { XCTAssertEqual(code, "session_missing") }
+                try await host.shutdownAndWait()
+            }
+            XCTAssertEqual(model.displays[chat.id]?.draft, "Keep this draft")
+            try await model.traces.close(); await model.store?.close()
+        }
+    }
+
+    @MainActor func testDeletedConnectionCannotReuseAnAlreadyOpenHelperSession() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let vault = ConfigurationVault(storage: MemoryVaultStorage())
+        var draft = ProfileRecord(); draft.baseUrl = "http://127.0.0.1:1"; draft.modelId = "fixture"
+        let profile = draft
+        let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
+        _ = try await vault.update(expectedRevision: 0) {
+            $0.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-only")]
+            $0.workspaces = [project]
+        }
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault)
+        defer { model.shutdown() }
+        try await model.reloadConfiguration()
+        let chat = ChatRecord(id: "retained-runtime", workspaceID: project.id, title: "Retained", path: nil, profileID: profile.id)
+        model.chats = [chat]; model.displays[chat.id] = SessionDisplay(id: chat.id)
+        try await model.store?.put(chat, kind: "chat", id: chat.id)
+        let host = try await model.open(chat)
+        XCTAssertTrue(host.isReady); XCTAssertTrue(model.opened.contains(chat.id))
+        // A vault reload can remove a connection while its helper still holds
+        // the previous key. Reusing that runtime must not bypass validation.
+        _ = try await vault.update(expectedRevision: model.configuration.revision) { $0.profiles = [] }
+        try await model.reloadConfiguration()
+        do { _ = try await model.open(chat); XCTFail("The cached helper must not authorize a deleted connection") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("connection is unavailable")) }
+        try await host.shutdownAndWait()
+        try await model.traces.close(); await model.store?.close()
+    }
+
+    @MainActor func testDeletingConnectionAlsoStopsUnregisteredSidesAndPreservesDrafts() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        try await model.reloadConfiguration()
+        var profile = ProfileRecord(); profile.baseUrl = "https://fixture.invalid"; profile.modelId = "fixture"
+        try await model.saveProfile(profile, key: "synthetic-only")
+        let parent = ChatRecord(id: "parent", workspaceID: "project", title: "Parent", path: nil, profileID: profile.id)
+        model.chats = [parent]
+        let side = SideRecord(id: "publishing-side", parentID: parent.id, workspaceID: parent.workspaceID, profileID: profile.id, title: "Side")
+        model.sides[parent.id] = side
+        let view = SessionDisplay(id: side.id); view.state = "running"; view.queueCount = 1; view.draft = "Keep my draft"
+        model.displays[side.id] = view
+        try await model.deleteProfile(profile.id)
+        XCTAssertEqual(view.state, "interrupted"); XCTAssertEqual(view.queueCount, 0)
+        XCTAssertTrue(view.notice.contains("connection was deleted")); XCTAssertEqual(view.draft, "Keep my draft")
+        XCTAssertNotNil(model.sides[parent.id], "A deletion must not discard an unsent side draft")
+        try await model.traces.close(); await model.store?.close()
+    }
+
     /// Deleting a connection removes it and its key from the vault; its chats stay and say so, and a run still going under it is stopped rather than blocking.
     @MainActor func testDeletingAConnectionStopsItsWorkAndKeepsItsChats() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("delete-connection-" + UUID().uuidString)
@@ -231,4 +439,16 @@ extension SettingsSaveTests {
         // A stale list: deleting an id the vault no longer has reloads and says so.
         do { try await model.deleteProfile(original.id); XCTFail("nothing to delete") } catch { XCTAssertTrue(error.localizedDescription.contains("no longer in the vault")) }
     }
+}
+
+@MainActor private final class SettingsConnectionGate {
+    private let entered: XCTestExpectation
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    init(entered: XCTestExpectation) { self.entered = entered }
+    func hold() async {
+        entered.fulfill()
+        if !released { await withCheckedContinuation { continuation = $0 } }
+    }
+    func release() { released = true; continuation?.resume(); continuation = nil }
 }

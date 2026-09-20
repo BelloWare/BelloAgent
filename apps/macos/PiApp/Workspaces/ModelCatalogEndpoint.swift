@@ -59,7 +59,11 @@ struct ModelDescriptor: Codable, Sendable, Equatable, Identifiable {
 /// redirects, no cookies or cached credentials, bounded body size and count.
 struct ModelCatalogEndpoint: Sendable {
     struct Limits: Sendable {
+        /// Idle timeout on each read of the response.
         var timeout: TimeInterval = 8
+        /// Deadline for the whole transfer, which the body's own size and the
+        /// link's speed both count against.
+        var transferTimeout: TimeInterval = 120
         var bodyBytes = 2_097_152
         var modelCount = 2048
         var textBytes = 2048
@@ -117,8 +121,12 @@ struct ModelCatalogEndpoint: Sendable {
         let url = try Self.url(url.absoluteString)
         guard key.isEmpty || GatewayModelDiscovery.validKey(key) else { throw Failure.credential }
         let configuration = URLSessionConfiguration.ephemeral
+        // The 8 s budget is an idle timeout on each read, not a deadline on the
+        // whole transfer: consuming the body counts against the resource
+        // timeout, so a large but perfectly healthy catalog, or an ordinary one
+        // on a slow link, reported itself as timed out.
         configuration.timeoutIntervalForRequest = limits.timeout
-        configuration.timeoutIntervalForResource = limits.timeout
+        configuration.timeoutIntervalForResource = limits.transferTimeout
         configuration.httpShouldSetCookies = false
         configuration.httpCookieStorage = nil
         configuration.urlCredentialStorage = nil
@@ -139,12 +147,13 @@ struct ModelCatalogEndpoint: Sendable {
             if (300..<400).contains(http.statusCode) { throw Failure.redirected }
             guard (200..<300).contains(http.statusCode) else { throw Failure.http(http.statusCode) }
             guard response.expectedContentLength <= Int64(limits.bodyBytes) else { throw Failure.oversized }
-            var body = Data()
+            var buffer = [UInt8](); buffer.reserveCapacity(min(limits.bodyBytes, 262_144))
             for try await byte in bytes {
-                guard body.count < limits.bodyBytes else { throw Failure.oversized }
-                if body.count.isMultiple(of: 1024) { try Task.checkCancellation() }
-                body.append(byte)
+                guard buffer.count < limits.bodyBytes else { throw Failure.oversized }
+                if buffer.count.isMultiple(of: 4096) { try Task.checkCancellation() }
+                buffer.append(byte)
             }
+            let body = Data(buffer)
             try Task.checkCancellation()
             return try parse(body)
         } catch let failure as Failure { throw failure }

@@ -15,6 +15,22 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
 /// selection and the last snapshot while refreshing newly retained requests.
 @MainActor final class ReportController: ObservableObject {
     static let debounceMilliseconds = 300
+    /// Row labels for the report's lists, rebuilt only when the chat or project
+    /// list actually changes. Building them inside the page's `body` meant a
+    /// chart drag rebuilt a dictionary of every chat and project per frame,
+    /// because the brush preview publishes on every pointer move.
+    private var labelRevisions: (chats: Int, workspaces: Int)?
+    private var cachedChatTitles: [String: String] = [:]
+    private var cachedWorkspaceNames: [String: String] = [:]
+    func labels(for model: WorkspaceModel) -> (titles: [String: String], workspaces: [String: String]) {
+        let revisions = (chats: model.chatsRevision, workspaces: model.workspacesRevision)
+        if labelRevisions == nil || labelRevisions! != revisions {
+            cachedChatTitles = Dictionary(model.chats.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
+            cachedWorkspaceNames = Dictionary(model.workspaces.map { ($0.id, WorkspaceLabel.name($0)) } + [(WorkspaceRecord.scratchID, "No project")], uniquingKeysWith: { first, _ in first })
+            labelRevisions = revisions
+        }
+        return (cachedChatTitles, cachedWorkspaceNames)
+    }
     static let manualSession = "\u{1}enter-id"
 
     @Published var preferences = DashboardPreferences()
@@ -254,7 +270,7 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
                 var selected: DashboardSnapshot?
                 if let selection, selection.fits(applied) { selected = try await query(model.traces, selection.narrowed(applied), 0) }
                 guard isCurrent(id) else { return }
-                let groupFilter = selection?.fits(applied) == true ? selection!.narrowed(applied) : applied
+                let groupFilter = selection.flatMap { $0.fits(applied) ? $0.narrowed(applied) : nil } ?? applied
                 let grouped = try await sessionQuery(model.traces, groupFilter, 0)
                 guard isCurrent(id) else { return }
                 let byModel = try await modelQuery(model.traces, groupFilter)

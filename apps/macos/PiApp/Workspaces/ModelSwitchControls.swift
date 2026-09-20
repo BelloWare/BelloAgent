@@ -5,39 +5,60 @@ import AppKit
 /// (contract H3). The model list comes from the shared catalog; manual entry
 /// always works. The connection pill appears once more than one Responses
 /// connection is saved, or when the chat's connection is unusable.
+/// What the three pills are drawn from, worked out once so the bar can
+/// measure them and the pills can draw them without asking twice.
+struct ModelSwitchPillContents: Equatable {
+    /// The connection pill appears once more than one Responses connection is
+    /// saved, or when the chat's connection is unusable.
+    var showsConnection = false
+    var connection = ""
+    var model = ""
+    var effort = ""
+    /// The model pill carries a spinner while its catalog loads.
+    var loading = false
+}
+
 struct ModelSwitchPills: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var session: SessionDisplay
     @ObservedObject private var catalog: ModelCatalog
+    /// How much of itself the group shows, decided by the bar that holds it.
+    var form: ComposerPillsForm = .named
     @State private var showingModels = false
     @State private var presentedProfile: ProfileRecord?
-    init(model: WorkspaceModel, session: SessionDisplay) { self.model = model; self.session = session; self.catalog = model.modelCatalog }
+    init(model: WorkspaceModel, session: SessionDisplay, form: ComposerPillsForm = .named) {
+        self.model = model; self.session = session; self.catalog = model.modelCatalog; self.form = form
+    }
     private var chat: ChatRecord? { model.record(session.id) }
     private var profile: ProfileRecord? { chat.flatMap { item in model.profiles.first { $0.id == item.profileID } } }
     private var override: String? { TurnOverrides.normalizedModel(chat?.model) }
     private var level: ThinkingLevel { chat?.thinkingLevel.flatMap(ThinkingLevel.init(rawValue:)) ?? .profileDefault }
     private var modelLabel: String { override ?? profile?.modelId ?? "Model" }
+    /// The strings and flags the bar measures, from the same places the pills
+    /// read them, so a measurement can never describe a different pill.
+    @MainActor static func contents(model: WorkspaceModel, session: SessionDisplay) -> ModelSwitchPillContents {
+        let pills = ModelSwitchPills(model: model, session: session)
+        return ModelSwitchPillContents(showsConnection: pills.showsConnectionPill,
+                                       connection: pills.profile?.name ?? "No connection",
+                                       model: pills.modelLabel,
+                                       effort: pills.level.pillLabel,
+                                       loading: pills.profile.map { model.catalogEntry(for: $0).loading } ?? false)
+    }
     var body: some View {
-        // The pills give up detail before they push the send button off the bar:
-        // full labels, then a compact connection pill and a shorter model name,
-        // then icons alone. Every choice stays reachable in each form.
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 4) {
-                if showsConnectionPill { connectionPill(compact: false) }
-                modelPill(maxWidth: 170, compact: false)
-                effortPill(compact: false)
-            }
-            HStack(spacing: 4) {
-                if showsConnectionPill { connectionPill(compact: true) }
-                modelPill(maxWidth: 110, compact: false)
-                effortPill(compact: false)
-            }
-            HStack(spacing: 4) {
-                if showsConnectionPill { connectionPill(compact: true) }
-                modelPill(maxWidth: 0, compact: true)
-                effortPill(compact: true)
-            }
+        // The pills give up detail before they push the send button off the
+        // bar, and they give it up in the order of what the reader needs to
+        // see: the model they are talking to is the last label to go. Which
+        // form that is was three trial layouts of this whole group inside
+        // three more of the run controls; `ComposerBarMetrics` measures the
+        // strings once and this builds the one rung that fits.
+        HStack(spacing: ComposerBarMetrics.spacing) {
+            if showsConnectionPill { connectionPill(compact: form.connectionIsCompact) }
+            modelPill(maxWidth: form.modelWidth, compact: form.modelIsCompact)
+            effortPill(compact: form.effortIsCompact)
         }
+        // A pane that narrows past a rung takes the labels away; they go by
+        // fading, not by disappearing between two frames.
+        .piAnimation(PiMotion.base, value: form)
         .disabled(session.loading || model.installPreparing || chat == nil)
         .accessibilityElement(children: .contain)
         // A visible picker must load without requiring mouse hover (including
@@ -62,7 +83,7 @@ struct ModelSwitchPills: View {
                 CatalogModelPicker(model: model, profile: profile, current: modelLabel, allowsCatalogSelection: true,
                                    defaultTitle: "Use connection default · \(profile.modelId)", defaultSelected: override == nil,
                                    useDefault: { showingModels = false; Task { await model.setModel(nil, for: chat.id) } },
-                                   manualEntry: { showingModels = false; enterModel(chat: chat, profile: profile) }) { item in
+                                   manualEntry: { alias in showingModels = false; Task { await model.setModel(alias.isEmpty ? nil : alias, for: chat.id) } }) { item in
                     showingModels = false
                     Task { await model.setModel(item.id, for: chat.id) }
                 }
@@ -78,56 +99,44 @@ struct ModelSwitchPills: View {
         model.requestProfiles.count > 1 || profile == nil || profile?.api != LiteLLMConfiguration.supportedAPI
     }
     private func connectionPill(compact: Bool) -> some View {
-        Menu {
-            if let chat {
-                let blocker = model.connectionSwitchBlocker(for: chat.id)
-                ForEach(model.requestProfiles) { candidate in
-                    Button {
-                        Task { await model.setConnection(candidate.id, for: chat.id) }
-                    } label: {
-                        choiceLabel(candidate.name + " · " + candidate.modelId, selected: candidate.id == chat.profileID)
-                    }.disabled(blocker != nil && candidate.id != chat.profileID)
-                }
-                if let blocker { Divider(); Text(blocker).foregroundStyle(Color.piWarning) }
-                Divider()
-                Button("Manage Connections…") { model.showProfiles = true }
-            }
-        } label: {
+        let blocker = chat.flatMap { model.connectionSwitchBlocker(for: $0.id) }
+        return PiChoicePicker(title: "Connection", selection: chat?.profileID,
+                              choices: model.requestProfiles.map { candidate in
+                                  PiChoice(id: candidate.id, title: candidate.name, subtitle: candidate.modelId,
+                                           enabled: blocker == nil || candidate.id == chat?.profileID)
+                              }, note: blocker, actionTitle: "Manage Connections…",
+                              action: { model.showProfiles = true }, choose: { id in
+                                  guard let chat else { return }
+                                  Task { await model.setConnection(id, for: chat.id) }
+                              }) {
             PillLabel(icon: "antenna.radiowaves.left.and.right", text: profile?.name ?? "No connection", active: profile == nil, loading: false, maxWidth: 150, compact: compact)
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().piPointer()
+        .fixedSize()
         .help("The LiteLLM connection, key and model list this chat uses. Switching closes its helper session; the next turn replays the chat's portable history on the new connection.")
         .accessibilityLabel("Connection: \(profile?.name ?? "none")")
         .accessibilityIdentifier("session-connection-picker")
     }
 
-    private func effortPill(compact: Bool) -> some View {
-        Menu {
-            if let chat {
-                ForEach(offeredLevels, id: \.self) { option in
-                    Button {
-                        Task { await model.setThinkingLevel(option.rawValue, for: chat.id) }
-                    } label: {
-                        choiceLabel(option.label, selected: level == option)
-                    }
-                    if option == .default { Divider() }
-                }
-                if !offeredLevels.contains(level) { Text("Current effort is unavailable for this model. Choose another level.").foregroundStyle(Color.piWarning) }
-                if offeredLevels.count < ThinkingLevel.allCases.count { Divider(); Text("Levels from the model catalog").foregroundStyle(Color.piInkTertiary) }
-            }
-        } label: {
-            PillLabel(icon: "brain", text: level.pillLabel, active: level != .profileDefault, loading: false, maxWidth: 130, compact: compact)
+    /// The effort pill's label says whose default is in force ("Effort ·
+    /// connection default"), which needs more room than the word "default"
+    /// did: at 130 points the widest of them was truncated down the middle.
+    static let effortLabelWidth: CGFloat = 176
+    private func effortPill(maxWidth: CGFloat = ModelSwitchPills.effortLabelWidth, compact: Bool) -> some View {
+        let levels = offeredLevels
+        let note = !levels.contains(level) ? "Current effort is unavailable for this model. Choose another level." :
+            levels.count < ThinkingLevel.allCases.count ? "Levels from the model catalog" : nil
+        return PiChoicePicker(title: "Reasoning effort", selection: level,
+                              choices: levels.map { PiChoice(id: $0, title: $0.label) },
+                              note: note, choose: { option in
+                                  guard let chat else { return }
+                                  Task { await model.setThinkingLevel(option.rawValue, for: chat.id) }
+                              }) {
+            PillLabel(icon: "brain", text: level.pillLabel, active: level != .profileDefault, loading: false, maxWidth: maxWidth, compact: compact)
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().piPointer()
+        .fixedSize()
         .help("Profile default keeps the connection's effort. Model default leaves effort unspecified. Your choice is remembered for new chats using this connection.")
         .accessibilityLabel("Reasoning effort: \(level.label)")
-    }
-
-    /// Native menu actions remain enabled on macOS 14; the checkmark reflects
-    /// only the saved selection, after its asynchronous write completes.
-    @ViewBuilder private func choiceLabel(_ title: String, selected: Bool) -> some View {
-        if selected { Label(title, systemImage: "checkmark") }
-        else { Text(title) }
+        .accessibilityIdentifier("session-reasoning-picker")
     }
 
     /// "GPT-5.1 · 400k ctx" or the bare alias, with a deprecation note.
@@ -151,16 +160,6 @@ struct ModelSwitchPills: View {
         }
         return levels
     }
-    private func enterModel(chat: ChatRecord, profile: ProfileRecord) {
-        let alert = NSAlert(); alert.messageText = "Model for this chat"
-        alert.informativeText = "Turns in this chat request this router alias instead of the profile's \(profile.modelId). Leave it empty to use the profile default."
-        let field = NSTextField(string: chat.model ?? ""); field.placeholderString = profile.modelId
-        field.frame.size = NSSize(width: 320, height: 24); alert.accessoryView = field; alert.window.initialFirstResponder = field
-        alert.addButton(withTitle: "Use Model"); alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        Task { await model.setModel(text.isEmpty ? nil : text, for: chat.id) }
-    }
 }
 
 /// A live native catalog view. Unlike a tracking NSMenu snapshot, its contents
@@ -168,24 +167,30 @@ struct ModelSwitchPills: View {
 /// whether invoked with the pointer or keyboard. Search includes every model,
 /// not just a first menu page.
 struct CatalogModelPicker: View {
+    /// A connection as the Settings sheet edits it: listed on its own, with the key typed there.
+    struct DraftListing: Equatable { var profile: ProfileRecord; var key: String }
     @ObservedObject var model: WorkspaceModel
     @ObservedObject private var catalog: ModelCatalog
     let profile: ProfileRecord
     let current: String?
+    var draft: DraftListing? = nil
     var allowsCatalogSelection = false
     var defaultTitle: String?
     var defaultSelected = false
     var useDefault: (() -> Void)?
-    var manualEntry: (() -> Void)?
+    /// Called with an alias typed into the picker; empty means the connection default.
+    var manualEntry: ((String) -> Void)?
     let choose: (ModelDescriptor) -> Void
     @State private var query = ""
+    @State private var enteringAlias = false
+    @State private var alias = ""
     @StateObject private var refresh = ModelCatalogRefreshState()
 
-    init(model: WorkspaceModel, profile: ProfileRecord, current: String?, allowsCatalogSelection: Bool = false,
+    init(model: WorkspaceModel, profile: ProfileRecord, current: String?, draft: DraftListing? = nil, allowsCatalogSelection: Bool = false,
          defaultTitle: String? = nil, defaultSelected: Bool = false,
-         useDefault: (() -> Void)? = nil, manualEntry: (() -> Void)? = nil,
+         useDefault: (() -> Void)? = nil, manualEntry: ((String) -> Void)? = nil,
          choose: @escaping (ModelDescriptor) -> Void) {
-        self.model = model; self.catalog = model.modelCatalog; self.profile = profile
+        self.model = model; self.catalog = model.modelCatalog; self.profile = profile; self.draft = draft
         self.current = current; self.defaultTitle = defaultTitle; self.defaultSelected = defaultSelected
         self.allowsCatalogSelection = allowsCatalogSelection
         self.useDefault = useDefault; self.manualEntry = manualEntry; self.choose = choose
@@ -194,8 +199,9 @@ struct CatalogModelPicker: View {
     var body: some View {
         // A popover can outlive a Settings/vault reload. Resolve only its own
         // saved ID, so its rows and source label follow the newly saved revision.
-        let profile = model.profiles.first(where: { $0.id == self.profile.id }) ?? self.profile
-        let source = model.catalogProfile(for: profile)
+        // A draft being edited in Settings is listed as given, with the typed key.
+        let profile = draft == nil ? (model.profiles.first(where: { $0.id == self.profile.id }) ?? self.profile) : self.profile
+        let source = draft == nil ? model.catalogProfile(for: profile) : self.profile
         let entry = catalog.entry(for: source)
         let offered = entry.offered(current: current)
         let matches = Self.filtered(offered, query: query)
@@ -211,7 +217,12 @@ struct CatalogModelPicker: View {
                 }
                 Spacer(minLength: 8)
                 if loading { ProgressView().controlSize(.small) }
-                Button { Task { await refresh.refresh(model: model, profileID: profile.id) } } label: {
+                Button {
+                    Task {
+                        if let draft { await model.listModels(forDraft: draft.profile, typedKey: draft.key, force: true) }
+                        else { await refresh.refresh(model: model, profileID: profile.id) }
+                    }
+                } label: {
                     Image(systemName: "arrow.clockwise").frame(width: 28, height: 28).contentShape(Rectangle())
                 }.buttonStyle(.plain).disabled(loading).help("Reload this saved connection and refresh its model list")
                     .accessibilityLabel("Refresh models")
@@ -288,7 +299,16 @@ struct CatalogModelPicker: View {
                         .accessibilityIdentifier("model-catalog-refreshed-at")
                 }
                 Spacer()
-                if let manualEntry { Button("Enter alias…", action: manualEntry).buttonStyle(.plain).font(PiFont.caption) }
+                if manualEntry != nil { Button(enteringAlias ? "Hide alias field" : "Enter alias…") { withAnimation(PiMotion.quick) { enteringAlias.toggle() } }.buttonStyle(.plain).font(PiFont.caption).accessibilityIdentifier("model-enter-alias") }
+            }
+            if let manualEntry, enteringAlias {
+                // Any alias the gateway routes, typed here; empty returns to the connection default.
+                HStack(spacing: 6) {
+                    PiTextField(placeholder: profile.modelId, text: $alias, icon: "cpu", mono: true, onSubmit: { manualEntry(alias.trimmingCharacters(in: .whitespacesAndNewlines)) })
+                        .accessibilityIdentifier("model-alias-field")
+                    Button("Use") { manualEntry(alias.trimmingCharacters(in: .whitespacesAndNewlines)) }.buttonStyle(.piPrimaryCompact).fixedSize()
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
             if !ModelCatalog.catalogConfigured(source) {
                 Text("Included models change with app updates. Choose a saved custom catalog above or set its URL in Settings.")
@@ -296,7 +316,9 @@ struct CatalogModelPicker: View {
             }
         }
         .padding(16).frame(width: 390).background(Color.piSurface)
-        .task(id: source) { await model.listModels(for: profile) }
+        .task(id: [source.id, source.baseUrl, source.catalogUrl ?? "", draft?.key ?? ""]) {
+            if let draft { await model.listModels(forDraft: draft.profile, typedKey: draft.key) } else { await model.listModels(for: profile) }
+        }
         .onChange(of: profile.id) { _, _ in query = "" }
         .onChange(of: source.id) { _, _ in query = "" }
     }
@@ -332,20 +354,12 @@ struct CatalogModelPicker: View {
     }
 
     private func sourceSelector(profile: ProfileRecord, source: ProfileRecord, loading: Bool) -> some View {
-        Menu {
-            Button("Saved with this connection · \(Self.sourceLabel(profile))") {
-                Task { await refresh.selectSource(model: model, sourceID: profile.id, profileID: profile.id) }
-            }
-            Divider()
-            ForEach(model.profiles.filter { $0.id != profile.id && $0.api == LiteLLMConfiguration.supportedAPI && model.catalogProfile(for: $0).id == $0.id }) { candidate in
-                Button {
-                    Task { await refresh.selectSource(model: model, sourceID: candidate.id, profileID: profile.id) }
-                } label: {
-                    if candidate.id == source.id { Label("\(candidate.name) · \(Self.sourceLabel(candidate))", systemImage: "checkmark") }
-                    else { Text("\(candidate.name) · \(Self.sourceLabel(candidate))") }
-                }
-            }
-        } label: {
+        let choices = [PiChoice(id: profile.id, title: "Saved with this connection", subtitle: Self.sourceLabel(profile))] +
+            model.profiles.filter { $0.id != profile.id && $0.api == LiteLLMConfiguration.supportedAPI && model.catalogProfile(for: $0).id == $0.id }
+                .map { PiChoice(id: $0.id, title: $0.name, subtitle: Self.sourceLabel($0)) }
+        return PiChoicePicker(title: "Catalog source", selection: source.id, choices: choices, choose: { id in
+            Task { await refresh.selectSource(model: model, sourceID: id, profileID: profile.id) }
+        }) {
             Label("Catalog source…", systemImage: "list.bullet.rectangle")
                 .font(PiFont.caption).frame(maxWidth: .infinity, alignment: .leading)
         }

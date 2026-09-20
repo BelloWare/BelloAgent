@@ -1,0 +1,6 @@
+<h2>Bello Agent 0.1.47</h2>
+<ul>
+  <li>Retry request sends the model and reasoning effort the chat has selected at the moment you click it, so a model switched after a failure is what retries; cleared pills retry with the connection's own defaults.</li>
+  <li>The output budget is metadata only. It is never sent as a limit and never fails a turn; a reply runs to the model's own output ceiling from the catalog (clipped only to the room a nearly full context window leaves). The budget just sizes the reserve that decides when a chat compacts.</li>
+  <li>The Usage menu's model distribution stays readable with very long model ids: labels are cut in the middle and the bars and figures keep their columns.</li>
+</ul>

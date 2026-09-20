@@ -4,7 +4,7 @@ import SwiftUI
 
 final class WorkspaceFollowupTests: XCTestCase {
     private func scratch() throws -> URL {
-        let base = ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()
+        let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("workspace-followup-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
@@ -34,7 +34,7 @@ final class WorkspaceFollowupTests: XCTestCase {
         try await model.reloadConfiguration()
         let chat = try await model.createConnectionTestChat(profileID: profile.id)
         let display = try XCTUnwrap(model.displays[chat.id]); display.draft = "Connection follow-up"
-        let hosted = NSHostingView(rootView: ConversationPane(model: model, session: display, chat: chat))
+        let hosted = NSHostingView(rootView: ConversationPane(model: model, session: display, chat: chat, paneWidth: 900))
         window.contentView = hosted; window.orderFront(nil)
         try await waitFor("The scratch chat must mount its native composer") {
             hosted.layoutSubtreeIfNeeded()
@@ -52,13 +52,13 @@ final class WorkspaceFollowupTests: XCTestCase {
         let attempts = try await model.traces.list(sessionID: chat.id); XCTAssertTrue(attempts.isEmpty)
 
         var unavailable = chat; unavailable.workspaceID = "removed-project"
-        hosted.rootView = ConversationPane(model: model, session: display, chat: unavailable)
+        hosted.rootView = ConversationPane(model: model, session: display, chat: unavailable, paneWidth: 900)
         try await waitFor("An unavailable project must remove the native composer") {
             hosted.layoutSubtreeIfNeeded()
             return self.descendants(ComposerTextView.self, in: hosted).isEmpty
         }
         XCTAssertEqual(display.draft, "Connection follow-up", "Unavailable projects remain history-only without losing the draft")
-        hosted.rootView = ConversationPane(model: model, session: display, chat: chat)
+        hosted.rootView = ConversationPane(model: model, session: display, chat: chat, paneWidth: 900)
         try await waitFor("Returning to the scratch chat must restore its native composer and draft") {
             hosted.layoutSubtreeIfNeeded()
             return self.descendants(ComposerTextView.self, in: hosted).first?.string == "Connection follow-up"
@@ -118,8 +118,35 @@ final class WorkspaceFollowupTests: XCTestCase {
         XCTAssertTrue(model.hosts.isEmpty)
         let saved = try await model.store?.get(DraftRecord.self, kind: "draft", id: test.id)
         XCTAssertEqual(saved?.text, testDisplay.draft)
+        XCTAssertNotNil(testDisplay.sendFailure)
+        XCTAssertFalse(testDisplay.uncertain, "A locally rejected send never reached the helper")
+        let pending = try await model.store?.list(CommandIntent.self, kind: "pending:\(test.id)") ?? []
+        XCTAssertTrue(pending.isEmpty)
         let unrelated = try await model.store?.get(DraftRecord.self, kind: "draft", id: other.id)
         XCTAssertNil(unrelated)
+        await model.store?.close()
+    }
+
+    @MainActor func testMissingConnectionPreservesTheEditedMessageAndDisplacedDraft() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        let chat = ChatRecord(id: "edit", workspaceID: "project", title: "Retained chat", path: nil, profileID: "missing")
+        let display = SessionDisplay(id: chat.id)
+        display.draft = "Edited question"; display.editingMessageID = "earlier-user-message"
+        display.draftBeforeEdit = DraftRecord(id: chat.id, text: "Unsent original draft")
+        model.chats = [chat]; model.displays[chat.id] = display
+
+        model.sendEdit(sessionID: chat.id)
+        try await waitFor { !display.loading }
+        let saved = try await model.store?.get(DraftRecord.self, kind: "draft", id: chat.id)
+        XCTAssertEqual(saved?.text, "Edited question")
+        XCTAssertEqual(saved?.edit?.messageID, "earlier-user-message")
+        XCTAssertEqual(saved?.edit?.originalText, "Unsent original draft")
+        XCTAssertTrue(display.notice.contains("connection is unavailable"))
+        XCTAssertFalse(display.uncertain); XCTAssertTrue(model.hosts.isEmpty)
+        let pending = try await model.store?.list(CommandIntent.self, kind: "pending:\(chat.id)") ?? []
+        XCTAssertTrue(pending.isEmpty)
         await model.store?.close()
     }
 

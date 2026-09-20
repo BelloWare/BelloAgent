@@ -201,9 +201,9 @@ final class SessionUsageTests: XCTestCase {
         let base = Date(timeIntervalSince1970: 1_000)
         var history = SessionTimingHistory()
         history.samples = [
-            SessionTimingSample(id: "1", wall: base, ttftMilliseconds: 400, streamingMilliseconds: 1_600, outputTokens: 200),
-            SessionTimingSample(id: "2", wall: base.addingTimeInterval(1), ttftMilliseconds: nil, streamingMilliseconds: 900, outputTokens: 90),
-            SessionTimingSample(id: "3", wall: base.addingTimeInterval(2), ttftMilliseconds: 250, streamingMilliseconds: 750, outputTokens: 500),
+            SessionTimingSample(id: "1", wall: base, ttftMilliseconds: 400, streamingMilliseconds: 1_600, outputTokens: 200, requestMilliseconds: 2_000),
+            SessionTimingSample(id: "2", wall: base.addingTimeInterval(1), ttftMilliseconds: nil, streamingMilliseconds: nil, outputTokens: 90, requestMilliseconds: 900),
+            SessionTimingSample(id: "3", wall: base.addingTimeInterval(2), ttftMilliseconds: 250, streamingMilliseconds: 750, outputTokens: 500, requestMilliseconds: 1_000),
         ]
         history.historicalRate = HistoricalOutputRate(outputTokens: 790, generationMilliseconds: 3_900, samples: 3)
         let work: [String: WireValue] = ["sessionModelMs": .number(72_000), "sessionToolMs": .number(14_300), "modelMs": .number(4_200), "toolMs": .number(300)]
@@ -326,8 +326,7 @@ final class SessionUsageTests: XCTestCase {
     }
 
     @MainActor func testOpenWindowKeepsTitleAndUsageLiveAfterChatSelectionChanges() async throws {
-        let environment = ProcessInfo.processInfo.environment
-        let base = environment["PI_APP_SCRATCH_ROOT"] ?? environment["TEST_RUNNER_PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()
+        let base = testEnvironment("PI_APP_SCRATCH_ROOT") ?? NSTemporaryDirectory()
         let root = URL(fileURLWithPath: base).appendingPathComponent("session-usage-window-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
@@ -366,8 +365,7 @@ final class SessionUsageTests: XCTestCase {
     /// Optional synthetic previews of the actual native resizable window. These
     /// never open the real vault, archive, or gateway.
     @MainActor func testSessionUsageSyntheticModelCostAndMissingValuePreviews() async throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard let path = environment["PI_APP_USAGE_CAPTURE_ROOT"] ?? environment["TEST_RUNNER_PI_APP_USAGE_CAPTURE_ROOT"] else {
+        guard let path = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") else {
             throw XCTSkip("Set PI_APP_USAGE_CAPTURE_ROOT to capture native session-usage previews")
         }
         let root = URL(fileURLWithPath: path, isDirectory: true)

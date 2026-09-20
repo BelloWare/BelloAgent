@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import Charts
 
 typealias MenuBarMetricsLoader = @MainActor (MenuBarPeriod, Date, Int) async throws -> MenuBarSnapshot
@@ -23,37 +24,50 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
     private let load: MenuBarMetricsLoader
     private let readActiveSessions: @MainActor () -> Int
     private let readActivity: (@MainActor () -> MenuBarActivitySnapshot)?
+    /// What says the panel's rows may have changed. Without one the panel
+    /// counts when it opens and whenever it is asked to `refresh()`.
+    private let activityChanges: (@MainActor () -> AnyPublisher<Void, Never>)?
     private let now: () -> Date
     private let interval: Duration
     private var task: Task<Void, Never>?
-    private var activityTask: Task<Void, Never>?
+    private var activityObservation: AnyCancellable?
     private var visible = false
     private var generation = 0
+    /// Test seam: how many times the rows have actually been counted.
+    private(set) var activityCounts = 0
 
-    init(load: @escaping MenuBarMetricsLoader, activeSessions: @escaping @MainActor () -> Int = { 0 }, activity: (@MainActor () -> MenuBarActivitySnapshot)? = nil, interval: Duration = .seconds(10), now: @escaping () -> Date = { Date() }) {
-        self.load = load; self.readActiveSessions = activeSessions; self.readActivity = activity; self.interval = interval; self.now = now
+    init(load: @escaping MenuBarMetricsLoader, activeSessions: @escaping @MainActor () -> Int = { 0 }, activity: (@MainActor () -> MenuBarActivitySnapshot)? = nil, activityChanges: (@MainActor () -> AnyPublisher<Void, Never>)? = nil, interval: Duration = .seconds(10), now: @escaping () -> Date = { Date() }) {
+        self.load = load; self.readActiveSessions = activeSessions; self.readActivity = activity
+        self.activityChanges = activityChanges; self.interval = interval; self.now = now
     }
-    deinit { task?.cancel(); activityTask?.cancel() }
+    deinit { task?.cancel() }
 
     func setVisible(_ value: Bool) {
         guard visible != value else { return }
         visible = value; restart()
-        activityTask?.cancel(); activityTask = nil
-        if value {
-            refreshActivity()
-            activityTask = Task { [weak self] in
-                while !Task.isCancelled {
-                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
-                    self?.refreshActivity()
-                }
-            }
-        }
+        activityObservation = nil
+        guard value else { return }
+        refreshActivity()
+        // Counting every chat's phase, queue and unread state once a second
+        // is work with nothing behind it. The workspace says when its rows
+        // change; several changes in the same moment count once.
+        activityObservation = activityChanges?()
+            .debounce(for: .milliseconds(120), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.refreshActivity() }
     }
     func refresh() { if visible { refreshActivity() }; restart() }
     private func refreshActivity() {
+        activityCounts += 1
+        // Reassigning an unchanged snapshot republishes it and redraws the
+        // whole panel.
         if let readActivity {
-            activity = readActivity(); activeSessions = activity.running
-        } else { activeSessions = max(0, readActiveSessions()) }
+            let next = readActivity()
+            if activity != next { activity = next }
+            if activeSessions != next.running { activeSessions = next.running }
+        } else {
+            let next = max(0, readActiveSessions())
+            if activeSessions != next { activeSessions = next }
+        }
     }
     func previousPage() {
         guard offset > 0 else { return }
@@ -75,7 +89,11 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
                     let value = try await load(period, now(), offset)
                     try Task.checkCancellation()
                     guard let self, self.generation == generation else { return }
-                    self.snapshot = value; self.loading = false; self.notice = ""
+                    // Reassigning an identical snapshot every interval redrew
+                    // the chart and the model table with the same numbers.
+                    if self.snapshot != value { self.snapshot = value }
+                    if self.loading { self.loading = false }
+                    if !self.notice.isEmpty { self.notice = "" }
                     if offset > 0 && value.models.isEmpty {
                         // Retention can shrink the distribution while open.
                         self.offset = 0; self.restart(); return
@@ -99,8 +117,8 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
     private let openReport: () -> Void
     private let openSession: (String) -> Void
 
-    init(load: @escaping MenuBarMetricsLoader, activeSessions: @escaping @MainActor () -> Int = { 0 }, activity: (@MainActor () -> MenuBarActivitySnapshot)? = nil, openApp: @escaping () -> Void, openReport: @escaping () -> Void, openSession: @escaping (String) -> Void = { _ in }) {
-        _controller = StateObject(wrappedValue: MenuBarMetricsController(load: load, activeSessions: activeSessions, activity: activity))
+    init(load: @escaping MenuBarMetricsLoader, activeSessions: @escaping @MainActor () -> Int = { 0 }, activity: (@MainActor () -> MenuBarActivitySnapshot)? = nil, activityChanges: (@MainActor () -> AnyPublisher<Void, Never>)? = nil, openApp: @escaping () -> Void, openReport: @escaping () -> Void, openSession: @escaping (String) -> Void = { _ in }) {
+        _controller = StateObject(wrappedValue: MenuBarMetricsController(load: load, activeSessions: activeSessions, activity: activity, activityChanges: activityChanges))
         self.openApp = openApp; self.openReport = openReport; self.openSession = openSession
     }
 
@@ -162,7 +180,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
         .frame(width: 428, height: 720)
         .background(Color.piContent)
         .tint(Color.piAccent)
-        .background(MenuBarVisibilityReader(onChange: controller.setVisible))
+        .background(WindowVisibilityReader(onChange: controller.setVisible))
         .onDisappear { controller.setVisible(false) }
         .accessibilityIdentifier("menu-bar-metrics")
     }
@@ -320,7 +338,14 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
                         .accessibilityLabel(modelChartLabel(item)).accessibilityValue("\(item.gateway.requests) requests")
                 }
                 .chartXAxis(.hidden)
-                .chartYAxis { AxisMarks(preset: .aligned) { AxisValueLabel().foregroundStyle(Color.piInk).font(PiFont.caption) } }
+                .chartYAxis { AxisMarks(preset: .aligned) { value in
+                    // A long model id must not squeeze the bars out of the popover: one
+                    // line, cut in the middle, never wider than about two fifths of the chart.
+                    AxisValueLabel {
+                        Text(value.as(String.self) ?? "").font(PiFont.caption).foregroundStyle(Color.piInk)
+                            .lineLimit(1).truncationMode(.middle).frame(maxWidth: 156, alignment: .trailing)
+                    }
+                } }
                 .chartXScale(domain: 0...Double(max(1, snapshot.models.map(\.gateway.requests).max() ?? 1)) * 1.18)
                 .frame(height: CGFloat(snapshot.models.count) * 24 + 8)
                 .accessibilityIdentifier("menu-bar-model-chart")
@@ -328,16 +353,17 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
             ForEach(snapshot.models) { item in
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(alignment: .firstTextBaseline) {
+                        // Ids are cut in the middle so the numbers keep their column; the full id is in the tooltip.
                         Text(item.requestedAlias.isEmpty ? "Alias unavailable" : item.requestedAlias)
-                            .font(PiFont.body.weight(.semibold)).foregroundStyle(Color.piInk).lineLimit(2)
+                            .font(PiFont.body.weight(.semibold)).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.middle)
                             .help(item.requestedAlias)
                         Spacer(minLength: 8)
                         Text("\(item.gateway.requests) · \(item.requestShare.formatted(.percent.precision(.fractionLength(1))))")
-                            .font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkSecondary)
+                            .font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkSecondary).fixedSize()
                     }
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
                         Image(systemName: "arrow.turn.down.right").font(PiFont.micro)
-                        Text(item.resolutionLabel).font(PiFont.caption).lineLimit(2).help(item.resolutionLabel)
+                        Text(item.resolutionLabel).font(PiFont.caption).lineLimit(1).truncationMode(.middle).help(item.resolutionLabel)
                         Spacer(minLength: 0)
                     }.foregroundStyle(item.resolvedModel == nil ? Color.piWarning : Color.piInkSecondary)
                     GeometryReader { geometry in
@@ -382,34 +408,4 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
 private func menuBarRate(_ value: Double?) -> String {
     guard let value, value.isFinite, value >= 0 else { return "—" }
     return value.formatted(.number.precision(.fractionLength(1)))
-}
-
-/// NSPopover retains its SwiftUI content after hiding its panel. Observe
-/// the native window, so hidden menus do not keep issuing archive queries.
-@MainActor private struct MenuBarVisibilityReader: NSViewRepresentable {
-    let onChange: (Bool) -> Void
-    func makeNSView(context: Context) -> VisibilityView { let view = VisibilityView(); view.onChange = onChange; return view }
-    func updateNSView(_ view: VisibilityView, context: Context) { view.onChange = onChange }
-    static func dismantleNSView(_ view: VisibilityView, coordinator: ()) { view.onChange?(false); view.stopObserving() }
-
-    @MainActor final class VisibilityView: NSView {
-        var onChange: ((Bool) -> Void)?
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow(); stopObserving()
-            if let window {
-                for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification, NSWindow.didChangeOcclusionStateNotification, NSWindow.willCloseNotification] {
-                    NotificationCenter.default.addObserver(self, selector: #selector(windowChanged), name: name, object: window)
-                }
-            }
-            reportVisibility()
-        }
-        func stopObserving() { NotificationCenter.default.removeObserver(self) }
-        @objc private func windowChanged(_ notification: Notification) { reportVisibility() }
-        private func reportVisibility() {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.onChange?(self.window.map { $0.isVisible && $0.occlusionState.contains(.visible) } ?? false)
-            }
-        }
-    }
 }

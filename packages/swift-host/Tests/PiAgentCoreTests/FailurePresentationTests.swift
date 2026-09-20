@@ -171,4 +171,23 @@ final class FailurePresentationTests: XCTestCase {
             } else { XCTAssertEqual(captured["bytes"], recorded[kind], "An unchanged request remains byte-exact") }
         }
     }
+
+    /// A gateway failure names its likely cause in the reader's terms, keeping the
+    /// status the retry policy and the connection test read.
+    func testGatewayFailuresSayWhatToCheck() {
+        let unauthorized = ProviderClient.guidance(status: 401, detail: nil, attempt: "3")
+        XCTAssertTrue(unauthorized.contains("API key"), unauthorized); XCTAssertTrue(unauthorized.contains("Inspect request 3"), unauthorized)
+        let missing = ProviderClient.guidance(status: 404, detail: "No such model: gpt-x", attempt: "1")
+        XCTAssertTrue(missing.hasPrefix("No such model: gpt-x."), missing); XCTAssertTrue(missing.contains("model alias"), missing)
+        XCTAssertFalse(missing.contains("Inspect request"), "a provider detail replaces the pointer to the captured body")
+        XCTAssertTrue(ProviderClient.guidance(status: 429, detail: nil, attempt: "2").contains("rate limiting"))
+        XCTAssertTrue(ProviderClient.guidance(status: 502, detail: nil, attempt: "2").contains("failed on its side"))
+        XCTAssertTrue(ProviderClient.guidance(status: 400, detail: nil, attempt: "4").hasPrefix("Inspect request 4"))
+        XCTAssertTrue(ProviderClient.transportGuidance(URLError(.cannotFindHost), attempt: "1").contains("host could not be found"))
+        XCTAssertTrue(ProviderClient.transportGuidance(URLError(.cannotConnectToHost), attempt: "1").contains("could not be reached"))
+        XCTAssertTrue(ProviderClient.transportGuidance(URLError(.timedOut), attempt: "1").contains("did not answer in time"))
+        XCTAssertTrue(ProviderClient.transportGuidance(URLError(.serverCertificateUntrusted), attempt: "1").contains("certificate"))
+        XCTAssertTrue(ProviderClient.transportGuidance(NSError(domain: "x", code: 1), attempt: "5").hasSuffix("Inspect request 5."))
+        XCTAssertEqual(AgentSession.httpStatus(in: "Provider returned HTTP 401. " + unauthorized), 401, "the status stays parseable")
+    }
 }

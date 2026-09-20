@@ -9,8 +9,7 @@ import AppKit
 // light and dark appearance. Production PiApp contains none of this.
 final class UIScreenshotTests: XCTestCase {
     @MainActor func testRenderRedesignGallery() async throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard let path = environment["PI_APP_UI_SCREENSHOT_ROOT"] ?? environment["TEST_RUNNER_PI_APP_UI_SCREENSHOT_ROOT"] else {
+        guard let path = testEnvironment("PI_APP_UI_SCREENSHOT_ROOT") else {
             throw XCTSkip("Set PI_APP_UI_SCREENSHOT_ROOT to render the synthetic screenshot gallery.")
         }
         let folder = URL(fileURLWithPath: path, isDirectory: true)
@@ -59,6 +58,7 @@ final class UIScreenshotTests: XCTestCase {
         let connections = ["ui-fixture", "fixture-fast"].map { alias -> VaultProfile in
             var profile = ProfileRecord(); profile.api = "openai-responses"; profile.baseUrl = base; profile.modelId = alias; profile.catalogUrl = base + "/catalog"
             profile.contextWindow = alias == "fixture-fast" ? 128_000 : 2_000_000; profile.maxOutputTokens = alias == "fixture-fast" ? 16_000 : 300_000
+            profile.modelOutputLimit = alias == "fixture-fast" ? 16_000 : 300_000   // the catalog ceiling is what requests carry
             profile.name = alias == "fixture-fast" ? "Team fast · Responses" : "Team router · Responses"
             profile.miniModelId = "fixture-fast"  // titles and suggestions require a mini model
             profile.advancedJSON = "{\"routing\":{\"replayPolicy\":\"portable\",\"reference\":\"Synthetic UI gateway accounting contract v1\",\"cacheHeader\":\"x-fixture-cache\"}}"
@@ -212,6 +212,8 @@ final class UIScreenshotTests: XCTestCase {
             try capture(panel, to: gallery.appendingPathComponent("11-session-info-\(name).png"))
             usage.close(); try await settle(0.6)
         }
+        try await renderReviewScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                     mainID: main.id, secondID: second.id, workspaceID: workspace.id)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
         let fresh = WorkspaceModel(stateRoot: folder.appendingPathComponent("onboarding-state"), vault: freshVault)
@@ -228,6 +230,79 @@ final class UIScreenshotTests: XCTestCase {
         XCTAssertNil(model.error, model.error ?? "")
         for host in model.hosts.values { try await host.shutdownAndWait() }
         try await model.traces.close()
+    }
+
+    /// Scenes the gallery above never reached, added for the 0.1.60 UX review:
+    /// a long chat with its turns folded and unfolded, a running turn with the
+    /// live bar and a queued follow-up, the sidebar with a topic, marked rows
+    /// and its narrowest width, the error strip, and the window at its
+    /// narrowest and at a wide size. Each is captured in light and dark.
+    @MainActor private func renderReviewScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                               appearances: [(String, NSAppearance.Name)],
+                                               mainID: String, secondID: String, workspaceID: String) async throws {
+        func pair(_ name: String, hold: Double = 1.0) async throws {
+            for (appearanceName, appearance) in appearances {
+                NSApp.appearance = NSAppearance(named: appearance)
+                try await settle(hold)
+                try capture(window, to: gallery.appendingPathComponent("\(name)-\(appearanceName).png"))
+            }
+        }
+        // The side pane opened earlier keeps half the window; the chat scenes want all of it.
+        if let side = model.sides[mainID] { model.closeSide(side.id); try await settle(1.2) }
+        await model.select(mainID); try await settle(0.8)
+        let session = try XCTUnwrap(model.displays[mainID])
+
+        // 12 · A long chat: every turn's work open, then every turn folded.
+        try await pair("12-turns-open")
+        let blocks = TranscriptActivity.blocks(of: session.presentedMessages).compactMap { item -> String? in
+            if case .block(let block) = item { return block.key }
+            return nil
+        }
+        for key in blocks { session.disclosure.setOpen(false, .work(key)) }
+        session.publishTranscript(); try await settle(0.8)
+        try await pair("12b-turns-folded")
+        for key in blocks { session.disclosure.setOpen(true, .work(key)) }
+        session.publishTranscript(); try await settle(0.5)
+
+        // 13 · A running turn: the live bar, and a follow-up waiting behind it.
+        session.draft = "slow: walk through the retry budget one step at a time."
+        model.send(sessionID: mainID)
+        try await settle(2.0)
+        session.draft = "Then summarise the change in one line for the commit message."
+        model.send(sessionID: mainID)
+        try await settle(1.5)
+        try await pair("13-running-with-queue", hold: 0.8)
+        model.stop(sessionID: mainID)
+        let deadline = Date().addingTimeInterval(45)
+        while Date() < deadline, session.hasWork || !session.queue.isEmpty { try await settle(0.3) }
+        try await settle(1.0)
+
+        // 14 · The sidebar: a topic holding a chat, two rows marked, and the narrowest width.
+        let topic = try? await model.createTopic(in: workspaceID, title: "Payments")
+        if let topic { try? await model.moveSessions([secondID], in: workspaceID, toTopic: topic.id) }
+        try await settle(0.8)
+        model.toggleSessionMark(mainID); model.toggleSessionMark(secondID)
+        try await settle(0.6)
+        try await pair("14-sidebar-topic-marks")
+        UserDefaults.standard.set(Double(WindowChrome.minimumSidebarWidth), forKey: "sidebarWidth")
+        try await settle(1.0)
+        try await pair("14b-sidebar-narrow")
+        model.clearSessionMarks()
+        UserDefaults.standard.set(Double(WindowChrome.sidebarWidth), forKey: "sidebarWidth")
+        try await settle(0.8)
+
+        // 15 · The error strip over a chat: a gateway failure with a long body.
+        model.error = "The gateway refused the request: 400 invalid_request_error — the model \"fixture-fast\" does not accept a 300000-token output limit on this route. Reduce the output budget in Settings, or choose a model whose catalog ceiling covers it, then send again."
+        try await pair("15-error-strip")
+        model.error = nil; try await settle(0.5)
+
+        // 16 · The window at its smallest, and wide.
+        window.setContentSize(NSSize(width: 920, height: 620)); window.center(); try await settle(1.0)
+        try await pair("16-window-narrow")
+        window.setContentSize(NSSize(width: 1760, height: 1000)); window.center(); try await settle(1.0)
+        try await pair("16b-window-wide")
+        window.setContentSize(NSSize(width: 1440, height: 900)); window.center(); try await settle(0.8)
+        XCTAssertNil(model.error, model.error ?? "")
     }
 
     @MainActor private func sheet(_ window: NSWindow, name: String, into gallery: URL, open: () -> Void, close: () -> Void) async throws {

@@ -5,7 +5,7 @@ import XCTest
 /// history, commit details, staging and committing.
 final class GitToolTests: XCTestCase {
     private func repository() throws -> URL {
-        let base = ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()
+        let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("git-tool-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
@@ -40,23 +40,21 @@ final class GitToolTests: XCTestCase {
         XCTAssertEqual(status.entries.first?.untracked, true); XCTAssertEqual(status.entries.first?.badge, "U")
         XCTAssertEqual(status.entries.last?.badge, "M"); XCTAssertEqual(status.entries.last?.unstaged, true); XCTAssertEqual(status.entries.last?.staged, false)
 
-        let diffText = try await service.diff(in: root.path, path: "notes.txt", staged: false)
-        let diff = GitDiffParser.parse(diffText)
+        let diff = try await service.diffFiles(in: root.path, paths: ["notes.txt"], staged: false)
         XCTAssertEqual(diff.count, 1); XCTAssertEqual(diff.first?.path, "notes.txt")
         XCTAssertEqual(diff.first?.added, 2); XCTAssertEqual(diff.first?.removed, 1)
         let lines = diff.first?.hunks.first?.lines ?? []
         XCTAssertEqual(lines.first { $0.kind == .removed }?.text, "two"); XCTAssertEqual(lines.first { $0.kind == .removed }?.oldNumber, 2)
         XCTAssertEqual(lines.filter { $0.kind == .added }.map(\.text), ["2", "four"]); XCTAssertEqual(lines.last { $0.kind == .added }?.newNumber, 4)
-        let untrackedText = try await service.diff(in: root.path, path: "new file.md", staged: false, untracked: true)
-        let untracked = GitDiffParser.parse(untrackedText)
+        let untracked = try await service.diffFiles(in: root.path, paths: ["new file.md"], staged: false, untracked: true)
         XCTAssertEqual(untracked.first?.path, "new file.md"); XCTAssertEqual(untracked.first?.added, 1)
         XCTAssertTrue(untracked.first?.notes.contains("New file.") == true)
 
         try await service.stage(["notes.txt"], in: root.path)
         status = try await service.status(in: root.path)
         XCTAssertEqual(status.entries.last?.staged, true); XCTAssertEqual(status.entries.last?.unstaged, false); XCTAssertEqual(status.stagedCount, 1)
-        let stagedDiff = try await service.diff(in: root.path, path: "notes.txt", staged: true)
-        XCTAssertEqual(GitDiffParser.parse(stagedDiff).first?.added, 2)
+        let stagedDiff = try await service.diffFiles(in: root.path, paths: ["notes.txt"], staged: true)
+        XCTAssertEqual(stagedDiff.first?.added, 2)
         try await service.unstage(["notes.txt"], in: root.path)
         status = try await service.status(in: root.path)
         XCTAssertEqual(status.stagedCount, 0)
@@ -72,7 +70,15 @@ final class GitToolTests: XCTestCase {
         let detail = try await service.commitDetail(in: root.path, commit: log[0])
         XCTAssertEqual(detail.message, "Revise notes\n\nSecond paragraph.")
         XCTAssertEqual(detail.files.map(\.path), ["new file.md", "notes.txt"]); XCTAssertEqual(detail.files.map(\.badge), ["A", "M"])
-        XCTAssertEqual(GitDiffParser.parse(detail.diff).count, 2)
+        // The detail carries counts, not the patch: selecting a commit never waits for diff text.
+        XCTAssertEqual(detail.stats["notes.txt"], GitDiffStat(added: 2, removed: 1, binary: false))
+        XCTAssertEqual(detail.stats["new file.md"]?.added, 1)
+        XCTAssertEqual(detail.insertions, 3); XCTAssertEqual(detail.deletions, 1)
+        XCTAssertEqual(detail.summary, "2 files · +3 −1"); XCTAssertFalse(detail.isLarge)
+        let commitDiff = try await service.commitDiffFiles(in: root.path, commit: log[0])
+        XCTAssertEqual(commitDiff.count, 2)
+        let oneFile = try await service.commitDiffFiles(in: root.path, commit: log[0], path: "notes.txt")
+        XCTAssertEqual(oneFile.map(\.path), ["notes.txt"]); XCTAssertEqual(oneFile.first?.added, 2)
         let paged = try await service.log(in: root.path, limit: 1, skip: 1)
         XCTAssertEqual(paged.map(\.subject), ["Initial notes"])
         do { _ = try await service.commit(message: "  ", in: root.path); XCTFail("An empty message is refused") } catch {}
@@ -121,7 +127,7 @@ final class GitToolTests: XCTestCase {
 
         // Per-file commit diff.
         let feature = try await service.log(in: root.path, filter: GitLogFilter(allBranches: true))[0]
-        let fileDiff = GitDiffParser.parse(try await service.commitDiff(in: root.path, commit: feature, path: "b.txt"))
+        let fileDiff = try await service.commitDiffFiles(in: root.path, commit: feature, path: "b.txt")
         XCTAssertEqual(fileDiff.map(\.path), ["b.txt"]); XCTAssertEqual(fileDiff.first?.added, 1)
 
         // Stash: push takes everything including untracked files, list names it, pop restores it.
@@ -174,7 +180,7 @@ final class GitToolTests: XCTestCase {
     func testSplitRowsPairRemovedAndAddedLines() {
         let text = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,4 +1,4 @@\n keep\n-old one\n-old two\n+new one\n keep two\n+tail\n\\ No newline at end of file\n"
         let hunk = try! XCTUnwrap(GitDiffParser.parse(text).first?.hunks.first)
-        let rows = hunk.splitRows
+        let rows = hunk.splitRows()
         XCTAssertEqual(rows.count, 6)
         XCTAssertEqual(rows[0].left?.text, "keep"); XCTAssertEqual(rows[0].right?.text, "keep")
         XCTAssertEqual(rows[1].left?.text, "old one"); XCTAssertEqual(rows[1].right?.text, "new one")
@@ -182,6 +188,22 @@ final class GitToolTests: XCTestCase {
         XCTAssertEqual(rows[3].left?.kind, .context); XCTAssertEqual(rows[3].left?.oldNumber, 4); XCTAssertEqual(rows[3].right?.newNumber, 3)
         XCTAssertNil(rows[4].left); XCTAssertEqual(rows[4].right?.text, "tail")
         XCTAssertEqual(rows[5].left?.kind, .note); XCTAssertEqual(rows[5].right?.kind, .note, "A note spans both sides")
+    }
+
+    /// Swift reads "\r\n" as one Character: splitting a patch on "\n" alone
+    /// left every line of a file with Windows endings in a single row.
+    func testDiffParserSplitsWindowsLineEndings() {
+        let text = "diff --git a/w.txt b/w.txt\n--- a/w.txt\n+++ b/w.txt\n@@ -1,3 +1,3 @@\n one\r\n-two\r\n+two changed\r\n three\r\n"
+        let hunk = try! XCTUnwrap(GitDiffParser.parse(text).first?.hunks.first)
+        XCTAssertEqual(hunk.lines.map(\.text), ["one", "two", "two changed", "three"])
+        XCTAssertEqual(hunk.lines.map(\.kind), [.context, .removed, .added, .context])
+        let rows = hunk.splitRows()
+        XCTAssertEqual(rows.count, 3)
+        XCTAssertEqual(rows[1].left?.text, "two"); XCTAssertEqual(rows[1].right?.text, "two changed")
+        // Mixed endings in one patch still line up.
+        let mixed = "diff --git a/m.txt b/m.txt\n--- a/m.txt\n+++ b/m.txt\n@@ -1,2 +1,2 @@\n-plain\n+crlf\r\n"
+        let mixedHunk = try! XCTUnwrap(GitDiffParser.parse(mixed).first?.hunks.first)
+        XCTAssertEqual(mixedHunk.lines.map(\.text), ["plain", "crlf"])
     }
 
     func testDiffParserHandlesRenamesBinariesAndMalformedInput() {

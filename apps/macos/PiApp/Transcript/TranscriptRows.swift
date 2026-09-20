@@ -12,6 +12,8 @@ struct TranscriptActions {
     var edit: (String) -> Void = { _ in }
     var copyMessage: (String) -> Void = { _ in }
     var stop: () -> Void = {}
+    /// Runs the failed turn again from where it stopped.
+    var retry: () -> Void = {}
 }
 
 enum TranscriptMetrics {
@@ -75,24 +77,49 @@ struct SpinnerView: View {
     }
 }
 
-/// The pill buttons under a row: Edit (user rows), Copy and Details. They show on hover.
+/// The pill buttons under a row: Edit (user rows), Copy and Details. They show
+/// on hover, and they exist only while the row is hovered: three buttons with
+/// their hover tracking for every row of a long chat is a large part of what
+/// opening one costs. The band reserves their height either way, so nothing
+/// moves, and the same actions stay reachable without a pointer through the
+/// row's accessibility actions.
 private struct RowActionsView: View {
     let message: TranscriptMessage
     let actions: TranscriptActions
     let visible: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         HStack(spacing: 4) {
-            if message.role == "user" && message.kind == nil { pill("Edit", accent: true) { actions.edit(message.id) } }
-            pill("Copy") { actions.copyMessage(message.id) }
-            pill("Details") { actions.inspect(message.id) }
+            if visible {
+                if message.role == "user" && message.kind == nil { pill("Edit", accent: true) { actions.edit(message.id) } }
+                pill("Copy") { actions.copyMessage(message.id) }
+                pill("Details") { actions.inspect(message.id) }
+            }
         }
-        .opacity(visible ? 1 : 0).offset(y: visible ? 0 : 2)
-        .animation(.easeOut(duration: 0.14), value: visible)
-        .accessibilityElement(children: .contain).accessibilityLabel("Actions for \(message.role) message")
+        .frame(height: 22)
+        .piAnimation(PiMotion.quick, value: visible)
+        .accessibilityHidden(true)
     }
     private func pill(_ title: String, accent: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) { Text(title).font(.system(size: 11, weight: .medium)) }
             .buttonStyle(TranscriptPillStyle(accent: accent))
+            .transition(reduceMotion ? .identity : .opacity.combined(with: .offset(y: 2)))
+    }
+}
+
+extension View {
+    /// The row's actions, for readers who never hover: VoiceOver reaches Copy,
+    /// Details and Edit through the row itself rather than through pills that
+    /// only a pointer can reveal.
+    @ViewBuilder func transcriptRowActions(_ message: TranscriptMessage, _ actions: TranscriptActions) -> some View {
+        if message.role == "user", message.kind == nil {
+            accessibilityAction(named: "Edit") { actions.edit(message.id) }
+                .accessibilityAction(named: "Copy") { actions.copyMessage(message.id) }
+                .accessibilityAction(named: "Details") { actions.inspect(message.id) }
+        } else {
+            accessibilityAction(named: "Copy") { actions.copyMessage(message.id) }
+                .accessibilityAction(named: "Details") { actions.inspect(message.id) }
+        }
     }
 }
 
@@ -126,17 +153,25 @@ struct MarkdownBodyView: View {
         let blocks = streaming ? TranscriptMarkdown.streamingBlocks(source, style: style) : TranscriptMarkdown.blocks(source, style: style)
         let headings = copyTargets.filter { if case .section = $0.kind { return true }; return false }
         let introduction = copyTargets.first { $0.kind == .introduction || $0.kind == .whole }
-        VStack(alignment: .leading, spacing: 10) {
-            if blocks.isEmpty && streaming { WaitingDots() }
-            ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-                let isLast = index == blocks.count - 1
-                MarkdownBlockView(block: block, style: style, capsWidth: capsWidth, caret: streaming && isLast,
-                                  headingTarget: headingTarget(block, headings: headings, blocks: blocks, index: index))
+        Group {
+            if blocks.count >= NativeMarkdownSurface.minimumBlockCount {
+                NativeMarkdownSurface(blocks: blocks, style: style, capsWidth: capsWidth, streaming: streaming, headings: headings)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    if blocks.isEmpty && streaming { WaitingDots() }
+                    ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                        let isLast = index == blocks.count - 1
+                        MarkdownBlockView(block: block, style: style, capsWidth: capsWidth, caret: streaming && isLast,
+                                          headingTarget: headingTarget(block, headings: headings, blocks: blocks, index: index)).equatable()
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .topTrailing) {
-            if let introduction, !streaming { CopyButton(target: introduction, visible: hovering).offset(y: -3) }
+            // An overlay never changes the row's layout, so the control can
+            // wait until the pointer is actually over this message.
+            if let introduction, !streaming, hovering { CopyButton(target: introduction, visible: hovering).offset(y: -3) }
         }
         .onHover { hovering = $0 }
         .textSelection(.enabled)
@@ -153,19 +188,26 @@ struct MarkdownBodyView: View {
 struct WaitingDots: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.4)) { context in
-            let phase = reduceMotion ? 3 : Int(context.date.timeIntervalSinceReferenceDate / 0.4) % 4
-            HStack(spacing: 5) {
-                ForEach(0..<3, id: \.self) { index in
-                    Circle().fill(TranscriptPalette.muted).frame(width: 7, height: 7).opacity(phase == 0 ? 0.25 : index < phase ? 1 : 0.25)
+        Group {
+            if reduceMotion { dots(phase: 3) }
+            else {
+                TimelineView(.periodic(from: .now, by: 0.4)) { context in
+                    dots(phase: Int(context.date.timeIntervalSinceReferenceDate / 0.4) % 4)
                 }
             }
         }
         .frame(height: 22).accessibilityLabel("Waiting for the reply")
     }
+    private func dots(phase: Int) -> some View {
+        HStack(spacing: 5) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle().fill(TranscriptPalette.muted).frame(width: 7, height: 7).opacity(phase == 0 ? 0.25 : index < phase ? 1 : 0.25)
+            }
+        }
+    }
 }
 
-private struct MarkdownBlockView: View {
+struct MarkdownBlockView: View {
     let block: MarkdownBlock
     let style: MarkdownStyle
     let capsWidth: Bool
@@ -186,14 +228,15 @@ private struct MarkdownBlockView: View {
             .frame(maxWidth: capsWidth ? TranscriptMetrics.proseWidth : .infinity, alignment: .leading)
             .onHover { hovering = $0 }
         case .code(let language, let code):
-            CodeBlockView(language: language, code: code, size: style.baseSize * 0.86)
+            CodeBlockView(language: language, code: code, size: style.baseSize * 0.86).equatable()
         case .list(let ordered, let start, let items):
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     HStack(alignment: .top, spacing: 8) {
                         Text(ordered ? "\(start + index)." : "•").font(.system(size: style.baseSize)).foregroundStyle(style.textColor).frame(minWidth: 16, alignment: .trailing)
+                            .textSelection(.disabled)
                         VStack(alignment: .leading, spacing: 6) {
-                            ForEach(Array(item.enumerated()), id: \.offset) { _, nested in MarkdownBlockView(block: nested, style: style, capsWidth: false) }
+                            ForEach(Array(item.enumerated()), id: \.offset) { _, nested in MarkdownBlockView(block: nested, style: style, capsWidth: false).equatable() }
                         }
                     }
                 }
@@ -204,7 +247,7 @@ private struct MarkdownBlockView: View {
             HStack(alignment: .top, spacing: 12) {
                 RoundedRectangle(cornerRadius: 1.5).fill(TranscriptPalette.hairStrong).frame(width: 3)
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(inner.enumerated()), id: \.offset) { _, nested in MarkdownBlockView(block: nested, style: MarkdownStyle(id: style.id + ".quote", baseSize: style.baseSize, keepsSoftBreaks: style.keepsSoftBreaks, textColor: TranscriptPalette.muted, codeBackground: style.codeBackground, linkColor: style.linkColor), capsWidth: false) }
+                    ForEach(Array(inner.enumerated()), id: \.offset) { _, nested in MarkdownBlockView(block: nested, style: MarkdownStyle(id: style.id + ".quote", baseSize: style.baseSize, keepsSoftBreaks: style.keepsSoftBreaks, textColor: TranscriptPalette.muted, codeBackground: style.codeBackground, linkColor: style.linkColor), capsWidth: false).equatable() }
                 }
             }
             .frame(maxWidth: capsWidth ? TranscriptMetrics.proseWidth : .infinity, alignment: .leading)
@@ -213,15 +256,57 @@ private struct MarkdownBlockView: View {
         }
     }
     @ViewBuilder private func proseText(_ text: AttributedString) -> some View {
-        if caret {
+        if caret && !reduceMotion {
             TimelineView(.periodic(from: .now, by: 0.5)) { context in
-                let on = reduceMotion || Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
+                let on = Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
                 Text(text) + Text(" ▍").foregroundColor(on ? TranscriptPalette.accent : .clear)
             }
             .lineSpacing(style.baseSize * 0.35)
+        } else if caret {
+            (Text(text) + Text(" ▍").foregroundColor(TranscriptPalette.accent)).lineSpacing(style.baseSize * 0.35)
         } else {
             Text(text).lineSpacing(style.baseSize * 0.35)
         }
+    }
+}
+
+/// The transcript's own disclosure line: the same chevron a turn's work header
+/// uses, the whole line tappable, and no motion on anything that decides the
+/// row's height — the AppKit row owns that and its frame snaps. Whether it is
+/// open comes from the conversation, never from this view, so the row can be
+/// re-measured in the same pass as the click. A stock `DisclosureGroup` draws
+/// its chevron from the window's appearance rather than the row's colour
+/// scheme, which is why the transcript does not use one.
+struct TranscriptFoldHeader: View {
+    let title: String
+    let open: Bool
+    let toggle: () -> Void
+    var help: (open: String, closed: String) = ("Hide", "Show")
+    var font: Font = .system(size: 12, weight: .medium)
+    var color: Color = TranscriptPalette.faint
+    @State private var hovering = false
+    var body: some View {
+        HStack(spacing: 4) {
+            Button(action: toggle) {
+                Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(hovering ? TranscriptPalette.text : TranscriptPalette.faint)
+                    .rotationEffect(.degrees(open ? 0 : -90))
+                    .piAnimation(PiMotion.base, value: open)
+                    .frame(width: 18, height: 16)
+                    .background(hovering ? TranscriptPalette.panel : Color.clear, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            }
+            .buttonStyle(.plain).piPointer()
+            .accessibilityHidden(true)
+            Text(title).font(font).foregroundStyle(hovering ? TranscriptPalette.muted : color)
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: toggle)
+        .onHover { hovering = $0 }
+        .help(open ? help.open : help.closed)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(open ? "Hide \(title)" : "Show \(title)")
     }
 }
 
@@ -237,16 +322,30 @@ struct CodeBlockView: View {
                 .lineSpacing(size * 0.4)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14).padding(.top, 31).padding(.bottom, 10)
+            // The toolbar sits in the block's reserved top padding, so it can
+            // wait for the pointer rather than existing in every fence of a
+            // long report.
             HStack(spacing: 6) {
-                if let language { Text(language.lowercased()).font(.system(size: 10.5, weight: .medium, design: .monospaced)).foregroundStyle(TranscriptPalette.faint).opacity(hovering ? 1 : 0).accessibilityLabel("Language \(language)") }
-                CopyButton(target: MarkdownCopyTarget(kind: .code, label: "Copy code", text: code), visible: hovering)
+                if hovering {
+                    if let language { Text(language.lowercased()).font(.system(size: 10.5, weight: .medium, design: .monospaced)).foregroundStyle(TranscriptPalette.faint).accessibilityLabel("Language \(language)") }
+                    CopyButton(target: MarkdownCopyTarget(kind: .code, label: "Copy code", text: code), visible: hovering)
+                }
             }
+            .frame(height: 20)
+            // Only the code is selectable. Inherited selection on decorative
+            // toolbar text creates extra AppKit text fields in every code fence.
+            .textSelection(.disabled)
             .padding(.trailing, 8).padding(.top, 5)
         }
         .background(TranscriptPalette.codeBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(TranscriptPalette.hair, lineWidth: 1))
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.14), value: hovering)
+        .piAnimation(PiMotion.quick, value: hovering)
+        .accessibilityElement(children: .contain)
+        .accessibilityAction(named: "Copy code") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(code, forType: .string)
+        }
     }
 }
 
@@ -266,18 +365,22 @@ struct CopyButton: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 10, weight: .medium))
-                    .contentTransition(.symbolEffect(.replace))
+                    .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                     .scaleEffect(copied && !reduceMotion ? 1.1 : 1).animation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.6), value: copied)
                 Text(copied ? "Copied" : "Copy").font(.system(size: 10.5, weight: .medium)).contentTransition(.opacity)
             }
             .foregroundStyle(copied ? TranscriptPalette.accent : hovering ? TranscriptPalette.text : TranscriptPalette.muted)
             .padding(.horizontal, 6).padding(.vertical, 4)
+            // Copy feedback must not rewrap a heading or change its cached
+            // Markdown block height when the label changes to “Copied”.
+            .frame(width: 64)
             .background(hovering ? TranscriptPalette.panelStrong : TranscriptPalette.codeBackground, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(copied ? TranscriptPalette.accent.opacity(0.4) : hovering ? TranscriptPalette.hairStrong : .clear, lineWidth: 1))
         }
         .buttonStyle(.plain).piPointer()
+        .textSelection(.disabled)
         .opacity(visible || copied || hovering ? 1 : 0)
-        .animation(.easeOut(duration: 0.14), value: visible || copied || hovering)
+        .piAnimation(PiMotion.quick, value: visible || copied || hovering)
         .onHover { hovering = $0 }
         .help(target.label).accessibilityLabel(target.label)
     }
@@ -350,12 +453,14 @@ struct MessageRowView: View {
     let message: TranscriptMessage
     let actions: TranscriptActions
     var inlineAccounting = true
+    var disclosure = TranscriptRowDisclosure.default
+    var toggle: (TranscriptDisclosure.Part) -> Void = { _ in }
     @State private var hovering = false
     var body: some View {
         switch message.kind {
-        case "compaction": CompactionRowView(message: message, actions: actions)
+        case "compaction": CompactionRowView(message: message, actions: actions, open: disclosure.compaction, toggle: { toggle(.compaction(message.id)) })
         case "branch": BranchRowView(message: message)
-        case "failure": FailureRowView(message: message)
+        case "failure": FailureRowView(message: message, actions: actions)
         case "notice": NoticeRowView(message: message)
         default: plain
         }
@@ -374,6 +479,7 @@ struct MessageRowView: View {
                 HStack(spacing: 0) {
                     Spacer(minLength: 40)
                     MarkdownBodyView(source: message.text, style: .user, capsWidth: false)
+                        .equatable()
                         .padding(.horizontal, 14).padding(.vertical, 9)
                         .background(TranscriptPalette.userBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                         .frame(maxWidth: TranscriptMetrics.proseWidth, alignment: .trailing)
@@ -384,10 +490,21 @@ struct MessageRowView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             } else if !(message.role == "assistant" && message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(message.tools ?? []).isEmpty) {
                 // A reply that only called tools keeps its row for anchors and receipts, but shows no body.
-                MarkdownBodyView(source: message.text, streaming: message.isStreaming, copyTargets: copyTargets)
+                MarkdownBodyView(source: message.text, streaming: message.isStreaming, copyTargets: copyTargets).equatable()
             }
             if message.truncated == true {
                 Text("Display preview truncated. Full retained content is available in the native message viewer.").font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted)
+            }
+            if message.role == "assistant", message.stopReason == "length" {
+                // The reply reached the output limit the request carried (the model's own
+                // ceiling, or the room a nearly full window left): a warning on the row,
+                // not a failed run. The output budget is never that limit.
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle").font(.system(size: 11, weight: .medium))
+                    Text("The reply reached the output limit. Ask the model to continue.").font(.system(size: 12))
+                }
+                .foregroundStyle(TranscriptPalette.warning).padding(.top, 2)
+                .accessibilityIdentifier("reply-output-limit")
             }
             // One quiet band under the row for its time, usage and actions; the
             // actions appear on hover without moving anything.
@@ -396,7 +513,7 @@ struct MessageRowView: View {
                 if message.role != "user" { Spacer(minLength: 0) }
                 if message.role == "user", let at = message.at {
                     Text(TranscriptActivity.formatClock(at)).font(.system(size: 10.5)).foregroundStyle(TranscriptPalette.faint).monospacedDigit()
-                        .opacity(hovering ? 1 : 0).animation(.easeOut(duration: 0.14), value: hovering)
+                        .opacity(hovering ? 1 : 0).piAnimation(PiMotion.quick, value: hovering)
                         .accessibilityLabel("Sent at \(TranscriptActivity.formatClock(at))")
                 }
                 RowActionsView(message: message, actions: actions, visible: hovering)
@@ -408,13 +525,15 @@ struct MessageRowView: View {
         .onHover { hovering = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(message.role) message")
+        .transcriptRowActions(message, actions)
     }
 }
 
 private struct CompactionRowView: View {
     let message: TranscriptMessage
     let actions: TranscriptActions
-    @State private var open = false
+    let open: Bool
+    let toggle: () -> Void
     @State private var hovering = false
     var body: some View {
         HStack(spacing: 8) {
@@ -428,9 +547,16 @@ private struct CompactionRowView: View {
                     RowActionsView(message: message, actions: actions, visible: hovering)
                 }
                 if !message.text.isEmpty {
-                    DisclosureGroup(isExpanded: $open) {
-                        MarkdownBodyView(source: message.text, style: .summary, capsWidth: false).padding(.top, 6)
-                    } label: { Text("Summary kept in context").font(.system(size: 11.5, weight: .medium)).foregroundStyle(TranscriptPalette.faint) }
+                    VStack(alignment: .leading, spacing: 0) {
+                        TranscriptFoldHeader(title: "Summary kept in context", open: open, toggle: toggle,
+                                             help: ("Hide the summary this compaction kept in context",
+                                                    "Show the summary this compaction kept in context"),
+                                             font: .system(size: 11.5, weight: .medium))
+                        if open {
+                            MarkdownBodyView(source: message.text, style: .summary, capsWidth: false).equatable()
+                                .padding(.top, 6).padding(.leading, 22)
+                        }
+                    }
                     .padding(.top, 6).overlay(alignment: .top) { Rectangle().fill(TranscriptPalette.hair).frame(height: 1) }
                 }
                 if let accounting = message.accounting { MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(message.id) }) }
@@ -445,6 +571,7 @@ private struct CompactionRowView: View {
         .padding(.vertical, 12)
         .onHover { hovering = $0 }
         .accessibilityLabel("Context compacted")
+        .transcriptRowActions(message, actions)
     }
 }
 
@@ -474,11 +601,20 @@ private struct BranchRowView: View {
 /// A run failure, shown where the conversation stopped rather than in a fixed strip above it.
 private struct FailureRowView: View {
     let message: TranscriptMessage
+    var actions = TranscriptActions()
+    /// A run failure can be retried from where it stopped; a refused send is retyped.
+    private var retryable: Bool { message.id.hasPrefix("failure:run:") }
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text("!").font(.system(size: 11, weight: .bold)).foregroundStyle(.white).frame(width: 18, height: 18).background(TranscriptPalette.danger, in: Circle())
                 Text("Something went wrong").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(TranscriptPalette.danger)
+                Spacer(minLength: 0)
+                if retryable {
+                    Button(action: actions.retry) { Label("Retry request", systemImage: "arrow.clockwise").font(.system(size: 11.5, weight: .medium)) }
+                        .buttonStyle(TranscriptPillStyle(accent: true)).accessibilityIdentifier("retry-run")
+                        .help("Send the failed request again from where the turn stopped, with this chat's current model and effort; queued follow-ups continue after it")
+                }
             }
             Text(message.text).font(.system(size: 13)).foregroundStyle(TranscriptPalette.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             if let detail = message.detail { Text(detail).font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted).fixedSize(horizontal: false, vertical: true) }
@@ -523,17 +659,21 @@ private func actionSymbol(_ kind: ActionKind) -> String {
 
 /// What the model asked a file tool to change, as tinted rows. It is the
 /// request, not proof of what is on disk, and the label says so.
-struct EditDiffView: View {
-    let before: String
-    let after: String
+struct EditDiffView: View, Equatable {
+    /// Already worked out, off any `body`: the rows of the change, what the
+    /// card leaves out, and whether the host cut the request short.
+    let request: TranscriptActivity.EditRequest
     let path: String?
-    let mode: String            // "edit" or "write"
     let outcome: ActionOutcome
-    let created: Bool
+    nonisolated static func == (a: Self, b: Self) -> Bool {
+        a.request == b.request && a.path == b.path && a.outcome == b.outcome
+    }
     var body: some View {
-        let rows: [DiffRow] = mode == "edit" || (created && outcome == .done) ? TranscriptActivity.lineDiff(before, after) : after.components(separatedBy: "\n").map { DiffRow(kind: .context, text: $0) }
-        let shown = rows.prefix(400)
-        let label = (mode == "edit" ? "Requested edit" : "Requested content") + (outcome == .done ? "" : outcome == .running ? " · in progress" : mode == "edit" ? " · not applied" : " · not written")
+        let mode = request.mode
+        let shown = request.rows
+        let label = (mode == "edit" ? "Requested edit" : "Requested content")
+            + (outcome == .done ? "" : outcome == .running ? " · in progress" : mode == "edit" ? " · not applied" : " · not written")
+            + (request.complete ? "" : " · arguments truncated")
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Text(label).font(.system(size: 11.5, weight: .medium)).foregroundStyle(outcome == .done ? TranscriptPalette.muted : outcome == .running ? TranscriptPalette.warning : TranscriptPalette.danger)
@@ -544,6 +684,12 @@ struct EditDiffView: View {
             Rectangle().fill(TranscriptPalette.hair).frame(height: 1)
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 0) {
+                    if request.tooLarge {
+                        Text("Diff too large to show — \(request.lines) lines.")
+                            .font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted)
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                            .accessibilityIdentifier("diff-too-large")
+                    }
                     ForEach(Array(shown.enumerated()), id: \.offset) { _, row in
                         HStack(alignment: .top, spacing: 8) {
                             Text(row.kind == .added ? "+" : row.kind == .removed ? "−" : " ").foregroundStyle(row.kind == .added ? TranscriptPalette.diffAddedMark : row.kind == .removed ? TranscriptPalette.danger : TranscriptPalette.faint).frame(width: 10, alignment: .leading)
@@ -553,7 +699,13 @@ struct EditDiffView: View {
                         .padding(.horizontal, 10)
                         .background(row.kind == .added ? TranscriptPalette.diffAdded : row.kind == .removed ? TranscriptPalette.danger.opacity(0.1) : Color.clear)
                     }
-                    if rows.count > shown.count { Text("… \(rows.count - shown.count) more lines").font(.system(size: 12, design: .monospaced)).foregroundStyle(TranscriptPalette.faint).padding(.horizontal, 28) }
+                    if request.hiddenRows > 0 { Text("… \(request.hiddenRows) more lines").font(.system(size: 12, design: .monospaced)).foregroundStyle(TranscriptPalette.faint).padding(.horizontal, 28) }
+                    if !request.complete {
+                        Text("The host bounded this call's arguments. This is the part that arrived, not the whole request.")
+                            .font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                    }
                 }
                 .textSelection(.enabled)
             }
@@ -569,7 +721,11 @@ struct EditDiffView: View {
 /// One tool call: a row that opens its card with the command or requested change, the output and the outcome.
 struct ActionRowView: View {
     let tool: ToolView
-    @State private var open = false
+    var open = false
+    /// The call's full arguments, once the host has answered for them. Until
+    /// then the card draws the inline document, which always parses.
+    var fetched: ToolInputDocument? = nil
+    var toggle: () -> Void = {}
     @State private var hovering = false
     var body: some View {
         let description = TranscriptActivity.describe(tool)
@@ -577,10 +733,9 @@ struct ActionRowView: View {
         let running = outcome == .running, failed = outcome == .failed || outcome == .cancelled
         let status = running ? "Running" : failed ? (outcome == .cancelled ? "Cancelled" : "Failed") : "Success"
         VStack(alignment: .leading, spacing: 0) {
-            Button { open.toggle() } label: {
+            Button { toggle() } label: {
                 HStack(spacing: 8) {
                     Image(systemName: actionSymbol(description.kind)).font(.system(size: 11, weight: .medium)).foregroundStyle(TranscriptPalette.faint).frame(width: 16)
-                        .symbolEffect(.bounce.down, value: running)
                     Text(description.verb).font(.system(size: 13)).foregroundStyle(hovering ? TranscriptPalette.text : TranscriptPalette.muted).fixedSize()
                     Text(description.object).font(description.kind == .command ? .system(size: 12, design: .monospaced) : .system(size: 13)).foregroundStyle(description.kind == .write ? TranscriptPalette.accent : description.kind == .command ? TranscriptPalette.muted : TranscriptPalette.text).lineLimit(1).truncationMode(.middle)
                         .help(description.path ?? description.object)
@@ -605,14 +760,38 @@ struct ActionRowView: View {
             .onHover { hovering = $0 }
             .accessibilityLabel("\(description.verb) \(description.object), \(status)")
             if open {
+                // The fetched document when the host has answered, the inline
+                // one until then: both parse, so a card is never a fragment.
+                let shown = requested
                 VStack(alignment: .leading, spacing: 6) {
                     Text(description.kind == .command ? "Shell" : tool.name).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.muted)
+                    if let note = truncationNote {
+                        Text(note).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.muted)
+                            .accessibilityIdentifier("tool-input-truncated")
+                    }
                     if description.kind == .command {
-                        Text("$ " + (TranscriptActivity.parseCommand(tool.input) ?? description.object)).font(.system(size: 12, design: .monospaced)).foregroundStyle(TranscriptPalette.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                    } else if let edit = TranscriptActivity.editTexts(tool) {
-                        EditDiffView(before: edit.before, after: edit.after, path: description.path, mode: tool.name == "write" ? "write" : "edit", outcome: outcome, created: tool.added != nil && (tool.removed ?? 0) == 0)
+                        Text("$ " + (TranscriptActivity.parseCommand(shown.input) ?? description.object)).font(.system(size: 12, design: .monospaced)).foregroundStyle(TranscriptPalette.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    } else if let edit = TranscriptActivity.editRequest(shown) {
+                        EditDiffView(request: edit, path: description.path, outcome: outcome).equatable()
                     } else {
-                        ScrollView(.vertical) { Text(tool.input).font(.system(size: 12, design: .monospaced)).foregroundStyle(TranscriptPalette.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 320)
+                        // Never the raw fragment: a call whose arguments the
+                        // host cut shows what could be read of them, and says
+                        // that is not all of it.
+                        let arguments = TranscriptActivity.argumentsText(shown)
+                        ScrollView(.vertical) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                if arguments.text.isEmpty {
+                                    Text("The host bounded this call's arguments and none of them could be read.")
+                                        .font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted).fixedSize(horizontal: false, vertical: true)
+                                } else {
+                                    Text(arguments.text).font(.system(size: 12, design: .monospaced)).foregroundStyle(TranscriptPalette.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                if !arguments.complete {
+                                    Text("The host bounded this call's arguments. This is the part that arrived, not the whole request.")
+                                        .font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted).fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }.frame(maxHeight: 320)
                             .accessibilityLabel("Tool input")
                     }
                     if tool.output.isEmpty {
@@ -628,39 +807,128 @@ struct ActionRowView: View {
                 .background(TranscriptPalette.toolBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(TranscriptPalette.hair, lineWidth: 1))
                 .padding(.leading, 28).padding(.top, 4).padding(.bottom, 8)
-                .transition(.opacity.combined(with: .offset(y: -4)))
             }
         }
-        .animation(.easeOut(duration: 0.22), value: open)
+        // No animation on the card: the row's AppKit frame snaps to the new
+        // height at once, and an animated inner size would fight that frame
+        // (and keep the whole row invalidating for every frame of it).
+    }
+    /// The call as the card should read it: the fetched document when one has
+    /// arrived, otherwise the inline one.
+    private var requested: ToolView {
+        guard let fetched else { return tool }
+        var copy = tool
+        copy.input = fetched.input
+        copy.inputTruncated = fetched.truncated ? true : nil
+        copy.inputBytes = fetched.bytes
+        return copy
+    }
+    /// What the card says when even what it is showing is short of the request.
+    private var truncationNote: String? {
+        let current = requested
+        guard current.inputTruncated == true else { return nil }
+        guard let bytes = current.inputBytes, bytes > 0 else { return "Preview truncated" }
+        return "Preview truncated · \(ToolInputDisplay.shortSize(bytes))"
     }
 }
 
 /// The expanded list of one run of tool calls; each row opens its own card.
+/// A long run is drawn through `NativeWorkListSurface`, which keeps every card
+/// but lays out only the ones near the conversation's viewport. A short run
+/// keeps the simpler SwiftUI stack.
 struct ActivityGroupView: View {
     let tools: [ToolView]
+    var openTools: Set<String> = []
+    /// Full argument documents the conversation has fetched, by call.
+    var fetched: [String: ToolInputDocument] = [:]
+    var toggle: (String) -> Void = { _ in }
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) { ForEach(tools) { ActionRowView(tool: $0) } }
+        Group {
+            if tools.count >= NativeWorkListSurface.minimumRowCount {
+                NativeWorkListSurface(tools: tools, openTools: openTools, fetched: fetched, toggle: toggle)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(tools) { tool in
+                        ActionRowView(tool: tool, open: openTools.contains(tool.id), fetched: fetched[tool.id], toggle: { toggle(tool.id) }).equatable()
+                    }
+                }
+            }
+        }
             .padding(.leading, 4).padding(.vertical, 2)
             .accessibilityLabel("Tool activity")
     }
 }
 
 private struct ReasoningView: View {
-    let message: TranscriptMessage
-    @State private var open = false
+    let thinking: String
+    let streaming: Bool
+    var open = false
+    var toggle: () -> Void = {}
     var body: some View {
-        if let thinking = message.thinking, !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            DisclosureGroup(isExpanded: $open) {
-                MarkdownBodyView(source: thinking, style: .reasoning, capsWidth: false).padding(.top, 6)
-                    .transition(.opacity.combined(with: .offset(y: -4)))
-            } label: { Text("Exposed reasoning").font(.system(size: 12, weight: .medium)).foregroundStyle(TranscriptPalette.faint) }
-            .animation(.easeOut(duration: 0.22), value: open)
+        if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                TranscriptFoldHeader(title: "Exposed reasoning", open: open, toggle: toggle,
+                                     help: ("Hide the reply's exposed reasoning", "Show the reply's exposed reasoning"))
+                if open {
+                    MarkdownBodyView(source: thinking, style: .reasoning, capsWidth: false, streaming: streaming).equatable()
+                        .padding(.top, 6).padding(.leading, 22)
+                }
+            }
             .padding(.vertical, 4)
         }
     }
 }
 
 // MARK: - Blocks and turns
+
+/// A text delta cannot change an earlier tool's summary. Keeping this small
+/// projection separate avoids decoding every retained tool input again while
+/// only the answer text or elapsed time changes.
+private struct WorkSummaryView: View, Equatable {
+    let tools: [ToolView]
+    let reasoned: Bool
+    var body: some View { Text(TranscriptActivity.summarizeWork(tools, reasoned: reasoned) ?? "Working") }
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.tools == b.tools && a.reasoned == b.reasoned }
+}
+
+/// Holds a turn's work list at its own height while the turn is open and at
+/// nothing while it is folded. A folded list is never measured and never
+/// placed: both send every tool row through native layout again for a click
+/// that hides them all.
+///
+/// A SwiftUI `Layout` cannot keep the measurement itself — SwiftUI drops a
+/// layout's cache when the row host's root view is replaced, which is exactly
+/// what a click does. So the row container keeps it, keyed as strictly as
+/// `TranscriptGeometryCache` keys a whole row, and hands it back in as a plain
+/// value: `known`. Unfolding is then a frame change and one placement, not a
+/// measurement of sixty tool rows followed by that placement.
+private struct FoldedWork: Layout {
+    var open: Bool
+    /// What this list measured last time it was open, at this width and this
+    /// content. Nil means it must be measured.
+    var known: CGFloat?
+    /// True while the document is moving this row between its open and its
+    /// folded height. The list is placed at its own height throughout and the
+    /// row clips to the frame the motion is interpolating, so folding is the
+    /// list sliding out of sight rather than vanishing before the row moves.
+    var placing = false
+    /// Reports a fresh measurement to the row container that keeps it.
+    var measured: (CGFloat) -> Void = { _ in }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let subview = subviews.first else { return .zero }
+        let width = proposal.width ?? 0
+        guard open else { return CGSize(width: width, height: 0) }
+        if let known { return CGSize(width: width, height: known) }
+        let size = subview.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        measured(size.height)
+        return size
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard open || placing, let subview = subviews.first else { return }
+        subview.place(at: CGPoint(x: bounds.minX, y: bounds.minY), anchor: .topLeading,
+                      proposal: ProposedViewSize(width: bounds.width, height: nil))
+    }
+}
 
 /// A reply in the order it happened: first what the model did before
 /// answering (its exposed reasoning, one row per tool call, the figures of
@@ -671,13 +939,20 @@ struct BlockRowView: View {
     let actions: TranscriptActions
     var fresh = false
     var now: () -> Double = { Date().timeIntervalSince1970 * 1000 }
-    @State private var open = true
+    var disclosure = TranscriptRowDisclosure.default
+    var toggle: (TranscriptDisclosure.Part) -> Void = { _ in }
+    /// What this turn's work list measured last time it was open at this
+    /// width and content; the row container keeps it across folds.
+    var workListHeight: CGFloat? = nil
+    var workListMeasured: (CGFloat) -> Void = { _ in }
+    /// True while the document is moving this row between its two heights.
+    var foldInMotion = false
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var open: Bool { disclosure.work }
     var body: some View {
         let reasoned = TranscriptActivity.blockReasoned(block)
         let hasWork = !block.tools.isEmpty || reasoned
-        let summary = TranscriptActivity.summarizeWork(block.tools, reasoned: reasoned)
         let accounting = block.accounting
         let tokens = TranscriptActivity.tokens(of: accounting)
         let hasUsage = tokens != nil || accounting.costUSD != nil || accounting.model != nil
@@ -687,7 +962,7 @@ struct BlockRowView: View {
         VStack(alignment: .leading, spacing: 4) {
             if hasWork {
                 VStack(alignment: .leading, spacing: 2) {
-                    workHeader(summary: summary)
+                    workHeader(reasoned: reasoned)
                     if reasoned && !open, let teaser = TranscriptActivity.reasoningTeaser(block.replies.compactMap(\.thinking).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.last ?? "") {
                         Text(teaser).font(.system(size: 12).italic()).foregroundStyle(TranscriptPalette.muted).lineLimit(1)
                             .help("The reply's exposed reasoning begins like this; expand the line for all of it")
@@ -708,29 +983,46 @@ struct BlockRowView: View {
                         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: trail.map(\.id))
                         .accessibilityLabel("Recent actions")
                     }
-                    if open {
-                        // Every request of the block in order: reasoning, its tool calls, its figures.
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(block.replies) { reply in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    ReasoningView(message: reply)
-                                    if let tools = reply.tools, !tools.isEmpty { ActivityGroupView(tools: tools) }
-                                    if let accounting = reply.accounting, !(reply.tools ?? []).isEmpty || !(reply.thinking ?? "").isEmpty || reply.id != block.message?.id {
-                                        MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(reply.id) })
+                    // Every request of the block in order: reasoning, its tool calls,
+                    // its figures. The list stays in the tree while closed, at zero
+                    // height and clipped: tearing down and rebuilding sixty tool rows
+                    // and their native text is what made a click cost two frames.
+                    // The list always keeps its own height, so the proposal its
+                    // rows see is the same whether the turn is open, closed or
+                    // being measured; while it is folded it is not placed, so a
+                    // click that hides it does not lay every tool row out again.
+                    if hasWork {
+                        FoldedWork(open: open, known: workListHeight, placing: foldInMotion, measured: workListMeasured) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(block.replies) { reply in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        ReasoningView(thinking: reply.thinking ?? "", streaming: reply.isStreaming,
+                                                      open: disclosure.openReasoning.contains(reply.id), toggle: { toggle(.reasoning(reply.id)) }).equatable()
+                                        if let tools = reply.tools, !tools.isEmpty {
+                                            ActivityGroupView(tools: tools, openTools: disclosure.openTools, fetched: disclosure.toolInputs,
+                                                              toggle: { toggle(.tool($0)) }).equatable()
+                                        }
+                                        if let accounting = reply.accounting, !(reply.tools ?? []).isEmpty || !(reply.thinking ?? "").isEmpty || reply.id != block.message?.id {
+                                            MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(reply.id) })
+                                        }
                                     }
                                 }
                             }
+                            .padding(.leading, 10)
+                            .overlay(alignment: .leading) { Rectangle().fill(TranscriptPalette.hairStrong).frame(width: 2) }
+                            .padding(.top, 2).padding(.leading, 2).padding(.bottom, 4)
+                            .fixedSize(horizontal: false, vertical: true)
                         }
-                        .padding(.leading, 10)
-                        .overlay(alignment: .leading) { Rectangle().fill(TranscriptPalette.hairStrong).frame(width: 2) }
-                        .padding(.top, 2).padding(.leading, 2).padding(.bottom, 4)
-                        .transition(.opacity.combined(with: .offset(y: -4)))
+                        .clipped()
+                        .allowsHitTesting(open)
+                        .accessibilityHidden(!open)
                     }
                 }
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: open)
                 .onHover { hovering = $0 }
             }
-            if let message = block.message { MessageRowView(message: message, actions: actions, inlineAccounting: false) }
+            if let message = block.message {
+                MessageRowView(message: message, actions: actions, inlineAccounting: false, disclosure: disclosure, toggle: toggle).equatable()
+            }
             // A reply inside a multi-reply turn keeps its own figures; the turn line closes the turn.
             if !block.live, !merged, hasUsage { replyFigures(tokens: tokens) }
             if let turn = block.turn, !turn.live { TurnLineView(turn: turn, settled: settled, now: now, actions: actions, model: accounting.model, modelMessageID: accounting.modelMessageID) }
@@ -738,13 +1030,19 @@ struct BlockRowView: View {
         .padding(.bottom, 10)
     }
     /// The header of the work rows: what the reply did, and the chevron that folds the rows.
-    private func workHeader(summary: String?) -> some View {
+    private func workHeader(reasoned: Bool) -> some View {
         HStack(spacing: 4) {
             if block.live && block.tools.contains(where: { TranscriptActivity.outcome(of: $0) == .running }) { SpinnerView() }
-            Text(summary ?? "Working").font(.system(size: 12.5, weight: .medium)).foregroundStyle(hovering ? TranscriptPalette.text : TranscriptPalette.muted)
-            Button { open.toggle() } label: {
+            WorkSummaryView(tools: block.tools, reasoned: reasoned).equatable()
+                .font(.system(size: 12.5, weight: .medium)).foregroundStyle(hovering ? TranscriptPalette.text : TranscriptPalette.muted)
+            Button { toggle(.work(block.key)) } label: {
+                // The chevron turns on the same curve the document moves the
+                // row on. A rotation decides nothing's height, so this is the
+                // one part of a disclosure SwiftUI may still animate.
                 Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(hovering ? TranscriptPalette.text : TranscriptPalette.faint)
-                    .rotationEffect(.degrees(open ? 0 : -90)).frame(width: 20, height: 18)
+                    .rotationEffect(.degrees(open ? 0 : -90))
+                    .piAnimation(PiMotion.base, value: open)
+                    .frame(width: 20, height: 18)
                     .background(hovering ? TranscriptPalette.panel : Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
             .buttonStyle(.plain).piPointer()
@@ -752,7 +1050,7 @@ struct BlockRowView: View {
             .accessibilityLabel(open ? "Hide work" : "Show work")
         }
         .contentShape(Rectangle())
-        .onTapGesture { open.toggle() }
+        .onTapGesture { toggle(.work(block.key)) }
     }
     /// Under a reply of a multi-reply turn: how long it took, its tokens, cost and model.
     private func replyFigures(tokens: Double?) -> some View {
@@ -878,8 +1176,30 @@ struct TranscriptStopStyle: ButtonStyle {
 // Rows skip their body while their inputs are unchanged, so a streaming delta
 // re-renders only the row that changed and settled rows never parse twice.
 extension MessageRowView: Equatable {
-    nonisolated static func == (a: MessageRowView, b: MessageRowView) -> Bool { a.message == b.message && a.inlineAccounting == b.inlineAccounting }
+    nonisolated static func == (a: MessageRowView, b: MessageRowView) -> Bool { a.message == b.message && a.inlineAccounting == b.inlineAccounting && a.disclosure == b.disclosure }
 }
 extension BlockRowView: Equatable {
-    nonisolated static func == (a: BlockRowView, b: BlockRowView) -> Bool { a.block == b.block && a.fresh == b.fresh }
+    nonisolated static func == (a: BlockRowView, b: BlockRowView) -> Bool { a.block == b.block && a.fresh == b.fresh && a.disclosure == b.disclosure && a.workListHeight == b.workListHeight && a.foldInMotion == b.foldInMotion }
+}
+extension MarkdownBodyView: Equatable {
+    nonisolated static func == (a: Self, b: Self) -> Bool {
+        a.source == b.source && a.style == b.style && a.capsWidth == b.capsWidth && a.streaming == b.streaming && a.copyTargets == b.copyTargets
+    }
+}
+extension MarkdownBlockView: Equatable {
+    nonisolated static func == (a: Self, b: Self) -> Bool {
+        a.block == b.block && a.style == b.style && a.capsWidth == b.capsWidth && a.caret == b.caret && a.headingTarget == b.headingTarget
+    }
+}
+extension CodeBlockView: Equatable {
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.code == b.code && a.language == b.language && a.size == b.size }
+}
+extension ActionRowView: Equatable {
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.tool == b.tool && a.open == b.open && a.fetched == b.fetched }
+}
+extension ActivityGroupView: Equatable {
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.tools == b.tools && a.openTools == b.openTools && a.fetched == b.fetched }
+}
+extension ReasoningView: Equatable {
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.thinking == b.thinking && a.streaming == b.streaming && a.open == b.open }
 }

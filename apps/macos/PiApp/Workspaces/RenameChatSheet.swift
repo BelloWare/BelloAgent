@@ -17,7 +17,7 @@ struct RenameChatSheet: View {
     private var canSuggest: Bool { chat.flatMap { item in model.profiles.first { $0.id == item.profileID } }.map { model.titleSuggestionsAvailable(for: $0) } ?? false }
 
     var body: some View {
-        PiSheet("Rename chat", subtitle: chat?.title, symbol: "pencil", width: 520, height: 400) {
+        PiSheet("Rename chat", subtitle: chat?.title, symbol: "pencil", width: 520, height: 400, cancelDisabled: saving) {
             VStack(alignment: .leading, spacing: PiSpacing.md) {
                 PiTextField(placeholder: "Chat title", text: $title, icon: "text.cursor", onSubmit: { save() })
                     .accessibilityIdentifier("sessionTitle")
@@ -46,7 +46,7 @@ struct RenameChatSheet: View {
                 PiStatusLine(text: notice, tone: .danger)
             }.padding(PiSpacing.xl)
         } actions: {
-            Button("Cancel") { dismiss() }
+            Button("Cancel") { dismiss() }.disabled(saving)
         } footer: {
             HStack {
                 Spacer()

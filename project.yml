@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.42
-    CURRENT_PROJECT_VERSION: 46
+    MARKETING_VERSION: 0.1.60
+    CURRENT_PROJECT_VERSION: 64
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Deleting a connection that was edited into a new route now works: the catalog link the edit left behind goes with it, the vault is read back to prove the deletion, and a deletion that does not happen says why in the footer and the banner. Saving a changed route keeps Settings open and explains the new tab."
+    RELEASE_MESSAGE: "Faster everywhere, transitions that feel right, a clearer UI, and code split along its seams."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO
@@ -57,6 +57,12 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.belloware.PiAppTests
+      configs:
+        # Which configuration the bundle was built in, said rather than
+        # inferred: the timing tests hold themselves to an absolute
+        # millisecond budget only where those milliseconds mean something.
+        Release:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: [$(inherited), PI_RELEASE_TESTS]
 schemes:
   PiApp:
     build:

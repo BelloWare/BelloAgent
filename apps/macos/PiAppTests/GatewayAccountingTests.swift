@@ -20,7 +20,7 @@ final class GatewayAccountingTests: XCTestCase {
         for fields in cases { XCTAssertThrowsError(try RoutingConfiguration.validate(.object(fields))) }
     }
     private func folder() throws -> URL {
-        let base = ProcessInfo.processInfo.environment["PI_BUILD_ROOT"] ?? NSTemporaryDirectory()
+        let base = testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()
         let root = URL(fileURLWithPath: base).appendingPathComponent("accounting-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
@@ -474,6 +474,6 @@ final class GatewayAccountingTests: XCTestCase {
         try await reopened.close()
         let db = try CaptureDatabase(url: root.appendingPathComponent("requests.sqlite"))
         XCTAssertNil(try db.rows("SELECT response_model FROM attempts WHERE id=?", [.text(id)]).first?["response_model"]?.string)
-        XCTAssertEqual(try db.rows("SELECT value FROM archive_info WHERE name='dashboard-projection'").first?["value"]?.data, Data([6]))
+        XCTAssertEqual(try db.rows("SELECT value FROM archive_info WHERE name='dashboard-projection'").first?["value"]?.data, Data([7]))
     }
 }

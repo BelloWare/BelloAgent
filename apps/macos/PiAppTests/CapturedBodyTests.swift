@@ -117,7 +117,10 @@ final class CapturedBodyTests: XCTestCase {
         XCTAssertNotEqual(document.structured(format: .combined)?.id, document.structured(format: .json)?.id,
                           "Changing view resets the native outline instead of retaining a stale event tree")
         XCTAssertTrue(document.displayedText(format: .json).contains("Event 2 · [DONE]"))
-        XCTAssertEqual(document.displayedText(format: .text), text)
+        // The plain UTF-8 view is decoded once by the view, off the main actor,
+        // and handed in; the document never re-decodes its bytes per render.
+        XCTAssertEqual(document.displayedText(format: .text, plain: String(decoding: bytes, as: UTF8.self)), text)
+        XCTAssertEqual(document.displayedText(format: .text), "", "the document does not decode a 64 MiB body on its own")
         XCTAssertEqual(document.displayedText(format: .hex, hex: try CapturedBodyHex.render(bytes)), try CapturedBodyHex.render(bytes))
         XCTAssertEqual(document.bytes, bytes)
         XCTAssertTrue(document.metadata.summary.hasPrefix("partial"), "A terminal object does not remove the retained-capture warning")
@@ -188,12 +191,15 @@ final class CapturedBodyTests: XCTestCase {
         outline.dataSource = coordinator; outline.delegate = coordinator
         outline.reloadData(); outline.expandItem(root)
         XCTAssertEqual(outline.numberOfRows, 3)
+        // The coordinator writes the SwiftUI binding on the next run-loop turn, never inside the outline's own update.
+        func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.03)) }
         outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         coordinator.outlineViewSelectionDidChange(Notification(name: NSOutlineView.selectionDidChangeNotification, object: outline))
-        XCTAssertEqual(selectedDetail, stream.outline.formatted)
+        XCTAssertEqual(selectedDetail, "", "nothing is written synchronously from the delegate")
+        settle(); XCTAssertEqual(selectedDetail, stream.outline.formatted)
         outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         coordinator.outlineViewSelectionDidChange(Notification(name: NSOutlineView.selectionDidChangeNotification, object: outline))
-        XCTAssertEqual(selectedDetail, stream.frames[0].formatted)
+        settle(); XCTAssertEqual(selectedDetail, stream.frames[0].formatted)
         outline.expandItem(completed)
         XCTAssertEqual(outline.numberOfRows, 6)
         outline.expandItem(data); outline.expandItem(data.child(0))
@@ -328,11 +334,20 @@ final class CapturedBodyTests: XCTestCase {
             XCTAssertThrowsError(try metadata.count(limit: CapturedBodyReader.limit("response")))
         }
         XCTAssertEqual(try CapturedBodyHex.render(Data([0, 10, 127, 255])), "00000000  00 0a 7f ff \n")
+        // Same dump, without one String(format:) call and one intermediate
+        // string per sixteen bytes: a large body used to spin a core for it.
+        let wide = Data((0..<(1 << 17)).map { UInt8(truncatingIfNeeded: $0) })
+        let started = ProcessInfo.processInfo.systemUptime
+        let dump = try CapturedBodyHex.render(wide)
+        let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+        print("PERF hex dump of \(wide.count) bytes = \(String(format: "%.1f", elapsed)) ms")
+        XCTAssertEqual(dump.prefix(34), "00000000  00 01 02 03 04 05 06 07 ")
+        XCTAssertTrue(dump.contains("\n00010000  "), "offsets past 16 bits keep their eight hex digits")
+        XCTAssertEqual(dump.filter { $0 == "\n" }.count, wide.count / 16)
     }
 
     @MainActor func testCaptureJSONViewerWhenRequested() async throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard let destination = environment["PI_APP_USAGE_CAPTURE_ROOT"] ?? environment["TEST_RUNNER_PI_APP_USAGE_CAPTURE_ROOT"] else {
+        guard let destination = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") else {
             throw XCTSkip("Set PI_APP_USAGE_CAPTURE_ROOT for the optional synthetic JSON viewer image")
         }
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("body-preview-\(UUID().uuidString)")
@@ -378,8 +393,7 @@ final class CapturedBodyTests: XCTestCase {
     }
 
     @MainActor func testCaptureCombinedResponseViewerWhenRequested() async throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard let destination = environment["PI_APP_USAGE_CAPTURE_ROOT"] ?? environment["TEST_RUNNER_PI_APP_USAGE_CAPTURE_ROOT"] else {
+        guard let destination = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") else {
             throw XCTSkip("Set PI_APP_USAGE_CAPTURE_ROOT for the optional synthetic SSE response image")
         }
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("sse-preview-\(UUID().uuidString)")

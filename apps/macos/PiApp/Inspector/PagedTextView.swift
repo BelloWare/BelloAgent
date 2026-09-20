@@ -14,7 +14,8 @@ struct PagedTextView: NSViewRepresentable {
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let editor = scroll.documentView as? NSTextView, editor.string != text else { return }
-        editor.string = text; editor.scrollToBeginningOfDocument(nil)
+        editor.string = text
+        DispatchQueue.main.async { [weak editor] in editor?.scrollToBeginningOfDocument(nil) }
     }
 }
 

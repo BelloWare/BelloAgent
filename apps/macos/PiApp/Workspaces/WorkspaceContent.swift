@@ -1,6 +1,26 @@
 import SwiftUI
+import AppKit
 
 extension WorkspaceModel {
+    @discardableResult
+    func copySessionID(_ id: String, to pasteboard: NSPasteboard = .general) -> Bool {
+        copySessionDetails(id, to: pasteboard) { $0.id }
+    }
+
+    @discardableResult
+    func copySessionReference(_ id: String, to pasteboard: NSPasteboard = .general) -> Bool {
+        copySessionDetails(id, to: pasteboard) { SessionReference(chat: $0).text }
+    }
+
+    private func copySessionDetails(_ id: String, to pasteboard: NSPasteboard, text: (ChatRecord) -> String) -> Bool {
+        // Resolve the clicked row, even when another conversation has focus.
+        guard let item = record(id) else { error = "That chat is no longer available to copy."; return false }
+        let value = text(item)
+        pasteboard.clearContents()
+        guard pasteboard.setString(value, forType: .string) else { error = "The session reference could not be copied. Try again."; return false }
+        return true
+    }
+
     func inspectConversation(_ id: String) { contentSessionID = id; showConversationContent = true }
     func searchConversation(_ id: String, query: String, start: Int) async throws -> ContentSearch {
         guard let item = record(id) else { throw StoreError.invalidRecord }
@@ -28,7 +48,7 @@ extension WorkspaceModel {
         defer { if !loaded { view.browsingHistory = wasBrowsing } }
         if opened.contains(id), let host = hosts[item.workspaceID] {
             let result = try await host.request("session.history", sessionID: id, params: ["before": .number(Double(hit.position))]).object ?? [:]
-            view.messages = try JSONDecoder().decode([TranscriptMessage].self, from: JSONEncoder().encode(result["messages"] ?? .array([])))
+            view.messages = try TranscriptMessage.page(result["messages"] ?? .array([]))
             view.hostBefore = result["before"]?.number
         } else if let path = item.path {
             let page = try await history.read(path: path, around: hit.id); view.messages = page.messages; view.before = page.before

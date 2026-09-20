@@ -5,9 +5,11 @@ import XCTest
 /// be observed without a network.
 private actor FlakyClient: ModelClient {
     var failures: [AgentError], replies: [ModelReply], requests = 0
+    /// The model and reasoning effort of every request, so a retry can be compared with the request it repeats.
+    var routes: [String] = []
     init(failures: [AgentError], replies: [ModelReply]) { self.failures = failures; self.replies = replies }
     func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
-        requests += 1
+        requests += 1; routes.append(profile.model + "/" + (profile.raw["thinkingLevel"].text ?? "default"))
         try Task.checkCancellation()
         if !failures.isEmpty {
             // A partial reply arrives before the stream dies, as with a dropped connection.
@@ -22,6 +24,36 @@ private actor FlakyClient: ModelClient {
 final class RetryTests: XCTestCase {
     private func session(_ client: FlakyClient, root: URL) throws -> AgentSession {
         try AgentSession(id:"s",profile:fixtureProfile(),apiKey:"test",cwd:root,directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false)
+    }
+
+    /// A request the policy does not retry on its own can be retried by the
+    /// reader from where it stopped, without a new message; a completed turn cannot.
+    func testAFailedRequestCanBeRetriedFromWhereItStopped() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=FlakyClient(failures:[AgentError("provider_http","Provider returned HTTP 401. The gateway rejected the API key."),AgentError("provider_http","Provider returned HTTP 401. Still rejected.")],replies:[answer("recovered")])
+        let session=try session(client,root:root)
+        var submission=Submission(commandID:"c1",turnID:"t1",text:"go"); submission.model="override-model"; submission.thinkingLevel="high"
+        _ = try await session.submit(submission,steer:false)
+        try await eventually { !(await session.isRunning) }
+        let failed=await session.snapshot(); let firstRequests=await client.requests
+        XCTAssertEqual(failed["state"].text,"error"); XCTAssertEqual(firstRequests,1,"a 401 is not retried by the policy")
+        // The retry carries the chat's current choices: here the pills moved to another model and effort.
+        try await session.retryRun(overrides:["model":"switched-model","thinkingLevel":"low"])
+        try await eventually { !(await session.isRunning) }
+        let switched=await session.snapshot()
+        XCTAssertEqual(switched["state"].text,"error","the second attempt failed too")
+        // Cleared pills retry with the connection's own model and effort.
+        try await session.retryRun(overrides:[:])
+        try await eventually { !(await session.isRunning) }
+        let recovered=await session.snapshot(); let secondRequests=await client.requests; let routes=await client.routes
+        let profile=try fixtureProfile(); let defaults=profile.model + "/" + (profile.raw["thinkingLevel"].text ?? "default")
+        XCTAssertEqual(routes,["override-model/high","switched-model/low",defaults],"each retry sends the chat's current model and effort")
+        XCTAssertEqual(secondRequests,3)
+        XCTAssertEqual(recovered["state"].text,"idle"); XCTAssertTrue(recovered["preflightError"].isNull); XCTAssertEqual(recovered["queuePaused"].flag,false)
+        XCTAssertEqual(recovered["messages"].list.last?["text"].text,"recovered")
+        XCTAssertEqual(recovered["messages"].list.filter { $0["role"].text=="user" }.count,1,"no message was added to retry")
+        do { try await session.retryRun(); XCTFail("a completed turn has nothing to retry") } catch let error as AgentError { XCTAssertEqual(error.code,"nothing_to_retry") }
+        await session.close()
     }
 
     func testTransientFailuresAreRetriedTwiceBeforeTheReplyLands() async throws {
@@ -89,6 +121,7 @@ final class RetryTests: XCTestCase {
 
     func testRetryPolicy() {
         XCTAssertTrue(AgentSession.isRetryable(AgentError("provider_transport", "x")))
+        XCTAssertTrue(AgentSession.isRetryable(AgentError("stream_backpressure", "Consumer could not keep up")), "a dropped stream is retried, never reported as the model's failure")
         XCTAssertTrue(AgentSession.isRetryable(AgentError("provider_http", "Provider returned HTTP 429. slow down")))
         XCTAssertTrue(AgentSession.isRetryable(AgentError("provider_http", "Provider returned HTTP 502. bad gateway")))
         XCTAssertFalse(AgentSession.isRetryable(AgentError("provider_http", "Provider returned HTTP 401. no")))

@@ -3,7 +3,7 @@ import XCTest
 
 final class SideTests: XCTestCase {
     @MainActor func testExactSideAndForkEnterUsePackagedHelperWithoutSendingAndClosedSideSurvivesRestart() async throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let root = try scratch()
         let workspace = WorkspaceRecord(id: "project", path: root.path, trusted: true)
         var profile = ProfileRecord(); profile.id = "p"; profile.baseUrl = "http://127.0.0.1:9/v1"; profile.modelId = "router"
         let connection = VaultProfile(profile: profile, apiKey: "synthetic-unused-key")
@@ -13,7 +13,7 @@ final class SideTests: XCTestCase {
             $0.resources[workspace.id] = .object(["codexHome": .string(root.appendingPathComponent("codex").path)])
         }
         let state = root.appendingPathComponent("state"), model = WorkspaceModel(stateRoot: state, vault: vault)
-        defer { model.shutdown() }
+        registerWorkspaceFixtureTeardown(model, root: root)
         try await model.reloadConfiguration()
         let parent = ChatRecord(id: "parent", workspaceID: workspace.id, title: "Source", path: nil, profileID: profile.id, model: "selected-model", thinkingLevel: "high", contextWindow: 64_000, maxOutputTokens: 8_000)
         try await model.store?.put(parent, kind: "chat", id: parent.id); model.chats = [parent]
@@ -63,20 +63,21 @@ final class SideTests: XCTestCase {
         model.shutdown(); try await host.shutdownAndWait(); try await model.traces.close(); await model.store?.close()
 
         let restored = WorkspaceModel(stateRoot: state, vault: vault)
+        registerWorkspaceFixtureTeardown(restored, root: root)
         await restored.restore()
         XCTAssertEqual(restored.chats.first { $0.id == side.id }?.parentSessionID, parent.id)
         XCTAssertNotNil(restored.chats.first { $0.id == fork.id && $0.parentSessionID == nil })
         await restored.select(side.id); XCTAssertEqual(restored.selected?.draft, "Saved unfinished question")
         XCTAssertTrue(restored.hosts.isEmpty, "Reading a saved child after restart does not open a gateway")
-        restored.shutdown(); try await restored.traces.close(); await restored.store?.close()
     }
     private func scratch() throws -> URL {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()).appendingPathComponent("native-side-\(UUID().uuidString)")
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("native-side-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); return root
     }
     @MainActor func testEphemeralDraftsAndAnchorsNeverEnterSQLiteAndBringBackDoesNotSubmit() async throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let root = try scratch()
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())), parent = SessionDisplay(id: "main"), side = SessionDisplay(id: "side")
+        registerWorkspaceFixtureTeardown(model, root: root)
         parent.draft = "original draft"; parent.state = "running"; side.draft = "ephemeral secret"
         model.displays = ["main": parent, "side": side]
         model.sides["main"] = SideRecord(id: "side", parentID: "main", workspaceID: "w", profileID: "p", title: "side")
@@ -91,11 +92,11 @@ final class SideTests: XCTestCase {
         let intents = try await model.store?.list(CommandIntent.self, kind: "pending:main")
         XCTAssertEqual(intents?.count, 0)
         XCTAssertThrowsError(try model.bringBack(String(repeating: "x", count: 262_145), from: "side", replace: true))
-        model.shutdown()
     }
     @MainActor func testLostKeepAcknowledgementRecoversFileWithoutStartingAHostAndRetainsReadOnlyMode() async throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let root = try scratch()
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
         let path = root.appendingPathComponent("Workspaces/w/Sessions/side_side.jsonl")
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         let bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"side\"}\n{\"type\":\"message\",\"id\":\"a\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"retained 🌍\"}}\n".utf8)
@@ -110,8 +111,9 @@ final class SideTests: XCTestCase {
         await model.reconcileSideKeeps(); XCTAssertEqual(model.chats.count, 1)
     }
     @MainActor func testFailedKeepValidationPreservesRecoveryIntentAndHostLossDiscardsOnlyUnkeptMemory() async throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let root = try scratch()
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())), path = root.appendingPathComponent("side.jsonl")
+        registerWorkspaceFixtureTeardown(model, root: root)
         try Data("{\"type\":\"session\",\"version\":3,\"id\":\"wrong\"}\n".utf8).write(to: path)
         let chat = ChatRecord(id: "side", workspaceID: "w", title: "side", path: path.path, profileID: "p", toolMode: "read-only")
         try await model.store?.put(SideKeepIntent(chat: chat), kind: "side-keep", id: "side")

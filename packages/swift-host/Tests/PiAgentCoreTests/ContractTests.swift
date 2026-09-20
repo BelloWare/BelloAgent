@@ -186,4 +186,24 @@ final class ContractTests: XCTestCase {
         XCTAssertEqual(page["messages"].list.filter { $0["kind"].text != nil }.count,1)
         await reopened.close()
     }
+
+    /// There is no cap on loaded chats: a workspace keeps every opened session
+    /// and side runtime, and never refuses one or unloads another to make room.
+    func testAWorkspaceKeepsEveryOpenedSessionLoaded() async throws {
+        let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
+        var unloaded:[String]=[]
+        let host=NativeHostService(emit:{ frame in if frame["type"].text == "session.unloaded" { unloaded.append(frame["sessionId"].text ?? "") } })
+        _=try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(root.appendingPathComponent("state").path),"mcp":["servers":[:]]])
+        let profile=try fixtureProfile().raw
+        for index in 1...6 {
+            let snapshot=try await host.command("session.open",sessionID:"chat-\(index)",params:["profile":profile,"apiKey":"synthetic"])
+            XCTAssertEqual(snapshot["state"].text,"idle","chat \(index) opened without a capacity refusal")
+        }
+        for index in 1...6 {
+            let snapshot=try await host.command("session.snapshot",sessionID:"chat-\(index)",params:[:])
+            XCTAssertEqual(snapshot["state"].text,"idle","chat \(index) is still loaded")
+        }
+        XCTAssertTrue(unloaded.isEmpty,"no chat was unloaded to make room: \(unloaded)")
+        await host.shutdown()
+    }
 }

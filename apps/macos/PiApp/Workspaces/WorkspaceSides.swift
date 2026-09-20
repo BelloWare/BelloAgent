@@ -16,13 +16,16 @@ struct SideRecord: Identifiable {
     var maxOutputTokens: Int? = nil
     var modelOutputLimit: Int? = nil
     var outputBudgetVersion: Int? = 1
-    var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: "read-only", model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, parentSessionID: parentID) }
+    var topicID: String?
+    var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: "read-only", model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, topicID: topicID, parentSessionID: parentID) }
 }
 struct SideKeepIntent: Codable, Sendable { var chat: ChatRecord }
 
 extension WorkspaceModel {
-    func side(_ id: String) -> SideRecord? { sides.values.first { $0.id == id } }
-    func record(_ id: String) -> ChatRecord? { chats.first { $0.id == id } ?? side(id)?.chat }
+    /// Both are asked for once per sidebar row, and the sidebar redraws on every
+    /// workspace change: a linear scan here is a scan of every chat per row.
+    func side(_ id: String) -> SideRecord? { sidebarIndex.side(id, in: sides) }
+    func record(_ id: String) -> ChatRecord? { chatRecord(id) ?? side(id)?.chat }
     func isEphemeral(_ id: String) -> Bool { side(id).map { !$0.kept } ?? false }
     var resourceTarget: SessionDisplay? { displays[resourceTargetSessionID ?? selectedID ?? ""] }
     func inspect(_ id: String, messageID: String? = nil) { inspectorSessionID = id; inspectorMessageID = messageID; showInspector = true }
@@ -65,6 +68,7 @@ extension WorkspaceModel {
         }
         let id = UUID().uuidString, view = SessionDisplay(id: id)
         var info = SideRecord(id: id, parentID: parentID, workspaceID: parent.workspaceID, profileID: parent.profileID, title: parent.title + " — side", model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
+        info.topicID = effectiveTopicID(for: parent)
         if question.isEmpty {
             // Nothing is created until the first message: no intent, journal or helper session.
             info.pending = true; sides[parentID] = info
@@ -102,6 +106,7 @@ extension WorkspaceModel {
         let id = info.id, parentID = info.parentID
         view.loading = true; defer { view.loading = false }
         var saved = info.chat
+        saved.topicID = effectiveTopicID(for: parent)
         saved.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
         try await store.put(SideKeepIntent(chat: saved), kind: "side-keep", id: id)
         try await store.put(DraftRecord(id: id, text: view.draft), kind: "draft", id: id)
@@ -140,6 +145,7 @@ extension WorkspaceModel {
         guard selectedID == parentID else { return }
         let view = displays[id] ?? SessionDisplay(id: id); view.used = Date(); displays[id] = view
         var info = SideRecord(id: id, parentID: parentID, workspaceID: child.workspaceID, profileID: child.profileID, title: child.title, kept: true, model: child.model, thinkingLevel: child.thinkingLevel, contextWindow: child.contextWindow, maxOutputTokens: child.maxOutputTokens, modelOutputLimit: child.modelOutputLimit, outputBudgetVersion: child.outputBudgetVersion)
+        info.topicID = effectiveTopicID(for: child)
         info.boundary = ["parentSessionId": .string(parentID)]
         sides[parentID] = info
         page = .chats; focusedSessionID = id
@@ -175,14 +181,20 @@ extension WorkspaceModel {
         } catch { view.notice = "History could not be read. Original files were preserved. \(error.localizedDescription)" }
     }
     func keepSide(_ id: String) {
+        guard let info = side(id), !info.kept, !info.keeping, !info.pending, let view = displays[id], !view.loading, hosts[info.workspaceID] != nil else { return }
+        guard view.hasWork else { performKeepSide(id, whenFinished: false); return }
+        // Asked on the window showing this side, so the run it is about keeps
+        // streaming behind the question instead of freezing with it.
+        let question = ChatQuestion(title: "Keep this side when it finishes?",
+                                    detail: "Save it as a separate read-only chat when its current work and queue reach idle. Your parent chat stays unchanged.",
+                                    action: "Keep When Finished")
+        if !questions.ask(question, about: id, answered: { [weak self] keep in
+            guard let self, keep else { return }
+            self.performKeepSide(id, whenFinished: true)
+        }) { view.notice = PiQuestion.busyNotice }
+    }
+    private func performKeepSide(_ id: String, whenFinished: Bool) {
         guard let info = side(id), !info.kept, !info.keeping, !info.pending, let view = displays[id], !view.loading, let host = hosts[info.workspaceID] else { return }
-        var whenFinished = false
-        if view.hasWork {
-            let alert = NSAlert(); alert.messageText = "Keep this side when it finishes?"
-            alert.informativeText = "Save it as a separate read-only chat when its current work and queue reach idle. Your parent chat stays unchanged."
-            alert.addButton(withTitle: "Keep When Finished"); alert.addButton(withTitle: "Cancel")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }; whenFinished = true
-        }
         view.loading = true
         Task { defer {
             view.loading = false
@@ -205,7 +217,6 @@ extension WorkspaceModel {
         let keeping = result["keeping"]?.bool ?? false, requested = result["keepRequested"]?.bool ?? false
         if info.keeping != keeping { sides[info.parentID]?.keeping = keeping }
         if info.keepRequested != requested { sides[info.parentID]?.keepRequested = requested }
-        if let error = result["keepError"]?.string { displays[id]?.notice = error }
         if result["ephemeral"]?.bool == false && !info.kept {
             do { try await registerKeptSide(id: id, path: result["path"]?.string) }
             catch {
@@ -227,10 +238,22 @@ extension WorkspaceModel {
         if let view { draft = view.savedDraft }
         else { draft = try await store.get(DraftRecord.self, kind: "draft", id: id) ?? DraftRecord(id: id, text: "") }
         var retained = intent.chat
+        if let existing = chats.first(where: { $0.id == id }) { retained.applyOrganization(from: existing) }
+        else if let parentID = retained.parentSessionID, let parent = record(parentID) {
+            // A parent may move while the helper publishes this saved side.
+            retained.topicID = effectiveTopicID(for: parent)
+        } else { retained.topicID = effectiveTopicID(for: retained) }
         if let profile = profiles.first(where: { $0.id == retained.profileID }) { retained.migrateOutputBudget(profile: profile) }
-        try await store.commitKeptSide(retained, draft: draft)
-        if !chats.contains(where: { $0.id == id }) { chats.insert(retained, at: 0) }
-        if let info = side(id) { sides[info.parentID]?.kept = true; sides[info.parentID]?.keeping = false; sides[info.parentID]?.keepRequested = false }
+        // The transaction resolves a concurrent parent move and returns its
+        // durable organization instead of the stale recovery intent's group.
+        retained = try await store.commitKeptSide(retained, draft: draft)
+        retained.topicID = effectiveTopicID(for: retained)
+        if let index = chats.firstIndex(where: { $0.id == id }) {
+            if (retained.organizationRevision ?? 0) >= (chats[index].organizationRevision ?? 0) {
+                chats[index].applyOrganization(from: retained)
+            }
+        } else { chats.insert(retained, at: 0) }
+        if let info = side(id) { sides[info.parentID]?.kept = true; sides[info.parentID]?.keeping = false; sides[info.parentID]?.keepRequested = false; sides[info.parentID]?.topicID = chats.first(where: { $0.id == id })?.topicID }
         await retainSideReadState(id)
     }
     func reconcileSideKeeps() async {
@@ -290,6 +313,7 @@ extension WorkspaceModel {
         }
         let id = UUID().uuidString
         var fork = ChatRecord(id: id, workspaceID: parent.workspaceID, title: String((parent.title + " — fork").prefix(120)), path: nil, profileID: parent.profileID, toolMode: parent.toolMode, connectionTest: parent.connectionTest, model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
+        fork.topicID = effectiveTopicID(for: parent)
         fork.path = root.appendingPathComponent("Workspaces/\(parent.workspaceID)/Sessions/fork_\(id).jsonl").path
         try await store.put(SideKeepIntent(chat: fork), kind: "side-keep", id: id)
         let host = try await open(parent)
@@ -327,10 +351,13 @@ extension WorkspaceModel {
     func enableEditing(_ id: String) {
         guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == "read-only", displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else { error = "Close the saved side panel and wait for idle before changing tools."; return }
         guard store != nil else { error = StoreError.unavailable.localizedDescription; return }
-        let alert = NSAlert(); alert.messageText = "Enable editing tools for this saved chat?"
-        alert.informativeText = "Future turns may run shell commands and change files in this project with your account's permissions."
-        alert.addButton(withTitle: "Enable Editing"); alert.addButton(withTitle: "Cancel"); guard alert.runModal() == .alertFirstButtonReturn else { return }
-        Task { do { try await enableEditingAfterConfirmation(id) } catch { self.error = error.localizedDescription } }
+        let question = ChatQuestion(title: "Enable editing tools for this saved chat?",
+                                    detail: "Future turns may run shell commands and change files in this project with your account's permissions.",
+                                    action: "Enable Editing")
+        if !questions.ask(question, about: id, destructive: true, answered: { [weak self] enable in
+            guard let self, enable else { return }
+            Task { do { try await self.enableEditingAfterConfirmation(id) } catch { self.error = error.localizedDescription } }
+        }) { displays[id]?.notice = PiQuestion.busyNotice }
     }
     func enableEditingAfterConfirmation(_ id: String) async throws {
         guard let store else { throw StoreError.unavailable }
@@ -355,13 +382,14 @@ struct SidePane: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var session: SessionDisplay
     let info: SideRecord
+    /// The share of the content column this side has, for the composer bar.
+    let paneWidth: CGFloat
     @State private var handoff = false
     var body: some View {
-        HStack(spacing: 0) {
-            Rectangle().fill(Color.piHairline).frame(width: 1)
-            ConversationPane(model: model, session: session, chat: model.record(info.id) ?? info.chat, side: info,
-                             sideActions: SideActions(bringBack: { handoff = true }, keep: { model.keepSide(info.id) }, close: { model.closeSide(info.id) }))
-        }
+        // The hairline that used to start this pane is the split's draggable
+        // divider now, drawn once by the workspace between the two panes.
+        ConversationPane(model: model, session: session, chat: model.record(info.id) ?? info.chat, paneWidth: paneWidth, side: info,
+                         sideActions: SideActions(bringBack: { handoff = true }, keep: { model.keepSide(info.id) }, close: { model.closeSide(info.id) }))
         .sheet(isPresented: $handoff) { SideHandoff(model: model, session: session) }
     }
 }

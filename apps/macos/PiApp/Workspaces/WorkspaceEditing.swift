@@ -82,10 +82,14 @@ extension WorkspaceModel {
         guard !view.busy, view.queue.isEmpty, view.queueCount == 0 else { view.notice = "Wait for the current run and queue to finish before resending an edited message."; return }
         guard view.draft.utf8.count <= 262_144 else { error = "The draft exceeds the 256 KiB submission limit"; return }
         if view.uncertain {
-            let alert = NSAlert(); alert.messageText = "Previous command outcome is uncertain"
-            alert.informativeText = "Review the transcript and any file or tool effects. Sending again starts a new command and may repeat effects."
-            alert.addButton(withTitle: "I Reviewed It — Send New Command"); alert.addButton(withTitle: "Cancel")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }; view.uncertain = false
+            // A sheet on the chat's window, not a modal run loop: the other
+            // chats keep streaming while this question waits for an answer.
+            if !questions.ask(WorkspaceModel.uncertainOutcome, about: id, answered: { [weak self] reviewed in
+                guard let self, reviewed, let view = self.displays[id], view.uncertain else { return }
+                view.uncertain = false
+                self.sendEdit(sessionID: id)
+            }) { view.notice = PiQuestion.busyNotice }
+            return
         }
         let attachments = view.attachments, skills = view.skills
         let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString, previousState = view.state
@@ -96,10 +100,14 @@ extension WorkspaceModel {
             defer { view.loading = false }
             var dispatched = false
             do {
+                let connection = Result { try connectionLease(for: item) }
                 if !isEphemeral(item.id) { try await store.put(savedDraft, kind: "draft", id: item.id) }
+                let lease = try connection.get()
+                try requireConnection(lease)
                 let host = try await open(item)
                 let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent", epoch: host.epoch, attachments: attachments, skills: skills)
                 if !isEphemeral(item.id) { try await store.put(intent, kind: "pending:\(item.id)", id: commandID) }
+                try requireConnection(lease)
                 dispatched = true
                 if !view.busy { view.state = "queued" }
                 _ = try await host.request(Self.editTurnMethod, sessionID: item.id, params: params, commandID: commandID)
@@ -108,7 +116,7 @@ extension WorkspaceModel {
                 latest(sessionID: item.id)
             } catch {
                 view.notice = error.localizedDescription
-                if case HostError.rejected = error { try? await store.remove(kind: "pending:\(item.id)", id: commandID); view.state = previousState }
+                if case HostError.rejected(let code, _) = error { try? await store.remove(kind: "pending:\(item.id)", id: commandID); view.state = code == "connection_unavailable" ? "interrupted" : previousState }
                 else { view.uncertain = dispatched; view.state = dispatched ? "interrupted" : previousState }
             }
         }

@@ -8,7 +8,11 @@ import Glibc
 
 /// A bounded writer: a blocked UI cannot cause unbounded protocol buffering.
 /// On overflow the helper terminates; the app reconciles durable session state.
-final class ProtocolWriter: @unchecked Sendable {
+///
+/// Concurrency: no mutable state of its own. Frames are serialized by `queue`
+/// and bounded by `slots`, both of which are thread-safe and immutable here,
+/// so the compiler can check the `Sendable` conformance.
+final class ProtocolWriter: Sendable {
     let queue=DispatchQueue(label:"pi.native.stdout"), slots=DispatchSemaphore(value:64)
     func send(_ value:JSON) {
         guard slots.wait(timeout:.now()) == .success else { Self.fail("Native host output backpressure limit reached") }
@@ -33,6 +37,8 @@ final class ProtocolWriter: @unchecked Sendable {
         let writer=ProtocolWriter(), service=NativeHostService { writer.send($0) }
         signal(SIGTERM,SIG_IGN); signal(SIGINT,SIG_IGN)
         let term=DispatchSource.makeSignalSource(signal:SIGTERM,queue:.global()), interrupt=DispatchSource.makeSignalSource(signal:SIGINT,queue:.global())
+        // A signal handler cannot await. This task is the shutdown itself, so
+        // it has no cancellation path by design: it ends the process.
         let shutdown:@Sendable ()->Void = { Task { await service.shutdown(); writer.drain(); exit(0) } }
         term.setEventHandler(handler:shutdown); interrupt.setEventHandler(handler:shutdown); term.resume(); interrupt.resume()
         let reader=Task.detached(priority:.userInitiated) {

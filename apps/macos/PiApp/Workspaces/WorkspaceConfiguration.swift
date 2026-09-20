@@ -2,17 +2,79 @@ import Foundation
 import os
 
 extension WorkspaceModel {
-    func reloadConfiguration() async throws {
+    struct ConnectionLease {
+        let profileID: String
+        let deletionGeneration: UInt64
+    }
+    var connectionUnavailable: HostError {
+        .rejected("connection_unavailable", "This chat's connection is unavailable. Restore it in Settings before continuing.")
+    }
+    func connectionLease(for item: ChatRecord) throws -> ConnectionLease {
+        let lease = ConnectionLease(profileID: item.profileID, deletionGeneration: profileDeletionGenerations[item.profileID, default: 0])
+        try requireConnection(lease)
+        return lease
+    }
+    func requireConnection(_ lease: ConnectionLease) throws {
+        guard !deletingProfiles.contains(lease.profileID),
+              profileDeletionGenerations[lease.profileID, default: 0] == lease.deletionGeneration,
+              profiles.contains(where: { $0.id == lease.profileID }) else { throw connectionUnavailable }
+    }
+    /// An open may acknowledge after deletion has already inspected the loaded
+    /// sessions. Keep it tracked until its late runtime is actually closed.
+    func withConnectionOpen(_ item: ChatRecord, lease: ConnectionLease, host: HostSupervisor,
+                            operation: @MainActor () async throws -> Void) async throws {
+        try requireConnection(lease)
         do {
-            let saved = try await vault.load()
-            configuration = saved; configurationLoaded = true
-            profiles = saved.profiles.map(\.profile); workspaces = saved.workspaces
-            try await migrateLegacyOutputBudgets()
-            await configureArchive(saved)
+            try await operation()
+            try requireConnection(lease)
         } catch {
-            configurationLoaded = false
+            if case nil = try? requireConnection(lease) {
+                if host.isReady {
+                    opened.insert(item.id)
+                    do {
+                        _ = try await host.request("turn.stop", sessionID: item.id)
+                        _ = try await host.request("session.close", sessionID: item.id)
+                        opened.remove(item.id)
+                    } catch HostError.rejected(let code, _) where code == "session_missing" {
+                        opened.remove(item.id)
+                    } catch {
+                        // A live busy runtime remains tracked; host loss has
+                        // already cleared it and must not be undone here.
+                        if !host.isReady, hosts[item.workspaceID] === host { opened.remove(item.id) }
+                    }
+                } else if hosts[item.workspaceID] === host { opened.remove(item.id) }
+                throw connectionUnavailable
+            }
             throw error
         }
+    }
+    func reloadConfiguration() async throws {
+        let saved: VaultConfiguration
+        do { saved = try await vault.load() }
+        catch { configurationLoaded = false; throw error }
+        applyConfiguration(saved)
+        await finishConfiguration(saved)
+    }
+    /// What the window needs to draw: the projects and the connections. Launch
+    /// publishes this as soon as the vault answers, alongside the chat list,
+    /// so the sidebar's first frame already names the projects instead of
+    /// listing every chat under a "Retained chats" placeholder.
+    func applyConfiguration(_ saved: VaultConfiguration) {
+        configuration = saved; configurationLoaded = true
+        profiles = saved.profiles.map(\.profile); workspaces = saved.workspaces
+    }
+    /// The rest, which nothing on screen waits for: a one-time migration of
+    /// saved chat output limits, and opening the request archive with its
+    /// retention sweep and retained billing.
+    ///
+    /// Local chat metadata is not the vault. Reporting a store failure here as
+    /// "settings not loaded" disabled Save, Test Connection and the model
+    /// catalog, and Reload vault repeated the same failure: Settings became
+    /// unusable with no way back inside the app.
+    func finishConfiguration(_ saved: VaultConfiguration) async {
+        do { try await migrateLegacyOutputBudgets() }
+        catch { self.error = "Saved chat output limits could not be migrated. \(error.localizedDescription)" }
+        await configureArchive(saved)
     }
     func ensureConfiguration() async throws { if !configurationLoaded { try await reloadConfiguration() } }
     /// Trusted, tool-free home for chats that belong to no project. It lives in
@@ -27,9 +89,11 @@ extension WorkspaceModel {
     func updateConfiguration(expectedRevision: Int64? = nil, _ change: @escaping @Sendable (inout VaultConfiguration) throws -> Void) async throws {
         try await ensureConfiguration()
         let saved = try await vault.update(expectedRevision: expectedRevision ?? configuration.revision, change)
-        configuration = saved; profiles = saved.profiles.map(\.profile); workspaces = saved.workspaces
-        try await migrateLegacyOutputBudgets()
-        await configureArchive(saved)
+        applyConfiguration(saved)
+        // The vault write already committed. A failure migrating local chat
+        // limits must not be reported as a save that did not happen: retrying
+        // a route change would fork a second, duplicate connection.
+        await finishConfiguration(saved)
     }
     /// Vault access can succeed after an initial startup failure. Migrate once
     /// when the matching connection is available, without replacing live state.
@@ -65,11 +129,9 @@ extension WorkspaceModel {
         try LiteLLMConfiguration.requireSupportedAPI(input.api)
         try await ensureConfiguration()
         var profile = input; profile.providerId = "litellm"
+        // Saving never waits for the connection's chats: a run that is going keeps
+        // the settings it started with and its next turn uses the new ones.
         let affected = chats.filter { $0.profileID == profile.id }
-        guard !sides.values.contains(where: { $0.profileID == profile.id && !$0.kept && !$0.pending }),
-              !affected.contains(where: { displays[$0.id]?.hasWork == true || displays[$0.id]?.loading == true }) else {
-            throw HostError.failure("Stop this connection's work and keep or close its side before changing settings.")
-        }
         let previous = configuration.profiles.first { $0.profile.id == profile.id }
         var parsedHeaders = previous?.headers ?? [:]
         if !headers.isEmpty {
@@ -94,18 +156,29 @@ extension WorkspaceModel {
                 saved.dashboard = preferences.dashboard; saved.automaticUpdateChecks = preferences.automaticUpdateChecks
             }
         }
-        // Configuration is durable before closing idle sessions. Reopening
-        // receives only that connection's credentials, never the vault object.
+        // Configuration is durable before the helper hears about it. An idle
+        // session takes the new settings at once; one with a run going keeps the
+        // settings it started with and switches when the run ends. Only that
+        // connection's credentials travel, never the vault object.
         if !changedRoute {
-            for item in affected where opened.contains(item.id) {
-                _ = try await hosts[item.workspaceID]?.request("session.close", sessionID: item.id); opened.remove(item.id)
+            let sideSessions = sides.values.filter { $0.profileID == profile.id }.map { ($0.id, $0.workspaceID) }
+            for (id, workspaceID) in affected.map({ ($0.id, $0.workspaceID) }) + sideSessions where opened.contains(id) {
+                guard let host = hosts[workspaceID], host.isReady else { continue }
+                var wire = connection.profile.wire.object ?? [:]
+                wire["headers"] = .object(connection.headers.mapValues(WireValue.string))
+                do {
+                    let result = try await host.request("session.configure", sessionID: id, params: ["profile": .object(wire), "apiKey": .string(connection.apiKey)])
+                    if result.object?["applied"]?.bool == false {
+                        displays[id]?.notice = "Settings saved. This run keeps the connection settings it started with; the next turn uses the new ones."
+                    }
+                } catch {
+                    // A helper without the command: an idle session reopens with the new settings on its next turn.
+                    if displays[id]?.hasWork != true { _ = try? await host.request("session.close", sessionID: id); opened.remove(id) }
+                }
             }
         }
         profileChoice = profile.id
     }
-    /// Removes a connection and its key from the vault. Its chats keep their
-    /// history and show that their connection is gone; nothing of theirs is
-    /// deleted, and a busy chat or an unkept side blocks the removal.
     /// Removes a connection and its key. Its chats keep their history and ask
     /// for another connection; a run still going under it is stopped and its
     /// helper session closed first, so the deletion never waits on work; the
@@ -122,15 +195,29 @@ extension WorkspaceModel {
             }
             try await deleteProfile(id); return
         }
+        guard deletingProfiles.insert(id).inserted else { throw HostError.failure("This connection is already being deleted.") }
+        profileDeletionGenerations[id, default: 0] &+= 1
+        defer { deletingProfiles.remove(id) }
         let name = removed.profile.name.isEmpty ? "Unnamed" : removed.profile.name
-        let affected = chats.filter { $0.profileID == id }
+        // A side may still be publishing and not yet appear in `chats`.
+        // It holds the same live credentials and must be stopped as well.
+        var seen = Set<String>()
+        let affected = (chats + sides.values.map(\.chat)).filter { $0.profileID == id && seen.insert($0.id).inserted }
         Self.vaultLog.info("Deleting connection \(name, privacy: .public) (\(id, privacy: .public)) at vault revision \(self.configuration.revision): \(affected.count) chats, \(self.configuration.catalogSources?.count ?? 0) catalog links")
         for item in affected {
             let view = displays[item.id]
             if opened.contains(item.id), let host = hosts[item.workspaceID] {
-                if view?.hasWork == true { _ = try? await host.request("turn.stop", sessionID: item.id) }
-                _ = try? await host.request("session.close", sessionID: item.id)
-                opened.remove(item.id)
+                // Display events can lag the helper. Stop is idempotent and its
+                // acknowledgment is required before removing the credentials.
+                _ = try await host.request("turn.stop", sessionID: item.id)
+                do {
+                    _ = try await host.request("session.close", sessionID: item.id)
+                    opened.remove(item.id)
+                } catch {
+                    // Stop is asynchronous; an unloading rejection must not
+                    // make a still-live runtime disappear from our tracking.
+                    // `open` also rejects deleted connections before its cache hit.
+                }
             }
             if let view, view.hasWork || view.loading { view.state = "interrupted"; view.queue = []; view.queueCount = 0; view.loading = false }
         }
@@ -154,6 +241,10 @@ extension WorkspaceModel {
             throw error
         }
         Self.vaultLog.info("Deleted connection \(name, privacy: .public); vault revision \(self.configuration.revision), \(self.profiles.count) connections remain")
+        // The connection is gone from the vault; its model list must go too.
+        // A cached entry outlived the connection for the rest of the session,
+        // and a new connection that reused the id would open on its models.
+        modelCatalog.invalidate(profileID: id)
         if profileChoice == id { profileChoice = profiles.first?.id ?? "" }
         for item in affected { displays[item.id]?.notice = "This chat's connection was deleted. Choose another connection to continue." }
     }

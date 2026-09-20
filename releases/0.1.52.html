@@ -1,0 +1,7 @@
+<h2>Bello Agent 0.1.52</h2>
+<ul>
+  <li>Tokens per second now uses gateway-reported output tokens divided by request duration. Hidden reasoning is included once, and visible text length no longer drives the rate.</li>
+  <li>The latest completed rate stays steady while the next response runs. Sidebar timing has a stable layout, a gentle transition, and a history chart with the session average.</li>
+  <li>Responses without visible text can still report throughput when usage and completion timing are available. Missing usage remains unavailable.</li>
+  <li>File reads and searches run on a bounded pool of worker threads, keeping other sessions and tool discovery responsive. Cancellation and project editing coordination remain intact.</li>
+</ul>

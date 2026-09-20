@@ -8,7 +8,6 @@ import SwiftUI
     private var item: NSStatusItem?
     private let popover = NSPopover()
     var onOpen: (() -> Void)?
-    var isInstalled: Bool { item != nil }
     var isShown: Bool { popover.isShown }
 
     func install<Content: View>(title: String? = nil, accessibilityLabel: String = "Bello Agent activity and usage", @ViewBuilder content: () -> Content) {

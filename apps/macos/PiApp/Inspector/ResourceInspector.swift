@@ -50,10 +50,18 @@ struct ResourceInspector: View {
         .onChange(of: tab) { _, value in if value == "settings" { Task { await loadOptions() } } }
     }
     private var selected: SkillDescriptor? { model.resourceCatalog.first { $0.id == selectedID } }
+    /// Read from `body`, so it runs on every keystroke. Concatenating three
+    /// strings per catalog entry and running a locale-aware search over the
+    /// result made the filter field lag on a large catalog.
     private var filtered: [SkillDescriptor] {
-        model.resourceCatalog.filter {
-            (management || !["disabled", "needsAttention"].contains($0.policy)) &&
-            (query.isEmpty || ($0.name + $0.path + $0.description).localizedCaseInsensitiveContains(query))
+        let needle = query.trimmingCharacters(in: .whitespaces)
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        return model.resourceCatalog.filter {
+            guard management || !["disabled", "needsAttention"].contains($0.policy) else { return false }
+            guard !needle.isEmpty else { return true }
+            return $0.name.range(of: needle, options: options) != nil
+                || $0.path.range(of: needle, options: options) != nil
+                || $0.description.range(of: needle, options: options) != nil
         }
     }
     private static func policyTone(_ policy: String) -> PiTone {
@@ -63,6 +71,19 @@ struct ResourceInspector: View {
         case "disabled": return .neutral
         case "needsAttention": return .warning
         default: return .neutral
+        }
+    }
+    /// The wire policy names are Codex's own (`implicitAllowed`,
+    /// `explicitOnly`). They were reaching the badge unchanged, so a reader
+    /// was told a skill was "explicitOnly" rather than what that means for
+    /// them: the model will only use it when they name it with a slash.
+    static func policyLabel(_ policy: String) -> String {
+        switch policy {
+        case "implicitAllowed": return "Model may use it"
+        case "explicitOnly": return "Only when you ask"
+        case "disabled": return "Off"
+        case "needsAttention": return "Needs attention"
+        default: return policy.isEmpty ? "" : policy.prefix(1).uppercased() + policy.dropFirst()
         }
     }
     private var skillsView: some View {
@@ -79,7 +100,7 @@ struct ResourceInspector: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("/" + skill.name).font(PiFont.heading).foregroundStyle(Color.piInk)
                                     HStack(spacing: 4) {
-                                        PiBadge(text: skill.policy, tone: Self.policyTone(skill.policy))
+                                        PiBadge(text: Self.policyLabel(skill.policy), tone: Self.policyTone(skill.policy)).help("Skill policy · " + skill.policy)
                                         PiBadge(text: skill.scope)
                                     }
                                     Text(skill.path).font(PiFont.caption).foregroundStyle(Color.piInkTertiary).lineLimit(1).truncationMode(.middle)
@@ -108,7 +129,7 @@ struct ResourceInspector: View {
                                 HStack(spacing: PiSpacing.sm) {
                                     Button {
                                         if let view = model.resourceTarget {
-                                            model.addSkill(skill, view: view, fromCommand: LeadingCommand.parse(view.draft, directInput: view.directCommand) != nil); dismiss()
+                                            model.addSkill(skill, view: view, fromCommand: LeadingCommand.begins(view.draft, directInput: view.directCommand)); dismiss()
                                         }
                                     } label: { Label("Select for Draft", systemImage: "plus.circle") }
                                         .buttonStyle(.piPrimary).disabled(!skill.canSelect || model.resourceTarget == nil || model.resourceTarget?.skills.count == 8)
@@ -125,7 +146,7 @@ struct ResourceInspector: View {
                     }
                     PagedTextView(text: detail).piInset()
                     PiPager(previous: { bodyOffset = 0; loadBody() }, next: { bodyOffset = Int(nextBody ?? 0); loadBody() }, canPrevious: bodyOffset != 0, canNext: nextBody != nil, previousLabel: "Start", nextLabel: "Next") {
-                        Text("Source · UTF-16 offset \(bodyOffset)")
+                        Text(bodyOffset == 0 ? "Skill file · from the start" : "Skill file · continued").help("Reading the skill file from character \(bodyOffset)")
                     }
                 }.frame(minWidth: 480).padding(.leading, PiSpacing.sm)
             }
@@ -204,9 +225,13 @@ struct ResourceInspector: View {
     private func addPath(_ key: String) {
         let panel = NSOpenPanel(); panel.canChooseDirectories = key != "piInstructionPaths"; panel.canChooseFiles = true; panel.allowsMultipleSelection = true
         panel.message = "Approve read-only resource discovery."
-        guard panel.runModal() == .OK else { return }
-        var paths = options[key]?.array?.compactMap(\.string) ?? []
-        for url in panel.urls where !paths.contains(url.path) { paths.append(url.path) }; options[key] = .array(paths.prefix(32).map(WireValue.string))
+        Task {
+            let chosen = await PiQuestion.shared.open(panel)
+            guard !chosen.isEmpty else { return }
+            var paths = options[key]?.array?.compactMap(\.string) ?? []
+            for url in chosen where !paths.contains(url.path) { paths.append(url.path) }
+            options[key] = .array(paths.prefix(32).map(WireValue.string))
+        }
     }
     private func policy(_ skill: SkillDescriptor, key: String, enabled: Bool) {
         guard !policyBusy else { return }; policyBusy = true
@@ -363,11 +388,9 @@ private struct NativeMCPInspector: View {
         configurationRevision = model.configuration.revision; editingConfiguration = true
     }
     private func saveConfiguration() {
-        let alert = NSAlert(); alert.messageText = "Trust these MCP servers?"
-        alert.informativeText = "Saving this configuration can authorize programs and authenticated endpoints with your account's permissions. Review the JSON first. Only explicit server credentials are sent to that server."
-        alert.addButton(withTitle: "Save in Vault and Connect"); alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform {
+        confirmThen("Trust these MCP servers?",
+                    "Saving this configuration can authorize programs and authenticated endpoints with your account's permissions. Review the JSON first. Only explicit server credentials are sent to that server.",
+                    action: "Save in Vault and Connect") {
             try await model.saveMCPConfiguration(parse(configuration), expectedRevision: configurationRevision)
             editingConfiguration = false; configuration = "{\"servers\":{}}"; try await refreshServers()
         }
@@ -380,11 +403,9 @@ private struct NativeMCPInspector: View {
     }
     private func invoke() {
         guard let id = model.resourceTargetSessionID ?? model.selectedID, let chat = model.record(id), chat.toolMode == "editing", chat.connectionTest != true else { notice = "Select an editing chat before invoking MCP."; return }
-        let alert = NSAlert(); alert.messageText = "Invoke \(server) / \(tool)?"
-        alert.informativeText = "Exactly one invocation will be sent. It may change external state. Inspect the schema and arguments first. No automatic retry is performed."
-        alert.addButton(withTitle: "Invoke Once"); alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform {
+        confirmThen("Invoke \(server) / \(tool)?",
+                    "Exactly one invocation will be sent. It may change external state. Inspect the schema and arguments first. No automatic retry is performed.",
+                    action: "Invoke Once") {
             let value = try parse(arguments); guard value.object != nil else { throw HostError.failure("Invocation arguments must be one JSON object") }
             _ = try await model.open(chat)
             do { result = WireValue.object(try await model.resourceRequest("mcp.invoke", params: ["server": .string(server), "tool": .string(tool), "arguments": value], sessionID: id)).pretty }
@@ -393,11 +414,20 @@ private struct NativeMCPInspector: View {
         }
     }
     private func acknowledge() {
-        let alert = NSAlert(); alert.messageText = "Have you checked the previous invocation’s effects?"
-        alert.informativeText = "Acknowledging permits a new invocation; it does not retry, cancel, or undo the previous one."
-        alert.addButton(withTitle: "I Checked — Acknowledge"); alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform { _ = try await model.resourceRequest("mcp.acknowledgeUnknown", params: ["confirmed": .bool(true)]); try await refreshServers() }
+        confirmThen("Have you checked the previous invocation’s effects?",
+                    "Acknowledging permits a new invocation; it does not retry, cancel, or undo the previous one.",
+                    action: "I Checked — Acknowledge") {
+            _ = try await model.resourceRequest("mcp.acknowledgeUnknown", params: ["confirmed": .bool(true)]); try await refreshServers()
+        }
+    }
+    /// Asks on a sheet and, if the reader agrees, runs the work through the
+    /// same busy guard `perform` uses. A modal run loop would stop the app.
+    private func confirmThen(_ title: String, _ detail: String, action: String, _ operation: @escaping @MainActor () async throws -> Void) {
+        guard !busy else { return }
+        Task {
+            guard await PiQuestion.shared.confirm(title, detail, action: action) else { return }
+            perform(operation)
+        }
     }
 }
 

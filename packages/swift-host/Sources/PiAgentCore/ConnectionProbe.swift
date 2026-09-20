@@ -12,11 +12,12 @@ public enum ConnectionProbe {
             throw AgentError("connection_test_key", "Enter a valid API key before testing this connection.")
         }
         var raw = original.raw
+        // A probe is a bounded task: its cap is explicit and small, including when
+        // an imported compatibility setting omits the field on ordinary requests.
         raw["maxOutputTokens"] = JSON(min(256, original.maxOutput))
+        raw["outputCap"] = 256
         raw["thinkingLevel"] = "default"
         raw["reasoning"] = false
-        // A probe always has a finite output budget, including when an imported
-        // compatibility setting omitted that field on ordinary requests.
         raw["compat"]["supportsMaxOutputTokens"] = true
         let profile = try Profile(raw)
         do {
@@ -32,7 +33,8 @@ public enum ConnectionProbe {
                     throw AgentError("connection_test_timeout", "The gateway did not finish the small connection test in time. Check its availability or try a faster model, then test again.")
                 }
                 defer { group.cancelAll() }
-                return try await group.next()!
+                guard let first = try await group.next() else { throw AgentError("connection_test_failed", "The connection test produced no result. Try again.") }
+                return first
             }
             try Task.checkCancellation()
             guard !reply.truncated else {

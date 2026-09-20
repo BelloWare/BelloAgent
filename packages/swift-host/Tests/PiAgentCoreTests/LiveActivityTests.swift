@@ -20,6 +20,19 @@ private actor HeldActivityTool: ToolExecuting {
     func release() { held = false }
 }
 
+private actor StreamingActivityClient: ModelClient {
+    private var callback: (@Sendable (StreamDelta) async throws -> Void)?
+    private var held = true
+    var ready: Bool { callback != nil }
+    func emit(_ delta: StreamDelta) async throws { try await callback?(delta) }
+    func release() { held = false }
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        callback = onDelta
+        while held { try await Task.sleep(nanoseconds: 1_000_000) }
+        return answer("Completed")
+    }
+}
+
 final class LiveActivityTests: XCTestCase {
     func testHiddenStatusSeesModelAndSilentToolPhaseChangesThroughNotifications() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
@@ -46,21 +59,30 @@ final class LiveActivityTests: XCTestCase {
         XCTAssertEqual(settled["activity"]["phase"].text, "idle")
     }
 
-    func testLiveRateCountsFullIncrementalExposedBytesAndAgesOut() {
-        var meter = LiveOutputMeter()
-        XCTAssertNil(meter.rate(at: 1_000))
-        meter.begin()
-        XCTAssertNil(meter.rate(at: 1_000), "No observed output is unknown, not reported zero")
-        meter.record(.text(String(repeating: "x", count: 20_000)), at: 1_000)
-        meter.record(.thinking("🌍"), at: 1_100)
-        meter.record(.tool("call", "read", "{}"), at: 1_200)
-        XCTAssertEqual(meter.bytes, 20_006, "Use full UTF-8 deltas, including bytes outside the transcript preview")
-        XCTAssertEqual(meter.rate(at: 1_200), 2_500.75)
-        XCTAssertEqual(meter.rate(at: 3_250), 0, "An active but stalled model ages to zero")
-        meter.end(); XCTAssertNil(meter.rate(at: 3_250))
-        meter.record(.text("ignored after completion"), at: 3_250)
-        XCTAssertEqual(meter.bytes, 20_006)
-        meter.begin(); XCTAssertEqual(meter.bytes, 0); XCTAssertNil(meter.rate(at: 3_300))
+    func testActivityContainsNoByteDerivedRateBeforeDuringOrAfterVisibleOutput() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = StreamingActivityClient()
+        let session = try AgentSession(id: "reported-rates", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)
+        addTeardownBlock { await client.release(); await session.close() }
+        _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: "Stream output"), steer: false)
+        try await eventually { await client.ready }
+        let waiting = await session.snapshot(["includeMessages": false])
+        try await client.emit(.text(String(repeating: "x", count: 20_000)))
+        try await client.emit(.thinking("Exposed reasoning 🌍"))
+        try await client.emit(.tool("call", "read", "{\"path\":\"file\"}"))
+        let streaming = await session.snapshot(["includeMessages": false])
+        XCTAssertEqual(streaming["activity"]["phase"].text, "model")
+        XCTAssertEqual(streaming["activity"]["modelActive"].flag, true)
+        await client.release(); try await eventually { !(await session.isRunning) }
+        let completed = await session.snapshot(["includeMessages": false])
+        XCTAssertEqual(completed["activity"]["phase"].text, "idle")
+        XCTAssertEqual(completed["activity"]["modelActive"].flag, false)
+        for snapshot in [waiting, streaming, completed] {
+            XCTAssertEqual(snapshot["activity"]["version"].int, 2)
+            for field in ["estimatedOutputTokensPerSecond", "outputBytes", "windowMS", "rateSource"] {
+                XCTAssertNil(snapshot["activity"].map[field], "Activity must not expose byte-derived rate telemetry")
+            }
+        }
     }
 
     func testStatusContainsDurableAssistantCountsThroughEditAndRestore() async throws {

@@ -14,7 +14,8 @@ struct RoutingContract: Sendable {
         policy = raw["replayPolicy"].text ?? "ask"
         guard ["ask", "portable", "pinned"].contains(policy) else { throw AgentError("routing_contract", "Choose a reasoning replay policy") }
         for field in ["modelHeader", "deploymentHeader", "groupHeader", "cacheHeader"] where !raw[field].isNull {
-            let name = raw[field].text!.lowercased()
+            // Every value passed `valid` above, so it is a bounded, printable string.
+            guard let name = raw[field].text?.lowercased() else { throw AgentError("routing_contract", "Metadata header names must be text") }
             guard name.range(of: "^[a-z0-9-]{1,128}$", options: .regularExpression) != nil,
                   !["authorization", "cookie", "token", "secret", "key"].contains(where: { name.contains($0) }),
                   !["host", "location", "set-cookie", "content-type", "content-length", "connection"].contains(name),
@@ -46,11 +47,11 @@ struct RoutingIdentity: Sendable {
     private var evidence: [JSON] = []
     private var omitted = 0
     init(profile: Profile) {
-        alias=profile.model; api=profile.api; contract=try! RoutingContract(profile.raw["routing"])
+        alias=profile.model; api=profile.api; contract=profile.routing
     }
     private mutating func add(_ value: JSON, source: String, kind: String = "model", excluding credential: (String) -> Bool) {
         guard !value.isNull else { return }
-        guard valid(value.text), !(kind == "model" && value.text == "openai/"), !credential(value.text!) else { omitted += 1; return }
+        guard let text = value.text, valid(text), !(kind == "model" && text == "openai/"), !credential(text) else { omitted += 1; return }
         let item:JSON=["value":value,"source":JSON(source),"kind":JSON(kind)]
         guard !evidence.contains(item) else { return }
         guard evidence.count < 32 else { omitted += 1; return }

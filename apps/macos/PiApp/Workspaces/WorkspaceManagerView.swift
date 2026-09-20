@@ -1,45 +1,6 @@
 import SwiftUI
 import AppKit
 
-/// Sidebar pill that switches the current workspace and opens the manager.
-/// Mirrors the compact PiDropdown look and adds a folder-count badge.
-struct WorkspacePickerMenu: View {
-    @ObservedObject var model: WorkspaceModel
-    private var current: WorkspaceRecord? { model.workspaces.first { $0.id == model.selectedWorkspaceID } }
-    var body: some View {
-        Menu {
-            if !model.workspaces.isEmpty {
-                Picker("Project", selection: $model.selectedWorkspaceID) {
-                    ForEach(model.workspaces) { workspace in
-                        Text(WorkspaceLabel.name(workspace) + (workspace.paths.isEmpty ? "" : " +\(workspace.paths.count)")).tag(Optional(workspace.id))
-                    }
-                }.pickerStyle(.inline)
-                Divider()
-            }
-            Button("Manage Projects…") { model.showWorkspaceManager = true }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "folder").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.piInkSecondary)
-                Text(current.map(WorkspaceLabel.name) ?? (model.workspaces.isEmpty ? "Create a project…" : "Choose project")).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.piInk).lineLimit(1)
-                if let current, !current.paths.isEmpty {
-                    Text("+\(current.paths.count)").font(PiFont.micro).foregroundStyle(Color.piAccent)
-                        .padding(.horizontal, 5).padding(.vertical, 1).background(Color.piAccentSoft, in: Capsule())
-                        .transition(AnyTransition.scale(scale: 0.8).combined(with: .opacity))
-                        .help(current.paths.joined(separator: "\n"))
-                }
-                Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
-            }
-            .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(Color.piSurface, in: Capsule())
-            .overlay(Capsule().stroke(Color.piHairlineStrong, lineWidth: 1))
-            .contentShape(Capsule())
-            .animation(.easeOut(duration: 0.18), value: current?.paths.count ?? 0)
-        }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().piPointer()
-        .accessibilityLabel("Project")
-    }
-}
-
 enum WorkspaceLabel {
     static func name(_ workspace: WorkspaceRecord) -> String { URL(fileURLWithPath: workspace.path).lastPathComponent }
     static func folders(_ count: Int) -> String { count == 1 ? "1 folder" : "\(count) folders" }
@@ -110,6 +71,8 @@ struct WorkspaceManagerView: View {
     @State private var message = ""
     @State private var tone: PiTone = .neutral
     @State private var busy = false
+    /// Remove Project asked once; the section shows the question until Remove or Keep.
+    @State private var confirmingRemove: String?
     private var selected: WorkspaceRecord? { model.workspaces.first { $0.id == selection } }
 
     struct NewWorkspaceDraft: Equatable {
@@ -159,6 +122,7 @@ struct WorkspaceManagerView: View {
         }
         .onAppear { selection = model.selectedWorkspaceID ?? model.workspaces.first?.id; if model.workspaces.isEmpty { draft = NewWorkspaceDraft() } }
         .onChange(of: model.workspaces.map(\.id)) { _, ids in if let selection, !ids.contains(selection) { self.selection = ids.first } }
+        .onChange(of: selection) { _, _ in confirmingRemove = nil }
     }
 
     private var list: some View {
@@ -208,6 +172,10 @@ struct WorkspaceManagerView: View {
 
     private func detail(_ workspace: WorkspaceRecord) -> some View {
         let chats = model.chatCount(workspaceID: workspace.id)
+        let hasTopics = !model.topics(in: workspace.id).isEmpty
+        let removalHint = chats > 0 ? "Delete its \(WorkspaceLabel.chats(chats)) first; a project with chats cannot be removed."
+            : hasTopics ? "Remove this project's topics first. Removing a topic keeps its chats."
+            : "Forget this project. Its folders on disk stay untouched."
         return ScrollView {
             VStack(alignment: .leading, spacing: PiSpacing.lg) {
                 HStack(alignment: .firstTextBaseline, spacing: PiSpacing.sm) {
@@ -224,19 +192,28 @@ struct WorkspaceManagerView: View {
                     WorkspaceFolderList(model: model, workspace: workspace) { report($0, .danger) }
                 }
                 VStack(alignment: .leading, spacing: PiSpacing.sm) {
-                    PiSectionHeader("Remove", subtitle: chats == 0 ? "Forget this project. Its folders on disk stay untouched." : "Delete its \(WorkspaceLabel.chats(chats)) first; a project with chats cannot be removed.")
-                    Button { remove(workspace) } label: { Label("Remove Project", systemImage: "trash") }.buttonStyle(.piDanger).disabled(chats > 0 || busy)
+                    PiSectionHeader("Remove", subtitle: removalHint)
+                    if confirmingRemove == workspace.id {
+                        HStack(spacing: PiSpacing.sm) {
+                            Text("Remove “\(WorkspaceLabel.name(workspace))”? Bello Agent forgets this project and its folder trust. Nothing on disk is deleted.")
+                                .font(PiFont.caption).foregroundStyle(Color.piDanger).fixedSize(horizontal: false, vertical: true)
+                            Button("Keep") { withAnimation(PiMotion.quick) { confirmingRemove = nil } }.buttonStyle(.piSecondaryCompact).fixedSize()
+                            Button { remove(workspace) } label: { Label("Remove Project", systemImage: "trash") }.buttonStyle(.piDanger).fixedSize().disabled(busy)
+                                .accessibilityIdentifier("workspace-confirm-remove")
+                        }
+                    } else {
+                        Button { withAnimation(PiMotion.base) { confirmingRemove = workspace.id } } label: { Label("Remove Project…", systemImage: "trash") }.buttonStyle(.piDanger).disabled(chats > 0 || hasTopics || busy)
+                            .accessibilityIdentifier("workspace-remove")
+                    }
                 }
+                .piAnimation(PiMotion.base, value: confirmingRemove)
             }
             .padding(PiSpacing.xl)
         }
     }
 
     private func remove(_ workspace: WorkspaceRecord) {
-        let alert = NSAlert(); alert.messageText = "Remove “\(WorkspaceLabel.name(workspace))”?"
-        alert.informativeText = "Bello Agent forgets this project and its folder trust. Nothing on disk is deleted."
-        alert.addButton(withTitle: "Remove Project"); alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        confirmingRemove = nil
         busy = true
         Task { defer { busy = false }
             do { try await model.removeWorkspace(workspace.id); report("Project removed.", .success) }
@@ -300,13 +277,17 @@ private struct NewWorkspacePane: View {
         .disabled(busy)
     }
     private func choosePrimary() {
-        guard let folder = WorkspaceModel.chooseFolders(message: "Choose the primary working directory for this project.", multiple: false).first else { return }
-        withAnimation { draft.selectPrimary(folder) }
+        Task {
+            guard let folder = await WorkspaceModel.chooseFolders(message: "Choose the primary working directory for this project.", multiple: false).first else { return }
+            withAnimation { draft.selectPrimary(folder) }
+        }
     }
     private func addExtras() {
-        let picked = WorkspaceModel.chooseFolders(message: "Choose additional folders for this project.", multiple: true).filter { !roots.contains($0) }
-        guard !picked.isEmpty else { return }
-        withAnimation { draft.extras += picked }
+        Task {
+            let picked = await WorkspaceModel.chooseFolders(message: "Choose additional folders for this project.", multiple: true).filter { !roots.contains($0) }
+            guard !picked.isEmpty else { return }
+            withAnimation { draft.extras += picked }
+        }
     }
     private func create() {
         guard let primary = draft.primary else { return }

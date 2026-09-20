@@ -40,6 +40,37 @@ import Charts
     }
 }
 
+/// One stable sidebar slot. No per-second clock or streamed-byte measurement
+/// participates; a local fade happens only when completed usage changes.
+struct SidebarReportedRate: View {
+    let history: SessionTimingHistory
+    let sessionTitle: String
+    @StateObject private var hover = SessionTimingHover()
+    private var presentation: SessionRatePresentation { SessionRatePresentation(history: history) }
+    var body: some View {
+        Button(action: hover.togglePinned) {
+            Text(presentation.label)
+                .font(PiFont.caption.monospacedDigit()).lineLimit(1)
+                .frame(width: 108, alignment: .leading)
+                .foregroundStyle(presentation.latest == nil ? Color.piInkTertiary : Color.piInkSecondary)
+                .contentTransition(.opacity).piAnimation(PiMotion.quick, value: presentation.label)
+        }
+        .buttonStyle(.plain).piPointer()
+        .help(SessionRatePresentation.explanation)
+        .accessibilityLabel("Latest completed output rate")
+        .accessibilityValue(presentation.label)
+        .accessibilityHint("Show session timing history and average")
+        .accessibilityIdentifier("sidebar-reported-rate")
+        .onHover(perform: hover.triggerHover)
+        .popover(isPresented: Binding(get: { hover.presented }, set: { if !$0 { hover.dismiss() } }), arrowEdge: .trailing) {
+            SessionTimingHistoryView(history: history, sessionTitle: sessionTitle, close: hover.dismiss)
+                .onHover(perform: hover.panelHover)
+        }
+        .onDisappear { hover.stop() }
+        .piStableLayout()
+    }
+}
+
 struct SessionTimingControls: View {
     @ObservedObject var footer: SessionMetrics
     let sessionTitle: String
@@ -51,6 +82,7 @@ struct SessionTimingControls: View {
             metric(.rate)
             average
         }
+        .piStableLayout()
         .onHover(perform: hover.triggerHover)
         .popover(isPresented: Binding(get: { hover.presented }, set: { if !$0 { hover.dismiss() } }), arrowEdge: .top) {
             SessionTimingHistoryView(history: footer.timing, sessionTitle: sessionTitle, close: hover.dismiss)
@@ -61,22 +93,24 @@ struct SessionTimingControls: View {
     }
     private func metric(_ metric: SessionTimingMetric) -> some View {
         let value = footer.timing.latest.flatMap { metric.value(in: $0) }
-        let text = (metric == .ttft ? "TTFT " : "Latest ") + (value.map { metric.label($0) } ?? "n/a")
+        let text = metric == .rate ? SessionRatePresentation(history: footer.timing).label : "TTFT " + (value.map { metric.label($0) } ?? "n/a")
         return timingButton(symbol: metric.symbol, text: text, label: "Latest completed request: " + metric.title,
-                            value: metric.label(value), identifier: "session-latest-" + metric.rawValue)
+                            value: metric.label(value), identifier: "session-latest-" + metric.rawValue, minimumWidth: metric == .rate ? 122 : 82)
+            .help(SessionRatePresentation.explanation)
     }
     private var average: some View {
         let value = footer.timing.historicalRate.tokensPerSecond
         return timingButton(symbol: nil, text: "Avg " + (value.map { SessionTimingMetric.rate.label($0) } ?? "n/a"),
-                            label: "Session average output tokens per second", value: SessionTimingMetric.rate.label(value), identifier: "session-average-rate")
+                            label: "Session average output tokens per second", value: SessionTimingMetric.rate.label(value), identifier: "session-average-rate", minimumWidth: 78)
             .help("Weighted average across retained completed requests: \(footer.timing.historicalRate.samples)/\(footer.timing.completedRequests) with reported output and completion timing.")
     }
-    private func timingButton(symbol: String?, text: String, label: String, value: String, identifier: String) -> some View {
+    private func timingButton(symbol: String?, text: String, label: String, value: String, identifier: String, minimumWidth: CGFloat) -> some View {
         return Button(action: hover.togglePinned) {
             HStack(spacing: 4) {
                 if let symbol { Image(systemName: symbol).font(.system(size: 10)) }
                 Text(text).lineLimit(1).monospacedDigit().fixedSize()
-            }
+                    .contentTransition(.opacity).piAnimation(PiMotion.quick, value: text)
+            }.frame(minWidth: minimumWidth, alignment: .leading)
         }
         .buttonStyle(.plain).piPointer()
         .accessibilityLabel(label)
@@ -122,7 +156,7 @@ struct SessionTimingHistoryView: View {
                 ForEach(SessionTimingMetric.footerMetrics, id: \.rawValue) { SessionTimingChart(history: history, metric: $0, selectedRequest: $selectedRequest) }
                 if let sample = selectedSample {
                     HStack(spacing: 5) {
-                        Text(selectedRequest == nil ? "Latest" : "Request \(selectedRequest!)")
+                        Text(selectedRequest.map { "Request \($0)" } ?? "Latest")
                         Text("· " + sample.wall.formatted(date: .abbreviated, time: .standard))
                         Spacer(minLength: 0)
                     }.font(PiFont.micro).foregroundStyle(Color.piInkSecondary).monospacedDigit()

@@ -10,6 +10,13 @@ import Glibc
 
 /// Every child is required to have its own process group. Cancellation can then
 /// terminate descendants without ever signaling the application process group.
+///
+/// Concurrency: `@unchecked` because Foundation's `Process` and `Pipe` are not
+/// `Sendable`. The invariant is that the three pipes and the process are
+/// immutable after `init` and used only through operations Foundation
+/// documents as thread-safe (`terminate`, `isRunning`, `fileHandleFor*`), and
+/// that `stopped` and `processGroup` are touched only while `lock` is held, so
+/// the process group is signalled at most once.
 final class ManagedChild: @unchecked Sendable {
     let process = Process(), input = Pipe(), output = Pipe(), errors = Pipe()
     private let lock = NSLock(); private var stopped = false; private var processGroup: Int32 = 0
@@ -56,6 +63,14 @@ public protocol MCPTransport: Sendable {
 
 /// Bounded JSON-RPC stdio peer. No server-provided instructions are elevated to
 /// system instructions. Unadvertised client operations are explicitly rejected.
+///
+/// Concurrency: `@unchecked` because FileHandle readability handlers and the
+/// writer queue run off any actor. The invariant is that `pending` and `closed`
+/// are touched only while `lock` is held, that each continuation is removed
+/// from `pending` under that lock before it is resumed (so a reply, a timeout
+/// and a cancellation cannot resume the same one twice), that `buffer` is
+/// touched only from the readability handler, which FileHandle serializes for
+/// one handle, and that writes go through the serial `writer` queue.
 final class StdioMCP: MCPTransport, @unchecked Sendable {
     private let child: ManagedChild, lock = NSLock(), writer = DispatchQueue(label: "pi.mcp.write")
     private var pending: [String: CheckedContinuation<JSON, Error>] = [:], closed = false, buffer = Data()
@@ -79,6 +94,9 @@ final class StdioMCP: MCPTransport, @unchecked Sendable {
                 pending[id] = continuation; lock.unlock()
                 if Task.isCancelled { resolve(id, .failure(CancellationError())); return }
                 send(["jsonrpc":"2.0", "id":JSON(id), "method":JSON(method), "params":params])
+                // The request deadline. Bounded rather than owned: it sleeps
+                // once, holds only a weak reference, and `cancel` is a no-op
+                // once the reply has removed this id from `pending`.
                 Task { [weak self, timeout] in
                     try? await Task.sleep(nanoseconds: timeout)
                     self?.cancel(id, error: AgentError("mcp_timeout", "MCP request timed out; invocation outcome may be unknown. No replay attempted."))
@@ -197,6 +215,9 @@ public actor AsyncGate {
                 if Task.isCancelled { c.resume(throwing:CancellationError()) }
                 else { waiters.append((id,c)) }
             }
+        // Cancellation handlers are synchronous; reaching the actor needs a
+        // task. It must not itself be cancellable, or a cancelled waiter would
+        // stay in `waiters` and never be resumed.
         },onCancel:{ Task { await self.cancel(id) } })
         if Task.isCancelled { release(); throw CancellationError() }
     }
@@ -220,6 +241,9 @@ public actor MCPManager {
     public func configure(_ config: JSON) async throws {
         guard config.isObject, Set(config.map.keys) == ["servers"], config["servers"].isObject, config["servers"].map.count <= 32,
               try config.data().count <= 262144 else { throw AgentError("mcp_config", "Expected {servers:{name:configuration}} with at most 32 servers within 256 KiB") }
+        // Releases are deliberately unowned and uncancellable: a gate that is
+        // not released strands every later invocation in this workspace, so
+        // these must run even when the invoking turn is being cancelled.
         try await gate.acquire(); defer { Task { await gate.release() } }
         try await connectionGate.acquire(); defer { Task { await connectionGate.release() } }
         var proposed: [String: Server] = [:]
@@ -254,26 +278,27 @@ public actor MCPManager {
     private func connect(_ name: String) async throws -> any MCPTransport {
         try await connectionGate.acquire()
         do {
-            guard var s = servers[name] else { throw AgentError("mcp_server", "Unknown or disabled MCP server") }
-            if s.initialized, let t = s.transport { await connectionGate.release(); return t }
-            if s.transport == nil {
-                if s.config["url"].text != nil {
+            guard var server = servers[name] else { throw AgentError("mcp_server", "Unknown or disabled MCP server") }
+            if server.initialized, let ready = server.transport { await connectionGate.release(); return ready }
+            if server.transport == nil {
+                if let configured = server.config["url"].text {
                     var headers: [String: String] = [:]
-                    for (key,value) in s.config["headers"].map {
+                    for (key,value) in server.config["headers"].map {
                         guard let v = value.text, !v.utf8.contains(13), !v.utf8.contains(10), !["host","content-length"].contains(key.lowercased()) else { throw AgentError("mcp_config", "Invalid MCP header") }; headers[key]=v
                     }
-                    s.transport = HTTPMCP(url:URL(string:s.config["url"].text!)!,headers:headers)
+                    guard let url = URL(string: configured) else { throw AgentError("mcp_config", "This server's URL is not a usable address; correct it in the native vault") }
+                    server.transport = HTTPMCP(url:url,headers:headers)
                 } else {
                     var env: [String:String] = [:]
-                    for (key,value) in s.config["env"].map { guard let value = value.text else { throw AgentError("mcp_config", "Environment values must be strings") }; env[key]=value }
-                    s.transport = try StdioMCP(command:required(s.config["command"], "command"), args:s.config["args"].list.compactMap(\.text), cwd:cwd, environment:toolEnvironment(env), timeoutSeconds:min(300,max(1,s.config["timeoutSeconds"].int ?? 60)))
+                    for (key,value) in server.config["env"].map { guard let value = value.text else { throw AgentError("mcp_config", "Environment values must be strings") }; env[key]=value }
+                    server.transport = try StdioMCP(command:required(server.config["command"], "command"), args:server.config["args"].list.compactMap(\.text), cwd:cwd, environment:toolEnvironment(env), timeoutSeconds:min(300,max(1,server.config["timeoutSeconds"].int ?? 60)))
                 }
             }
-            let t=s.transport!
-            let hello = try await t.request("initialize", params:["protocolVersion":"2025-11-25","capabilities":[:],"clientInfo":["name":"pi-app-native","version":"1.0.0"]])
-            guard ["2025-11-25","2025-06-18"].contains(hello["protocolVersion"].text), hello["capabilities"]["tools"].isObject else { await t.close(); throw AgentError("mcp_version", "Server must support MCP 2025-11-25 or 2025-06-18 and tools capability") }
-            try await t.notify("notifications/initialized", params:[:]); s.initialized=true; servers[name]=s
-            await connectionGate.release(); return t
+            guard let transport=server.transport else { throw AgentError("mcp_server", "MCP server has no usable transport") }
+            let hello = try await transport.request("initialize", params:["protocolVersion":"2025-11-25","capabilities":[:],"clientInfo":["name":"pi-app-native","version":"1.0.0"]])
+            guard ["2025-11-25","2025-06-18"].contains(hello["protocolVersion"].text), hello["capabilities"]["tools"].isObject else { await transport.close(); throw AgentError("mcp_version", "Server must support MCP 2025-11-25 or 2025-06-18 and tools capability") }
+            try await transport.notify("notifications/initialized", params:[:]); server.initialized=true; servers[name]=server
+            await connectionGate.release(); return transport
         } catch { await connectionGate.release(); throw error }
     }
     private func tools(_ name: String) async throws -> [JSON] {

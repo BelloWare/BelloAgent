@@ -86,7 +86,7 @@ final class ConfigurationVaultTests: XCTestCase {
     }
 
     @MainActor func testLegacyMessagesCannotStartWorkAndExplicitResponsesCopyPreservesOriginal() async throws {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let workspace = WorkspaceRecord(id: "fixture", path: root.path, trusted: true)

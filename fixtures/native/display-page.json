@@ -1,0 +1,183 @@
+[
+  {
+    "at" : 1789817388106.571,
+    "id" : "t0",
+    "role" : "user",
+    "state" : "complete",
+    "text" : "Question 0",
+    "thinking" : "",
+    "tools" : [
+
+    ],
+    "truncated" : false,
+    "turn" : "t0"
+  },
+  {
+    "at" : 1789817388108.2639,
+    "id" : "B1CD3BE0-FED3-4DD3-A42C-E24A1FC695DD",
+    "modelMs" : 0.027416706085205078,
+    "role" : "assistant",
+    "state" : "complete",
+    "text" : "Plain answer 0 with **markdown** and a `token`.",
+    "thinking" : "",
+    "tools" : [
+
+    ],
+    "truncated" : false,
+    "turn" : "t0"
+  },
+  {
+    "detail" : "Compacted 401 tokens · 2 messages kept",
+    "id" : "BB85077E-EF6B-4CC1-B7C8-74929D290B71",
+    "kind" : "compaction",
+    "role" : "system",
+    "state" : "complete",
+    "text" : "Conversation summary:\nEarlier turns summarised for context.",
+    "thinking" : "",
+    "tools" : [
+
+    ],
+    "truncated" : false
+  },
+  {
+    "id" : "658D7C46-8994-4224-B3FA-0318584190BB",
+    "kind" : "branch",
+    "role" : "system",
+    "state" : "complete",
+    "text" : "Edited from here · earlier replies stay in the journal",
+    "thinking" : "",
+    "tools" : [
+
+    ],
+    "truncated" : false
+  },
+  {
+    "at" : 1789817388156.3369,
+    "id" : "edit",
+    "role" : "user",
+    "state" : "complete",
+    "text" : "Replacement question",
+    "thinking" : "",
+    "tools" : [
+
+    ],
+    "truncated" : false,
+    "turn" : "edit"
+  },
+  {
+    "at" : 1789817388157.96,
+    "id" : "B4D68031-E8DC-41DB-982F-4B8C6318ADD0",
+    "modelMs" : 0.009833335876464844,
+    "role" : "assistant",
+    "state" : "complete",
+    "stopReason" : "length",
+    "text" : "long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long answer long",
+    "thinking" : "reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning reasoning re",
+    "tools" : [
+
+    ],
+    "truncated" : true,
+    "turn" : "edit"
+  },
+  {
+    "at" : 1789817388174.1262,
+    "id" : "tool",
+    "role" : "user",
+    "state" : "complete",
+    "text" : "Read the file",
+    "thinking" : "",
+    "tools" : [
+
+    ],
+    "truncated" : false,
+    "turn" : "tool"
+  },
+  {
+    "at" : 1789817388190.158,
+    "id" : "6F9FF40E-83A1-402A-89F3-7E54ABFDF4CE",
+    "modelMs" : 0.070166587829589844,
+    "role" : "assistant",
+    "state" : "complete",
+    "text" : "Reading the file.",
+    "thinking" : "",
+    "tools" : [
+      {
+        "added" : null,
+        "durationMs" : 0.11004161834716797,
+        "id" : "call-read",
+        "input" : "{\"path\":\"/tmp/a.swift\"}",
+        "inputBytes" : 23,
+        "inputTruncated" : false,
+        "name" : "first",
+        "output" : "done first",
+        "path" : null,
+        "removed" : null,
+        "state" : "completed",
+        "truncated" : false
+      }
+    ],
+    "truncated" : false,
+    "turn" : "tool"
+  },
+  {
+    "at" : 1789817388191.5349,
+    "id" : "1088A4ED-21CC-47A9-96DE-A786F745680D",
+    "role" : "tool",
+    "state" : "complete",
+    "text" : "done first",
+    "thinking" : "",
+    "tools" : [
+
+    ],
+    "truncated" : false,
+    "turn" : "tool"
+  },
+  {
+    "at" : 1789817388325.2739,
+    "id" : "0709A64A-E3B5-4CBA-85E5-7DF6B6CB8C50",
+    "modelMs" : 0.11991643905639648,
+    "role" : "assistant",
+    "state" : "complete",
+    "text" : "Finished after the tool.",
+    "thinking" : "",
+    "tools" : [
+
+    ],
+    "truncated" : false,
+    "turn" : "tool"
+  },
+  {
+    "at" : 1789817388338.449,
+    "id" : "live",
+    "role" : "user",
+    "state" : "complete",
+    "text" : "One more",
+    "thinking" : "",
+    "tools" : [
+
+    ],
+    "truncated" : false,
+    "turn" : "live"
+  },
+  {
+    "id" : "63770D87-1F9A-45E2-9221-DF97442A326C",
+    "role" : "assistant",
+    "state" : "streaming",
+    "text" : "Partially written answer",
+    "thinking" : "Working it out",
+    "tools" : [
+      {
+        "durationMs" : null,
+        "id" : "call-live",
+        "input" : "{\"query\":\"open\"",
+        "inputBytes" : 15,
+        "inputTruncated" : false,
+        "name" : "second",
+        "output" : "",
+        "state" : "preparing",
+        "truncated" : false
+      }
+    ],
+    "truncated" : false
+  }
+]

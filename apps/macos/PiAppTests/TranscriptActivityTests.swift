@@ -316,3 +316,15 @@ extension TranscriptActivityTests {
         XCTAssertNil(TranscriptActivity.patched(items, from: previous, to: earlierChanged), "an earlier row changing regroups")
     }
 }
+
+extension TranscriptActivityTests {
+    /// A reply the model cut at its output budget carries the reason from the helper's row and from a journal alike.
+    func testAReplyStoppedAtTheOutputBudgetCarriesItsReason() throws {
+        let live = try JSONDecoder().decode(TranscriptMessage.self, from: Data(#"{"id":"a1","role":"assistant","text":"partial","stopReason":"length"}"#.utf8))
+        XCTAssertEqual(live.stopReason, "length"); XCTAssertNil(live.state)
+        let projected = TranscriptMessage.project(id: "a2", message: ["role": .string("assistant"), "content": .string("partial"), "stopReason": .string("length")])
+        XCTAssertEqual(projected.stopReason, "length"); XCTAssertEqual(projected.state, "length")
+        let plain = try JSONDecoder().decode(TranscriptMessage.self, from: Data(#"{"id":"a3","role":"assistant","text":"done"}"#.utf8))
+        XCTAssertNil(plain.stopReason)
+    }
+}

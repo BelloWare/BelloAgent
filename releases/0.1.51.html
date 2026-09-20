@@ -1,0 +1,8 @@
+<h2>Bello Agent 0.1.51</h2>
+<ul>
+  <li>Run 20 conversations concurrently within one project or across projects. Request capture and command handling now tolerate simultaneous streaming, tool calls and refresh bursts.</li>
+  <li>Opening several chats together shares project startup safely and waits for each chat's capture preferences before sending.</li>
+  <li>Stopping one conversation leaves the others running. Commands wait for available capacity without silently retrying uncertain work.</li>
+  <li>Background usage updates do less work, and saving request history no longer waits for the UI thread.</li>
+  <li>Concurrent captures stay within their memory budget while complete recorded bodies remain available on disk.</li>
+</ul>

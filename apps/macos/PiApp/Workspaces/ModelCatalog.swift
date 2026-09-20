@@ -21,8 +21,10 @@ enum ThinkingLevel: String, CaseIterable, Sendable {
     /// Short text for the composer pill, e.g. "Effort · medium".
     var pillLabel: String {
         switch self {
-        case .profileDefault: return "Effort · default"
-        case .default: return "Effort · model"
+        // "default" twice over said nothing about whose default it was, and
+        // "model" read as the name of a model rather than as who decides.
+        case .profileDefault: return "Effort · connection default"
+        case .default: return "Effort · model decides"
         default: return "Effort · \(rawValue)"
         }
     }
@@ -131,7 +133,8 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
 
     static func failureMessage(_ error: Error) -> String {
         (error as? ModelCatalogEndpoint.Failure)?.localizedDescription ??
-        (error as? GatewayModelDiscovery.Failure)?.localizedDescription ?? "Couldn't list models."
+        (error as? GatewayModelDiscovery.Failure)?.localizedDescription ??
+        (error as? HostError)?.localizedDescription ?? "Couldn't list models."
     }
     /// A non-blank catalog URL makes the catalog the only model source.
     static func catalogConfigured(_ profile: ProfileRecord) -> Bool {
@@ -170,7 +173,10 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
                 return Listing(models: descriptors.filter { !$0.deprecated }.map(\.id), descriptors: descriptors, source: "catalog")
             }
             try Task.checkCancellation()
-            let descriptors = try readBundled()
+            // This task inherits the main actor, and reading and parsing the
+            // bundled catalog is a file read: it happens in the window between
+            // a chat's pane appearing and its controls settling.
+            let descriptors = try await Self.readingBundled(readBundled)
             return Listing(models: descriptors.filter { !$0.deprecated }.map(\.id), descriptors: descriptors, source: "bundled")
         }
         let token = UUID()
@@ -183,15 +189,23 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
             let listing = try result.get()
             updated.models = listing.models; updated.descriptors = listing.descriptors; updated.source = listing.source
             updated.fetchedAt = now(); updated.error = nil
-        } catch is CancellationError {
-            updated.error = "Model listing was cancelled."
         } catch {
-            // The last good list stays usable; pickers show the error beside it.
+            // No "cancelled" case: the only canceller is `invalidate`, which
+            // clears this entry and its in-flight token, so such a result is
+            // already dropped by the guard above. A cancellation that somehow
+            // arrived from the endpoint is reported like any other failure,
+            // rather than as an action nobody took. The last good list stays
+            // usable; pickers show the error beside it.
             updated.source = usesCatalog ? "catalog" : "bundled"
             updated.fetchedAt = now(); updated.error = Self.failureMessage(error)
         }
         entries[id] = updated
         return updated.models
+    }
+
+    /// Off the main actor: the catalog is `Sendable`, so nothing else moves.
+    private nonisolated static func readingBundled(_ read: @escaping ReadBundled) async throws -> [ModelDescriptor] {
+        try await Task.detached(priority: .userInitiated) { try read() }.value
     }
 
     func invalidate(profileID: String) {

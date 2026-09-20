@@ -3,7 +3,7 @@ import XCTest
 
 final class WorkspaceDurabilityTests: XCTestCase {
     private func scratch() throws -> URL {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory())
+        let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("workspace-durability-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
@@ -36,11 +36,48 @@ final class WorkspaceDurabilityTests: XCTestCase {
         model.shutdown(); try await model.traces.close()
     }
 
+    /// Quitting with text in a chat that never sent used to write the draft
+    /// under an id no launch would ever list again: the text was gone and the
+    /// row stayed behind forever. An empty never-sent chat still writes nothing.
+    @MainActor func testQuittingWithTextInANeverSentChatKeepsBothTheChatAndItsDraft() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let store = try XCTUnwrap(model.store)
+        let typed = ChatRecord(id: "typed-in", workspaceID: "w", title: "New chat", path: nil, profileID: "p")
+        let untouched = ChatRecord(id: "never-touched", workspaceID: "w", title: "New chat", path: nil, profileID: "p")
+        model.chats = [typed, untouched]
+        model.pendingChatIDs = [typed.id, untouched.id]
+        let view = SessionDisplay(id: typed.id); view.draft = "Half-written question I want back"
+        model.displays[typed.id] = view
+        model.displays[untouched.id] = SessionDisplay(id: untouched.id)
+
+        try await model.flushDrafts()
+
+        let savedDraft = try await store.get(DraftRecord.self, kind: "draft", id: typed.id)
+        let savedChat = try await store.get(ChatRecord.self, kind: "chat", id: typed.id)
+        XCTAssertEqual(savedDraft?.text, view.draft)
+        XCTAssertEqual(savedChat?.id, typed.id, "a draft must never be written under an id no launch will list")
+        XCTAssertFalse(model.pendingChatIDs.contains(typed.id))
+        let emptyChat = try await store.get(ChatRecord.self, kind: "chat", id: untouched.id)
+        let emptyDraft = try await store.get(DraftRecord.self, kind: "draft", id: untouched.id)
+        XCTAssertNil(emptyChat, "an empty never-sent chat still writes nothing")
+        XCTAssertNil(emptyDraft)
+
+        // The next launch finds the chat and the text together.
+        let reopened = try await store.loadChats()
+        XCTAssertEqual(reopened.map(\.id), [typed.id])
+        model.shutdown(); try await model.traces.close(); await store.close()
+    }
+
     @MainActor func testUnavailableStoreStopsCopyHandoffAndAutomaticHostOpening() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root.appendingPathComponent("desktop.sqlite"), withIntermediateDirectories: true)
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        XCTAssertNil(model.store)
+        // The database opens off the main actor, so "there is no storage" is
+        // something launch finds out, not something construction blocks on.
+        let ready = await model.prepareStore()
+        XCTAssertFalse(ready); XCTAssertNil(model.store)
+        XCTAssertTrue(model.error?.contains("Cannot open desktop metadata") == true)
         var profile = ProfileRecord(); profile.id = "p"; profile.modelId = "fixture"
         let chat = ChatRecord(id: "source", workspaceID: "w", title: "Source", path: root.appendingPathComponent("source.jsonl").path, profileID: profile.id)
         model.workspaces = [WorkspaceRecord(id: "w", path: root.path, trusted: true)]

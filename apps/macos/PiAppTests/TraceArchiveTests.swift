@@ -2,7 +2,54 @@ import XCTest
 import CryptoKit
 @testable import PiApp
 
+private actor TraceExportGate {
+    private var waiter: CheckedContinuation<Void, Never>?
+    private(set) var entered = false
+    func pause() async { entered = true; await withCheckedContinuation { waiter = $0 } }
+    func release() { waiter?.resume(); waiter = nil }
+}
+
 final class TraceArchiveTests: XCTestCase {
+    func testMalformedRetainedLengthsCannotTrapOrPublishAnArtifact() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = TraceArchive(root: root)
+        for value in [-1.0, 0.5, 1e30, Double.infinity, Double.nan] {
+            let metadata: [String: WireValue] = ["attemptId": .string(UUID().uuidString), "request": .object(["retainedBytes": .number(value)])]
+            do {
+                _ = try await archive.persist(metadata, read: { _, _ in XCTFail("Invalid metadata must fail before reading"); return [:] }, verify: { metadata })
+                XCTFail("Invalid retained length must fail")
+            } catch { guard case TraceError.invalid = error else { return XCTFail("Unexpected error: \(error)") } }
+        }
+        let metadata: [String: WireValue] = ["attemptId": .string(UUID().uuidString), "request": .object(["retainedBytes": .number(1)])]
+        for value in [1.5, 1e30] {
+            do {
+                _ = try await archive.persist(metadata, read: { _, _ in ["bytes": .string(Data([65]).base64EncodedString()), "retainedBytes": .number(value)] }, verify: { metadata })
+                XCTFail("Page lengths must match exactly, without truncating or trapping")
+            } catch { guard case TraceError.changed = error else { return XCTFail("Unexpected error: \(error)") } }
+        }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    func testCancelledExportRemovesStagingInsteadOfPublishingAfterALatePage() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = TraceArchive(root: root), gate = TraceExportGate()
+        let metadata: [String: WireValue] = ["attemptId": .string(UUID().uuidString), "request": .object(["retainedBytes": .number(1)])]
+        let export = Task {
+            try await archive.persist(metadata, read: { _, _ in
+                await gate.pause()
+                return ["bytes": .string(Data([65]).base64EncodedString()), "retainedBytes": .number(1)]
+            }, verify: { metadata })
+        }
+        for _ in 0..<100 { if await gate.entered { break }; try await Task.sleep(for: .milliseconds(10)) }
+        let entered = await gate.entered; XCTAssertTrue(entered)
+        export.cancel(); await gate.release()
+        do { _ = try await export.value; XCTFail("Cancelled exports must not publish") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
     func testUnavailableLiveBodiesAreNotExportedAsEmptyOriginals() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

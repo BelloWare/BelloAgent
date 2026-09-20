@@ -14,8 +14,9 @@ struct OnboardingView: View {
             VStack(spacing: PiSpacing.xl) {
                 VStack(spacing: 10) {
                     Image("BelloAgentIcon").resizable().interpolation(.high).scaledToFit().frame(width: 72, height: 72).accessibilityHidden(true)
-                    Text("Welcome to Bello Agent").font(PiFont.display(30)).foregroundStyle(Color.piInk)
-                    Text("Three quick steps: connect your LiteLLM gateway, pick a model, open a project.").font(PiFont.body).foregroundStyle(Color.piInkSecondary)
+                    Text(setup.resumedFromSaved ? "Welcome back" : "Welcome to Bello Agent").font(PiFont.display(30)).foregroundStyle(Color.piInk)
+                    Text(setup.resumedFromSaved ? "Your connection is saved. Choose a project and start a chat." : "Three quick steps: connect your LiteLLM gateway, pick a model, open a project.")
+                        .font(PiFont.body).foregroundStyle(Color.piInkSecondary)
                 }
                 steps
                 VStack(alignment: .leading, spacing: PiSpacing.lg) {
@@ -78,10 +79,13 @@ struct OnboardingView: View {
             Text("The Bello model catalog is included. Set a URL to replace it with your own list, context sizes and reasoning levels. External catalogs are fetched anonymously.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
             if setup.hasStoredKey { PiNote("Leave the key empty to keep its saved value. Re-enter it only to refresh a custom catalog on the gateway's origin.") }
             field("API") { Text("Responses").font(PiFont.body).foregroundStyle(Color.piInkSecondary) }
-            HStack {
+            HStack(alignment: .center) {
+                // A disabled Continue always says what it is waiting for.
+                if !setup.gatewayHint.isEmpty { PiNote(setup.gatewayHint).accessibilityIdentifier("onboarding-gateway-hint") }
                 Spacer()
                 Button { setup.step = .model; Task { await setup.listModels() } } label: { Label("Continue", systemImage: "arrow.right") }.labelStyle(.trailingIcon).buttonStyle(.piPrimary).disabled(!setup.gatewayReady)
             }
+            .animation(.easeInOut(duration: 0.18), value: setup.gatewayHint)
         }
     }
 
@@ -125,7 +129,7 @@ struct OnboardingView: View {
                 field("Output budget") { PiNumberField(placeholder: "Tokens", value: $setup.profile.maxOutputTokens, width: 130) }
                 Spacer()
             }
-            Text("The output budget includes reasoning and is reserved before sending. Model output ceiling: " + (setup.profile.modelOutputLimit.map { "\($0.formatted()) tokens." } ?? "not supplied."))
+            Text("The output budget only sizes the reserve the context estimate keeps for a reply; it is never sent as a limit. Model output ceiling: " + (setup.profile.modelOutputLimit.map { "\($0.formatted()) tokens, sent with every request." } ?? "not supplied, so requests carry no output limit."))
                 .font(PiFont.caption).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button { setup.invalidateModelList(); setup.step = .gateway } label: { Label("Back", systemImage: "arrow.left") }.buttonStyle(.piGhost)
@@ -138,7 +142,11 @@ struct OnboardingView: View {
 
     private var workspace: some View {
         Group {
-            PiSectionHeader("Create a project", subtitle: "Choose the primary folder Bello Agent may read, then add more folders if a task spans several. Editing chats can also run commands and change files there with your permissions.")
+            if selectedWorkspace?.trusted == true {
+                PiSectionHeader("Start your first chat", subtitle: "Your project is ready. Test & Start sends one small request to the selected model, then opens the chat. Add more folders below if a task spans several.")
+            } else {
+                PiSectionHeader("Create a project", subtitle: "Choose the primary folder Bello Agent may read, then add more folders if a task spans several. Editing chats can also run commands and change files there with your permissions.")
+            }
             if let workspace = selectedWorkspace {
                 WorkspaceFolderList(model: model, workspace: workspace) { folderError = $0 }
                     .transition(AnyTransition.move(edge: .top).combined(with: .opacity))

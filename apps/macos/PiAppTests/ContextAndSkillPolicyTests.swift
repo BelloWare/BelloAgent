@@ -92,7 +92,7 @@ final class ContextAndSkillPolicyTests: XCTestCase {
     }
 
     @MainActor func testFirstContextPreviewOfFreshChatUsesPackagedHelperWithoutSending() async throws {
-        let folder = URL(fileURLWithPath:ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? ProcessInfo.processInfo.environment["PI_BUILD_ROOT"] ?? NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let folder = URL(fileURLWithPath:scratchBase()).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
         let vault = ConfigurationVault(storage:MemoryVaultStorage())
         let workspace = WorkspaceRecord(id:"context-fixture",path:folder.path,trusted:true)
@@ -140,7 +140,7 @@ final class ContextAndSkillPolicyTests: XCTestCase {
     }
 
     @MainActor func testPreparedContextMeterRejectsChangedInputsAndConfiguration() throws {
-        let folder = URL(fileURLWithPath:ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let folder = URL(fileURLWithPath:scratchBase()).appendingPathComponent(UUID().uuidString)
         let model = WorkspaceModel(stateRoot:folder,vault:ConfigurationVault(storage:MemoryVaultStorage()))
         defer { model.shutdown(); try? FileManager.default.removeItem(at:folder) }
         var chat = ChatRecord(id:"meter",workspaceID:"project",title:"New chat",path:nil,profileID:"profile")
@@ -201,7 +201,7 @@ final class ContextAndSkillPolicyTests: XCTestCase {
         XCTAssertEqual(ring.fullLabel, ContextMeterPresentation(context: inspection).fullLabel)
         XCTAssertEqual(ring.methodLabel, "Provider count")
         XCTAssertTrue(ring.modelLabel?.contains("provider/chosen-model") == true)
-        XCTAssertTrue(ring.budgetLabel?.contains("requested output " + Double(2048).formatted(.number.precision(.fractionLength(0)))) == true)
+        XCTAssertTrue(ring.budgetLabel?.contains("output reserve " + Double(2048).formatted(.number.precision(.fractionLength(0)))) == true)
         XCTAssertTrue(ring.detailLabel.contains("unsent draft"))
     }
 

@@ -6,8 +6,7 @@ import AppKit
 /// terminal view, captured in both appearances next to the gallery captures.
 final class TerminalCaptureTests: XCTestCase {
     @MainActor func testCaptureTerminalInBothAppearances() async throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard let root = environment["PI_APP_UI_SCREENSHOT_ROOT"] ?? environment["TEST_RUNNER_PI_APP_UI_SCREENSHOT_ROOT"] else { throw XCTSkip("Set PI_APP_UI_SCREENSHOT_ROOT to capture the terminal") }
+        guard let root = testEnvironment("PI_APP_UI_SCREENSHOT_ROOT") else { throw XCTSkip("Set PI_APP_UI_SCREENSHOT_ROOT to capture the terminal") }
         let folder = URL(fileURLWithPath: root, isDirectory: true).appendingPathComponent("screenshots")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let terminal = TerminalEmulator(columns: 80, rows: 16)

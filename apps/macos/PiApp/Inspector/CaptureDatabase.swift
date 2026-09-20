@@ -30,6 +30,19 @@ enum CaptureSQLValue: Sendable {
 // cleanup explicit without transferring an SQLite pointer between actors.
 final class CaptureDatabase: @unchecked Sendable {
     private var handle: OpaquePointer?
+    // MARK: Test seams
+    //
+    // Three counters SQLite already keeps. They cost one addition per statement
+    // and let a test pin the shape of a write instead of its wall clock.
+
+    /// Rows visited by full table scans, from SQLite's own statement counters.
+    /// Tests pin writes with it: a per-chunk or per-event cost that grows with
+    /// the size of the archive shows up here long before it shows up in a timer.
+    private(set) var scannedRows = 0
+    /// Prepared statements, and committed top-level transactions. Tests pin how
+    /// much work an operation costs without depending on a wall clock.
+    private(set) var statements = 0
+    private(set) var commits = 0
     init(url: URL) throws {
         // macOS exposes its temporary directory through /var -> /private/var.
         // Resolve the already-validated archive directory, while keeping the
@@ -55,8 +68,12 @@ final class CaptureDatabase: @unchecked Sendable {
     func execute(_ sql: String, _ values: [CaptureSQLValue] = []) throws { _ = try rows(sql, values) }
     func rows(_ sql: String, _ values: [CaptureSQLValue] = []) throws -> [[String: CaptureSQLValue]] {
         var statement: OpaquePointer?
+        statements += 1
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { throw CaptureFailure.database("prepare", sqlite3_extended_errcode(handle)) }
-        defer { sqlite3_finalize(statement) }
+        defer {
+            scannedRows += Int(sqlite3_stmt_status(statement, SQLITE_STMTSTATUS_FULLSCAN_STEP, 0))
+            sqlite3_finalize(statement)
+        }
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         for (offset, value) in values.enumerated() {
             let index = Int32(offset + 1), result: Int32
@@ -92,9 +109,13 @@ final class CaptureDatabase: @unchecked Sendable {
             result.append(row)
         }
     }
+    private var depth = 0
+    /// Nested calls join the outermost transaction, so a sweep can hold every
+    /// eviction it performs in one commit instead of one fsync per row.
     func transaction<T>(_ work: () throws -> T) throws -> T {
-        try execute("BEGIN IMMEDIATE")
-        do { let result = try work(); try execute("COMMIT"); return result }
-        catch { try? execute("ROLLBACK"); throw error }
+        if depth > 0 { depth += 1; defer { depth -= 1 }; return try work() }
+        try execute("BEGIN IMMEDIATE"); depth = 1; commits += 1
+        do { let result = try work(); depth = 0; try execute("COMMIT"); return result }
+        catch { depth = 0; try? execute("ROLLBACK"); throw error }
     }
 }

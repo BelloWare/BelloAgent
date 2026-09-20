@@ -75,6 +75,7 @@ extension NSWindow {
         titlebarAppearsTransparent = true
         titlebarSeparatorStyle = .none
         toolbar = nil
+        tabbingMode = .disallowed
         backgroundColor = NSColor(Color.piWindow)
     }
 }
@@ -129,6 +130,11 @@ final class ConversationHeaderMarkerView: NSView {
     private var consumesSecondMouseUp = false
     /// The chat whose composer takes stray typing; set from the workspace view.
     var focusedSessionID: String?
+    /// The composer found for the focused chat, kept so repeated typing outside
+    /// a text view does not walk the window's view tree — with a long chat open
+    /// that tree holds thousands of rows. Tests pin the count.
+    private var resolvedComposer: (sessionID: String, editor: ComposerTextView)?
+    private(set) var composerLookups = 0
 
     func attach(_ window: NSWindow?, chrome: WindowChromeView) {
         guard let window else { detach(); return }
@@ -141,6 +147,7 @@ final class ConversationHeaderMarkerView: NSView {
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.toolbar = nil
+        window.tabbingMode = .disallowed
         window.isMovableByWindowBackground = false
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
             let consumed = MainActor.assumeIsolated {
@@ -159,6 +166,7 @@ final class ConversationHeaderMarkerView: NSView {
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         eventMonitor = nil; keyMonitor = nil; window = nil; chrome = nil; restoreFrame = nil; consumesSecondMouseUp = false
+        resolvedComposer = nil
     }
 
     // MARK: Typing lands in the composer
@@ -170,9 +178,21 @@ final class ConversationHeaderMarkerView: NSView {
     func redirectTyping(_ event: NSEvent) -> NSEvent? {
         guard let window, event.window === window, window.attachedSheet == nil, !window.isMiniaturized,
               Self.shouldRedirectTyping(characters: event.characters, modifiers: event.modifierFlags, responderTakesText: Self.takesText(window.firstResponder)),
-              let editor = Self.composerTarget(in: window, sessionID: focusedSessionID) else { return event }
+              let editor = composerTarget(in: window) else { return event }
         window.makeFirstResponder(editor)
         return event
+    }
+    /// The focused chat's composer, remembered while it stays in this window
+    /// and keeps its chat. Anything else falls back to a full search.
+    private func composerTarget(in window: NSWindow) -> ComposerTextView? {
+        if let sessionID = focusedSessionID, let cached = resolvedComposer, cached.sessionID == sessionID,
+           cached.editor.window === window, cached.editor.sessionID == sessionID, !cached.editor.isHiddenOrHasHiddenAncestor {
+            return cached.editor
+        }
+        composerLookups += 1
+        let found = Self.composerTarget(in: window, sessionID: focusedSessionID)
+        if let sessionID = focusedSessionID, let found { resolvedComposer = (sessionID, found) } else { resolvedComposer = nil }
+        return found
     }
     /// Only plain, printable characters redirect: no command or control shortcuts,
     /// no arrows, function keys, Escape, Tab, Return or Delete, and no space,

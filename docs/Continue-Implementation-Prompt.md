@@ -2,12 +2,19 @@
 
 ```text
 Continue BelloWare/BelloAgent on main. Inspect the working tree and configured
-upstream, preserving unrelated edits. Do not use the old main branch or reset
-history to an earlier release.
+upstream, preserving unrelated edits. Do not reset to the archived BelloWare/pi-app
+repository or an earlier release.
 
 Read docs/Implementation-Status.md first, then Features.md, Design.md,
 docs/Swift-Feature-Parity.md, docs/Swift-Test-Handoff.md and
-docs/validation/Bello-Agent-0.1.19-2026-09-17.md and docs/Deep-Review-2026-09-17.md. Current source and the latest
+docs/Deep-Review-2026-09-19.md, docs/Performance-Review-2026-09-19.md and
+docs/Concurrency-Review-2026-09-19.md and docs/TPS-Workers-Review-2026-09-19.md.
+Read docs/Responsiveness-Review-2026-09-19.md.
+Read docs/Session-Reference-Review-2026-09-19.md.
+Read docs/Scrolling-Review-2026-09-19.md.
+Read docs/Topics-Review-2026-09-19.md.
+Read docs/Five-Session-Performance-Review-2026-09-19.md.
+Read the latest release record linked below. Current source and the latest
 validation record take precedence over historical counts and chat claims.
 
 Owner workflow change after 0.1.6: prioritize faster tests/releases. Do not run
@@ -19,7 +26,186 @@ toolchain. Run independent suites in parallel, use stable incremental build
 caches and isolated per-run fixtures, and avoid routine full-gallery/full-matrix
 repeats. Follow the current test-selection policy in Swift-Test-Handoff.md.
 
-Bello Agent 0.1.42/build 46 is publicly released at
+Bello Agent 0.1.60/build 64 is publicly released at
+[belloware.com](https://belloware.com/bello-agent.html), from source `ce252bcabe542efc58d87774f16bbe09b4a646d8`
+and website `4ceb9e8773b605931d15eceaf04b0e4947f6f2c7`. The DMG measures **7,824,296 bytes (7.46 MiB)**,
+SHA-256 `0cf92ca649e56a4293a404fa98a9d8fcbe547d2ee9a97222a04be124e1cc81c7`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-19 23:24:08 UTC**.
+Read the [0.1.60 release record](validation/Bello-Agent-0.1.60-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed.
+
+Bello Agent 0.1.59/build 63 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `f24e92d0649ceba066ad62e0a9ba439a0e07aacc`
+and website `25f67c4a683c0927981df5940388b4f3f1759fa6`. The DMG measures **7,658,997 bytes (7.30 MiB)**,
+SHA-256 `27f4680d1e1181880309f17250328f8b93c39cb6a7db09407e2fae9f01d668ab`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-19 09:00:47 UTC**.
+Read the [0.1.59 release record](validation/Bello-Agent-0.1.59-2026-09-19.md).
+
+Bello Agent 0.1.58/build 62 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `998411e757bddfe419d4afdd3e578f299689ad60`
+and website `fa044232670ca60292baf2de3744526aed86f3ff`. The DMG measures **7,593,537 bytes (7.24 MiB)**,
+SHA-256 `be36e9bbfe783c3463038fca6337ad19fc9808aa17334c28bd567fc7fafb979d`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-19 02:56:13 UTC**.
+Read the [0.1.58 release record](validation/Bello-Agent-0.1.58-2026-09-19.md).
+
+Bello Agent 0.1.57/build 61 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `dbbf3421a7143e606768659be8e688ba64d8ac59`
+and website `eaaa9f647ff410dacc4126d3e370ea7249357264`. The DMG measures **7,538,829 bytes (7.19 MiB)**,
+SHA-256 `f82811cec97b217385e2d58b9fb6a1ac62b3a6a8c8fa725e937a08afe00b5f3b`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-19 01:00:09 UTC**.
+Cloudflare check **105810946636** succeeded.
+Read the [0.1.57 release record](validation/Bello-Agent-0.1.57-2026-09-19.md) and
+[five-session performance review](Five-Session-Performance-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+Bello Agent 0.1.56/build 60 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `bb114ef07a69ef6e1cb33c60e733564e930a8a27`
+and website `3fe37bb891f544f6ed464a1f82d9e60d4c7a1b08`. The DMG measures **7,478,445 bytes (7.13 MiB)**,
+SHA-256 `e19097bbaaf6c2eaa3fcc69ba9db2d1427ffaf299f03761546266c2d57fd822b`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 23:34:17 UTC**.
+Cloudflare check **105796177570** succeeded.
+Read the [0.1.56 release record](validation/Bello-Agent-0.1.56-2026-09-19.md) and
+[topics review](Topics-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+Bello Agent 0.1.55/build 59 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `f42d237efe30c298523a47b62dd23c35fdda107e`
+and website `5c1aec57e1c8e9a69ef44cbbd053715280db3e01`. The DMG measures **7,357,293 bytes (7.02 MiB)**,
+SHA-256 `031ec071db485f796e9dc2e66c9b8b24f13da443778877db54a1f35d8f1955db`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 22:58:16 UTC**.
+Cloudflare check **105788774388** succeeded.
+Read the [0.1.55 release record](validation/Bello-Agent-0.1.55-2026-09-19.md) and
+[scrolling review](Scrolling-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+Bello Agent 0.1.54/build 58 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `49ed3c95e7fe53605bfb31b7ad8c0c8595ed0f4d`
+and website `8170e23d0ef7b0f9284c37679aa4895108b679d0`. The DMG measures **7,335,665 bytes (7.00 MiB)**,
+SHA-256 `f97d207d8f18ed7c0d2a12f7898d04b70463598c3067cce3590b2076e35b0a83`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 22:03:23 UTC**.
+Cloudflare check **105776630049** succeeded.
+Read the [0.1.54 release record](validation/Bello-Agent-0.1.54-2026-09-19.md) and
+[session-reference review](Session-Reference-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+Bello Agent 0.1.53/build 57 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `feb9df30c02c21e38ccb95d378ac619688062e49`
+and website `5d43a239e2fdc8665e5782976ba8e3ec7c9cd352`. The DMG measures **7,329,401 bytes (6.99 MiB)**,
+SHA-256 `6354391322a03c8bc408b8db57e2edddc0fa1eb15cdece0f68c29edd30ae9c24`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 21:30:15 UTC**.
+Cloudflare check **105767983479** succeeded.
+Read the [0.1.53 release record](validation/Bello-Agent-0.1.53-2026-09-19.md) and
+[responsiveness review](Responsiveness-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+Bello Agent 0.1.52/build 56 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `78e7b8f80a89e497978d915908f97b080a751512`
+and website `f188c0db312da614df13b97a6f113b899b87932a`. The DMG measures **7,269,703 bytes (6.93 MiB)**,
+SHA-256 `39037ef81f15ef1c3c28be59c1c142b258f5b967372df03ceec71cb534887c4a`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 20:13:40 UTC**.
+Read the [0.1.52 release record](validation/Bello-Agent-0.1.52-2026-09-19.md)
+and [throughput/worker review](TPS-Workers-Review-2026-09-19.md). Installation/update
+rehearsals were skipped under the standing owner policy.
+
+Bello Agent 0.1.51/build 55 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `1eb8f9ea3b801aa50d380b5ae9627f337aa45189`
+and website `fdcde0b40f8cc99d50bcc5ad2de74911912e33de`. The DMG measures **7,254,854 bytes (6.92 MiB)**,
+SHA-256 `4674b23636b513802ebbca323bed9e02794f129936f2b851528fc95c30fa3e40`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 19:40:46 UTC**.
+Read the [0.1.51 release record](validation/Bello-Agent-0.1.51-2026-09-19.md)
+and [concurrency review](Concurrency-Review-2026-09-19.md). Installation/update
+rehearsals were skipped under the standing owner policy.
+
+Bello Agent 0.1.50/build 54 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `0969ad030f769aadf1761d9e18869ca85130c031`
+and website `178662a9abad8bd567553ed5f3dcf899d3f265b4`. The DMG measures **7,232,970 bytes (6.90 MiB)**,
+SHA-256 `e3e5b43e042fa435a691819e6d30918c7915e7bd6298c3b5c8298f8c65e67e30`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 18:56:46 UTC**.
+Read the [0.1.50 release record](validation/Bello-Agent-0.1.50-2026-09-19.md)
+and [performance review](Performance-Review-2026-09-19.md). Installation/update
+rehearsals were skipped under the standing owner policy.
+
+Bello Agent 0.1.49/build 53 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `b59a34a63bc4f174fddb2cd5c4ae5068ba6c834d`
+and website `69520c61e62bc4e4b3152296ced8ebfbee6c72d8`. The DMG measures 7,222,143 bytes (6.89 MiB),
+SHA-256 `e10cf9b7e2df730192801124b942e51138b92c269ebcb25e891c8d2628938aae`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: 2026-09-18 18:10:02 UTC.
+Read the [0.1.49 release record](validation/Bello-Agent-0.1.49-2026-09-19.md)
+and [deep review](Deep-Review-2026-09-19.md). Installation/update rehearsals
+were skipped under the standing owner policy.
+
+Bello Agent 0.1.48/build 52 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `c52a3d197553c32c7ef0e8dfa2230f16cff68066`
+and website `67e1eb1414622f013abafc3e27f05462e9c64b93`. The DMG measures 7,203,566 bytes (6.87 MiB),
+SHA-256 `5b74ee2fded4a7ca8305a157d85db95a979b842ee6ab66624d1f1b14af129bd4`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: 2026-09-18 17:12:05 UTC.
+Read the [0.1.48 release record](validation/Bello-Agent-0.1.48-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+Bello Agent 0.1.47/build 51 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `a093b4df18176df0df411d842475cbaff9efc43e`
+and website `4580f6b23af1dafecd459cc47b96cfcbc1923781`. The DMG measures 7,186,673 bytes (6.85 MiB),
+SHA-256 `8b718ddd7b93de0626328383f7344b1c078f1c81aebbae6980fe435219922f0f`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: 2026-09-18 16:14:07 UTC.
+Read the [0.1.47 release record](validation/Bello-Agent-0.1.47-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+Bello Agent 0.1.46/build 50 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `3fcb762c54d6dc8a4681b846a1b339d5d56ae6d8`
+and website `def13c36778eefc98fb6d61ecd8959b71a3fb7b8`. The DMG measures 7,180,448 bytes (6.85 MiB),
+SHA-256 `789fc8ab3a3b313b9d3e7c658e7e2f55394139cfd4c4559e73a0437347f0a259`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: 2026-09-18 15:20:46 UTC.
+Read the [0.1.46 release record](validation/Bello-Agent-0.1.46-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+Bello Agent 0.1.45/build 49 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `9af946daf435d696d0cab53ac402c21b70966912`
+and website `d52e8ac9c8435cbac619812b54893764bdc12766`. The DMG measures 7,179,717 bytes (6.85 MiB),
+SHA-256 `11d923809f4d6c4b7f524c280805372068b39ebe2f74e61d547db082f4082b0d`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: 2026-09-18 14:45:05 UTC.
+Read the [0.1.45 release record](validation/Bello-Agent-0.1.45-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+Bello Agent 0.1.44/build 48 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `a0cc15e3386cef9b6a044504191c72134a514f35`
+and website `7199c735eb1ed977d187286b73b892f37dc538c4`. The DMG measures 7,160,116 bytes (6.83 MiB),
+SHA-256 `4d890fc163a3df16e5e9aad37fc781bc969297f12e6a2ab105ecc547f3879337`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: 2026-09-18 13:25:46 UTC.
+Read the [0.1.44 release record](validation/Bello-Agent-0.1.44-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+Bello Agent 0.1.43/build 47 is a historical verified release at
+[belloware.com](https://belloware.com/bello-agent.html), from source `b3491f8c2fe62250896c918c9624d0f79a2991e3`
+and website `8008e13ec2ce0bf447d1f4f80c58f12df760d7a4`. The DMG measures 7,161,822 bytes (6.83 MiB),
+SHA-256 `f30b09b90f84f0ce25c72314352f74b4ad36f4f04ea5917656543e677f408ce1`. Signing/notarization, packaged-catalog/helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: 2026-09-18 13:13:16 UTC.
+Read the [0.1.43 release record](validation/Bello-Agent-0.1.43-2026-09-18.md).
+Installation/update rehearsals were skipped under the standing owner policy.
+
+Bello Agent 0.1.42/build 46 is a historical verified release at
 [belloware.com](https://belloware.com/bello-agent.html), from source `6b80619760c8328f9eb8a94e3f040cebfd82cc5c`
 and website `1e57c83b90df30187a0e5d1943f29ee7225d425e`. The DMG measures 7,137,493 bytes (6.81 MiB),
 SHA-256 `f3b8460af5c7ee378921ab8766fbf1cd8dade20921c995255c7b0b0874e0405c`. Signing/notarization, packaged-catalog/helper smoke,
@@ -234,6 +420,109 @@ public pages/icon, identical canonical/legacy feeds and downloaded archive
 SHA-256/Ed25519 verification pass. Public verification: 2026-09-16 16:58:48 UTC.
 Read the [0.1.19 release record](validation/Bello-Agent-0.1.19-2026-09-17.md).
 Installation/update rehearsals were skipped by owner instruction.
+
+Version 0.1.48 fixes the crash the owner reported in 0.1.47 and hardens
+the app after it. The transcript page drove SwiftUI's scroll proxy from an
+AppKit frame-change notification that fired while the hosting scroll view
+was still mid-update, which trapped the app; every scroll the page lands is
+now deferred to the next run-loop turn. Settings can be saved while a
+connection's chats are working: the helper's new `session.configure` command
+hands the saved profile and key to open sessions, a run that is going keeps
+the settings it started with and switches when it ends, and an idle chat
+takes them at once, so nothing is closed or blocked. Editing an earlier
+message no longer re-anchors the page on every frame of the composer's
+resize, and the slash-completion popup no longer forces a composer
+re-render per keystroke. A code audit for the same classes of failure fixed
+a host pipe deadlock (the stdout reader waited on the command queue while
+a stdin write could block on a full pipe), a stale handshake watchdog that
+could kill a later healthy host, a delayed terminal SIGKILL that could reach
+a recycled pid, a `precondition` in the terminal, force unwraps on archive
+rows that would trap on a damaged database, and AppKit calls made from
+inside SwiftUI updates in the captured-JSON outline, the paged text view,
+the page-visibility background and the session usage window.
+See the [0.1.48 release record](validation/Bello-Agent-0.1.48-2026-09-18.md).
+
+Version 0.1.47 changes three things the owner asked for. Retry request
+now sends the chat's current model and reasoning effort: the app passes the
+pills as they stand to `turn.retry`, and the helper builds the retried
+request from them (cleared pills retry with the connection's defaults), so a
+model switched after a failure is what retries. The output budget is
+metadata only: it is never sent as `max_output_tokens` and never fails a
+turn. A conversation request carries the model's catalog ceiling as its
+output limit, clipped to the room the context estimate leaves in the window,
+or no limit when the catalog gives none; the connection test, chat titles
+and compaction summaries keep their own small caps. The budget only sizes
+the reserve that decides when a chat compacts, and a request whose input
+fits the window is always sent. The Usage menu's model distribution keeps
+its layout with very long model ids: axis labels and the per-model rows are
+cut in the middle, and the bars and figures keep their columns.
+See the [0.1.47 release record](validation/Bello-Agent-0.1.47-2026-09-18.md).
+
+Version 0.1.46 fixes the retry the owner found wrong: Retry request re-ran
+the failed turn with the connection's default model and effort, because the
+helper cleared the turn's submission (which carries the chat's model,
+reasoning effort and budgets) when the run ended, and the retried run built
+its request from the bare profile. The helper now keeps the failed or
+stopped turn's submission and restores it for the retry, so the retried
+request uses the same model, effort and budgets as the request that failed
+and completes the same command receipt.
+See the [0.1.46 release record](validation/Bello-Agent-0.1.46-2026-09-18.md).
+
+Version 0.1.45 walks the first-run and everyday paths after the owner
+asked for a smooth, self-explaining experience. Gateway failures are worded
+for the reader by the helper: the provider's own detail first, then the
+likely cause with what to check (the API key for 401/403, the base URL and
+alias for 404, a rate limit for 429, the gateway for 5xx, the final URL for
+redirects; an unknown host, an unreachable gateway, a timeout or an
+untrusted certificate for transport failures), keeping the
+"Provider returned HTTP N." prefix the retry policy and the connection test
+read. Onboarding explains a disabled Continue (the URL, its scheme, the
+key), greets a returning user whose connection is saved, and names the last
+step "Start your first chat" once a project is ready. The welcome screen
+offers New Chat once a project and a connection exist. The test request in
+Settings, removing a project and typing a model alias for a chat are
+confirmed or entered in place, in the sheet or popover already open, so no
+flow runs a system alert from a sheet. Two run failures the owner met are
+gone: a reply the model cuts at the output budget is a complete row with
+`stopReason` "length" and a warning under it, the turn ends idle and queued
+follow-ups go on (before, the run failed with "Response reached its output
+limit"); and the helper's HTTP stream buffers without limit, so a consumer
+busy journaling or notifying the app never loses a chunk to a fixed buffer
+(before, a 128-part buffer cancelled the stream with "Consumer could not
+keep up"), with `stream_backpressure` retried like a transport failure
+should it ever occur. A run that failed or was stopped can be retried from
+its failure row: "Retry request" sends the turn again from where it stopped
+(helper command `turn.retry`), the partial reply stays but is not replayed,
+and queued follow-ups go on after the turn.
+See the [0.1.45 release record](validation/Bello-Agent-0.1.45-2026-09-18.md).
+
+Version 0.1.44 removes the cap on live chats at the owner's request. The
+project helper kept at most three chat runtimes loaded per project, unloaded
+an idle one to make room and refused a fourth with "Three runtimes are active
+or pinned by side chats; close or keep a side first" when every loaded chat
+was busy or pinned by a side. `HostService.ensureCapacity` and its three
+call sites (opening a chat, opening a side, forking a side) are gone: every
+opened chat and side stays loaded for as long as the app holds it open, and
+nothing is unloaded to make room. The app's handling of a `session.unloaded`
+event stays for older helpers.
+See the [0.1.44 release record](validation/Bello-Agent-0.1.44-2026-09-18.md).
+
+Version 0.1.43 reworks the connection flow in Settings after the owner
+found it off in every step. The sheet's state moved into
+`ConnectionSettingsController`, so it could be driven by a test the way a
+person drives it. A new connection lists models before it is saved: the API
+key now sits right under the base URL, the included Bello catalog lists
+without a key, and a gateway's own catalog lists with the key typed above
+(or the saved one), relisting when the base URL or catalog URL changes and
+saying why when it cannot list; before, the picker was disabled until the
+connection was saved and its list ignored edited URLs. Each tab keeps its
+own draft, so switching tabs no longer discards edits; a dot marks unsaved
+edits, Save writes every edited tab (the current one last), and Discard
+drops an unsaved one. Saves use the vault's current revision rather than
+the sheet's snapshot and retry once after a conflict, so a write made
+elsewhere while Settings was open no longer fails the save quietly; a save
+that fails keeps its edits on their tab with the reason in red.
+See the [0.1.43 release record](validation/Bello-Agent-0.1.43-2026-09-18.md).
 
 Version 0.1.42 fixes the connection deletion the owner reported as
 doing nothing. Editing a connection's API route saves a new connection and
@@ -940,9 +1229,9 @@ Read the 0.1.4 validation record for exact hashes, checks and limits. The 0.1.3
 record is historical. Do not repeat completed release work without a new change
 or concrete concern.
 
-Keep SwiftUI/AppKit composers, React/TypeScript inside WKWebView and the
-self-contained Swift helper. Node is build-only; the retired Pi v0.85.1 host is
-an explicit behavioral reference. Preserve bundle ID com.belloware.PiApp,
+Keep SwiftUI/AppKit composers, the native SwiftUI transcript selected in 0.1.38,
+and the self-contained Swift helper. React, WKWebView and Node are no longer in
+the build; the retired Pi v0.85.1 host is an explicit behavioral reference. Preserve bundle ID com.belloware.PiApp,
 Keychain service/account, stored history and existing Sparkle signing key.
 The exact selected bello-agent-flat-01-soft.png is now the icon master at
 assets/branding/bello-agent-icon.png, SHA-256
@@ -969,10 +1258,12 @@ Preserve the current owner requirements:
   Empty/error/stale/cancelled results cannot complete setup or create a probe chat.
 - The persistent native status item opens on either mouse button. Usage is
   first, with historical output TPS and requested/resolved model distribution.
-  Activity shows running work and a separate live exposed-byte output estimate;
+  Activity shows running work, without a byte-derived output estimate;
   omit unread/waiting/paused sessions from this panel. Keep sidebar unread.
   Historical TPS divides reported output by summed dispatch-to-completion
-  timing for valid completed samples; show coverage and never add it to live TPS.
+  timing for valid completed samples, even without visible text; show coverage.
+  Keep the actual latest completed rate stable during a new run; a newer completed
+  request without usage shows unavailable instead of reusing an older sample.
   Session header/cost controls open scoped model/cost shares with truthful nulls.
 - Durable unread state baselines old history and reconciles offline journals.
   Clear only when the latest completed reply is actually visible in a foreground
@@ -1007,7 +1298,7 @@ Preserve the current owner requirements:
   groups while preserving internal workspace IDs, paths and host ownership.
   Rename/pin/archive/restore cannot discard work/history; stale unrelated saves
   cannot revert organization. Cost updates without focus changes, including
-  unloaded sessions, and running rows show fresh estimated output speed. Omit
+  unloaded sessions, and running rows keep the latest completed reported output speed stable. Omit
   gateway/API/model-ID/editing title badges.
 - `/side` with Enter opens an empty durable child immediately, without sending.
   Closing its pane preserves context, history, draft, running work and the child
@@ -1150,7 +1441,8 @@ action; physical left/right status clicks, chart dragging, real-language IME and
 the full Release performance budget remain unverified. Historical Debug targets
 were missed. Actual title-bar double-click zoom/restore was CUA-verified in 0.1.5.
 
-Use small reviewable commits and normal pushes to master. Reuse passing checks
+Use small reviewable local commits on main. Push source only when the owner
+asks, following the current squash policy; releasing pushes the website commit. Reuse passing checks
 unless source changes or a concrete concern warrant rerunning them. Release
 through the sibling apps' profile-free Developer ID/hardened-runtime/timestamp/
 notarization/Sparkle flow; do not change signing-key ACLs or request an Apple

@@ -48,6 +48,20 @@ extension FocusedValues {
                 Button("Import Pi Session…", action: commandModel.importChat)
                 Button("Rename Chat…", action: commandModel.rename).disabled(!commandModel.conversationCommandsEnabled)
                 Button("Delete Chat…", action: commandModel.deleteChat).disabled(!commandModel.conversationCommandsEnabled)
+                Divider()
+                // The row's own actions, on the chat with keyboard focus.
+                // Until now they existed only under a right-click on a row.
+                Button(commandModel.commandChat?.isArchived == true ? "Restore Chat" : "Archive Chat", action: commandModel.archiveCommandChat)
+                    .disabled(commandModel.commandChat == nil)
+                Button(commandModel.commandChat?.isPinned == true ? "Unpin Chat" : "Pin Chat", action: commandModel.pinCommandChat)
+                    .disabled(commandModel.commandChat == nil)
+                Menu("Move to Topic") {
+                    Button("Project root") { commandModel.moveCommandChat(toTopic: nil) }
+                    ForEach(commandModel.commandTopicChoices) { topic in
+                        Button(topic.title) { commandModel.moveCommandChat(toTopic: topic.id) }
+                    }
+                }.disabled(commandModel.commandChat == nil || commandModel.commandChat?.workspaceID == WorkspaceRecord.scratchID)
+                Button("Mark as Read", action: commandModel.markCommandChatRead).disabled(commandModel.commandChat == nil)
             }
             CommandGroup(after: .sidebar) {
                 Button(commandModel.page == .report ? "Back to Chats" : "Usage Report") { commandModel.toggleReport() }.keyboardShortcut("r", modifiers: [.command, .shift])
@@ -57,6 +71,12 @@ extension FocusedValues {
                 Divider()
                 Button("Next Chat") { commandModel.selectAdjacentChat(1) }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
                 Button("Previous Chat") { commandModel.selectAdjacentChat(-1) }.keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                Divider()
+                // The sidebar boundary can be dragged; now it can also be typed.
+                Button("Widen Sidebar") { WindowChrome.adjustStoredSidebarWidth(by: WindowChrome.widthStep) }
+                    .keyboardShortcut(.rightArrow, modifiers: [.control, .command])
+                Button("Narrow Sidebar") { WindowChrome.adjustStoredSidebarWidth(by: -WindowChrome.widthStep) }
+                    .keyboardShortcut(.leftArrow, modifiers: [.control, .command])
             }
             CommandMenu("Conversation") {
                 Button("Send / Queue Follow-up") { commandModel.send() }.keyboardShortcut(.return, modifiers: .command).disabled(!commandModel.conversationCommandsEnabled)
@@ -66,6 +86,17 @@ extension FocusedValues {
                 Button("Resume Follow-ups") { commandModel.action("queue.resume", sessionID: commandModel.focusedSessionID) }.disabled(!commandModel.conversationCommandsEnabled)
                 Button("Compact Now") { commandModel.action("context.compact", sessionID: commandModel.focusedSessionID) }.disabled(!commandModel.conversationCommandsEnabled)
                 Button("Latest Messages") { commandModel.latest(sessionID: commandModel.focusedSessionID) }.disabled(!commandModel.conversationCommandsEnabled)
+                Divider()
+                // Folding a turn was a click on its chevron and nothing else.
+                Button("Fold This Turn") { commandModel.setFocusedTurnFolded(true) }
+                    .keyboardShortcut("[", modifiers: [.command, .option]).disabled(!commandModel.canFoldTurns)
+                Button("Unfold This Turn") { commandModel.setFocusedTurnFolded(false) }
+                    .keyboardShortcut("]", modifiers: [.command, .option]).disabled(!commandModel.canFoldTurns)
+                Button("Fold Every Turn") { commandModel.setEveryTurnFolded(true) }
+                    .keyboardShortcut("[", modifiers: [.command, .option, .shift]).disabled(!commandModel.canFoldTurns)
+                Button("Unfold Every Turn") { commandModel.setEveryTurnFolded(false) }
+                    .keyboardShortcut("]", modifiers: [.command, .option, .shift]).disabled(!commandModel.canFoldTurns)
+                Divider()
                 Button("View Retained Message…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.viewMessages(id) } }.disabled(!commandModel.conversationCommandsEnabled)
                 Button("Search and Copy Conversation…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspectConversation(id) } }.keyboardShortcut("f").disabled(!commandModel.conversationCommandsEnabled)
             }
@@ -83,6 +114,7 @@ extension FocusedValues {
                     try await model.ensureConfiguration()
                     return try await model.traces.menuBarMetrics(period: period, until: until, offset: offset)
                 }, activity: { model.menuBarActivity() },
+                   activityChanges: { model.menuBarActivityChanges },
                    openApp: revealWorkspace,
                    openReport: { revealWorkspace(); model.openReport() },
                    openSession: { id in

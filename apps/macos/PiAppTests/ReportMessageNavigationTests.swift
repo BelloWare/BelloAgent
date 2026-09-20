@@ -19,7 +19,7 @@ private actor MessageNavigationGate {
 
 final class ReportMessageNavigationTests: XCTestCase {
     @MainActor private func makeModel() async throws -> (WorkspaceModel, URL, SessionDisplay) {
-        let base = ProcessInfo.processInfo.environment["PI_BUILD_ROOT"] ?? NSTemporaryDirectory()
+        let base = testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()
         let root = URL(fileURLWithPath: base).appendingPathComponent("message-navigation-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

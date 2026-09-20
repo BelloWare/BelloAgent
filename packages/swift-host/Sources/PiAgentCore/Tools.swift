@@ -18,6 +18,13 @@ func objectSchema(_ properties: JSON, required: [String]) -> JSON { ["type":"obj
 
 /// Output is drained on both pipes even after its retention cap is reached.
 /// The output file is private; only a bounded preview enters model context.
+///
+/// Concurrency: `@unchecked` because the two pipe readers run on Dispatch
+/// worker threads and the termination handler on another. The invariant is
+/// that every mutable property is read and written only while `lock` is held,
+/// and that `continuation` is resumed exactly once: `completeIfReady` clears
+/// it under the same lock that sets `finished`. `child`, `file` and `url` are
+/// immutable, and `file` is written only from `consume`, itself under `lock`.
 final class ShellRun: @unchecked Sendable {
     let child: ManagedChild
     private let lock = NSLock(), file: FileHandle, url: URL
@@ -48,6 +55,9 @@ final class ShellRun: @unchecked Sendable {
                         while true { let data=handle.availableData;if data.isEmpty { break };consume(data) }
                     }
                 }
+                // The command deadline. Bounded rather than owned: it sleeps
+                // once, holds only a weak reference, and `expire` is a no-op
+                // once the run has finished or been cancelled.
                 Task { [weak self] in
                     try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds) * 1_000_000_000)
                     self?.expire()
@@ -61,6 +71,10 @@ final class ShellRun: @unchecked Sendable {
         if previewBytes.count < 32768 { previewBytes.append(data.prefix(32768 - previewBytes.count)) }
         let keep = data.prefix(max(0, 64 * 1024 * 1024 - retained))
         do { try file.write(contentsOf:keep); retained += keep.count } catch { ioError=true }
+        // At most one live-output notice every 66 ms, handed to the session
+        // actor from a Dispatch reader thread. Unowned because it carries the
+        // preview by value and holds nothing: a dropped notice would only
+        // leave the card showing the previous preview until the next one.
         if nowMS()-latestUpdate >= 66 { latestUpdate=nowMS();let update=resultText(String(decoding:previewBytes,as:UTF8.self));let callback=onUpdate;Task { await callback(update) } }
     }
     private func exited(_ code: Int32) { lock.lock(); exitCode=code; lock.unlock(); completeIfReady() }
@@ -90,8 +104,15 @@ public actor NativeTools: ToolExecuting {
     /// primary root; a relative path that is absent there but present under
     /// exactly one other root resolves to that root for existing files.
     public let roots: [URL]
-    private let outputs: URL
-    public init(cwd: URL, roots: [URL] = [], outputs: URL, mcp: MCPManager) { self.cwd=cwd; self.roots=workspaceRoots(primary:cwd,additional:roots); self.outputs=outputs; self.mcp=mcp }
+    private let outputs: URL, files: FileToolContext, workers: BlockingWorkExecutor
+    public init(cwd: URL, roots: [URL] = [], outputs: URL, mcp: MCPManager) {
+        self.cwd=cwd; self.roots=workspaceRoots(primary:cwd,additional:roots); self.outputs=outputs; self.mcp=mcp
+        self.files=FileToolContext(cwd:cwd,roots:self.roots); self.workers = .shared
+    }
+    init(cwd: URL, roots: [URL] = [], outputs: URL, mcp: MCPManager, workers: BlockingWorkExecutor) {
+        self.cwd=cwd; self.roots=workspaceRoots(primary:cwd,additional:roots); self.outputs=outputs; self.mcp=mcp
+        self.files=FileToolContext(cwd:cwd,roots:self.roots); self.workers=workers
+    }
     public func definitions(readOnly: Bool) -> [ToolDefinition] {
         let s: JSON = ["type":"string"], n: JSON = ["type":"integer","minimum":1]
         var result = [
@@ -109,15 +130,6 @@ public actor NativeTools: ToolExecuting {
         }
         result.append(MCPManager.definition); return result
     }
-    private func path(_ value: JSON, optional: Bool = false, existing: Bool = false) throws -> URL {
-        if value.isNull && optional { return cwd }
-        let text=try required(value,"path")
-        if text.hasPrefix("/") || text.hasPrefix("~") { return canonical(text) }
-        let primary=canonical(cwd.appendingPathComponent(text).path)
-        guard existing, roots.count > 1, !FileManager.default.fileExists(atPath:primary.path) else { return primary }
-        let elsewhere=roots.dropFirst().map { canonical($0.appendingPathComponent(text).path) }.filter { FileManager.default.fileExists(atPath:$0.path) }
-        return elsewhere.count == 1 ? elsewhere[0] : primary
-    }
     public func capabilityIDs(readOnly: Bool) async -> [String] { definitions(readOnly:readOnly).map(\.name) + (await mcp.serverNames()).map { "mcp:"+$0 } }
     public func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON { try await invoke(call,readOnly:readOnly,onUpdate:{_ in}) }
     public func invoke(_ call: ToolCall, readOnly: Bool, onUpdate: @escaping @Sendable (JSON) async -> Void) async throws -> JSON {
@@ -127,21 +139,18 @@ public actor NativeTools: ToolExecuting {
         guard let definition = definitions(readOnly:readOnly).first(where:{$0.name == call.name}) else { throw AgentError("tool_unavailable", "Tool is unavailable in this session") }
         let keys=Set(definition.schema["properties"].map.keys)
         guard Set(p.map.keys).isSubset(of:keys), definition.schema["required"].list.allSatisfy({ p.map.keys.contains($0.text ?? "") }) else { throw AgentError("tool_arguments", "Missing or unsupported tool arguments") }
+        if ["read", "ls", "find", "grep"].contains(call.name) {
+            let files = self.files
+            return try await workers.run { try files.invoke(call, cancellation: $0) }
+        }
         switch call.name {
         case "mcp": return try await mcp.perform(p,readOnly:readOnly)
         case "bash":
             let command=try required(p["command"],"command",maximum:262144), timeout=try boundedInt(p["timeout"],fallback:120,maximum:600)
             guard timeout > 0 else { throw AgentError("tool_arguments", "Timeout must be positive") }
             return try await ShellRun(command:command,cwd:cwd,outputDirectory:outputs,onUpdate:onUpdate).run(timeoutSeconds:timeout)
-        case "read":
-            let file=try path(p["path"],existing:true), data=try readBounded(file,maximum:16 * 1024 * 1024)
-            guard let text=String(data:data,encoding:.utf8) else { throw AgentError("binary_file", "read accepts UTF-8 text; binary/image contents are not decoded as text") }
-            let offset=try boundedInt(p["offset"],fallback:1,maximum:10_000_000), count=try boundedInt(p["limit"],fallback:2000,maximum:10_000)
-            guard offset > 0, count > 0 else { throw AgentError("tool_arguments", "Line offset and limit must be positive") }
-            let lines=text.components(separatedBy:"\n"), selected=lines.dropFirst(offset-1).prefix(count).joined(separator:"\n"), bounded=preview(selected,bytes:32768)
-            return resultText(bounded + (offset-1+count < lines.count || bounded.utf8.count < selected.utf8.count ? "\n[Truncated. \(lines.count) total lines; read another range.]" : ""))
         case "write", "edit":
-            let file=try path(p["path"],existing:call.name == "edit"); var value: String; var previous=""
+            let file=try files.path(p["path"],existing:call.name == "edit"); var value: String; var previous=""
             if call.name == "write" {
                 guard let content=p["content"].text, content.utf8.count <= 16*1024*1024 else { throw AgentError("tool_arguments", "Content must be text below 16 MiB") }; value=content
                 previous=(try? readBounded(file,maximum:16*1024*1024)).flatMap { String(data:$0,encoding:.utf8) } ?? ""
@@ -161,10 +170,43 @@ public actor NativeTools: ToolExecuting {
             var result=resultText("\(call.name == "edit" ? "Edited" : "Wrote") \(file.path) (+\(stats.added) -\(stats.removed))")
             result["stats"]=["path":JSON(file.path),"added":JSON(stats.added),"removed":JSON(stats.removed)]
             return result
+        default: throw AgentError("tool_unavailable", "Unsupported tool")
+        }
+    }
+}
+
+/// Only immutable workspace paths cross into blocking workers. Directory
+/// enumerators, file handles and regex matchers remain local to one job.
+private struct FileToolContext: Sendable {
+    let cwd: URL, roots: [URL]
+    func path(_ value: JSON, optional: Bool = false, existing: Bool = false) throws -> URL {
+        if value.isNull && optional { return cwd }
+        let text=try required(value,"path")
+        if text.hasPrefix("/") || text.hasPrefix("~") { return canonical(text) }
+        let primary=canonical(cwd.appendingPathComponent(text).path)
+        guard existing, roots.count > 1, !FileManager.default.fileExists(atPath:primary.path) else { return primary }
+        let elsewhere=roots.dropFirst().map { canonical($0.appendingPathComponent(text).path) }.filter { FileManager.default.fileExists(atPath:$0.path) }
+        return elsewhere.count == 1 ? elsewhere[0] : primary
+    }
+    func invoke(_ call: ToolCall, cancellation: BlockingWorkCancellation) throws -> JSON {
+        try cancellation.checkCancellation()
+        let p = call.arguments
+        switch call.name {
+        case "read":
+            let file=try path(p["path"],existing:true), data=try readBounded(file,maximum:16 * 1024 * 1024)
+            try cancellation.checkCancellation()
+            guard let text=String(data:data,encoding:.utf8) else { throw AgentError("binary_file", "read accepts UTF-8 text; binary/image contents are not decoded as text") }
+            let offset=try boundedInt(p["offset"],fallback:1,maximum:10_000_000), count=try boundedInt(p["limit"],fallback:2000,maximum:10_000)
+            guard offset > 0, count > 0 else { throw AgentError("tool_arguments", "Line offset and limit must be positive") }
+            let lines=text.components(separatedBy:"\n"), selected=lines.dropFirst(offset-1).prefix(count).joined(separator:"\n"), bounded=preview(selected,bytes:32768)
+            return resultText(bounded + (offset-1+count < lines.count || bounded.utf8.count < selected.utf8.count ? "\n[Truncated. \(lines.count) total lines; read another range.]" : ""))
         case "ls":
             let directory=try path(p["path"],optional:true,existing:true), limit=try boundedInt(p["limit"],fallback:200,maximum:2000)
             let all=try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:[.isDirectoryKey]).sorted(by:{$0.lastPathComponent < $1.lastPathComponent})
-            let rows=all.prefix(limit).map { $0.lastPathComponent + ((try? $0.resourceValues(forKeys:[.isDirectoryKey]).isDirectory) == true ? "/" : "") }
+            let rows=try all.prefix(limit).map { file in
+                try cancellation.checkCancellation()
+                return file.lastPathComponent + ((try? file.resourceValues(forKeys:[.isDirectoryKey]).isDirectory) == true ? "/" : "")
+            }
             return resultText(rows.joined(separator:"\n") + (all.count > limit ? "\n[Truncated; \(all.count) entries]" : ""))
         case "find", "grep":
             let root=try path(p["path"],optional:true,existing:true), pattern=try required(p["pattern"],"pattern",maximum:4096), limit=try boundedInt(p["limit"],fallback:100,maximum:2000)
@@ -174,7 +216,7 @@ public actor NativeTools: ToolExecuting {
             if isDirectory.boolValue {
                 guard let iterator=FileManager.default.enumerator(at:root,includingPropertiesForKeys:[.isDirectoryKey,.isSymbolicLinkKey],options:[],errorHandler:{_,_ in false}) else { throw AgentError("search_failed", "Cannot enumerate search path") }
                 for case let file as URL in iterator {
-                    try Task.checkCancellation()
+                    try cancellation.checkCancellation()
                     if [".git","node_modules",".build"].contains(file.lastPathComponent) { iterator.skipDescendants(); continue }
                     if (try? file.resourceValues(forKeys:[.isSymbolicLinkKey]).isSymbolicLink) == true { iterator.skipDescendants(); continue }
                     candidates.append(file)
@@ -185,13 +227,16 @@ public actor NativeTools: ToolExecuting {
             let options: NSRegularExpression.Options = p["ignoreCase"].flag == true ? [.caseInsensitive] : []
             let expression = call.name == "grep" ? try NSRegularExpression(pattern:p["literal"].flag == true ? NSRegularExpression.escapedPattern(for:pattern) : pattern,options:options) : nil
             for file in candidates.sorted(by:{$0.path < $1.path}) {
-                try Task.checkCancellation()
+                try cancellation.checkCancellation()
                 let relative=within(file,root) && file != root ? String(file.path.dropFirst(root.path.count+1)) : file.lastPathComponent
                 if call.name == "find" {
                     if fnmatch(pattern,relative,0) == 0 || fnmatch(pattern,file.lastPathComponent,0) == 0 { hits.append(relative) }
                 } else if (try? file.resourceValues(forKeys:[.isDirectoryKey]).isDirectory) != true {
                     guard let data=try? readBounded(file,maximum:2*1024*1024), let text=String(data:data,encoding:.utf8) else { continue }
                     for (i,line) in text.components(separatedBy:"\n").enumerated() {
+                        // A Foundation regex match is synchronous. Cancellation
+                        // is cooperative between lines, never thread termination.
+                        try cancellation.checkCancellation()
                         if expression?.firstMatch(in:line,range:NSRange(location:0,length:(line as NSString).length)) != nil { hits.append("\(relative):\(i+1): \(preview(line,bytes:1000))") }
                         if hits.count >= limit { break }
                     }
@@ -200,7 +245,7 @@ public actor NativeTools: ToolExecuting {
             }
             let output=hits.joined(separator:"\n")
             return resultText(preview(output,bytes:32768) + (hits.count >= limit || scanTruncated || output.utf8.count > 32768 ? "\n[Search limited; narrow the path/pattern. Large/binary files and .git/node_modules/.build are skipped.]" : "\n[Binary and >2 MiB files, .git/node_modules/.build are skipped by grep.]"))
-        default: throw AgentError("tool_unavailable", "Unsupported tool")
+        default: throw AgentError("tool_unavailable", "Unsupported file tool")
         }
     }
 }

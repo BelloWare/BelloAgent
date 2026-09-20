@@ -13,32 +13,41 @@ extension WorkspaceModel {
         guard !installPreparing, let item = record(id), let view = displays[id], !view.loading else { throw HostError.failure("Wait for the chat to finish loading before inspecting its context.") }
         guard !item.imported else { throw HostError.failure("Imported history has no native request context. Its original conversation remains available in Search and copy.") }
         guard view.editingMessageID == nil else { throw HostError.failure("Finish or cancel the message edit before previewing the next context. Earlier retained requests remain available below.") }
-        if let command = LeadingCommand.parse(view.draft,directInput:view.directCommand) {
+        if let command = LeadingCommand.leading(view.draft, directInput: view.directCommand) {
             if LeadingCommand.reserved.contains(command.name) { throw HostError.failure("/\(command.name) is an app command, not a model request. Finish or clear the command before previewing context.") }
             throw HostError.failure("Choose /\(command.name) from the skill suggestions first, then preview its structured selection and arguments.")
         }
         try await ensureConfiguration()
         if automatic { try requireAutomaticContext(id) }
+        if automatic, let cached = matchingPreparedContext(view), opened.contains(id), hosts[item.workspaceID]?.isReady == true {
+            return cached.summary
+        }
         let revision = configuration.revision
         let directCommand = view.directCommand
         let params = contextPreviewParams(item, view: view)
-        let host = try await open(item, automaticContext: automatic)
-        defer { scheduleIdle(workspaceID:item.workspaceID,host:host) }
-        if automatic { try requireAutomaticContext(id) }
-        let result = try await host.request("context.preview",sessionID:id,params:params).object ?? [:]
-        guard !Task.isCancelled, (!automatic || automaticContextEligible(id)), displays[id] === view, let current = record(id), ContextPreviewBinding(current) == ContextPreviewBinding(item),
-              configuration.revision == revision, view.editingMessageID == nil, view.directCommand == directCommand,
-              contextPreviewParams(current,view:view) == params,
-              (result["seq"]?.number ?? -1) >= view.lastSequence else {
-            if let snapshot = result["revision"] { _ = try? await host.request("context.preview.clear",sessionID:id,params:["revision":snapshot]) }
-            throw HostError.failure("The conversation, draft, model or settings changed. Refresh the context preview.")
+        let signature = automaticContextSignature(item, view: view)
+        // A footer activation can arrive while an explicit inspector request is
+        // awaiting configuration or helper startup. Both must share the same
+        // helper snapshot, whose revision would otherwise expire on replacement.
+        return try await preparedContextRequests.perform(id, signature: signature, sequence: view.lastSequence) { [self] in
+            let host = try await open(item, automaticContext: automatic)
+            defer { scheduleIdle(workspaceID:item.workspaceID,host:host) }
+            if automatic { try requireAutomaticContext(id) }
+            let result = try await host.request("context.preview",sessionID:id,params:params).object ?? [:]
+            guard !Task.isCancelled, (!automatic || automaticContextEligible(id)), displays[id] === view, let current = record(id), ContextPreviewBinding(current) == ContextPreviewBinding(item),
+                  configuration.revision == revision, view.editingMessageID == nil, view.directCommand == directCommand,
+                  contextPreviewParams(current,view:view) == params,
+                  (result["seq"]?.number ?? -1) >= view.lastSequence else {
+                if let snapshot = result["revision"] { _ = try? await host.request("context.preview.clear",sessionID:id,params:["revision":snapshot]) }
+                throw HostError.failure("The conversation, draft, model or settings changed. Refresh the context preview.")
+            }
+            // Keep the helper's request count in the observable footer,
+            // with the exact inputs that make it valid. It is a prepared request,
+            // not a provider measurement or a substitute for captured HTTP bytes.
+            view.footer.preparedContext = PreparedContextMetrics(summary:result,binding:ContextPreviewBinding(current),
+                params:params,configurationRevision:revision,directCommand:directCommand)
+            return result
         }
-        // Keep the helper's request count in the observable footer,
-        // with the exact inputs that make it valid. It is a prepared request,
-        // not a provider measurement or a substitute for captured HTTP bytes.
-        view.footer.preparedContext = PreparedContextMetrics(summary:result,binding:ContextPreviewBinding(current),
-            params:params,configurationRevision:revision,directCommand:directCommand)
-        return result
     }
     private func contextPreviewParams(_ item: ChatRecord, view: SessionDisplay) -> [String: WireValue] {
         TurnOverrides.params(for:item,base:["text":.string(view.draft),"skills":.array(view.skills.map(\.wire)),"attachments":.array(view.attachments.map(\.wire))])
@@ -75,7 +84,7 @@ extension WorkspaceModel {
               !view.hasWork, view.state == "idle", !view.uncertain, view.recovered.isEmpty, view.editingMessageID == nil,
               !workspaceChangesInFlight.contains(item.workspaceID), let workspace = workspace(for: item.workspaceID), workspace.trusted,
               let profile = profiles.first(where: { $0.id == item.profileID }), profile.api == LiteLLMConfiguration.supportedAPI,
-              LeadingCommand.parse(view.draft, directInput: view.directCommand) == nil else { return false }
+              !LeadingCommand.begins(view.draft, directInput: view.directCommand) else { return false }
         return true
     }
     func requireAutomaticContext(_ id: String) throws {
@@ -144,6 +153,47 @@ extension WorkspaceModel {
     }
     func clearPreparedContext(_ id: String, revision: String) async {
         _ = try? await debugRequest("context.preview.clear",sessionID:id,params:["revision":.string(revision)])
+    }
+}
+
+/// The helper retains one prepared snapshot per session. Matching callers share
+/// its revision; changed inputs wait for the previous request so an older reply
+/// cannot replace a newer snapshot. Cancelling a waiter does not cancel work
+/// another caller is reading; the operation still checks its input/selection guards.
+@MainActor final class PreparedContextRequests {
+    private struct Pending {
+        let token: UUID
+        let signature: AutomaticContextSignature
+        let sequence: Double
+        let task: Task<[String: WireValue], Error>
+    }
+    private var pending: [String: Pending] = [:]
+
+    func perform(_ id: String, signature: AutomaticContextSignature, sequence: Double,
+                 operation: @escaping @MainActor () async throws -> [String: WireValue]) async throws -> [String: WireValue] {
+        try Task.checkCancellation()
+        while let current = pending[id] {
+            if current.signature == signature, current.sequence == sequence {
+                let result = try await current.task.value
+                try Task.checkCancellation()
+                return result
+            }
+            let result = try? await current.task.value
+            try Task.checkCancellation()
+            // Startup/snapshot events can advance the desktop sequence while
+            // the shared request is being built. Reuse it when its actual
+            // helper sequence already covers the newer caller's observation.
+            if current.signature == signature, let result, (result["seq"]?.number ?? -1) >= sequence { return result }
+        }
+        let token = UUID()
+        let task = Task { [self] in
+            defer { if pending[id]?.token == token { pending.removeValue(forKey: id) } }
+            return try await operation()
+        }
+        pending[id] = Pending(token: token, signature: signature, sequence: sequence, task: task)
+        let result = try await task.value
+        try Task.checkCancellation()
+        return result
     }
 }
 

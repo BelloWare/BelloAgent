@@ -188,7 +188,11 @@ actor ConfigurationVault {
     static func decode(_ data: Data?) throws -> VaultConfiguration {
         guard let data else { return VaultConfiguration() }
         guard data.count <= maximumBytes else { throw VaultError.corrupt }
+        // validate() explains exactly which field a newer build wrote that this
+        // one rejects. Collapsing that into "corrupt" told a user who had just
+        // downgraded that their settings were damaged, with no clue what to fix.
         do { let value = try JSONDecoder().decode(VaultConfiguration.self, from: data); try value.validate(); return value }
+        catch let error as VaultError { throw error }
         catch { throw VaultError.corrupt }
     }
     func load() async throws -> VaultConfiguration {
@@ -256,11 +260,10 @@ enum LiteLLMConfiguration {
         guard !profile.modelId.isEmpty, profile.modelId.utf8.count <= 256,
               !profile.modelId.utf8.contains(where: { $0 < 32 || $0 == 127 }),
               profile.maxOutputTokens > 0, profile.maxOutputTokens <= 1_000_000,
-              profile.contextWindow > profile.maxOutputTokens, profile.contextWindow <= 10_000_000 else { throw VaultError.invalid("Set a model alias and valid context/output token limits.") }
+              profile.contextWindow > profile.maxOutputTokens, profile.contextWindow <= 10_000_000 else { throw VaultError.invalid("Set a model alias, a context capacity of at most 10,000,000 tokens and an output budget below it.") }
+        // The budget is a local reserve; the catalog ceiling is what requests carry. Either may be the larger.
         if let ceiling = profile.modelOutputLimit {
-            guard ceiling > 0, ceiling <= 1_000_000, profile.maxOutputTokens <= ceiling else {
-                throw VaultError.invalid("The output budget must fit within the model's supported output limit.")
-            }
+            guard ceiling > 0, ceiling <= 1_000_000 else { throw VaultError.invalid("The model output ceiling must be between 1 and 1,000,000 tokens.") }
         }
         if let mini = profile.miniModelId {
             guard !mini.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

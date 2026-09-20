@@ -28,28 +28,176 @@ is deferred.
 Onboarding checks the selected gateway model before opening the first chat.
 The native menu bar opens on either mouse button. Usage shows historical output
 speed, tokens, reported costs and requested/resolved model distribution; Activity
-shows running work with a separate live output estimate. Session headers and
+shows running work; TPS uses reported output divided by measured request duration. Session headers and
 cost totals open resizable usage windows with tokens, cache and model/cost breakdowns. Unread history remains in the sidebar.
 
-**Bello Agent 0.1.37/build 41 is publicly released** at
-[belloware.com](https://belloware.com/bello-agent.html). The DMG measures
-**7,336,336 bytes (7.00 MiB)**, SHA-256
-`19801f32ec462a9cba321629802db2ee4eecb2a07907377fbbe8ed3428577a06`.
-Signing, notarization, packaged-catalog and helper smoke, identical
-canonical/legacy update feeds and downloaded-archive SHA-256/Ed25519
-verification pass. Public verification: **2026-09-18 01:57:55 UTC**.
-Read the [0.1.37 release record](docs/validation/Bello-Agent-0.1.37-2026-09-18.md).
-Installation and update rehearsals are skipped by owner instruction.
+**Bello Agent 0.1.57/build 61 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `dbbf3421a7143e606768659be8e688ba64d8ac59`
+and website `eaaa9f647ff410dacc4126d3e370ea7249357264`. The DMG measures **7,538,829 bytes (7.19 MiB)**,
+SHA-256 `f82811cec97b217385e2d58b9fb6a1ac62b3a6a8c8fa725e937a08afe00b5f3b`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-19 01:00:09 UTC**.
+Cloudflare check **105810946636** succeeded.
+Read the [0.1.57 release record](docs/validation/Bello-Agent-0.1.57-2026-09-19.md) and
+[five-session performance review](docs/Five-Session-Performance-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
 
-[Download 0.1.37](https://belloware.com/assets/BelloAgent-0.1.37.dmg).
+**Bello Agent 0.1.56/build 60 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `bb114ef07a69ef6e1cb33c60e733564e930a8a27`
+and website `3fe37bb891f544f6ed464a1f82d9e60d4c7a1b08`. The DMG measures **7,478,445 bytes (7.13 MiB)**,
+SHA-256 `e19097bbaaf6c2eaa3fcc69ba9db2d1427ffaf299f03761546266c2d57fd822b`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 23:34:17 UTC**.
+Cloudflare check **105796177570** succeeded.
+Read the [0.1.56 release record](docs/validation/Bello-Agent-0.1.56-2026-09-19.md) and
+[topics review](docs/Topics-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+**Bello Agent 0.1.55/build 59 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `f42d237efe30c298523a47b62dd23c35fdda107e`
+and website `5c1aec57e1c8e9a69ef44cbbd053715280db3e01`. The DMG measures **7,357,293 bytes (7.02 MiB)**,
+SHA-256 `031ec071db485f796e9dc2e66c9b8b24f13da443778877db54a1f35d8f1955db`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 22:58:16 UTC**.
+Cloudflare check **105788774388** succeeded.
+Read the [0.1.55 release record](docs/validation/Bello-Agent-0.1.55-2026-09-19.md) and
+[scrolling review](docs/Scrolling-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+**Bello Agent 0.1.54/build 58 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `49ed3c95e7fe53605bfb31b7ad8c0c8595ed0f4d`
+and website `8170e23d0ef7b0f9284c37679aa4895108b679d0`. The DMG measures **7,335,665 bytes (7.00 MiB)**,
+SHA-256 `f97d207d8f18ed7c0d2a12f7898d04b70463598c3067cce3590b2076e35b0a83`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 22:03:23 UTC**.
+Cloudflare check **105776630049** succeeded.
+Read the [0.1.54 release record](docs/validation/Bello-Agent-0.1.54-2026-09-19.md) and
+[session-reference review](docs/Session-Reference-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+**Bello Agent 0.1.53/build 57 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `feb9df30c02c21e38ccb95d378ac619688062e49`
+and website `5d43a239e2fdc8665e5782976ba8e3ec7c9cd352`. The DMG measures **7,329,401 bytes (6.99 MiB)**,
+SHA-256 `6354391322a03c8bc408b8db57e2edddc0fa1eb15cdece0f68c29edd30ae9c24`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 21:30:15 UTC**.
+Cloudflare check **105767983479** succeeded.
+Read the [0.1.53 release record](docs/validation/Bello-Agent-0.1.53-2026-09-19.md) and
+[responsiveness review](docs/Responsiveness-Review-2026-09-19.md). Source commits remain local;
+the website publication commit was pushed. Installation/update rehearsals were
+skipped under the standing owner policy.
+
+**Bello Agent 0.1.52/build 56 is a historical verified release** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `78e7b8f80a89e497978d915908f97b080a751512`
+and website `f188c0db312da614df13b97a6f113b899b87932a`. The DMG measures **7,269,703 bytes (6.93 MiB)**,
+SHA-256 `39037ef81f15ef1c3c28be59c1c142b258f5b967372df03ceec71cb534887c4a`. Signing, notarization, packaged helper/catalog smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-18 20:13:40 UTC**.
+Read the [0.1.52 release record](docs/validation/Bello-Agent-0.1.52-2026-09-19.md)
+and [throughput/worker review](docs/TPS-Workers-Review-2026-09-19.md). Installation/update
+rehearsals were skipped under the standing owner policy.
+
+[Download 0.1.57](https://belloware.com/assets/BelloAgent-0.1.57.dmg).
 
 Signing and notarization need credentials this repository does not carry: a
 Developer ID identity, `NOTARY_KEY_PATH`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`
 and the Sparkle update key in the login keychain. Building, running and the
 whole test suite need none of them.
 
-Version 0.1.19 completes a deeper review of Claude's recent changes and the
-Settings-to-existing-chat catalog flow. It fixes clock-correction write loss,
+<!-- release-summary:0.1.57 -->
+Version 0.1.57 isolates per-chat usage notifications, skips hidden helper transcript
+projection, rejects stale refresh replies and reuses verified immutable native row
+geometry. In the five-session fixture, background content/billing work fell from
+12.51 ms to 7.24 ms mean, with zero whole-workspace notifications. A return to the
+initially mounted chat took 629.11 ms to readiness plus 68.76 ms deferred settlement;
+the original readiness-only baseline was 1,421.23 ms. Repeated helper status reads
+fell 98.0%. Acceptance covers 118 distinct native passes, 41 helper passes and three
+request-aware concurrent gateway scenarios (162 distinct passes), with two native
+interactive checks skipped. The final shipping-source selection passed 23/23;
+unchanged checks reuse the earlier successful selections, excluding four discarded
+experimental tests. Twenty simultaneous requests completed tools and exact capture.
+A shared Markdown-block cache was rejected after it slowed long-answer scrolling.
+Rich foreground layout still has spikes (54.46 ms mean, 124.57 ms maximum), and cold
+large-history loading remains expensive. Physical trackpad/VoiceOver smoothness is
+unverified on this inactive desktop. Installation and actual update rehearsals stay
+skipped under the owner’s policy.
+<!-- /release-summary:0.1.57 -->
+
+<!-- release-summary:0.1.56 -->
+Version 0.1.56 adds project topics: collapsible, named groups for related
+sessions, with New Chat, rename, removal that keeps chats, and drag-and-drop
+between topics or back to the project header. Move to Topic is also available
+in session menus. New chats inherit the focused topic, sides/forks inherit
+the source group, and moving a parent includes its saved side descendants.
+Atomic metadata updates preserve active work, drafts, history and session IDs;
+regressions cover side publication, late writes and concurrent deletion.
+Topics and their disclosure state persist across restart.
+
+The native Release selection passed 90 tests with no failures or skips; a
+final seven-test subset also passed after checking the packaged drag-type
+declaration. Unchanged helper/gateway/scrolling evidence was reused. Physical
+pointer drag/drop, context-menu interaction and VoiceOver remain unverified
+on the inactive remote desktop; real item-provider dispatch and hosted native
+sidebar layout passed. Installation/update rehearsals remain skipped.
+<!-- /release-summary:0.1.56 -->
+
+<!-- release-summary:0.1.55 -->
+Version 0.1.55 keeps only nearby native transcript rows and Markdown blocks
+attached while retaining complete content, exact geometry and selected text.
+The 300-message fixture drops from 85.7 to 9.6 ms per native scroll step on
+average; the 88 KiB answer drops from 44.6 to 13.0 ms. These are comparable
+layout/display stress measurements, not physical display FPS. Initial loading
+of every retained row still requires an up-front geometry pass.
+The affected Release XCTest run executed 78 cases: 76 passed and two interactive
+pointer checks were explicitly skipped on the inactive remote desktop. A final
+four-case Markdown/scroll rerun passed after fixing Copy/Copied layout feedback.
+Unchanged provider/helper/gateway/worker and website-staging acceptance is
+reused; physical trackpad and VoiceOver checks are not claimed. Single enormous
+Markdown blocks and selection at the streaming renderer threshold remain
+qualified in the scrolling review. Installation/update rehearsals are skipped
+under the owner’s standing instruction.
+<!-- /release-summary:0.1.55 -->
+
+<!-- release-summary:0.1.54 -->
+Version 0.1.54 adds Copy Session ID and Copy Session Reference to session right-click and conversation “…” menus. References include the authoritative local JSONL path and a shell-quoted read command, without switching chats, loading history or starting helpers. Empty chats and imported identities are explicit. All 27 focused native tests and 12 site-staging tests pass, including executable Bash quoting and complete retained-history reads. The release-page template now preserves native-transcript and reported-throughput wording. Existing helper, gateway, concurrency and rendering evidence is reused. Physical menu/VoiceOver and install/update rehearsals were not repeated.
+<!-- /release-summary:0.1.54 -->
+
+<!-- release-summary:0.1.53 -->
+Version 0.1.53 uses Bello-styled selection panels and disables the system window tab strip. Exact row-layout caches isolate retained transcript text from streaming updates; ownership-scoped accounting avoids repeated history reads. Comparable native rendering fixtures open about 37% faster and reduce per-update layout/display work by 85.4% (61 rows) and 91.7% (300 rows); these are stress measurements, not a 60 fps guarantee. Final focused evidence contains 191 distinct native passes and four explicit interactive-desktop skips. The native/helper/gateway fixture completed 20 concurrent sessions and tool round trips with 80 exact retained bodies. Unchanged helper/provider/worker evidence is reused from 0.1.52. Pointer/popover and VoiceOver behavior are not claimed as verified on this remote desktop. Installation/update rehearsals remain skipped under the standing owner policy.
+<!-- /release-summary:0.1.53 -->
+
+Version 0.1.52 uses gateway-reported output divided by request duration for TPS,
+including hidden reasoning once. The latest completed rate remains steady while
+a new response runs; native timing uses completion even without visible text.
+Read/list/find/grep run on bounded worker threads, with real parallel execution,
+queue limits and cancellation coverage. Final checks cover 140 native passes,
+188 helper passes and 29 packaged gateway/process scenarios. See the
+[throughput/worker review](docs/TPS-Workers-Review-2026-09-19.md).
+
+Version 0.1.51 fixed concurrency limits in capture delivery, command admission,
+native storage and project/session startup. Twenty actual native conversations
+complete overlapping model requests, tools and durable captures; stopping one
+does not interrupt the others. Final evidence covers 137 native cases, 176 helper
+cases and 29 packaged helper gateway/process scenarios. Background session usage
+updates automatically. In that release, file tools shared the project tool actor; 0.1.52 moves
+reads/searches onto bounded workers. Editing gates and remote gateway limits remain. See the
+[concurrency review](docs/Concurrency-Review-2026-09-19.md).
+
+Version 0.1.50 improved warm chat loading, trimmed unnecessary initial history,
+kept native text geometry stable during transitions, sped up code coloring,
+and preserved scrolling while new output arrives. Its focused Release checks cover
+195 passing native cases and one opt-in skip, with no failures. Unchanged helper,
+gateway and release-tool evidence is reused from 0.1.49. Large rich histories
+still have expensive native layout; this release does not establish a universal
+frame-rate target. See the [performance review](docs/Performance-Review-2026-09-19.md)
+and [0.1.50 acceptance record](docs/validation/Bello-Agent-0.1.50-2026-09-19.md).
+
+The historical 0.1.19 review covered the Settings-to-existing-chat catalog flow.
+It fixed clock-correction write loss,
 quit and side recovery failures, non-atomic handoffs, false transcript paint/read
 acknowledgements, command replay after ledger eviction and duplicated queued
 messages after a partial journal commit. Response capture masks known credential

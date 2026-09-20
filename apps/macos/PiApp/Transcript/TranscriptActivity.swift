@@ -110,9 +110,53 @@ extension TranscriptMessage {
 enum TranscriptActivity {
     // MARK: Tool descriptions
 
-    static func parseInput(_ input: String) -> [String: Any] {
-        guard let data = input.data(using: .utf8), let value = try? JSONSerialization.jsonObject(with: data), let object = value as? [String: Any] else { return [:] }
-        return object
+    static func parseInput(_ input: String) -> [String: Any] { decodeArguments(input).values }
+
+    /// A call's arguments as JSON. The host bounds what it sends, which can cut
+    /// the JSON in the middle of a string, so a fragment is closed up and read
+    /// for whatever survived rather than thrown away: a card that shows part of
+    /// a request is worth more than one that shows raw bytes, and `complete`
+    /// says which of the two the reader is looking at.
+    static func decodeArguments(_ input: String) -> (values: [String: Any], complete: Bool) {
+        if let data = input.data(using: .utf8), let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            return (object, true)
+        }
+        for candidate in repairedArguments(input) {
+            if let data = candidate.data(using: .utf8), let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                return (object, false)
+            }
+        }
+        return ([:], false)
+    }
+    /// Ways a cut fragment might be closed, most complete first: close the
+    /// string and the containers it was inside, or drop back to the last member
+    /// that arrived whole when the cut landed in a key.
+    private static func repairedArguments(_ input: String) -> [String] {
+        var text = input
+        // A cut inside an escape leaves a backslash with nothing to escape.
+        while text.hasSuffix("\\") { text.removeLast() }
+        guard text.first == "{" else { return [] }
+        var stack: [Character] = [], inString = false, escaped = false
+        var lastMemberEnd: String.Index? = nil
+        for index in text.indices {
+            let character = text[index]
+            if escaped { escaped = false; continue }
+            if character == "\\" { if inString { escaped = true }; continue }
+            if character == "\"" { inString.toggle(); continue }
+            if inString { continue }
+            switch character {
+            case "{", "[": stack.append(character)
+            case "}", "]": if !stack.isEmpty { stack.removeLast() }
+            case ",": if stack.count == 1 { lastMemberEnd = index }
+            default: break
+            }
+        }
+        var closed = text
+        if inString { closed.append("\"") }
+        for opener in stack.reversed() { closed.append(opener == "{" ? "}" : "]") }
+        var candidates = [closed]
+        if let lastMemberEnd { candidates.append(String(text[text.startIndex..<lastMemberEnd]) + "}") }
+        return candidates
     }
     static func shortPath(_ path: String) -> String {
         let parts = path.split(separator: "/").filter { !$0.isEmpty }
@@ -143,8 +187,13 @@ enum TranscriptActivity {
     }
     /// One verb-and-object line per tool call, like "Ran npm test", "Editing retry.swift" or "Failed reading notes.md".
     static func describe(_ tool: ToolView) -> ActionDescription {
-        let input = parseInput(tool.input)
-        let path = text(tool.path) ?? text(input["path"])
+        // Native file tools already report their resolved path. Their input can
+        // contain a whole file or edit, and is irrelevant to a collapsed label.
+        // Only decode it if a legacy row needs a path, or the tool needs arguments.
+        let reportedPath = text(tool.path)
+        let isFileTool = ["read", "write", "edit", "ls"].contains(tool.name)
+        let input = isFileTool && reportedPath != nil ? [:] : parseInput(tool.input)
+        let path = reportedPath ?? text(input["path"])
         let outcome = outcome(of: tool)
         func verb(_ done: String, _ doing: String) -> String { conjugate(done, doing, outcome) }
         switch tool.name {
@@ -242,7 +291,8 @@ enum TranscriptActivity {
     static func formatDuration(_ ms: Double) -> String {
         guard ms.isFinite, ms >= 0 else { return "" }
         if ms < 1_000 { return String(format: "%.1fs", ms / 1000) }
-        let seconds = Int((ms / 1000).rounded())
+        // Retained history can contain finite values outside Int's range.
+        guard let seconds = Int(exactly: (ms / 1000).rounded()) else { return "" }
         if seconds < 60 { return "\(seconds)s" }
         let minutes = seconds / 60, rest = seconds % 60
         if minutes < 60 { return rest > 0 ? "\(minutes)m \(rest)s" : "\(minutes)m" }
@@ -256,8 +306,8 @@ enum TranscriptActivity {
     }
     /// Digits grouped in threes, as en-US writes them: 1,234.
     static func grouped(_ value: Double) -> String {
-        let whole = Int(value.rounded())
-        let digits = String(abs(whole))
+        guard let whole = Int(exactly: value.rounded()) else { return "—" }
+        let digits = String(whole.magnitude)
         var out = ""
         for (index, digit) in digits.enumerated() {
             if index > 0 && (digits.count - index) % 3 == 0 { out.append(",") }
@@ -268,7 +318,8 @@ enum TranscriptActivity {
     /// Tokens as counted: exact with grouping under ten thousand, compact above.
     static func formatTokenCount(_ value: Double) -> String { value < 10_000 ? grouped(value) : formatCompactTokens(value) }
     static func formatCompactTokens(_ value: Double) -> String {
-        if value < 1_000 { return "\(Int(value.rounded()))" }
+        guard value.isFinite else { return "—" }
+        if value < 1_000 { return grouped(value) }
         if value < 10_000 {
             var text = String(format: "%.1f", value / 1_000)
             if text.hasSuffix(".0") { text.removeLast(2) }
@@ -327,11 +378,111 @@ enum TranscriptActivity {
     }
     /// The tool's edit as old and new text, when it is a file edit or write.
     static func editTexts(_ tool: ToolView) -> (before: String, after: String)? {
-        guard let data = tool.input.data(using: .utf8), let value = try? JSONSerialization.jsonObject(with: data) else { return nil }
-        let input = value as? [String: Any] ?? [:]
-        if tool.name == "edit", let old = input["oldText"] as? String, let new = input["newText"] as? String { return (old, new) }
-        if tool.name == "write", let content = input["content"] as? String { return ("", content) }
-        return nil
+        guard let request = editRequest(tool) else { return nil }
+        return (request.before, request.after)
+    }
+
+    /// What a file tool asked for, ready to draw: the rows of the change, how
+    /// many the card leaves out, whether the host's bound cut the request short
+    /// and whether it is past the size this preview will diff. Worked out once
+    /// per call and remembered, so re-rendering an open card never runs the
+    /// line diff again and no `body` ever does that work.
+    struct EditRequest: Equatable, Sendable {
+        var before: String
+        var after: String
+        /// "edit" shows a diff; "write" shows the requested content.
+        var mode: String
+        var rows: [DiffRow]
+        /// Rows past what the card draws.
+        var hiddenRows: Int
+        /// The whole request arrived; false when the host bounded it, whether
+        /// by cutting the document or by cutting the values inside it.
+        var complete: Bool
+        /// Past the size this preview diffs; the card says so instead.
+        var tooLarge: Bool
+        var lines: Int
+    }
+    /// The card draws at most this many rows, and refuses to diff a request
+    /// past these bounds at all — the helper bounds a call's arguments today,
+    /// and a preview must stay a preview if it ever stops.
+    static let diffDrawLimit = 400
+    static let diffLineLimit = 4_000
+    static let diffByteLimit = 256 << 10
+
+    private final class CachedEdit: Sendable {
+        let request: EditRequest?
+        init(_ request: EditRequest?) { self.request = request }
+    }
+    nonisolated(unsafe) private static let editCache: NSCache<NSString, CachedEdit> = {
+        let cache = NSCache<NSString, CachedEdit>(); cache.countLimit = 512; cache.totalCostLimit = 32 << 20; return cache
+    }()
+    /// How many times the line diff has actually run, as evidence that drawing
+    /// an open card again does not repeat it.
+    nonisolated(unsafe) private(set) static var editComputationCount = 0
+
+    static func editRequest(_ tool: ToolView) -> EditRequest? {
+        guard tool.name == "edit" || tool.name == "write" else { return nil }
+        let outcome = outcome(of: tool)
+        let created = tool.added != nil && (tool.removed ?? 0) == 0
+        let key = "\(tool.name)\u{0}\(outcome.rawValue)\u{0}\(created)\u{0}\(tool.inputTruncated == true)\u{0}\(tool.input)" as NSString
+        if let cached = editCache.object(forKey: key) { return cached.request }
+        let request = computeEditRequest(tool, outcome: outcome, created: created)
+        editCache.setObject(CachedEdit(request), forKey: key, cost: tool.input.utf8.count + 256)
+        return request
+    }
+    /// A value the host cut carries its marker at the end. The card shows that
+    /// as its own line at the end of the hunk rather than glued to the last
+    /// line of content.
+    static func withoutMarker(_ text: String) -> (text: String, marker: String?) {
+        guard let range = text.range(of: ToolInputDisplay.truncationMarker, options: .backwards) else { return (text, nil) }
+        return (String(text[text.startIndex..<range.lowerBound]), String(text[range.lowerBound...]))
+    }
+    private static func computeEditRequest(_ tool: ToolView, outcome: ActionOutcome, created: Bool) -> EditRequest? {
+        let decoded = decodeArguments(tool.input)
+        let oldRaw = decoded.values["oldText"] as? String
+        let newRaw = (decoded.values["newText"] ?? decoded.values["content"]) as? String
+        guard oldRaw != nil || newRaw != nil else { return nil }
+        let oldCut = oldRaw.map(withoutMarker), newCut = newRaw.map(withoutMarker)
+        let old = oldCut?.text, new = newCut?.text
+        let marker = newCut?.marker ?? oldCut?.marker
+        let mode = tool.name == "write" ? "write" : "edit"
+        let before = old ?? "", after = new ?? old ?? ""
+        // A request whose second half never arrived is not a diff: show the
+        // half that did, as itself, and let the card say what happened.
+        let diffable = (decoded.complete && marker == nil) || (old != nil && new != nil)
+        let complete = decoded.complete && marker == nil && tool.inputTruncated != true
+        func lineCount(_ text: String) -> Int { text.isEmpty ? 0 : text.reduce(1) { $1 == "\n" ? $0 + 1 : $0 } }
+        let lines = max(lineCount(before), lineCount(after))
+        guard before.utf8.count + after.utf8.count <= diffByteLimit, lines <= diffLineLimit else {
+            return EditRequest(before: before, after: after, mode: mode, rows: [], hiddenRows: 0,
+                               complete: complete, tooLarge: true, lines: lines)
+        }
+        editComputationCount += 1
+        var all: [DiffRow]
+        if diffable, mode == "edit" || (created && outcome == .done) {
+            all = lineDiff(before, after)
+        } else {
+            all = (new ?? before).components(separatedBy: "\n").map { DiffRow(kind: .context, text: $0) }
+        }
+        // Where the content stops, as its own line at the end of the hunk.
+        if let marker { all.append(DiffRow(kind: .context, text: marker)) }
+        return EditRequest(before: before, after: after, mode: mode, rows: Array(all.prefix(diffDrawLimit)),
+                           hiddenRows: max(0, all.count - diffDrawLimit), complete: complete,
+                           tooLarge: false, lines: all.count)
+    }
+
+    /// The arguments of a call as the card shows them: the call's own JSON when
+    /// it arrived whole, and what could be read of it when the host's bound cut
+    /// it short, so a card never presents a fragment as the whole request.
+    static func argumentsText(_ tool: ToolView) -> (text: String, complete: Bool) {
+        let decoded = decodeArguments(tool.input)
+        if decoded.complete { return (tool.input, tool.inputTruncated != true) }
+        guard !decoded.values.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: decoded.values, options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else {
+            return ("", false)
+        }
+        return (text, false)
     }
     static func parseCommand(_ input: String) -> String? { parseInput(input)["command"] as? String }
 
@@ -481,6 +632,14 @@ enum TranscriptActivity {
         patched[patched.count - 1] = .block(block)
         return patched
     }
+    /// A reply that is still arriving carries a provisional row id; the row the
+    /// host persists keeps the same identity without that marker. Blocks are
+    /// keyed by the settled form, so the row the reader folded — and the fold
+    /// itself, the reader's place and any selection in it — survive the reply
+    /// landing under its final id.
+    static func settledRowID(_ id: String) -> String {
+        id.hasPrefix("stream:") ? String(id.dropFirst("stream:".count)) : id
+    }
     static func blocks(of messages: [TranscriptMessage]) -> [TranscriptItem] {
         var items: [TranscriptItem] = []
         var lastAt: Double? = nil
@@ -510,7 +669,7 @@ enum TranscriptActivity {
                 continue
             }
             if message.role == "assistant" && message.kind == nil {
-                var block = pending ?? open("block:" + message.id)
+                var block = pending ?? open("block:" + settledRowID(message.id))
                 if message.isActivityOnly { block.activity.append(message); observe(message, &block); pending = block; continue }
                 observe(message, &block)
                 block.message = message; block.id = message.id
@@ -541,13 +700,13 @@ enum TranscriptActivity {
     private static func attachTurns(_ items: inout [TranscriptItem]) {
         var group: [Int] = []
         var lastUser: String? = nil, groupUser: String? = nil
-        func block(_ index: Int) -> TranscriptBlock { if case .block(let block) = items[index] { return block }; fatalError("not a block") }
+        func block(_ index: Int) -> TranscriptBlock? { if case .block(let block) = items[index] { return block }; return nil }
         func close() {
             defer { group = [] }
-            guard let firstIndex = group.first, let lastIndex = group.last else { return }
-            let blocks = group.map(block)
-            let first = blocks[0]
-            var last = block(lastIndex)
+            guard let lastIndex = group.last else { return }
+            // Only block indices are grouped; should that ever not hold, the turn is left without a summary rather than trapping the render path.
+            let blocks = group.compactMap(block)
+            guard blocks.count == group.count, let first = blocks.first, var last = block(lastIndex) else { return }
             let partial = first.turnID != nil && first.turnID != groupUser
             let requests = blocks.flatMap(\.replies).filter { $0.accounting != nil }
             let live = blocks.contains { $0.live }
@@ -566,12 +725,11 @@ enum TranscriptActivity {
                 current: live ? last.tools.last(where: { ["running", "preparing", "prepared"].contains($0.state) }) : nil,
                 notice: nil)
             items[lastIndex] = .block(last)
-            _ = firstIndex
         }
         for index in items.indices {
             switch items[index] {
             case .block(let current):
-                if let firstIndex = group.first, let firstTurn = block(firstIndex).turnID, let turn = current.turnID, firstTurn != turn { close() }
+                if let firstIndex = group.first, let firstTurn = block(firstIndex)?.turnID, let turn = current.turnID, firstTurn != turn { close() }
                 if group.isEmpty { groupUser = lastUser }
                 group.append(index)
             case .message(let message):

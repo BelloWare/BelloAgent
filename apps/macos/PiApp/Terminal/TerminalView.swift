@@ -66,7 +66,7 @@ import SwiftUI
     }
     private var isDark: Bool { effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
     var defaultForeground: NSColor { NSColor(Color.piInk) }
-    var defaultBackground: NSColor { NSColor(Color.piSurfaceSunken) }
+    var defaultBackground: NSColor { NSColor(Color.piTerminalSurface) }
     private var accent: NSColor { NSColor(Color.piBrandOrange) }
     private static let lightPalette: [NSColor] = ["1d1b17", "b3312c", "2f7d3b", "9a6a00", "2a5aa6", "8a3fb0", "1f7a8c", "c9c3b8", "6e6a61", "d1453f", "3d8a57", "b97a1e", "3b6fc4", "a35bd1", "2c96a8", "f2ede5"].map(NSColor.init(hex:))
     private static let darkPalette: [NSColor] = ["3a3129", "ea7c7c", "7cc48f", "e3b15c", "a8c9fc", "d7a5ee", "7fd3e0", "d9d4cb", "78746b", "f19a9a", "98d6a8", "f0c67c", "bcd6ff", "e4c0f5", "9fe0eb", "f5f1ea"].map(NSColor.init(hex:))
@@ -119,10 +119,21 @@ import SwiftUI
         NSRect(x: inset + CGFloat(column) * cellWidth, y: inset + CGFloat(row) * cellHeight, width: cellWidth * CGFloat(width), height: cellHeight)
     }
 
+    /// Lines the emulator has ever pushed out of the screen, so new output can
+    /// be told from lines the scrollback has dropped.
+    private var producedLines = 0
     /// Redraws what the emulator changed since the last refresh.
     func refresh() {
-        defer { emulator.clearDirty() }
-        if scrollOffset > 0 { scrollOffset = min(scrollOffset, emulator.scrollback.count); needsDisplay = true; return }
+        let produced = emulator.trimmedLines + emulator.scrollback.count
+        defer { emulator.clearDirty(); producedLines = produced }
+        if scrollOffset > 0 {
+            // A reader who has scrolled back stays on the lines they are
+            // reading: output arriving underneath pushes the bottom further
+            // away instead of dragging the text out from under them.
+            scrollOffset = min(scrollOffset + max(0, produced - producedLines), emulator.scrollback.count)
+            needsDisplay = true
+            return
+        }
         guard let dirty = emulator.dirtyRows else { needsDisplay = true; return }
         for row in dirty { setNeedsDisplay(rowRect(row)) }
     }
@@ -408,7 +419,7 @@ import SwiftUI
     }
     @objc override func selectAll(_ sender: Any?) {
         // Everything with content: the blank rows under the cursor add nothing.
-        guard let last = (0..<emulator.lineCount).last(where: { !TerminalEmulator.text(of: emulator.line(at: $0)).isEmpty }) else { selection = nil; needsDisplay = true; return }
+        guard let last = (0..<emulator.lineCount).last(where: { !emulator.text(atLine: $0).isEmpty }) else { selection = nil; needsDisplay = true; return }
         selection = Selection(start: Position(line: emulator.trimmedLines, column: 0), end: Position(line: emulator.trimmedLines + last, column: emulator.columns))
         needsDisplay = true
     }

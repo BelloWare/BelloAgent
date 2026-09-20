@@ -22,6 +22,9 @@ struct NativeComposer: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.borderType = .noBorder
         scroll.drawsBackground = false; scroll.autohidesScrollers = true
+        // An overlay scroller never narrows the text container, so a reply reaching the height
+        // clamp cannot rewrap, change height, hide the scroller and rewrap again.
+        scroll.scrollerStyle = .overlay
         let editor = ComposerTextView()
         editor.isRichText = false; editor.allowsUndo = true; editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false; editor.font = .systemFont(ofSize: 14)
@@ -29,17 +32,25 @@ struct NativeComposer: NSViewRepresentable {
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]
         editor.textContainer?.widthTracksTextView = true; editor.delegate = context.coordinator
         editor.setAccessibilityLabel(accessibilityLabel); editor.setAccessibilityIdentifier("nativeComposer"); editor.sessionID = sessionID
-        editor.send = { context.coordinator.parent.send() }
-        editor.directSlash = { context.coordinator.parent.directSlash() }
-        editor.pasted = { context.coordinator.parent.pasted() }
-        editor.attachFiles = { context.coordinator.parent.attachFiles($0) }
+        // Every one of these is held by the editor, and the coordinator holds
+        // this view value, whose closures hold the chat's page and the whole
+        // workspace. Capturing the coordinator strongly made an editor that
+        // outlived its pane — AppKit keeps a text view alive past the SwiftUI
+        // teardown — keep that chat's transcript page in memory for the rest
+        // of the session, so memory grew with every chat visited.
+        let coordinator = context.coordinator
+        editor.send = { [weak coordinator] in coordinator?.parent.send() }
+        editor.directSlash = { [weak coordinator] in coordinator?.parent.directSlash() }
+        editor.pasted = { [weak coordinator] in coordinator?.parent.pasted() }
+        editor.attachFiles = { [weak coordinator] in coordinator?.parent.attachFiles($0) }
+        editor.imageRejected = { [weak coordinator] in coordinator?.parent.inputRejected($0) }
         editor.registerForDraggedTypes([.fileURL, .png, .tiff])
-        editor.completionKey = { context.coordinator.parent.completionKey($0) }
-        editor.focused = { [weak editor, weak coordinator = context.coordinator] in
+        editor.completionKey = { [weak coordinator] in coordinator?.parent.completionKey($0) ?? false }
+        editor.focused = { [weak editor, weak coordinator] in
             if let editor { coordinator?.focusChanged(editor) }
         }
-        editor.contentHeightChanged = { height in Task { @MainActor in context.coordinator.parent.heightChanged(height) } }
-        editor.string = text; scroll.documentView = editor
+        editor.contentHeightChanged = { [weak coordinator] height in Task { @MainActor in coordinator?.parent.heightChanged(height) } }
+        editor.string = text; context.coordinator.adopt(text); scroll.documentView = editor
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -61,16 +72,42 @@ struct NativeComposer: NSViewRepresentable {
         private var applyingModelText = false
         private var rejectedModelText: String?
         private var focusRevision = 0
+        /// The text the editor and the model last agreed on, in the app's own
+        /// storage. `NSTextView.string` hands back a fresh UTF-16 bridge each
+        /// time; comparing the draft against one of those decodes the whole
+        /// document, so a 200 KB draft used to cost about 10 ms per keystroke.
+        /// Comparing against this copy is a pointer check in the usual case.
+        private var settled: String?
         init(_ parent: NativeComposer) { self.parent = parent }
+        func adopt(_ text: String) { settled = text }
+        /// The editor's text in the app's own UTF-8 storage, so every later
+        /// comparison is a memcmp rather than a UTF-16 decode. AppKit's own
+        /// UTF-8 buffer is an order of magnitude faster than transcoding the
+        /// bridge character by character; it stops at an embedded NUL, so the
+        /// length is checked and the slow path used when one is present.
+        static func contents(of editor: NSTextView) -> String {
+            let source = editor.string as NSString
+            if let buffer = source.utf8String {
+                let text = String(cString: buffer)
+                if text.utf16.count == source.length { return text }
+            }
+            var text = editor.string
+            text.makeContiguousUTF8()
+            return text
+        }
         func applyModelText(_ text: String, to editor: ComposerTextView) {
-            guard !editor.hasMarkedText(), editor.string != text, rejectedModelText != text else { return }
+            guard !editor.hasMarkedText(), settled != text, rejectedModelText != text else { return }
+            let current = Self.contents(of: editor)
+            guard current != text else { settled = text; return }
             rejectedModelText = nil
             // insertText preserves native undo, but synchronously invokes the
             // delegate. A model-to-view refresh must not publish that same text
             // or completion state back into SwiftUI during updateNSView.
             applyingModelText = true; defer { applyingModelText = false }
-            editor.insertText(text,replacementRange:NSRange(location:0,length:(editor.string as NSString).length))
-            if editor.string != text { rejectedModelText = text }
+            editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.textStorage?.length ?? 0))
+            let applied = Self.contents(of: editor)
+            settled = applied
+            if applied != text { rejectedModelText = text }
         }
         func focusChanged(_ editor: ComposerTextView) {
             focusRevision += 1; let revision = focusRevision
@@ -86,8 +123,8 @@ struct NativeComposer: NSViewRepresentable {
         }
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
             guard let replacementString else { return true }
-            guard replacementString.utf8.count <= 262_144, NSMaxRange(affectedCharRange) <= (textView.string as NSString).length,
-                  textView.string.utf8.count - (textView.string as NSString).substring(with: affectedCharRange).utf8.count + replacementString.utf8.count <= 262_144 else {
+            guard replacementString.utf8.count <= 262_144, NSMaxRange(affectedCharRange) <= (textView.textStorage?.length ?? 0),
+                  Self.fits(textView, replacing: affectedCharRange, with: replacementString) else {
                 let message = "The composer accepts at most 256 KiB of text. Attach or reference larger files instead."
                 if applyingModelText { Task { @MainActor [weak self] in self?.parent.inputRejected(message) } }
                 else { parent.inputRejected(message) }
@@ -95,10 +132,25 @@ struct NativeComposer: NSViewRepresentable {
             }
             return true
         }
+        /// The 256 KiB submission limit, without reading the whole document on
+        /// every keystroke: a UTF-16 unit never exceeds three UTF-8 bytes, so a
+        /// draft that cannot reach the limit is accepted from its length alone.
+        static func fits(_ textView: NSTextView, replacing range: NSRange, with replacement: String) -> Bool {
+            let units = (textView.textStorage?.length ?? 0) - range.length
+            let added = replacement.utf8.count
+            if units <= (262_144 - added) / 3 { return true }
+            let text = textView.string
+            return text.utf8.count - (text as NSString).substring(with: range).utf8.count + added <= 262_144
+        }
         func textDidChange(_ notification: Notification) {
             guard !applyingModelText, let editor = notification.object as? NSTextView else { return }
-            if parent.text != editor.string { parent.text = editor.string }
-            if !editor.hasMarkedText() { parent.completion(editor.string) }
+            // The editor only notifies after a real edit, so the text is new by
+            // construction: comparing it against the draft first would cost a
+            // full decode of the document for nothing.
+            let text = Self.contents(of: editor)
+            settled = text
+            parent.text = text
+            if !editor.hasMarkedText() { parent.completion(text) }
         }
     }
 }
@@ -114,6 +166,32 @@ struct ComposerEditMeasurement {
     }
 }
 @MainActor final class ComposerTextView: NSTextView {
+    /// The keys that belong to the conversation rather than to the draft.
+    static func conversationScroll(for keyCode: UInt16) -> TranscriptKeyScroll? {
+        switch keyCode {
+        case 116: return .pageUp
+        case 121: return .pageDown
+        case 115: return .top
+        case 119: return .bottom
+        default: return nil
+        }
+    }
+    /// True while the whole draft is on screen, so these keys have nothing to
+    /// do here. A draft long enough to scroll keeps them.
+    var draftFitsInTheField: Bool {
+        guard let scroll = enclosingScrollView else { return true }
+        return (scroll.documentView?.frame.height ?? 0) <= scroll.contentSize.height + 1
+    }
+    /// The conversation this composer sits under.
+    func conversationScrollView() -> TranscriptNativeScrollView? {
+        func find(_ view: NSView) -> TranscriptNativeScrollView? {
+            if let scroll = view as? TranscriptNativeScrollView { return scroll }
+            for child in view.subviews { if let found = find(child) { return found } }
+            return nil
+        }
+        guard let root = window?.contentView else { return nil }
+        return find(root)
+    }
     /// The chat this editor belongs to (see `WindowPresentationController.redirectTyping`).
     var sessionID = ""
     private var measurement = ComposerEditMeasurement()
@@ -124,48 +202,94 @@ struct ComposerEditMeasurement {
     var focused: (() -> Void)?
     var contentHeightChanged: ((CGFloat) -> Void)?
     private var reportedHeight: CGFloat = 0
-    /// Reports the laid-out text height so the shell can grow the field with its content.
+    /// The tallest the field ever becomes; past it the exact text height no
+    /// longer changes the layout, so it is never measured.
+    var maximumContentHeight: CGFloat = 240
+    /// Reports the laid-out text height so the shell can grow the field with
+    /// its content. A long draft is laid out only as far as the ceiling:
+    /// `ensureLayout(for:)` would lay out every line of a 200 KB draft on every
+    /// keystroke, which is the whole cost of typing into one.
     private func reportContentHeight() {
         guard let container = textContainer, let layout = layoutManager else { return }
-        layout.ensureLayout(for: container)
-        let height = ceil(layout.usedRect(for: container).height + textContainerInset.height * 2)
+        let inset = textContainerInset.height * 2
+        let ceiling = max(0, maximumContentHeight - inset)
+        layout.ensureLayout(forBoundingRect: CGRect(x: 0, y: 0, width: container.size.width, height: ceiling + 1), in: container)
+        let height = ceil(min(layout.usedRect(for: container).height, ceiling) + inset)
         if abs(height - reportedHeight) >= 1 { reportedHeight = height; contentHeightChanged?(height) }
     }
     override func layout() { super.layout(); reportContentHeight() }
     override func becomeFirstResponder() -> Bool { let accepted = super.becomeFirstResponder(); if accepted { focused?() }; return accepted }
     var attachFiles: (([URL]) -> Void)?
+    /// Reported when a pasted or dropped image cannot be read; wired to the
+    /// same notice the composer uses for text it refuses.
+    var imageRejected: ((String) -> Void)?
     override func paste(_ sender: Any?) {
         if PerformanceProbe.shared.enabled { measurement.begin(event: PerformanceProbe.now, handler: PerformanceProbe.now) }
         defer { measurement.end() }
         // A screenshot on the clipboard or a copied image file becomes an
         // attachment instead of a pasted file path.
-        if let attachFiles, let urls = Self.imageFiles(on: NSPasteboard.general) { attachFiles(urls); return }
+        if pasteAttachments(from: NSPasteboard.general) { return }
         pasted?(); super.paste(sender)
     }
+    /// True when the pasteboard held images and they became attachments.
+    /// Separated from `paste` so a test can paste from its own pasteboard
+    /// rather than the clipboard the owner is using.
+    func pasteAttachments(from pasteboard: NSPasteboard) -> Bool {
+        guard let attachFiles else { return false }
+        if let urls = Self.imageFiles(on: pasteboard) { attachFiles(urls); return true }
+        guard let pasted = Self.pastedImage(on: pasteboard) else { return false }
+        // Decoding a screenshot, re-encoding it and writing it out takes long
+        // enough to freeze the window: a 4000x3000 paste is hundreds of
+        // milliseconds. Only the bytes are taken here; the rest happens off
+        // the main thread and the chip appears when it lands.
+        Task { @MainActor [weak self] in
+            let written = await Task.detached(priority: .userInitiated) { Self.writePastedImage(pasted) }.value
+            guard let self else { return }
+            if let written { self.attachFiles?([written]) }
+            else { self.imageRejected?("That image could not be read. Copy it again, or attach the file instead.") }
+        }
+        return true
+    }
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
-        Self.imageFiles(on: sender.draggingPasteboard) != nil ? .copy : super.draggingEntered(sender)
+        let pasteboard = sender.draggingPasteboard
+        return Self.imageFiles(on: pasteboard) != nil || Self.pastedImage(on: pasteboard) != nil ? .copy : super.draggingEntered(sender)
     }
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        if let attachFiles, let urls = Self.imageFiles(on: sender.draggingPasteboard) { attachFiles(urls); return true }
+        if pasteAttachments(from: sender.draggingPasteboard) { return true }
         return super.performDragOperation(sender)
     }
-    /// Image files on the pasteboard, or a pasted bitmap written to a private PNG.
-    private static func imageFiles(on pasteboard: NSPasteboard) -> [URL]? {
-        let extensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp"]
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            let images = urls.filter { extensions.contains($0.pathExtension.lowercased()) }
-            return images.isEmpty ? nil : images
+    /// Image bytes taken from the pasteboard without decoding them.
+    struct PastedImage: Sendable { let data: Data; let isPNG: Bool }
+    static func pastedImage(on pasteboard: NSPasteboard) -> PastedImage? {
+        if let png = pasteboard.data(forType: .png) { return PastedImage(data: png, isPNG: true) }
+        if let tiff = pasteboard.data(forType: .tiff) { return PastedImage(data: tiff, isPNG: false) }
+        return nil
+    }
+    /// Writes the pasted bytes to a private PNG. PNG goes through untouched;
+    /// anything else is converted here, off the main thread.
+    nonisolated static func writePastedImage(_ image: PastedImage) -> URL? {
+        let bytes: Data
+        if image.isPNG { bytes = image.data }
+        else {
+            guard let bitmap = NSBitmapImageRep(data: image.data),
+                  let png = bitmap.representation(using: .png, properties: [:]) else { return nil }
+            bytes = png
         }
-        guard pasteboard.canReadItem(withDataConformingToTypes: [NSPasteboard.PasteboardType.png.rawValue, NSPasteboard.PasteboardType.tiff.rawValue]),
-              let image = NSImage(pasteboard: pasteboard), let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff), let png = bitmap.representation(using: .png, properties: [:]) else { return nil }
+        guard !bytes.isEmpty, bytes.count <= 8 * 1024 * 1024 else { return nil }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("BelloAgent-Pasted", isDirectory: true)
         let url = folder.appendingPathComponent("pasted-" + UUID().uuidString + ".png")
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            try png.write(to: url, options: .atomic)
+            try bytes.write(to: url, options: .atomic)
         } catch { return nil }
-        return [url]
+        return url
+    }
+    /// Image files on the pasteboard, which need no conversion at all.
+    private static func imageFiles(on pasteboard: NSPasteboard) -> [URL]? {
+        let extensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp"]
+        guard let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else { return nil }
+        let images = urls.filter { extensions.contains($0.pathExtension.lowercased()) }
+        return images.isEmpty ? nil : images
     }
     override func didChangeText() { measurement.edited(); super.didChangeText(); reportContentHeight() }
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
@@ -194,6 +318,14 @@ struct ComposerEditMeasurement {
            !event.modifierFlags.contains(.option), !event.modifierFlags.contains(.control) {
             if event.modifierFlags.contains(.shift) { insertNewline(nil) } else { send?() }; return
         }
+        // Page Up and Page Down, Home and End move the reader through the
+        // conversation, not through a draft that already fits in the field.
+        // Focus stays here: a reader reads and keeps typing without a click.
+        // `.function` and `.numericPad` are what the keyboard says about these
+        // keys themselves, not something the reader held down.
+        if !hasMarkedText(), event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+           let move = Self.conversationScroll(for: event.keyCode), draftFitsInTheField,
+           conversationScrollView()?.scroll(by: move) == true { return }
         super.keyDown(with: event)
         // Draw the edited native text before processing the next background
         // stream notification. This flushes only this view's invalidated region;

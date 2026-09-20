@@ -1,0 +1,9 @@
+<h2>Bello Agent 0.1.49</h2>
+<ul>
+  <li>Fixes a crash when queued follow-ups or steering messages are removed while another message is being prepared. Retry now repeats the failed request before delivering pending steering.</li>
+  <li>Crash recovery distinguishes repeated tool-call IDs, records interrupted operations as unknown, and never reruns those tools automatically.</li>
+  <li>Unresponsive helpers and large terminal pastes no longer block shutdown. Terminal control sequences cannot cause unbounded tab movement.</li>
+  <li>Damaged capture records and extreme numeric values are handled without crashing. JSON details discard stale selection updates, and transcript scroll restoration waits for the native view to attach.</li>
+  <li>Removed connections cannot be reused through a cached helper or a delayed request. Connection deletion also stops side conversations that are still being registered, and rejected sends preserve their drafts.</li>
+  <li>The context inspector shares automatic calculations instead of immediately invalidating their snapshots. Prepared requests show the same output limit that will be sent after clipping it to the available context room.</li>
+</ul>

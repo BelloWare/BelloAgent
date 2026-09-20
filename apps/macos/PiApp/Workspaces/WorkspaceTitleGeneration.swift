@@ -134,8 +134,10 @@ extension WorkspaceModel {
                 try? await store.remove(kind: "chat", id: taskID)
             }
         }
+        let lease = try connectionLease(for: item)
         let connected = try await open(item); host = connected
         let turn = UUID().uuidString
+        try requireConnection(lease)
         _ = try await connected.request("turn.submit", sessionID: taskID, params: TurnOverrides.params(for: item, base: ["text": .string(plan.prompt), "clientTurnId": .string(turn)]))
         let deadline = ProcessInfo.processInfo.systemUptime + 45
         while ProcessInfo.processInfo.systemUptime < deadline {
@@ -143,7 +145,7 @@ extension WorkspaceModel {
             let snapshot = try await connected.request("session.snapshot", sessionID: taskID).object ?? [:]
             let state = snapshot["state"]?.string ?? ""
             if state == "idle", let value = snapshot["messages"] {
-                let messages = try JSONDecoder().decode([TranscriptMessage].self, from: JSONEncoder().encode(value))
+                let messages = try TranscriptMessage.page(value)
                 if messages.contains(where: { $0.role == "assistant" && $0.state != "streaming" }) {
                     let titles = TitleGenerationPlan.titles(from: messages, limit: 3)
                     guard !titles.isEmpty else { throw HostError.failure("The mini model did not return usable titles.") }
@@ -234,6 +236,7 @@ extension WorkspaceModel {
             chats.append(item); displays[taskID] = display; display.loading = true
             defer { display.loading = false }
             try Task.checkCancellation()
+            let lease = try connectionLease(for: item)
             let connected = try await open(item); host = connected
             try Task.checkCancellation()
             let command = UUID().uuidString, turn = UUID().uuidString
@@ -241,6 +244,7 @@ extension WorkspaceModel {
             try await store.put(CommandIntent(id: command, sessionID: taskID, turnID: turn, text: plan.prompt,
                                               state: "intent", epoch: connected.epoch), kind: "pending:\(taskID)", id: command)
             try Task.checkCancellation()
+            try requireConnection(lease)
             _ = try await connected.request("turn.submit", sessionID: taskID,
                 params: TurnOverrides.params(for: item, base: ["text": .string(plan.prompt), "clientTurnId": .string(turn)]), commandID: command)
             try await store.acknowledgeCommand(sessionID: taskID, commandID: command)
@@ -254,7 +258,7 @@ extension WorkspaceModel {
                 let state = snapshot["state"]?.string ?? ""
                 let receipt = snapshot["commands"]?.array?.compactMap(\.object).last { $0["commandId"]?.string == command }
                 if receipt?["state"]?.string == "completed", state == "idle" {
-                    let messages = try JSONDecoder().decode([TranscriptMessage].self, from: JSONEncoder().encode(snapshot["messages"] ?? .array([])))
+                    let messages = try TranscriptMessage.page(snapshot["messages"] ?? .array([]))
                     display.messages = messages
                     guard let title = TitleGenerationPlan.title(from: messages) else { throw HostError.failure("The mini model did not return a usable title. The original title was kept.") }
                     if let saved = try await store.applyGeneratedTitle(title, sourceID: sourceID, taskID: taskID),
@@ -275,6 +279,7 @@ extension WorkspaceModel {
             }
             throw HostError.failure("Title generation timed out. The original title was kept; nothing was retried.")
         } catch {
+            if let commandID, case HostError.rejected = error { try? await store.remove(kind: "pending:\(taskID)", id: commandID) }
             if let host, commandID != nil { _ = try? await host.request("turn.stop", sessionID: taskID) }
             display.loading = false
             display.notice = error is CancellationError ? "Title generation interrupted. Nothing was retried." : error.localizedDescription

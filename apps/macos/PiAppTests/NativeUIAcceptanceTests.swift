@@ -6,14 +6,13 @@ import SwiftUI
 // PiApp has no fixture switch, credential fallback, or test-vault implementation.
 final class NativeUIAcceptanceTests: XCTestCase {
     @MainActor func testInteractiveSyntheticWorkspace() async throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard let path = environment["PI_APP_UI_ACCEPTANCE_ROOT"] ?? environment["TEST_RUNNER_PI_APP_UI_ACCEPTANCE_ROOT"] else {
+        guard let path = testEnvironment("PI_APP_UI_ACCEPTANCE_ROOT") else {
             throw XCTSkip("Set PI_APP_UI_ACCEPTANCE_ROOT to run the interactive CUA acceptance window.")
         }
         let folder = URL(fileURLWithPath: path, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let featureBatch = environment["PI_APP_UI_ACCEPTANCE_FEATURES"] == "1" || environment["TEST_RUNNER_PI_APP_UI_ACCEPTANCE_FEATURES"] == "1"
-        let productivityBatch = environment["PI_APP_UI_ACCEPTANCE_PRODUCTIVITY"] == "1" || environment["TEST_RUNNER_PI_APP_UI_ACCEPTANCE_PRODUCTIVITY"] == "1"
+        let featureBatch = testEnvironment("PI_APP_UI_ACCEPTANCE_FEATURES") == "1"
+        let productivityBatch = testEnvironment("PI_APP_UI_ACCEPTANCE_PRODUCTIVITY") == "1"
         let secondaryFolder = folder.appendingPathComponent("secondary-workspace-folder", isDirectory: true)
         if featureBatch {
             try FileManager.default.createDirectory(at: secondaryFolder, withIntermediateDirectories: true)
@@ -46,6 +45,7 @@ final class NativeUIAcceptanceTests: XCTestCase {
         var connections = ["auto-router", "fixture-fast"].map { alias -> VaultProfile in
             var profile = ProfileRecord(); profile.api = "openai-responses"; profile.baseUrl = base; profile.modelId = alias
             profile.contextWindow = alias == "fixture-fast" ? 128_000 : 2_000_000; profile.maxOutputTokens = alias == "fixture-fast" ? 16_000 : 300_000
+            profile.modelOutputLimit = alias == "fixture-fast" ? 16_000 : 300_000   // the catalog ceiling is what requests carry
             profile.catalogUrl = base + "/catalog"
             profile.name = alias == "fixture-fast" ? "Responses · Fast model" : "Synthetic Responses"
             let reasoning = alias == "fixture-fast" ? "\"reasoning\":false,\"thinkingLevel\":\"default\"" : "\"reasoning\":true,\"thinkingLevel\":\"high\""
@@ -90,7 +90,7 @@ final class NativeUIAcceptanceTests: XCTestCase {
             model.chats.append(chat)
             try await model.store?.put(chat, kind: "chat", id: chat.id)
         }
-        if environment["PI_APP_UI_ACCEPTANCE_HISTORY"] == "1" || environment["TEST_RUNNER_PI_APP_UI_ACCEPTANCE_HISTORY"] == "1" {
+        if testEnvironment("PI_APP_UI_ACCEPTANCE_HISTORY") == "1" {
             try await prepareHistory(in: folder, model: model, workspace: workspace, profileID: connections[0].profile.id)
         }
         let selectedPath = folder.appendingPathComponent("selected-for-relaunch.txt")
@@ -161,7 +161,7 @@ final class NativeUIAcceptanceTests: XCTestCase {
             for record in fast {
                 let body = try XCTUnwrap(Data(base64Encoded: record["request"]?.string ?? ""))
                 let json = try JSONDecoder().decode(WireValue.self, from: body).object ?? [:]
-                XCTAssertEqual(json["max_output_tokens"]?.number, 16_000, "The selected model's output limit must reach the wire")
+                XCTAssertEqual(json["max_output_tokens"]?.number, 16_000, "The selected model's catalog ceiling must reach the wire as its output limit")
                 XCTAssertNil(json["reasoning"]); XCTAssertNil(json["thinking"]); XCTAssertNil(json["output_config"])
                 XCTAssertTrue(record["contractValidated"]?.bool == true)
             }

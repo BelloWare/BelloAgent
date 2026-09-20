@@ -13,6 +13,7 @@ extension WorkspaceModel {
         if item.connectionTest == true || item.workspaceID == WorkspaceRecord.scratchID { return "Connection tests keep the connection they tested." }
         if item.isBackgroundTask { return "Background tasks keep their connection." }
         if side(chatID) != nil || item.parentSessionID != nil { return "Side conversations keep their parent's connection." }
+        if isSessionOpening(chatID) { return "Wait for this chat's connection to finish opening." }
         if let view = displays[chatID], view.hasWork || view.loading { return "Wait for this chat to finish its current work first." }
         if workspaceChangesInFlight.contains(item.workspaceID) { return "Wait for this project's folder changes to finish." }
         return nil
@@ -32,14 +33,25 @@ extension WorkspaceModel {
         // Let an in-flight model or effort write for either connection land first.
         await overrideWrites[item.profileID]?.task.value
         await overrideWrites[profileID]?.task.value
-        guard connectionSwitchBlocker(for: chatID) == nil, var updated = record(chatID), updated.profileID != profileID else { return }
+        // Decide the chat's model against the target's real catalog. A
+        // connection nobody has listed this session has a blank entry, which
+        // silently dropped the chat's model on the first switch to it.
+        if item.model != nil { _ = await listModels(for: target) }
+        // Every other rejection explains itself; a run that started while those
+        // awaits drained used to make the pill do nothing at all.
+        if let blocker = connectionSwitchBlocker(for: chatID) { error = blocker; return }
+        guard var updated = record(chatID), updated.profileID != profileID else { return }
         do {
             if opened.contains(chatID) {
                 guard let host = hosts[updated.workspaceID], host.isReady else { throw HostError.failure("Wait for this project's host to recover before changing the connection.") }
                 _ = try await host.request("session.close", sessionID: chatID); opened.remove(chatID)
             }
             updated.profileID = profileID
-            let listed = updated.model.flatMap { alias in catalogEntry(for: target).descriptor(for: alias) != nil ? alias : nil }
+            // Only an actually-read catalog is evidence that a model is gone.
+            // A blank or failed listing keeps the chat's choice.
+            let catalog = catalogEntry(for: target)
+            let known = catalog.error == nil && !catalog.descriptors.isEmpty
+            let listed = updated.model.flatMap { alias in !known || catalog.descriptor(for: alias) != nil ? alias : nil }
             applyModelChoice(listed, to: &updated, profile: target)
             try await store.put(updated, kind: "chat", id: chatID)
             if let index = chats.firstIndex(where: { $0.id == chatID }) {

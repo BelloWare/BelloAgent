@@ -7,21 +7,23 @@ struct SessionTimingSample: Sendable, Equatable, Identifiable {
     let wall: Date
     let ttftMilliseconds: Double?
     let streamingMilliseconds: Double?
+    /// Dispatch through model completion, independent of visible first content.
+    let requestMilliseconds: Double?
     let outputTokens: Double?
     /// Gateway-reported cost of this request, when reported.
     let costUSD: Double?
 
-    init(id: String, wall: Date, ttftMilliseconds: Double?, streamingMilliseconds: Double?, outputTokens: Double?, costUSD: Double? = nil) {
+    init(id: String, wall: Date, ttftMilliseconds: Double?, streamingMilliseconds: Double?, outputTokens: Double?, costUSD: Double? = nil, requestMilliseconds: Double? = nil) {
         self.id = id; self.wall = wall
         self.ttftMilliseconds = Self.observed(ttftMilliseconds)
         self.streamingMilliseconds = Self.observed(streamingMilliseconds)
+        self.requestMilliseconds = Self.observed(requestMilliseconds)
         self.outputTokens = Self.observed(outputTokens)
         self.costUSD = Self.observed(costUSD)
     }
 
     var outputTokensPerSecond: Double? {
-        guard let outputTokens, let ttftMilliseconds, let streamingMilliseconds else { return nil }
-        let duration = ttftMilliseconds + streamingMilliseconds
+        guard let outputTokens, let duration = requestMilliseconds else { return nil }
         guard duration.isFinite, duration > 0 else { return nil }
         let rate = outputTokens / (duration / 1_000)
         return rate.isFinite ? rate : nil
@@ -29,6 +31,35 @@ struct SessionTimingSample: Sendable, Equatable, Identifiable {
 
     private static func observed(_ value: Double?) -> Double? {
         value.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+    }
+}
+
+/// Only the latest completed request supplies the current figure. A running
+/// request does not replace it, and a completion lacking usage stays missing.
+struct SessionRatePresentation: Equatable {
+    static let explanation = "Gateway-reported output tokens, including reasoning once, divided by dispatch-to-completion time. The latest completed request stays visible while the next request runs. This is an end-to-end request average, not provider decode speed."
+    let latest: Double?
+    let average: Double?
+    let hasCompletion: Bool
+    init(history: SessionTimingHistory) {
+        latest = history.latest?.outputTokensPerSecond
+        average = history.historicalRate.tokensPerSecond
+        hasCompletion = history.latest != nil
+    }
+    var label: String {
+        latest.map { "Latest " + Self.compactRate($0) } ?? (hasCompletion ? "Usage unavailable" : "Awaiting usage")
+    }
+    /// The sidebar gives this label a fixed 108-point slot. A fast route
+    /// reporting five or six digits ran past it and was cut mid-number
+    /// ("Latest 126397 to…"), which reads as a broken figure rather than a
+    /// fast one. Four digits and up are abbreviated so the number always
+    /// finishes; the exact rate stays in Session info and in the help.
+    static func compactRate(_ value: Double) -> String {
+        guard value.isFinite, value >= 0 else { return SessionTimingMetric.rate.label(value) }
+        if value >= 1_000_000 { return String(format: "%.1fM tok/s", value / 1_000_000).replacingOccurrences(of: ".0M", with: "M") }
+        if value >= 10_000 { return String(format: "%.0fk tok/s", value / 1_000) }
+        if value >= 1_000 { return String(format: "%.1fk tok/s", value / 1_000).replacingOccurrences(of: ".0k", with: "k") }
+        return SessionTimingMetric.rate.label(value)
     }
 }
 
@@ -107,14 +138,15 @@ extension PayloadArchive {
         let summary = try db.rows("SELECT \(Self.historicalOutputRateSQL),COUNT(*) AS completed_requests FROM attempts WHERE \(scope)", values).first ?? [:]
         try Task.checkCancellation()
         let rows = try db.rows("""
-        SELECT id,wall,ttft_ms,stream_ms,output_tokens,cost_usd FROM attempts
+        SELECT id,wall,ttft_ms,stream_ms,request_ms,output_tokens,cost_usd FROM attempts
         WHERE \(scope)
         ORDER BY wall DESC,id DESC LIMIT ?
         """, values + [.integer(Int64(SessionTimingHistory.limit + 1))])
         let samples = try rows.prefix(SessionTimingHistory.limit).reversed().map { row -> SessionTimingSample in
             guard let id = row["id"]?.string, let wall = row["wall"]?.double, wall.isFinite, wall >= 0 else { throw CaptureFailure.corrupt }
             return SessionTimingSample(id: id, wall: Date(timeIntervalSince1970: wall), ttftMilliseconds: row["ttft_ms"]?.double,
-                                       streamingMilliseconds: row["stream_ms"]?.double, outputTokens: row["output_tokens"]?.double, costUSD: row["cost_usd"]?.double)
+                                       streamingMilliseconds: row["stream_ms"]?.double, outputTokens: row["output_tokens"]?.double, costUSD: row["cost_usd"]?.double,
+                                       requestMilliseconds: row["request_ms"]?.double)
         }
         try Task.checkCancellation()
         return SessionTimingHistory(samples: samples, hasOlderRequests: rows.count > SessionTimingHistory.limit,

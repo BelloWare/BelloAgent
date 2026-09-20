@@ -4,45 +4,11 @@ import Foundation
 // cell grid with scrollback, an alternate screen, scroll regions, tab stops,
 // the usual modes and the replies programs ask for. It knows nothing about
 // drawing or processes; TerminalView draws it and PseudoTerminal feeds it.
-
-struct TerminalColor: Equatable, Hashable, Sendable {
-    enum Kind: Equatable, Hashable, Sendable { case standard, indexed(UInt8), rgb(UInt8, UInt8, UInt8) }
-    var kind: Kind
-    static let standard = TerminalColor(kind: .standard)
-    static func indexed(_ index: UInt8) -> TerminalColor { TerminalColor(kind: .indexed(index)) }
-    static func rgb(_ red: UInt8, _ green: UInt8, _ blue: UInt8) -> TerminalColor { TerminalColor(kind: .rgb(red, green, blue)) }
-}
-
-struct CellStyle: Equatable, Hashable, Sendable {
-    var foreground = TerminalColor.standard
-    var background = TerminalColor.standard
-    var bold = false
-    var dim = false
-    var italic = false
-    var underline = false
-    var inverse = false
-    var strikethrough = false
-    var hidden = false
-    static let plain = CellStyle()
-}
-
-struct TerminalCell: Equatable, Sendable {
-    /// One grapheme: a base scalar with any combining marks. Empty for the trailing half of a wide character.
-    var text: String = " "
-    /// 1 for a normal cell, 2 for the leading half of a wide character, 0 for the trailing half.
-    var width: UInt8 = 1
-    var style = CellStyle.plain
-    static let blank = TerminalCell()
-    var isBlank: Bool { width == 1 && text == " " }
-}
-
-struct TerminalCursor: Equatable, Sendable {
-    var x = 0
-    var y = 0
-}
-
-/// The cursor shape a program asked for through DECSCUSR.
-enum TerminalCursorShape: Equatable, Sendable { case block, underline, bar }
+//
+// Isolation: deliberately unannotated and deliberately not Sendable. One
+// main-actor TerminalSession owns each emulator, and both the view that
+// draws it and the pseudo-terminal that feeds it reach the main actor before
+// they touch it, which is what lets the parser skip exclusivity checks below.
 
 final class TerminalEmulator {
     // The state every byte touches skips Swift's dynamic exclusivity checks: the emulator is fed from one thread and
@@ -50,7 +16,7 @@ final class TerminalEmulator {
     @exclusivity(unchecked) private(set) var columns: Int
     @exclusivity(unchecked) private(set) var rows: Int
     @exclusivity(unchecked) private(set) var screen: [[TerminalCell]]
-    @exclusivity(unchecked) private(set) var scrollback: [[TerminalCell]] = []
+    @exclusivity(unchecked) private(set) var scrollback: [TerminalHistoryLine] = []
     /// Lines dropped from the front of the scrollback since the start, so absolute line numbers stay stable.
     private(set) var trimmedLines = 0
     let scrollbackLimit: Int
@@ -115,24 +81,8 @@ final class TerminalEmulator {
         resetTabStops()
     }
 
-    // MARK: Reading the screen
+    // MARK: Dirty rows
 
-    /// Every line the reader can see, oldest first: the scrollback then the screen.
-    var lineCount: Int { scrollback.count + rows }
-    func line(at index: Int) -> [TerminalCell] {
-        if index < scrollback.count { return scrollback[index] }
-        let row = index - scrollback.count
-        return row < rows ? screen[row] : []
-    }
-    /// The text of one screen row without trailing blanks.
-    func text(ofRow row: Int) -> String { Self.text(of: screen[row]) }
-    static func text(of cells: [TerminalCell]) -> String {
-        var end = cells.count
-        while end > 0, cells[end - 1].isBlank || cells[end - 1].width == 0 && cells[end - 1].text.isEmpty && end == cells.count { end -= 1 }
-        return cells[..<end].map(\.text).joined()
-    }
-    /// The whole screen as text, rows joined by newlines, for accessibility and tests.
-    var screenText: String { (0..<rows).map { text(ofRow: $0) }.joined(separator: "\n") }
     func clearDirty() { dirtyRows = []; lastDirtyRow = -1 }
     /// The row marked last: printing marks the same row for every cell of a line.
     @exclusivity(unchecked) private var lastDirtyRow = -1
@@ -210,7 +160,7 @@ final class TerminalEmulator {
                 if byte < 0x20 { control(byte) } else { escape(byte, intermediates: []); state = .ground }
             }
         case .escapeIntermediate:
-            if (0x20...0x2f).contains(byte) { intermediates.append(byte) }
+            if (0x20...0x2f).contains(byte) { if intermediates.count < 2 { intermediates.append(byte) } }
             else if byte < 0x20 { control(byte) }
             else { escape(byte, intermediates: intermediates); state = .ground }
         case .csiEntry, .csiParam, .csiIntermediate, .csiIgnore:
@@ -222,7 +172,7 @@ final class TerminalEmulator {
             case 0x5c where stringEscape: finishOSC(); state = .ground
             case 0x18, 0x1a: state = .ground
             default:
-                if stringEscape { stringEscape = false; oscBuffer.append(0x1b) }
+                if stringEscape { stringEscape = false; if oscBuffer.count < 65_536 { oscBuffer.append(0x1b) } }
                 if oscBuffer.count < 65_536 { oscBuffer.append(byte) }
             }
         case .dcsString, .apcString:
@@ -303,12 +253,18 @@ final class TerminalEmulator {
             if state == .csiIntermediate { state = .csiIgnore; return }
             state = .csiParam
             if byte == 0x3b { pushParameter() }
-            else if byte == 0x3a { subParameters.append(parameterDigits > 0 ? parameterValue : 0); parameterValue = 0; parameterDigits = 0 }
-            else { if parameterDigits < 16 { parameterValue = parameterValue * 10 + Int(byte - 0x30) }; parameterDigits += 1 }
+            else if byte == 0x3a {
+                guard subParameters.count < 32 else { state = .csiIgnore; return }
+                subParameters.append(parameterDigits > 0 ? parameterValue : 0); parameterValue = 0; parameterDigits = 0
+            }
+            else { if parameterDigits < 16 { parameterValue = parameterValue * 10 + Int(byte - 0x30); parameterDigits += 1 } }
         case 0x3c...0x3f:
             if state == .csiEntry { privateMarker = byte; state = .csiParam } else { state = .csiIgnore }
         case 0x20...0x2f:
-            if state != .csiIgnore { intermediates.append(byte); state = .csiIntermediate }
+            if state != .csiIgnore {
+                guard intermediates.count < 2 else { state = .csiIgnore; return }
+                intermediates.append(byte); state = .csiIntermediate
+            }
         case 0x40...0x7e:
             if state != .csiIgnore { pushParameter(); dispatchCSI(final: byte) }
             state = .ground
@@ -337,7 +293,7 @@ final class TerminalEmulator {
             case 0x68: for group in parameters { setPrivateMode(group.first ?? 0, on: true) }
             case 0x6c: for group in parameters { setPrivateMode(group.first ?? 0, on: false) }
             case 0x70 where intermediates == [0x24]: reportPrivateMode(parameters.first?.first ?? 0)   // DECRQM
-            case 0x4a: if parameter(0) == 3 { scrollback.removeAll(); trimmedLines = 0; markAllDirty() } // xterm erases saved lines via ?3J too
+            case 0x4a: if parameter(0) == 3 { clearScrollback(); markAllDirty() } // xterm erases saved lines via ?3J too
             default: break
             }
             return
@@ -363,7 +319,7 @@ final class TerminalEmulator {
         case 0x46: moveCursor(dy: -p0); cursor.x = 0                                 // CPL
         case 0x47, 0x60: setCursor(x: p0 - 1, y: cursor.y)                           // CHA, HPA
         case 0x48, 0x66: setCursor(x: parameter(1, default: 1) - 1, y: p0 - 1, origin: true)  // CUP, HVP
-        case 0x49: for _ in 0..<p0 { tab() }                                         // CHT
+        case 0x49: for _ in 0..<min(p0, columns) { tab() }                           // CHT: further tabs stay at the edge
         case 0x4a: eraseInDisplay(parameter(0))                                      // ED
         case 0x4b: eraseInLine(parameter(0))                                         // EL
         case 0x4c: insertLines(p0)                                                   // IL
@@ -372,7 +328,7 @@ final class TerminalEmulator {
         case 0x53: scrollUp(p0)                                                      // SU
         case 0x54: scrollDown(p0)                                                    // SD
         case 0x58: eraseCharacters(p0)                                               // ECH
-        case 0x5a: for _ in 0..<p0 { backTab() }                                     // CBT
+        case 0x5a: for _ in 0..<min(p0, columns) { backTab() }                        // CBT
         case 0x62: repeatLast(p0)                                                    // REP
         case 0x63: respond("\u{1b}[?62;22c")                                          // DA1
         case 0x64: setCursor(x: cursor.x, y: p0 - 1, origin: true)                   // VPA
@@ -432,25 +388,6 @@ final class TerminalEmulator {
         default: break
         }
     }
-    private func reportPrivateMode(_ mode: Int) {
-        let value: Int
-        switch mode {
-        case 1: value = applicationCursorKeys ? 1 : 2
-        case 6: value = originMode ? 1 : 2
-        case 7: value = autowrap ? 1 : 2
-        case 25: value = cursorVisible ? 1 : 2
-        case 47, 1047, 1049: value = alternateScreen ? 1 : 2
-        case 1004: value = focusReporting ? 1 : 2
-        case 2004: value = bracketedPaste ? 1 : 2
-        case 2026: value = 2
-        default: value = 0
-        }
-        respond("\u{1b}[?\(mode);\(value)$y")
-    }
-    private func reportMode(_ mode: Int) {
-        let value = mode == 4 ? (insertMode ? 1 : 2) : mode == 20 ? (newlineMode ? 1 : 2) : 0
-        respond("\u{1b}[\(mode);\(value)$y")
-    }
     private func switchScreen(alternate: Bool, saveCursor save: Bool) {
         guard alternate != alternateScreen else { return }
         if alternate {
@@ -468,21 +405,6 @@ final class TerminalEmulator {
         wrapNext = false
         markAllDirty()
     }
-    private func deviceStatus(_ kind: Int) {
-        switch kind {
-        case 5: respond("\u{1b}[0n")
-        case 6: respond("\u{1b}[\(cursor.y - (originMode ? scrollTop : 0) + 1);\(cursor.x + 1)R")
-        default: break
-        }
-    }
-    private func windowOperation(_ operation: Int) {
-        switch operation {
-        case 14: respond("\u{1b}[4;\(rows * cellPixelSize.height);\(columns * cellPixelSize.width)t")
-        case 18: respond("\u{1b}[8;\(rows);\(columns)t")
-        default: break
-        }
-    }
-    private func respond(_ text: String) { onOutput?(Data(text.utf8)) }
 
     // MARK: Cursor
 
@@ -623,15 +545,35 @@ final class TerminalEmulator {
         }
         for row in scrollTop...scrollBottom { markDirty(row) }
     }
+    /// Cells the history may hold. A line costs as many cells as the terminal
+    /// is wide, so a very wide window would otherwise let ten thousand lines
+    /// grow to hundreds of megabytes, once per project with a shell open.
+    static let scrollbackCellLimit = 2_000_000
+    @exclusivity(unchecked) private var scrollbackCells = 0
     private func pushScrollback(_ line: [TerminalCell]) {
         var end = line.count
         while end > 0, line[end - 1].isBlank, line[end - 1].style == .plain { end -= 1 }
-        scrollback.append(end == line.count ? line : Array(line[..<end]))
+        scrollback.append(TerminalHistoryLine(line[..<end]))
+        scrollbackCells += end
         if scrollback.count > scrollbackLimit {
             // Shifting the whole history for every line would cost more than the line: the oldest go in batches.
             let excess = scrollback.count - scrollbackLimit + scrollbackLimit / 32
-            scrollback.removeFirst(excess); trimmedLines += excess
+            dropOldest(excess)
+        } else if scrollbackCells > Self.scrollbackCellLimit {
+            var excess = 0, freed = 0
+            while excess < scrollback.count, freed < scrollbackCells - Self.scrollbackCellLimit + Self.scrollbackCellLimit / 32 {
+                freed += scrollback[excess].cellCount; excess += 1
+            }
+            dropOldest(excess)
         }
+    }
+    private func clearScrollback() { scrollback.removeAll(); scrollbackCells = 0; trimmedLines = 0 }
+    /// Gives up the oldest lines of the history, keeping the counts with them.
+    private func dropOldest(_ count: Int) {
+        let count = min(count, scrollback.count)
+        guard count > 0 else { return }
+        for index in 0..<count { scrollbackCells -= scrollback[index].cellCount }
+        scrollback.removeFirst(count); trimmedLines += count
     }
     private func insertLines(_ count: Int) {
         guard cursor.y >= scrollTop, cursor.y <= scrollBottom else { return }
@@ -693,7 +635,7 @@ final class TerminalEmulator {
             for row in 0..<rows { screen[row] = Array(repeating: blank(), count: columns) }
             markAllDirty()
         case 3:
-            scrollback.removeAll(); trimmedLines = 0; markAllDirty()
+            clearScrollback(); markAllDirty()
         default:
             eraseInLine(0)
             if cursor.y + 1 < rows { for row in cursor.y + 1..<rows { screen[row] = Array(repeating: blank(), count: columns); markDirty(row) } }
@@ -786,7 +728,8 @@ final class TerminalEmulator {
         } else if newRows > rows {
             var add = newRows - rows
             while add > 0, !alternateScreen, let line = scrollback.popLast() {
-                screen.insert(Self.fit([line], columns: columns, rows: 1)[0], at: 0); cursor.y += 1; add -= 1
+                scrollbackCells -= line.cellCount
+                screen.insert(Self.fit([line.cells], columns: columns, rows: 1)[0], at: 0); cursor.y += 1; add -= 1
             }
             while add > 0 { screen.append(Array(repeating: .blank, count: columns)); add -= 1 }
         }
@@ -820,36 +763,6 @@ final class TerminalEmulator {
         charsets = [0, 0]; charset = 0; wrapNext = false
         resetTabStops(); markAllDirty()
     }
-
-    // MARK: Character widths and charsets
-
-    /// Cells a scalar takes: 0 for marks and joiners, 2 for East Asian wide characters and emoji, otherwise 1.
-    static func width(of scalar: Unicode.Scalar) -> Int {
-        let v = scalar.value
-        if v >= 0x20 && v < 0x7f { return 1 }
-        if v < 0x20 || (0x7f...0x9f).contains(v) { return 0 }
-        if v < 0x300 { return 1 }   // Latin: nothing wide, no combining marks before U+0300
-        if v == 0x200b || v == 0x200c || v == 0x200d || v == 0x2060 || v == 0xfeff { return 0 }
-        if (0xfe00...0xfe0f).contains(v) || (0xe0100...0xe01ef).contains(v) || (0x1f3fb...0x1f3ff).contains(v) || (0xe0020...0xe007f).contains(v) { return 0 }
-        let properties = scalar.properties
-        switch properties.generalCategory {
-        case .nonspacingMark, .enclosingMark: return 0
-        default: break
-        }
-        if properties.isEmojiPresentation { return 2 }
-        for range in wideRanges where range.contains(v) { return 2 }
-        return 1
-    }
-    private static let wideRanges: [ClosedRange<UInt32>] = [
-        0x1100...0x115f, 0x231a...0x231b, 0x2329...0x232a, 0x23e9...0x23ec, 0x23f0...0x23f0, 0x23f3...0x23f3, 0x25fd...0x25fe, 0x2614...0x2615,
-        0x2648...0x2653, 0x267f...0x267f, 0x2693...0x2693, 0x26a1...0x26a1, 0x26aa...0x26ab, 0x26bd...0x26be, 0x26c4...0x26c5, 0x26ce...0x26ce,
-        0x26d4...0x26d4, 0x26ea...0x26ea, 0x26f2...0x26f3, 0x26f5...0x26f5, 0x26fa...0x26fa, 0x26fd...0x26fd, 0x2705...0x2705, 0x270a...0x270b,
-        0x2728...0x2728, 0x274c...0x274c, 0x274e...0x274e, 0x2753...0x2755, 0x2757...0x2757, 0x2795...0x2797, 0x27b0...0x27b0, 0x27bf...0x27bf,
-        0x2b1b...0x2b1c, 0x2b50...0x2b50, 0x2b55...0x2b55, 0x2e80...0x303e, 0x3041...0x33ff, 0x3400...0x4dbf, 0x4e00...0x9fff, 0xa000...0xa4cf,
-        0xa960...0xa97f, 0xac00...0xd7a3, 0xf900...0xfaff, 0xfe10...0xfe19, 0xfe30...0xfe6f, 0xff00...0xff60, 0xffe0...0xffe6, 0x16fe0...0x16fe4,
-        0x17000...0x18aff, 0x1b000...0x1b2ff, 0x1f004...0x1f004, 0x1f0cf...0x1f0cf, 0x1f18e...0x1f18e, 0x1f191...0x1f19a, 0x1f200...0x1f251,
-        0x1f300...0x1f64f, 0x1f680...0x1f6ff, 0x1f7e0...0x1f7eb, 0x1f90c...0x1f9ff, 0x1fa70...0x1faff, 0x20000...0x2fffd, 0x30000...0x3fffd,
-    ]
     /// DEC special graphics, so line-drawing programs draw boxes rather than letters.
     private static let specialGraphics: [Unicode.Scalar: Unicode.Scalar] = [
         "`": "\u{25c6}", "a": "\u{2592}", "b": "\u{2409}", "c": "\u{240c}", "d": "\u{240d}", "e": "\u{240a}", "f": "\u{00b0}", "g": "\u{00b1}",
@@ -857,57 +770,4 @@ final class TerminalEmulator {
         "p": "\u{23bb}", "q": "\u{2500}", "r": "\u{23bc}", "s": "\u{23bd}", "t": "\u{251c}", "u": "\u{2524}", "v": "\u{2534}", "w": "\u{252c}",
         "x": "\u{2502}", "y": "\u{2264}", "z": "\u{2265}", "{": "\u{03c0}", "|": "\u{2260}", "}": "\u{00a3}", "~": "\u{00b7}",
     ]
-}
-
-// MARK: - Keys
-
-/// The bytes a key sends, honouring the application cursor and keypad modes.
-enum TerminalKeyEncoder {
-    enum Key { case up, down, left, right, home, end, pageUp, pageDown, insert, delete, tab, backTab, enter, escape, backspace, function(Int) }
-    static func encode(_ key: Key, applicationCursor: Bool, shift: Bool = false, control: Bool = false, option: Bool = false) -> Data {
-        let modifier: String = {
-            var value = 1
-            if shift { value += 1 }
-            if option { value += 2 }
-            if control { value += 4 }
-            return value == 1 ? "" : ";\(value)"
-        }()
-        func csi(_ final: String) -> String { modifier.isEmpty ? "\u{1b}[\(final)" : "\u{1b}[1\(modifier)\(final)" }
-        func ss3(_ final: String) -> String { modifier.isEmpty ? (applicationCursor ? "\u{1b}O\(final)" : "\u{1b}[\(final)") : "\u{1b}[1\(modifier)\(final)" }
-        func tilde(_ number: Int) -> String { "\u{1b}[\(number)\(modifier)~" }
-        let text: String
-        switch key {
-        case .up: text = ss3("A")
-        case .down: text = ss3("B")
-        case .right: text = ss3("C")
-        case .left: text = ss3("D")
-        case .home: text = ss3("H")
-        case .end: text = ss3("F")
-        case .pageUp: text = tilde(5)
-        case .pageDown: text = tilde(6)
-        case .insert: text = tilde(2)
-        case .delete: text = tilde(3)
-        case .tab: text = "\t"
-        case .backTab: text = "\u{1b}[Z"
-        case .enter: text = "\r"
-        case .escape: text = "\u{1b}"
-        case .backspace: text = option ? "\u{1b}\u{7f}" : "\u{7f}"
-        case .function(let number):
-            switch number {
-            case 1: text = modifier.isEmpty ? "\u{1b}OP" : csi("P")
-            case 2: text = modifier.isEmpty ? "\u{1b}OQ" : csi("Q")
-            case 3: text = modifier.isEmpty ? "\u{1b}OR" : csi("R")
-            case 4: text = modifier.isEmpty ? "\u{1b}OS" : csi("S")
-            case 5: text = tilde(15)
-            case 6: text = tilde(17)
-            case 7: text = tilde(18)
-            case 8: text = tilde(19)
-            case 9: text = tilde(20)
-            case 10: text = tilde(21)
-            case 11: text = tilde(23)
-            default: text = tilde(24)
-            }
-        }
-        return Data(text.utf8)
-    }
 }

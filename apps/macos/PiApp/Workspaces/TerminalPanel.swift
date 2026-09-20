@@ -18,7 +18,10 @@ import AppKit
         view = TerminalView(emulator: emulator)
         emulator.onOutput = { [weak self] data in self?.process.write(data) }
         emulator.onTitleChange = { [weak self] title in self?.title = title.isEmpty ? "Terminal" : title }
-        emulator.onBell = { NSSound.beep() }
+        // `cat` on a binary file writes thousands of BEL bytes. Ringing once per
+        // byte costs the main thread seconds and sounds like an alarm, so the
+        // bell is coalesced the way every terminal coalesces it.
+        emulator.onBell = { [weak self] in self?.ringBell() }
         view.onInput = { [weak self] data in self?.process.write(data) }
         view.onResize = { [weak self] columns, rows in self?.process.resize(columns: columns, rows: rows) }
         process.onData = { [weak self] data in
@@ -46,6 +49,17 @@ import AppKit
         }
     }
 
+    /// Bells actually rung, for the test that feeds a binary file's worth of them.
+    private(set) var bellsRung = 0
+    private var lastBell = -Double.greatestFiniteMagnitude
+    private static let bellInterval = 0.25
+    private func ringBell() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastBell >= Self.bellInterval else { return }
+        lastBell = now; bellsRung += 1
+        NSSound.beep()
+    }
+
     func focus() { view.window?.makeFirstResponder(view) }
     func applyColors() { view.needsDisplay = true }
 }
@@ -53,6 +67,8 @@ import AppKit
 @MainActor final class TerminalRegistry {
     static let shared = TerminalRegistry()
     private var sessions: [String: TerminalSession] = [:]
+    /// Open shells, for tests and for the panel's own bookkeeping.
+    var openWorkspaceIDs: Set<String> { Set(sessions.keys) }
     func session(for workspace: WorkspaceRecord) -> TerminalSession {
         if let existing = sessions[workspace.id] { return existing }
         let session = TerminalSession(workspaceID: workspace.id, directory: workspace.path)
@@ -60,8 +76,20 @@ import AppKit
         return session
     }
     func restart(for workspace: WorkspaceRecord) -> TerminalSession {
-        if let old = sessions.removeValue(forKey: workspace.id) { old.process.terminate(); old.view.removeFromSuperview() }
+        close(workspaceID: workspace.id)
         return session(for: workspace)
+    }
+    /// Ends one project's shell and gives up its scrollback. A project that is
+    /// no longer configured must not keep a shell and its history for the rest
+    /// of the app's life.
+    func close(workspaceID: String) {
+        guard let old = sessions.removeValue(forKey: workspaceID) else { return }
+        old.process.terminate(); old.view.removeFromSuperview()
+    }
+    /// Ends every shell, on the way out of the app.
+    func shutdown() {
+        for session in sessions.values { session.process.terminate(); session.view.removeFromSuperview() }
+        sessions.removeAll()
     }
 }
 
@@ -70,6 +98,9 @@ private struct TerminalHost: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { NSView() }
     func updateNSView(_ container: NSView, context: Context) {
         let view = session.view
+        // Switching projects used to leave the previous project's terminal
+        // stacked underneath this one, still in the window and still drawing.
+        for other in container.subviews where other !== view { other.removeFromSuperview() }
         if view.superview !== container {
             view.removeFromSuperview()
             view.frame = container.bounds; view.autoresizingMask = [.width, .height]
@@ -88,7 +119,13 @@ struct TerminalPanel: View {
     @State private var dragging: CGFloat?
     @State private var startHeight: CGFloat?
     @StateObject private var holder = SessionHolder()
-    private var height: CGFloat { min(700, max(120, dragging ?? CGFloat(storedHeight))) }
+    static let minimumHeight: CGFloat = 120
+    static let maximumHeight: CGFloat = 700
+    static func clampHeight(_ value: CGFloat) -> CGFloat {
+        guard value.isFinite else { return 240 }
+        return min(maximumHeight, max(minimumHeight, value))
+    }
+    private var height: CGFloat { Self.clampHeight(dragging ?? CGFloat(storedHeight)) }
 
     @MainActor final class SessionHolder: ObservableObject {
         @Published var session: TerminalSession?
@@ -96,22 +133,18 @@ struct TerminalPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Rectangle().fill(Color.piHairline).frame(height: 1)
-                .overlay {
-                    Rectangle().fill(Color.clear).frame(height: 9).contentShape(Rectangle())
-                        .onHover { inside in if inside { NSCursor.resizeUpDown.set() } else { NSCursor.arrow.set() } }
-                        .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                            .onChanged { value in
-                                let base = startHeight ?? height
-                                if startHeight == nil { startHeight = height }
-                                dragging = min(700, max(120, base - value.translation.height))
-                            }
-                            .onEnded { value in
-                                storedHeight = Double(min(700, max(120, (startHeight ?? height) - value.translation.height)))
-                                startHeight = nil; dragging = nil
-                            })
-                        .accessibilityLabel("Resize terminal")
-                }.zIndex(1)
+            PiResizeHandle(orientation: .horizontal, label: "Resize terminal",
+                           hint: "Drag up or down",
+                           dragging: dragging != nil,
+                           changed: { translation in
+                               let base = startHeight ?? height
+                               if startHeight == nil { startHeight = height }
+                               dragging = Self.clampHeight(base - translation)
+                           },
+                           ended: { translation in
+                               storedHeight = Double(Self.clampHeight((startHeight ?? height) - translation))
+                               startHeight = nil; dragging = nil
+                           })
             HStack(spacing: PiSpacing.sm) {
                 Image(systemName: "terminal").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.piInkSecondary)
                 TerminalTitle(session: holder.session)
@@ -123,14 +156,19 @@ struct TerminalPanel: View {
             if let session = holder.session {
                 TerminalHost(session: session).frame(height: height)
             } else {
-                Color.piSurfaceSunken.frame(height: height)
+                Color.piTerminalSurface.frame(height: height)
             }
         }
         .onAppear {
             holder.session = TerminalRegistry.shared.session(for: workspace)
             DispatchQueue.main.async { holder.session?.focus() }
         }
-        .onChange(of: workspace.id) { _, _ in holder.session = TerminalRegistry.shared.session(for: workspace) }
+        .onChange(of: workspace.id) { _, _ in
+            // The old project's view leaves the window with the keyboard, so
+            // the new project's shell has to be given it back.
+            holder.session = TerminalRegistry.shared.session(for: workspace)
+            DispatchQueue.main.async { holder.session?.focus() }
+        }
         .accessibilityIdentifier("terminal-panel")
     }
 }

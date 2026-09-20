@@ -3,7 +3,7 @@ import XCTest
 
 final class OnboardingTests: XCTestCase {
     private func scratch() throws -> URL {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory())
+        let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("onboarding-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
@@ -331,7 +331,8 @@ final class OnboardingTests: XCTestCase {
         let blocked = WorkspaceModel(stateRoot: blockedRoot, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(config))))
         defer { blocked.shutdown() }
         try await blocked.reloadConfiguration(); blocked.selectedWorkspaceID = "untrusted"; blocked.profileChoice = profile.id
-        XCTAssertNil(blocked.store)
+        let ready = await blocked.prepareStore()
+        XCTAssertFalse(ready); XCTAssertNil(blocked.store)
         do { try await blocked.verifyOnboardingConnection(profile); XCTFail("Missing storage must prevent a gateway probe") } catch { }
         do { try await blocked.createOnboardingChat(); XCTFail("Missing storage must not report a successful chat") } catch { }
         XCTAssertTrue(blocked.chats.isEmpty); XCTAssertNil(blocked.selectedID); XCTAssertTrue(blocked.hosts.isEmpty)
@@ -405,5 +406,27 @@ private actor OnboardingBarrier {
     func release() {
         released = true
         releaseWaiters.forEach { $0.resume() }; releaseWaiters.removeAll()
+    }
+}
+
+extension OnboardingTests {
+    /// A disabled Continue explains what it waits for: the URL, its scheme, the key.
+    @MainActor func testGatewayHintsExplainWhyContinueIsDisabled() {
+        let state = OnboardingState()
+        XCTAssertFalse(state.gatewayReady); XCTAssertEqual(state.gatewayHint, "Enter your gateway's URL to continue.")
+        state.profile.baseUrl = "litellm.example.com"
+        XCTAssertTrue(state.gatewayHint.contains("https://"), state.gatewayHint)
+        state.profile.baseUrl = "http://litellm.example.com"
+        XCTAssertTrue(state.gatewayHint.contains("only localhost"), state.gatewayHint)
+        state.profile.baseUrl = "https://litellm.example.com"
+        XCTAssertTrue(state.gatewayHint.contains("API key"), state.gatewayHint); XCTAssertFalse(state.gatewayReady)
+        state.key = "sk-\u{1}"
+        XCTAssertTrue(state.gatewayHint.contains("paste it again"), state.gatewayHint)
+        state.key = "sk-valid"
+        XCTAssertEqual(state.gatewayHint, ""); XCTAssertTrue(state.gatewayReady)
+        XCTAssertFalse(state.resumedFromSaved)
+        var saved = state.profile; saved.modelId = "m"
+        let returning = OnboardingState(); returning.resume(profiles: [saved], preferredID: saved.id)
+        XCTAssertTrue(returning.resumedFromSaved); XCTAssertEqual(returning.step, .workspace)
     }
 }

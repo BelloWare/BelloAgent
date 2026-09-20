@@ -45,7 +45,7 @@ struct HistoricalOutputRate: Sendable, Equatable {
     }
 }
 
-struct MenuBarModelDistribution: Sendable, Identifiable {
+struct MenuBarModelDistribution: Sendable, Identifiable, Equatable {
     struct ID: Hashable, Sendable {
         let api: String
         let alias: String
@@ -79,7 +79,7 @@ struct MenuBarModelDistribution: Sendable, Identifiable {
     }
 }
 
-struct MenuBarSnapshot: Sendable {
+struct MenuBarSnapshot: Sendable, Equatable {
     static let pageSize = 24
     let period: MenuBarPeriod
     let from: Date?
@@ -223,8 +223,8 @@ extension PayloadArchive {
     // Projection already validates ordinary metadata. Explicit finite bounds
     // also keep corrupt/legacy typed values out of the rate sample population.
     static let historicalOutputRateSQL: String = {
-        let sample = "outcome='completed' AND dispatch IS NOT NULL AND output_tokens>=0 AND output_tokens<=1.7976931348623157e308 AND ttft_ms>=0 AND ttft_ms<=1.7976931348623157e308 AND stream_ms>=0 AND stream_ms<=1.7976931348623157e308 AND ttft_ms+stream_ms>0 AND ttft_ms+stream_ms<=1.7976931348623157e308"
-        return "SUM(CASE WHEN \(sample) THEN output_tokens END) AS rate_output_tokens,SUM(CASE WHEN \(sample) THEN ttft_ms+stream_ms END) AS rate_generation_ms,COUNT(CASE WHEN \(sample) THEN 1 END) AS rate_samples"
+        let sample = "outcome='completed' AND dispatch IS NOT NULL AND output_tokens>=0 AND output_tokens<=1.7976931348623157e308 AND request_ms>0 AND request_ms<=1.7976931348623157e308"
+        return "SUM(CASE WHEN \(sample) THEN output_tokens END) AS rate_output_tokens,SUM(CASE WHEN \(sample) THEN request_ms END) AS rate_generation_ms,COUNT(CASE WHEN \(sample) THEN 1 END) AS rate_samples"
     }()
 
     static func historicalOutputRate(_ row: [String: CaptureSQLValue]) -> HistoricalOutputRate {
