@@ -13,6 +13,7 @@ actor PayloadArchive {
     let root: URL
     private var database: CaptureDatabase?
     private var reportReader: DashboardReader?
+    var usageSnapshots: [UsageSnapshotKey: MenuBarSnapshot] = [:]
     private var closeTask: Task<Void, Never>?
     private var ownership: WorkspaceLock?
     private var legacyCipher: LegacyCaptureCipher?
@@ -683,6 +684,7 @@ actor PayloadArchive {
         guard leases.isEmpty else { throw CaptureFailure.busy }
         if let closeTask { await closeTask.value; return }
         let reader = reportReader; reportReader = nil
+        usageSnapshots.removeAll()
         // Reject new writer/report work while the old read queue drains.
         writers.removeAll(); database = nil; legacyCipher = nil; nextReconciliation = -Double.infinity
         chunkTotals = nil; eventIndexCount = nil

@@ -27,7 +27,7 @@ struct ProjectSidebarGroup: View {
                 || model.sidebarEntries(in: project.id, topicID: topic.id, archived: archived, collapsed: []).contains { $0.chat.title.localizedCaseInsensitiveContains(query) }
         }
     }
-    private var archivedCount: Int { model.chats.reduce(0) { $0 + ($1.workspaceID == project.id && $1.isArchived ? 1 : 0) } }
+    private var archivedCount: Int { model.sidebarIndex.archivedCount(in: project.id, chats: model.chats) }
     private var hasUnread: Bool { model.projectHasUnread(project.id) }
     /// Whether the header still has room for its own changes and new-chat
     /// buttons beside the project's name.

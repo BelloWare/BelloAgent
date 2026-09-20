@@ -11,6 +11,29 @@ private final class MenuMetricsClock: @unchecked Sendable {
 @MainActor private final class MenuMetricsActivity { var count = 2 }
 
 final class MenuBarMetricsTests: XCTestCase {
+    func testRoutePageUsesOnlyTwoQueriesAndPopupSkipsLatencySorts() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = try await configured(root)
+        try await save(archive, value(usage: ["inputIncludingCache": .number(38), "output": .number(302)]))
+        let until = until, reader = try await archive.dashboardReader()
+        let (summary, pageQueries) = try await reader.run { engine in
+            let summary = try engine.usageMetrics(period: .retained, until: until, offset: 0)
+            let before = engine.db.statements
+            let page = try engine.usageMetrics(period: .retained, until: until, offset: 24, cached: summary)
+            XCTAssertEqual(page.gateway, summary.gateway)
+            XCTAssertEqual(page.buckets, summary.buckets)
+            XCTAssertEqual(page.summaryReadAt, summary.summaryReadAt)
+            return (summary, engine.db.statements - before)
+        }
+        XCTAssertEqual(pageQueries, 2, "Only route count and page: no summary, bucket, or median queries")
+        XCTAssertNil(summary.models.first?.ttftP50)
+        let paged = try await archive.menuBarMetrics(period: .retained, until: until, offset: 0)
+        let cached = try await archive.menuBarMetrics(period: .retained, until: until.addingTimeInterval(1), offset: 24)
+        XCTAssertEqual(cached.summaryReadAt, paged.summaryReadAt)
+        XCTAssertEqual(cached.until, paged.until)
+        try await archive.close()
+    }
+
     func testSidebarUsesConsumedSessionTokensAcrossToolRoundsWithPartialCoverage() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await configured(root)

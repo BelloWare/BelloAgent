@@ -64,9 +64,28 @@ extension WorkspaceModel {
     /// Reads the existing bounded display snapshots. Opening the menu does not
     /// load a session, poll a provider, or sum completed-request average speeds.
     func menuBarActivity(now: Double = ProcessInfo.processInfo.systemUptime) -> MenuBarActivitySnapshot {
-        var rows: [MenuBarActivityRow] = []
-        for view in displays.values {
-            guard let record = record(view.id), !record.isArchived, record.connectionTest != true else { continue }
+        guard !activityDirtyIDs.isEmpty else { return activitySnapshot }
+        let started = PerformanceProbe.now
+        for id in activityDirtyIDs {
+            activityRows[id] = activityRow(id)
+            activityProjectionCount += 1
+        }
+        activityDirtyIDs.removeAll(keepingCapacity: true)
+        var rows = Array(activityRows.values)
+        rows.sort {
+            let a = $0.running ? 0 : $0.phase == "queued" ? 1 : ["paused", "error"].contains($0.phase) ? 2 : 3
+            let b = $1.running ? 0 : $1.phase == "queued" ? 1 : ["paused", "error"].contains($1.phase) ? 2 : 3
+            if a != b { return a < b }
+            if $0.title != $1.title { return $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            return $0.id < $1.id
+        }
+        activitySnapshot = MenuBarActivitySnapshot(rows: rows, unreadChats: rows.filter { $0.unread > 0 }.count)
+        PerformanceProbe.shared.observe("menuActivityProjectionMs", milliseconds: PerformanceProbe.now - started)
+        return activitySnapshot
+    }
+    private func activityRow(_ id: String) -> MenuBarActivityRow? {
+        guard let record = record(id), !record.isArchived, record.connectionTest != true else { return nil }
+        if let view = displays[id] {
             let raw = view.activity, unread = unreadOutputCount(sessionID: view.id)
             let phase: String
             if view.state == "error" { phase = "error" }
@@ -79,7 +98,7 @@ extension WorkspaceModel {
             } else { phase = "idle" }
             let followUps = activityCount(raw["pendingFollowUps"]) ?? max(0, view.queueCount)
             let steering = activityCount(raw["pendingSteering"]) ?? 0
-            guard phase != "idle" || followUps + steering > 0 || unread > 0 else { continue }
+            guard phase != "idle" || followUps + steering > 0 || unread > 0 else { return nil }
             let workspace = workspaces.first { $0.id == record.workspaceID }.map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? "Project"
             let model = raw["model"]?.string ?? record.model ?? profiles.first { $0.id == record.profileID }?.modelId ?? ""
             // This is explicitly the last reported route, never an assumption
@@ -87,7 +106,7 @@ extension WorkspaceModel {
             let identity = view.metrics["identity"]?.object
             let resolved = view.metrics["requestedModel"]?.string == model && identity?["status"]?.string == "reported" ? identity?["effectiveModel"]?.string : nil
             let tools = (raw["toolNames"]?.array ?? []).compactMap(\.string)
-            let totals = chatStats[view.id]
+            let totals = view.footer.gateway.requests > 0 ? view.footer.gateway : chatStats[view.id]
             var row = MenuBarActivityRow(id: view.id, title: record.title, workspace: workspace, phase: phase, model: model, resolvedModel: resolved != model ? resolved : nil, tools: tools, followUps: followUps, steering: steering, unread: unread)
             row.modelActive = raw["modelActive"]?.bool == true
             row.startedAt = activityNumber(view.turnTiming["startedAt"])
@@ -99,27 +118,15 @@ extension WorkspaceModel {
                 row.retryAttempt = view.retryAttempt
                 row.retryLimit = view.retryLimit
             }
-            rows.append(row)
+            return row
         }
-        // Persistent unread badges do not require loading old transcript pages
-        // or starting their helper. Keep those chats actionable after restart.
-        let projectedIDs = Set(rows.map(\.id))
-        for record in chats where !projectedIDs.contains(record.id) {
-            let unread = unreadOutputCount(sessionID: record.id)
-            guard unread > 0 else { continue }
-            let workspace = workspaces.first { $0.id == record.workspaceID }.map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? "Project"
-            let model = record.model ?? profiles.first { $0.id == record.profileID }?.modelId ?? ""
-            rows.append(MenuBarActivityRow(id: record.id, title: record.title, workspace: workspace, phase: "idle", model: model, resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: unread))
-        }
-        rows.sort {
-            let a = $0.running ? 0 : $0.phase == "queued" ? 1 : ["paused", "error"].contains($0.phase) ? 2 : 3
-            let b = $1.running ? 0 : $1.phase == "queued" ? 1 : ["paused", "error"].contains($1.phase) ? 2 : 3
-            if a != b { return a < b }
-            if $0.title != $1.title { return $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-            return $0.id < $1.id
-        }
-        return MenuBarActivitySnapshot(rows: rows, unreadChats: unreadCount)
+        let unread = unreadOutputCount(sessionID: id)
+        guard unread > 0 else { return nil }
+        let workspace = workspaces.first { $0.id == record.workspaceID }.map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? "Project"
+        let model = record.model ?? profiles.first { $0.id == record.profileID }?.modelId ?? ""
+        return MenuBarActivityRow(id: id, title: record.title, workspace: workspace, phase: "idle", model: model, resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: unread)
     }
+
 }
 
 private func activityCount(_ value: WireValue?) -> Int? {

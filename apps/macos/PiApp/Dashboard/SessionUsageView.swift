@@ -257,7 +257,7 @@ struct SessionUsageView: View {
                         // per-model split those figures blend, then the request
                         // charts, then tokens, cost and cache.
                         summary(snapshot)
-                        modelsTable(snapshot)
+                        modelsTable(snapshot).help(snapshot.observationHelp)
                         timingCharts
                         tokenBar(snapshot)
                         tokenAndCacheDetails(snapshot)

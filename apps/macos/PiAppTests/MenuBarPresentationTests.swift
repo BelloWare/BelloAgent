@@ -5,6 +5,31 @@ import SwiftUI
 @testable import PiApp
 
 final class MenuBarPresentationTests: XCTestCase {
+    @MainActor func testTextAndDraftDoNotProjectActivityAndFooterUpdatesOneID() throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        model.chats = (0..<10_000).map { ChatRecord(id: "chat\($0)", workspaceID: "p", title: "Chat \($0)", path: nil, profileID: "g") }
+        for index in 0..<20 {
+            let view = SessionDisplay(id: "chat\(index)"); view.state = "running"
+            model.displays[view.id] = view
+        }
+        _ = model.menuBarActivity()
+        let projections = model.activityProjectionCount, invalidations = model.sidebarIndex.computations
+        let view = try XCTUnwrap(model.displays["chat0"])
+        for index in 0..<100 {
+            view.draft = "typing \(index)"; view.notice = "transcript update \(index)"
+            _ = model.menuBarActivity()
+        }
+        XCTAssertEqual(model.activityProjectionCount, projections)
+        view.footer.gateway = GatewayTotals(requests: 1, costSamples: 1, costUSD: 0.12)
+        let snapshot = model.menuBarActivity()
+        XCTAssertEqual(model.activityProjectionCount, projections + 1)
+        XCTAssertEqual(snapshot.rows.first { $0.id == "chat0" }?.costUSD, 0.12)
+        XCTAssertEqual(model.sidebarIndex.computations, invalidations)
+    }
+
     @MainActor func testRunningPresentationExcludesQuietChatsWithoutChangingUnreadOrQueuedWork() throws {
         let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("menu-presentation-" + UUID().uuidString)

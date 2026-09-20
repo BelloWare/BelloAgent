@@ -34,14 +34,26 @@ struct SidebarChatEntry: Identifiable {
     private var groupedProjects: Set<String> = []
     private var entryLists: [EntryKey: [SidebarChatEntry]] = [:]
     private var chatOrder: [String]?
+    private var archiveCounts: [String: Int]?
     /// How many of these answers were actually computed rather than reused.
     /// A sidebar pass must not grow this with the number of rows it draws.
     private(set) var computations = 0
 
     func invalidate() {
+        archiveCounts = nil
+        PerformanceProbe.shared.observe("sidebarIndexInvalidations", milliseconds: 1)
         chatsByID = nil; sidesByID = nil; projectGroups = nil; chatOrder = nil
         if !entryLists.isEmpty { entryLists.removeAll(keepingCapacity: true) }
         if !groupChats.isEmpty { groupChats.removeAll(keepingCapacity: true); groupedProjects.removeAll(keepingCapacity: true) }
+    }
+    func archivedCount(in project: String, chats: [ChatRecord]) -> Int {
+        if archiveCounts == nil {
+            computations += 1
+            var counts: [String: Int] = [:]
+            for chat in chats where chat.isArchived { counts[chat.workspaceID, default: 0] += 1 }
+            archiveCounts = counts
+        }
+        return archiveCounts?[project] ?? 0
     }
     /// Every group of a project in one pass over that project's chats. Asking
     /// per group filtered the whole workspace once per topic, per archive

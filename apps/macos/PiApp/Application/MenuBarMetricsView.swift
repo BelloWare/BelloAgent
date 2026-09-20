@@ -9,7 +9,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
     var title: String { switch self { case .requests: "Requests"; case .cost: "Cost"; case .rate: "Output tok/s" } }
 }
 
-/// The query itself runs on PayloadArchive's actor. Closing the panel cancels
+/// Queries run on the bounded read-only report worker. Closing the panel cancels
 /// polling; a cancelled or superseded read cannot replace the visible scope.
 @MainActor final class MenuBarMetricsController: ObservableObject {
     @Published var period = MenuBarPeriod.day {
@@ -430,6 +430,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
             Text("Output tok/s uses completed output tokens divided by their combined dispatch-to-completion time, including first-token latency. Missing usage or timing is excluded.")
             Text("Retained metadata only · \(snapshot.gateway.expiredRecords) expired records and \(snapshot.counts.unobservedDispatch) unobserved dispatches excluded. Refreshes every 10 seconds while open.")
         }.font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
+            .help(snapshot.observationHelp)
     }
 }
 

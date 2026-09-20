@@ -4,7 +4,7 @@ import Combine
 enum WorkspacePage: String, Sendable { case chats, report }
 
 @MainActor final class WorkspaceModel: ObservableObject {
-    @Published var workspaces: [WorkspaceRecord] = [] { didSet { sidebarIndex.invalidate(); workspacesRevision &+= 1 } }
+    @Published var workspaces: [WorkspaceRecord] = [] { didSet { sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged() } }
     /// Bumped by any change to the list, so views can cache derived labels
     /// instead of rebuilding them on every redraw.
     private(set) var workspacesRevision = 0
@@ -12,13 +12,13 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// Every sidebar row, unread badge and menu-bar row looks a chat up by id.
     /// A linear scan made those lookups O(chats) each and the sidebar O(chats²).
     /// The sidebar index rebuilds its id table at most once per mutation, lazily.
-    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); chatsRevision &+= 1 } }
+    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); chatsRevision &+= 1; noteActivityChanged() } }
     /// A duplicate id keeps the first entry, matching `chats.first`.
     func chatRecord(_ id: String) -> ChatRecord? { sidebarIndex.chat(id, in: chats) }
-    @Published var unreadStates: [String: SessionReadState] = [:]
+    @Published var unreadStates: [String: SessionReadState] = [:] { didSet { noteActivityChanged() } }
     var dirtyReadStates: Set<String> = []
     var readStateWrites: [String: Task<Void, Never>] = [:]
-    @Published var profiles: [ProfileRecord] = []
+    @Published var profiles: [ProfileRecord] = [] { didSet { noteActivityChanged() } }
     @Published var selectedID: String? {
         didSet { if selectedID != oldValue { messageNavigationRevision += 1; organizationNavigationRevision &+= 1; cancelAutomaticContext() } }
     }
@@ -147,22 +147,30 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// Owned by `WorkspaceChatLifecycle.swift`: the throwaway archive a
     /// portable handoff writes into.
     let liveExporter: TraceArchive
-    /// What the status-bar panel lists, as a signal rather than a tick: the
-    /// workspace itself, every loaded page's own run state, and the status
-    /// snapshots that write a phase or a queue depth without publishing.
+    /// The panel observes only committed activity/usage changes, never text or
+    /// unrelated workspace presentation. Dirty IDs are projected once per window.
     let activityChanged = PassthroughSubject<Void, Never>()
-    var menuBarActivityChanges: AnyPublisher<Void, Never> {
-        activityChanged.merge(with: objectWillChange.map { _ in () }).eraseToAnyPublisher()
+    var activityRows: [String: MenuBarActivityRow] = [:]
+    var activityDirtyIDs: Set<String> = []
+    var activitySnapshot = MenuBarActivitySnapshot()
+    var activityProjectionCount = 0
+    var menuBarActivityChanges: AnyPublisher<Void, Never> { activityChanged.eraseToAnyPublisher() }
+    func noteActivityChanged(_ id: String? = nil) {
+        if let id { activityDirtyIDs.insert(id) }
+        else { activityDirtyIDs.formUnion(displays.keys); activityDirtyIDs.formUnion(unreadStates.keys); activityDirtyIDs.formUnion(activityRows.keys) }
+        activityChanged.send()
     }
-    func noteActivityChanged() { activityChanged.send() }
     private var activityObservers: [ObjectIdentifier: AnyCancellable] = [:]
     private func syncActivityObservers() {
         let live = Set(displays.values.map(ObjectIdentifier.init))
         guard live != Set(activityObservers.keys) else { return }
         activityObservers = activityObservers.filter { live.contains($0.key) }
         for view in displays.values where activityObservers[ObjectIdentifier(view)] == nil {
-            activityObservers[ObjectIdentifier(view)] = view.objectWillChange.sink { [weak self] _ in self?.activityChanged.send() }
+            let id = view.id
+            activityObservers[ObjectIdentifier(view)] = view.activityChanges.merge(with: view.footer.activityChanges)
+                .sink { [weak self] _ in self?.noteActivityChanged(id) }
         }
+        noteActivityChanged()
     }
     var displays: [String: SessionDisplay] = [:] {
         didSet { syncActivityObservers() }

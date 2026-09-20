@@ -18,15 +18,18 @@ import Combine
     var contextInputIdentity: ContextInputIdentity? { ContextInputIdentity(contextState) }
     @Published var preparedContext: PreparedContextMetrics?
     @Published var preparingContext = false
-    @Published var metrics: [String: WireValue] = [:]
-    @Published var turnTiming: [String: WireValue] = [:]
-    @Published var timing = SessionTimingHistory()
-    @Published var gateway = GatewayTotals()
+    let activityChanges = PassthroughSubject<Void, Never>()
+    @Published var metrics: [String: WireValue] = [:] { didSet { if metrics != oldValue { activityChanges.send() } } }
+    @Published var turnTiming: [String: WireValue] = [:] { didSet { if turnTiming != oldValue { activityChanges.send() } } }
+    @Published var timing = SessionTimingHistory() { didSet { if timing != oldValue { activityChanges.send() } } }
+    @Published var gateway = GatewayTotals() { didSet { if gateway != oldValue { activityChanges.send() } } }
     @Published var gatewayNotice = ""
 }
 @MainActor final class ComposerDraft: ObservableObject { @Published var text = "" }
 
 @MainActor final class SessionDisplay: ObservableObject {
+    /// Committed activity only: text, draft, selection and context rendering do not enter this stream.
+    let activityChanges = PassthroughSubject<Void, Never>()
     let id: String
     let transcriptChanges = CurrentValueSubject<[TranscriptMessage], Never>([])
     var messages: [TranscriptMessage] = [] { didSet { projectionRevision = nil; publishTranscript() } }
@@ -48,8 +51,8 @@ import Combine
     func publishTranscript() { transcriptChanges.send(presentedMessages) }
     /// "Retrying (attempt 2 of 6) after: …" while the helper waits to retry a transient failure.
     @Published var retryNotice: String? { didSet { if retryNotice != oldValue { publishTranscript() } } }
-    private(set) var retryAttempt: Int?
-    private(set) var retryLimit: Int?
+    private(set) var retryAttempt: Int? { didSet { if retryAttempt != oldValue { activityChanges.send() } } }
+    private(set) var retryLimit: Int? { didSet { if retryLimit != oldValue { activityChanges.send() } } }
     /// A submission the host or app refused; cleared by the next send.
     @Published var sendFailure: String? { didSet { if sendFailure != oldValue { publishTranscript() } } }
     func observeRetry(_ snapshot: [String: WireValue]) {
@@ -76,8 +79,8 @@ import Combine
     @Published var directCommand = false
     @Published var completionVisible = false
     @Published var completionIndex = 0
-    @Published var state = "idle"
-    @Published var runStatus = "idle"
+    @Published var state = "idle" { didSet { if state != oldValue { activityChanges.send() } } }
+    @Published var runStatus = "idle" { didSet { if runStatus != oldValue { activityChanges.send() } } }
     /// Bumped when the pane should move keyboard focus into the composer.
     @Published var composerFocusRequest = 0
     @Published var failureMessage: String? { didSet { if failureMessage != oldValue { publishTranscript() } } }
@@ -151,21 +154,21 @@ import Combine
         observedCompactionID = id
         compactionNotice = id == nil ? nil : summary?["detail"]?.string
     }
-    var activity: [String: WireValue] = [:]
+    var activity: [String: WireValue] = [:] { didSet { if activity != oldValue { activityChanges.send() } } }
     var activityObservedAt: Double = 0
     @Published var queue: [[String: WireValue]] = []
     /// The queued follow-up being rewritten in place. This belongs to the chat,
     /// not to the panel: the queue changes underneath it while a run delivers,
     /// and the panel has to be sized for the taller row it opens.
     @Published var queueEditingID: String?
-    var queueCount = 0
+    var queueCount = 0 { didSet { if queueCount != oldValue { activityChanges.send() } } }
     @Published var notice = ""
     @Published var before: String?
     @Published var hostBefore: Double?
     var loadingEarlier = false
     /// Set once the first page has been checked to begin at a user message.
     var pageStartEnsured = false
-    @Published var loading = false
+    @Published var loading = false { didSet { if loading != oldValue { activityChanges.send() } } }
     var scrollAnchor: TranscriptAnchor?
     @Published var viewportRequest = 0
     let footer = SessionMetrics()
@@ -267,7 +270,7 @@ import Combine
     var lastSequence: Double = -1
     var snapshotInFlight = false
     var dirty = false
-    var uncertain = false
+    var uncertain = false { didSet { if uncertain != oldValue { activityChanges.send() } } }
     @Published var contextSelectionReady = false
     var used = Date()
     init(id: String) { self.id = id }

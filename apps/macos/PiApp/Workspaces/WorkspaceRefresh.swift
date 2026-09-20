@@ -68,7 +68,6 @@ extension WorkspaceModel {
                     // Phase, queue depth and the last route are plain stored
                     // values: nothing observes them. The status panel used to
                     // find out by recounting every chat once a second.
-                    noteActivityChanged()
                     // The same decision that asked the helper for the figures.
                     view.observeContext(result)
                     if wantsMetrics {

@@ -169,7 +169,7 @@ extension WorkspaceModel {
         } else { _ = beginChatStatsQuery(id) }
         let changed = chatStats[id] != totals
         chatAccounting.publish(totals, sessionID: id)
-        if changed { noteActivityChanged() }
+        if changed { noteActivityChanged(id) }
     }
 
     func refreshAccounting(_ view: SessionDisplay, workspaceID: String, includeMessages: Bool = true, query: (@MainActor () async throws -> SessionGatewayAccounting)? = nil) async {
@@ -188,7 +188,7 @@ extension WorkspaceModel {
             if view.footer.gateway != value.session { view.footer.gateway = value.session }
             if let timing = value.timing, view.footer.timing != timing {
                 view.footer.timing = timing
-                noteActivityChanged()
+                noteActivityChanged(view.id)
             }
             publishChatStats(value.session, sessionID: view.id, revision: totalsRevision)
             if !view.footer.gatewayNotice.isEmpty { view.footer.gatewayNotice = "" }
