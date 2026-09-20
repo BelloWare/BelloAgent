@@ -1,7 +1,8 @@
 # Bello Agent 0.1.63/build 67 acceptance — 2026-09-20
 
-Publication pending. This record is completed with the signed artifact and public
-verification before the task is closed.
+**Published and verified 2026-09-20 08:14:46 UTC.** Source
+`b0ae02f51525f517929d4feb53deb5cf3bb9e3fc`; website
+`2980441eeb55161c6e17d01c1d4f524d87e3e3d3`.
 
 ## Scope
 
@@ -74,7 +75,21 @@ is also a different workload, not a substitute for the matched comparison.
 
 ## Publication checks
 
-Pending Developer ID signing, notarization/stapling of app and DMG, packaged
-helper smoke, Sparkle signature validation, website publication and public
-feed/archive verification. Fresh installation and actual update/relaunch are
-skipped under the owner's standing policy.
+- Developer ID signing passes for the app, embedded Swift helper, Sparkle and
+  DMG, using the existing Clipboard-style signing setup.
+- App notarization accepted: `2815e0fb-c1e8-4a27-a940-58c611768221`; app stapling
+  and Gatekeeper assessment pass.
+- DMG notarization accepted: `f8208b4d-2827-4064-9289-5e12ea2a24dd`; stapling
+  and ticket validation pass.
+- The packaged helper smoke passes. The shipping app uses the normal optimized
+  Release configuration; dSYMs for app and helper remain beside the artifacts.
+- Sparkle Ed25519 signature verified for **8,115,649 bytes (7.74 MiB)**.
+  SHA-256: `591a351f9a50f0deb34df45287336dddf654e146155336da0ae450daf5e8677d`.
+- Website commit `2980441eeb55161c6e17d01c1d4f524d87e3e3d3` pushed. Cloudflare
+  check **106047299701** succeeded at 2026-09-20 08:14:37 UTC.
+- Public product link, byte-identical canonical/legacy appcasts and downloaded
+  archive SHA-256/Ed25519 verified at **2026-09-20 08:14:46 UTC**.
+- Final DMG copied to the session outbox as `BelloAgent-0.1.63.dmg`.
+
+Fresh installation and actual update/relaunch were skipped under the owner's
+standing policy. This does not claim new install/upgrade runtime evidence.

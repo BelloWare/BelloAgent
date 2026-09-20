@@ -12,17 +12,27 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**0.1.63/build 67 passed validation and is prepared for publication.** It implements
-Return/follow-up versus Command-Return/steering, logical tool-call summaries,
-request-scoped live context observations, stable streaming Markdown, Copy Turn
-Info and persistent drag-and-drop session ordering. The broader gateway check
-also found and fixed stalled HTTP MCP consumption. Validation: 228 helper tests,
-26 executable gateway tests, 176 optimized native tests, 26 final focused actor-checked
-Debug tests and the every-prefix performance comparison passed. See the
+**Bello Agent 0.1.63/build 67 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `b0ae02f51525f517929d4feb53deb5cf3bb9e3fc`
+and website `2980441eeb55161c6e17d01c1d4f524d87e3e3d3`. The DMG measures **8,115,649 bytes (7.74 MiB)**,
+SHA-256 `591a351f9a50f0deb34df45287336dddf654e146155336da0ae450daf5e8677d`. App/DMG signing and notarization,
+packaged helper smoke, public product link, identical canonical/legacy feeds and
+downloaded archive SHA-256/Ed25519 verification pass. Public verification:
+**2026-09-20 08:14:46 UTC**. Cloudflare check **106047299701** succeeded.
+
+This release implements Return/follow-up versus Command-Return/steering, logical
+tool-call summaries, request-scoped context observations, stable streaming
+Markdown, Copy Turn Info and persistent drag-and-drop session ordering. The
+broader gateway check also found and fixed stalled HTTP MCP consumption.
+Validation: 228 helper tests, 26 executable gateway tests, 176 optimized native
+tests, 26 final focused actor-checked Debug tests and the every-prefix performance
+comparison passed. See the
 [implementation record](Chat-Behavior-Implementation-2026-09-20.md) and
 [0.1.63 acceptance record](validation/Bello-Agent-0.1.63-2026-09-20.md).
+Large cold-content layout costs remain documented. No subagents or installation/
+update rehearsals were used.
 
-**Bello Agent 0.1.62/build 66 is publicly released** at
+**Bello Agent 0.1.62/build 66 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source `2ec983143943e68230b4fbe383702a8015422b8b`
 and website `3cb8726f66608b5cf4acbd5d12fbbcc99b24c745`. The DMG measures **8,030,328 bytes (7.66 MiB)**,
 SHA-256 `896e7b488c70617aaa60aca496f68fae13a64f112ee5ee5ccf07c20000b93f76`. App/DMG signing and notarization, packaged helper/catalog smoke,
