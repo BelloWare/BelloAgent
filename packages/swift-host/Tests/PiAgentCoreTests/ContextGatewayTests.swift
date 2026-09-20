@@ -64,6 +64,21 @@ final class ContextGatewayTests: XCTestCase {
         XCTAssertEqual(running["context"]["requestFingerprint"], prepared["count"]["requestFingerprint"],
             "Execution preflight must use the same counting contract as the prepared context")
 
+        let bound=running["contextState"]["currentRequest"]
+        XCTAssertEqual(bound["phase"].text,"awaiting")
+        XCTAssertNotNil(bound["requestFingerprint"].text)
+        for _ in 0..<3 {
+            let inspection=try await session.prepareContext(["text":"A draft which is not dispatched","model":"next-model"])
+            let inspectedPage=try await session.readPreparedContext(["revision":inspection["revision"],"section":"request"])
+            XCTAssertEqual(try JSON.parse(Data(inspectedPage["text"].text!.utf8)),sentBody)
+            await session.clearPreparedContext(inspection["revision"].text)
+            let after=await session.snapshot(["includeMetrics":false])
+            XCTAssertEqual(after["contextState"]["currentRequest"],bound)
+            XCTAssertEqual(after["contextState"]["count"],running["contextState"]["count"])
+            XCTAssertEqual(after["contextState"]["replayRevision"],running["contextState"]["replayRevision"])
+            XCTAssertEqual(try JSON.parse(Data(contentsOf:recordURL))["request"],recorded["request"])
+        }
+
         // Release only after observing preflight. The server validated the
         // actual request and derived the final answer from its text.
         try Data().write(to: root.appendingPathComponent("release"))

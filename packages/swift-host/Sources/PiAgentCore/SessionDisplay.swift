@@ -157,7 +157,6 @@ extension AgentSession {
     // The trace actor may be busy persisting a streamed body. Keep its awaited
     // read separate from taking the display projection, including in tests.
     func snapshot(_ params: JSON, traceSnapshot: @Sendable () async -> (latest: JSON, mode: String)) async -> JSON {
-        await flushRequestLinks()
         if nowMS()-observationPublishedAt>=250 { publishObservation() }
         let revision=displayRevision
         let includesMessages = params["includeMessages"].flag != false && params["displayRevision"].text != revision
@@ -178,6 +177,10 @@ extension AgentSession {
             value["contextObservationRevision"]=JSON("\(displayEpoch):\(observationRevision)")
             value["requestObservation"]=publishedObservation
             value["lastRequestObservation"]=lastRequestObservation
+        }
+        if params["contextStateRevision"].text != contextStateRevision {
+            value["contextStateRevision"]=JSON(contextStateRevision)
+            value["contextState"]=contextState()
         }
         value["compaction"]=compactionPresentation(compactionState)
         // Page cursors describe a materialized projection only. A status-only
@@ -205,6 +208,7 @@ extension AgentSession {
         // not going to show them this time says so, and a streamed token stops
         // carrying five kilobytes of request accounting it will discard.
         if params["includeMetrics"].flag != false {
+            await flushRequestLinks()
             let trace = await traceSnapshot()
             value["captureMode"] = JSON(trace.mode); value["latestAttempt"] = trace.latest
         }

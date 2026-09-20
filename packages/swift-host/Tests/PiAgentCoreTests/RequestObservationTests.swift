@@ -58,7 +58,7 @@ final class RequestObservationTests: XCTestCase {
         for purpose in ["title","compaction"] { await session.observe(try observation("foreign",purpose:purpose),generation:next) }
         await session.observe(try observation("foreign",session:"side"),generation:next)
         let empty=await session.snapshot(["includeMetrics":false,"displayRevision":revision],traceSnapshot:{ XCTFail("Usage-only status must not wait on capture reporting"); return (.null,"off") })
-        XCTAssertTrue(empty["requestObservation"].isNull); XCTAssertEqual(empty["lastRequestObservation"],before["requestObservation"])
+        XCTAssertEqual(empty["requestObservation"]["phase"].text,"preparing"); XCTAssertTrue(empty["requestObservation"]["attemptID"].isNull); XCTAssertEqual(empty["lastRequestObservation"],before["requestObservation"])
         XCTAssertEqual(empty["displayRevision"],revision); XCTAssertTrue(empty["messages"].isNull)
         await session.observe(try observation("b"),generation:next)
         await session.clearRequestObservation()

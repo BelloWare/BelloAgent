@@ -2,7 +2,7 @@ import Foundation
 
 // What the session asks of a provider and of the tool executor.
 
-public struct ToolDefinition: Sendable {
+public struct ToolDefinition: Sendable, Equatable {
     public let name: String, description: String
     public let schema: JSON
     public init(_ name: String, _ description: String, _ schema: JSON) { self.name=name; self.description=description; self.schema=schema }

@@ -90,7 +90,7 @@ extension AgentSession {
             // Nothing below can suspend or fail until the new projection is adopted.
             try journal?.append(record,id:summary.id,flush:true)
             context=[summary]+retained; history.append(summary); visible.append(summary); boundary=context
-            contextMutation &+= 1; contextBaseline=nil; preparedContext=nil; currentContextCount=after; clearRequestObservation()
+            replayInputsChanged(reason:"compaction-committed"); contextBaseline=nil; currentContextCount=after; clearRequestObservation()
             compactionState=metadata; invalidateDisplay(allRows:true); recordDisplayChange(summary.id,at:displayClock())
             for attempt in compactionAttemptIDs { pendingRequestLinks[attempt,default:[]].append(summary.id) }
             event("context.compacted")

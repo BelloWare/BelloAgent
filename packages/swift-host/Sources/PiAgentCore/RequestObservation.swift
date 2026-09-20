@@ -58,11 +58,16 @@ public struct RequestObservation: Sendable, Equatable {
 }
 
 extension AgentSession {
-    func beginObservationGeneration() -> UInt64 {
+    func beginObservationGeneration(profile boundProfile: Profile? = nil) -> UInt64 {
         observationGeneration &+= 1
         if !publishedObservation.isNull { lastRequestObservation=publishedObservation }
-        requestObservation=nil; publishedObservation = .null
+        requestObservation=nil
         observationEstimate=currentContextCount?.json ?? .null
+        let bound=boundProfile ?? turnProfile
+        publishedObservation=["sessionID":JSON(id),"turnID":JSON(currentTurnID),"purpose":JSON(titleTask ? "title":"turn"),
+            "runtimeEpoch":JSON(displayEpoch),"generation":JSON(Int(observationGeneration)),"replayRevision":JSON(Int(contextMutation)),
+            "phase":"preparing","requestedModel":JSON(bound.model),"contextWindow":JSON(bound.contextWindow),
+            "estimate":observationEstimate,"attemptID":.null,"requestFingerprint":.null]
         observationRevision &+= 1
         event("request.usage")
         return observationGeneration
@@ -83,6 +88,7 @@ extension AgentSession {
         guard let observation=requestObservation else { return }
         var value=observation.json
         value["generation"]=JSON(Int(observationGeneration)); value["contextRevision"]=JSON(displayEpoch)
+        value["runtimeEpoch"]=JSON(displayEpoch); value["replayRevision"]=publishedObservation["replayRevision"]
         value["estimate"]=observationEstimate
         guard value != publishedObservation else { return }
         publishedObservation=value; observationRevision &+= 1; observationPublishedAt=nowMS()

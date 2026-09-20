@@ -70,6 +70,7 @@ public actor AgentSession {
     var cumulativeModelMs: Double? = 0, cumulativeToolMs: Double? = 0
     var contextBaseline: RequestUsageBaseline?
     var contextMutation: UInt64 = 0
+    var contextResetReason = "epoch-reset"
     var taskRootID: String?
     var contextRecovery: JSON = .null
     var compactionState: JSON = .null
@@ -220,7 +221,7 @@ public actor AgentSession {
     }
     func apply(profile: Profile, apiKey: String) {
         self.profile = profile; self.apiKey = apiKey; pendingConfiguration = nil
-        contextMutation &+= 1
+        replayInputsChanged()
         // The count and its usage baseline described requests under the old settings.
         contextBaseline = nil; currentContextCount = nil; clearRequestObservation()
         event("configured")

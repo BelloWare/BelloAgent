@@ -148,7 +148,11 @@ public actor NativeHostService {
             return ["quiesced":true]
         }
         if method == "workspace.resume" { quiesced=false; return ["resumed":true] }
-        if method == "resources.configure" { try await resources.configure(params["options"].isNull ? [:] : params["options"]); return try await resources.inspect(["refresh":true]) }
+        if method == "resources.configure" {
+            try await resources.configure(params["options"].isNull ? [:] : params["options"])
+            for session in sessions.values { await session.resourcesChanged() }
+            return try await resources.inspect(["refresh":true])
+        }
         if method == "resources.inspect" {
             var applied: String?; if let id=sessionID, let session=sessions[id] { applied=await session.resourceRevision }
             let available=await nativeTools.capabilityIDs(readOnly:sessionID.flatMap { sessions[$0]?.readOnly } ?? false)
@@ -159,6 +163,7 @@ public actor NativeHostService {
             for s in sessions.values { guard !(await s.isRunning) else { throw AgentError("session_busy", "Stop active runs before changing MCP connections") } }
             guard params["path"].isNull, params["config"].isObject else { throw AgentError("vault_configuration_required", "MCP configuration must come from the native vault over private IPC.") }
             try await mcp.configure(params["config"])
+            for session in sessions.values { await session.resourcesChanged() }
             var result=try await mcp.perform(["action":"list"]);result["configurationSource"]="native vault via private IPC";return result
         }
         if ["mcp.list","mcp.describe"].contains(method) {

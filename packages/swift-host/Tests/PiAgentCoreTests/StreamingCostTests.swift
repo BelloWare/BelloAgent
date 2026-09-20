@@ -87,13 +87,17 @@ final class StreamingCostTests: XCTestCase {
         let first = await session.snapshot()
         let pageBytes = (try? first.data().count) ?? 0
         var revision = first["displayRevision"]
+        var contextRevision=first["contextStateRevision"], observationRevision=first["contextObservationRevision"]
         let rounds = 200
         var frameBytes = 0, maximumFrame = 0
         var page = Page(first["messages"].list)
         let cpuStart = processCPUMilliseconds(), start = ProcessInfo.processInfo.systemUptime
         for index in 0..<rounds {
             try await client.emit(.text("token-\(index) "))
-            let next = await session.snapshot(["displayRevision": revision, "messageDelta": true])
+            let next = await session.snapshot(["displayRevision":revision,"messageDelta":true,"includeMetrics":false,
+                "contextStateRevision":contextRevision,"contextObservationRevision":observationRevision])
+            if !next["contextStateRevision"].isNull { contextRevision=next["contextStateRevision"] }
+            if !next["contextObservationRevision"].isNull { observationRevision=next["contextObservationRevision"] }
             let bytes = (try? next.data().count) ?? 0
             frameBytes += bytes; maximumFrame = max(maximumFrame, bytes)
             revision = next["displayRevision"]

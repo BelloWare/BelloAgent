@@ -60,7 +60,7 @@ extension AgentSession {
         var record: JSON=["type":"message","message":message.pi]; for (key,value) in extra.map { record[key]=value }
         try journal?.append(record,id:message.id,flush:journalFlushesEachRecord)
         toolHistory.append(message, at: history.count); history.append(message); context.append(message); visible.append(message); currentContextCount=nil
-        if message.replayEligible { contextMutation &+= 1 }
+        if message.replayEligible { replayInputsChanged() }
         invalidateDisplay(message.id)
         if message.role == "toolResult", let callID=message.toolCallId, let owner=toolHistory.owners[callID] { invalidateDisplay(owner) }
         if message.role=="assistant" { assistantMessageCount += 1; latestAssistantMessageID=message.id }

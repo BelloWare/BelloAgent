@@ -10,6 +10,32 @@ extension AgentSession {
     /// A title task is a bounded utility request: its budget is its cap.
     /// Conversation turns send the model ceiling instead.
     func applyingTaskCap(_ effective: Profile) -> Profile { titleTask ? ((try? effective.capped(effective.maxOutput)) ?? effective) : effective }
+    /// Semantic input changes, unlike the event sequence, never include partial
+    /// output, accounting arrival, timers, titles or queued-but-undelivered turns.
+    var contextPhase: String {
+        if runStatus == "compacting" { return "compacting" }
+        if modelActive { return publishedObservation["phase"].text == "preparing" ? "preparing" : "current-request" }
+        if ["waitingTool","retrying"].contains(runStatus) { return "last-request" }
+        return runTask != nil ? "preparing" : "next-input"
+    }
+    var contextStateRevision: String { "\(displayEpoch):\(contextMutation):\(observationRevision):\(contextPhase)" }
+    func contextState() -> JSON {
+        let terminal=["final","interrupted"].contains(publishedObservation["phase"].text ?? "")
+        return ["version":1,"sessionID":JSON(id),"runtimeEpoch":JSON(displayEpoch),"replayRevision":JSON(Int(contextMutation)),
+                "generation":JSON(Int(observationGeneration)),"phase":JSON(contextPhase),"turnID":JSON(currentTurnID),
+                "reason":JSON(contextResetReason),"count":contextInfo(),
+                "currentRequest":modelActive ? publishedObservation : .null,
+                "lastRequest":terminal ? publishedObservation : lastRequestObservation]
+    }
+    func replayInputsChanged(reason: String = "input-changed") {
+        contextMutation &+= 1; contextResetReason=reason; currentContextCount=nil; preparedContext=nil
+    }
+    func resourcesChanged() {
+        // A running request keeps its frozen resource snapshot. Delivery of a
+        // later submission already advances the revision when it applies changes.
+        guard runTask == nil else { return }
+        replayInputsChanged(); contextBaseline=nil; event("context.inputs-changed")
+    }
     public func contextInfo() -> JSON {
         if let count=currentContextCount { return count.json }
         return ["tokens":.null,"contextWindow":JSON(turnProfile.contextWindow),"source":"Prepared request calculation pending",
@@ -26,7 +52,8 @@ extension AgentSession {
     /// context; an unsent draft and queued turns are not pretended to be applied.
     public func prepareContext(_ params: JSON) async throws -> JSON {
         guard !closed else { throw AgentError("session_closed", "Reopen the session to inspect its context") }
-        let startingSequence = sequence, active = runTask != nil
+        let startingSequence = sequence, startingMutation = contextMutation, active = runTask != nil
+        let startingProfile=turnProfile.raw, startingResources=appliedSnapshot?.revision
         let overrides = try NativeHostService.turnOverrides(params)
         let effective = active ? turnProfile : applyingTaskCap(try profile.overriding(model:overrides.model, thinkingLevel:overrides.thinkingLevel, contextWindow:overrides.contextWindow, maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit))
         let snapshot: ResourceSnapshot
@@ -35,7 +62,7 @@ extension AgentSession {
         let definitions = await sessionDefinitions()
         let draft = params["text"].text ?? ""
         guard draft.utf8.count <= 256 * 1024 else { throw AgentError("message_limit", "Draft exceeds the supported submission limit") }
-        var messages = context
+        var messages = active && runStatus == "waitingTool" ? boundary : context
         var selectionIDs = activeSubmission?.skills.map(\.id) ?? []
         var includedDraft = false
         if !active {
@@ -51,19 +78,23 @@ extension AgentSession {
             let currentResources = try await resources.resolve()
             guard currentResources.revision == snapshot.revision else { throw AgentError("context_changed", "Instruction or skill sources changed. Refresh the context preview.") }
         }
-        guard startingSequence == sequence, !closed else { throw AgentError("context_changed", "The conversation changed. Refresh the context preview.") }
+        let finalDefinitions=await sessionDefinitions()
+        guard startingMutation == contextMutation, active == (runTask != nil), startingProfile == turnProfile.raw,
+              startingResources == appliedSnapshot?.revision,
+              definitions == finalDefinitions, !closed else { throw AgentError("context_changed", "The conversation changed. Refresh the context preview.") }
         let instructions = Self.requestInstructions(snapshot.prompt,selectionIDs:selectionIDs)
         var body = try ProviderClient.requestBody(profile:effective,messages:messages,instructions:instructions,tools:definitions,sessionID:id)
         let count = try contextCounter.count(request:body,profile:effective,baseline:contextBaseline)
         // Dispatch clips a catalog ceiling to the estimated remaining room.
         // Show that same provider-built request in the inspector.
         body = try ProviderClient.requestBody(profile:effective.dispatching(count),messages:messages,instructions:instructions,tools:definitions,sessionID:id)
-        if !includedDraft { currentContextCount=count }
         var headers = profile.raw["headers"].map.compactMapValues(\.text)
         headers["Authorization"] = "Bearer " + apiKey
         let credentials = CaptureCredentials(headers:headers,configuredNames:Set(profile.raw["headers"].map.keys))
         let safe = credentials.metadata(body)
         let metadata: JSON = ["mode":JSON(active ? "active-context" : "prepared-next-request"), "model":JSON(effective.model), "seq":JSON(startingSequence),
+            "runtimeEpoch":JSON(displayEpoch),"replayRevision":JSON(Int(startingMutation)),
+            "inputBinding":JSON(sha256(try JSON.object(["profile":effective.raw,"resources":JSON(snapshot.revision),"tools":.array(definitions.map { ["name":JSON($0.name),"description":JSON($0.description),"schema":$0.schema] })]).data())),
             "draftIncluded":JSON(includedDraft), "draftDeferred":JSON(active && (!draft.isEmpty || !params["skills"].list.isEmpty || !params["attachments"].list.isEmpty)),
             "queueCount":JSON(queue.count + steering.count), "contextMessages":JSON(context.filter(\.replayEligible).count),
             "instructionRevision":JSON(snapshot.revision), "contextWindow":JSON(effective.contextWindow), "outputReserve":JSON(effective.maxOutput),

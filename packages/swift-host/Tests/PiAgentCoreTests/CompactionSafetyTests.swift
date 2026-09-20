@@ -153,6 +153,9 @@ final class CompactionSafetyTests: XCTestCase {
         XCTAssertTrue(requests.contains { $0.encoded().contains("intermediateSummary") })
         XCTAssertEqual(context.filter { $0.role=="user" }.map(\.id),["root"])
         XCTAssertLessThan(state["compaction"]["after"]["tokens"].int!,state["compaction"]["before"]["tokens"].int!)
+        XCTAssertEqual(state["contextState"]["reason"].text,"compaction-committed")
+        XCTAssertTrue(state["contextState"]["currentRequest"].isNull)
+        XCTAssertEqual(state["contextState"]["replayRevision"].int,1)
         XCTAssertEqual(state["compaction"]["after"]["method"].text,"heuristic");await s.close()
     }
     func testInvalidSummariesNeverAdoptAndBudgetIsSharedWithRetries() async throws {
@@ -160,8 +163,11 @@ final class CompactionSafetyTests: XCTestCase {
         for mode:SummaryProbe.Mode in [.empty,.truncated,.tool,.transient,.overflow,.grow] {
             let client=SummaryProbe(mode);var policy=CompactionPolicy();policy.maximumAttempts=2
             let messages=seed(count:3,bytes:6000),s=try session(root,client:client,messages:messages,window:6000,policy:policy)
+            let before=await s.snapshot(["includeMetrics":false])
             try await s.compact();try await eventually { !(await s.isRunning) }
             let state=await s.snapshot(),context=await s.context,calls=await client.summaryCalls
+            XCTAssertEqual(state["contextState"]["replayRevision"],before["contextState"]["replayRevision"])
+            XCTAssertEqual(state["contextState"]["generation"],before["contextState"]["generation"],"Summary attempts cannot own the conversation observation")
             XCTAssertEqual(state["state"].text,"error");XCTAssertEqual(context.map(\.id),messages.map(\.id));XCTAssertLessThanOrEqual(calls,2)
             XCTAssertTrue(state["latestSuccessfulCompaction"].isNull);await s.close()
         }

@@ -50,7 +50,7 @@ extension AgentSession {
     func applyBranch(from messageID: String, keptIDs: Set<String>, markerID: String) {
         Self.branch(history:&history,context:&context,visible:&visible,from:messageID,keptIDs:keptIDs,markerID:markerID)
         invalidateDisplay(allRows: true)
-        contextMutation &+= 1; preparedContext=nil; contextRecovery = .null
+        replayInputsChanged(); contextRecovery = .null
         boundary=context; contextBaseline=nil; currentContextCount=nil; clearRequestObservation()
     }
     /// Shared by live edits and journal replay (the synchronous initializer

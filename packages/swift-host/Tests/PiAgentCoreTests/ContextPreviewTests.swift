@@ -40,7 +40,10 @@ final class ContextPreviewTests: XCTestCase {
         try await eventually { await client.count == 1 }
         _ = try await session.submit(Submission(commandID:"pending",turnID:"pending",text:"Future queued input"),steer:false)
         try Data("New instructions not applied to the active turn.".utf8).write(to:instructions)
+        let before = await session.contextInfo()
         let preview = try await session.prepareContext(["text":"Unsent draft", "model":"future-model"])
+        let after = await session.contextInfo()
+        XCTAssertEqual(before, after, "Inspection must not replace preflight state")
         let page = try await session.readPreparedContext(["revision":preview["revision"],"section":"request"])
         XCTAssertEqual(preview["mode"].text,"active-context"); XCTAssertEqual(preview["model"].text,"active-model")
         let status = await session.snapshot()

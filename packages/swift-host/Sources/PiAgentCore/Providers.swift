@@ -136,6 +136,7 @@ public struct ProviderClient: ModelClient {
         let credentials = CaptureCredentials(headers: request.allHTTPHeaderFields ?? [:], configuredNames: Set(profile.raw["headers"].map.keys))
         let attempt=await traces.begin(session:sessionID,turn:turnID,profile:profile,purpose:purpose,body:bytes,headers:request.allHTTPHeaderFields ?? [:],messageIDs:messages.flatMap { $0.sourceMessageIDs ?? [$0.id] })
         var observation=RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:purpose,fingerprint:try RequestContextCounter.fingerprint(body,profile:profile),profile:profile)
+        observation.phase="preparing"; observation.sourceEvent="capture.ready"
         await onObservation(observation)
         let stream=HTTPStream();var parser=SSEParser(), accumulator=ProviderAccumulator(api:profile.api)
         var status=0,jsonBody=false,nonSSE=Data(),receivedBytes=0
@@ -144,6 +145,8 @@ public struct ProviderClient: ModelClient {
         do {
             try Task.checkCancellation()
             let parts = stream.start(request)
+            observation.phase="awaiting"; observation.sourceEvent="dispatch"
+            await onObservation(observation)
             let dispatch = stream.observation()
             await traces.dispatched(attempt, at: dispatch["dispatch"].double ?? nowMS(), wall: dispatch["dispatchWallTimestamp"].double ?? Date().timeIntervalSince1970)
             for try await part in parts {
