@@ -6,7 +6,7 @@ import SwiftUI
 /// This is not another scroll view and does not truncate the source or copy
 /// targets. Small replies keep the simpler SwiftUI stack.
 struct NativeMarkdownSurface: NSViewRepresentable {
-    static let minimumBlockCount = 32
+    static let minimumBlockCount = 8
     let blocks: [MarkdownBlock]
     let style: MarkdownStyle
     let capsWidth: Bool
@@ -127,6 +127,7 @@ private struct NativeHostedMarkdownBlock: View {
     /// Evidence for regressions: pure scrolling must reuse exact measurements.
     var blockMeasurementCount: Int { blocks.reduce(0) { $0 + $1.measurementCount } }
     var retainedBlockCount: Int { blocks.count }
+    var hostedBlockCount: Int { blocks.count }
     var mountedBlockCount: Int { blocks.reduce(0) { $0 + ($1.view.superview === self ? 1 : 0) } }
 
     deinit { if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }

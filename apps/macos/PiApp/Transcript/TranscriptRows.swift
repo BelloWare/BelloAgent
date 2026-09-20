@@ -316,10 +316,20 @@ struct CodeBlockView: View {
     let code: String
     var size: CGFloat = 12.5
     @State private var hovering = false
+    @State private var usesNativeText: Bool
+    init(language: String?, code: String, size: CGFloat = 12.5) {
+        self.language = language; self.code = code; self.size = size
+        _usesNativeText = State(initialValue: NativeCodeText.enabled && code.utf8.count >= NativeCodeText.minimumBytes)
+    }
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            Text(SyntaxHighlighter.attributed(code, language: language, size: size))
-                .lineSpacing(size * 0.4)
+            // Keep the chosen leaf for this block's mounted lifetime. Crossing
+            // the size threshold while selecting/streaming must not replace
+            // the native selection owner. Reopened large fences use TextKit.
+            Group {
+                if usesNativeText { NativeCodeText(source: code, language: language, size: size) }
+                else { Text(SyntaxHighlighter.attributed(code, language: language, size: size)).lineSpacing(size * 0.4) }
+            }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14).padding(.top, 31).padding(.bottom, 10)
             // The toolbar sits in the block's reserved top padding, so it can

@@ -56,8 +56,12 @@ final class NativeMarkdownViewportTests: XCTestCase {
         await nextMainTurn()
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
     }
-    @MainActor private func fixture() -> (FixtureModel, NSWindow, NSScrollView, NSHostingView<FixtureBody>) {
-        let model = FixtureModel(source: (0..<40).map(Self.section).joined(separator: "\n\n"))
+    @MainActor private func fixture(largeCode: Bool = false) -> (FixtureModel, NSWindow, NSScrollView, NSHostingView<FixtureBody>) {
+        var source = (0..<40).map(Self.section).joined(separator: "\n\n")
+        if largeCode {
+            source = source.replacingOccurrences(of: "print(result0)", with: "print(result0)\n" + String(repeating: "// retained literal code context\n", count: 600))
+        }
+        let model = FixtureModel(source: source)
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 680, height: 500))
         scroll.hasVerticalScroller = true
         let hosted = NSHostingView(rootView: FixtureBody(model: model))
@@ -144,4 +148,32 @@ final class NativeMarkdownViewportTests: XCTestCase {
         XCTAssertTrue(field.currentEditor() === editor, "Reflow preserves the native field and its selection")
         XCTAssertEqual(editor.selectedRange, selected)
     }
+    @MainActor func testSelectedCodeSurvivesAppendScrollAndReflowInsideItsHostedBlock() async throws {
+        let (model, window, outer, hosted) = fixture(largeCode: true)
+        defer { window.contentView = nil; window.close() }
+        await settle(hosted, scroll: outer, window: window)
+        let body = try XCTUnwrap(descendants(NativeMarkdownContainer.self, in: hosted).first)
+        let code = try XCTUnwrap(descendants(TranscriptCodeTextView.self, in: body).first { $0.string.hasPrefix("let result0 =") })
+        XCTAssertTrue(window.makeFirstResponder(code))
+        let selected = (code.string as NSString).range(of: "result0")
+        code.setSelectedRange(selected)
+        await scroll(to: hosted.frame.height - outer.contentView.bounds.height, scroll: outer, hosted: hosted, window: window)
+        XCTAssertTrue(window.firstResponder === code)
+        XCTAssertTrue(code.isDescendant(of: body), "Selection retains a code block outside the viewport")
+        model.source = model.source.replacingOccurrences(of: "print(result0)", with: "print(result0)\nprint(\"appended 中文🙂\")")
+        model.source += "\n\n" + Self.section(40)
+        await settle(hosted, scroll: outer, window: window)
+        XCTAssertTrue(code.string.contains("appended 中文🙂"))
+        XCTAssertEqual(code.selectedRange(), selected)
+        XCTAssertTrue(window.firstResponder === code)
+        model.width = 340
+        await settle(hosted, scroll: outer, window: window)
+        XCTAssertTrue(window.firstResponder === code)
+        XCTAssertEqual(code.selectedRange(), selected)
+        let board = NSPasteboard(name: .init("hosted-code-copy-" + UUID().uuidString))
+        defer { board.releaseGlobally() }
+        XCTAssertTrue(code.writeSelection(to: board, types: code.writablePasteboardTypes))
+        XCTAssertEqual(board.string(forType: .string), "result0")
+    }
+
 }

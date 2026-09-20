@@ -80,7 +80,8 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
     }
 
     @MainActor private func viewCounts(in view: NSView) -> (all: Int, selectable: Int) {
-        var count = 1, selectable = (view as? NSTextField).map { $0.isSelectable ? 1 : 0 } ?? 0
+        var count = 1, selectable = (view as? NSTextField).map { $0.isSelectable ? 1 : 0 }
+            ?? (view as? NSTextView).map { $0.isSelectable ? 1 : 0 } ?? 0
         for child in view.subviews {
             let children = viewCounts(in: child)
             count += children.all; selectable += children.selectable
