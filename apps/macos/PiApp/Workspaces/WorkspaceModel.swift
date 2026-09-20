@@ -245,8 +245,11 @@ enum WorkspacePage: String, Sendable { case chats, report }
     var chat: ChatRecord? { selectedID.flatMap(chatRecord) }
     var requestProfiles: [ProfileRecord] { profiles.filter { $0.api == LiteLLMConfiguration.supportedAPI } }
 
-    init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared) {
+    let completionSound: CompletionSound
+
+    init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil) {
         self.vault = vault
+        self.completionSound = completionSound ?? CompletionSound()
         let benchmarkRoot = PerformanceProbe.shared.enabled ? ProcessInfo.processInfo.environment["PI_APP_BENCHMARK_STATE_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) } : nil
         root = stateRoot ?? benchmarkRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("com.belloware.PiApp", isDirectory: true)
         traces = PayloadArchive(root: root.appendingPathComponent("Requests-v1", isDirectory: true))

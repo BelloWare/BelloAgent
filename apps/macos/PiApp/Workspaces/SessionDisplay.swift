@@ -31,6 +31,7 @@ import Combine
     /// Committed activity only: text, draft, selection and context rendering do not enter this stream.
     let activityChanges = PassthroughSubject<Void, Never>()
     let id: String
+    var completionTracker = SessionCompletionTracker()
     var monitoringEpoch: String?
     var monitoringCursor: Double?
     let transcriptChanges = CurrentValueSubject<[TranscriptMessage], Never>([])

@@ -120,6 +120,7 @@ extension WorkspaceModel {
         view.captureMode = preference.mode
         let initial = try await host.request("session.status", sessionID: id)
         observeAssistantOutputs(sessionID: id, snapshot: initial.object ?? [:])
+        observeSessionCompletion(sessionID: id, snapshot: initial.object ?? [:], baseline: true)
         sides[parentID]?.boundary = result["side"]?.object ?? [:]; opened.insert(id); view.captureAvailable = true
         if selectedID == parentID { focusedSessionID = id }
         updateHostActivity(workspaceID: info.workspaceID); refresh(id)
@@ -326,6 +327,7 @@ extension WorkspaceModel {
         view.captureMode = preference.mode; view.captureAvailable = true
         let initial = try await host.request("session.status", sessionID: id)
         observeAssistantOutputs(sessionID: id, snapshot: initial.object ?? [:])
+        observeSessionCompletion(sessionID: id, snapshot: initial.object ?? [:], baseline: true)
         refresh(id)
         return fork
     }

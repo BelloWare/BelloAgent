@@ -56,6 +56,7 @@ extension WorkspaceModel {
                 if sequence >= view.lastSequence {
                     view.lastSequence = sequence
                     observeAssistantOutputs(sessionID: id, snapshot: result)
+                    observeSessionCompletion(sessionID: id, snapshot: result)
                     view.observeCompaction(result)
                     let wasBusy = view.busy
                     view.observeRunState(result)

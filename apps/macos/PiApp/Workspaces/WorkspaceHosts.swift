@@ -145,6 +145,7 @@ extension WorkspaceModel {
                             try await store.put(chats[index], kind: "chat", id: item.id)
                         }
                         observeAssistantOutputs(sessionID: item.id, snapshot: initial.object ?? [:])
+                        observeSessionCompletion(sessionID: item.id, snapshot: initial.object ?? [:], baseline: true)
                         displays[item.id]?.observeCompaction(initial.object ?? [:], baseline: true)
                         displays[item.id]?.observeContext(initial.object ?? [:], baseline: true)
                         let preference = try await capturePreference(sessionID: item.id)

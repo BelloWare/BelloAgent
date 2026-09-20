@@ -144,6 +144,18 @@ struct ProfileSettings: View {
                         PiRow(label: "Metric retention") { PiStepper(label: "\(controller.preferences.dashboard.metricRetentionDays) days", value: $controller.preferences.dashboard.metricRetentionDays, range: 1...3650) }
                         PiRow(label: "Dashboard window", last: true) { PiStepper(label: "\(controller.preferences.dashboard.windowHours) hours", value: $controller.preferences.dashboard.windowHours, range: 1...8760) }
                     }
+                    PiSettingsGroup(title: "Notifications") {
+                        PiRow(label: "Task completion sound", detail: "Play a short chime when a chat finishes its task, even while the app is in the background.", last: true) {
+                            HStack(spacing: PiSpacing.sm) {
+                                Button { model.completionSound.play() } label: { Label("Preview", systemImage: "speaker.wave.2") }
+                                    .buttonStyle(.piSecondaryCompact)
+                                    .accessibilityIdentifier("settings-preview-completion-sound")
+                                Toggle("", isOn: $controller.preferences.playsCompletionSound).labelsHidden()
+                                    .accessibilityLabel("Play task completion sound")
+                                    .accessibilityIdentifier("settings-completion-sound")
+                            }
+                        }
+                    }
                     PiSettingsGroup(title: "Updates") {
                         PiRow(label: "Check for app updates automatically", last: true) { Toggle("", isOn: $controller.preferences.automaticUpdateChecks).labelsHidden() }
                     }

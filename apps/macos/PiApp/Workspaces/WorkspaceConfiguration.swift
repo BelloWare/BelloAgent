@@ -154,6 +154,7 @@ extension WorkspaceModel {
             if let preferences {
                 saved.runtime = preferences.runtime; saved.capture = preferences.capture
                 saved.dashboard = preferences.dashboard; saved.automaticUpdateChecks = preferences.automaticUpdateChecks
+                saved.completionSoundEnabled = preferences.completionSoundEnabled
             }
         }
         // Configuration is durable before the helper hears about it. An idle
@@ -254,6 +255,7 @@ extension WorkspaceModel {
         try await updateConfiguration(expectedRevision: expectedRevision) {
             $0.runtime = preferences.runtime; $0.capture = preferences.capture
             $0.dashboard = preferences.dashboard; $0.automaticUpdateChecks = preferences.automaticUpdateChecks
+            $0.completionSoundEnabled = preferences.completionSoundEnabled
         }
     }
     func saveMCPConfiguration(_ config: WireValue, expectedRevision: Int64) async throws {

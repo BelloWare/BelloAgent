@@ -98,6 +98,12 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
     var capture = CapturePreferences()
     var dashboard = DashboardPreferences()
     var automaticUpdateChecks = true
+    /// Absent in older vaults; completion sounds are enabled by default.
+    var completionSoundEnabled: Bool?
+    var playsCompletionSound: Bool {
+        get { completionSoundEnabled ?? true }
+        set { completionSoundEnabled = newValue }
+    }
     // Existing keys remain for reading legacy encrypted captures only. New
     // vaults and new plaintext captures need no payload key. Helpers never
     // receive this object or a legacy key.
