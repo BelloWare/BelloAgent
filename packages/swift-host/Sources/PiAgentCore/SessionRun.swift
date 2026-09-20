@@ -12,14 +12,14 @@ extension AgentSession {
         let pending = pendingRequestLinks; pendingRequestLinks = [:]
         for (attempt, ids) in pending { await traces.outputs(attempt, messageIDs: ids) }
     }
-    /// A model request is tried up to three times before its failure is
+    /// A model request gets five retries after its initial failure before it is
     /// reported. Only transient gateway conditions are retried: transport
     /// failures, HTTP 408/425/429/5xx and provider errors that describe
     /// overload, rate limits or temporary unavailability. Anything about the
     /// request itself (a bad model, an oversized body, an auth failure) fails
     /// at once, and a cancellation is never retried.
-    public static let modelAttempts = 3
-    static let retryDelays: [Double] = [1.0, 3.0]
+    public static let modelAttempts = 6
+    static let retryDelays: [Double] = [1.0, 3.0, 5.0, 8.0, 10.0]
     static func isRetryable(_ error: AgentError) -> Bool {
         if let failure=error.failure, [.inputContextExceeded,.inputPlusOutputContextExceeded,.outputLimitInvalid,.requestBodyTooLarge,.authentication].contains(failure) { return false }
         switch error.code {

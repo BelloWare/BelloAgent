@@ -64,7 +64,7 @@ final class RetryTests: XCTestCase {
         // The first attempt fails at once; the session then waits one second before the second.
         try await eventually { await session.snapshot()["runStatus"].text == "retrying" }
         let midway = await session.snapshot()
-        XCTAssertEqual(midway["retry"]["attempt"].int, 2); XCTAssertEqual(midway["retry"]["of"].int, 3); XCTAssertEqual(midway["retry"]["reason"].text, "stream dropped")
+        XCTAssertEqual(midway["retry"]["attempt"].int, 2); XCTAssertEqual(midway["retry"]["of"].int, 6); XCTAssertEqual(midway["retry"]["reason"].text, "stream dropped")
         XCTAssertEqual(midway["state"].text, "running")
         XCTAssertEqual(midway["messages"].list.last?["text"].text, "", "The failed attempt's partial text is dropped before the retry")
         try await eventually { !(await session.isRunning) }
@@ -76,17 +76,20 @@ final class RetryTests: XCTestCase {
         await session.close()
     }
 
-    func testTheThirdFailureIsReportedWithItsAttemptCount() async throws {
+    func testFiveRetriesStopAfterSixFailedAttempts() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        let client=FlakyClient(failures:Array(repeating:AgentError("provider_failed","Model overloaded (overloaded_error)"),count:3),replies:[])
+        let client=FlakyClient(failures:Array(repeating:AgentError("provider_failed","Model overloaded (overloaded_error)"),count:6),replies:[])
         let session=try session(client,root:root)
         _ = try await session.submit(Submission(commandID:"c1",turnID:"t1",text:"go"),steer:false)
-        try await eventually { !(await session.isRunning) }
+        let deadline = Date().addingTimeInterval(40)
+        while await session.isRunning, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        let running = await session.isRunning
+        XCTAssertFalse(running, "Five bounded backoffs must eventually settle")
         let requests = await client.requests
-        XCTAssertEqual(requests, 3, "Two retries, never more")
+        XCTAssertEqual(requests, 6, "Initial request plus five retries, never a seventh attempt")
         let final = await session.snapshot()
         XCTAssertEqual(final["state"].text, "error")
-        XCTAssertEqual(final["preflightError"].text, "Failed after 3 attempts. Model overloaded (overloaded_error)")
+        XCTAssertEqual(final["preflightError"].text, "Failed after 6 attempts. Model overloaded (overloaded_error)")
         XCTAssertTrue(final["retry"].isNull)
         await session.close()
     }

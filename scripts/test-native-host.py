@@ -418,8 +418,8 @@ class NativeIntegration(unittest.TestCase):
         return self.peer.command('session.open',{'profile':profile,'apiKey':'fixture-secret','toolMode':'editing',**extra},session,fail=fail)
     def submit(self, session='s', text='question'):
         return self.peer.command('turn.submit',{'clientTurnId':str(uuid.uuid4()),'text':text},session)
-    def settled(self, session='s'):
-        deadline=time.monotonic()+12
+    def settled(self, session='s', timeout=12):
+        deadline=time.monotonic()+timeout
         while time.monotonic()<deadline:
             value=self.peer.command('session.snapshot',session=session)
             # Since 0.1.45 a failed run settles as 'error' (retryable from the failure row); a stop settles as 'paused'.
@@ -769,11 +769,20 @@ class NativeIntegration(unittest.TestCase):
     def test_strict_gateway_request_selected_error_and_cancellation_do_not_replay(self):
         for api in ['openai-responses']:
             session='strict-errors-'+api; self.strict_open(api,session)
-            self.submit(session,'fixture: error'); self.assertEqual(self.settled(session)['state'],'error')
-            attempt=self.peer.command('debug.list',session=session)['attempts'][0]
-            self.assertEqual(attempt['status'],429); self.assertEqual(attempt['gateway']['cost']['status'],'unreported')
-            sent=self.captured_body(session,attempt,'request'); record=next(r for r in reversed(Fixture.requests) if r['body']==sent)
-            self.assertEqual(self.captured_body(session,attempt,'response'),record['response']); self.assertEqual(record['scenario'],'provider-error')
+            self.submit(session,'fixture: error')
+            # Five production backoffs total 27 seconds; other scenarios keep
+            # their original short deadline. Every physical attempt is captured.
+            failed=self.settled(session,timeout=40); self.assertEqual(failed['state'],'error')
+            self.assertIn('Failed after 6 attempts.',failed['preflightError'])
+            attempts=self.peer.command('debug.list',session=session)['attempts']; self.assertEqual(len(attempts),6)
+            request_bodies=[]
+            for attempt in attempts:
+                self.assertEqual(attempt['status'],429); self.assertEqual(attempt['gateway']['cost']['status'],'unreported')
+                sent=self.captured_body(session,attempt,'request'); request_bodies.append(sent)
+                record=next(r for r in reversed(Fixture.requests) if r['body']==sent)
+                self.assertEqual(self.captured_body(session,attempt,'response'),record['response']); self.assertEqual(record['scenario'],'provider-error')
+            self.assertEqual(len(set(request_bodies)),1,'Retries must preserve the submitted model context')
+            self.assertEqual(sum(r['body']==request_bodies[0] for r in Fixture.requests),6,'The gateway must receive exactly one initial request and five retries')
             self.peer.command('session.close',session=session)
             session='strict-cancel-'+api; self.strict_open(api,session); self.submit(session,'fixture: cancel')
             deadline=time.monotonic()+5
