@@ -99,7 +99,7 @@ The transcript attaches a work line to the bottom of every assistant reply: how 
 
 A session actor owns its history and two separate queues. Pi `v0.85.1/packages/agent/src/agent-loop.ts` is the steering/follow-up reference. Deliver a user input, stream a complete model response, append it, execute validated tools serially and save each result. Only then consume steering; consult queued follow-ups when the run would otherwise stop. `one-at-a-time` is the default; `all` is an explicit queue setting.
 
-Stop lives beside the send/queue controls inside each chat composer and cancels only that session's active work, pausing its queues. Background tasks with no composer expose Stop in their lower task footer. Failures, truncated responses and failed compaction also pause continuation. Failed responses display Error and a visible, wrapping explanation without opening an inspector. Persist the failure for reopened sessions, bound long details with scrolling, and redact known credentials before display or journal storage. The failed run and its paused follow-up queue remain separate states; deliberate cancellation stays paused. Transient HTTP failures have at most three attempts. Explicit context rejection permits one bounded reduction/retry cycle per logical model operation; mutating tools are never automatically retried. Recovery pairs unresolved tool calls with explicit unknown results; it does not rerun them. Journal delivery IDs avoid duplicate user delivery after a crash between a message append and queue-state append.
+Stop lives beside the send/queue controls inside each chat composer and cancels only that session's active work, pausing its queues. Background tasks with no composer expose Stop in their lower task footer. Failures, truncated responses and failed compaction also pause continuation. Failed responses display Error and a visible, wrapping explanation without opening an inspector. Persist the failure for reopened sessions, bound long details with scrolling, and redact known credentials before display or journal storage. The failed run and its paused follow-up queue remain separate states; deliberate cancellation stays paused. Transient HTTP failures have five retries after the initial request (six attempts total), with 1/3/5/8/10-second cancellable backoffs. Explicit context rejection permits one bounded reduction/retry cycle per logical model operation; mutating tools are never automatically retried. Recovery pairs unresolved tool calls with explicit unknown results; it does not rerun them. Journal delivery IDs avoid duplicate user delivery after a crash between a message append and queue-state append.
 
 Each native journal is append-only, exclusively locked and bounded. Its envelope supports existing history display, but native opaque state is not Pi SDK session compatibility. Additional backward migration is not a release goal. Preserve old user files rather than silently rewriting them.
 
@@ -503,8 +503,8 @@ instead of one query per chat.
 Errors live in the conversation, not in a strip pinned above it: a failed run
 appears as a card where the conversation stopped, a refused send as a card
 under the messages, and while the helper retries a transient failure a status
-line says so. The helper tries a model request up to three times (one and
-three seconds apart) before reporting it: transport failures, HTTP 408, 425,
+line says so. The helper allows five retries after the initial model request
+(six attempts total, with 1/3/5/8/10-second backoffs) before reporting failure: transport failures, HTTP 408, 425,
 429 and 5xx, and provider errors describing overload, rate limits or
 temporary unavailability are retried, a partial reply from the failed attempt
 is dropped, and anything about the request itself (a missing model, an auth
@@ -1270,3 +1270,26 @@ shared comparator honors ranks; revision-aware organization merging prevents a
 late title, model, draft or path write from undoing a drag. Pin/archive/topic moves
 reset an old group's rank. Native row drag handling remains above the SwiftUI
 insertion target, preserving selection, double-click rename and control cutouts.
+
+### Activity and disclosure follow-up (0.1.65)
+
+A turn's work, individual tool input/output, exposed reasoning and compaction
+notes start collapsed. No recent-tool trail or reasoning teaser leaks out of a
+closed work section. Explicit choices remain scoped to the conversation through
+streaming, scrolling and tab switches. The sidebar calls a running tool phase
+"Working"; the ongoing-turn bar omits the current tool's verb/arguments.
+
+Archive hides unread reply/failure indicators from the sidebar, project groups,
+Dock and menu activity without marking the retained output read. Restoring the
+chat restores its original read state. Archived sessions never populate live
+menu rows even while their stop request is settling.
+
+The menu's live section shows running/generating counts, queued input counts,
+turn elapsed time, requested model and last reported route, latest completed
+request output rate, and reported session tokens/cost. It omits idle unread,
+paused and waiting-only rows. Continuous workspace events coalesce in a fixed
+250 ms window, rather than a trailing debounce that can starve during multiple
+streams. Only elapsed labels tick once per second; clocks perform no database,
+provider or transcript queries. Reported accounting signals update live rows,
+and hiding the popup cancels its pending refresh and archive polling. Historical
+charts and model distribution retain their independent bounded query cadence.

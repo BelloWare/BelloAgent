@@ -41,6 +41,13 @@ instruction. SDK-era requirements remain in `docs/archive/PiSDK-Features.md`.
 
 ## 2. Required features and honest implementation status
 
+**Activity and disclosure, 0.1.65:** work/tool details start collapsed, archived
+chats have no unread indicators, and live menu rows show elapsed time, models,
+queues and reported session usage. Continuous streaming no longer starves popup
+updates. Transient model failures allow five retries after the initial request;
+invalid requests and tool side effects are not automatically replayed. Compaction
+still shares its independent eight-physical-request budget across all chunks.
+
 **Compaction, 0.1.64:** one long user task can compact between complete model/tool
 batches. Original task input and delivered steering remain verbatim. Complete
 assistant/call/result groups are retained or summarized together; uncertain tool
