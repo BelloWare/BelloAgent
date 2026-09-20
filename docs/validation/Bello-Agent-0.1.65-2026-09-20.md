@@ -1,6 +1,8 @@
 # Bello Agent 0.1.65/build 69 acceptance — 2026-09-20
 
-Candidate; signing and public publication checks pending.
+**Released and publicly verified 2026-09-20 10:15:41 UTC.** Signing,
+notarization, product page, both public feeds and downloaded SHA-256/Ed25519
+verification passed.
 
 ## Changes
 
@@ -65,3 +67,25 @@ No subagents, live paid gateway calls, installation or actual Sparkle update
 rehearsal were used. Local fixture timing is not a claim about every real
 provider's latency; throughput remains gateway-reported output divided by
 completed-request duration, including reasoning tokens once.
+
+## Release artifacts
+
+- Source: `852452e2cce24c70bd092ca059308e8c99265c2d` on `BelloWare/BelloAgent/main`.
+- Website: `ab5b69a266aa6c0dceb772ceea3e7c43df0cd8e1` on
+  `BelloWare/belloware.com/main`.
+- Normal Release build, packaged helper smoke, Developer ID signatures, app/DMG
+  notarization and stapling, Gatekeeper assessment and local Ed25519 validation
+  passed. No installer or updater rehearsal was performed.
+- App notarization: `097f72b9-5501-4932-8d1b-008bf7f4bb80` — Accepted.
+- DMG notarization: `3c83c8fe-c079-4462-85db-c30f969f6008` — Accepted.
+- `BelloAgent-0.1.65.dmg`: **8,214,586 bytes (7.83 MiB)**.
+- SHA-256: `e9534a58adab6b0de86116bf59493e5c117c8a7889f3e49d4ffc592473ec6d3c`.
+- Artifacts and dSYMs: session scratch `bello-agent-0.1.6/build/releases/0.1.65`.
+  The final DMG is also in `tmp/outbox`.
+- Build/notarization logs: `bello-agent-0.1.6/build/release.xv1tqr`.
+- Public verification: **2026-09-20 10:15:41 UTC**. Canonical Bello Agent and
+  legacy Pi App feeds are byte-identical; downloaded DMG hash/signature match the
+  validated local archive. The public product page links to the new version.
+- Cloudflare check **106062066215** succeeded at **2026-09-20 10:15:38 UTC**.
+- [Product page](https://belloware.com/bello-agent.html) ·
+  [Download](https://belloware.com/assets/BelloAgent-0.1.65.dmg).

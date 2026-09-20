@@ -12,9 +12,21 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Bello Agent 0.1.65/build 69 is the release candidate** for collapsed tool
-work, hidden archived unread markers, live menu activity updates and five
-transient retries. See [0.1.65 acceptance](validation/Bello-Agent-0.1.65-2026-09-20.md).
+**Bello Agent 0.1.65/build 69 is released and publicly verified** at
+[belloware.com](https://belloware.com/bello-agent.html), from source
+`852452e2cce24c70bd092ca059308e8c99265c2d` and website
+`ab5b69a266aa6c0dceb772ceea3e7c43df0cd8e1`. The DMG measures **8,214,586 bytes
+(7.83 MiB)**, SHA-256 `e9534a58adab6b0de86116bf59493e5c117c8a7889f3e49d4ffc592473ec6d3c`.
+Signing/notarization, packaged helper smoke, product page, identical update feeds
+and downloaded archive SHA-256/Ed25519 verification pass. Public verification:
+**2026-09-20 10:15:41 UTC**. Cloudflare check **106062066215** succeeded.
+
+Tool work starts collapsed, archived unread indicators are hidden, the menu
+shows live activity without starving during continuous streaming, and transient
+model requests allow five retries after the initial request. Validation: **38
+optimized helper tests, 26 packaged gateway tests, 75 actor-checked native tests
+plus one explicit native visual check passed**. See
+[0.1.65 acceptance](validation/Bello-Agent-0.1.65-2026-09-20.md).
 
 **Bello Agent 0.1.64/build 68 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source
