@@ -296,6 +296,9 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         let session = Self.chat("delta-budget", rows: rows)
         let last = Self.lastUserID(rows: rows)
         let pane = Pane(session, state: "running"); defer { pane.close() }
+        // Compare actual per-delta layout with the pre-coalescing baseline;
+        // production cadence is exercised separately by the two-pane workload.
+        pane.page?.presentationInterval = 0
         let ready = await pane.waitForRow(last)
         XCTAssertTrue(ready)
         await pane.settleUntilExact()

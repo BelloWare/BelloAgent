@@ -90,7 +90,7 @@ final class NativeMarkdownViewportTests: XCTestCase {
         let selection = editor.selectedRange
         await nextMainTurn()
         let measured = body.blockMeasurementCount
-        for _ in 0..<160 where body.hostedBlockCount > 40 {
+        for _ in 0..<160 where body.hostedBlockCount >= 40 {
             try await Task.sleep(for: .milliseconds(16))
             TranscriptIdleScheduler.shared.runReady()
         }

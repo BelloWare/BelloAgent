@@ -44,33 +44,22 @@ enum TranscriptMarkdown {
 
     private final class CachedBlocks: Sendable {
         let blocks: [MarkdownBlock]
-        init(_ blocks: [MarkdownBlock]) { self.blocks = blocks }
+        let offsets: [Int]
+        init(_ records: [(offset: Int, block: MarkdownBlock)]) { blocks = records.map(\.block); offsets = records.map(\.offset) }
+        var located: [(offset: Int, block: MarkdownBlock)] { Array(zip(offsets, blocks)) }
     }
     nonisolated(unsafe) private static let cache: NSCache<NSString, CachedBlocks> = {
         let cache = NSCache<NSString, CachedBlocks>(); cache.countLimit = 6_000; cache.totalCostLimit = 64 << 20; return cache
     }()
     /// The document as blocks, remembered per source and style so a settled row never parses twice.
     static func blocks(_ source: String, style: MarkdownStyle = .prose) -> [MarkdownBlock] {
-        let key = (style.id + "\u{0}" + source) as NSString
-        if let cached = cache.object(forKey: key) { return cached.blocks }
-        let blocks = parse(source, style: style)
-        cache.setObject(CachedBlocks(blocks), forKey: key, cost: source.utf8.count)
-        return blocks
+        locatedBlocks(source, style: style).map(\.block)
     }
     /// Blocks for a reply that is still arriving. The text is cut wherever a
     /// delta can no longer change how the parts parse; each settled part is
     /// remembered by the cache, so a delta parses only the tail still growing.
     static func streamingBlocks(_ source: String, style: MarkdownStyle = .prose) -> [MarkdownBlock] {
-        let cuts = settledCuts(in: source)
-        guard !cuts.isEmpty else { return parse(source, style: style) }
-        var result: [MarkdownBlock] = []
-        var start = source.startIndex
-        for cut in cuts {
-            result.append(contentsOf: blocks(String(source[start..<cut]), style: style))
-            start = cut
-        }
-        result.append(contentsOf: parse(String(source[start...]), style: style))
-        return result
+        StreamingMarkdownState.preview(source, style: style).map(\.block)
     }
     /// Where the document splits into parts that parse the same alone as together:
     /// after a blank line outside any code fence, before a line that starts at the
@@ -126,10 +115,24 @@ enum TranscriptMarkdown {
     }
     /// The document as blocks. A source the parser rejects outright renders as one plain paragraph.
     static func parse(_ source: String, style: MarkdownStyle = .prose) -> [MarkdownBlock] {
-        let options = AttributedString.MarkdownParsingOptions(allowsExtendedAttributes: true, interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible)
+        locatedBlocks(source, style: style).map(\.block)
+    }
+    /// Foundation's source positions tie blocks to source lines, rather than
+    /// their changing array position. Inline source attributes never reach UI.
+    static func locatedBlocks(_ source: String, style: MarkdownStyle) -> [(offset: Int, block: MarkdownBlock)] {
+        let key = (style.id + "\u{0}" + source) as NSString
+        if let cached = cache.object(forKey: key) { return cached.located }
+        let result = parseLocated(source, style: style)
+        cache.setObject(CachedBlocks(result), forKey: key, cost: source.utf8.count)
+        return result
+    }
+    private static func parseLocated(_ source: String, style: MarkdownStyle) -> [(offset: Int, block: MarkdownBlock)] {
+        let options = AttributedString.MarkdownParsingOptions(allowsExtendedAttributes: true, interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible, appliesSourcePositionAttributes: true)
         guard let parsed = try? AttributedString(markdown: source, options: options) else {
-            return source.isEmpty ? [] : [.paragraph(inline(AttributedString(source), style: style, size: style.baseSize))]
+            return source.isEmpty ? [] : [(0, .paragraph(inline(AttributedString(source), style: style, size: style.baseSize)))]
         }
+        var lineOffsets = [0]
+        for (offset, byte) in source.utf8.enumerated() where byte == 10 { lineOffsets.append(offset + 1) }
         var leaves: [Leaf] = []
         let characters = parsed.characters
         for run in parsed.runs {
@@ -148,9 +151,18 @@ enum TranscriptMarkdown {
                 default: break
                 }
             }
-            leaves.append(Leaf(path: path, fragment: code ? AttributedString() : inline(run, text: plain, style: style, size: size, heading: heading), plain: plain))
+            leaves.append(Leaf(sourceOffset: lineOffsets[min(lineOffsets.count - 1, max(0, (run.markdownSourcePosition?.startLine ?? 1) - 1))], path: path, fragment: code ? AttributedString() : inline(run, text: plain, style: style, size: size, heading: heading), plain: plain))
         }
-        return build(leaves[...], depth: 0, style: style)
+        var result: [(offset: Int, block: MarkdownBlock)] = []
+        var index = 0
+        while index < leaves.count {
+            var end = index + 1
+            while end < leaves.count, leaves[end].component(at: 0)?.identity == leaves[index].component(at: 0)?.identity { end += 1 }
+            let group = leaves[index..<end]
+            result.append(contentsOf: build(group, depth: 0, style: style).map { (leaves[index].sourceOffset, $0) })
+            index = end
+        }
+        return result
     }
 
     /// One level of a run's block nesting: what kind of block, and which one.
@@ -159,6 +171,7 @@ enum TranscriptMarkdown {
         let identity: Int
     }
     private struct Leaf {
+        var sourceOffset: Int
         var path: [Component]
         /// The run dressed for its block.
         var fragment: AttributedString

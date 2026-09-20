@@ -51,13 +51,19 @@ final class MarkdownStreamingTests: XCTestCase {
         XCTAssertEqual(TranscriptMarkdown.settledCuts(in: "a\n\n    indented code\n\nb").count, 1, "an indented line is not a cut; the margin line is")
     }
 
-    func testEveryPartialReplyReadsAsItsWholeParse() {
+    func testEveryPartialReplyRetainsSourceAndReconcilesToCanonicalFinal() {
+        let state = StreamingMarkdownState()
         let bytes = Array(reply.utf8)
         var offset = 1
         var checked = 0
         while offset <= bytes.count {
             if let partial = String(bytes: bytes[0..<offset], encoding: .utf8) {
-                XCTAssertEqual(TranscriptMarkdown.streamingBlocks(partial), TranscriptMarkdown.parse(partial), "at \(offset) bytes")
+                let rendered = state.update(partial, style: .prose, streaming: true)
+                XCTAssertEqual(state.source, partial)
+                XCTAssertEqual(Set(rendered.map(\.id)).count, rendered.count)
+                XCTAssertFalse(rendered.isEmpty)
+                let final = StreamingMarkdownState().update(partial, style: .prose, streaming: false)
+                XCTAssertEqual(final.map(\.block), TranscriptMarkdown.parse(partial), "at \(offset) bytes")
                 checked += 1
             }
             offset += 7

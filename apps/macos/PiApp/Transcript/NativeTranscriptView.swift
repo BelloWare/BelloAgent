@@ -41,7 +41,15 @@ struct ContentGeometry: Equatable {
     @Published private(set) var liveTurn: TurnSummary?
     @Published private(set) var detached = false
     /// The session's run state; while it is busy the bar stays up even between rows.
-    var state = "idle" { didSet { if state != oldValue { recomputeLive() } } }
+    var state = "idle" { didSet {
+        if state != oldValue {
+            if !busy, let pending=pendingPresentation, let session=presentationSession {
+                presentationTask?.cancel(); presentationTask=nil; pendingPresentation=nil
+                receive(pending.messages, viewportRequest:pending.request, from:session)
+            }
+            recomputeLive()
+        }
+    } }
     var busy: Bool { ["queued", "running", "stopping", "compacting"].contains(state) }
 
     var onAnchorChanged: (TranscriptAnchor?) -> Void = { _ in }
@@ -49,6 +57,14 @@ struct ContentGeometry: Equatable {
     var onLoadEarlier: (String) -> Void = { _ in }
 
     private var subscription: AnyCancellable?
+    private var pendingPresentation: (messages: [TranscriptMessage], request: Int)?
+    private var presentationTask: Task<Void, Never>?
+    private weak var presentationSession: SessionDisplay?
+    private var lastPresentationAt: TimeInterval = 0
+    var pendingPresentationCount: Int { presentationTask == nil ? 0 : 1 }
+    /// Internal benchmark seam: zero measures every input delta separately.
+    var presentationInterval: TimeInterval = 1 / 30
+
     private(set) var sessionID: String?
     /// The bound session's disclosure store, used by the native document.
     private(set) var disclosure: TranscriptDisclosure?
@@ -93,7 +109,7 @@ struct ContentGeometry: Equatable {
     }
     deinit {
         for observer in windowObservers + scrollObservers { NotificationCenter.default.removeObserver(observer) }
-        freshTask?.cancel(); reportTask?.cancel()
+        freshTask?.cancel(); reportTask?.cancel(); presentationTask?.cancel()
     }
 
     // MARK: Where the reader is
@@ -116,6 +132,8 @@ struct ContentGeometry: Equatable {
     func bind(_ session: SessionDisplay) {
         guard sessionID != session.id else { return }
         subscription?.cancel(); subscription = nil
+        presentationTask?.cancel(); presentationTask = nil; pendingPresentation = nil
+        presentationSession = session; lastPresentationAt = 0
         freshTask?.cancel(); freshTask = nil
         reportTask?.cancel(); reportTask = nil
         // The chat the reader left keeps nothing here. The pane is kept
@@ -133,7 +151,7 @@ struct ContentGeometry: Equatable {
         snapshot = nil; liveTurn = nil; detached = false
         subscription = session.transcriptChanges.combineLatest(session.$viewportRequest).sink { [weak self, weak session] messages, request in
             guard let self, let session else { return }
-            self.receive(messages, viewportRequest: request, from: session)
+            self.present(messages, viewportRequest: request, from: session)
         }
     }
     private func reset() {
@@ -154,6 +172,35 @@ struct ContentGeometry: Equatable {
             page.removeFirst(drop)
         }
         return page
+    }
+
+    /// One leading and one trailing presentation per pane, not a debounce:
+    /// raw history has already been updated before it reaches this boundary.
+    /// Tool transitions, first content and every terminal state flush promptly.
+    private func present(_ messages: [TranscriptMessage], viewportRequest request: Int, from session: SessionDisplay) {
+        let previous = snapshot?.messages.last, last = messages.last
+        let textDelta = viewportRequest == request && snapshot?.messages.count == messages.count &&
+            previous?.id == last?.id && previous?.isStreaming == true && last?.isStreaming == true &&
+            previous?.tools == last?.tools && previous?.toolCallCount == last?.toolCallCount &&
+            (!(previous?.text.isEmpty ?? true) || !(previous?.thinking?.isEmpty ?? true)) &&
+            !((previous?.text.isEmpty ?? true) && !(last?.text.isEmpty ?? true)) &&
+            snapshot?.messages.dropLast() == messages.dropLast() && previous?.state == last?.state
+        let delay = presentationInterval - (ProcessInfo.processInfo.systemUptime - lastPresentationAt)
+        if textDelta, delay > 0 {
+            pendingPresentation = (messages, request)
+            guard presentationTask == nil else { return }
+            presentationTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self else { return }
+                self.presentationTask = nil
+                guard let pending = self.pendingPresentation, let session = self.presentationSession else { return }
+                self.pendingPresentation = nil
+                self.receive(pending.messages, viewportRequest: pending.request, from: session)
+            }
+        } else {
+            presentationTask?.cancel(); presentationTask = nil; pendingPresentation = nil
+            receive(messages, viewportRequest: request, from: session)
+        }
     }
 
     private func receive(_ messages: [TranscriptMessage], viewportRequest request: Int, from session: SessionDisplay) {
@@ -191,6 +238,7 @@ struct ContentGeometry: Equatable {
         let ids = Set(items.map(\.id))
         frames = frames.filter { ids.contains($0.key) }
         sequence += 1
+        lastPresentationAt = ProcessInfo.processInfo.systemUptime
         let next = Snapshot(sessionID: session.id, messages: page, items: items, fresh: fresh, sequence: sequence)
         let live = Self.liveTurn(in: items, busy: busy)
         // The scroll document always adopts its final geometry immediately.

@@ -6,12 +6,15 @@ import SwiftUI
 /// This is not another scroll view and does not truncate the source or copy
 /// targets. Small replies keep the simpler SwiftUI stack.
 struct NativeMarkdownSurface: NSViewRepresentable {
-    static let minimumBlockCount = 8
+    nonisolated static let minimumBlockCount = 8
     let blocks: [MarkdownBlock]
     let style: MarkdownStyle
     let capsWidth: Bool
     let streaming: Bool
     let headings: [MarkdownCopyTarget]
+    var identities: [MarkdownBlockIdentity]? = nil
+    var sourceText: String? = nil
+    var sourceRanges: [Range<Int>]? = nil
 
     func makeNSView(context: Context) -> NativeMarkdownContainer {
         let view = NativeMarkdownContainer()
@@ -20,7 +23,7 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     }
     func updateNSView(_ view: NativeMarkdownContainer, context: Context) {
         view.update(blocks: blocks, style: style, capsWidth: capsWidth, streaming: streaming,
-                    headings: headings, environment: TranscriptRowEnvironment(context.environment))
+                    headings: headings, environment: TranscriptRowEnvironment(context.environment), identities: identities, sourceText: sourceText, sourceRanges: sourceRanges)
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeMarkdownContainer, context: Context) -> CGSize? {
         nsView.measure(width: proposal.width)
@@ -59,6 +62,8 @@ private struct NativeHostedMarkdownBlock: View {
     private(set) var view: NSHostingView<NativeHostedMarkdownBlock>?
     private var item: NativeMarkdownItem
     private var nativeCodeChoice: Bool?
+    private weak var selectionEditor: NSTextView?
+    private var restoredSelection: (range: NSRange, rendered: String)?
     private var width: CGFloat = TranscriptMetrics.pageWidth
     private var sizes: [CGSize] = []
     var frame = CGRect.zero
@@ -80,8 +85,14 @@ private struct NativeHostedMarkdownBlock: View {
     /// Geometry and source outlive the expensive native tree. No sizing
     /// surrogate is shared, and a selected owner is excluded by the caller.
     func releaseDetachedHost() { if view?.superview == nil { view = nil } }
-    @discardableResult func update(_ item: NativeMarkdownItem) -> Bool {
+    @discardableResult func update(_ item: NativeMarkdownItem, source: () -> String? = { nil }) -> Bool {
         guard self.item != item else { return false }
+        if case .paragraph(let oldText)=self.item.block, case .paragraph(let newText)=item.block,
+           let host=view, let editor=host.window?.firstResponder as? NSTextView,
+           let field=editor.delegate as? NSTextField, field.isDescendant(of:host),
+           let raw=source(), let range=MarkdownSelection.canonicalRange(editor.selectedRange(), literal:String(oldText.characters), source:raw, rendered:String(newText.characters), keepsSoftBreaks:item.style.keepsSoftBreaks) {
+            selectionEditor=editor; restoredSelection=(range,String(newText.characters))
+        }
         // Retain the mounted leaf decision across idle host reclamation. A
         // completed short fence that began live must recreate the same TextKit
         // renderer, so its cached exact height still describes the new host.
@@ -112,6 +123,7 @@ private struct NativeHostedMarkdownBlock: View {
         if sizes.count == 4 { sizes.removeFirst() }
         sizes.append(size)
         measurementCount += 1
+        restoreSelection()
         return size
     }
     func setWidth(_ width: CGFloat) {
@@ -124,6 +136,15 @@ private struct NativeHostedMarkdownBlock: View {
         let view = host()
         if view.frame != frame { view.frame = frame }
         if view.superview !== container { container.addSubview(view) }
+        restoreSelection()
+    }
+    private func restoreSelection() {
+        guard let selection=restoredSelection, let editor=selectionEditor,
+              view?.window?.firstResponder === editor else { return }
+        // Do not modify attributed content or take first responder away from
+        // the user. SwiftUI owns the text update; we restore only its selection.
+        guard editor.string == selection.rendered else { return }
+        editor.setSelectedRange(selection.range); restoredSelection=nil; selectionEditor=nil
     }
 }
 
@@ -134,6 +155,8 @@ private struct NativeHostedMarkdownBlock: View {
         var total: CGFloat
     }
     private var blocks: [NativeMarkdownBlockHost] = []
+    private var identities: [MarkdownBlockIdentity] = []
+    var blockOwnerIdentities: [ObjectIdentifier] { blocks.map(ObjectIdentifier.init) }
     private var layouts: [Layout] = []
     private var laidOutWidth: CGFloat?
     private var invalidationScheduled = false
@@ -153,10 +176,17 @@ private struct NativeHostedMarkdownBlock: View {
     deinit { if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
 
     func update(blocks source: [MarkdownBlock], style: MarkdownStyle, capsWidth: Bool, streaming: Bool,
-                headings: [MarkdownCopyTarget], environment: TranscriptRowEnvironment) {
+                headings: [MarkdownCopyTarget], environment: TranscriptRowEnvironment, identities: [MarkdownBlockIdentity]? = nil, sourceText: String? = nil, sourceRanges: [Range<Int>]? = nil) {
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownUpdateSeconds += TranscriptLayoutClock.now - clock } }
-        var changed = blocks.count != source.count, headingIndex = 0
+        var ids = identities?.count == source.count ? identities! : source.indices.map { MarkdownBlockIdentity(generation: 0, sourceOffset: $0) }
+        var seen = Set<MarkdownBlockIdentity>()
+        for index in ids.indices {
+            while !seen.insert(ids[index]).inserted { ids[index].component += 1 }
+        }
+        var changed = self.identities != ids, headingIndex = 0
+        let old = Dictionary(uniqueKeysWithValues: zip(self.identities, blocks))
+        var next: [NativeMarkdownBlockHost] = []
         for (index, block) in source.enumerated() {
             var heading: MarkdownCopyTarget?
             if case .heading = block {
@@ -165,13 +195,20 @@ private struct NativeHostedMarkdownBlock: View {
             }
             let item = NativeMarkdownItem(block: block, style: style, capsWidth: capsWidth,
                                           caret: streaming && index == source.count - 1, headingTarget: heading, environment: environment)
-            if blocks.indices.contains(index) { if blocks[index].update(item) { changed = true } }
-            else { blocks.append(NativeMarkdownBlockHost(item: item)) }
+            if let retained = old[ids[index]] {
+                if retained.update(item, source: {
+                    guard let sourceText, let sourceRanges, sourceRanges.indices.contains(index) else { return nil }
+                    let range=sourceRanges[index], bytes=sourceText.utf8
+                    guard range.lowerBound>=0, range.upperBound<=bytes.count else { return nil }
+                    let start=bytes.index(bytes.startIndex,offsetBy:range.lowerBound), end=bytes.index(start,offsetBy:range.count)
+                    return String(decoding:bytes[start..<end],as:UTF8.self)
+                }) { changed = true }
+                next.append(retained)
+            } else { next.append(NativeMarkdownBlockHost(item: item)); changed = true }
         }
-        if blocks.count > source.count {
-            for block in blocks.dropFirst(source.count) { block.view?.removeFromSuperview() }
-            blocks.removeLast(blocks.count - source.count)
-        }
+        let retained = Set(ids)
+        for (id, block) in old where !retained.contains(id) { block.view?.removeFromSuperview() }
+        blocks = next; self.identities = ids
         guard changed else { return }
         layouts.removeAll(keepingCapacity: true)
         laidOutWidth = nil

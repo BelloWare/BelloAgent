@@ -148,14 +148,19 @@ struct MarkdownBodyView: View {
     var capsWidth = true
     var streaming = false
     var copyTargets: [MarkdownCopyTarget] = []
+    var sourceIdentity = ""
+    @State private var rendering = StreamingMarkdownState()
     @State private var hovering = false
     var body: some View {
-        let blocks = streaming ? TranscriptMarkdown.streamingBlocks(source, style: style) : TranscriptMarkdown.blocks(source, style: style)
+        let records = rendering.update(source, style: style, streaming: streaming, identity: sourceIdentity)
+        let blocks = records.map(\.block)
         let headings = copyTargets.filter { if case .section = $0.kind { return true }; return false }
         let introduction = copyTargets.first { $0.kind == .introduction || $0.kind == .whole }
         Group {
-            if blocks.count >= NativeMarkdownSurface.minimumBlockCount {
-                NativeMarkdownSurface(blocks: blocks, style: style, capsWidth: capsWidth, streaming: streaming, headings: headings)
+            if rendering.usesNative {
+                NativeMarkdownSurface(blocks: blocks, style: style, capsWidth: capsWidth, streaming: streaming, headings: headings, identities: records.map(\.id), sourceText: source, sourceRanges: records.map(\.range))
+                    .frame(minHeight: blocks.isEmpty && streaming ? 22 : nil)
+                    .overlay(alignment: .leading) { if blocks.isEmpty && streaming { WaitingDots() } }
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     if blocks.isEmpty && streaming { WaitingDots() }
@@ -175,6 +180,7 @@ struct MarkdownBodyView: View {
         }
         .onHover { hovering = $0 }
         .textSelection(.enabled)
+        .piStableLayout()
     }
     /// The nth heading block copies the nth heading section the scanner found.
     private func headingTarget(_ block: MarkdownBlock, headings: [MarkdownCopyTarget], blocks: [MarkdownBlock], index: Int) -> MarkdownCopyTarget? {
@@ -257,17 +263,19 @@ struct MarkdownBlockView: View {
         }
     }
     @ViewBuilder private func proseText(_ text: AttributedString) -> some View {
-        if caret && !reduceMotion {
-            TimelineView(.periodic(from: .now, by: 0.5)) { context in
-                let on = Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
-                Text(text) + Text(" ▍").foregroundColor(on ? TranscriptPalette.accent : .clear)
+        Text(text).lineSpacing(style.baseSize * 0.35)
+            .overlay(alignment: .bottomTrailing) {
+                // Blinking changes only this decoration. The selectable text
+                // field and its attributed string do not change on a blink or
+                // when the reply finishes.
+                if caret {
+                    TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                        Rectangle().fill(TranscriptPalette.accent).frame(width: 2, height: style.baseSize)
+                            .opacity(reduceMotion || Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 0 ? 1 : 0)
+                    }.offset(x: 5).allowsHitTesting(false).accessibilityHidden(true)
+                }
             }
-            .lineSpacing(style.baseSize * 0.35)
-        } else if caret {
-            (Text(text) + Text(" ▍").foregroundColor(TranscriptPalette.accent)).lineSpacing(style.baseSize * 0.35)
-        } else {
-            Text(text).lineSpacing(style.baseSize * 0.35)
-        }
+
     }
 }
 
@@ -513,7 +521,7 @@ struct MessageRowView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             } else if !(message.role == "assistant" && message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(message.tools ?? []).isEmpty) {
                 // A reply that only called tools keeps its row for anchors and receipts, but shows no body.
-                MarkdownBodyView(source: message.text, streaming: message.isStreaming, copyTargets: copyTargets).equatable()
+                MarkdownBodyView(source: message.text, streaming: message.isStreaming, copyTargets: copyTargets, sourceIdentity: message.id).equatable()
             }
             if message.truncated == true {
                 Text("Display preview truncated. Full retained content is available in the native message viewer.").font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted)
@@ -1230,7 +1238,7 @@ extension BlockRowView: Equatable {
 }
 extension MarkdownBodyView: Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool {
-        a.source == b.source && a.style == b.style && a.capsWidth == b.capsWidth && a.streaming == b.streaming && a.copyTargets == b.copyTargets
+        a.source == b.source && a.style == b.style && a.capsWidth == b.capsWidth && a.streaming == b.streaming && a.copyTargets == b.copyTargets && a.sourceIdentity == b.sourceIdentity
     }
 }
 extension MarkdownBlockView: Equatable {
