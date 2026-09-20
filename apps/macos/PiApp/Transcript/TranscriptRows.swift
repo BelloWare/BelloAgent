@@ -1152,6 +1152,11 @@ struct TurnLineView: View {
         if !usage.isEmpty { lines.append("Gateway-reported usage: " + usage) }
         if let model = model ?? turn.accounting.model { lines.append("Model: " + model) }
         if turn.live { lines.append("Still running; figures are incomplete.") }
+        for (index, request) in turn.requests.enumerated() {
+            guard let accounting = request.accounting else { continue }
+            let figures = TranscriptActivity.accountingPresentation(accounting)
+            lines.append("\nRequest \(index + 1) · message \(request.id)\n" + figures.summary + "\n" + figures.detail)
+        }
         return lines.joined(separator: "\n")
     }
     static func counts(_ turn: TurnSummary, includeTools: Bool = true) -> String {

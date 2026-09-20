@@ -14,6 +14,7 @@ final class ToolCallSummaryTests: XCTestCase {
         XCTAssertEqual(ToolCallSummary(tools: [tool(state: "recorded")]).label, "1 tool call · 1 outcome unknown")
         XCTAssertEqual(ToolCallSummary(tools: [tool(state: "cancelled")]).label, "1 tool call · 1 skipped")
         XCTAssertEqual(ToolCallSummary(tools: [tool(name: "mcp")]).total, 1)
+        XCTAssertEqual(TranscriptActivity.changedFiles([tool(state: "recorded", name: "write")]), 0, "An imported call with no outcome cannot prove a write succeeded")
     }
     func testProvisionalArgumentsNeverInflateValidatedCount() {
         var row = TranscriptMessage(id: "a", role: "assistant", text: "", tools: [tool(state: "preparing")], state: "streaming", toolCallCount: 0)
@@ -37,5 +38,23 @@ final class ToolCallSummaryTests: XCTestCase {
         let items = TranscriptActivity.blocks(of: [row, .init(id: "final", role: "assistant", text: "Done")])
         guard case .block(let block) = items.last else { return XCTFail("Missing group") }
         XCTAssertEqual(block.turn?.tools, 64); XCTAssertEqual(ToolCallSummary(rows: block.replies).total, 64)
+    }
+}
+
+extension ToolCallSummaryTests {
+    @MainActor func testTurnInformationCopyIncludesCountsTimingUsageAndUncertainty() throws {
+        let rows=[TranscriptMessage(id:"u",role:"user",text:"ask",at:1000),
+                  TranscriptMessage(id:"a",role:"assistant",text:"answer",state:"streaming",at:2000,turn:"u",modelMs:750,toolCallCount:4)]
+        let blocks=TranscriptActivity.blocks(of:rows)
+        let turn=try XCTUnwrap(blocks.compactMap { item -> TurnSummary? in
+            if case .block(let block)=item { return block.turn }; return nil
+        }.last)
+        let copied=TurnLineView.copyText(turn,model:"gateway-model")
+        XCTAssertTrue(copied.contains("4 tool calls")); XCTAssertTrue(copied.contains("Model time:"))
+        XCTAssertTrue(copied.contains("Started:")); XCTAssertTrue(copied.contains("gateway-model"))
+        XCTAssertTrue(copied.contains("incomplete"))
+        var partial=turn; partial.partial=true; partial.toolCountPartial=true
+        XCTAssertTrue(TurnLineView.copyText(partial).contains("partial loaded history"))
+        XCTAssertTrue(TurnLineView.copyText(partial).contains("at least 4 tool calls"))
     }
 }

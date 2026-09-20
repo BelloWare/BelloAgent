@@ -257,7 +257,7 @@ enum TranscriptActivity {
     /// Distinct files that completed write or edit calls touched.
     static func changedFiles(_ tools: [ToolView]) -> Int {
         var files = Set<String>()
-        for tool in tools where outcome(of: tool) == .done {
+        for tool in tools where tool.state == "completed" {
             let description = describe(tool)
             if description.kind == .write { files.insert(fileKey(description, tool)) }
         }
