@@ -59,7 +59,7 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
     /// The per-route split for the same filter as the session list; nil while it loads.
     @Published private(set) var modelSummaries: [DashboardModelSummary]?
     /// First request page per expanded session, keyed by session id.
-    @Published private(set) var sessionRequests: [String: DashboardSnapshot] = [:]
+    @Published private(set) var sessionRequests: [String: DashboardRequestPage] = [:]
     @Published var expandedSessions: Set<String> = []
     private var sessionTasks: [String: Task<Void, Never>] = [:]
     private var sessionRevision = 0
@@ -79,9 +79,11 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
     private var appliedPreset = DashboardWindowPreset.day
     private var observers: Set<AnyCancellable> = []
     typealias Query = @Sendable (PayloadArchive, DashboardFilter, Int) async throws -> DashboardSnapshot
+    typealias PageQuery = @Sendable (PayloadArchive, DashboardFilter, Int) async throws -> DashboardRequestPage
     typealias SessionQuery = @Sendable (PayloadArchive, DashboardFilter, Int) async throws -> DashboardSessionPage
     typealias ModelQuery = @Sendable (PayloadArchive, DashboardFilter) async throws -> [DashboardModelSummary]
     private let query: Query
+    private let pageQuery: PageQuery
     private let sessionQuery: SessionQuery
     private let modelQuery: ModelQuery
 
@@ -89,14 +91,18 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
         try await archive.dashboard(filter, offset: offset)
     }
 
+    private nonisolated static func queryPage(_ archive: PayloadArchive, _ filter: DashboardFilter, _ offset: Int) async throws -> DashboardRequestPage {
+        try await archive.requestPage(filter, offset: offset)
+    }
     private nonisolated static func querySessions(_ archive: PayloadArchive, _ filter: DashboardFilter, _ offset: Int) async throws -> DashboardSessionPage {
         try await archive.sessionSummaries(filter, offset: offset)
     }
     private nonisolated static func queryModels(_ archive: PayloadArchive, _ filter: DashboardFilter) async throws -> [DashboardModelSummary] {
         try await archive.modelSummaries(filter)
     }
-    init(query: @escaping Query = ReportController.queryArchive, sessionQuery: @escaping SessionQuery = ReportController.querySessions, modelQuery: @escaping ModelQuery = ReportController.queryModels) {
+    init(query: @escaping Query = ReportController.queryArchive, pageQuery: @escaping PageQuery = ReportController.queryPage, sessionQuery: @escaping SessionQuery = ReportController.querySessions, modelQuery: @escaping ModelQuery = ReportController.queryModels) {
         self.query = query
+        self.pageQuery = pageQuery
         self.sessionQuery = sessionQuery
         self.modelQuery = modelQuery
         $preferences.dropFirst().removeDuplicates().sink { [weak self] _ in self?.scheduleRefresh() }.store(in: &observers)
@@ -260,15 +266,20 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
             do {
                 let result = try await query(model.traces, applied, 0)
                 guard isCurrent(id) else { return }
-                async let aliasValues = model.traces.distinctAliases(applied)
-                async let modelValues = model.traces.distinctModels(applied)
-                async let purposeValues = model.traces.distinctPurposes(applied)
-                let values = try await (aliasValues, modelValues, purposeValues)
-                guard isCurrent(id) else { return }
                 guard revision == filterRevision else { dirty = true; continue }
                 let selection = brush, selectionRevision = brushRevision
                 var selected: DashboardSnapshot?
                 if let selection, selection.fits(applied) { selected = try await query(model.traces, selection.narrowed(applied), 0) }
+                guard isCurrent(id) else { return }
+                guard revision == filterRevision, selectionRevision == brushRevision else { dirty = true; continue }
+                snapshot = result; appliedPreset = preset; filtersPending = false
+                focused = selected
+                sessions = nil; modelSummaries = nil
+                failure = nil
+                async let aliasValues = model.traces.distinctAliases(applied)
+                async let modelValues = model.traces.distinctModels(applied)
+                async let purposeValues = model.traces.distinctPurposes(applied)
+                let values = try await (aliasValues, modelValues, purposeValues)
                 guard isCurrent(id) else { return }
                 let groupFilter = selection.flatMap { $0.fits(applied) ? $0.narrowed(applied) : nil } ?? applied
                 let grouped = try await sessionQuery(model.traces, groupFilter, 0)
@@ -309,9 +320,10 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
             guard let self else { return }
             defer { self.finishQuery(id) }
             do {
-                let result = try await self.query(model.traces, selection?.narrowed(applied) ?? applied, offset)
+                let result = try await self.pageQuery(model.traces, selection?.narrowed(applied) ?? applied, offset)
                 guard self.isCurrent(id), revision == self.filterRevision, selectionRevision == self.brushRevision, self.snapshot?.filter == applied else { return }
-                if selection != nil { self.focused = result } else { self.snapshot = result }
+                if selection != nil { self.focused?.replaceRows(result) } else { self.snapshot?.replaceRows(result) }
+                self.notice = "Request rows refreshed at \(result.asOf.formatted(date: .omitted, time: .standard)). Charts and totals remain from the last report refresh."
                 self.failure = nil
             } catch {
                 guard self.isCurrent(id), revision == self.filterRevision, selectionRevision == self.brushRevision else { return }
@@ -443,7 +455,7 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
                 self.visible && !Task.isCancelled && self.expandedSessions.contains(id) && revision == self.filterRevision && selectionRevision == self.brushRevision && expandedRevision == self.sessionRevision
             }
             do {
-                let result = try await self.query(model.traces, applied, 0)
+                let result = try await self.pageQuery(model.traces, applied, 0)
                 guard current() else { return }
                 self.sessionRequests[id] = result
             } catch {

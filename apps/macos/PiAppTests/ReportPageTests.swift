@@ -282,7 +282,10 @@ final class ReportPageTests: XCTestCase {
         let (model, _) = try makeModel()
         try await model.reloadConfiguration(); try await record(model)
         let probe = ReportQueryProbe()
-        let report = ReportController(query: { try await probe.run($0, $1, $2) }); report.attach(model)
+        let report = ReportController(query: { try await probe.run($0, $1, $2) }, pageQuery: { archive, filter, offset in
+            let result = try await probe.run(archive, filter, offset)
+            return DashboardRequestPage(filter: result.filter, selectedRequests: result.selectedRequests, requests: result.requests, offset: result.offset)
+        }); report.attach(model)
         await report.prepare(); report.toggleSession("s")
         for _ in 0..<200 where report.sessionRequests["s"] == nil { try await Task.sleep(for: .milliseconds(5)) }
         XCTAssertEqual(report.sessionRequests["s"]?.selectedRequests, 1)

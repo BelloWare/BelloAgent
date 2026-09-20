@@ -160,6 +160,15 @@ extension GatewayTotals {
     }
 }
 
+struct DashboardRequestPage: Sendable {
+    let filter: DashboardFilter
+    let selectedRequests: Int
+    let requests: [DashboardRequest]
+    let offset: Int
+    var asOf = Date()
+    var hasNext: Bool { offset + requests.count < selectedRequests }
+}
+
 struct DashboardSnapshot: Sendable {
     let filter: DashboardFilter
     let scopeCounts: DashboardCounts
@@ -168,12 +177,19 @@ struct DashboardSnapshot: Sendable {
     let streaming: DashboardPercentiles
     let http: DashboardPercentiles
     let buckets: [DashboardBucket]
-    let requests: [DashboardRequest]
-    let offset: Int
+    var requests: [DashboardRequest]
+    var offset: Int
+    var summaryAsOf = Date()
+    var rowsAsOf = Date()
+    var rowCount: Int?
     var gateway = GatewayTotals()
     /// Output throughput of the window's completed, measured requests, duration-weighted.
     var historicalRate = HistoricalOutputRate()
-    var hasNext: Bool { offset + requests.count < selectedRequests }
+    var hasNext: Bool { offset + requests.count < (rowCount ?? selectedRequests) }
+    mutating func replaceRows(_ page: DashboardRequestPage) {
+        guard filter == page.filter else { return }
+        requests = page.requests; offset = page.offset; rowsAsOf = page.asOf; rowCount = page.selectedRequests
+    }
 }
 
 extension PayloadArchive {
@@ -275,11 +291,36 @@ extension PayloadArchive {
         ])
     }
 
+    static let modelGroupLimit = 64, sessionPageSize = 64, distinctLimit = 256
+    func dashboard(_ filter: DashboardFilter, offset: Int = 0) async throws -> DashboardSnapshot {
+        try await dashboardReader().run { try $0.dashboard(filter, offset: offset) }
+    }
+    func requestPage(_ filter: DashboardFilter, offset: Int = 0) async throws -> DashboardRequestPage {
+        try await dashboardReader().run { try $0.requestPage(filter, offset: offset) }
+    }
+    func modelSummaries(_ filter: DashboardFilter) async throws -> [DashboardModelSummary] {
+        try await dashboardReader().run { try $0.modelSummaries(filter) }
+    }
+    func sessionSummaries(_ filter: DashboardFilter, offset: Int = 0) async throws -> DashboardSessionPage {
+        try await dashboardReader().run { try $0.sessionSummaries(filter, offset: offset) }
+    }
+    func distinctAliases(_ filter: DashboardFilter) async throws -> [String] {
+        try await dashboardReader().run { try $0.distinctAliases(filter) }
+    }
+    func distinctModels(_ filter: DashboardFilter) async throws -> [String] {
+        try await dashboardReader().run { try $0.distinctModels(filter) }
+    }
+    func distinctPurposes(_ filter: DashboardFilter) async throws -> [String] {
+        try await dashboardReader().run { try $0.distinctPurposes(filter) }
+    }
+}
+
+/// Executes only inside a short read transaction on the report worker.
+struct DashboardQueryEngine {
+    let db: CaptureDatabase
     func dashboard(_ filter: DashboardFilter, offset: Int = 0) throws -> DashboardSnapshot {
         try filter.validated()
         guard (0...100_000).contains(offset) else { throw CaptureFailure.unavailable }
-        try reconcile()
-        let db = try dashboardDatabase()
         let scope = dashboardPredicate(filter, status: false)
         let selected = dashboardPredicate(filter, status: true)
         let baseCounts = try db.rows("SELECT COUNT(dispatch) AS dispatched,SUM(dispatch IS NULL) AS unobserved FROM attempts WHERE \(scope.sql)", scope.values).first ?? [:]
@@ -297,8 +338,8 @@ extension PayloadArchive {
             }
         }
         let requestCount = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first?["n"]?.number ?? 0)
-        let summaryRow = try db.rows("SELECT \(Self.gatewayAggregateSQL),\(Self.historicalOutputRateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first ?? [:]
-        let gateway = Self.gatewayTotals(summaryRow)
+        let summaryRow = try db.rows("SELECT \(PayloadArchive.gatewayAggregateSQL),\(PayloadArchive.historicalOutputRateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first ?? [:]
+        let gateway = PayloadArchive.gatewayTotals(summaryRow)
         let ttft = try percentile(db, column: "ttft_ms", predicate: selected)
         let streaming = try percentile(db, column: "stream_ms", predicate: selected)
         let http = try percentile(db, column: "http_ms", predicate: selected)
@@ -309,8 +350,8 @@ extension PayloadArchive {
         for row in try db.rows("SELECT \(bucketSQL) AS bucket,COUNT(*) AS n FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY bucket", bucketArgs + selected.values) {
             if let i = row["bucket"]?.number.map(Int.init), buckets.indices.contains(i) { buckets[i].requests = Int(row["n"]?.number ?? 0) }
         }
-        for row in try db.rows("SELECT \(bucketSQL) AS bucket,\(Self.gatewayAggregateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY bucket", bucketArgs + selected.values) {
-            if let i = row["bucket"]?.number.map(Int.init), buckets.indices.contains(i) { buckets[i].gateway = Self.gatewayTotals(row) }
+        for row in try db.rows("SELECT \(bucketSQL) AS bucket,\(PayloadArchive.gatewayAggregateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY bucket", bucketArgs + selected.values) {
+            if let i = row["bucket"]?.number.map(Int.init), buckets.indices.contains(i) { buckets[i].gateway = PayloadArchive.gatewayTotals(row) }
         }
         for column in ["ttft_ms", "stream_ms", "http_ms"] {
             // Compute each bucket from raw samples. A global percentile above
@@ -326,6 +367,18 @@ extension PayloadArchive {
                 if column == "ttft_ms" { buckets[i].ttft = value } else if column == "stream_ms" { buckets[i].streaming = value } else { buckets[i].http = value }
             }
         }
+        let requests = try requestRows(selected, offset: offset)
+        return DashboardSnapshot(filter: filter, scopeCounts: counts, selectedRequests: requestCount, ttft: ttft, streaming: streaming, http: http, buckets: buckets, requests: requests, offset: offset, gateway: gateway, historicalRate: PayloadArchive.historicalOutputRate(summaryRow))
+    }
+
+    func requestPage(_ filter: DashboardFilter, offset: Int = 0) throws -> DashboardRequestPage {
+        try filter.validated()
+        guard (0...100_000).contains(offset) else { throw CaptureFailure.unavailable }
+        let selected = dashboardPredicate(filter, status: true)
+        let total = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first?["n"]?.number ?? 0)
+        return DashboardRequestPage(filter: filter, selectedRequests: total, requests: try requestRows(selected, offset: offset), offset: offset)
+    }
+    private func requestRows(_ selected: (sql: String, values: [CaptureSQLValue]), offset: Int) throws -> [DashboardRequest] {
         let rows = try db.rows("SELECT id,session,workspace,wall,purpose,api,alias,model,identity_status,reported_models,outcome,ttft_ms,stream_ms,http_ms,cost_usd,cost_status,cache_status,cache_read_tokens,cache_write_tokens,input_tokens,output_tokens,reasoning_tokens,reasoning_cost_usd,reasoning_cost_status FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL ORDER BY wall DESC,id DESC LIMIT 128 OFFSET ?", selected.values + [.integer(Int64(offset))])
         let requests = try rows.map { row -> DashboardRequest in
             guard let id = row["id"]?.string, let session = row["session"]?.string, let workspace = row["workspace"]?.string, let wall = row["wall"]?.double else { throw CaptureFailure.corrupt }
@@ -338,7 +391,7 @@ extension PayloadArchive {
             observation.reasoningCostStatus = row["reasoning_cost_status"]?.string ?? "unreported"
             return DashboardRequest(id: id, sessionID: session, workspaceID: workspace, wall: Date(timeIntervalSince1970: wall), purpose: row["purpose"]?.string ?? "", api: row["api"]?.string ?? "", alias: row["alias"]?.string ?? "", effectiveModel: row["model"]?.string, identityStatus: row["identity_status"]?.string ?? "unreported", reportedModels: row["reported_models"]?.string.flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) } ?? [], outcome: row["outcome"]?.string ?? "", ttft: row["ttft_ms"]?.double, streaming: row["stream_ms"]?.double, http: row["http_ms"]?.double, gateway: observation)
         }
-        return DashboardSnapshot(filter: filter, scopeCounts: counts, selectedRequests: requestCount, ttft: ttft, streaming: streaming, http: http, buckets: buckets, requests: requests, offset: offset, gateway: gateway, historicalRate: Self.historicalOutputRate(summaryRow))
+        return requests
     }
 
     static let modelGroupLimit = 64
@@ -347,8 +400,6 @@ extension PayloadArchive {
     /// and nearest-rank medians. Bounded to the busiest routes.
     func modelSummaries(_ filter: DashboardFilter) throws -> [DashboardModelSummary] {
         try filter.validated()
-        try reconcile()
-        let db = try dashboardDatabase()
         let selected = dashboardPredicate(filter, status: true)
         let reported = "identity_status='reported' AND model IS NOT NULL AND LENGTH(TRIM(model))>0 AND model<>alias"
         let normalized = """
@@ -362,7 +413,7 @@ extension PayloadArchive {
         let rows = try db.rows("""
         \(normalized)
         SELECT \(key),SUM(outcome='completed') AS completed,SUM(outcome IN ('failed','cancelled','truncated','interrupted')) AS problems,
-          \(Self.gatewayAggregateSQL),\(Self.historicalOutputRateSQL)
+          \(PayloadArchive.gatewayAggregateSQL),\(PayloadArchive.historicalOutputRateSQL)
         FROM selected GROUP BY \(key)
         ORDER BY requests DESC,alias COLLATE BINARY,api COLLATE BINARY,resolution_status COLLATE BINARY,resolved_model COLLATE BINARY LIMIT ?
         """, selected.values + [.integer(Int64(Self.modelGroupLimit))])
@@ -370,7 +421,7 @@ extension PayloadArchive {
             guard let api = row["api"]?.string, let alias = row["alias"]?.string, let status = row["resolution_status"]?.string else { throw CaptureFailure.corrupt }
             var summary = DashboardModelSummary(api: api, alias: alias, model: row["resolved_model"]?.string, status: status)
             summary.requests = Int(row["requests"]?.number ?? 0); summary.completed = Int(row["completed"]?.number ?? 0); summary.problems = Int(row["problems"]?.number ?? 0)
-            summary.gateway = Self.gatewayTotals(row); summary.rate = Self.historicalOutputRate(row)
+            summary.gateway = PayloadArchive.gatewayTotals(row); summary.rate = PayloadArchive.historicalOutputRate(row)
             return summary
         }
         for column in ["ttft_ms", "http_ms"] where !summaries.isEmpty {
@@ -393,14 +444,12 @@ extension PayloadArchive {
     func sessionSummaries(_ filter: DashboardFilter, offset: Int = 0) throws -> DashboardSessionPage {
         try filter.validated()
         guard (0...100_000).contains(offset) else { throw CaptureFailure.unavailable }
-        try reconcile()
-        let db = try dashboardDatabase()
         let selected = dashboardPredicate(filter, status: true)
         let total = Int(try db.rows("SELECT COUNT(DISTINCT session) AS n FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first?["n"]?.number ?? 0)
         let rows = try db.rows("""
         SELECT session,MIN(workspace) AS workspace,MIN(wall) AS first_wall,MAX(wall) AS last_wall,
         SUM(outcome='completed') AS completed,SUM(outcome IN ('failed','cancelled','truncated','interrupted')) AS problems,SUM(outcome='running') AS running,
-        \(Self.gatewayAggregateSQL)
+        \(PayloadArchive.gatewayAggregateSQL)
         FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY session ORDER BY last_wall DESC,session LIMIT ? OFFSET ?
         """, selected.values + [.integer(Int64(Self.sessionPageSize)), .integer(Int64(offset))])
         var sessions = try rows.map { row -> DashboardSessionSummary in
@@ -408,7 +457,7 @@ extension PayloadArchive {
             var summary = DashboardSessionSummary(sessionID: session, workspaceID: row["workspace"]?.string ?? "", first: Date(timeIntervalSince1970: first), last: Date(timeIntervalSince1970: last))
             summary.requests = Int(row["requests"]?.number ?? 0); summary.completed = Int(row["completed"]?.number ?? 0)
             summary.problems = Int(row["problems"]?.number ?? 0); summary.running = Int(row["running"]?.number ?? 0)
-            summary.gateway = Self.gatewayTotals(row)
+            summary.gateway = PayloadArchive.gatewayTotals(row)
             return summary
         }
         guard !sessions.isEmpty else { return DashboardSessionPage(filter: filter, sessions: [], total: total, offset: offset) }
@@ -440,8 +489,6 @@ extension PayloadArchive {
     static let distinctLimit = 256
     private func distinct(column: String, _ filter: DashboardFilter) throws -> [String] {
         try filter.validated()
-        try reconcile()
-        let db = try dashboardDatabase()
         let predicate = dashboardPredicate(filter, status: true, excluding: column)
         let rows = try db.rows("SELECT DISTINCT \(column) AS value FROM attempts WHERE \(predicate.sql) AND dispatch IS NOT NULL AND \(column) IS NOT NULL ORDER BY \(column) LIMIT ?", predicate.values + [.integer(Int64(Self.distinctLimit))])
         return rows.compactMap { $0["value"]?.string }.filter { !$0.isEmpty }

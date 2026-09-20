@@ -12,6 +12,8 @@ actor PayloadArchive {
     private static let maximumBodyWriters = 128
     let root: URL
     private var database: CaptureDatabase?
+    private var reportReader: DashboardReader?
+    private var closeTask: Task<Void, Never>?
     private var ownership: WorkspaceLock?
     private var legacyCipher: LegacyCaptureCipher?
     private var quota: Int64 = 1_073_741_824
@@ -42,6 +44,7 @@ actor PayloadArchive {
         self.didReconcile = didReconcile
     }
     func configure(key: Data? = nil, quota: Int64, bodyRetention: TimeInterval, metricRetention: TimeInterval) throws {
+        guard closeTask == nil else { throw CaptureFailure.busy }
         let next = try key.flatMap { $0.isEmpty ? nil : try LegacyCaptureCipher(key: $0) }
         guard quota > 0, bodyRetention > 0, metricRetention > 0 else { throw CaptureFailure.unavailable }
         if let database { try verifyLegacyKey(database, cipher: next) }
@@ -103,6 +106,14 @@ actor PayloadArchive {
     // Called only by actor-isolated dashboard extension methods. No UI receives
     // the connection or executes SQL; filters are typed and parameterized.
     func dashboardDatabase() throws -> CaptureDatabase { try ready() }
+    func dashboardReader() throws -> DashboardReader {
+        _ = try ready()
+        try reconcile()
+        if let reportReader { return reportReader }
+        let reader = DashboardReader(url: root.appendingPathComponent("requests.sqlite"))
+        reportReader = reader
+        return reader
+    }
     private func writerKey(_ id: String, _ kind: String) -> String { id + ":" + kind }
     private func record(_ id: String) throws -> [String: CaptureSQLValue] {
         let db = try ready()
@@ -668,10 +679,23 @@ actor PayloadArchive {
                 "attempts": try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE metrics_retained=1").first?["n"]?.number ?? 0,
                 "expiredRequests": try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE metrics_retained=0").first?["n"]?.number ?? 0]
     }
-    func close() throws {
+    func close() async throws {
         guard leases.isEmpty else { throw CaptureFailure.busy }
-        writers.removeAll(); database = nil; ownership = nil; legacyCipher = nil; nextReconciliation = -Double.infinity
+        if let closeTask { await closeTask.value; return }
+        let reader = reportReader; reportReader = nil
+        // Reject new writer/report work while the old read queue drains.
+        writers.removeAll(); database = nil; legacyCipher = nil; nextReconciliation = -Double.infinity
         chunkTotals = nil; eventIndexCount = nil
+        // Concurrent shutdown callers share one drain. Its task owns cleanup,
+        // so no second close can release the workspace lock before the reader
+        // finishes, or release a newly reopened archive's ownership afterward.
+        let task = Task {
+            await reader?.close()
+            ownership = nil
+            closeTask = nil
+        }
+        closeTask = task
+        await task.value
     }
 }
 

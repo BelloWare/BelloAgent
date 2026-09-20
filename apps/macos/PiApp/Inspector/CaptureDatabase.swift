@@ -26,24 +26,27 @@ enum CaptureSQLValue: Sendable {
     var data: Data? { if case .blob(let value) = self { value } else { nil } }
 }
 
-// Owned exclusively by PayloadArchive's actor. The wrapper makes lifetime
-// cleanup explicit without transferring an SQLite pointer between actors.
+// Each connection is owned exclusively by either PayloadArchive's actor or
+// DashboardReader's serial worker. SQLite pointers never cross those owners.
 final class CaptureDatabase: @unchecked Sendable {
     private var handle: OpaquePointer?
     // MARK: Test seams
     //
-    // Three counters SQLite already keeps. They cost one addition per statement
-    // and let a test pin the shape of a write instead of its wall clock.
+    // Execution/preparation counts plus SQLite's scan/sort counters let tests
+    // pin the shape of a write or query instead of depending on its wall clock.
 
     /// Rows visited by full table scans, from SQLite's own statement counters.
     /// Tests pin writes with it: a per-chunk or per-event cost that grows with
     /// the size of the archive shows up here long before it shows up in a timer.
     private(set) var scannedRows = 0
-    /// Prepared statements, and committed top-level transactions. Tests pin how
-    /// much work an operation costs without depending on a wall clock.
+    /// Executions, actual preparations, sort operations and transactions.
     private(set) var statements = 0
+    private(set) var preparations = 0
+    private(set) var sorts = 0
     private(set) var commits = 0
-    init(url: URL) throws {
+    private var prepared: [String: OpaquePointer] = [:]
+    private var preparedOrder: [String] = []
+    init(url: URL, readOnly: Bool = false) throws {
         // macOS exposes its temporary directory through /var -> /private/var.
         // Resolve the already-validated archive directory, while keeping the
         // database leaf subject to SQLite's no-follow check.
@@ -52,27 +55,53 @@ final class CaptureDatabase: @unchecked Sendable {
         // URL.resolvingSymlinksInPath deliberately shortens /private/var back
         // to /var on Darwin, so use realpath's bytes without URL normalization.
         let path = String(cString: parent) + "/" + url.lastPathComponent
-        guard sqlite3_open_v2(path, &handle, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK else {
+        guard sqlite3_open_v2(path, &handle, (readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE) | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK else {
             let code = sqlite3_extended_errcode(handle)
             sqlite3_close(handle); handle = nil; throw CaptureFailure.database("open", code)
         }
         do {
-            try execute("PRAGMA journal_mode=WAL")
-            try execute("PRAGMA synchronous=FULL")
+            if !readOnly { try execute("PRAGMA journal_mode=WAL"); try execute("PRAGMA synchronous=FULL") }
+            else { try execute("PRAGMA query_only=ON") }
             try execute("PRAGMA foreign_keys=ON")
             try execute("PRAGMA busy_timeout=3000")
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        } catch { sqlite3_close(handle); handle = nil; throw error }
+            if !readOnly { try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }
+        } catch { prepared.values.forEach { sqlite3_finalize($0) }; prepared = [:]; sqlite3_close(handle); handle = nil; throw error }
     }
-    deinit { sqlite3_close(handle) }
+    deinit { prepared.values.forEach { sqlite3_finalize($0) }; sqlite3_close(handle) }
+    /// Only the read worker installs this handler. Cancelling a report never
+    /// interrupts the independent durable capture connection.
+    func cancellation(_ token: ReportCancellation?) {
+        if let token {
+            sqlite3_progress_handler(handle, 1000, { pointer in
+                guard let pointer else { return 0 }
+                return Unmanaged<ReportCancellation>.fromOpaque(pointer).takeUnretainedValue().isCancelled ? 1 : 0
+            }, Unmanaged.passUnretained(token).toOpaque())
+        } else { sqlite3_progress_handler(handle, 0, nil, nil) }
+    }
+    func readSnapshot<T>(_ work: () throws -> T) throws -> T {
+        try execute("BEGIN DEFERRED")
+        do { let value = try work(); try execute("COMMIT"); return value }
+        catch { cancellation(nil); try? execute("ROLLBACK"); throw error }
+    }
     func execute(_ sql: String, _ values: [CaptureSQLValue] = []) throws { _ = try rows(sql, values) }
     func rows(_ sql: String, _ values: [CaptureSQLValue] = []) throws -> [[String: CaptureSQLValue]] {
-        var statement: OpaquePointer?
         statements += 1
-        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { throw CaptureFailure.database("prepare", sqlite3_extended_errcode(handle)) }
+        let statement: OpaquePointer
+        if let cached = prepared[sql] { statement = cached }
+        else {
+            var next: OpaquePointer?
+            preparations += 1
+            guard sqlite3_prepare_v2(handle, sql, -1, &next, nil) == SQLITE_OK, let next else {
+                throw CaptureFailure.database("prepare", sqlite3_extended_errcode(handle))
+            }
+            statement = next
+            if preparedOrder.count == 96 { sqlite3_finalize(prepared.removeValue(forKey: preparedOrder.removeFirst())) }
+            prepared[sql] = next; preparedOrder.append(sql)
+        }
         defer {
-            scannedRows += Int(sqlite3_stmt_status(statement, SQLITE_STMTSTATUS_FULLSCAN_STEP, 0))
-            sqlite3_finalize(statement)
+            scannedRows += Int(sqlite3_stmt_status(statement, SQLITE_STMTSTATUS_FULLSCAN_STEP, 1))
+            sorts += Int(sqlite3_stmt_status(statement, SQLITE_STMTSTATUS_SORT, 1))
+            sqlite3_reset(statement); sqlite3_clear_bindings(statement)
         }
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         for (offset, value) in values.enumerated() {
