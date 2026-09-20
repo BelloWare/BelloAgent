@@ -1,6 +1,7 @@
 # Bello Agent 0.1.62/build 66 acceptance — 2026-09-20
 
-Signed release validated; public verification is pending.
+**Public release verified at 2026-09-20 06:53:32 UTC.**
+Website: `3cb8726f66608b5cf4acbd5d12fbbcc99b24c745`.
 Release source: `2ec983143943e68230b4fbe383702a8015422b8b`. Later documentation-only commits do not change the packaged source.
 
 ## Scope and environment
@@ -127,4 +128,23 @@ regression checks reader cancellation, old-reader rejection and successful reope
 - No test bundle is embedded in the shipped application. No install/update
   rehearsal was run.
 
-Public product/download/feed checks are recorded after deployment.
+## Public verification
+
+- [Product page](https://belloware.com/bello-agent.html) links
+  [BelloAgent-0.1.62.dmg](https://belloware.com/assets/BelloAgent-0.1.62.dmg).
+- The downloaded archive matches the local SHA-256 above and its Sparkle
+  Ed25519 signature validates. Canonical `bello_agent.appcast.xml` and legacy
+  `pi_app.appcast.xml` are byte-identical to each other and the validated local feed.
+- Website commit `3cb8726f66608b5cf4acbd5d12fbbcc99b24c745`; Cloudflare check **106037307690** succeeded.
+- Public verification completed **2026-09-20 06:53:32 UTC**. Earlier reads during deployment
+  correctly rejected the previous feed; no stale feed was reported as current.
+- Source implementation commits and this final record are pushed to
+  `BelloWare/BelloAgent:main`. Matching final DMG is also in the session outbox.
+
+Reproduction commands use the repository's Swift package, `xcodebuild` with the
+named suites above, and `scripts/test-concurrent-native-host.py` against the
+staged optimized helper. The combined native test sets both `PI_REVIEW_VISUAL_LOAD=1`
+and `TEST_RUNNER_PI_REVIEW_VISUAL_LOAD=1`; rich-row measurements set both
+`PI_PERF_DELTA_BYTES=64` and its `TEST_RUNNER_` equivalent. Release/publication use
+`scripts/release.sh`, `scripts/publish-release.sh 0.1.62` and
+`scripts/verify-published.py` with the external incremental build root.

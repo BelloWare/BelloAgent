@@ -15,10 +15,10 @@ Read docs/Scrolling-Review-2026-09-19.md.
 Read docs/Topics-Review-2026-09-19.md.
 Read docs/Five-Session-Performance-Review-2026-09-19.md.
 Read docs/Crash-Audit-Implementation-2026-09-20.md and
-docs/validation/Bello-Agent-0.1.61-2026-09-20.md for the current crash-fix release
+docs/validation/Bello-Agent-0.1.61-2026-09-20.md for the prior crash-fix release
 status. Do not use subagents unless explicitly requested in the current owner request.
 Read docs/Performance-Review-0.1.62-2026-09-20.md and
- docs/validation/Bello-Agent-0.1.62-2026-09-20.md for the second performance review,
+docs/validation/Bello-Agent-0.1.62-2026-09-20.md for the second performance review,
 explicit PF01–PF09 deferrals and 0.1.62 publication status.
 Read the latest release record linked below. Current source and the latest
 validation record take precedence over historical counts and chat claims.
@@ -32,7 +32,20 @@ toolchain. Run independent suites in parallel, use stable incremental build
 caches and isolated per-run fixtures, and avoid routine full-gallery/full-matrix
 repeats. Follow the current test-selection policy in Swift-Test-Handoff.md.
 
-**Bello Agent 0.1.61/build 65 is publicly released** at
+**Bello Agent 0.1.62/build 66 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `2ec983143943e68230b4fbe383702a8015422b8b`
+and website `3cb8726f66608b5cf4acbd5d12fbbcc99b24c745`. The DMG measures **8,030,328 bytes (7.66 MiB)**,
+SHA-256 `896e7b488c70617aaa60aca496f68fae13a64f112ee5ee5ccf07c20000b93f76`. App/DMG signing and notarization, packaged helper/catalog smoke,
+public product link, identical canonical/legacy feeds and downloaded archive
+SHA-256/Ed25519 verification pass. Public verification: **2026-09-20 06:53:32 UTC**.
+Cloudflare check **106037307690** succeeded. Read the
+[release validation](validation/Bello-Agent-0.1.62-2026-09-20.md) and
+[PF01–PF09 dispositions](Performance-Review-0.1.62-2026-09-20.md).
+The release improves capture, report paging, context checks, tables and native
+view retention; rich-row and giant-answer cold-layout limits remain explicit.
+No subagents or installation/update rehearsals were used for this task.
+
+**Bello Agent 0.1.61/build 65 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source `62de9de0ed29be3a2be030b3b458b4e1cb8d996c`
 and website `f2b89f07be5850426c0350ec3712f0951fd98e44`. The DMG measures **8,103,822 bytes (7.73 MiB)**,
 SHA-256 `4d289ecdde0f518b5f361d4aae0d90505f2c1fc692d7bd89e0961a681387ab81`. Signing, notarization, packaged helper smoke,
