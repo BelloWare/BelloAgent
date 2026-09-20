@@ -6,6 +6,8 @@ import AppKit
 struct ContextInspector: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var session: SessionDisplay
+    @ObservedObject var footer: SessionMetrics
+    init(model: WorkspaceModel, session: SessionDisplay) { self.model=model; self.session=session; self.footer=session.footer }
     @State private var summary: [String: WireValue] = [:]
     @State private var section = "instructions"
     @State private var itemOffset = 0
@@ -28,7 +30,7 @@ struct ContextInspector: View {
         PiSheet("Context", subtitle: "Inspect instructions, tool schemas and every item in the prepared model input.", symbol:"square.stack.3d.up",width:1080,height:750) {
             VStack(alignment:.leading,spacing:PiSpacing.md) {
                 HStack(spacing:PiSpacing.lg) {
-                    Label(summary["mode"]?.string == "active-context" ? "Current running context" : "Next request preview",systemImage:"doc.text.magnifyingglass").font(PiFont.heading)
+                    Label(summary["mode"]?.string == "active-context" ? "Next request estimate during run" : "Next request preview",systemImage:"doc.text.magnifyingglass").font(PiFont.heading)
                     if let model = summary["model"]?.string { Text(model).font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
                     Spacer()
                     if meter.fraction != nil {
@@ -37,6 +39,19 @@ struct ContextInspector: View {
                     }
                 }
                 Text(explanation).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal:false,vertical:true)
+                if !footer.requestObservation.isEmpty || !footer.lastRequestObservation.isEmpty {
+                    let observation = RequestContextObservation(footer.requestObservation.isEmpty ? footer.lastRequestObservation : footer.requestObservation)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Reported request usage").font(PiFont.heading)
+                        Text(observation.details).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).textSelection(.enabled)
+                    }.padding(PiSpacing.sm).piInset()
+                }
+                if !footer.requestObservation.isEmpty, !footer.lastRequestObservation.isEmpty {
+                    DisclosureGroup("Previous request usage") {
+                        Text(RequestContextObservation(footer.lastRequestObservation).details)
+                            .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).textSelection(.enabled)
+                    }
+                }
                 if meter.fraction != nil { countDetails }
                 HSplitView {
                     VStack(spacing:PiSpacing.sm) {
@@ -72,7 +87,7 @@ struct ContextInspector: View {
             Button("Done") { dismiss() }
         } footer: {
             HStack {
-                Text("Request count and provenance match the context ring. Opaque provider state is shown as stored; captured HTTP remains separate.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
+                Text("Prepared replay estimates and reported request usage are separate. Opaque provider state is shown as stored; captured HTTP remains separate.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
                 Spacer()
                 Button { showCaptured = true } label: { Label("Actual Captured Requests",systemImage:"arrow.up.doc") }
             }

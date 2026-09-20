@@ -56,7 +56,7 @@ extension AgentSession {
         let record: JSON=["type":"compaction","summary":JSON(answer.message.text),"firstKeptEntryId":kept.first.map { JSON($0.id) } ?? .null,"nativeKeptIDs":.array(kept.map { JSON($0.id) }),"tokensBefore":tokensBefore.map { JSON($0) } ?? .null,"nativeRequestAttemptIds":.array((summary.requestAttemptIDs ?? []).map { JSON($0) })]
         summary.id=try journal?.append(record) ?? summary.id
         for attempt in summary.requestAttemptIDs ?? [] { await traces.outputs(attempt, messageIDs: [summary.id]) }
-        context=[summary]+kept; history.append(summary); visible.append(summary); boundary=context; contextBaseline=nil; currentContextCount=nil
+        context=[summary]+kept; history.append(summary); visible.append(summary); boundary=context; contextBaseline=nil; currentContextCount=nil; clearRequestObservation()
         recordDisplayChange(summary.id, at: observedAt)
         cumulativeUsage.observe(answer.usage)
         let compactMs=nowMS()-compactStart; turnModelMs += compactMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, compactMs)

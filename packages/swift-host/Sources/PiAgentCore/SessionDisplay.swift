@@ -158,6 +158,7 @@ extension AgentSession {
     // read separate from taking the display projection, including in tests.
     func snapshot(_ params: JSON, traceSnapshot: @Sendable () async -> (latest: JSON, mode: String)) async -> JSON {
         await flushRequestLinks()
+        if nowMS()-observationPublishedAt>=250 { publishObservation() }
         let revision=displayRevision
         let includesMessages = params["includeMessages"].flag != false && params["displayRevision"].text != revision
         let projection=includesMessages ? projectedDisplay() : displayProjection
@@ -173,6 +174,11 @@ extension AgentSession {
             }
         }
         var value: JSON=["sessionId":JSON(id),"seq":JSON(sequence),"state":JSON(state),"runStatus":JSON(runStatus),"retry":retryInfo,"settingsPending":JSON(pendingConfiguration != nil),"preflightError":errorMessage.map { JSON($0) } ?? .null,"side":parentInfo,"ephemeral":JSON(ephemeral),"keeping":false,"keepRequested":JSON(keepRequested),"keepError":.null,"queue":.array(queue.map { var v=$0.previewValue;v["kind"]="follow-up";return v }+steering.map { var v=$0.previewValue;v["kind"]="steering";v["text"]=JSON("[Steering] "+(v["text"].text ?? ""));return v }),"steering":.array(steering.map(\.previewValue)),"queueCount":JSON(queue.count+steering.count),"queuePaused":JSON(queuePaused),"path":path.map { JSON($0) } ?? .null,"commands":.array(commands),"total":JSON(visible.count),"displayRevision":JSON(revision),"profileId":JSON(profile.id),"toolMode":JSON(readOnly ? "read-only" : "editing"),"context":contextInfo(),"turnMetrics":turnMetrics(),"assistantMessageCount":JSON(assistantMessageCount),"latestAssistantMessageId":latestAssistantMessageID.map { JSON($0) } ?? .null,"activity":activitySnapshot()]
+        if params["contextObservationRevision"].text != "\(displayEpoch):\(observationRevision)" {
+            value["contextObservationRevision"]=JSON("\(displayEpoch):\(observationRevision)")
+            value["requestObservation"]=publishedObservation
+            value["lastRequestObservation"]=lastRequestObservation
+        }
         // Page cursors describe a materialized projection only. A status-only
         // read must not build a hidden page merely to compute its byte limit.
         if let projection { value["before"]=projection.start>0 ? JSON(projection.start):.null }
@@ -194,12 +200,13 @@ extension AgentSession {
             recordSent(projection, revision: revision)
             if let observedAt { value["displayObservedAt"] = JSON(observedAt) }
         }
-        let trace = await traceSnapshot()
-        value["captureMode"] = JSON(trace.mode)
         // The footer's figures refresh a few times a second; a reader that is
         // not going to show them this time says so, and a streamed token stops
         // carrying five kilobytes of request accounting it will discard.
-        if params["includeMetrics"].flag != false { value["latestAttempt"] = trace.latest }
+        if params["includeMetrics"].flag != false {
+            let trace = await traceSnapshot()
+            value["captureMode"] = JSON(trace.mode); value["latestAttempt"] = trace.latest
+        }
         else { value = value.removing(["context","turnMetrics"]) }
         return value
     }

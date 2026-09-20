@@ -71,6 +71,10 @@ public actor AgentSession {
     var contextBaseline: RequestUsageBaseline?
     var contextCounter = RequestContextCounter()
     var currentContextCount: RequestContextCount?
+    var requestObservation: RequestObservation?
+    var publishedObservation: JSON = .null, lastRequestObservation: JSON = .null, observationEstimate: JSON = .null
+    var observationGeneration: UInt64 = 0, observationRevision: UInt64 = 0
+    var observationPublishedAt = 0.0
     var begin: Double?, end: Double?, parentInfo: JSON = .null, ephemeral=false, keepRequested=false
     var steeringMode="one-at-a-time", followUpMode="one-at-a-time"
     var closed=false
@@ -202,7 +206,7 @@ public actor AgentSession {
     func apply(profile: Profile, apiKey: String) {
         self.profile = profile; self.apiKey = apiKey; pendingConfiguration = nil
         // The count and its usage baseline described requests under the old settings.
-        contextBaseline = nil; currentContextCount = nil
+        contextBaseline = nil; currentContextCount = nil; clearRequestObservation()
         event("configured")
     }
     public var path: String? { journal?.url.path }

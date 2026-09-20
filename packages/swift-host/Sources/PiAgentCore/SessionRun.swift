@@ -41,8 +41,9 @@ extension AgentSession {
         var attempt = 0
         while true {
             attempt += 1
+            let generation=beginObservationGeneration()
             do {
-                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,turnID:turnID,purpose:purpose,onDelta:onDelta)
+                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,turnID:turnID,purpose:purpose,onObservation:{ [weak self] observation in await self?.observe(observation,generation:generation) },onDelta:onDelta)
                 retryInfo = .null
                 return reply
             } catch let error as AgentError {

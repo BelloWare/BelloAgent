@@ -38,6 +38,7 @@ extension WorkspaceModel {
                 // Ask for changes to the page this display holds rather than
                 // the page itself. The helper falls back to a whole page for
                 // any revision it did not just send, which is also the resync.
+                if let revision = view.footer.contextObservationRevision { params["contextObservationRevision"] = .string(revision) }
                 if requestedRevision != nil, !view.projectedRows.isEmpty { params["messageDelta"] = .bool(true) }
                 // Human-readable footer accounting refreshes at 4 Hz. Decide
                 // here, so a poll that will not show those figures does not
@@ -68,9 +69,9 @@ extension WorkspaceModel {
                     // find out by recounting every chat once a second.
                     noteActivityChanged()
                     // The same decision that asked the helper for the figures.
+                    view.observeContext(result)
                     if wantsMetrics {
                         view.footerUpdatedAt = now
-                        view.observeContext(result)
                         if let timing = result["turnMetrics"]?.object, timing != view.turnTiming { view.turnTiming = timing }
                         if let metrics = result["latestAttempt"]?.object, metrics != view.metrics { view.metrics = metrics }
                     }

@@ -85,6 +85,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             except CONTRACT.FixtureContractError as error:
                 self.reject(record, str(error))
             return
+        if model.startswith('observation-'):
+            self.observation_response(record, body); return
         if model == 'error':
             output = b'{"error":{"message":"fixture provider error"}}'
             record['response'] = output
@@ -181,6 +183,37 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         self.send_response(422); self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(record['response']))); self.end_headers()
         self.wfile.write(record['response'])
+
+    def observation_response(self, record, body):
+        """Request-aware three-response tool loop with real interim boundaries."""
+        round_number = 1 + sum(i.get('type') == 'function_call_output' for i in body['input'])
+        if round_number < 3:
+            output = [{'type':'function_call','id':f'item-{round_number}','call_id':f'call-{round_number}',
+                       'name':'read','arguments':'{"path":"README.md"}'}]
+        else:
+            output = [{'type':'message','id':'answer','role':'assistant','status':'completed',
+                       'content':[{'type':'output_text','text':'Three requests complete 中文🙂'}]}]
+        response = {'id':f'observation-{round_number}','model':body['model'],'router_model_name':'resolved-fixture',
+                    'status':'in_progress','output':[]}
+        self.send_response(200); self.send_header('Content-Type','text/event-stream'); self.end_headers()
+        def emit(kind, sequence, usage=None):
+            current = dict(response, usage=usage)
+            if kind == 'response.completed': current.update(status='completed', output=output)
+            payload = b'data: ' + encoded({'type':kind,'sequence_number':sequence,'response':current}) + b'\n\n'
+            record['response'] += payload; self.wfile.write(payload); self.wfile.flush()
+        try:
+            emit('response.created', 0)
+            time.sleep(.12)
+            if body['model'] != 'observation-final':
+                emit('response.in_progress', 1, {'input_tokens':round_number*1000,'output_tokens':10})
+                emit('response.in_progress', 2, {'output_tokens':20})
+                emit('response.in_progress', 3, {'output_tokens':20})
+                emit('response.in_progress', 2, {'input_tokens':99999})
+            time.sleep(.4)
+            emit('response.completed', 4, {'input_tokens':round_number*1000,'output_tokens':30,'total_tokens':round_number*1000+30,
+                'input_tokens_details':{'cached_tokens':round_number*100},'output_tokens_details':{'reasoning_tokens':20}})
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def owner_sample_response(self, record, body, semantic):
         """The owner's shape, selected only after validating the actual request."""
@@ -389,6 +422,39 @@ class NativeIntegration(unittest.TestCase):
                 return value
             time.sleep(.01)
         self.fail('Session did not settle')
+    def test_request_observations_during_tool_loop_without_capture_and_after_recorder_rejection(self):
+        for capture, reject in [('off',False), ('persist',True), ('memory',False)]:
+            session = 'observations-'+capture
+            self.peer.reject_capture = reject
+            self.open(model='observation-early', session=session)
+            self.peer.command('debug.mode', {'mode':capture}, session)
+            self.submit(session)
+            seen = {}; deadline = time.monotonic()+8
+            while time.monotonic()<deadline:
+                state = self.peer.command('session.snapshot', {'includeMessages':False,'includeMetrics':False}, session)
+                observation = state.get('requestObservation') or {}
+                input_tokens = observation.get('usage',{}).get('input')
+                if input_tokens is not None:
+                    seen.setdefault(input_tokens,set()).add(observation['phase'])
+                    self.assertEqual(observation['contextWindow'],100000)
+                    self.assertEqual(observation['sessionID'],session)
+                    self.assertLessEqual(observation['usage'].get('output',0),30)
+                if state['state'] in ('idle','error'): break
+                time.sleep(.02)
+            self.assertEqual(state['state'],'idle',state.get('preflightError'))
+            self.assertEqual(set(seen),{1000,2000,3000})
+            self.assertTrue(all('interim' in seen[n] for n in seen),seen)
+            self.assertEqual(observation['phase'],'final'); self.assertEqual(observation['usage']['total'],3030)
+            self.assertEqual(observation['usage']['reasoning'],20)
+            self.peer.command('session.close',session=session)
+        self.peer.reject_capture = False
+        self.open(model='observation-final',session='final-only'); self.submit('final-only')
+        time.sleep(.2)
+        state=self.peer.command('session.snapshot',session='final-only')
+        self.assertIsNone(state['requestObservation']['usage'].get('input'))
+        self.assertIsNotNone(state['requestObservation']['estimate']['tokens'])
+        self.assertEqual(self.settled('final-only')['requestObservation']['usage']['input'],3000)
+
     def test_responses_real_stream_tool_roundtrip_and_capture(self):
         self.open(model='tool');self.submit();value=self.settled()
         self.assertEqual(value['state'],'idle')

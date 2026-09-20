@@ -21,7 +21,7 @@ enum UsageObservation {
         var fields: [String: JSON] = ["input": raw["input_tokens"], "output": raw["output_tokens"],
             "cacheRead": api == "openai-responses" ? raw["input_tokens_details"]["cached_tokens"] : raw["cache_read_input_tokens"],
             "cacheWrite": api == "openai-responses" ? raw["input_tokens_details"]["cache_write_tokens"] : raw["cache_creation_input_tokens"],
-            "reasoning": raw["output_tokens_details"]["reasoning_tokens"]]
+            "reasoning": raw["output_tokens_details"]["reasoning_tokens"], "total": raw["total_tokens"]]
         var status: JSON = [:]
         for (key, value) in fields {
             status[key] = value.isNull ? "unreported" : count(value) == nil ? "invalid" : "reported"
@@ -31,6 +31,17 @@ enum UsageObservation {
             if (api == "openai-responses" || detail == "reasoning"), let part = count(fields[detail] ?? .null), let whole = count(fields[parent] ?? .null), part > whole {
                 fields[detail] = .null; status[detail] = "invalid"
             }
+        }
+        if api == "openai-responses", let input=count(fields["input"] ?? .null),
+           let read=count(fields["cacheRead"] ?? .null), let write=count(fields["cacheWrite"] ?? .null) {
+            let (sum, overflow)=read.addingReportingOverflow(write)
+            if overflow || sum>input {
+                for key in ["cacheRead","cacheWrite"] { fields[key] = .null; status[key]="invalid" }
+            }
+        }
+        if api == "openai-responses", let input=count(fields["input"] ?? .null), let output=count(fields["output"] ?? .null) {
+            let (sum, overflow)=input.addingReportingOverflow(output)
+            if overflow || (count(fields["total"] ?? .null).map { $0 != sum } ?? false) { fields["total"] = .null; status["total"]="invalid" }
         }
         fields["inputIncludingCache"] = fields["input"]
         status["inputIncludingCache"] = status["input"]

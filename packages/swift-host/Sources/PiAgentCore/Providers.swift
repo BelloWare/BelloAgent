@@ -111,6 +111,9 @@ public struct ProviderClient: ModelClient {
         return body
     }
     public func complete(profile:Profile, apiKey:String, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, turnID:String, purpose:String, onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        try await complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,turnID:turnID,purpose:purpose,onObservation:{ _ in },onDelta:onDelta)
+    }
+    public func complete(profile:Profile, apiKey:String, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, turnID:String, purpose:String, onObservation:@escaping @Sendable (RequestObservation) async -> Void, onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
         try Task.checkCancellation()
         let body=try Self.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID)
         let bytes=try body.data()
@@ -132,6 +135,8 @@ public struct ProviderClient: ModelClient {
         }
         let credentials = CaptureCredentials(headers: request.allHTTPHeaderFields ?? [:], configuredNames: Set(profile.raw["headers"].map.keys))
         let attempt=await traces.begin(session:sessionID,turn:turnID,profile:profile,purpose:purpose,body:bytes,headers:request.allHTTPHeaderFields ?? [:],messageIDs:messages.flatMap { $0.sourceMessageIDs ?? [$0.id] })
+        var observation=RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:purpose,fingerprint:try RequestContextCounter.fingerprint(body,profile:profile),profile:profile)
+        await onObservation(observation)
         let stream=HTTPStream();var parser=SSEParser(), accumulator=ProviderAccumulator(api:profile.api)
         var status=0,jsonBody=false,nonSSE=Data(),receivedBytes=0
         var lastBodyAt:Double?
@@ -158,6 +163,7 @@ public struct ProviderClient: ModelClient {
                         await traces.event(attempt,event)
                         if event.data=="[DONE]" { continue }
                         let value=try JSON.parse(Data(event.data.utf8))
+                        if profile.api == "openai-responses", observation.consume(value,streaming:true,at:receivedAt) { await onObservation(observation) }
                         await traces.reported(attempt,value:value,streaming:true)
                         if ["response.failed", "error"].contains(value["type"].text ?? "") {
                             await traces.terminal(attempt,at:receivedAt)
@@ -191,6 +197,7 @@ public struct ProviderClient: ModelClient {
             if let providerFailure { throw providerFailure }
             if jsonBody {
                 let value=try JSON.parse(nonSSE)
+                if profile.api == "openai-responses", observation.consume(value,streaming:false,at:lastBodyAt ?? nowMS()) { await onObservation(observation) }
                 await traces.reported(attempt,value:value,streaming:false)
                 try accumulator.acceptJSON(value)
                 let reply=try accumulator.result()
@@ -208,6 +215,7 @@ public struct ProviderClient: ModelClient {
             return result
         } catch {
             stream.cancel()
+            observation.interrupt(at:nowMS()); await onObservation(observation)
             let cancelled=Task.isCancelled || (error as? URLError)?.code == .cancelled
             await traces.transport(attempt,observation:await stream.endObservation())
             await traces.finish(attempt,outcome:cancelled ? "cancelled":"failed",modelOutcome:providerFailure != nil ? "failed":"interrupted")

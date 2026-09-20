@@ -251,6 +251,7 @@ struct ContextMeterPresentation {
     var estimated: Bool { context["estimated"]?.bool ?? true }
     var methodLabel: String {
         switch context["method"]?.string {
+        case "gateway-reported": return "LiteLLM reported"
         case "provider-count": return "Provider count"
         case "tokenizer": return "Gateway tokenizer"
         case "usage-baseline": return "Usage baseline"
@@ -276,7 +277,7 @@ struct ContextMeterPresentation {
     private var pending: Bool { ["post-compaction", "pending"].contains(context["state"]?.string ?? "") }
     var compactLabel: String {
         guard let counts else { return pending ? "Context pending" : "Inspect context" }
-        return (estimated ? "≈" : "") + "\(compact(counts.tokens)) / \(compact(counts.capacity))"
+        return (estimated ? "≈" : "") + "\(compact(counts.tokens)) / \(compact(counts.capacity))" + (context["method"]?.string == "gateway-reported" ? " · reported" : context["awaitingUsage"]?.bool == true ? " · awaiting usage" : "")
     }
     var fullLabel: String {
         guard let counts else { return compactLabel }

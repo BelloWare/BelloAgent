@@ -53,7 +53,13 @@ extension WorkspaceModel {
         TurnOverrides.params(for:item,base:["text":.string(view.draft),"skills":.array(view.skills.map(\.wire)),"attachments":.array(view.attachments.map(\.wire))])
     }
     func displayedContext(_ view: SessionDisplay) -> [String: WireValue] {
+        if view.runStatus == "compacting" {
+            return ["state": .string("pending"), "source": .string("Compacting context; summarizer usage is separate"), "tokens": .null]
+        }
+        let observation = RequestContextObservation(view.footer.requestObservation)
+        if view.busy, let current = observation.context { return current }
         if let prepared = matchingPreparedContext(view) { return prepared.context }
+        if let last = observation.context { return last }
         if view.footer.preparingContext {
             return ["state": .string("pending"), "tokens": .null, "source": .string("Preparing the current request inputs")]
         }

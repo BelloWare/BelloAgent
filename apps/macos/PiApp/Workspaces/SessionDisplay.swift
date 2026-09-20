@@ -8,6 +8,9 @@ import Combine
 
 @MainActor final class SessionMetrics: ObservableObject {
     @Published var context: [String: WireValue] = [:]
+    @Published var requestObservation: [String: WireValue] = [:]
+    @Published var lastRequestObservation: [String: WireValue] = [:]
+    var contextObservationRevision: String?
     @Published var preparedContext: PreparedContextMetrics?
     @Published var preparingContext = false
     @Published var metrics: [String: WireValue] = [:]
@@ -145,7 +148,13 @@ import Combine
     func observeContext(_ snapshot: [String: WireValue], baseline: Bool = false) {
         // A newly opened helper starts a new sequence epoch, even when the
         // desktop still has this session's previous prepared estimate.
-        if baseline { footer.preparedContext = nil }
+        if baseline { footer.preparedContext = nil; footer.requestObservation = [:]; footer.lastRequestObservation = [:]; footer.contextObservationRevision = nil }
+        if let revision = snapshot["contextObservationRevision"]?.string, revision != footer.contextObservationRevision {
+            footer.contextObservationRevision = revision
+            let current = snapshot["requestObservation"]?.object ?? [:], last = snapshot["lastRequestObservation"]?.object ?? [:]
+            if footer.requestObservation != current { footer.requestObservation = current }
+            if footer.lastRequestObservation != last { footer.lastRequestObservation = last }
+        }
         if let context = snapshot["context"]?.object, context != self.context, acceptsContext(context) { self.context = context }
         if let sequence = snapshot["seq"]?.number, let preview = footer.preparedContext, sequence > preview.sequence {
             footer.preparedContext = nil

@@ -35,7 +35,7 @@ extension AgentSession {
     func applyBranch(from messageID: String, keptIDs: Set<String>, markerID: String) {
         Self.branch(history:&history,context:&context,visible:&visible,from:messageID,keptIDs:keptIDs,markerID:markerID)
         invalidateDisplay(allRows: true)
-        boundary=context; contextBaseline=nil; currentContextCount=nil
+        boundary=context; contextBaseline=nil; currentContextCount=nil; clearRequestObservation()
     }
     /// Shared by live edits and journal replay (the synchronous initializer
     /// cannot call isolated methods). The marker is display-only: it joins
