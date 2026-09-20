@@ -12,14 +12,23 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**0.1.70/build 74 is being prepared:** a short native completion chime, enabled
-by default with Settings → Notifications controls. Task receipts prevent tool
-rounds, utility work, old history and repeated polls from announcing completion.
-Concurrent finishes share a cue without a playback backlog. **48 focused native
-tests pass with actor data-race checks**, including a real packaged-helper tool
-loop and fast JSON reply. See [0.1.70 acceptance](validation/Bello-Agent-0.1.70-2026-09-21.md).
+**Bello Agent 0.1.70/build 74 is released and publicly verified** at
+[belloware.com](https://belloware.com/bello-agent.html), from source
+`2d2b6f6118f00b44b1656565ff5ff49b72845da1` and website
+`ac2adbed59741fd4c674ed71b4f59c1e0c7912fa`. The DMG measures **8,464,726 bytes
+(8.07 MiB)**, SHA-256 `830c317d1eaf83879cd71cb8406a56bafa7ac0f4d64e1b5335ff11e0ebbdad27`.
+Signing, app/DMG notarization, packaged smoke, public product page, identical
+update feeds and downloaded SHA-256/Ed25519 verification pass. Public
+verification: **2026-09-20 17:53:24 UTC**. Cloudflare check **106121349448** succeeded.
 
-**Bello Agent 0.1.69/build 73 is released and publicly verified** at
+The short completion chime is enabled by default with Settings → Notifications
+controls. Task receipts prevent tool rounds, utility work, old history and repeated
+polls from announcing completion. Concurrent finishes share a cue without a
+playback backlog. **48 focused native tests pass with actor data-race checks**,
+including a real packaged-helper tool loop and fast JSON reply. See
+[0.1.70 acceptance](validation/Bello-Agent-0.1.70-2026-09-21.md).
+
+**Bello Agent 0.1.69/build 73 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source
 `6c101522840a5a5ac8dbbc9556ec37e4fceb477b` and website
 `fb34fa2404446ccbfeb2f906a7bbe8134b7d31c9`. The DMG measures **8,459,128 bytes

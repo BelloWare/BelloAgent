@@ -1,6 +1,6 @@
 # Bello Agent 0.1.70/build 74 acceptance — 2026-09-21
 
-Release preparation; publication verification will be recorded after deployment.
+**Released and publicly verified 2026-09-20 17:53:24 UTC.**
 
 ## Change
 
@@ -51,3 +51,24 @@ capture, concurrency and popup validation remain applicable.
 Installation and actual Sparkle-update rehearsals are omitted under the owner's
 standing release policy. Signing, notarization, packaged smoke and public
 archive/feed verification remain release gates.
+
+## Distribution
+
+- Shipping source: `2d2b6f6118f00b44b1656565ff5ff49b72845da1`;
+  implementation: `961054c`. Both pushed to `BelloWare/BelloAgent` main.
+- Website: `ac2adbed59741fd4c674ed71b4f59c1e0c7912fa`, pushed to
+  `BelloWare/belloware.com` main. Cloudflare check **106121349448** succeeded
+  at **2026-09-20 17:51:49 UTC**.
+- Developer ID signing, packaged-helper offline smoke, app and DMG notarization,
+  stapling, Gatekeeper and Sparkle Ed25519 validation passed.
+- App notarization: `e907810e-2dcd-411d-b92f-c0ab86c8caa5` (Accepted).
+- DMG notarization: `808f4afb-5377-401c-b179-a0b051069a65` (Accepted).
+- DMG: **8,464,726 bytes (8.07 MiB)**, SHA-256
+  `830c317d1eaf83879cd71cb8406a56bafa7ac0f4d64e1b5335ff11e0ebbdad27`.
+- Public product page advertises 0.1.70 and its DMG. Both public feeds are
+  byte-identical to the signed release feed, and the downloaded public DMG
+  passes SHA-256 and Ed25519 verification.
+
+Distribution logs: `tmp/completion-sound/release.log`, `publish.log`,
+`public-verification.log`, `public-0.1.70/`; signing/notary workspace:
+`tmp/bello-agent-0.1.6/build/release.wJHP1p`.
