@@ -206,8 +206,12 @@ actor MetadataStore {
         case .title(let title):
             guard !chat.isBackgroundTask else { throw StoreError.invalidRecord }
             chat.title = try ChatRecord.normalizedTitle(title); chat.titleWasEdited = true; chat.titleWasGenerated = nil
-        case .pinned(let pinned): chat.pinnedAt = pinned ? (chat.pinnedAt ?? now) : nil
-        case .archived(let archived): chat.archivedAt = archived ? (chat.archivedAt ?? now) : nil
+        case .pinned(let pinned):
+            if chat.isPinned != pinned { chat.manualSidebarOrder = nil }
+            chat.pinnedAt = pinned ? (chat.pinnedAt ?? now) : nil
+        case .archived(let archived):
+            if chat.isArchived != archived { chat.manualSidebarOrder = nil }
+            chat.archivedAt = archived ? (chat.archivedAt ?? now) : nil
         }
         chat.organizationRevision = try nextOrganizationRevision(chat)
         try put(chat, kind: "chat", id: id)
@@ -295,11 +299,37 @@ actor MetadataStore {
             }
             var chats = selected.values.sorted { $0.id < $1.id }
             for index in chats.indices where chats[index].topicID != topicID {
-                chats[index].topicID = topicID
+                chats[index].topicID = topicID; chats[index].manualSidebarOrder = nil
                 chats[index].organizationRevision = try nextOrganizationRevision(chats[index])
             }
             for chat in chats { try put(chat, kind: "chat", id: chat.id) }
             return chats
+        }
+    }
+
+    /// A single atomic organization update; later stale title/path writes keep
+    /// these ranks through applyOrganization, just as they preserve pin/archive.
+    func reorderChats(_ ids: [String], relativeTo targetID: String, after: Bool, workspaceID: String) throws -> [ChatRecord] {
+        try transaction {
+            guard !ids.isEmpty, !ids.contains(targetID), Set(ids).count == ids.count,
+                  let target = try get(ChatRecord.self, kind: "chat", id: targetID), target.workspaceID == workspaceID,
+                  !target.isBackgroundTask, target.connectionTest != true else { throw StoreError.invalidRecord }
+            let selected = Set(ids)
+            var group = try organizationRows().filter {
+                $0.workspaceID == workspaceID && $0.groupable && $0.topicID == target.topicID &&
+                ($0.pinnedAt != nil || $0.parentSessionID == target.parentSessionID) &&
+                ($0.pinnedAt != nil) == target.isPinned && ($0.archivedAt != nil) == target.isArchived
+            }.compactMap { try? get(ChatRecord.self, kind: "chat", id: $0.id) }.sorted(by: ChatRecord.sidebarPrecedes)
+            guard selected.isSubset(of: Set(group.map(\.id))) else { throw HostError.failure("Reorder chats within the same topic, parent and pinned group. Drop on a topic header to move between topics.") }
+            let moving = group.filter { selected.contains($0.id) }; group.removeAll { selected.contains($0.id) }
+            guard let index = group.firstIndex(where: { $0.id == targetID }) else { throw StoreError.invalidRecord }
+            group.insert(contentsOf: moving, at: index + (after ? 1 : 0))
+            for index in group.indices {
+                group[index].manualSidebarOrder = index
+                group[index].organizationRevision = try nextOrganizationRevision(group[index])
+                try put(group[index], kind: "chat", id: group[index].id)
+            }
+            return group
         }
     }
 
@@ -310,7 +340,7 @@ actor MetadataStore {
             guard let topic = try get(TopicRecord.self, kind: TopicRecord.recordKind, id: id), topic.isValid else { throw StoreError.invalidRecord }
             var members = try organizationRows().filter { $0.topicID == id }.compactMap { try get(ChatRecord.self, kind: "chat", id: $0.id) }
             for index in members.indices {
-                members[index].topicID = nil
+                members[index].topicID = nil; members[index].manualSidebarOrder = nil
                 members[index].organizationRevision = try nextOrganizationRevision(members[index])
             }
             let revision = try reserveRevision(kind: TopicRecord.recordKind, id: id)
@@ -337,6 +367,7 @@ actor MetadataStore {
     private struct OrganizationRow: Decodable {
         var id: String; var workspaceID: String; var topicID: String?; var parentSessionID: String?
         var backgroundTask: String?; var connectionTest: Bool?
+        var pinnedAt: Date?; var archivedAt: Date?
         var isBackgroundTask: Bool { backgroundTask != nil }
         var groupable: Bool { !isBackgroundTask && connectionTest != true }
     }
@@ -568,6 +599,7 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var outputBudgetVersion: Int? = 1
     /// Optional for records created before session organization was introduced.
     var sidebarOrder: Int64? = Int64(Date().timeIntervalSince1970 * 1_000_000)
+    var manualSidebarOrder: Int?
     var pinnedAt: Date?
     var archivedAt: Date?
     var titleWasEdited: Bool?
@@ -596,6 +628,12 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     }
     static func sidebarPrecedes(_ lhs: ChatRecord, _ rhs: ChatRecord) -> Bool {
         if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
+        if lhs.manualSidebarOrder != nil || rhs.manualSidebarOrder != nil {
+            // Newly created chats remain above an explicitly ordered group.
+            if lhs.manualSidebarOrder == nil { return true }
+            if rhs.manualSidebarOrder == nil { return false }
+            if lhs.manualSidebarOrder != rhs.manualSidebarOrder { return lhs.manualSidebarOrder! < rhs.manualSidebarOrder! }
+        }
         if let a = lhs.pinnedAt, let b = rhs.pinnedAt, a != b { return a < b }
         let a = lhs.sidebarOrder ?? 0, b = rhs.sidebarOrder ?? 0
         if a != b { return a > b }
@@ -607,7 +645,7 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
         return String(trimmed.prefix(120))
     }
     mutating func applyOrganization(from other: ChatRecord) {
-        pinnedAt = other.pinnedAt; archivedAt = other.archivedAt; topicID = other.topicID
+        pinnedAt = other.pinnedAt; archivedAt = other.archivedAt; topicID = other.topicID; manualSidebarOrder = other.manualSidebarOrder
         titleWasEdited = other.titleWasEdited; titleWasGenerated = other.titleWasGenerated; organizationRevision = other.organizationRevision
         if other.titleWasEdited == true || other.titleWasGenerated == true { title = other.title }
     }

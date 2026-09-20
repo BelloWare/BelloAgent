@@ -66,6 +66,7 @@ struct SidebarChatRow: View, Equatable {
     let projectID: String
     let state: SidebarChatRowState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var insertionAfter: Bool?
 
     /// A drag surface owns the pointer on draggable rows, so the press has to
     /// route the same way whether it arrives from AppKit or from the button's
@@ -100,6 +101,16 @@ struct SidebarChatRow: View, Equatable {
             }
         }
         .contextMenu { menu }
+        .overlay {
+            if state.draggable {
+                GeometryReader { geometry in
+                    Color.clear.onDrop(of: [TopicSessionDrag.type], delegate: SessionOrderDrop(model: model, projectID: projectID, targetID: chat.id, height: geometry.size.height, insertionAfter: $insertionAfter))
+                }
+            }
+        }
+        .overlay(alignment: insertionAfter == true ? .bottom : .top) {
+            if insertionAfter != nil { Rectangle().fill(Color.piAccent).frame(height: 2).allowsHitTesting(false) }
+        }
         .modifier(TopicSessionDragSource(model: model, sessionID: chat.id, projectID: projectID, enabled: state.draggable,
                                          click: click, doubleClick: rename))
         .padding(.leading, state.indent)

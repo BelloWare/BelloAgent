@@ -109,6 +109,20 @@ extension WorkspaceModel {
         if let topicID { setTopicExpanded(topicID, expanded: true) }
     }
 
+    func reorderSessions(_ ids: [String], relativeTo targetID: String, after: Bool, in projectID: String) async throws {
+        try requireTopicProject(projectID)
+        guard !ids.contains(targetID) else { return }
+        guard !ids.isEmpty, ids.count <= TopicSessionDrag.maximumSessions,
+              let target = record(targetID), target.workspaceID == projectID,
+              ids.allSatisfy({ id in record(id).map { $0.workspaceID == projectID && $0.topicID == target.topicID && ($0.isPinned || $0.parentSessionID == target.parentSessionID) && $0.isPinned == target.isPinned && $0.isArchived == target.isArchived } == true }),
+              let store else { throw HostError.failure("Reorder chats within the same topic, parent and pinned group. Drop on a topic header to move between topics.") }
+        topicOperationsInFlight += 1; defer { topicOperationsInFlight -= 1 }
+        let group = chats.filter { $0.workspaceID == projectID && $0.topicID == target.topicID && ($0.isPinned || $0.parentSessionID == target.parentSessionID) && $0.isPinned == target.isPinned && $0.isArchived == target.isArchived && !$0.isBackgroundTask && $0.connectionTest != true }
+        for chat in group { try await materializeChat(chat.id) }
+        let saved = try await store.reorderChats(ids, relativeTo: targetID, after: after, workspaceID: projectID)
+        applyTopicMemberships(saved)
+    }
+
     private func topicBranchIDs(_ roots: Set<String>, in projectID: String) -> Set<String> {
         var children: [String: [String]] = [:]
         for chat in chats where chat.workspaceID == projectID && !chat.isBackgroundTask && chat.connectionTest != true {
