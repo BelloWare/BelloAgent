@@ -29,7 +29,17 @@ toolchain. Run independent suites in parallel, use stable incremental build
 caches and isolated per-run fixtures, and avoid routine full-gallery/full-matrix
 repeats. Follow the current test-selection policy in Swift-Test-Handoff.md.
 
-Bello Agent 0.1.60/build 64 is publicly released at
+**Bello Agent 0.1.61/build 65 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), from source `62de9de0ed29be3a2be030b3b458b4e1cb8d996c`
+and website `f2b89f07be5850426c0350ec3712f0951fd98e44`. The DMG measures **8,103,822 bytes (7.73 MiB)**,
+SHA-256 `4d289ecdde0f518b5f361d4aae0d90505f2c1fc692d7bd89e0961a681387ab81`. Signing, notarization, packaged helper smoke,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-20 05:01:56 UTC**.
+Read the [0.1.61 release record](validation/Bello-Agent-0.1.61-2026-09-20.md)
+and [crash audit implementation](Crash-Audit-Implementation-2026-09-20.md).
+Installation and actual update rehearsals remain skipped under the owner's policy.
+
+Bello Agent 0.1.60/build 64 is a historical verified release at
 [belloware.com](https://belloware.com/bello-agent.html), from source `ce252bcabe542efc58d87774f16bbe09b4a646d8`
 and website `4ceb9e8773b605931d15eceaf04b0e4947f6f2c7`. The DMG measures **7,824,296 bytes (7.46 MiB)**,
 SHA-256 `0cf92ca649e56a4293a404fa98a9d8fcbe547d2ee9a97222a04be124e1cc81c7`. Signing, notarization, packaged helper/catalog smoke,

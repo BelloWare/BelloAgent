@@ -1,7 +1,8 @@
 # Bello Agent 0.1.61/build 65 acceptance — 2026-09-20
 
-Release candidate for the owner's uploaded `Crash-Audit.md`. Publication details
-are recorded below after the signed archive and public feeds are verified.
+**Public release verified at 2026-09-20 05:01:56 UTC.**
+Release source: `62de9de0ed29be3a2be030b3b458b4e1cb8d996c`. Website: `f2b89f07be5850426c0350ec3712f0951fd98e44`.
+Subsequent documentation-only commits do not change the packaged source.
 
 ## Scope and evidence
 
@@ -30,6 +31,10 @@ mutable external MCP service or private conversation was used.
 | PTY root exit with a continuously writing descendant | Release | **1 passed**, bounded drain, one exit, no late output |
 | Watcher/pipe/terminal regressions plus existing host transport tests | Debug, explicit `-enable-actor-data-race-checks` | **20 passed**, zero failures |
 | Final native crash, opaque-ID/read-state and transcript document/wire checks | Debug, explicit actor checks | **37 passed**, zero failures; includes deferred projection diagnostics and the descendant exit fixture |
+
+The 37-test actor-instrumented rerun covers the final change to defer native
+projection-error publication until reconciliation finishes. The shipping Release
+app was rebuilt successfully after that change.
 
 The native selection includes the real Git watcher and large-diff tests,
 HostSupervisor/HostTransport/HostInbox, workspace failure/durability, gateway
@@ -85,4 +90,21 @@ frame-rate or universally smooth UI claim.
 
 ## Publication
 
-Pending signed artifact generation and public feed/archive verification.
+- [Public product page](https://belloware.com/bello-agent.html) links the new archive.
+- [BelloAgent-0.1.61.dmg](https://belloware.com/assets/BelloAgent-0.1.61.dmg): **8,103,822 bytes (7.73 MiB)**.
+- SHA-256: `4d289ecdde0f518b5f361d4aae0d90505f2c1fc692d7bd89e0961a681387ab81`.
+- Developer ID: Zhaofeng Wang, team `43TXHV3TM3`; hardened runtime and timestamp.
+- Application and DMG notarizations accepted; tickets stapled and validated.
+  App submission `e2f8acbe-18b6-48d8-82fd-48ffb5317311`;
+  DMG submission `55a56fb9-5b9b-4ed8-86b8-ec7d1559a7cf`.
+- Packaged native helper/catalog smoke passed; no install or update rehearsal.
+- Canonical `bello_agent.appcast.xml` and legacy `pi_app.appcast.xml` downloaded
+  byte-identically to the validated local feeds. Downloaded archive SHA-256 and
+  Ed25519 signature pass.
+- App dSYM UUID: `2248A61F-A86E-3DEC-BF5F-43D0F431856C`; helper dSYM UUID: `CC557BD3-8181-39BA-8991-EFF3E94945B6`.
+  Matching dSYMs remain beside the local release artifacts for crash symbolication.
+- Website publication commit: `f2b89f07be5850426c0350ec3712f0951fd98e44`. Public verification: **2026-09-20 05:01:56 UTC**.
+
+Fix commits: `1217228` (Git watcher/output), `cf5257f` (helper telemetry/MCP),
+`6038870` (native pipe/terminal/history), `62de9de` (version/release record).
+The source commits and final record are pushed to `BelloWare/BelloAgent:main`.

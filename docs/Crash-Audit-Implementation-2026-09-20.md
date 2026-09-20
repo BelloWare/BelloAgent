@@ -2,7 +2,7 @@
 
 Based on the owner's uploaded `Crash-Audit.md`. Reviewed and fixed on top of
 `ce3c764f87fa565fd32ea31ed013fcef6d7032a2`, preserving the preceding performance
-work. No subagents were used. The release target is **0.1.61 (65)**.
+work. No subagents were used. Released as **0.1.61 (65)** with signed/notarized public artifacts.
 
 ## Production crash confirmed
 
@@ -67,7 +67,9 @@ isolated state roots and incremental build caches.
   linked worktrees/root moves, asynchronous context release, a paused pipe read
   racing close, EOF/SIGTERM/SIGKILL, repeated Stop, malformed history, consecutive
   native row reconciliations, pagination/branch/reopen, tool-only-to-prose identity,
-  terminal floods/delayed consumption/paste admission, and Git output limits.
+  terminal floods/delayed consumption/paste admission/descendant exit, and Git
+  output limits. Native projection diagnostics publish after reconciliation,
+  rejecting stale notices if a newer page has replaced the failing one.
 - Helper regressions cover malformed/missing usage, cumulative overflow, retained
   invalid timing, capture, cancellation, compaction, concurrent sessions, MCP
   floods, bounded writer cancellation and existing unknown-outcome recovery.
