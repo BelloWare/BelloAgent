@@ -1,6 +1,6 @@
 # Bello Agent 0.1.67/build 71 acceptance — 2026-09-20
 
-Publication pending verification.
+**Released and publicly verified 2026-09-20 11:11:39 UTC.**
 
 ## Change
 
@@ -38,3 +38,21 @@ The helper is unchanged; 0.1.66's helper and gateway evidence is reused.
 
 Scratch: session `tmp/motion-067`. No helper or transport behavior changed.
 No subagents, installation tests or Sparkle install/update rehearsals are used.
+
+## Signed release
+
+- Shipping source: `406bc17ff101ada6608f69b7a4b2a3f10ca0e3d2`.
+- Website publication: `a8a84a6b39e2f8dd7d65dd82ece7876c07ac4940`.
+- Optimized native build, Developer ID signatures, hardened runtime, packaged
+  helper offline/catalog smoke, Gatekeeper and app/DMG staples passed.
+- Apple accepted app submission `3835814b-d790-486b-ad37-d423f114a3ed` and DMG
+  submission `fc4e7891-c51e-4ff9-8c03-2ca4238dd078`.
+- DMG: **8,228,882 bytes (7.85 MiB)**,
+  SHA-256 `3a641c8fe55bf2ac90c8028a91ef1034b26038afb2b731671bcda6ab9408df02`.
+- Release scripts: `release.log`, `publish.log`; build/notary/smoke evidence in
+  shared build cache `release.9ngcN6`. Final DMG copied to the session outbox.
+
+Public product page, byte-identical canonical/legacy update feeds and downloaded
+DMG SHA-256/Ed25519 verification passed **2026-09-20 11:11:39 UTC**. Cloudflare
+check **106068742987** succeeded at 11:11:21 UTC. Public verification evidence:
+`public-verification.log`, `public-verified.txt` and `public-0.1.67/` in scratch.

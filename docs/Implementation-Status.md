@@ -12,11 +12,19 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Bello Agent 0.1.67/build 71 is being prepared.** App-owned motion stays enabled
-independently of macOS Reduce Motion, fixing frozen loading rings and waiting
-dots. Native editor/scroll layout stabilization remains in place. **21 focused
-actor-checked native tests passed**, including rendered animation frames with
-the system motion environment reduced. See
+**Bello Agent 0.1.67/build 71 is released and publicly verified** at
+[belloware.com](https://belloware.com/bello-agent.html), from source
+`406bc17ff101ada6608f69b7a4b2a3f10ca0e3d2` and website
+`a8a84a6b39e2f8dd7d65dd82ece7876c07ac4940`. The DMG measures **8,228,882 bytes
+(7.85 MiB)**, SHA-256 `3a641c8fe55bf2ac90c8028a91ef1034b26038afb2b731671bcda6ab9408df02`.
+Signing/notarization, packaged helper smoke, product page, identical update feeds
+and downloaded archive SHA-256/Ed25519 verification pass. Public verification:
+**2026-09-20 11:11:39 UTC**. Cloudflare check **106068742987** succeeded.
+
+App-owned motion stays enabled independently of macOS Reduce Motion, fixing
+frozen loading rings and waiting dots. Native editor/scroll layout stabilization
+remains in place. **21 focused actor-checked native tests passed**, including
+rendered animation frames with the system motion environment reduced. See
 [0.1.67 validation](validation/Bello-Agent-0.1.67-2026-09-20.md).
 
 **Bello Agent 0.1.66/build 70 is a historical verified release** at
