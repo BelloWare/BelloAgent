@@ -230,7 +230,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         variants = {f'fixture: owner-sample {transport} {cost}': (transport, cost, False)
                     for transport in ('json', 'sse') for cost in ('null', 'paid', 'zero')}
         variants.update({f'fixture: owner-billing {transport}': (transport, 'null', True) for transport in ('json','sse')})
-        prompt = semantic['user_texts'][0] if semantic['is_compaction'] else semantic['latest_text']
+        prompt = semantic['latest_text']
         CONTRACT.require(prompt in variants, 'unrecognized owner sample prompt')
         CONTRACT.require(semantic['user_texts'] == [prompt] and not semantic['calls'] and not semantic['results'],
                          'owner sample requires one original user question without invented tool history')
@@ -269,7 +269,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
                                   model=body['model'], max_output_tokens=4096,
                                   custom_headers={'X-Fixture-Contract': 'strict-v1'}, native_items=native_policy,
                                   expected_tool_names=[] if semantic['is_compaction'] else ['read','ls','find','grep','write','edit','bash','mcp','history_read'])
-        prompt = semantic['latest_text']
+        prompt = semantic['user_texts'][0] if semantic['is_compaction'] else semantic['latest_text']
         history = body['input' if responses else 'messages']
         tool_result = history[-1].get('type') == 'function_call_output' if responses else any(block.get('type') == 'tool_result' for block in history[-1]['content'])
         expected_opaque = {'type': 'reasoning', 'id': 'strict-reasoning', 'summary': [], 'encrypted_content': 'strict-original-opaque'} if responses else {'type': 'thinking', 'thinking': 'Fixture reasoning.', 'signature': 'strict-original-signature'}
@@ -711,7 +711,7 @@ class NativeIntegration(unittest.TestCase):
                 self.assertIn('Validated read: fixture file contents',json.dumps(first['messages']))
                 self.submit(session,'fixture: echo continuation 中文🙂'); self.assertEqual(self.settled(session)['state'],'idle')
                 self.peer.command('context.compact',session=session)
-                compacted = self.settled(session); self.assertEqual(compacted['state'],'idle')
+                compacted = self.settled(session); self.assertEqual(compacted['state'],'idle',compacted.get('preflightError'))
                 self.assertIn('Fixture continuation summary',json.dumps(compacted['messages']))
                 attempts = self.peer.command('debug.list',session=session)['attempts']; self.assertEqual(len(attempts),4)
                 records = []
