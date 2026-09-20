@@ -126,15 +126,17 @@ extension PayloadArchive {
     }
     private func readUsageMetrics(period: MenuBarPeriod, until: Date, offset: Int, sessionID: String? = nil, workspaceID: String? = nil) async throws -> MenuBarSnapshot {
         let key = UsageSnapshotKey(period: period, sessionID: sessionID, workspaceID: workspaceID)
+        let generation = usageReadGeneration
         let previous = usageSnapshots[key]
         // Pages reuse a recent summary/chart observation. The normal refresh
         // interval still requests a fresh aggregate; the cache is bounded.
         let cached = offset > 0 ? previous.flatMap { until.timeIntervalSince($0.until) >= 0 && until.timeIntervalSince($0.until) < 10 ? $0 : nil } : nil
-        let value = try await dashboardReader().run {
+        let value = try await dashboardReader().run(consumer: sessionID == nil ? "menuUsage" : "sessionUsage") {
             try $0.usageMetrics(period: period, until: cached?.until ?? until, offset: offset,
                                sessionID: sessionID, workspaceID: workspaceID, cached: cached, includeLatency: sessionID != nil)
         }
         try Task.checkCancellation()
+        guard generation == usageReadGeneration else { throw CancellationError() }
         if cached == nil {
             if usageSnapshots.count >= 16, usageSnapshots[key] == nil,
                let oldest = usageSnapshots.min(by: { $0.value.until < $1.value.until })?.key { usageSnapshots[oldest] = nil }
@@ -208,7 +210,8 @@ extension DashboardQueryEngine {
         let groupCount = Int(try db.rows("\(normalized) SELECT COUNT(*) AS n FROM (SELECT 1 FROM selected \(grouping))", values).first?["n"]?.number ?? 0)
         let rows = try db.rows("""
         \(normalized)
-        SELECT api,alias,resolved_model,resolution_status,\(PayloadArchive.gatewayAggregateSQL),\(PayloadArchive.historicalOutputRateSQL)
+        SELECT api,alias,resolved_model,resolution_status,\(PayloadArchive.gatewayAggregateSQL),\(PayloadArchive.historicalOutputRateSQL),
+          SUM(COUNT(*)) OVER() AS route_all_requests,SUM(SUM(cost_usd)) OVER() AS route_all_cost
         FROM selected \(grouping)
         ORDER BY requests DESC,alias COLLATE BINARY,api COLLATE BINARY,resolution_status COLLATE BINARY,resolved_model COLLATE BINARY
         LIMIT \(MenuBarSnapshot.pageSize) OFFSET ?
@@ -217,9 +220,11 @@ extension DashboardQueryEngine {
             guard let api = row["api"]?.string, let alias = row["alias"]?.string, let status = row["resolution_status"]?.string else { throw CaptureFailure.corrupt }
             let gateway = PayloadArchive.gatewayTotals(row)
             let share: Double?
-            if let cost = gateway.costUSD, let allCost = totals.costUSD, allCost > 0 { share = cost / allCost }
+            // A paged observation may be newer than its cached summary. Keep
+            // each share's denominator from the same query as its numerator.
+            if let cost = gateway.costUSD, let allCost = row["route_all_cost"]?.double, allCost.isFinite, allCost > 0 { share = cost / allCost }
             else { share = nil }
-            return MenuBarModelDistribution(api: api, requestedAlias: alias, resolvedModel: row["resolved_model"]?.string, identityStatus: status, gateway: gateway, allRequests: totals.requests,
+            return MenuBarModelDistribution(api: api, requestedAlias: alias, resolvedModel: row["resolved_model"]?.string, identityStatus: status, gateway: gateway, allRequests: Int(row["route_all_requests"]?.number ?? 0),
                                             historicalRate: PayloadArchive.historicalOutputRate(row), costShare: share)
         }
         if includeLatency, !models.isEmpty {

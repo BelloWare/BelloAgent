@@ -641,8 +641,8 @@ struct JSONOutlineView: NSViewRepresentable {
         if coordinator.revision != expandRevision {
             coordinator.revision = expandRevision
             coordinator.expandEverything = expandAll
-            if expandAll { outline.expandItem(nil, expandChildren: true) }
-            else { outline.collapseItem(nil, collapseChildren: true); outline.expandItem(coordinator.root) }
+            if expandAll { coordinator.expandAll(in: outline) }
+            else { coordinator.cancelExpansion(); outline.collapseItem(nil, collapseChildren: true); outline.expandItem(coordinator.root) }
         }
     }
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
@@ -661,6 +661,7 @@ struct JSONOutlineView: NSViewRepresentable {
         private var preparedNodes: [ObjectIdentifier: JSONOutlineNode] = [:]
         private var requestedExpansion: Set<ObjectIdentifier> = []
         private var detailTask: Task<Void, Never>?
+        private var expansionTask: Task<Void, Never>?
         nonisolated(unsafe) private var viewportObserver: NSObjectProtocol?
         deinit { if let viewportObserver { NotificationCenter.default.removeObserver(viewportObserver) } }
         func observeViewport(_ clip: NSClipView, outline: NSOutlineView) {
@@ -683,7 +684,7 @@ struct JSONOutlineView: NSViewRepresentable {
             }
         }
         private func prepare(_ node: JSONOutlineNode, outline: NSOutlineView) {
-            guard node.prepared == nil, let frame = node.value as? CapturedEventFrame else { return }
+            guard expansionTask == nil, node.prepared == nil, let frame = node.value as? CapturedEventFrame else { return }
             let key = ObjectIdentifier(node), document = documentID
             guard pending[key] == nil else { return }
             pending[key] = Task { [weak self, weak outline, weak node] in
@@ -696,6 +697,41 @@ struct JSONOutlineView: NSViewRepresentable {
                 self.trimPreparedFrames(outline)
             }
         }
+        /// Expand all also includes offscreen events. One bounded worker job at
+        /// a time replaces a task per frame, and each publication preserves the
+        /// visible outline item while rows are inserted above it.
+        func expandAll(in outline: NSOutlineView) {
+            cancelExpansion()
+            guard let root, let frames = root.value as? [CapturedEventFrame] else {
+                outline.expandItem(nil, expandChildren: true); return
+            }
+            pending.values.forEach { $0.cancel() }; pending.removeAll()
+            let document = documentID, revision = revision
+            expansionTask = Task { [weak self, weak outline] in
+                defer { if self?.documentID == document, self?.revision == revision { self?.expansionTask = nil } }
+                for start in stride(from: 0, to: frames.count, by: 8) {
+                    let end = min(start + 8, frames.count)
+                    let batch = Array(frames[start..<end])
+                    guard let contents = try? await CapturedBodyWorker.shared.run({ try batch.map { frame in try Task.checkCancellation(); return frame.content } }),
+                          !Task.isCancelled, let self, let outline, self.documentID == document,
+                          self.revision == revision, self.expandEverything, outline.delegate === self else { return }
+                    let visible = outline.rows(in: outline.visibleRect)
+                    let anchor = visible.length > 0 ? outline.item(atRow: visible.location) : nil
+                    let offset = visible.length > 0 ? outline.visibleRect.minY - outline.rect(ofRow: visible.location).minY : 0
+                    for (index, content) in zip(start..<end, contents) {
+                        let node = root.child(index)
+                        node.prepared = content; self.preparedNodes[ObjectIdentifier(node)] = node
+                        outline.reloadItem(node, reloadChildren: true)
+                        outline.expandItem(node, expandChildren: true)
+                    }
+                    if let anchor, let clip = outline.enclosingScrollView?.contentView {
+                        let row = outline.row(forItem: anchor)
+                        if row >= 0 { clip.scroll(to: NSPoint(x: clip.bounds.minX, y: outline.rect(ofRow: row).minY + offset)) }
+                    }
+                }
+            }
+        }
+        func cancelExpansion() { expansionTask?.cancel(); expansionTask = nil }
         func outlineViewItemWillExpand(_ notification: Notification) {
             guard let outline = notification.object as? NSOutlineView, let node = notification.userInfo?["NSObject"] as? JSONOutlineNode else { return }
             requestedExpansion.insert(ObjectIdentifier(node)); prepare(node, outline: outline)
@@ -707,6 +743,7 @@ struct JSONOutlineView: NSViewRepresentable {
         init(selection: Binding<String>) { self.selection = selection }
         func cancelPendingSelection() {
             selectionRevision += 1; detailTask?.cancel(); detailTask = nil
+            cancelExpansion()
             pending.values.forEach { $0.cancel() }; pending.removeAll(); preparedNodes.removeAll(); requestedExpansion.removeAll(); expandEverything = false
         }
         func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int { (item as? JSONOutlineNode)?.count ?? (root == nil ? 0 : 1) }

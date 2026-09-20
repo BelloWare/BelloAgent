@@ -11,6 +11,23 @@ private final class MenuMetricsClock: @unchecked Sendable {
 @MainActor private final class MenuMetricsActivity { var count = 2 }
 
 final class MenuBarMetricsTests: XCTestCase {
+    func testNewRoutePageUsesItsOwnCostAndRequestDenominators() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = try await configured(root)
+        for index in 0..<25 { try await save(archive, value(model: String(format: "model-%03d", index), cost: 1)) }
+        let first = try await archive.menuBarMetrics(period: .retained, until: until)
+        try await save(archive, value(model: "zz-new-model", cost: 100))
+        let page = try await archive.menuBarMetrics(period: .retained, until: until, offset: 24)
+        XCTAssertEqual(page.gateway.costUSD, 25, "The summary keeps its disclosed observation time")
+        XCTAssertEqual(page.summaryReadAt, first.summaryReadAt)
+        let fresh = try XCTUnwrap(page.models.first { $0.resolvedModel == "zz-new-model" })
+        XCTAssertEqual(fresh.allRequests, 26)
+        XCTAssertEqual(try XCTUnwrap(fresh.costShare), 100 / 125.0, accuracy: 1e-10)
+        try await archive.close()
+        let cached = await archive.usageSnapshots.count
+        XCTAssertEqual(cached, 0)
+    }
+
     func testRoutePageUsesOnlyTwoQueriesAndPopupSkipsLatencySorts() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await configured(root)

@@ -44,6 +44,34 @@ final class CapturedBodyTests: XCTestCase {
         CapturedBodyMetadata(body: ["state": .string(state), "retainedBytes": .number(Double(bytes.count)),
                                     "observedBytes": .number(Double(observed ?? bytes.count))], hash: .string(hash))
     }
+
+    @MainActor func testExpandAllIncludesOffscreenEventsAndCollapseCancelsExpansion() async throws {
+        let bytes = Data(String(repeating: "event: message\ndata: {\"nested\":{\"leaf\":1}}\n\n", count: 96).utf8)
+        let stream = try XCTUnwrap(CapturedEventStream.parse(bytes))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 350), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        var selection = ""
+        let binding = Binding(get: { selection }, set: { selection = $0 })
+        let hosted = NSHostingView(rootView: JSONOutlineView(json: stream.outline, selection: binding, expandRevision: 0, expandAll: false))
+        window.contentView = hosted; window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        let outline = try await renderedOutline(in: hosted, window: window)
+        let root = try XCTUnwrap(outline.item(atRow: 0) as? JSONOutlineNode)
+        hosted.rootView = JSONOutlineView(json: stream.outline, selection: binding, expandRevision: 1, expandAll: true)
+        for _ in 0..<200 {
+            hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            if outline.isItemExpanded(root.child(95).child(0).child(0)) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(outline.isItemExpanded(root.child(95)), "Expand all must include events outside the viewport")
+        XCTAssertTrue(outline.isItemExpanded(root.child(95).child(0).child(0)))
+        XCTAssertEqual(root.child(95).child(0).child(0).child(0).detail, "1")
+        hosted.rootView = JSONOutlineView(json: stream.outline, selection: binding, expandRevision: 2, expandAll: false)
+        hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(outline.numberOfRows, 97)
+        XCTAssertFalse(outline.isItemExpanded(root.child(95)))
+    }
     @MainActor private func source(_ bytes: Data, state: String = "complete", observed: Int? = nil) -> CapturedBodySource {
         let description = metadata(bytes, state: state, observed: observed)
         return CapturedBodySource(metadata: { description }, page: { offset in

@@ -35,11 +35,13 @@ final class DashboardReader: @unchecked Sendable {
         }
     }
     init(url: URL) { self.url = url }
-    func run<T: Sendable>(_ work: @escaping @Sendable (DashboardQueryEngine) throws -> T) async throws -> T {
+    func run<T: Sendable>(consumer: String = "report", _ work: @escaping @Sendable (DashboardQueryEngine) throws -> T) async throws -> T {
         let token = ReportCancellation(), id = UUID()
+        let admittedAt = ProcessInfo.processInfo.systemUptime
+        let measuring = PerformanceProbe.recordingEnabled
         guard admit(id, token: token) else { throw CaptureFailure.unavailable }
         defer { finished(id) }
-        return try await withTaskCancellationHandler {
+        let (value, queued, elapsed, statements, sorts) = try await withTaskCancellationHandler {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
                 queue.async { [self] in
@@ -48,14 +50,24 @@ final class DashboardReader: @unchecked Sendable {
                         let db: CaptureDatabase
                         if let database { db = database }
                         else { db = try CaptureDatabase(url: url, readOnly: true); database = db }
+                        let beganAt = ProcessInfo.processInfo.systemUptime, previousStatements = db.statements, previousSorts = db.sorts
                         db.cancellation(token)
                         defer { db.cancellation(nil) }
                         let value = try db.readSnapshot { try work(DashboardQueryEngine(db: db)) }
                         guard !token.isCancelled else { throw CancellationError() }
-                        continuation.resume(returning: value)
+                        continuation.resume(returning: (value, (beganAt - admittedAt) * 1_000, (ProcessInfo.processInfo.systemUptime - beganAt) * 1_000, db.statements - previousStatements, db.sorts - previousSorts))
                     } catch { continuation.resume(throwing: token.isCancelled ? CancellationError() : error) }
                 }
             }
         } onCancel: { token.cancel() }
+        if measuring {
+            await MainActor.run {
+                PerformanceProbe.shared.observe(consumer + "QueryQueueMs", milliseconds: queued)
+                PerformanceProbe.shared.observe(consumer + "QueryExecutionMs", milliseconds: elapsed)
+                PerformanceProbe.shared.count(consumer + "SQLStatements", by: statements)
+                PerformanceProbe.shared.count(consumer + "SQLSorts", by: sorts)
+            }
+        }
+        return value
     }
 }
