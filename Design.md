@@ -1009,6 +1009,20 @@ every marked chat of that project in one payload, bounded like a bulk action
 and previewed as "N chats"; dragging an unmarked row still carries only itself.
 Marks never cross into a bulk delete: chats are still deleted one at a time.
 
+Starting in 0.1.68, the marked-row menu and selection bar also copy all selected
+session references, without consuming the marks. Single-session references use
+the same path. Each reference contains identity, the actual journal path and a
+shell-quoted read command, plus gateway-reported retained token counts, cached
+input, reasoning tokens, reported cost and reasoning cost, with per-field sample
+coverage. Cache/reasoning are labeled subsets; unknown or expired observations
+are not replaced with zero or estimated from transcript text. Request metadata
+is read on the archive actor for the chosen project/session scopes in bounded
+200-session batches; copying starts no helpers and reads no conversation bodies.
+Selected IDs/order are fixed before the read, with current records rechecked
+before writing the clipboard. A newer copy, changed clipboard, deleted chat,
+cancelled task or shutdown prevents a stale result overwriting clipboard data.
+
+
 A chat row's press belongs to AppKit (0.1.59). SwiftUI's `.onDrag` on a row
 inside a `Button` never started a drag, because the button claims the press
 on macOS, so the sidebar showed no drag at all. Each draggable row now carries

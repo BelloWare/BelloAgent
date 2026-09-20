@@ -272,7 +272,7 @@ private struct SidebarSessionGroup: View, Equatable {
 }
 
 /// What a right-click offers while several rows are marked. Every item runs the
-/// same durable path as its single-chat counterpart, then drops the marks.
+/// same path as its single-chat counterpart. Copying preserves the marks.
 struct MarkedSessionActions: View {
     @ObservedObject var model: WorkspaceModel
     var body: some View {
@@ -280,6 +280,10 @@ struct MarkedSessionActions: View {
         let archived = marked.filter(\.isArchived).count
         let unread = marked.filter { model.unreadOutputCount(sessionID: $0.id) > 0 }.count
         Text("\(marked.count) chats selected")
+        Divider()
+        Button("Copy Session References", systemImage: "doc.on.doc") { Task { await model.copyMarkedSessionReferences() } }
+            .help("Copy selected session IDs, conversation file paths, token usage and reported cost")
+            .accessibilityIdentifier("copyMarkedSessionReferences")
         Divider()
         if archived < marked.count {
             Button("Archive \(marked.count - archived) Chats", systemImage: "archivebox") { model.archiveMarkedSessions(true) }
@@ -345,8 +349,8 @@ struct SessionReferenceActions: View {
     var body: some View {
         Button("Copy Session ID", systemImage: "number") { model.copySessionID(sessionID) }
             .accessibilityIdentifier("copySessionID-" + sessionID)
-        Button("Copy Session Reference", systemImage: "doc.on.doc") { model.copySessionReference(sessionID) }
-            .help("Copy the session ID and its local conversation file path for inspection in another chat")
+        Button("Copy Session Reference", systemImage: "doc.on.doc") { Task { await model.copySessionReference(sessionID) } }
+            .help("Copy the session ID, conversation file path, token usage and reported cost")
             .accessibilityIdentifier("copySessionReference-" + sessionID)
     }
 }

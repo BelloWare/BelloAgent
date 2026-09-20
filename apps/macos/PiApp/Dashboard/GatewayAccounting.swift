@@ -239,6 +239,35 @@ extension PayloadArchive {
         return totals
     }
 
+    /// A copy action reads fresh compact metadata without opening chats or
+    /// scanning every session. Batches stay below older SQLite parameter limits.
+    func sessionReferenceTotals(scopes: [SessionUsageScope]) throws -> [SessionUsageScope: GatewayTotals] {
+        guard scopes.count <= TopicSessionDrag.maximumSessions,
+              Set(scopes).count == scopes.count,
+              scopes.allSatisfy({ !$0.sessionID.isEmpty && $0.sessionID.utf8.count <= 128 && !$0.workspaceID.isEmpty && $0.workspaceID.utf8.count <= 128 }) else { throw CaptureFailure.unavailable }
+        guard !scopes.isEmpty else { return [:] }
+        try Task.checkCancellation()
+        try reconcile()
+        let db = try dashboardDatabase()
+        var totals = Dictionary(uniqueKeysWithValues: scopes.map { ($0, GatewayTotals()) })
+        for start in stride(from: 0, to: scopes.count, by: 200) {
+            try Task.checkCancellation()
+            let batch = scopes[start..<min(start + 200, scopes.count)]
+            let wanted = "WITH wanted(session,workspace) AS (VALUES " + batch.map { _ in "(?,?)" }.joined(separator: ",") + ") "
+            let args = batch.flatMap { [CaptureSQLValue.text($0.sessionID), .text($0.workspaceID)] }
+            let join = "FROM wanted CROSS JOIN attempts ON attempts.session=wanted.session AND attempts.workspace=wanted.workspace"
+            for row in try db.rows("\(wanted) SELECT attempts.session,attempts.workspace,\(Self.gatewayAggregateSQL) \(join) WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY attempts.workspace,attempts.session", args) {
+                guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
+                totals[SessionUsageScope(sessionID: session, workspaceID: workspace)] = Self.gatewayTotals(row)
+            }
+            for row in try db.rows("\(wanted) SELECT attempts.session,attempts.workspace,COUNT(*) AS n \(join) WHERE metrics_retained=0 GROUP BY attempts.workspace,attempts.session", args) {
+                guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
+                totals[SessionUsageScope(sessionID: session, workspaceID: workspace), default: GatewayTotals()].expiredRecords = Int(row["n"]?.number ?? 0)
+            }
+        }
+        return totals
+    }
+
     func gatewayAccounting(sessionID: String, workspaceID: String, messages: [TranscriptMessage], includeTiming: Bool = false) throws -> SessionGatewayAccounting {
         guard !sessionID.isEmpty, sessionID.utf8.count <= 128, !workspaceID.isEmpty, workspaceID.utf8.count <= 128,
               messages.count <= 500, Set(messages.map(\.id)).count == messages.count,

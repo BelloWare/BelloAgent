@@ -76,7 +76,13 @@ usage stays separate from normal-request context observations. See the
 Session right-click and conversation “…” menus offer **Copy Session ID** and
 **Copy Session Reference**. A reference contains the app session ID and actual
 retained JSONL path, with a shell-quoted read command for local inspection from
-another session. Copying does not select, open, export or modify the conversation.
+another session. It also includes freshly read retained input/output/total tokens,
+cache and reasoning breakdowns, reported USD cost and reporting coverage. Missing
+figures remain unreported, and cache/reasoning subsets are never added twice.
+Command-click adds sessions and Shift-click selects a range; **Copy Session
+References** in the right-click menu and the selection-bar copy button copy the
+whole selection in sidebar order, including each session's individual usage.
+Copying preserves the selection and does not open, export or modify conversations.
 An unsaved chat reports that it has no journal yet; imported originals distinguish
 the app ID from the file's original identity. References describe the full retained
 journal, including branch metadata, rather than claiming to be the current context

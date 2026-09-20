@@ -3,13 +3,14 @@ import XCTest
 @testable import PiApp
 
 final class SessionReferenceTests: XCTestCase {
-    @MainActor private func fixture() throws -> (WorkspaceModel, URL, NSPasteboard) {
+    @MainActor private func fixture() async throws -> (WorkspaceModel, URL, NSPasteboard) {
         let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("session-reference-" + UUID().uuidString)
         let state = root.appendingPathComponent("state", isDirectory: true)
         try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
         let model = WorkspaceModel(stateRoot: state, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.traces.configure(quota: 1_048_576, bodyRetention: 86400, metricRetention: 86400)
         let pasteboard = NSPasteboard(name: .init("com.belloware.PiApp.tests.session-reference." + UUID().uuidString))
         pasteboard.clearContents()
         addTeardownBlock { @MainActor in pasteboard.releaseGlobally() }
@@ -43,8 +44,8 @@ final class SessionReferenceTests: XCTestCase {
         return data
     }
 
-    @MainActor func testCopyTargetsFreshArchivedRowWithoutChangingSelectionOrLoadingHistory() throws {
-        let (model, root, pasteboard) = try fixture()
+    @MainActor func testCopyTargetsFreshArchivedRowWithoutChangingSelectionOrLoadingHistory() async throws {
+        let (model, root, pasteboard) = try await fixture()
         let selected = chat("selected")
         var archived = chat("background", path: root.appendingPathComponent("old.jsonl"))
         archived.archivedAt = Date(timeIntervalSince1970: 1)
@@ -62,7 +63,8 @@ final class SessionReferenceTests: XCTestCase {
         model.chats[1].path = newestPath.path; model.chats[1].title = "Renamed in background"
         XCTAssertTrue(model.copySessionID(archived.id, to: pasteboard))
         XCTAssertEqual(pasteboard.string(forType: .string), archived.id)
-        XCTAssertTrue(model.copySessionReference(archived.id, to: pasteboard))
+        let didCopyReference = await model.copySessionReference(archived.id, to: pasteboard)
+        XCTAssertTrue(didCopyReference)
         let copied = try XCTUnwrap(pasteboard.string(forType: .string))
         XCTAssertTrue(copied.contains("App session ID: background"))
         XCTAssertTrue(copied.contains("Title: Renamed in background"))
@@ -75,8 +77,8 @@ final class SessionReferenceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: newestPath.path), "Copying must not create or load a journal")
     }
 
-    @MainActor func testCopiedCommandReadsEntireRetainedJournalAndSafelyQuotesUnusualPath() throws {
-        let (model, root, pasteboard) = try fixture()
+    @MainActor func testCopiedCommandReadsEntireRetainedJournalAndSafelyQuotesUnusualPath() async throws {
+        let (model, root, pasteboard) = try await fixture()
         let path = root.appendingPathComponent("saved space O'Brien $fixture `printf harmless`\nline.jsonl")
         var bytes = Data()
         func append(_ value: [String: WireValue]) throws {
@@ -102,7 +104,9 @@ final class SessionReferenceTests: XCTestCase {
         display.messages = (65..<125).map { .init(id: "m\($0)", role: "assistant", text: "Visible preview \($0)") }
         model.chats = [item]; model.displays[item.id] = display
 
-        XCTAssertTrue(model.copySessionReference(item.id, to: pasteboard))
+        let didCopyReference = await model.copySessionReference(item.id, to: pasteboard)
+
+        XCTAssertTrue(didCopyReference)
         let copied = try XCTUnwrap(pasteboard.string(forType: .string))
         let read = try runReadCommand(copied, in: root)
         XCTAssertEqual(read, bytes, "A reference must expose the whole durable file, including rows outside the visible60")
@@ -115,8 +119,8 @@ final class SessionReferenceTests: XCTestCase {
         XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.opened.isEmpty)
     }
 
-    @MainActor func testSavedSideForkAndImportedOriginalUseTheirOwnRetainedFiles() throws {
-        let (model, root, pasteboard) = try fixture()
+    @MainActor func testSavedSideForkAndImportedOriginalUseTheirOwnRetainedFiles() async throws {
+        let (model, root, pasteboard) = try await fixture()
         let parent = chat("parent")
         var side = chat("side", path: root.appendingPathComponent("side_side.jsonl")); side.parentSessionID = parent.id
         let fork = chat("fork", path: root.appendingPathComponent("fork_fork.jsonl"))
@@ -134,7 +138,8 @@ final class SessionReferenceTests: XCTestCase {
             try original.write(to: URL(fileURLWithPath: try XCTUnwrap(item.path)))
             XCTAssertTrue(model.copySessionID(item.id, to: pasteboard))
             XCTAssertEqual(pasteboard.string(forType: .string), item.id)
-            XCTAssertTrue(model.copySessionReference(item.id, to: pasteboard))
+            let didCopyReference = await model.copySessionReference(item.id, to: pasteboard)
+            XCTAssertTrue(didCopyReference)
             let copied = try XCTUnwrap(pasteboard.string(forType: .string))
             XCTAssertEqual(try runReadCommand(copied, in: root), original)
             if item.id == side.id { XCTAssertTrue(copied.contains("Parent session ID: parent")) }
@@ -148,8 +153,8 @@ final class SessionReferenceTests: XCTestCase {
         XCTAssertTrue(model.displays.isEmpty); XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.opened.isEmpty)
     }
 
-    @MainActor func testEmptyChatAndPendingSideCopyIdentityWithoutInventingAFile() throws {
-        let (model, root, pasteboard) = try fixture()
+    @MainActor func testEmptyChatAndPendingSideCopyIdentityWithoutInventingAFile() async throws {
+        let (model, root, pasteboard) = try await fixture()
         let parent = chat("empty")
         model.chats = [parent]
         var pending = SideRecord(id: "pending-side", parentID: parent.id, workspaceID: "project", profileID: "profile", title: "Unsent side")
@@ -158,7 +163,8 @@ final class SessionReferenceTests: XCTestCase {
         for id in [parent.id, pending.id] {
             XCTAssertTrue(model.copySessionID(id, to: pasteboard))
             XCTAssertEqual(pasteboard.string(forType: .string), id)
-            XCTAssertTrue(model.copySessionReference(id, to: pasteboard))
+            let didCopyReference = await model.copySessionReference(id, to: pasteboard)
+            XCTAssertTrue(didCopyReference)
             let copied = try XCTUnwrap(pasteboard.string(forType: .string))
             XCTAssertTrue(copied.contains("App session ID: \(id)"))
             XCTAssertTrue(copied.contains("Conversation file: not created yet"))
@@ -169,8 +175,8 @@ final class SessionReferenceTests: XCTestCase {
         XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.opened.isEmpty); XCTAssertTrue(model.displays.isEmpty)
     }
 
-    @MainActor func testRemovedSessionPreservesAllClipboardRepresentations() throws {
-        let (model, _, pasteboard) = try fixture()
+    @MainActor func testRemovedSessionPreservesAllClipboardRepresentations() async throws {
+        let (model, _, pasteboard) = try await fixture()
         let removed = chat("removed")
         model.chats = [removed]
         XCTAssertTrue(model.copySessionID(removed.id, to: pasteboard))
@@ -181,11 +187,139 @@ final class SessionReferenceTests: XCTestCase {
         let changeCount = pasteboard.changeCount
         model.chats = []
 
-        XCTAssertFalse(model.copySessionReference(removed.id, to: pasteboard))
+        let didCopyReference = await model.copySessionReference(removed.id, to: pasteboard)
+
+        XCTAssertFalse(didCopyReference)
         XCTAssertFalse(model.copySessionID(removed.id, to: pasteboard))
         XCTAssertEqual(pasteboard.changeCount, changeCount)
         XCTAssertEqual(pasteboard.string(forType: .string), removed.id)
         XCTAssertEqual(pasteboard.data(forType: extraType), extraData)
         XCTAssertNotNil(model.error); XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.displays.isEmpty)
+    }
+
+    @MainActor private func saveUsage(_ model: WorkspaceModel, session: String, project: String = "project", input: Double = 38,
+                                     output: Double = 302, cost: Double? = 0.0013875) async throws {
+        let wall = Date().timeIntervalSince1970
+        let metadata: [String: WireValue] = [
+            "attemptId": .string(UUID().uuidString), "sessionId": .string(session), "turnId": .string("turn"),
+            "api": .string("openai-responses"), "requestedModel": .string("router"), "purpose": .string("turn"),
+            "mode": .string("off"), "outcome": .string("completed"),
+            "wallTimestamp": .number(wall), "dispatchWallTimestamp": .number(wall),
+            "timingVersion": .number(2), "timings": .object(["dispatch": .number(100), "firstContent": .number(110), "modelComplete": .number(120), "httpEnd": .number(130)]),
+            "outputMessageIds": .array([.string("inherited-output")]),
+            "usage": .object(["inputIncludingCache": .number(input), "output": .number(output), "cacheRead": .number(0), "reasoning": .number(min(253, output))]),
+            "gateway": .object(["version": .number(1),
+                "cost": .object(["status": .string(cost == nil ? "unreported" : "reported"), "usd": cost.map(WireValue.number) ?? .null]),
+                "costBreakdown": .object(["reasoning": .object(["status": .string(cost == nil ? "unreported" : "reported"), "usd": cost.map { .number(min($0, 0.0011385)) } ?? .null])])])
+        ]
+        try await model.traces.begin(metadata, workspace: project)
+        try await model.traces.finish(metadata)
+    }
+
+    @MainActor func testSingleCopyReadsFreshRetainedUsageWithoutOpeningTheChat() async throws {
+        let (model, root, pasteboard) = try await fixture()
+        model.chats = [chat("cold", path: root.appendingPathComponent("cold.jsonl"))]
+        model.publishChatStats(GatewayTotals(requests: 1, costSamples: 1, costUSD: 999), sessionID: "cold")
+        try await saveUsage(model, session: "cold")
+        let copied = await model.copySessionReference("cold", to: pasteboard)
+        XCTAssertTrue(copied)
+        let reference = try XCTUnwrap(pasteboard.string(forType: .string))
+        XCTAssertTrue(reference.contains("Total tokens (input + output): 340 (1/1 requests reported)"))
+        XCTAssertTrue(reference.contains("Input tokens (includes cache): 38"))
+        XCTAssertTrue(reference.contains("Output tokens (includes reasoning): 302"))
+        XCTAssertTrue(reference.contains("Cached input tokens: 0 (1/1 requests reported)"))
+        XCTAssertTrue(reference.contains("Reasoning tokens (part of output): 253"))
+        XCTAssertTrue(reference.contains("Reported cost: $0.0013875 USD (1/1 requests reported)"))
+        XCTAssertTrue(reference.contains("Reasoning cost (part of reported cost): $0.0011385 USD"))
+        XCTAssertFalse(reference.contains("$999")); XCTAssertTrue(model.displays.isEmpty)
+        XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.opened.isEmpty)
+    }
+
+    @MainActor func testCopyMarkedReferencesUsesSidebarOrderKeepsSelectionAndScopesEachUsage() async throws {
+        let (model, root, pasteboard) = try await fixture()
+        var first = chat("first", path: root.appendingPathComponent("one.jsonl")); first.sidebarOrder = 20
+        var second = chat("second", path: root.appendingPathComponent("two.jsonl")); second.sidebarOrder = 10
+        model.chats = [second, first]
+        model.workspaces = [WorkspaceRecord(id: "project", path: root.path, trusted: true)]
+        model.selectedID = first.id
+        model.extendSessionMarks(to: second.id)
+        XCTAssertEqual(model.markedChats.map(\.id), ["first", "second"])
+        try await saveUsage(model, session: first.id, input: 100, output: 20, cost: 1.5)
+        try await saveUsage(model, session: second.id, input: 10, output: 3, cost: 0)
+        // Same app ID in another project and common inherited message links
+        // must not contaminate either reference's own request accounting.
+        try await saveUsage(model, session: first.id, project: "different-project", input: 9999, output: 9999, cost: 999)
+        let copied = await model.copyMarkedSessionReferences(to: pasteboard)
+        XCTAssertTrue(copied)
+        let text = try XCTUnwrap(pasteboard.string(forType: .string))
+        let parts = text.components(separatedBy: "\n\n---\n\n")
+        XCTAssertEqual(parts.count, 2)
+        XCTAssertTrue(parts[0].contains("App session ID: first")); XCTAssertTrue(parts[0].contains("Total tokens (input + output): 120"))
+        XCTAssertTrue(parts[0].contains("Reported cost: $1.5 USD")); XCTAssertTrue(parts[0].contains("one.jsonl"))
+        XCTAssertTrue(parts[1].contains("App session ID: second")); XCTAssertTrue(parts[1].contains("Total tokens (input + output): 13"))
+        XCTAssertTrue(parts[1].contains("Reported cost: $0 USD (1/1 requests reported)")); XCTAssertTrue(parts[1].contains("two.jsonl"))
+        XCTAssertFalse(text.contains("$999"))
+        XCTAssertEqual(model.markedSessionIDs, ["first", "second"]); XCTAssertEqual(model.selectedID, first.id)
+        XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.displays.isEmpty)
+    }
+
+    func testReferenceDistinguishesPartialMissingAndExpiredAccountingFromZero() {
+        var totals = GatewayTotals(requests: 3, costSamples: 1, costUSD: 0, cacheReadTokens: 8000, cacheReadSamples: 1, expiredRecords: 2)
+        totals.tokens = GatewayTokenTotals(input: 10000, output: 2000, total: 12000, inputSamples: 1, outputSamples: 1, samples: 1, reasoning: 1500, reasoningSamples: 1)
+        let reference = SessionReference(chat: chat("partial"), usage: totals).text
+        XCTAssertTrue(reference.contains("Total tokens (input + output): 12000 (1/3 requests reported)"))
+        XCTAssertTrue(reference.contains("Cached input tokens: 8000 (1/3 requests reported)"))
+        XCTAssertTrue(reference.contains("Reported cost: $0 USD (1/3 requests reported)"))
+        XCTAssertTrue(reference.contains("Expired request records excluded: 2"))
+        XCTAssertTrue(reference.contains("Reasoning cost (part of reported cost): not reported"))
+        let missing = SessionReference(chat: chat("missing")).text
+        XCTAssertTrue(missing.contains("Total tokens (input + output): not reported"))
+        XCTAssertTrue(missing.contains("Reported cost: not reported")); XCTAssertFalse(missing.contains("$0"))
+    }
+
+    @MainActor func testReferenceQueryHandlesMaximumSelectionAndIncludesOnlyRequestedScopes() async throws {
+        let (model, _, _) = try await fixture()
+        let scopes = (0..<500).map { SessionUsageScope(sessionID: "chat\($0)", workspaceID: "project") }
+        for index in [0, 200, 499] { try await saveUsage(model, session: "chat\(index)") }
+        try await saveUsage(model, session: "chat200", project: "other", cost: 900)
+        try await saveUsage(model, session: "unselected", cost: 999)
+        let totals = try await model.traces.sessionReferenceTotals(scopes: scopes)
+        XCTAssertEqual(totals.count, 500)
+        XCTAssertEqual(totals[scopes[0]]?.requests, 1); XCTAssertEqual(totals[scopes[200]]?.costUSD, 0.0013875)
+        XCTAssertEqual(totals[scopes[499]]?.tokens?.total, 340)
+        XCTAssertEqual(totals[scopes[1]]?.requests, 0); XCTAssertNil(totals[scopes[1]]?.costUSD)
+        do {
+            _ = try await model.traces.sessionReferenceTotals(scopes: scopes + [scopes[0]])
+            XCTFail("A selection above the bound must fail rather than truncate")
+        } catch { }
+    }
+
+    @MainActor func testPendingReferenceCannotReplaceANewerClipboardCopy() async throws {
+        let (model, _, pasteboard) = try await fixture()
+        model.chats = [chat("first"), chat("second")]
+        for external in [false, true] {
+            let copied = await model.copySessionReferences(["first"], to: pasteboard) { _ in
+                await Task.yield()
+                if external { pasteboard.clearContents(); pasteboard.setString("external copy", forType: .string) }
+                else { XCTAssertTrue(model.copySessionID("second", to: pasteboard)) }
+                return [:]
+            }
+            XCTAssertFalse(copied)
+            XCTAssertEqual(pasteboard.string(forType: .string), external ? "external copy" : "second")
+        }
+    }
+
+    @MainActor func testDeletedMemberAndUnavailableAccountingLeaveClipboardIntact() async throws {
+        let (model, _, pasteboard) = try await fixture()
+        model.chats = [chat("first"), chat("second")]
+        pasteboard.setString("keep me", forType: .string)
+        let before = pasteboard.changeCount
+        let deleted = await model.copySessionReferences(["first", "second"], to: pasteboard) { _ in
+            await Task.yield(); model.chats.removeAll { $0.id == "second" }; return [:]
+        }
+        XCTAssertFalse(deleted); XCTAssertEqual(pasteboard.changeCount, before)
+        let unavailable = await model.copySessionReferences(["first"], to: pasteboard) { _ in throw CaptureFailure.unavailable }
+        XCTAssertFalse(unavailable); XCTAssertEqual(pasteboard.changeCount, before)
+        XCTAssertEqual(pasteboard.string(forType: .string), "keep me"); XCTAssertNotNil(model.error)
     }
 }

@@ -4,18 +4,56 @@ import AppKit
 extension WorkspaceModel {
     @discardableResult
     func copySessionID(_ id: String, to pasteboard: NSPasteboard = .general) -> Bool {
-        copySessionDetails(id, to: pasteboard) { $0.id }
+        sessionReferenceCopyRevision += 1
+        guard record(id) != nil else { error = "That chat is no longer available to copy."; return false }
+        return writeSessionReference(id, to: pasteboard)
     }
 
     @discardableResult
-    func copySessionReference(_ id: String, to pasteboard: NSPasteboard = .general) -> Bool {
-        copySessionDetails(id, to: pasteboard) { SessionReference(chat: $0).text }
+    func copySessionReference(_ id: String, to pasteboard: NSPasteboard = .general) async -> Bool {
+        await copySessionReferences([id], to: pasteboard)
     }
 
-    private func copySessionDetails(_ id: String, to pasteboard: NSPasteboard, text: (ChatRecord) -> String) -> Bool {
-        // Resolve the clicked row, even when another conversation has focus.
-        guard let item = record(id) else { error = "That chat is no longer available to copy."; return false }
-        let value = text(item)
+    @discardableResult
+    func copyMarkedSessionReferences(to pasteboard: NSPasteboard = .general) async -> Bool {
+        await copySessionReferences(markedChats.map(\.id), to: pasteboard)
+    }
+
+    @discardableResult
+    func copySessionReferences(_ ids: [String], to pasteboard: NSPasteboard = .general,
+                               query: (@MainActor ([SessionUsageScope]) async throws -> [SessionUsageScope: GatewayTotals])? = nil) async -> Bool {
+        sessionReferenceCopyRevision += 1
+        let revision = sessionReferenceCopyRevision, clipboardRevision = pasteboard.changeCount
+        var seen = Set<String>()
+        let ids = ids.filter { seen.insert($0).inserted }
+        guard !ids.isEmpty, ids.count <= Self.markedSessionLimit else { error = "Select chats to copy their references."; return false }
+        let records = ids.compactMap { record($0) }
+        guard records.count == ids.count else { error = "A selected chat is no longer available to copy."; return false }
+        let scopes = records.map { SessionUsageScope(sessionID: $0.id, workspaceID: $0.workspaceID) }
+        func isCurrent() -> Bool {
+            !Task.isCancelled && !accountingStopped && sessionReferenceCopyRevision == revision && pasteboard.changeCount == clipboardRevision
+        }
+        do {
+            let totals: [SessionUsageScope: GatewayTotals]
+            if let query { totals = try await query(scopes) }
+            else { totals = try await traces.sessionReferenceTotals(scopes: scopes) }
+            guard isCurrent() else { return false }
+            // Resolve current titles and file paths after the metadata read,
+            // while retaining the originally requested order and identities.
+            let current = ids.compactMap { record($0) }
+            guard current.count == scopes.count, zip(current, scopes).allSatisfy({ $0.workspaceID == $1.workspaceID }) else {
+                error = "A selected chat is no longer available to copy."; return false
+            }
+            let references = zip(current, scopes).map { SessionReference(chat: $0, usage: totals[$1] ?? GatewayTotals()).text }
+            let heading = references.count > 1 ? "Bello Agent session references (\(references.count))\n\n" : ""
+            return writeSessionReference(heading + references.joined(separator: "\n\n---\n\n"), to: pasteboard)
+        } catch {
+            if isCurrent() { self.error = "Session usage could not be read for copying. " + error.localizedDescription }
+            return false
+        }
+    }
+
+    private func writeSessionReference(_ value: String, to pasteboard: NSPasteboard) -> Bool {
         pasteboard.clearContents()
         guard pasteboard.setString(value, forType: .string) else { error = "The session reference could not be copied. Try again."; return false }
         return true

@@ -24,6 +24,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
     }
     /// Invalidates delayed report-to-message navigation when another target wins.
     var messageNavigationRevision = 0
+    var sessionReferenceCopyRevision = 0
     /// Owned by `WorkspaceSelection.swift`: which `select` call is current, so
     /// a slower one cannot finish over a newer selection.
     var selectionRevision = 0

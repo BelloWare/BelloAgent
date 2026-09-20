@@ -124,6 +124,9 @@ struct SidebarSelectionBar: View {
                 .accessibilityLabel("\(count) chats selected")
                 .accessibilityIdentifier("sidebarSelectionCount")
             Spacer(minLength: 2)
+            PiIconButton(symbol: "doc.on.doc", label: "Copy selected session references, tokens and cost", size: 20) {
+                Task { await model.copyMarkedSessionReferences() }
+            }.accessibilityIdentifier("sidebarSelectionCopy")
             if compact {
                 PiIconButton(symbol: allArchived ? "arrow.uturn.backward" : "archivebox",
                              label: allArchived ? "Restore selected chats" : "Archive selected chats", size: 20) {
