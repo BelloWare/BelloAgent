@@ -1,0 +1,7 @@
+<h2>Bello Agent 0.1.61</h2>
+<ul>
+  <li>Fixes the Git filesystem-watcher crash, rejects callbacks from a stopped watch, and safely releases watcher resources.</li>
+  <li>Makes helper shutdown safe while pipes are active. Invalid timing, token totals, and unusual session IDs no longer crash the app or helper; original request captures and conversation history are preserved.</li>
+  <li>Bounds terminal output, pasted input, combining characters, Git output, and MCP replies. Oversized operations report a clear limit, and uncertain tool outcomes are not automatically replayed.</li>
+  <li>Includes the reviewed scrolling and transition improvements: shared idle preparation, steadier disclosure animations, and persistent native rendering for large code blocks.</li>
+</ul>

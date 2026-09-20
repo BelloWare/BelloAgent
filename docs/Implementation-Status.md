@@ -12,7 +12,7 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Unreleased performance follow-up, 2026-09-20:** display-linked disclosure motion
+**Performance follow-up included in the 0.1.61 candidate, 2026-09-20:** display-linked disclosure motion
 survives streaming updates; resize completion reconciles unseen history in bounded
 idle work; both panes share input/visibility-aware preparation; large code fences
 use a persistent native text leaf; asynchronous image paste keeps its originating
@@ -20,9 +20,11 @@ session. New measurements and regressions cover rich streaming, five sessions,
 and 20 concurrent gateway sessions with two histories, capture, an inspector, IME
 and resize. Rich-row, cold scrolling and large-table stalls remain; see the
 [review implementation record](Performance-Review-Implementation-2026-09-20.md).
-The owner requested source commits and push only: **no new release**; version and
-public artifacts remain 0.1.60/build 64. Do not spawn subagents unless explicitly
-requested by the owner in the current request.
+The initial performance-only request was committed and pushed without a release.
+The subsequent crash-audit request authorizes **0.1.61/build 65**. Read the
+[crash audit implementation](Crash-Audit-Implementation-2026-09-20.md) and
+[release validation](validation/Bello-Agent-0.1.61-2026-09-20.md). Do not spawn
+subagents unless explicitly requested by the owner in the current request.
 
 **Bello Agent 0.1.60/build 64 is publicly released** at
 [belloware.com](https://belloware.com/bello-agent.html), from source `ce252bcabe542efc58d87774f16bbe09b4a646d8`

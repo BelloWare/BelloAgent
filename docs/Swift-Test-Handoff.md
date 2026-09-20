@@ -30,15 +30,18 @@ execute every suite for every change. This policy supersedes older blanket gates
 
 Updated 2026-09-20. **Use `main` in `BelloWare/BelloAgent`.** See the
 [implementation status](Implementation-Status.md) for the current public release,
-and the [latest deep review](Deep-Review-2026-09-19.md) for the crash/lifecycle audit.
+and the [crash audit implementation](Crash-Audit-Implementation-2026-09-20.md)
+for the latest crash/lifecycle fixes. The [0.1.61 validation record](validation/Bello-Agent-0.1.61-2026-09-20.md)
+records optimized native/helper tests, explicit actor checks and publication.
 Current release records take precedence over the historical matrices below.
 Installation/update rehearsals remain skipped by owner instruction.
 
-## Unreleased 2026-09-20 performance acceptance
+## 2026-09-20 performance acceptance (included in 0.1.61)
 
 Read the [performance implementation record](Performance-Review-Implementation-2026-09-20.md)
-for measurements, rejected prototypes and remaining stalls. This work is source-only;
-do not release or bump 0.1.60/build 64 without a new owner request.
+for measurements, rejected prototypes and remaining stalls. The original work
+was source-only; the subsequent crash-audit request authorizes its inclusion in
+0.1.61/build 65.
 Validation totals: **83 distinct focused passes**, plus 12 unchanged parser/copy/
 cache-lifetime checks reused from the earlier successful Release selection. The
 final scheduler/load selection passed 16/16 and the isolated scroll/stream repeat
@@ -88,7 +91,8 @@ the final exact-geometry assertions to make timing tests pass.
 The work preserves helper/capture semantics, complete source and copy actions,
 cache limits and native selection. It does not establish physical 60/120 Hz
 cadence, VoiceOver, system-driven Reduce Motion, external-display moves or
-slow-storage behavior. No install/update or publication checks were run.
+slow-storage behavior. No install/update or publication checks were run during
+that source-only task; the separate 0.1.61 record covers publication.
 
 ## Current 0.1.57 concurrent-session responsiveness acceptance
 

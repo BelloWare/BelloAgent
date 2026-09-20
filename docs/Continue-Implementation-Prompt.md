@@ -14,6 +14,9 @@ Read docs/Session-Reference-Review-2026-09-19.md.
 Read docs/Scrolling-Review-2026-09-19.md.
 Read docs/Topics-Review-2026-09-19.md.
 Read docs/Five-Session-Performance-Review-2026-09-19.md.
+Read docs/Crash-Audit-Implementation-2026-09-20.md and
+docs/validation/Bello-Agent-0.1.61-2026-09-20.md for the current crash-fix release
+status. Do not use subagents unless explicitly requested in the current owner request.
 Read the latest release record linked below. Current source and the latest
 validation record take precedence over historical counts and chat claims.
 
@@ -32,8 +35,8 @@ and website `4ceb9e8773b605931d15eceaf04b0e4947f6f2c7`. The DMG measures **7,824
 SHA-256 `0cf92ca649e56a4293a404fa98a9d8fcbe547d2ee9a97222a04be124e1cc81c7`. Signing, notarization, packaged helper/catalog smoke,
 identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
 verification pass. Public verification: **2026-09-19 23:24:08 UTC**.
-Read the [0.1.60 release record](validation/Bello-Agent-0.1.60-2026-09-19.md). Source commits remain local;
-the website publication commit was pushed.
+Read the [0.1.60 release record](validation/Bello-Agent-0.1.60-2026-09-19.md). Its
+source and the subsequent performance work are already included on origin/main.
 
 Bello Agent 0.1.59/build 63 is a historical verified release at
 [belloware.com](https://belloware.com/bello-agent.html), from source `f24e92d0649ceba066ad62e0a9ba439a0e07aacc`
