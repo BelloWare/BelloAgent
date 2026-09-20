@@ -12,11 +12,23 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Bello Agent 0.1.64/build 68 is the release candidate** implementing single-task
-compaction, bounded chunk/merge summaries, scoped history recall, durable v2
-checkpoints and one explicit context-rejection recovery. The 4,096 summary cap
-is removed; reasoning effort stays unchanged and the summary instruction follows
-its source. Read the [implementation and CP01–CP33 dispositions](Compaction-Implementation-2026-09-20.md)
+**Bello Agent 0.1.64/build 68 is released and publicly verified** at
+[belloware.com](https://belloware.com/bello-agent.html), from source
+`b7f08f5fe812e52eef4ff3447ce66c0f3e1c080e` and website
+`0adb68c37b16fe1a5eea2eaf755f3b6f51d150df`. The DMG measures **8,216,889 bytes
+(7.84 MiB)**, SHA-256 `632c42730cc90b0538f92430baa7274416ef745bc6ece5bf1983ec5fb52438f9`.
+App/DMG signing, notarization, packaged helper smoke, public product link,
+identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
+verification pass. Public verification: **2026-09-20 09:50:33 UTC**.
+Cloudflare check **106059060216** succeeded.
+
+The release implements single-task compaction, bounded chunk/merge summaries,
+scoped history recall, durable v2 checkpoints and one explicit context-rejection
+recovery. The fixed 4,096 summary cap is removed; reasoning effort stays unchanged
+and the intent-only summary instruction follows its source. Validation: **260
+optimized helper tests, 258 Debug functional helper tests, 26 executable gateway
+tests, 62 native Release tests and 18 actor-checked native Debug tests passed**.
+Read the [implementation and CP01–CP33 dispositions](Compaction-Implementation-2026-09-20.md)
 and [0.1.64 validation](validation/Bello-Agent-0.1.64-2026-09-20.md).
 
 **Bello Agent 0.1.63/build 67 is a historical verified release** at
