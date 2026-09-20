@@ -12,12 +12,27 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**0.1.69/build 73 is being prepared** with the Plan B live status popup and the
-previously committed Plan A improvements. The popup separates Live and Usage,
+**Bello Agent 0.1.69/build 73 is released and publicly verified** at
+[belloware.com](https://belloware.com/bello-agent.html), from source
+`6c101522840a5a5ac8dbbc9556ec37e4fceb477b` and website
+`fb34fa2404446ccbfeb2f906a7bbe8134b7d31c9`. The DMG measures **8,459,128 bytes
+(8.07 MiB)**, SHA-256 `2a7d429633d5a304278349c19cfee334f4a8cd88055f414ebf0d9ba940a2496f`.
+Developer ID signing, app/DMG notarization, packaged smoke, public product page,
+identical update feeds and downloaded SHA-256/Ed25519 verification pass.
+Public verification: **2026-09-20 17:29:00 UTC**. Cloudflare check
+**106118013463** succeeded. Source and publication commits are pushed.
+
+The release includes Plan B and the previously committed Plan A improvements.
+The popup separates Live and Usage,
 shows observed work, checked active-request accounting and request speed samples,
 and keeps its footer accessible on short screens. See
 [Plan B implementation](Plan-B-Live-Status-2026-09-21.md) and
 [0.1.69 acceptance](validation/Bello-Agent-0.1.69-2026-09-21.md).
+**59 distinct optimized native, 22 helper and seven packaged gateway tests
+passed**, with 17 native popup tests rerun after the final refinement. The native
+20-session fixture verifies 40 unique observed attempts and 80 exact bodies.
+Warm popup display opportunity p95 is 53.86 ms in the mounted native fixture;
+this is not a physical frame-rate claim. Deployed-route interim usage is unverified.
 
 **Plan A smoothness work, included in 0.1.69,** batches archive/restore/pin, prevents
 intermediate chat navigation, orders overlapping organization changes, isolates

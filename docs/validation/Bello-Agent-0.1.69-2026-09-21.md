@@ -1,5 +1,7 @@
 # Bello Agent 0.1.69/build 73 acceptance — 2026-09-21
 
+**Released and publicly verified 2026-09-20 17:29:00 UTC.**
+
 ## Change
 
 The native menu-bar popup now separates current Live observations from retained
@@ -88,3 +90,25 @@ failure and capture-backpressure evidence is reused.
 No subagents, installation tests or actual Sparkle install/update rehearsals are
 used. Developer ID signing, notarization, packaged smoke and public feed/archive
 hash/signature verification remain release gates.
+
+## Signed release and publication
+
+- Shipping source: `6c101522840a5a5ac8dbbc9556ec37e4fceb477b`.
+- Website publication: `fb34fa2404446ccbfeb2f906a7bbe8134b7d31c9`.
+- Source and website commits were pushed to their respective `main` branches.
+- Optimized build, Developer ID signatures, hardened runtime, packaged helper
+  offline/catalog smoke, Gatekeeper and app/DMG staples passed.
+- Apple accepted app submission `f23709ba-0f57-4c4c-b180-0dfad4d155f4` and DMG
+  submission `ff9447b0-b8a8-482c-9e70-afd447ebc6dd`.
+- DMG: **8,459,128 bytes (8.07 MiB)**,
+  SHA-256 `2a7d429633d5a304278349c19cfee334f4a8cd88055f414ebf0d9ba940a2496f`.
+- Build/notary/smoke evidence: shared build cache `release.JnbRQy`; release and
+  publication commands: scratch `release.log` and `publish.log`. The final signed
+  DMG was also copied to the session outbox.
+
+Cloudflare check **106118013463** succeeded at **2026-09-20 17:28:07 UTC**.
+Public product page and download link, byte-identical canonical/legacy update
+feeds, and the downloaded archive's SHA-256 and Ed25519 signature passed at
+**2026-09-20 17:29:00 UTC**. Evidence is in `public-product.html`,
+`public-verification.log` and `public-0.1.69/`. Verification waited for the actual
+deployment instead of treating the website Git push as public availability.
