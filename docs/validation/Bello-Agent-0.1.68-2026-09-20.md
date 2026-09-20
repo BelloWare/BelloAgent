@@ -1,6 +1,6 @@
 # Bello Agent 0.1.68/build 72 acceptance — 2026-09-20
 
-Publication pending verification.
+**Released and publicly verified 2026-09-20 15:29:15 UTC.**
 
 ## Change
 
@@ -48,3 +48,21 @@ Scratch: session `tmp/references-068`, logs/result bundles
 `native-references`, `native-references-final`, `native-reference-accounting`.
 No helper or transport behavior changed; their prior validation is reused.
 No subagents, installation tests or Sparkle install/update rehearsals are used.
+
+## Signed release
+
+- Shipping source: `73ff2334db6440c3fa31265b540f3898444c4c2a`.
+- Website publication: `0f1358e79971dab6e99db426e9d87b29df18fa63`.
+- Optimized native build, Developer ID signatures, hardened runtime, packaged
+  helper offline/catalog smoke, Gatekeeper and app/DMG staples passed.
+- Apple accepted app submission `e8506dc1-ca3c-49b9-b82e-8b66b7b4f514` and DMG
+  submission `2ea078b4-a4cb-4110-ab25-64dd06feff90`.
+- DMG: **8,253,957 bytes (7.87 MiB)**,
+  SHA-256 `0f4d717763a9de0906d276d959480d79aa810ad797ff08492ef2ae6a1f7158bf`.
+- Release scripts: `release.log`, `publish.log`; build/notary/smoke evidence in
+  shared build cache `release.kQYAGk`. Final DMG copied to the session outbox.
+
+Public product page, byte-identical canonical/legacy update feeds and downloaded
+DMG SHA-256/Ed25519 verification passed **2026-09-20 15:29:15 UTC**. Cloudflare
+check **106101546960** succeeded at 15:28:46 UTC. Public verification evidence:
+`public-verification.log`, `public-verified.txt` and `public-0.1.68/` in scratch.
