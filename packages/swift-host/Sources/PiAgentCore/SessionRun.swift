@@ -107,12 +107,12 @@ extension AgentSession {
                         partialText=""; partialThinking=""; resetPartialRow()
                         if let partialID { recordDisplayChange(partialID, at: displayClock()) }
                     })
-                    let modelMs=nowMS()-modelStart; turnModelMs += modelMs; cumulativeModelMs += modelMs
+                    let modelMs=nowMS()-modelStart; turnModelMs += modelMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, modelMs)
                     modelActive=false
                     var assistant=reply.message; assistant.id=partialID ?? assistant.id; assistant.modelMs=modelMs; partialID=nil; currentAttemptIDs=assistant.requestAttemptIDs ?? []
                     // A reply cut at the output budget is a complete row with a reason, not a failed run.
                     if reply.truncated { assistant.stopReason="length" }
-                    try append(assistant); cumulativeInput += inputIncludingCache(reply.usage); cumulativeOutput += reply.usage["output"].int ?? 0
+                    try append(assistant); cumulativeUsage.observe(reply.usage)
                     contextBaseline=try RequestUsageBaseline(request:request,profile:turnProfile,reply:reply)
                     event("message_end")
                     await flushRequestLinks()

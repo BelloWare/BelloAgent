@@ -204,5 +204,5 @@ extension AgentSession {
         return value
     }
     public func turnMetrics() -> JSON { ["startedAt":begin.map { JSON($0) } ?? .null,"endedAt":end.map { JSON($0) } ?? .null,"durationMs":begin.map { JSON((end ?? nowMS())-$0) } ?? .null,"elapsedMs":begin.map { JSON((end ?? nowMS())-$0) } ?? .null,
-                                          "modelMs":JSON(turnModelMs),"toolMs":JSON(turnToolMs),"sessionModelMs":JSON(cumulativeModelMs),"sessionToolMs":JSON(cumulativeToolMs)] }
+                                          "modelMs":JSON(turnModelMs),"toolMs":JSON(turnToolMs),"sessionModelMs":cumulativeModelMs.map { JSON($0) } ?? .null,"sessionToolMs":cumulativeToolMs.map { JSON($0) } ?? .null] }
 }

@@ -58,8 +58,8 @@ extension AgentSession {
         for attempt in summary.requestAttemptIDs ?? [] { await traces.outputs(attempt, messageIDs: [summary.id]) }
         context=[summary]+kept; history.append(summary); visible.append(summary); boundary=context; contextBaseline=nil; currentContextCount=nil
         recordDisplayChange(summary.id, at: observedAt)
-        cumulativeInput += inputIncludingCache(answer.usage); cumulativeOutput += answer.usage["output"].int ?? 0
-        let compactMs=nowMS()-compactStart; turnModelMs += compactMs; cumulativeModelMs += compactMs
+        cumulativeUsage.observe(answer.usage)
+        let compactMs=nowMS()-compactStart; turnModelMs += compactMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, compactMs)
         event("context.compacted")
     }
     func compactionDelta(_: StreamDelta) {

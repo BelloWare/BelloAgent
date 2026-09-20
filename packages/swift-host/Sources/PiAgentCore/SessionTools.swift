@@ -62,7 +62,7 @@ extension AgentSession {
         var message=ChatMessage(role:"toolResult",content:[textBlock(text)]); message.toolCallId=call.id; message.toolName=call.name; message.isError=result["isError"].flag ?? false
         message.requestAttemptIDs=currentAttemptIDs
         let durationMs=started.map { nowMS()-$0 }
-        if let durationMs { turnToolMs += durationMs; cumulativeToolMs += durationMs }
+        if let durationMs { turnToolMs += durationMs; cumulativeToolMs = ObservedDuration.adding(cumulativeToolMs, durationMs) }
         let stats=result["stats"]
         message.toolStats=["durationMs":durationMs.map { JSON($0) } ?? .null,"path":stats["path"],"added":stats["added"],"removed":stats["removed"]]
         try append(message, observedAt: observedAt)

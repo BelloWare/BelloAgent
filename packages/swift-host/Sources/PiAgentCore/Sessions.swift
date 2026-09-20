@@ -62,10 +62,12 @@ public actor AgentSession {
     /// Eviction is oldest-first; a dictionary's key order is not arrival order,
     /// so sorting keys would retire a running card and keep a finished one.
     var toolStateOrder: [String]=[], toolStateBytes: [String:Int]=[:]
-    var cumulativeInput=0, cumulativeOutput=0, currentTurnID="", appliedRevision: String?
+    var cumulativeUsage = CumulativeUsage()
+    var currentTurnID="", appliedRevision: String?
     /// Where the time went: model requests versus tool execution, for the
     /// current turn and for the whole session. Session totals persist.
-    var turnModelMs=0.0, turnToolMs=0.0, cumulativeModelMs=0.0, cumulativeToolMs=0.0
+    var turnModelMs=0.0, turnToolMs=0.0
+    var cumulativeModelMs: Double? = 0, cumulativeToolMs: Double? = 0
     var contextBaseline: RequestUsageBaseline?
     var contextCounter = RequestContextCounter()
     var currentContextCount: RequestContextCount?
@@ -154,7 +156,10 @@ public actor AgentSession {
             steering=try JSONDecoder().decode([Submission].self,from:saved["steering"].data())
             commands=saved["commands"].list; let hasQueued = !queue.isEmpty; let hasSteering = !steering.isEmpty; queuePaused = hasQueued || hasSteering || saved["active"].flag == true || saved["queuePaused"].flag == true
             steeringMode=saved["steeringMode"].text ?? "one-at-a-time"; followUpMode=saved["followUpMode"].text ?? "one-at-a-time"
-            cumulativeModelMs=saved["timing"]["modelMs"].double ?? 0; cumulativeToolMs=saved["timing"]["toolMs"].double ?? 0
+            if !saved["timing"].isNull {
+                cumulativeModelMs=ObservedDuration.valid(saved["timing"]["modelMs"].double)
+                cumulativeToolMs=ObservedDuration.valid(saved["timing"]["toolMs"].double)
+            }
             if saved["active"].flag == true { errorMessage="The previous run was interrupted. No model or tool request was replayed. Inspect tool effects before continuing." }
             else if saved["runStatus"].text == "failed" {
                 runStatus="failed"; errorMessage=saved["errorMessage"].text ?? "Run failed."

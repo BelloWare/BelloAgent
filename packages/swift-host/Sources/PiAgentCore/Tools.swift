@@ -52,7 +52,15 @@ final class ShellRun: @unchecked Sendable {
                 for handle in [child.output.fileHandleForReading, child.errors.fileHandleForReading] {
                     DispatchQueue.global(qos:.utility).async { [self] in
                         defer { try? handle.close(); readerDone() }
-                        while true { let data=handle.availableData;if data.isEmpty { break };consume(data) }
+                        var bytes = [UInt8](repeating: 0, count: 65_536)
+                        while true {
+                            let count = read(handle.fileDescriptor, &bytes, bytes.count)
+                            if count > 0 { consume(Data(bytes.prefix(count))) }
+                            else if count == 0 { break }
+                            else if errno != EINTR {
+                                lock.lock(); ioError = true; lock.unlock(); child.stop(); break
+                            }
+                        }
                     }
                 }
                 // The command deadline. Bounded rather than owned: it sleeps

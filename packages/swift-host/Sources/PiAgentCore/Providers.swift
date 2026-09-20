@@ -351,14 +351,7 @@ public struct ProviderAccumulator: Sendable {
             }
         }
         guard Set(calls.map(\.id)).count==calls.count,calls.count<=64 else { throw AgentError("invalid_tool_calls","Duplicate tool identities or excessive tool calls") }
-        let u=root["usage"],input=u["input_tokens"].double,output=u["output_tokens"].double
-        let cached=api=="openai-responses" ? u["input_tokens_details"]["cached_tokens"].double:u["cache_read_input_tokens"].double
-        let write=api=="openai-responses" ? u["input_tokens_details"]["cache_write_tokens"].double:u["cache_creation_input_tokens"].double
-        // Responses input_tokens already includes its cached/read and write
-        // subsets. output_tokens likewise includes reasoning_tokens. Neither
-        // detail may be added a second time to consumed token totals.
-        let total=input.map { api=="openai-responses" ? $0:$0+(cached ?? 0)+(write ?? 0) }
-        let usage:JSON=["input":input.map { JSON($0) } ?? .null,"output":output.map { JSON($0) } ?? .null,"cacheRead":cached.map { JSON($0) } ?? .null,"cacheWrite":write.map { JSON($0) } ?? .null,"reasoning":u["output_tokens_details"]["reasoning_tokens"],"inputIncludingCache":total.map { JSON($0) } ?? .null,"raw":u]
+        let usage = UsageObservation.normalized(root["usage"], api: api)
         return ModelReply(message:message,calls:calls,usage:usage,truncated:truncated)
     }
 }

@@ -33,7 +33,7 @@ extension AgentSession {
         return ["accepted":true,"sessionId":JSON(newID),"path":JSON(destination.path),"origin":origin]
     }
     func savedState(active: Bool? = nil) throws -> JSON {
-        let value: JSON = ["active":JSON(active ?? (runTask != nil)),"queue":.array(queue.map(\.savedValue)),"steering":.array(steering.map(\.savedValue)),"commands":.array(Array(commands.suffix(128))),"queuePaused":JSON(queuePaused),"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode),"runStatus":JSON(runStatus),"errorMessage":errorMessage.map { JSON($0) } ?? .null,"timing":["modelMs":JSON(cumulativeModelMs),"toolMs":JSON(cumulativeToolMs)]]
+        let value: JSON = ["active":JSON(active ?? (runTask != nil)),"queue":.array(queue.map(\.savedValue)),"steering":.array(steering.map(\.savedValue)),"commands":.array(Array(commands.suffix(128))),"queuePaused":JSON(queuePaused),"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode),"runStatus":JSON(runStatus),"errorMessage":errorMessage.map { JSON($0) } ?? .null,"timing":["modelMs":cumulativeModelMs.map { JSON($0) } ?? .null,"toolMs":cumulativeToolMs.map { JSON($0) } ?? .null]]
         guard (try value.data()).count <= 8*1024*1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
         return value
     }

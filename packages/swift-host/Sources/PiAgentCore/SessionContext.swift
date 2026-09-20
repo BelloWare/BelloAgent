@@ -10,7 +10,6 @@ extension AgentSession {
     /// A title task is a bounded utility request: its budget is its cap.
     /// Conversation turns send the model ceiling instead.
     func applyingTaskCap(_ effective: Profile) -> Profile { titleTask ? ((try? effective.capped(effective.maxOutput)) ?? effective) : effective }
-    func inputIncludingCache(_ u: JSON) -> Int { (u["input"].int ?? 0) + (profile.api == "anthropic-messages" ? (u["cacheRead"].int ?? 0)+(u["cacheWrite"].int ?? 0) : 0) }
     public func contextInfo() -> JSON {
         if let count=currentContextCount { return count.json }
         return ["tokens":.null,"contextWindow":JSON(turnProfile.contextWindow),"source":"Prepared request calculation pending",
@@ -19,7 +18,7 @@ extension AgentSession {
     }
     public func inspectContext() async -> JSON {
         let latest=await traces.latest(id)
-        return ["context":contextInfo(),"contextSource":"Native estimate; configured capacity","profile":profile.publicValue,"headerNames":.array(profile.raw["headers"].map.keys.sorted().map { JSON($0) }),"effectiveThinkingLevel":turnProfile.raw["thinkingLevel"],"effectiveModel":JSON(turnProfile.model),"outputReserve":JSON(turnProfile.maxOutput),"run":turnMetrics(),"captureMode":JSON(await traces.mode(id)),"latestAttemptId":latest["attemptId"],"latestUsage":latest["usage"],"latestMetrics":latest["metrics"],"cumulative":["input":JSON(cumulativeInput),"output":JSON(cumulativeOutput)],"provenance":parentInfo,"liveTokenRate":.null,"resources":["appliedRevision":appliedRevision.map { JSON($0) } ?? .null]]
+        return ["context":contextInfo(),"contextSource":"Native estimate; configured capacity","profile":profile.publicValue,"headerNames":.array(profile.raw["headers"].map.keys.sorted().map { JSON($0) }),"effectiveThinkingLevel":turnProfile.raw["thinkingLevel"],"effectiveModel":JSON(turnProfile.model),"outputReserve":JSON(turnProfile.maxOutput),"run":turnMetrics(),"captureMode":JSON(await traces.mode(id)),"latestAttemptId":latest["attemptId"],"latestUsage":latest["usage"],"latestMetrics":latest["metrics"],"cumulative":cumulativeUsage.json,"provenance":parentInfo,"liveTokenRate":.null,"resources":["appliedRevision":appliedRevision.map { JSON($0) } ?? .null]]
     }
     /// Builds the same provider body as dispatch without appending a message,
     /// starting a run, executing tools, compacting, or granting skill selection.

@@ -26,9 +26,9 @@ struct RequestContextCount: Sendable {
     /// The reserve says the reply may not fit beside this input: compact first when possible.
     var fits: Bool { tokens <= inputBudget }
     /// The input itself fits the window; only when it does not is a turn stopped.
-    var inputFits: Bool { tokens + safetyMargin <= contextWindow }
+    var inputFits: Bool { tokens <= contextWindow - safetyMargin }
     /// Room for the reply once the input and the safety margin are in the window.
-    var replyRoom: Int { max(1, contextWindow - tokens - safetyMargin) }
+    var replyRoom: Int { tokens >= contextWindow - safetyMargin ? 1 : max(1, contextWindow - safetyMargin - tokens) }
     var json: JSON {
         ["tokens":JSON(tokens), "method":JSON(method), "requestedModel":JSON(requestedModel),
          "countedModel":countedModel.map { JSON($0) } ?? .null, "requestFingerprint":JSON(requestFingerprint),
@@ -68,7 +68,8 @@ struct RequestUsageBaseline: Sendable {
               let input = reply.usage["input"].int, input >= 0 else { return nil }
         template = try RequestContextCounter.template(request, profile:profile)
         itemHashes = try RequestContextCounter.items(request).map { sha256(try $0.data()) }
-        inputTokens = input + (profile.api == "anthropic-messages" ? (reply.usage["cacheRead"].int ?? 0) + (reply.usage["cacheWrite"].int ?? 0) : 0)
+        guard let observed = UsageObservation.count(reply.usage.map["inputIncludingCache"] ?? reply.usage["input"]) else { return nil }
+        inputTokens = observed
         self.model = model
     }
 }
@@ -88,7 +89,10 @@ struct RequestContextCounter: Sendable {
         if let baseline, baseline.template == (try Self.template(request, profile:profile)), input.count >= baseline.itemHashes.count,
            try Array(input.prefix(baseline.itemHashes.count)).map({ sha256(try $0.data()) }) == baseline.itemHashes {
             method = "usage-baseline"; countedModel = baseline.model
-            tokens = baseline.inputTokens + counter.count(.array(Array(input.dropFirst(baseline.itemHashes.count))))
+            let (sum, overflow) = baseline.inputTokens.addingReportingOverflow(counter.count(.array(Array(input.dropFirst(baseline.itemHashes.count)))))
+            // A saturated count remains over capacity without overflowing any
+            // of the budget comparisons or misrepresenting it as zero usage.
+            tokens = overflow ? Int.max : sum
         } else {
             tokens = counter.count(Self.modelInput(request))
         }
@@ -103,7 +107,8 @@ struct RequestContextCounter: Sendable {
         }
         warnings += counter.warnings
         warnings.append("LiteLLM counting endpoints are not used without a request-compatible counting and routing contract.")
-        let room = max(1, profile.contextWindow - tokens - RequestContextCount.safetyMargin(contextWindow: profile.contextWindow))
+        let available = profile.contextWindow - RequestContextCount.safetyMargin(contextWindow: profile.contextWindow)
+        let room = tokens >= available ? 1 : max(1, available - tokens)
         let outputCap = profile.wireOutputLimit.map { profile.outputCap != nil ? $0 : min($0, room) }
         let result = RequestContextCount(tokens:tokens, method:method, requestedModel:profile.model, countedModel:countedModel,
             requestFingerprint:fingerprint,

@@ -35,9 +35,9 @@ final class ManagedChild: @unchecked Sendable {
         if getpgid(pid)==pid || (!process.isRunning && kill(-pid,0)==0) { processGroup=pid }
         else if process.isRunning { process.terminate();throw AgentError("process_group","Runtime did not isolate the tool process group") }
     }
-    func stop() {
+    func stop(closeInput: Bool = true) {
         lock.lock(); if stopped { lock.unlock(); return }; stopped = true; let pid = process.processIdentifier, group = processGroup; lock.unlock()
-        try? input.fileHandleForWriting.close()
+        if closeInput { try? input.fileHandleForWriting.close() }
         if group > 0, group != getpgrp() { _ = kill(-group, SIGTERM) }
         else if process.isRunning { process.terminate() }
         let child=process
@@ -72,15 +72,36 @@ public protocol MCPTransport: Sendable {
 /// touched only from the readability handler, which FileHandle serializes for
 /// one handle, and that writes go through the serial `writer` queue.
 final class StdioMCP: MCPTransport, @unchecked Sendable {
-    private let child: ManagedChild, lock = NSLock(), writer = DispatchQueue(label: "pi.mcp.write")
+    private let child: ManagedChild, lock = NSLock()
+    private var writer: MCPWriteQueue!
+    private var serverRequestWindow = 0.0, serverRequests = 0
     private var pending: [String: CheckedContinuation<JSON, Error>] = [:], closed = false, buffer = Data()
     private let timeout: UInt64
     init(command: String, args: [String], cwd: URL, environment: [String: String], timeoutSeconds: Int) throws {
         child = try ManagedChild(command: command, arguments: args, cwd: cwd, environment: environment); timeout = UInt64(timeoutSeconds) * 1_000_000_000
-        child.errors.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
+        writer = MCPWriteQueue(handle: child.input.fileHandleForWriting) { [weak self] in
+            self?.fail(AgentError("mcp_backpressure", "MCP output queue exceeded its limit or disconnected; invocation outcome may be unknown. No replay attempted."))
+        }
+        for handle in [child.errors.fileHandleForReading, child.output.fileHandleForReading] {
+            let fd = handle.fileDescriptor; _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        }
+        child.errors.fileHandleForReading.readabilityHandler = { handle in
+            var bytes = [UInt8](repeating: 0, count: 65_536)
+            let count = read(handle.fileDescriptor, &bytes, bytes.count)
+            if count == 0 || (count < 0 && errno != EAGAIN && errno != EINTR) { handle.readabilityHandler = nil }
+        }
         child.output.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
             guard let self else { return }
+            // The callback retains the handle; no other path explicitly closes
+            // stdout/stderr. POSIX returns an error rather than an ObjC exception,
+            // and unlike Foundation's filling read it does not await 64 KiB.
+            var bytes = [UInt8](repeating: 0, count: 65_536)
+            let count = read(handle.fileDescriptor, &bytes, bytes.count)
+            if count < 0 {
+                if errno != EAGAIN && errno != EINTR { self.fail(AgentError("mcp_read", "MCP output interrupted; invocation outcome may be unknown")) }
+                return
+            }
+            let data = Data(bytes.prefix(count))
             if data.isEmpty { self.fail(AgentError("mcp_closed", "MCP server disconnected; an in-flight invocation may have completed remotely")); return }
             self.consume(data)
         }
@@ -111,10 +132,11 @@ final class StdioMCP: MCPTransport, @unchecked Sendable {
     }
     private func resolve(_ id: String, _ result: Result<JSON, Error>) { lock.lock(); let c = pending.removeValue(forKey: id); lock.unlock(); c?.resume(with: result) }
     private func send(_ value: JSON) {
-        writer.async { [self] in
-            do { var data = try value.data(); guard data.count <= 4 * 1024 * 1024 else { throw AgentError("mcp_limit", "MCP frame too large") }; data.append(10); try child.input.fileHandleForWriting.write(contentsOf: data) }
-            catch { fail(AgentError("mcp_write", "MCP write failed; no invocation replay attempted")) }
-        }
+        lock.lock(); let stopped = closed; lock.unlock(); guard !stopped else { return }
+        do {
+            var data = try value.data(); data.append(10)
+            guard writer.append(data) else { throw AgentError("mcp_backpressure", "MCP outbound queue exceeded its byte/frame limit; invocation outcome may be unknown. No replay attempted.") }
+        } catch { fail(error) }
     }
     private func consume(_ data: Data) {
         // FileHandle serializes callbacks for this handle. The buffer is never
@@ -122,11 +144,16 @@ final class StdioMCP: MCPTransport, @unchecked Sendable {
         buffer.append(data)
         do {
             while let nl = buffer.firstIndex(of: 10) {
+                lock.lock(); let stopped = closed; lock.unlock(); if stopped { buffer.removeAll(); return }
                 guard nl <= 4 * 1024 * 1024 else { throw AgentError("mcp_limit", "MCP response frame too large") }
                 let line = Data(buffer[..<nl]); buffer.removeSubrange(...nl)
                 let v = try JSON.parse(line); guard v.isObject, v["jsonrpc"].text == "2.0" else { throw AgentError("mcp_protocol", "Invalid MCP JSON-RPC response") }
                 if let method = v["method"].text {
                     if !v["id"].isNull {
+                        let now = ProcessInfo.processInfo.systemUptime
+                        if now - serverRequestWindow >= 1 { serverRequestWindow = now; serverRequests = 0 }
+                        serverRequests += 1
+                        guard serverRequests <= 64 else { throw AgentError("mcp_server_flood", "MCP server exceeded 64 client-directed requests per second; invocation outcome may be unknown. No replay attempted.") }
                         var response: JSON = ["jsonrpc":"2.0", "id":v["id"]]
                         if method == "ping" { response["result"] = [:] }
                         else { response["error"] = ["code":-32601,"message":"Client capability not supported"] }
@@ -144,9 +171,72 @@ final class StdioMCP: MCPTransport, @unchecked Sendable {
     }
     private func fail(_ error: Error) {
         lock.lock(); if closed { lock.unlock(); return }; closed = true; let waits = pending.values; pending.removeAll(); lock.unlock()
-        for c in waits { c.resume(throwing: error) }; child.stop()
+        writer.close()
+        child.output.fileHandleForReading.readabilityHandler = nil; child.errors.fileHandleForReading.readabilityHandler = nil
+        for c in waits { c.resume(throwing: error) }; child.stop(closeInput: false)
     }
     func close() async { fail(AgentError("mcp_closed", "MCP connection closed")); child.output.fileHandleForReading.readabilityHandler = nil; child.errors.fileHandleForReading.readabilityHandler = nil }
+    deinit {
+        writer.close(); child.stop(closeInput: false)
+        child.output.fileHandleForReading.readabilityHandler = nil; child.errors.fileHandleForReading.readabilityHandler = nil
+    }
+}
+
+/// Admission is byte/frame bounded before dispatching a closure. The sole
+/// writer is nonblocking; cancellation owns descriptor close after writes stop.
+final class MCPWriteQueue: @unchecked Sendable {
+    static let byteLimit = 4 * 1024 * 1024 + 1, frameLimit = 64
+    private let lock = NSLock(), queue = DispatchQueue(label: "pi.mcp.write")
+    private let fd: Int32, failed: @Sendable () -> Void
+    private var closed = false, bytes = 0, frames = 0
+    private var source: DispatchSourceWrite?
+    private var resumed = false, pending: [Data] = [], offset = 0
+    var retainedBytes: Int { lock.lock(); defer { lock.unlock() }; return bytes }
+    init(handle: FileHandle, failed: @escaping @Sendable () -> Void) {
+        fd = handle.fileDescriptor; self.failed = failed
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        #if canImport(Darwin)
+        _ = fcntl(fd, F_SETNOSIGPIPE, 1)
+        #endif
+        let source = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: queue)
+        source.setEventHandler { [weak self] in self?.flush() }
+        source.setCancelHandler { try? handle.close() }; self.source = source
+    }
+    func append(_ data: Data) -> Bool {
+        lock.lock()
+        guard !closed, frames < Self.frameLimit, data.count <= Self.byteLimit - bytes else { lock.unlock(); return false }
+        frames += 1; bytes += data.count; lock.unlock()
+        queue.async { [self] in
+            guard source != nil else { release(data.count); return }
+            pending.append(data); flush()
+        }
+        return true
+    }
+    private func release(_ count: Int) { lock.lock(); bytes -= count; frames -= 1; lock.unlock() }
+    private func flush() {
+        guard let source else { return }
+        for _ in 0..<16 {
+            guard let first = pending.first else { if resumed { source.suspend(); resumed = false }; return }
+            let count = first.withUnsafeBytes { raw in
+                raw.baseAddress.map { write(fd, $0 + offset, min(65_536, raw.count - offset)) } ?? 0
+            }
+            if count > 0 {
+                offset += count
+                if offset == first.count { pending.removeFirst(); offset = 0; release(first.count) }
+            } else if count < 0, errno == EINTR { continue }
+            else if count < 0, errno == EAGAIN || errno == EWOULDBLOCK { break }
+            else { close(); failed(); return }
+        }
+        if !resumed { source.resume(); resumed = true }
+    }
+    func close() {
+        lock.lock(); if closed { lock.unlock(); return }; closed = true; lock.unlock()
+        queue.async { [self] in
+            for entry in pending { release(entry.count) }; pending.removeAll(); offset = 0
+            if !resumed { source?.resume() }; source?.cancel(); source = nil
+        }
+    }
+    deinit { if !resumed { source?.resume() }; source?.cancel() }
 }
 
 /// Streamable HTTP 2025-11-25/2025-06-18, with no automatic reconnect/replay.
