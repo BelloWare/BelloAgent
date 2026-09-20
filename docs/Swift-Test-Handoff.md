@@ -36,6 +36,29 @@ records optimized native/helper tests, explicit actor checks and publication.
 Current release records take precedence over the historical matrices below.
 Installation/update rehearsals remain skipped by owner instruction.
 
+## 0.1.64 compaction acceptance
+
+See [the implementation record](Compaction-Implementation-2026-09-20.md) and
+[release validation](validation/Bello-Agent-0.1.64-2026-09-20.md). Run helper
+`CompactionSafetyTests`, `CompactionTaskRegressionTests`, `CompactionBudgetTests`,
+`CompactionGatewayTests`, receipts/snapshots, `TurnCapacityTests`, context/usage,
+queue, branch/fork and storage checks. `fixtures/native/compaction_gateway.py`
+validates serialized requests, independent routed capacity, one-time tool effects,
+JSON/SSE outcomes, output reserve/effort and exact HTTP captures.
+The fixture publishes its ready marker atomically to avoid a file-creation race;
+the same race fix applies to the pre-existing `CrashAuditTests` gateway.
+
+Native boundaries: `AutomaticContextTests`, `PreparedContextLifecycleTests`,
+`WorkspaceFollowupTests`, `ConversationRunTests`, `GatewayAccountingTests`,
+`RequestContextObservationTests`, `WorkspaceDurabilityTests`,
+`WorkspaceFailureTests`, `WorkspaceConcurrencyTests`, `CaptureMacIntegrationTests`
+and `ReleaseConfigurationTests`. Keep native windows serialized and explicitly
+enable actor checks in a separate focused Debug run. Measure streaming CPU in
+the optimized helper configuration; do not weaken its existing performance budget.
+Twenty helper compactions are tested independently of the native twenty-session
+capture workload; this does not establish native-visible twenty-compaction frame
+rate, real-provider capacity or prompt-cache hit rates.
+
 ## 0.1.63 chat behavior and ordering acceptance
 
 See [the implementation record](Chat-Behavior-Implementation-2026-09-20.md) and

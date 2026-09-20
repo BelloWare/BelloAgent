@@ -41,6 +41,24 @@ instruction. SDK-era requirements remain in `docs/archive/PiSDK-Features.md`.
 
 ## 2. Required features and honest implementation status
 
+**Compaction, 0.1.64:** one long user task can compact between complete model/tool
+batches. Original task input and delivered steering remain verbatim. Complete
+assistant/call/result groups are retained or summarized together; uncertain tool
+effects require inspection. Large sources use bounded evidence excerpts and
+chunk/merge requests, with eight physical summary attempts per operation.
+`history_read` retrieves retained evidence in UTF-8 pages without rerunning tools.
+Summary output has no fixed 4,096-token cap: use the selected model ceiling,
+clipped to the actual summary request's remaining capacity; use the configured
+output budget when the catalog has no ceiling. Preserve the session's reasoning
+effort. The summarization instruction follows the source content, with no target
+character or token count. Empty, refused, truncated, tool-calling or non-reducing
+summaries do not replace context. A typed context rejection permits one reduction
+and one retry of that model operation, never a replay of completed tools.
+Checkpoints synchronize before memory adoption and preserve ordered lineage on
+reopen, side/keep and fork. Existing banners show chunk/merge progress, and summary
+usage stays separate from normal-request context observations. See the
+[implementation and CP01–CP33 record](docs/Compaction-Implementation-2026-09-20.md).
+
 Session right-click and conversation “…” menus offer **Copy Session ID** and
 **Copy Session Reference**. A reference contains the app session ID and actual
 retained JSONL path, with a shell-quoted read command for local inspection from

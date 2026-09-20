@@ -12,7 +12,14 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Bello Agent 0.1.63/build 67 is publicly released** at
+**Bello Agent 0.1.64/build 68 is the release candidate** implementing single-task
+compaction, bounded chunk/merge summaries, scoped history recall, durable v2
+checkpoints and one explicit context-rejection recovery. The 4,096 summary cap
+is removed; reasoning effort stays unchanged and the summary instruction follows
+its source. Read the [implementation and CP01–CP33 dispositions](Compaction-Implementation-2026-09-20.md)
+and [0.1.64 validation](validation/Bello-Agent-0.1.64-2026-09-20.md).
+
+**Bello Agent 0.1.63/build 67 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source `b0ae02f51525f517929d4feb53deb5cf3bb9e3fc`
 and website `2980441eeb55161c6e17d01c1d4f524d87e3e3d3`. The DMG measures **8,115,649 bytes (7.74 MiB)**,
 SHA-256 `591a351f9a50f0deb34df45287336dddf654e146155336da0ae450daf5e8677d`. App/DMG signing and notarization,

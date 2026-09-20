@@ -1,0 +1,10 @@
+<h2>Bello Agent 0.1.64</h2>
+<ul>
+  <li>Long tasks can compact within a single conversation turn, preserving the original objective and delivered steering while keeping complete tool-call/result groups together.</li>
+  <li>Removes the fixed 4,096-token summary limit. Summary allowance now follows the selected model's output ceiling and context window, with the configured budget used when no ceiling is known.</li>
+  <li>Keeps the session's reasoning effort and places the compaction instruction after the source content, without a summary-length target. Distinguishes exhausted output, refusals, empty summaries and other incomplete responses.</li>
+  <li>Large histories use bounded chunks and merged summaries. Retained tool evidence can be recalled in pages without running the tool again.</li>
+  <li>Explicit context-limit rejections can recover through one reduction and retry. Completed tool actions are never automatically repeated.</li>
+  <li>Compaction checkpoints are synchronized before adoption and validated when reopening or branching. Cancelled, incomplete and non-reducing summaries leave the previous context intact.</li>
+  <li>Shows summary chunk/merge progress, keeps summary usage separate from the main context meter, and stops truncated tool-call responses for explicit continuation.</li>
+</ul>

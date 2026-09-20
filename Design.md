@@ -99,7 +99,7 @@ The transcript attaches a work line to the bottom of every assistant reply: how 
 
 A session actor owns its history and two separate queues. Pi `v0.85.1/packages/agent/src/agent-loop.ts` is the steering/follow-up reference. Deliver a user input, stream a complete model response, append it, execute validated tools serially and save each result. Only then consume steering; consult queued follow-ups when the run would otherwise stop. `one-at-a-time` is the default; `all` is an explicit queue setting.
 
-Stop lives beside the send/queue controls inside each chat composer and cancels only that session's active work, pausing its queues. Background tasks with no composer expose Stop in their lower task footer. Failures, truncated responses and failed compaction also pause continuation. Failed responses display Error and a visible, wrapping explanation without opening an inspector. Persist the failure for reopened sessions, bound long details with scrolling, and redact known credentials before display or journal storage. The failed run and its paused follow-up queue remain separate states; deliberate cancellation stays paused. No automatic HTTP or mutating-tool retry is implemented. Recovery pairs unresolved tool calls with explicit unknown results; it does not rerun them. Journal delivery IDs avoid duplicate user delivery after a crash between a message append and queue-state append.
+Stop lives beside the send/queue controls inside each chat composer and cancels only that session's active work, pausing its queues. Background tasks with no composer expose Stop in their lower task footer. Failures, truncated responses and failed compaction also pause continuation. Failed responses display Error and a visible, wrapping explanation without opening an inspector. Persist the failure for reopened sessions, bound long details with scrolling, and redact known credentials before display or journal storage. The failed run and its paused follow-up queue remain separate states; deliberate cancellation stays paused. Transient HTTP failures have at most three attempts. Explicit context rejection permits one bounded reduction/retry cycle per logical model operation; mutating tools are never automatically retried. Recovery pairs unresolved tool calls with explicit unknown results; it does not rerun them. Journal delivery IDs avoid duplicate user delivery after a crash between a message append and queue-state append.
 
 Each native journal is append-only, exclusively locked and bounded. Its envelope supports existing history display, but native opaque state is not Pi SDK session compatibility. Additional backward migration is not a release goal. Preserve old user files rather than silently rewriting them.
 
@@ -863,9 +863,58 @@ the abandoned tail. A compaction summary retained by the branch stays visible
 even if its journal record followed the edited user message. Content-page
 revisions combine visible and journal counts.
 
+**Compaction checkpoints (0.1.64).** `CompactionPlanner` validates complete
+assistant/tool groups with occurrence-scoped call IDs. The current task root and
+delivered steering are protected inputs; old ambiguous legacy inputs are also
+protected. The planner can summarize the newest complete group when keeping it
+would exceed capacity. `CompactionSourceBuilder` preserves requested tool
+arguments and observed outcomes, labels omitted evidence and emits scoped
+`history_read` references. Historical text never grants skills or approvals.
+
+`SessionSummarizer` uses the same selected connection/model, tools disabled, and
+at most eight physical requests including chunks, merges and transient retries.
+The output allowance is the model ceiling, respecting an explicit task/cost cap
+and actual input headroom; without a catalog ceiling it uses the configured budget.
+Each dispatched summary profile reserves the full transmitted cap plus the
+existing safety margin. The session's reasoning effort is unchanged. Source
+records come first and the compaction instruction is the last input message,
+with no requested character/token length. This preserves a stable source prefix;
+actual prompt-cache hits remain gateway observations, not a client guarantee.
+These owner instructions supersede the original 4,096 cap and the addendum's
+proposed 16,384/32,768 defaults, low effort, and visible-summary target.
+Source/intermediate data is bounded to 2 MiB; each actual summary body gets an
+independent capacity check. Explicit summary-input rejection shrinks packing
+within the same budget. Non-shrinking merges, incomplete output and a candidate
+that does not reduce the actual next request fail without adoption.
+Typed terminal metadata distinguishes explicit output exhaustion, other/unknown
+incompleteness, refusal, empty text and unexpected tool calls. A headroom-clipped
+exhaustion may reduce its source once to make more of the model allowance fit;
+a full-cap exhaustion cannot be escalated above that ceiling. All attempts share
+the same eight-request budget and retain their usage, diagnostics and captures.
+
+Version-2 `compaction` records retain ordered source/protected/kept IDs, exact
+summary dependencies, task root, before/after count provenance, operation and
+attempt IDs, output allowance and recovery linkage. An explicit synchronized
+append flushes preceding tool writes. Memory adopts the checkpoint synchronously
+before any trace-link await. Failed synchronization poisons the writer; reopening
+validates either a complete old or new projection and never replays work.
+Queue changes do not invalidate frozen context; immediate configuration/context
+changes do. Native history indexing and portable export validate checkpoint
+version/order instead of silently filtering missing IDs. Editing a protected
+input abandons summaries that depend on it. Forks retain original sources but
+start independent recovery state; a side with only a boundary snapshot reports
+missing ancestor evidence as unavailable.
+
+Only typed context rejections trigger one durable reduction/retry allowance per
+logical model operation. Transient HTTP retry remains separate. No complete tool
+batch is rewound, and a length-truncated tool request stops without invocation
+or automatic regeneration. Summary usage is linked per physical attempt; it
+does not replace the normal-request context meter. Snapshot progress omits large
+source-ID arrays, which remain in the checkpoint journal.
+
 **Display kinds (H5).** Display messages carry optional `kind` and `detail`.
 The compaction summary row has `kind: "compaction"` and
-`detail: "Compacted N tokens · M messages kept"` (tokens estimated before
+`detail: "Compacted N estimated input tokens · M messages kept"` (tokens estimated before
 compaction, kept message count), reconstructed from the compaction record on
 load. The branch marker has `kind: "branch"`. Ordinary rows omit both fields;
 role, text, thinking and tools are unchanged.
