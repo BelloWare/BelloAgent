@@ -42,6 +42,8 @@ actor HistoryReader {
         var type: String?; var id: String?; var parentId: String?
         var fromMessageId: String?; var keptIds: [String]?; var nativeKeptIDs: [String]?; var contextIDs: [String]?
         var version: Int?; var customType: String?; var pendingWork: PendingWork?
+        var nativeCompactionVersion: Int?; var nativeCompaction: Checkpoint?
+        struct Checkpoint: Decodable { var version: Int; var sourceIDs: [String]; var protectedIDs: [String]; var keptIDs: [String] }
         struct PendingItem: Decodable {}
         struct PendingWork: Decodable {
             var active: Bool?; var queue: [PendingItem]?; var steering: [PendingItem]?
@@ -55,12 +57,13 @@ actor HistoryReader {
         }
         struct MessageRole: Decodable {
             struct Block: Decodable { var type: String?; var id: String? }
-            var role: String?; var toolCallId: String?; var calls: [String]; var contentIndexed: Bool
-            private enum CodingKeys: String, CodingKey { case role, toolCallId, content }
+            var role: String?; var toolCallId: String?; var calls: [String]; var contentIndexed: Bool; var nativeReplayEligible: Bool?
+            private enum CodingKeys: String, CodingKey { case role, toolCallId, content, nativeReplayEligible }
             init(from decoder: Decoder) throws {
                 let value = try decoder.container(keyedBy: CodingKeys.self)
                 role = try value.decodeIfPresent(String.self, forKey: .role)
                 toolCallId = try value.decodeIfPresent(String.self, forKey: .toolCallId)
+                nativeReplayEligible = try value.decodeIfPresent(Bool.self, forKey: .nativeReplayEligible)
                 // String-form user content is valid. Only normalized call IDs
                 // are indexed; text/provider content is never retained here.
                 let blocks = try? value.decode([Block].self, forKey: .content)
@@ -72,13 +75,15 @@ actor HistoryReader {
         }
         var message: MessageRole?
         private struct ContextSelection: Decodable { var ids: [String]? }
-        private enum CodingKeys: String, CodingKey { case type, id, parentId, fromMessageId, keptIds, nativeKeptIDs, version, customType, nativeState, data, message }
+        private enum CodingKeys: String, CodingKey { case type, id, parentId, fromMessageId, keptIds, nativeKeptIDs, version, customType, nativeState, data, message, nativeCompactionVersion, nativeCompaction }
         init(from decoder: Decoder) throws {
             let value = try decoder.container(keyedBy: CodingKeys.self)
             type = try value.decodeIfPresent(String.self, forKey: .type); id = try value.decodeIfPresent(String.self, forKey: .id)
             parentId = try value.decodeIfPresent(String.self, forKey: .parentId)
             fromMessageId = try value.decodeIfPresent(String.self, forKey: .fromMessageId); keptIds = try value.decodeIfPresent([String].self, forKey: .keptIds)
             nativeKeptIDs = try value.decodeIfPresent([String].self, forKey: .nativeKeptIDs)
+            nativeCompactionVersion = try value.decodeIfPresent(Int.self, forKey: .nativeCompactionVersion)
+            nativeCompaction = try value.decodeIfPresent(Checkpoint.self, forKey: .nativeCompaction)
             version = try value.decodeIfPresent(Int.self, forKey: .version); customType = try value.decodeIfPresent(String.self, forKey: .customType)
             message = try value.decodeIfPresent(MessageRole.self, forKey: .message)
             if type == "branch" { pendingWork = try value.decodeIfPresent(PendingWork.self, forKey: .nativeState) }
@@ -255,6 +260,7 @@ actor HistoryReader {
         var pending = Data(), offset: UInt64 = 0, refs: [String: Ref] = [:], leaf: String?
         var sessionID: String?, native = false, linear = true, pendingWork = false
         var contextIDs: Set<String> = [], contextMessages: [String: (calls: [String], result: String?)] = [:]
+        var orderedContext: [String] = [], roles: [String: String] = [:]
         var contextSafe = true, callCount = 0
         while let chunk = try file.read(upToCount: 65_536), !chunk.isEmpty {
             var start = chunk.startIndex
@@ -286,19 +292,33 @@ actor HistoryReader {
                             callCount += calls.count
                             if callCount > 100_000 { contextSafe = false }
                             contextMessages[id] = (callCount <= 100_000 ? calls : [], value.message?.role == "toolResult" ? value.message?.toolCallId : nil)
-                            contextIDs.insert(id)
+                            roles[id]=value.message?.role
+                            if value.message?.nativeReplayEligible != false { contextIDs.insert(id); orderedContext.append(id) }
                         } else if value.type == "compaction" {
-                            contextIDs = Set(value.nativeKeptIDs ?? []).intersection(contextMessages.keys)
+                            let kept=value.nativeKeptIDs ?? [], keptSet=Set(kept)
+                            guard keptSet.count==kept.count, keptSet.isSubset(of:contextIDs) else { throw StoreError.unreadableRecord }
+                            if value.nativeCompactionVersion != nil || value.nativeCompaction != nil {
+                                guard value.nativeCompactionVersion==2, let checkpoint=value.nativeCompaction, checkpoint.version==2,
+                                      checkpoint.sourceIDs==orderedContext, checkpoint.keptIDs==kept else { throw StoreError.unreadableRecord }
+                                let protected=Set(checkpoint.protectedIDs)
+                                guard protected.count==checkpoint.protectedIDs.count,
+                                      Array(kept.prefix(protected.count))==checkpoint.protectedIDs,
+                                      orderedContext.filter({ protected.contains($0) })==checkpoint.protectedIDs,
+                                      checkpoint.protectedIDs.allSatisfy({ roles[$0]=="user" }),
+                                      orderedContext.filter({ keptSet.subtracting(protected).contains($0) })==Array(kept.dropFirst(protected.count)) else { throw StoreError.unreadableRecord }
+                            } else if orderedContext.filter({ keptSet.contains($0) }) != kept { throw StoreError.unreadableRecord }
+                            orderedContext=[id]+kept; contextIDs=Set(orderedContext)
                             contextMessages[id] = ([], nil); contextIDs.insert(id)
                         } else if value.type == "branch" {
                             let kept = Set(value.keptIds ?? [])
-                            if !kept.isSubset(of: Set(contextMessages.keys)) { contextSafe = false }
+                            if kept.count != value.keptIds?.count || orderedContext.filter({ kept.contains($0) }) != value.keptIds { contextSafe = false }
                             contextIDs.formIntersection(kept)
+                            orderedContext=orderedContext.filter { kept.contains($0) }
                             contextMessages[id] = ([], nil)
                         } else if let replacement = value.contextIDs {
                             let ids = Set(replacement)
-                            if !ids.isSubset(of: Set(contextMessages.keys)) { contextSafe = false }
-                            contextIDs = ids
+                            if ids.count != replacement.count || !ids.isSubset(of: Set(contextMessages.keys)) { contextSafe = false }
+                            contextIDs = ids; orderedContext=replacement
                         }
                         // Count durable appends, including abandoned branches,
                         // exactly as the helper does. This is not the visible-page count.

@@ -192,6 +192,30 @@ final class AutomaticContextTests: XCTestCase {
         XCTAssertFalse(interrupted)
     }
 
+    func testVersionedCompactionValidatesOrderedActiveReferences() async throws {
+        let root=try scratch();defer { try? FileManager.default.removeItem(at:root) }
+        let path=root.appendingPathComponent("checkpoint.jsonl"),reader=HistoryReader()
+        let records:[[String:Any]]=[
+            ["type":"session","version":3,"id":"a"],
+            ["type":"custom","id":"native","parentId":NSNull(),"customType":"pi-app.native.v1"],
+            ["type":"message","id":"root","parentId":"native","message":["role":"user","content":"Objective"]],
+            ["type":"message","id":"answer","parentId":"root","message":["role":"assistant","content":"Work"]],
+            ["type":"message","id":"steer","parentId":"answer","message":["role":"user","content":"Constraint"]]
+        ]
+        for variant in 0..<4 {
+            var metadata:[String:Any]=["version":2,"sourceIDs":["root","answer","steer"],"protectedIDs":["root","steer"],"keptIDs":["root","steer","answer"]]
+            if variant==1 { metadata["version"]=99 }
+            if variant==2 { metadata["sourceIDs"]=["root","abandoned","steer"] }
+            if variant==3 { metadata["protectedIDs"]=["steer","root"] }
+            let checkpoint:[String:Any]=["type":"compaction","id":"summary","parentId":"steer","nativeCompactionVersion":2,"nativeCompaction":metadata,"nativeKeptIDs":["root","steer","answer"],"summary":"Work summary"]
+            var bytes=Data()
+            for record in records+[checkpoint] { bytes.append(try JSONSerialization.data(withJSONObject:record,options:.sortedKeys));bytes.append(10) }
+            try bytes.write(to:path,options:.atomic)
+            let safe=try await reader.allowsAutomaticContext(path:path.path,id:"a")
+            XCTAssertEqual(safe,variant==0,"Malformed, foreign or reordered checkpoint must not open automatically")
+        }
+    }
+
     @MainActor func testAutomaticPackagedPreviewPersistsNewJournalWithoutDispatchAndCanReopen() async throws {
         let model = try await fixture(); defer { model.shutdown() }
         await model.select("a")

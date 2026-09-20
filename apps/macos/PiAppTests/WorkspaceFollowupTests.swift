@@ -174,6 +174,20 @@ final class WorkspaceFollowupTests: XCTestCase {
         await model.store?.close()
     }
 
+    @MainActor func testCompactionProgressUsesOperationalChunksWithoutInventedPercent() {
+        let display=SessionDisplay(id:"progress")
+        display.observeCompaction(["runStatus":.string("compacting"),"compaction":.object(["phase":.string("summarizing"),"chunk":.number(2)])])
+        XCTAssertEqual(display.compactionProgress,"Summarizing earlier work · chunk 2")
+        display.observeCompaction(["runStatus":.string("compacting"),"compaction":.object(["phase":.string("merging"),"chunk":.number(1)])])
+        XCTAssertEqual(display.compactionProgress,"Combining summaries · chunk 1")
+        display.observeCompaction(["runStatus":.string("compacting"),"compaction":.object(["phase":.string("retrying-output-budget")])])
+        XCTAssertEqual(display.compactionProgress,"Reducing summary input to leave more output space")
+        display.observeCompaction(["compaction":.object(["phase":.string("summarizing"),"chunk":.number(1e30)])])
+        XCTAssertEqual(display.compactionProgress,"Summarizing earlier work")
+        display.observeCompaction(["runStatus":.string("failed"),"compaction":.object(["phase":.string("failed")])])
+        XCTAssertNil(display.compactionProgress);XCTAssertNil(display.compactionNotice)
+    }
+
     @MainActor func testCompactionNoticesRequireNewSuccessAndIgnoreFailureCancellationAndOldHistory() {
         func snapshot(_ id: String?, detail: String = "Compacted 12000 tokens · 2 messages kept", run: String = "idle") -> [String: WireValue] {
             ["runStatus": .string(run), "latestSuccessfulCompaction": id.map { .object(["id": .string($0), "detail": .string(detail)]) } ?? .null]

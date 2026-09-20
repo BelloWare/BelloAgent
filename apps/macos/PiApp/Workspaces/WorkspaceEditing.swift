@@ -136,7 +136,7 @@ struct CompactionBanner: View {
             if compacting { ProgressView().controlSize(.mini) }
             else { Image(systemName: "arrow.down.right.and.arrow.up.left").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.piInfo) }
             Text(compacting ? "Compacting context…" : "Context compacted").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Color.piInk)
-            Text("· " + (compacting ? "older messages are being summarized to fit the model's window" : session.compactionNotice ?? ""))
+            Text("· " + (compacting ? session.compactionProgress ?? "Preparing context" : session.compactionNotice ?? ""))
                 .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
             if !compacting { Button("Dismiss", action: dismiss).buttonStyle(.piGhost) }

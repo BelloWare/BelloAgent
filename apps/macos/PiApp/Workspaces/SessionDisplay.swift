@@ -109,12 +109,28 @@ import Combine
     }
     /// Set when a compaction finishes; shown above the composer until the next send or dismissal.
     @Published var compactionNotice: String?
+    @Published var compactionProgress: String?
     private var compactionBaselineLoaded = false
     private var observedCompactionID: String?
     /// Status snapshots carry the successful summary that is still in active
     /// context, independently of the visible transcript page. Opening history
     /// establishes a baseline; only a new committed summary produces a notice.
     func observeCompaction(_ snapshot: [String: WireValue], baseline: Bool = false) {
+        let operation=snapshot["compaction"]?.object
+        let chunk=operation?["chunk"]?.number.flatMap { value in
+            value.isFinite && value >= 1 && value <= 8 && value.rounded() == value ? Int(value):nil
+        }
+        let chunkDetail=chunk.map { " · chunk \($0)" } ?? ""
+        let progress: String?
+        switch operation?["phase"]?.string {
+        case "summarizing": progress="Summarizing earlier work"+chunkDetail
+        case "merging": progress="Combining summaries"+chunkDetail
+        case "retrying": progress="Retrying summary request"
+        case "retrying-output-budget": progress="Reducing summary input to leave more output space"
+        case "planning": progress="Preparing complete tool history"
+        default: progress=nil
+        }
+        if compactionProgress != progress { compactionProgress=progress }
         let summary = snapshot["latestSuccessfulCompaction"]?.object
         let id = summary?["id"]?.string
         if baseline || !compactionBaselineLoaded {
