@@ -82,6 +82,7 @@ public struct ChatMessage: Codable, Sendable {
         }
         let full = displayText ?? text
         var value: JSON = ["id": JSON(id), "role": JSON(role == "toolResult" ? "tool" : role), "text": JSON(preview(full)), "thinking": JSON(preview(thinking, bytes: 8192)), "tools": .array(Array(tools.prefix(ToolInputDisplay.projectedCards))), "state": JSON(state), "truncated": JSON(full.utf8.count > 16384 || thinking.utf8.count > 8192 || tools.count > ToolInputDisplay.projectedCards)]
+        if role == "assistant" { value["toolCallCount"] = JSON(tools.count) }
         if let kind { value["kind"] = JSON(kind) }
         if let stopReason { value["stopReason"] = JSON(stopReason) }
         if let detail { value["detail"] = JSON(preview(detail, bytes: 1024)) }

@@ -56,7 +56,7 @@ extension AgentSession {
             let text=partialTextPreview ?? { let value=preview(partialText,bytes:Self.streamedTextBytes); partialTextPreview=value; return value }()
             let thinking=partialThinkingPreview ?? { let value=preview(partialThinking,bytes:Self.streamedThinkingBytes); partialThinkingPreview=value; return value }()
             let truncated=partialText.utf8.count>Self.streamedTextBytes || partialThinking.utf8.count>Self.streamedThinkingBytes || partialToolSeen.count>cards.count
-            let value:JSON=["id":JSON(partialID),"role":"assistant","text":JSON(text),"thinking":JSON(thinking),"tools":.array(cards),"state":"streaming","truncated":JSON(truncated)]
+            let value:JSON=["id":JSON(partialID),"role":"assistant","text":JSON(text),"thinking":JSON(thinking),"tools":.array(cards),"state":"streaming","toolCallCount":0,"truncated":JSON(truncated)]
             displayRowVersion &+= 1
             _=append(DisplayRow(value:value,bytes:(try? value.data().count) ?? 1_048_576,version:displayRowVersion))
             streaming=StreamingRowState(id:partialID,text:text,thinking:thinking,cards:partialCardsVersion,truncated:truncated)

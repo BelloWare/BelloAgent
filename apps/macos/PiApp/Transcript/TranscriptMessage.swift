@@ -29,6 +29,8 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     var turn: String? = nil
     /// Assistant rows: the model request's duration in milliseconds, when the host measured it.
     var modelMs: Double? = nil
+    /// Validated logical calls in the whole reply, before bounding its cards.
+    var toolCallCount: Int? = nil
     private static func bounded(_ text: String, bytes: Int) -> String {
         var prefix = Data(text.utf8.prefix(bytes))
         while !prefix.isEmpty { if let value = String(data: prefix, encoding: .utf8) { return value }; prefix.removeLast() }
@@ -51,7 +53,7 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
                             input: arguments.text, output: "", durationMs: nil, truncated: arguments.truncated,
                             inputTruncated: arguments.truncated ? true : nil, inputBytes: arguments.truncated ? arguments.bytes : nil)
         }, state: message["stopReason"]?.string, truncated: text.utf8.count > 16_384 || thinking.utf8.count > 8192 || toolBlocks.count > 32, stopReason: message["stopReason"]?.string,
-                     at: message["timestamp"]?.number, turn: message["nativeTurn"]?.string, modelMs: message["nativeModelMs"]?.number)
+                     at: message["timestamp"]?.number, turn: message["nativeTurn"]?.string, modelMs: message["nativeModelMs"]?.number, toolCallCount: role == "assistant" ? toolBlocks.count : nil)
     }
 }
 
@@ -101,6 +103,7 @@ extension TranscriptMessage {
         row.at = try optionalDouble(fields["at"])
         row.turn = try optionalString(fields["turn"])
         row.modelMs = try optionalDouble(fields["modelMs"])
+        row.toolCallCount = try optionalInt(fields["toolCallCount"])
         return row
     }
     private static func tool(_ value: WireValue) throws -> ToolView {

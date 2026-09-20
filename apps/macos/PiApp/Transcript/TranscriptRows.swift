@@ -908,10 +908,9 @@ private struct ReasoningView: View {
 /// projection separate avoids decoding every retained tool input again while
 /// only the answer text or elapsed time changes.
 private struct WorkSummaryView: View, Equatable {
-    let tools: [ToolView]
+    let summary: ToolCallSummary
     let reasoned: Bool
-    var body: some View { Text(TranscriptActivity.summarizeWork(tools, reasoned: reasoned) ?? "Working") }
-    nonisolated static func == (a: Self, b: Self) -> Bool { a.tools == b.tools && a.reasoned == b.reasoned }
+    var body: some View { Text(summary.label(reasoned: reasoned) ?? "Working") }
 }
 
 /// Holds a turn's work list at its own height while the turn is open and at
@@ -1056,7 +1055,7 @@ struct BlockRowView: View {
     private func workHeader(reasoned: Bool) -> some View {
         HStack(spacing: 4) {
             if block.live && block.tools.contains(where: { TranscriptActivity.outcome(of: $0) == .running }) { SpinnerView() }
-            WorkSummaryView(tools: block.tools, reasoned: reasoned).equatable()
+            WorkSummaryView(summary: ToolCallSummary(rows: block.replies), reasoned: reasoned).equatable()
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(hovering ? TranscriptPalette.text : TranscriptPalette.muted)
             Button { toggle(.work(block.key)) } label: {
                 // The chevron turns on the same curve the document moves the
@@ -1109,7 +1108,7 @@ struct TurnLineView: View {
         let usage = TranscriptActivity.usageBreakdown(turn.accounting)
         var items: [FigureItem] = [.text(Text(turn.partial ? "Turn (partial)" : "Turn").fontWeight(.semibold).foregroundColor(TranscriptPalette.muted))]
         if let elapsed = turn.elapsedMs { items.append(.text(Text(TranscriptActivity.formatDuration(elapsed)))) }
-        items.append(.text(Text(TurnLineView.counts(turn))))
+        items.append(.text(Text(TurnLineView.counts(turn, includeTools: turn.replies > 1))))
         if turn.modelMs > 0 || turn.toolMs > 0 { items.append(.text(Text("model \(TranscriptActivity.formatDuration(turn.modelMs)) · tools \(TranscriptActivity.formatDuration(turn.toolMs))"))) }
         if !usage.isEmpty { items.append(.text(Text(usage).foregroundColor(TranscriptPalette.muted))) }
         if let model = model ?? turn.accounting.model {
@@ -1118,6 +1117,9 @@ struct TurnLineView: View {
                 HStack(spacing: 3) { Text(model).font(.system(size: 12, weight: .medium)); if target != nil { Image(systemName: "info.circle").font(.system(size: 11)) } }.foregroundStyle(TranscriptPalette.faint)
             }.buttonStyle(.plain).piPointer().help("View response-body and header models").accessibilityLabel("View model reports: \(model)")))
         }
+        items.append(.view(Button { copyInfo() } label: {
+            Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundStyle(TranscriptPalette.faint)
+        }.buttonStyle(.plain).piPointer().help("Copy Turn Info").accessibilityLabel("Copy Turn Info")))
         return FigureFlow(items: items, font: .system(size: 12, weight: .medium), color: TranscriptPalette.faint)
             .overlay(alignment: .topTrailing) {
                 if hovering, !stamps.isEmpty {
@@ -1134,9 +1136,26 @@ struct TurnLineView: View {
         .onHover { hovering = $0 }
         .help(turn.partial ? "Earlier replies of this turn are above the loaded history" : "The whole turn: every reply since your message")
         .accessibilityLabel("Turn: \(TurnLineView.counts(turn))")
+        .contextMenu { Button("Copy Turn Info") { copyInfo() } }
     }
-    static func counts(_ turn: TurnSummary) -> String {
-        plural(turn.replies, "reply", "replies") + (turn.tools > 0 ? ", " + plural(turn.tools, "tool call", "tool calls") : "") + (turn.files > 0 ? ", " + plural(turn.files, "file changed", "files changed") : "")
+    private func copyInfo() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(Self.copyText(turn, model: model), forType: .string)
+    }
+    static func copyText(_ turn: TurnSummary, model: String? = nil) -> String {
+        var lines = [turn.partial ? "Turn (partial loaded history)" : "Turn", counts(turn)]
+        if let started = turn.startedAt { lines.append("Started: " + TranscriptActivity.formatClock(started)) }
+        if let ended = turn.endedAt { lines.append("Finished: " + TranscriptActivity.formatClock(ended)) }
+        if let elapsed = turn.elapsedMs { lines.append("Duration: " + TranscriptActivity.formatDuration(elapsed)) }
+        lines.append("Model time: " + TranscriptActivity.formatDuration(turn.modelMs) + " · Tool time: " + TranscriptActivity.formatDuration(turn.toolMs))
+        let usage = TranscriptActivity.usageBreakdown(turn.accounting)
+        if !usage.isEmpty { lines.append("Gateway-reported usage: " + usage) }
+        if let model = model ?? turn.accounting.model { lines.append("Model: " + model) }
+        if turn.live { lines.append("Still running; figures are incomplete.") }
+        return lines.joined(separator: "\n")
+    }
+    static func counts(_ turn: TurnSummary, includeTools: Bool = true) -> String {
+        plural(turn.replies, "reply", "replies") + (includeTools && turn.tools > 0 ? ", " + (turn.toolCountPartial ? "at least " : "") + plural(turn.tools, "tool call", "tool calls") : "") + (turn.files > 0 ? ", " + plural(turn.files, "file changed", "files changed") : "")
     }
 }
 

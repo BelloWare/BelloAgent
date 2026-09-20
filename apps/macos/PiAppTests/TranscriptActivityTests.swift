@@ -33,13 +33,13 @@ final class TranscriptActivityTests: XCTestCase {
         XCTAssertEqual(TranscriptActivity.describe(tool("g", "grep", input: "{\"pattern\":\"TODO\"}")).object, "TODO")
         XCTAssertEqual(TranscriptActivity.describe(tool("m", "mcp", input: "{\"server\":\"fixture\",\"tool\":\"echo\"}")).object, "fixture · echo")
         let read = { (id: String, path: String, state: String) in self.tool(id, "read", state: state, input: "{\"path\":\"\(path)\"}") }
-        XCTAssertEqual(TranscriptActivity.summarize([bash, edit, created, read("r", "x", "completed")]), "Edited 1 file, ran 1 command, read 1 file", "two calls on one path are one file")
+        XCTAssertEqual(TranscriptActivity.summarize([bash, edit, created, read("r", "x", "completed")]), "4 tool calls", "Each validated call counts even on the same path")
         var elsewhere = created; elsewhere.path = "/repo/Sources/App/New.swift"
-        XCTAssertEqual(TranscriptActivity.summarize([bash, edit, elsewhere]), "Edited 2 files, ran 1 command")
-        XCTAssertEqual(TranscriptActivity.summarize([read("r1", "a", "completed"), read("r2", "a", "completed"), read("r3", "a", "completed")]), "Read 1 file", "three reads of one file are one file, not three")
-        XCTAssertEqual(TranscriptActivity.summarize([read("r1", "a", "completed"), tool("l", "ls", input: "{\"path\":\"/repo\"}")]), "Read 1 file, listed 1 directory", "a listing is not a file read")
+        XCTAssertEqual(TranscriptActivity.summarize([bash, edit, elsewhere]), "3 tool calls")
+        XCTAssertEqual(TranscriptActivity.summarize([read("r1", "a", "completed"), read("r2", "a", "completed"), read("r3", "a", "completed")]), "3 tool calls", "three reads of one file are three calls")
+        XCTAssertEqual(TranscriptActivity.summarize([read("r1", "a", "completed"), tool("l", "ls", input: "{\"path\":\"/repo\"}")]), "2 tool calls", "a listing is not a file read")
         var failedEdit = edit; failedEdit.id = "e2"; failedEdit.state = "failed"
-        XCTAssertEqual(TranscriptActivity.summarize([edit, failedEdit, read("r4", "b", "cancelled"), read("r5", "c", "running")]), "Edited 1 file, 1 call failed, 1 call skipped", "failed and skipped calls are attempts, never work done; a running one waits")
+        XCTAssertEqual(TranscriptActivity.summarize([edit, failedEdit, read("r4", "b", "cancelled"), read("r5", "c", "running")]), "4 tool calls · 1 failed · 1 skipped", "failed and skipped calls are attempts, never work done; a running one waits")
         var running = bash; running.state = "running"
         XCTAssertEqual(TranscriptActivity.describe(running).verb, "Running"); XCTAssertEqual(TranscriptActivity.describe(failedEdit).verb, "Failed editing"); XCTAssertEqual(TranscriptActivity.describe(read("r6", "x", "cancelled")).verb, "Skipped reading")
         var preparing = bash; preparing.state = "preparing"; var failed = bash; failed.state = "failed"; var cancelled = bash; cancelled.state = "cancelled"
@@ -53,7 +53,7 @@ final class TranscriptActivityTests: XCTestCase {
         XCTAssertEqual(TranscriptActivity.formatDuration(400), "0.4s"); XCTAssertEqual(TranscriptActivity.formatDuration(72_000), "1m 12s"); XCTAssertEqual(TranscriptActivity.formatDuration(3_753_000), "1h 2m")
         XCTAssertEqual(TranscriptActivity.formatDuration(12_500), "13s"); XCTAssertEqual(TranscriptActivity.formatDuration(-1), "")
         XCTAssertEqual(TranscriptActivity.state(of: [bash, running]), .running); XCTAssertEqual(TranscriptActivity.state(of: [bash, failed]), .failed); XCTAssertEqual(TranscriptActivity.state(of: [bash]), .completed)
-        XCTAssertEqual(TranscriptActivity.summarizeWork([], reasoned: true), "Reasoned"); XCTAssertEqual(TranscriptActivity.summarizeWork([bash], reasoned: true), "Reasoned, ran 1 command"); XCTAssertNil(TranscriptActivity.summarizeWork([], reasoned: false))
+        XCTAssertEqual(TranscriptActivity.summarizeWork([], reasoned: true), "Reasoned"); XCTAssertEqual(TranscriptActivity.summarizeWork([bash], reasoned: true), "Reasoned · 1 tool call"); XCTAssertNil(TranscriptActivity.summarizeWork([], reasoned: false))
     }
 
     func testToolRoundsFoldIntoTheReplyAndTurnsCarryTheirTotals() {

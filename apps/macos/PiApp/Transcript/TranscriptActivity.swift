@@ -70,6 +70,7 @@ struct TurnSummary: Equatable, Sendable {
     var current: ToolView?
     /// While live: a status the host attached to the turn, such as a retry in progress.
     var notice: String?
+    var toolCountPartial = false
 }
 
 /// One prose reply and the work that produced it: the reasoning-only and
@@ -250,39 +251,9 @@ enum TranscriptActivity {
     /// edits, reads and listings, counts for the rest, then what failed or was
     /// skipped. Only completed calls count as work done; a running one waits.
     static func summarize(_ tools: [ToolView]) -> String {
-        var writes = Set<String>(), reads = Set<String>(), lists = Set<String>()
-        var commands = 0, searches = 0, mcp = 0, other = 0, failed = 0, cancelled = 0
-        for tool in tools {
-            switch outcome(of: tool) {
-            case .failed: failed += 1; continue
-            case .cancelled: cancelled += 1; continue
-            case .running: continue
-            case .done: break
-            }
-            let description = describe(tool)
-            switch description.kind {
-            case .write: writes.insert(fileKey(description, tool))
-            case .read: reads.insert(fileKey(description, tool))
-            case .list: lists.insert(fileKey(description, tool))
-            case .command: commands += 1
-            case .search: searches += 1
-            case .mcp: mcp += 1
-            case .other: other += 1
-            }
-        }
-        var parts: [String] = []
-        if !writes.isEmpty { parts.append("edited " + plural(writes.count, "file", "files")) }
-        if commands > 0 { parts.append("ran " + plural(commands, "command", "commands")) }
-        if !reads.isEmpty { parts.append("read " + plural(reads.count, "file", "files")) }
-        if !lists.isEmpty { parts.append("listed " + plural(lists.count, "directory", "directories")) }
-        if searches > 0 { parts.append(searches == 1 ? "searched once" : "searched \(searches) times") }
-        if mcp > 0 { parts.append("called " + plural(mcp, "tool", "tools")) }
-        if other > 0 { parts.append("used " + plural(other, "tool", "tools")) }
-        if failed > 0 { parts.append(plural(failed, "call", "calls") + " failed") }
-        if cancelled > 0 { parts.append(plural(cancelled, "call", "calls") + " skipped") }
-        let joined = parts.joined(separator: ", ")
-        return joined.prefix(1).uppercased() + joined.dropFirst()
+        ToolCallSummary(tools: tools).label ?? ""
     }
+
     /// Distinct files that completed write or edit calls touched.
     static func changedFiles(_ tools: [ToolView]) -> Int {
         var files = Set<String>()
@@ -299,11 +270,9 @@ enum TranscriptActivity {
     }
     /// "Reasoned", "Read 1 file" or "Reasoned, read 1 file, ran 2 commands".
     static func summarizeWork(_ tools: [ToolView], reasoned: Bool) -> String? {
-        let work: String? = tools.isEmpty ? nil : summarize(tools)
-        guard reasoned else { return work }
-        guard let work else { return "Reasoned" }
-        return "Reasoned, " + work.prefix(1).lowercased() + work.dropFirst()
+        ToolCallSummary(tools: tools).label(reasoned: reasoned)
     }
+
     static func blockReasoned(_ block: TranscriptBlock) -> Bool {
         block.replies.contains { !($0.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
@@ -726,9 +695,10 @@ enum TranscriptActivity {
             let partial = first.turnID != nil && first.turnID != groupUser
             let requests = blocks.flatMap(\.replies).filter { $0.accounting != nil }
             let live = blocks.contains { $0.live }
+            let calls = ToolCallSummary(rows: blocks.flatMap(\.replies))
             last.turn = TurnSummary(
                 replies: blocks.count,
-                tools: blocks.reduce(0) { $0 + $1.tools.count },
+                tools: calls.total,
                 startedAt: first.startedAt, endedAt: last.endedAt,
                 elapsedMs: { if let s = first.startedAt, let e = last.endedAt, e >= s { return e - s }; return nil }(),
                 modelMs: blocks.reduce(0) { $0 + $1.modelMs },
@@ -739,7 +709,7 @@ enum TranscriptActivity {
                 accounting: aggregate(requests),
                 requests: requests,
                 current: live ? last.tools.last(where: { ["running", "preparing", "prepared"].contains($0.state) }) : nil,
-                notice: nil)
+                notice: nil, toolCountPartial: calls.partial || partial)
             items[lastIndex] = .block(last)
         }
         for index in items.indices {
