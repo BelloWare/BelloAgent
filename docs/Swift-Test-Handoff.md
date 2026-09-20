@@ -855,3 +855,23 @@ only its synthetic items. Direct raw modification behavior is a documented
 ordinary-Keychain limitation, not a passed app-isolation guarantee.
 
 For every result, record commit, platform/toolchain, commands, actual pass/fail counts, reproducible steps and logs. Separate core, executable, Mac typecheck, UI, signed-Keychain, real-LiteLLM and release/size validation. Add focused regressions for fixes and update the status/parity documents. Keep source/UI acceptance distinct from signed/public artifact verification and historical installation/update evidence. Record skipped or reused checks; do not imply a rehearsal was performed. Do not mark a missing feature complete by weakening its requirement.
+
+## 0.1.62 performance follow-up
+
+Use [the PF01–PF09 record](Performance-Review-0.1.62-2026-09-20.md) and
+[release validation](validation/Bello-Agent-0.1.62-2026-09-20.md) for current
+measurements and explicit deferrals. Added helper regressions cover owned trace
+buffers, bounded HTTP ingress, already-received fragment coalescing with original
+arrival timing, and structural count-cache identities without actual-byte changes.
+`ReportWorkerPerformanceTests` seeds 100,000 attempts and checks paging, cancellation,
+concurrent writes, exact percentile oracles, prepared bindings and WAL checkpoints.
+`CapturedBodyTests` verifies demand-driven combination; table and code tests cover
+complete copy and persistent selection. Keep the real 20-session native/helper
+capture test with `PI_REVIEW_VISUAL_LOAD=1` (also forwarded with `TEST_RUNNER_`) for
+combined UI/capture acceptance after changing both reader and transport ownership.
+
+For comparable rich streaming, set `PI_PERF_DELTA_BYTES=64` and the corresponding
+`TEST_RUNNER_` variable to obtain 134 deltas in the current fixture. Run native
+window suites serially, with compilation and other performance runs idle. Include
+deferred work and workload heartbeats; do not compare only root assignment or
+infer physical display cadence. The 640-block initial sizing remains expensive.

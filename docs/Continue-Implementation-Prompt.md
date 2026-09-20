@@ -17,6 +17,9 @@ Read docs/Five-Session-Performance-Review-2026-09-19.md.
 Read docs/Crash-Audit-Implementation-2026-09-20.md and
 docs/validation/Bello-Agent-0.1.61-2026-09-20.md for the current crash-fix release
 status. Do not use subagents unless explicitly requested in the current owner request.
+Read docs/Performance-Review-0.1.62-2026-09-20.md and
+ docs/validation/Bello-Agent-0.1.62-2026-09-20.md for the second performance review,
+explicit PF01–PF09 deferrals and 0.1.62 publication status.
 Read the latest release record linked below. Current source and the latest
 validation record take precedence over historical counts and chat claims.
 

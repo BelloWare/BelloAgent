@@ -12,6 +12,16 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
+**0.1.62/build 66 performance follow-up is prepared for release.** The latest
+uploaded review is dispositioned as PF01–PF09 in
+[the implementation record](Performance-Review-0.1.62-2026-09-20.md).
+The batch improves trace ownership, bounded/coalesced HTTP ingress, independent
+report reads and paging, prepared-statement reuse, live code, large tables,
+Markdown host retention, demand-driven combined responses and context-cache lookup.
+It preserves exact capture and records remaining rich-row/cold-layout limits.
+[Validation/publication status](validation/Bello-Agent-0.1.62-2026-09-20.md) is
+kept separately; source changes alone do not establish publication.
+
 **Performance follow-up included in 0.1.61, 2026-09-20:** display-linked disclosure motion
 survives streaming updates; resize completion reconciles unseen history in bounded
 idle work; both panes share input/visibility-aware preparation; large code fences

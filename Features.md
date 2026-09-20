@@ -1,6 +1,6 @@
 # Bello Agent — Native Swift feature contract
 
-Updated: 2026-09-19. Repository: `BelloWare/BelloAgent`, target branch: `main`.
+Updated: 2026-09-20. Repository: `BelloWare/BelloAgent`, target branch: `main`.
 
 **Status: native initial version implemented; UI redesigned on 2026-09-15.** Read [implementation status](docs/Implementation-Status.md) first, then [Design.md](Design.md) and [test handoff](docs/Swift-Test-Handoff.md). F13–F18 have implementations and deterministic Mac tests. Current request-aware loopback fixtures exercise Responses; earlier two-API checks remain historical evidence. These fixtures are not a deployed LiteLLM server. The owner selected Clipboard's ordinary macOS Keychain and profile-free Developer ID distribution; the native UI redesign landed on 2026-09-15 and plaintext settings remain deferred.
 
@@ -207,3 +207,16 @@ Acceptance coverage includes native-core/executable and macOS/UI checks, F13–F
 **Owner workflow change after 0.1.6, 2026-09-16:** select checks for changed behavior, reuse passing evidence for unchanged code/dependencies/toolchain, run independent checks in parallel and reuse incremental build caches. Do not repeat the entire acceptance matrix for routine changes. Skip fresh-install and actual Sparkle update/relaunch rehearsals, including signed owner/update rehearsals, unless explicitly requested again. Keep code signing, notarization, artifact/feed validation and public download hash/signature verification. Historical installation/update evidence remains recorded, without implying it was repeated for later releases. See the [test selection policy](docs/Swift-Test-Handoff.md#current-test-selection-policy).
 
 No arbitrary Pi extensions, OAuth/credential shell commands, new plugin marketplace, MCP sampling/elicitation, WebSockets, or automatic model/tool retry is promised. These exclusions do not excuse missing owner-requested features. See [implementation status](docs/Implementation-Status.md) for the continuation order and [parity](docs/Swift-Feature-Parity.md) for the narrower implementation boundary.
+
+### Performance follow-up in 0.1.62
+
+Large tables use an explicit bounded preview with a full native table window,
+complete cell text and full-source copy. Live code preserves its native selection
+owner, tool-list geometry survives prose-only changes, and distant unselected
+Markdown hosts can be released without losing source or exact geometry. Reports
+page requests without repeating summary calculations and run on a separate
+cancellable reader. Capture retains exact ordered bytes with explicit ingress
+budgets and coalesces received fragments before acknowledgement; durability is
+unchanged. Combined response generation waits until that view is selected.
+See the [review dispositions and measured limits](docs/Performance-Review-0.1.62-2026-09-20.md);
+this does not claim that all rich-row or cold giant-answer frame costs are solved.

@@ -1,6 +1,6 @@
 # Bello Agent — Native Swift implementation and continuation design
 
-Updated: 2026-09-19. Work on `main` in `BelloWare/BelloAgent`. Read [Features.md](Features.md), [implementation status](docs/Implementation-Status.md), and [test handoff](docs/Swift-Test-Handoff.md).
+Updated: 2026-09-20. Work on `main` in `BelloWare/BelloAgent`. Read [Features.md](Features.md), [implementation status](docs/Implementation-Status.md), and [test handoff](docs/Swift-Test-Handoff.md).
 
 **Sections 1–9 describe the native implementation and its acceptance boundaries.** The archived SDK-era design at `docs/archive/PiSDK-Design.md` is historical. Current source and [implementation status](docs/Implementation-Status.md) establish what exists; deterministic fixtures do not establish compatibility with an unspecified deployment or signed-release readiness.
 
@@ -1135,3 +1135,39 @@ mechanism asks a question (`PiQuestion`), one table measures text
 can reach; every unchecked `Sendable` names its invariant. Absolute frame
 budgets in tests are Release claims (`PI_RELEASE_TESTS`); the shape assertions
 beside them hold in every configuration.
+
+## 13. Performance ownership and bounds in 0.1.62
+
+The second [performance review disposition](docs/Performance-Review-0.1.62-2026-09-20.md)
+records measured improvements and deferred work separately. Tool-list height
+identity excludes unrelated prose. A live code fence starts with a persistent
+native text leaf; small already-complete fences keep their previous renderer.
+Many-block answers retain lightweight source/geometry records while distant,
+unselected native hosts can be reclaimed by the shared idle scheduler. Cold
+inner-block geometry is still exact and still requires a full measurement.
+
+Tables above 40 rows or eight columns show a labeled 20-row/eight-column inline
+preview. The full native table window reuses visible cells, offers complete cell
+text and full TSV copy. Original Markdown copy is unchanged.
+
+Each HTTP stream admits at most 4 MiB of pending bytes, with 32 MiB shared per
+helper and a 64 MiB response ceiling enforced at ingress. Suspend/resume happens
+at 1 MiB/512 KiB. One ordered body batch of at most 32 KiB advances at a time;
+bytes already received during its capture ACK are coalesced before the next
+admission. Original network callback timestamps still determine SSE timing.
+Overflow is an explicit partial capture, never a successful dropped stream.
+Durable capture-before-dispatch and finalization fences are unchanged.
+
+Reports use a dedicated read-only connection on a serial worker, with a short WAL
+snapshot per query and reader-local progress cancellation. Paging reads rows and
+counts without recalculating percentiles; charts retain their refresh observation,
+and a paging notice identifies newer rows. Reader shutdown cancels and drains
+queries before releasing archive ownership. Each connection caches at most 96
+prepared statements and clears bindings on every exit. Data/directory sync and
+manifest ordering remain unchanged.
+
+Combined Response is generated off-main only when selected. Raw retained bytes
+remain available and closing releases the document. Event parsing/formatting is
+still eager; full lazy event indexing is a documented follow-up. Context-count
+cache identities cover original UTF-8 and all request/profile inputs before
+serialization; they are distinct from actual submitted-byte fingerprints.
