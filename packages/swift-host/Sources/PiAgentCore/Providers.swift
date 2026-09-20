@@ -146,6 +146,7 @@ public struct ProviderClient: ModelClient {
                 switch part {
                 case .head(let code,let headers): status=code;jsonBody=headers["content-type"]?.contains("application/json") == true;await traces.head(attempt,status:code,headers:headers)
                 case .bytes(let data, let receivedAt):
+                    defer { stream.consumed(data.count) }
                     lastBodyAt=receivedAt
                     await traces.append(attempt,data:data)
                     receivedBytes += data.count
