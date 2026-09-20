@@ -12,16 +12,23 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Unreleased Plan A smoothness work** batches archive/restore/pin, prevents
+**0.1.69/build 73 is being prepared** with the Plan B live status popup and the
+previously committed Plan A improvements. The popup separates Live and Usage,
+shows observed work, checked active-request accounting and request speed samples,
+and keeps its footer accessible on short screens. See
+[Plan B implementation](Plan-B-Live-Status-2026-09-21.md) and
+[0.1.69 acceptance](validation/Bello-Agent-0.1.69-2026-09-21.md).
+
+**Plan A smoothness work, included in 0.1.69,** batches archive/restore/pin, prevents
 intermediate chat navigation, orders overlapping organization changes, isolates
 live activity and usage reads, and lazily prepares captured SSE details. Exact
 Markdown suffix sizing reuses completed blocks. The native 500-chat archive
 fixture improves from 14.4 s/500 publications to 69 ms/one publication. Rich-row
 streaming and cold giant-answer sizing remain measurable limits, not a claimed
 general frame-rate improvement. See [Plan A implementation and validation](Plan-A-Smoothness-2026-09-21.md).
-No version bump or release is included in this task.
+The original Plan A task did not release; its commits are included in 0.1.69.
 
-**Bello Agent 0.1.68/build 72 is released and publicly verified** at
+**Bello Agent 0.1.68/build 72 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source
 `73ff2334db6440c3fa31265b540f3898444c4c2a` and website
 `0f1358e79971dab6e99db426e9d87b29df18fa63`. The DMG measures **8,253,957 bytes
