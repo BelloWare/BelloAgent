@@ -68,6 +68,7 @@ struct WorkspaceSidebar: View {
             // Marking rows takes a strip above the list; the list moves down
             // to make room rather than jumping.
             .piAnimation(PiMotion.base, value: model.hasMarkedSessions)
+            .piAnimation(PiMotion.glide, value: model.organizationPresentationRevision)
             .environment(\.piSelectionNamespace, selectionGlide)
             .overlay {
                 if model.sidebarProjects.isEmpty {

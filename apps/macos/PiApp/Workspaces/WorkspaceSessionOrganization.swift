@@ -120,8 +120,8 @@ extension WorkspaceModel {
         Task { await select(target) }
     }
 
-    /// Archive is a sidebar filter, not a host/session lifecycle operation.
-    /// Active work, queued turns, unread state, drafts and captures stay intact.
+    /// Archive filters retained history; archive actions separately request a
+    /// running chat to stop. Drafts, unread state and captures stay intact.
     func sidebarChats(in workspaceID: String?, archived: Bool, excluding ids: Set<String> = []) -> [ChatRecord] {
         chats.filter { $0.workspaceID == workspaceID && $0.isArchived == archived && !ids.contains($0.id) && (!$0.isBackgroundTask || showBackgroundSessions) }
             .sorted(by: ChatRecord.sidebarPrecedes)
@@ -210,31 +210,12 @@ extension WorkspaceModel {
         Task { do { try await setSessionArchived(id, archived: !item.isArchived) } catch { self.error = error.localizedDescription } }
     }
     func setSessionArchived(_ id: String, archived: Bool) async throws {
-        // An archived chat runs nothing: a run in progress stops, and its queued follow-ups wait for a restore.
-        if archived, displays[id]?.busy == true { stop(sessionID: id, userInitiated: false) }
         try await changeSessionOrganization(id, change: .archived(archived))
-        if archived { updateDockBadge() }
-        // A background session can be archived without changing current focus.
-        guard selectedID == id || focusedSessionID == id, let item = record(id) else { return }
-        if archived {
-            // Archiving never switches the sidebar to the archive; the user
-            // opens it deliberately. Move on to the nearest active chat instead.
-            if selectedID == id, let next = sidebarChats(in: item.workspaceID, archived: false, excluding: [id]).first { await select(next.id) }
-        } else {
-            revealProjectChat(item)
-        }
     }
 
     private func changeSessionOrganization(_ id: String, change: ChatOrganizationChange) async throws {
-        guard !installPreparing else { throw HostError.failure("Wait for the app update to finish before changing a chat.") }
-        guard chats.contains(where: { $0.id == id }), let store else { throw HostError.failure("This saved chat is unavailable.") }
-        try await materializeChat(id)
-        let saved = try await store.updateChatOrganization(id: id, change: change)
-        guard let index = chats.firstIndex(where: { $0.id == id }),
-              (saved.organizationRevision ?? 0) >= (chats[index].organizationRevision ?? 0) else { return }
-        // An unrelated path/model update may have completed during the actor
-        // write. Only publish the organization fields returned by this change.
-        chats[index].applyOrganization(from: saved)
-        if let side = side(id) { sides[side.parentID]?.title = chats[index].title }
+        guard record(id) != nil else { throw HostError.failure("This saved chat is unavailable.") }
+        let result = try await enqueueOrganization([id], change: change).value
+        if result.rejected.contains(id) { throw StoreError.invalidRecord }
     }
 }

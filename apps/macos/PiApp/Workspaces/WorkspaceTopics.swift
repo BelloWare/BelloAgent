@@ -56,6 +56,10 @@ extension WorkspaceModel {
     }
 
     func removeTopic(_ id: String) async throws {
+        let ids = Set(chats.filter { $0.topicID == id }.map(\.id))
+        try await organizationScheduler.enqueue(ids: ids) { try await self.performRemoveTopic(id) }.value
+    }
+    private func performRemoveTopic(_ id: String) async throws {
         guard let topic = topics.first(where: { $0.id == id }) else { throw HostError.failure("This topic is no longer available.") }
         try requireTopicProject(topic.workspaceID)
         guard let store else { throw StoreError.unavailable }
@@ -75,6 +79,12 @@ extension WorkspaceModel {
     /// Moves the selected branches as one desktop transaction. This method
     /// never selects a chat, opens a helper, sends, stops or changes a journal.
     func moveSessions(_ ids: [String], in projectID: String, toTopic topicID: String?) async throws {
+        let branches = topicBranchIDs(Set(ids), in: projectID)
+        try await organizationScheduler.enqueue(ids: branches) {
+            try await self.performMoveSessions(ids, in: projectID, toTopic: topicID)
+        }.value
+    }
+    private func performMoveSessions(_ ids: [String], in projectID: String, toTopic topicID: String?) async throws {
         try requireTopicProject(projectID)
         guard !ids.isEmpty, ids.count <= 10_000 else { throw HostError.failure("Choose sessions to move.") }
         if let topicID, !topics.contains(where: { $0.id == topicID && $0.workspaceID == projectID }) {
@@ -110,6 +120,12 @@ extension WorkspaceModel {
     }
 
     func reorderSessions(_ ids: [String], relativeTo targetID: String, after: Bool, in projectID: String) async throws {
+        let group = Set(chats.filter { $0.workspaceID == projectID }.map(\.id))
+        try await organizationScheduler.enqueue(ids: group) {
+            try await self.performReorderSessions(ids, relativeTo: targetID, after: after, in: projectID)
+        }.value
+    }
+    private func performReorderSessions(_ ids: [String], relativeTo targetID: String, after: Bool, in projectID: String) async throws {
         try requireTopicProject(projectID)
         guard !ids.contains(targetID) else { return }
         guard !ids.isEmpty, ids.count <= TopicSessionDrag.maximumSessions,
@@ -153,21 +169,10 @@ extension WorkspaceModel {
     }
 
     private func applyTopicMemberships(_ saved: [ChatRecord], includingNewChildrenNotIn knownChatIDs: Set<String>? = nil) {
-        for chat in saved {
-            guard let index = chats.firstIndex(where: { $0.id == chat.id }) else {
-                // A child can be committed while its publication callback is
-                // still awaiting the actor. The move transaction includes it;
-                // expose that durable metadata so an older callback cannot
-                // subsequently restore its previous topic. A previously known
-                // chat that disappeared during the await was removed locally;
-                // this stale move response must not bring it back.
-                if let knownChatIDs, !knownChatIDs.contains(chat.id) { chats.append(chat) }
-                continue
-            }
-            guard (chat.organizationRevision ?? 0) >= (chats[index].organizationRevision ?? 0) else { continue }
-            chats[index].applyOrganization(from: chat)
-            if let info = side(chat.id) { sides[info.parentID]?.topicID = chats[index].topicID }
-        }
+        // Saved children which first materialized during the move are the only
+        // allowed additions. Known-but-deleted chats never return.
+        let additions = saved.filter { chat in record(chat.id) == nil && knownChatIDs.map { !$0.contains(chat.id) } == true }
+        applyOrganizationBatch(saved, adding: additions)
     }
 
     func setTopicExpanded(_ id: String, expanded: Bool) {
@@ -202,12 +207,12 @@ extension WorkspaceModel {
     @discardableResult func flushTopicChanges(timeout: TimeInterval = 5) async -> Bool {
         let deadline = ProcessInfo.processInfo.systemUptime + max(0, timeout)
         var retried: Set<String> = []
-        while topicOperationsInFlight > 0 || !topicExpansionRequests.isEmpty || !topicExpansionWrites.isEmpty {
+        while organizationScheduler.inFlight || topicOperationsInFlight > 0 || !topicExpansionRequests.isEmpty || !topicExpansionWrites.isEmpty {
             guard !Task.isCancelled, ProcessInfo.processInfo.systemUptime < deadline else { return false }
             for id in topicExpansionRequests.keys where topicExpansionWrites[id] == nil && retried.insert(id).inserted {
                 scheduleTopicExpansionWrite(id)
             }
-            if topicOperationsInFlight == 0 && topicExpansionWrites.isEmpty { return topicExpansionRequests.isEmpty }
+            if !organizationScheduler.inFlight && topicOperationsInFlight == 0 && topicExpansionWrites.isEmpty { return topicExpansionRequests.isEmpty }
             do { try await Task.sleep(for: .milliseconds(10)) } catch { return false }
         }
         return true

@@ -85,41 +85,33 @@ extension WorkspaceModel {
 
     // MARK: Bulk actions
 
-    /// Archives or restores every marked chat, one durable write each, then
-    /// clears the marks. A chat already in that state is left alone.
+    /// One durable batch and one final navigation, with immediate mark feedback.
     func archiveMarkedSessions(_ archived: Bool) {
-        let ids = markedChats.filter { $0.isArchived != archived }.map(\.id)
+        let ids = markedChats.map(\.id)
         clearSessionMarks()
         guard !ids.isEmpty else { return }
+        let operation = enqueueOrganization(ids, change: .archived(archived))
         Task {
-            let failed = await applyToMarked(ids) { try await self.setSessionArchived($0, archived: archived) }
-            if let failed { error = (archived ? "Some chats could not be archived. " : "Some chats could not be restored. ") + failed }
+            do {
+                let result = try await operation.value
+                if !result.rejected.isEmpty { throw StoreError.invalidRecord }
+            } catch {
+                self.error = (archived ? "Some chats could not be archived. Stop requests already sent remain in effect. " : "Some chats could not be restored. ") + error.localizedDescription
+            }
         }
     }
 
     func pinMarkedSessions(_ pinned: Bool) {
-        let ids = markedChats.filter { $0.isPinned != pinned }.map(\.id)
+        let ids = markedChats.map(\.id)
         clearSessionMarks()
         guard !ids.isEmpty else { return }
+        let operation = enqueueOrganization(ids, change: .pinned(pinned))
         Task {
-            let failed = await applyToMarked(ids) { try await self.setSessionPinned($0, pinned: pinned) }
-            if let failed { error = "Some chats could not be pinned. " + failed }
+            do {
+                let result = try await operation.value
+                if !result.rejected.isEmpty { throw StoreError.invalidRecord }
+            } catch { self.error = "Some chats could not be pinned. " + error.localizedDescription }
         }
-    }
-
-    /// One durable write per chat, and the first real failure. A bulk action
-    /// runs one await at a time, so a chat can be deleted — from a menu, from
-    /// another window, by the run that owned it — while the loop is partway
-    /// through. A chat that is no longer there is nothing to report: the reader
-    /// deleted it, and "Some chats could not be archived" would be a lie.
-    private func applyToMarked(_ ids: [String], _ write: @escaping (String) async throws -> Void) async -> String? {
-        var failed: String?
-        for id in ids {
-            guard chats.contains(where: { $0.id == id }) else { continue }
-            do { try await write(id) }
-            catch { failed = failed ?? error.localizedDescription }
-        }
-        return failed
     }
 
     /// Moves every marked chat of one project into a topic, as one transaction,

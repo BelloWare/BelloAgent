@@ -20,7 +20,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
     var readStateWrites: [String: Task<Void, Never>] = [:]
     @Published var profiles: [ProfileRecord] = []
     @Published var selectedID: String? {
-        didSet { if selectedID != oldValue { messageNavigationRevision += 1; cancelAutomaticContext() } }
+        didSet { if selectedID != oldValue { messageNavigationRevision += 1; organizationNavigationRevision &+= 1; cancelAutomaticContext() } }
     }
     /// Invalidates delayed report-to-message navigation when another target wins.
     var messageNavigationRevision = 0
@@ -28,7 +28,14 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// Owned by `WorkspaceSelection.swift`: which `select` call is current, so
     /// a slower one cannot finish over a newer selection.
     var selectionRevision = 0
-    @Published var focusedSessionID: String? { didSet { if focusedSessionID != oldValue { cancelAutomaticContext() } } }
+    var organizationNavigationRevision = 0
+    var organizationPresentationRevision = 0
+    let organizationScheduler = SessionOrganizationScheduler()
+    var archiveStopQueue: [(String, SessionDisplay, HostSupervisor)] = []
+    var archiveStopWorkers = 0
+    /// Optional delayed writer used by race/failure fixtures, never by production.
+    var organizationWrite: (([String], ChatOrganizationChange) async throws -> ChatOrganizationBatch)?
+    @Published var focusedSessionID: String? { didSet { if focusedSessionID != oldValue { organizationNavigationRevision &+= 1; cancelAutomaticContext() } } }
     @Published var selected: SessionDisplay?
     @Published var error: String?
     /// New chats that exist only on screen until their first message is sent.
@@ -88,7 +95,10 @@ enum WorkspacePage: String, Sendable { case chats, report }
     @Published var showInspector = false
     /// Which page the main window shows; the chat pane stays mounted underneath the report.
     @Published var page: WorkspacePage = .chats {
-        didSet { if page == .report && page != oldValue { messageNavigationRevision += 1 } }
+        didSet {
+            if page != oldValue { organizationNavigationRevision &+= 1 }
+            if page == .report && page != oldValue { messageNavigationRevision += 1 }
+        }
     }
     /// Report page state survives navigation so filters, selection and results come back intact.
     let report = ReportController()

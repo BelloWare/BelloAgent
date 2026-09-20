@@ -7,6 +7,7 @@ import Foundation
 extension WorkspaceModel {
     func select(_ id: String, revealInSidebar: Bool = true) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
+        PerformanceProbe.shared.observe("sessionSelectionCalls", milliseconds: 1)
         selectionRevision += 1
         let selection = selectionRevision
         if let previous = selectedID, previous != id, isPendingEmpty(previous) { discardPendingChat(previous) }

@@ -101,6 +101,7 @@ extension WorkspaceModel {
     /// many replies each holds. A chat whose run failed, and an archived chat,
     /// never count here. Archived chats also hide their sidebar marks.
     func updateDockBadge() {
+        PerformanceProbe.shared.observe("dockBadgeRecomputations", milliseconds: 1)
         let total = unreadStates.values.filter { state in
             guard state.unreadOutputs > 0, state.unreadFailure != true, let item = record(state.id), item.connectionTest != true, !item.isArchived else { return false }
             return true

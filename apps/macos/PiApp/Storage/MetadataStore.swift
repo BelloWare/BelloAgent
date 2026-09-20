@@ -59,6 +59,7 @@ actor MetadataStore {
     /// the database an operation has to materialise; grouping used to
     /// materialise all of it. One addition per decode when nothing reads it.
     private(set) var decodedChats = 0
+    private(set) var organizationCommits = 0
     /// Cheap and non-throwing. Opening SQLite runs WAL recovery, which used to
     /// happen on whichever thread built the model — for the app, the main actor
     /// during its first `body`. The database opens inside the actor instead, on
@@ -201,7 +202,47 @@ actor MetadataStore {
         return Int(sqlite3_column_int64(statement, 0))
     }
     func updateChatOrganization(id: String, change: ChatOrganizationChange, now: Date = Date()) throws -> ChatRecord {
-        guard var chat = try get(ChatRecord.self, kind: "chat", id: id) else { throw StoreError.invalidRecord }
+        let result = try updateChatOrganizations(ids: [id], change: change, now: now)
+        guard let chat = result.records.first else { throw StoreError.invalidRecord }
+        return chat
+    }
+
+    /// Validate every patch before writing. Missing/unsupported rows are reported
+    /// individually; a storage failure rolls back the entire durable batch.
+    /// Actor isolation prevents any await or concurrent writer inside this transaction.
+    func updateChatOrganizations(ids: [String], change: ChatOrganizationChange, now: Date = Date()) throws -> ChatOrganizationBatch {
+        guard !ids.isEmpty, ids.count <= 500, ids.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 128 }) else { throw StoreError.invalidRecord }
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = try transaction {
+            var result = ChatOrganizationBatch(), seen: Set<String> = []
+            var patches: [ChatRecord] = []
+            for id in ids where seen.insert(id).inserted {
+                do {
+                    guard let original = try get(ChatRecord.self, kind: "chat", id: id) else { result.missing.insert(id); continue }
+                    guard original.id == id else { result.rejected.insert(id); continue }
+                    var chat = original
+                    try changeOrganization(&chat, change: change, now: now)
+                    if chat == original { result.unchanged.insert(id) }
+                    else {
+                        chat.organizationRevision = try nextOrganizationRevision(original)
+                        guard try JSONEncoder().encode(chat).count <= 524_288 else { throw StoreError.invalidRecord }
+                        patches.append(chat)
+                    }
+                    result.records.append(chat)
+                } catch StoreError.invalidRecord { result.rejected.insert(id) }
+                  catch is DecodingError { result.rejected.insert(id) }
+            }
+            for chat in patches { try put(chat, kind: "chat", id: chat.id) }
+            result.changed = Set(patches.map(\.id))
+            return result
+        }
+        organizationCommits += 1
+        var measured = result
+        measured.transactionMilliseconds = (ProcessInfo.processInfo.systemUptime - started) * 1_000
+        return measured
+    }
+
+    private func changeOrganization(_ chat: inout ChatRecord, change: ChatOrganizationChange, now: Date) throws {
         switch change {
         case .title(let title):
             guard !chat.isBackgroundTask else { throw StoreError.invalidRecord }
@@ -213,9 +254,6 @@ actor MetadataStore {
             if chat.isArchived != archived { chat.manualSidebarOrder = nil }
             chat.archivedAt = archived ? (chat.archivedAt ?? now) : nil
         }
-        chat.organizationRevision = try nextOrganizationRevision(chat)
-        try put(chat, kind: "chat", id: id)
-        return chat
     }
     private func nextOrganizationRevision(_ chat: ChatRecord) throws -> Int64 {
         let revision = chat.organizationRevision ?? 0
@@ -651,6 +689,14 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     }
 }
 enum ChatOrganizationChange: Sendable { case title(String), pinned(Bool), archived(Bool) }
+struct ChatOrganizationBatch: Sendable {
+    var records: [ChatRecord] = []
+    var changed: Set<String> = []
+    var missing: Set<String> = []
+    var unchanged: Set<String> = []
+    var rejected: Set<String> = []
+    var transactionMilliseconds: Double = 0
+}
 struct DraftRecord: Codable, Sendable {
     var id: String; var text: String; var attachments: [AttachmentRecord]?; var skills: [SkillChip]?
     /// An edit remains an edit after a restart, and its displaced draft remains recoverable.

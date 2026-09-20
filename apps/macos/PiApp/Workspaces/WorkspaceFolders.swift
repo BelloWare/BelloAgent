@@ -116,7 +116,7 @@ extension WorkspaceModel {
         let count = chatCount(workspaceID: workspaceID)
         guard count == 0 else { throw HostError.failure("Delete its \(count == 1 ? "chat" : "\(count) chats") before removing this project.") }
         guard topics(in: workspaceID).isEmpty else { throw HostError.failure("Remove this project's topics before removing the project. Removing a topic keeps its chats.") }
-        guard topicOperationsInFlight == 0 else { throw HostError.failure("Wait for topic changes to finish before removing the project.") }
+        guard topicOperationsInFlight == 0, !organizationScheduler.inFlight else { throw HostError.failure("Wait for topic changes to finish before removing the project.") }
         try requireIdle(workspaceID)
         workspaceChangesInFlight.insert(workspaceID)
         defer { workspaceChangesInFlight.remove(workspaceID) }
