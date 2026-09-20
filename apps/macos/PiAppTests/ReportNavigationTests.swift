@@ -61,17 +61,24 @@ final class ReportNavigationTests: XCTestCase {
 
         model.openReport()
         try await waitFor { composers.allSatisfy(\.isHidden) && window.firstResponder is ConversationPageVisibilityView }
+        XCTAssertTrue(transcripts.allSatisfy(\.isHidden), "Reports must also suspend native transcript preparation")
         XCTAssertFalse(model.conversationCommandsEnabled)
         XCTAssertEqual(editor.string, "main unsent draft"); XCTAssertEqual(editor.selectedRange(), selectedRange)
         XCTAssertEqual(side.draft, "side unsent draft"); XCTAssertEqual(main.state, "running"); XCTAssertEqual(main.queueCount, 1); XCTAssertEqual(side.state, "running")
         model.send(); model.send(steer: true); editor.send?()
         XCTAssertFalse(main.loading, "Neither global Send nor a stale native composer callback can submit a hidden draft")
         XCTAssertFalse(side.loading); XCTAssertTrue(model.hosts.isEmpty)
+        let documents = transcripts.compactMap { $0.documentView as? TranscriptNativeDocument }
+        let measurementsBefore = documents.flatMap(\.retainedRows).reduce(0) { $0 + $1.measurementCount }
         main.messages.append(TranscriptMessage(id: "a1", role: "assistant", text: "Streaming continues while Report is open"))
+        for _ in 0..<4 { await Task.yield(); hosted.layoutSubtreeIfNeeded() }
+        XCTAssertEqual(documents.flatMap(\.retainedRows).reduce(0) { $0 + $1.measurementCount }, measurementsBefore,
+                       "A covered transcript must defer native sizing while still adopting model updates")
 
         let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
         window.firstResponder?.keyDown(with: escape)
         try await waitFor { model.page == .chats && composers.allSatisfy { !$0.isHidden } }
+        XCTAssertTrue(transcripts.allSatisfy { !$0.isHidden })
         let current = descendants(ComposerTextView.self, in: hosted) as [NSView] + descendants(TranscriptSurfaceMarker.self, in: hosted).compactMap(\.enclosingScrollView) as [NSView]
         XCTAssertEqual(Set(current.map(ObjectIdentifier.init)), surfaceIDs, "Navigation must retain the actual NSTextView and transcript scroll view instances")
         XCTAssertTrue(window.firstResponder === editor); XCTAssertEqual(editor.selectedRange(), selectedRange); XCTAssertEqual(editor.undoManager?.canUndo, undoAvailable)

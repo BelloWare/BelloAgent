@@ -110,6 +110,50 @@ final class TranscriptDisclosureTests: XCTestCase {
 
     // MARK: The motion a click starts
 
+    @MainActor func testUnrelatedPublicationDoesNotFinishADisclosure() async throws {
+        TranscriptNativeDocument.reducesMotionOverride = false
+        defer { TranscriptNativeDocument.reducesMotionOverride = nil }
+        let fixture = Fixture(messages: workingTurn(tools: 24, tail: 8)); defer { fixture.close() }
+        await fixture.settle()
+        let row = try XCTUnwrap(fixture.blockRow)
+        row.toggleDisclosure(try XCTUnwrap(fixture.workPart))
+        fixture.document.advanceDisclosureMotion(to: 0.25)
+        let shown = row.frame.height
+        var messages = fixture.session.messages
+        messages[messages.count - 1].text += "\nA new result in another row."
+        fixture.session.messages = messages
+        fixture.document.update(snapshot: fixture.page.snapshot, actions: TranscriptActions(),
+                                environment: TranscriptRowEnvironment(), disclosure: fixture.session.disclosure)
+        fixture.document.layoutRows(width: fixture.scroll.contentSize.width)
+        XCTAssertTrue(fixture.document.isMovingDisclosure, "An unrelated publication must not finish a 220 ms fold")
+        XCTAssertEqual(row.frame.height, shown, accuracy: 1, "The moving row must stay at its presented height")
+        assertStackedDuringMotion(fixture, "after an unrelated delta", moving: row)
+        fixture.document.advanceDisclosureMotion(to: 1)
+        assertStacked(fixture, "after completion")
+    }
+
+    @MainActor func testChangedMovingRowRetargetsWithoutJumping() async throws {
+        TranscriptNativeDocument.reducesMotionOverride = false
+        defer { TranscriptNativeDocument.reducesMotionOverride = nil }
+        let fixture = Fixture(messages: workingTurn(tools: 24, tail: 4)); defer { fixture.close() }
+        await fixture.settle()
+        let row = try XCTUnwrap(fixture.blockRow)
+        row.toggleDisclosure(try XCTUnwrap(fixture.workPart))
+        fixture.document.advanceDisclosureMotion(to: 0.35)
+        let shown = row.frame.height
+        var messages = fixture.session.messages
+        messages[1].text += String(repeating: "\nA newly arrived paragraph.", count: 8)
+        fixture.session.messages = messages
+        fixture.document.update(snapshot: fixture.page.snapshot, actions: TranscriptActions(),
+                                environment: TranscriptRowEnvironment(), disclosure: fixture.session.disclosure)
+        fixture.document.layoutRows(width: fixture.scroll.contentSize.width)
+        XCTAssertTrue(fixture.document.isMovingDisclosure)
+        XCTAssertEqual(row.frame.height, shown, accuracy: 1, "New content retargets from the displayed geometry")
+        assertStackedDuringMotion(fixture, "retargeted content", moving: row)
+        fixture.document.advanceDisclosureMotion(to: 1)
+        assertStacked(fixture, "latest content at completion")
+    }
+
     /// Rows are stacked at a point part way through a disclosure's motion.
     /// The row that is moving deliberately holds more than its frame — it is
     /// clipped, which is what makes the fold a reveal — so what is checked of
@@ -119,6 +163,8 @@ final class TranscriptDisclosureTests: XCTestCase {
                                                       file: StaticString = #filePath, line: UInt = #line) {
         var expected: CGFloat?
         for row in fixture.rows {
+            XCTAssertEqual(fixture.page.rowFrame(of: row.itemID), row.frame,
+                           "Scroll anchors must use presented geometry during motion", file: file, line: line)
             if let expected {
                 XCTAssertEqual(row.frame.minY, expected, accuracy: 0.5,
                                "\(what): row \(row.itemID) starts at \(row.frame.minY) but the row above ends at \(expected)", file: file, line: line)

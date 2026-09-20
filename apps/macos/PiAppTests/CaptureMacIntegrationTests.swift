@@ -41,6 +41,15 @@ final class CaptureMacIntegrationTests: XCTestCase {
             let view = SessionDisplay(id: id); view.draft = "concurrency " + id; model.displays[id] = view
         }
         model.selectedID = model.chats.first?.id; model.selected = model.selectedID.flatMap { model.displays[$0] }
+        var interaction: ReviewConcurrentInteractionLoad?
+        if testEnvironment("PI_REVIEW_VISUAL_LOAD") == "1" {
+            let json = await Task.detached {
+                CapturedJSON(value: ["records": (0..<2048).map { ["index": String($0), "payload": String(repeating: "x", count: 1024)] }],
+                             formatted: "Synthetic 2 MiB capture inspector")
+            }.value
+            interaction = try ReviewConcurrentInteractionLoad(model: model, json: json)
+        }
+        defer { interaction?.verifyAndClose() }
         XCTAssertTrue(model.hosts.isEmpty, "Every session must take the real cold startup path")
         let started = ProcessInfo.processInfo.systemUptime
         var heartbeatSamples = 0, maximumHeartbeatGap = 0.0, previousHeartbeat = started
@@ -59,8 +68,12 @@ final class CaptureMacIntegrationTests: XCTestCase {
         let deadline = Date().addingTimeInterval(60)
         var completedSnapshots: [String: [String: WireValue]] = [:]
         while Date() < deadline {
-            if model.displays.values.contains(where: { $0.sendFailure != nil }) { break }
-            if model.opened.count == 20, model.displays.values.allSatisfy({ !$0.loading && $0.draft.isEmpty && $0.state == "idle" }),
+            try interaction?.step()
+            if model.displays.values.contains(where: { $0.sendFailure != nil }) {
+                XCTFail("Concurrent send failures: " + model.displays.values.compactMap { view in view.sendFailure.map { "\(view.id): \($0)" } }.joined(separator: "; "))
+                break
+            }
+            if model.opened.count == 20, model.displays.values.allSatisfy({ !$0.loading && ($0.draft.isEmpty || interaction?.composingSessionID == $0.id) && $0.state == "idle" }),
                let host = model.hosts[workspace.id] {
                 for chat in model.chats where completedSnapshots[chat.id] == nil {
                     let snapshot = try await host.request("session.snapshot", sessionID: chat.id).object ?? [:]
@@ -87,7 +100,9 @@ final class CaptureMacIntegrationTests: XCTestCase {
         for chat in model.chats {
             let view = try XCTUnwrap(model.displays[chat.id])
             XCTAssertNil(view.sendFailure, chat.id); XCTAssertFalse(view.loading, chat.id)
-            XCTAssertEqual(view.draft, "", chat.id); XCTAssertEqual(view.state, "idle", chat.id)
+            if interaction?.composingSessionID == chat.id { XCTAssertTrue(view.draft.hasPrefix("输入"), "The concurrent input stays in its draft") }
+            else { XCTAssertEqual(view.draft, "", chat.id) }
+            XCTAssertEqual(view.state, "idle", chat.id)
             let snapshot = try XCTUnwrap(completedSnapshots[chat.id])
             XCTAssertEqual(snapshot["state"]?.string, "idle", chat.id)
             let messages = snapshot["messages"]?.array ?? []

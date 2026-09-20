@@ -845,6 +845,11 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     /// The row's SwiftUI tree, built if this is the first time it is needed.
     @discardableResult private func host() -> TranscriptRowHostingView {
         if let hosted { return hosted }
+        let started = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
+        defer { if TranscriptLayoutClock.recording {
+            TranscriptLayoutClock.hostBuildSeconds += TranscriptLayoutClock.now - started
+            TranscriptLayoutClock.hostBuilds += 1
+        } }
         let view = TranscriptRowHostingView(rootView: hostedRow())
         view.owner = self
         view.sizingOptions = [.intrinsicContentSize]
@@ -931,6 +936,11 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     /// measured or mounted.
     private func updateRoot() {
         guard let hosted else { return }
+        let started = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
+        defer { if TranscriptLayoutClock.recording {
+            TranscriptLayoutClock.rootUpdateSeconds += TranscriptLayoutClock.now - started
+            TranscriptLayoutClock.rootUpdates += 1
+        } }
         hosted.rootView = hostedRow()
     }
     /// A click on a disclosure: record it, rebuild this row's content and drop
@@ -1005,8 +1015,10 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         // frame the document sets a moment later is the height it was just
         // laid out at and nothing is laid out again before it is drawn.
         if hosted.frame.height != height {
+            let started = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
             hosted.frame = CGRect(x: 0, y: 0, width: target, height: height)
             hosted.layoutSubtreeIfNeeded()
+            if TranscriptLayoutClock.recording { TranscriptLayoutClock.placementSeconds += TranscriptLayoutClock.now - started }
         }
         let result = CGSize(width: target, height: height)
         if measurements.count == 4 { measurements.removeFirst() }
@@ -1045,6 +1057,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         if let hosted, hosted.frame != bounds { hosted.frame = bounds }
     }
     fileprivate func contentSizeChanged() {
+        if TranscriptLayoutClock.recording { TranscriptLayoutClock.intrinsicInvalidations += 1 }
         // The host also invalidates while answering fittingSize. That call
         // supplies the new exact measurement; it need not schedule itself.
         guard !measuring else { return }
@@ -1060,6 +1073,9 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
                 self.invalidationPending = false
                 self.onHeightValidated?()
             }
+            // Reports retains this tree but hides its native scroll surface.
+            // Reflow its latest revision when shown, not behind the report.
+            if self.isHiddenOrHasHiddenAncestor { self.onHeightInvalidated?(); return }
             // Removing/reinserting the same host also invalidates its AppKit
             // intrinsic-size observation. Keep exact geometry unless its
             // actual height changed; otherwise scrolling causes a reflow loop.
@@ -1080,7 +1096,9 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
                 self.measuring = true
                 // One native pass, as in `measure`: laying the host out and
                 // then asking its fitting size runs SwiftUI's sizing twice.
+                let started = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
                 let height = max(1, ceil(hosted.fittingSize.height))
+                if TranscriptLayoutClock.recording { TranscriptLayoutClock.validationSeconds += TranscriptLayoutClock.now - started }
                 self.intrinsicValidationCount += 1
                 self.measuring = false
                 self.restoredMeasurementNeedsValidation = false

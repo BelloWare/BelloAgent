@@ -517,13 +517,73 @@ final class TranscriptStreamingStressTests: XCTestCase {
                                      "scrolling mid-drag left row \(row.itemID) holding \(row.hostedFittingHeight) points in \(row.frame.height)")
         }
 
-        // The drag ends: everything is exact.
+        // The drag ends: the viewport is exact and idle reconciliation
+        // finishes the unseen history without monopolizing mouse-up.
         stage.endDrag()
-        await stage.settle()
+        await stage.settleUntilExact()
         XCTAssertEqual(stage.document.approximateRowCount, 0, "the page is exact once the drag stops")
         assertStacked(stage, "after the drag")
         assertMeasuredAtDrawnWidth(stage, "after the drag")
         await assertFitsWhileScrollingThrough(stage, "reading the chat after the drag")
+    }
+
+    @MainActor func testResizeReleaseDoesNotSynchronouslyMeasureTheRemainingHistory() async throws {
+        let session = SessionDisplay(id: "resize-release-budget")
+        session.messages = Self.history(turns: 150)
+        let stage = Stage(session); defer { stage.close() }
+        await stage.settleUntilExact()
+        stage.readerScroll(to: stage.document.frame.height * 0.5)
+        await stage.settle()
+        let anchor = try XCTUnwrap(stage.rows.first { $0.frame.maxY > stage.scrollY })
+        let offset = anchor.frame.minY - stage.scrollY
+        stage.beginDrag()
+        let before = stage.rows.reduce(0) { $0 + $1.measurementCount }
+        let dragStarted = ProcessInfo.processInfo.systemUptime
+        stage.resize(width: 640)
+        let dragMS = (ProcessInfo.processInfo.systemUptime - dragStarted) * 1000
+        let afterDrag = stage.rows.reduce(0) { $0 + $1.measurementCount }
+        let releaseStarted = ProcessInfo.processInfo.systemUptime
+        stage.endDrag()
+        let releaseMS = (ProcessInfo.processInfo.systemUptime - releaseStarted) * 1000
+        let afterRelease = stage.rows.reduce(0) { $0 + $1.measurementCount }
+        print("REVIEW resize 300 rows at middle: drag \(dragMS) ms / \(afterDrag - before) measurements; release \(releaseMS) ms / \(afterRelease - afterDrag) measurements")
+        XCTAssertLessThan(afterDrag - before, 40, "A deep anchor must not synchronously remeasure the prefix")
+        XCTAssertLessThan(afterRelease - afterDrag, 20, "Mouse-up must not synchronously finish every offscreen row")
+        XCTAssertGreaterThan(stage.document.approximateRowCount, 100, "Offscreen reconciliation remains scheduled")
+        XCTAssertEqual(anchor.frame.minY - stage.scrollY, offset, accuracy: 2)
+        await stage.settleUntilExact()
+        XCTAssertEqual(stage.document.approximateRowCount, 0)
+        assertMeasuredAtDrawnWidth(stage, "after bounded reconciliation")
+        assertStacked(stage, "after bounded reconciliation")
+    }
+
+    @MainActor func testRapidResizeAtTopMiddleAndBottomUsesOnlyTheLatestWidth() async throws {
+        let session = SessionDisplay(id: "resize-interrupted")
+        session.messages = Self.history(turns: 150)
+        let stage = Stage(session); defer { stage.close() }
+        await stage.settleUntilExact()
+        for (fraction, width): (Double, CGFloat) in [(0, 640), (0.5, 710), (0.95, 610)] {
+            stage.readerScroll(to: stage.document.frame.height * fraction)
+            await stage.settle(turns: 1)
+            let anchor = try XCTUnwrap(stage.rows.first { $0.frame.maxY > stage.scrollY })
+            let offset = anchor.frame.minY - stage.scrollY
+            stage.beginDrag(); stage.resize(width: width); stage.endDrag()
+            XCTAssertEqual(anchor.frame.minY - stage.scrollY, offset, accuracy: 2)
+            let expected = max(1, min(TranscriptMetrics.pageWidth, stage.scroll.contentSize.width - 48))
+            for row in stage.rows where row.superview != nil {
+                XCTAssertTrue(row.hasMeasurement(width: expected))
+                XCTAssertFalse(stage.document.isApproximate(row.itemID))
+            }
+            assertStacked(stage, "during successive widths")
+            // Start some old-width reconciliation, then change width before
+            // the hundreds of unseen rows can all settle.
+            try await Task.sleep(for: .milliseconds(180))
+            XCTAssertGreaterThan(stage.document.approximateRowCount, 0)
+        }
+        await stage.settleUntilExact()
+        XCTAssertEqual(stage.document.approximateRowCount, 0)
+        assertMeasuredAtDrawnWidth(stage, "latest width wins")
+        assertStacked(stage, "after interrupted reconciliation")
     }
 
     /// A side pane opening changes the width of every row of the page. What
@@ -579,7 +639,7 @@ final class TranscriptStreamingStressTests: XCTestCase {
         stage.resize(width: 700)
         XCTAssertGreaterThan(stage.document.approximateRowCount, 0, "the drag leaves rows below the reader standing")
         // No end-of-drag ever arrives; the page catches up on its own.
-        let deadline = ProcessInfo.processInfo.systemUptime + 4
+        let deadline = ProcessInfo.processInfo.systemUptime + 15
         while ProcessInfo.processInfo.systemUptime < deadline {
             stage.draw()
             if stage.document.approximateRowCount == 0 { break }

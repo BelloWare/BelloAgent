@@ -275,9 +275,15 @@ final class FiveSessionWorkspacePerformanceTests: XCTestCase {
                 while settledPasses < 2, ProcessInfo.processInfo.systemUptime < settlementDeadline {
                     await mainQueueTurn(); hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
                     let pendingRows = native.subviews.compactMap { $0 as? TranscriptRowContainer }.contains(where: \.needsMountedValidation)
-                    settledPasses = !pendingRows && native.frame.size == previousSize ? settledPasses + 1 : 0
+                    // Exact-geometry comparisons cannot snapshot provisional
+                    // offscreen heights merely because two run-loop turns had
+                    // the same document size. First paint stays timed above;
+                    // bounded idle reconciliation is measured separately.
+                    settledPasses = native.approximateRowCount == 0 && !pendingRows && native.frame.size == previousSize ? settledPasses + 1 : 0
                     previousSize = native.frame.size
+                    if settledPasses < 2 { try await Task.sleep(for: .milliseconds(5)) }
                 }
+                XCTAssertEqual(native.approximateRowCount, 0, "Record only exact geometry for the next tab-return comparison")
                 XCTAssertEqual(settledPasses, 2, "Deferred native height confirmation and its queued layout must settle before choosing another tab")
                 XCTAssertFalse(native.subviews.compactMap { $0 as? TranscriptRowContainer }.contains(where: \.needsMountedValidation), "Mounted rows must finish their deferred exact-height confirmation before leaving the tab")
                 deferredSettlement.append((ProcessInfo.processInfo.systemUptime - settlementStarted) * 1_000)

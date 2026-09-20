@@ -60,7 +60,7 @@ struct ConversationPageVisibility: NSViewRepresentable {
     private func hideNativeViews(in window: NSWindow, takeFocus: Bool) {
         guard let content = window.contentView else { return }
         func nativeViews(_ view: NSView) -> [NSView] {
-            if view is ComposerTextView { return [view] }
+            if view is ComposerTextView || view is TranscriptNativeScrollView { return [view] }
             return view.subviews.flatMap { nativeViews($0) }
         }
         let views = nativeViews(content)

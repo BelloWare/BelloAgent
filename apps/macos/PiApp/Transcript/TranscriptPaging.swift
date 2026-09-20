@@ -38,6 +38,15 @@ enum TranscriptPaging {
     /// exactly one.
     static var rowSizingPasses = 0
     static var rowSizingSeconds = 0.0
+    // Inclusive phase timings and explicit call counts, not a count of
+    // SwiftUI's internal sizing/placement passes.
+    static var rootUpdateSeconds = 0.0
+    static var rootUpdates = 0
+    static var hostBuildSeconds = 0.0
+    static var hostBuilds = 0
+    static var placementSeconds = 0.0
+    static var validationSeconds = 0.0
+    static var intrinsicInvalidations = 0
     static var mountSeconds = 0.0
     static var rowLoopSeconds = 0.0
     static var now: Double { ProcessInfo.processInfo.systemUptime }
@@ -45,5 +54,7 @@ enum TranscriptPaging {
         updateSeconds = 0; layoutSeconds = 0; measureSeconds = 0; measuredRows = 0; mountedRows = 0
         markdownUpdateSeconds = 0; markdownLayoutSeconds = 0; markdownBlocksMeasured = 0; workListCardsMeasured = 0
         mountSeconds = 0; rowLoopSeconds = 0; rowSizingPasses = 0; rowSizingSeconds = 0
+        rootUpdateSeconds = 0; rootUpdates = 0; hostBuildSeconds = 0; hostBuilds = 0
+        placementSeconds = 0; validationSeconds = 0; intrinsicInvalidations = 0
     }
 }

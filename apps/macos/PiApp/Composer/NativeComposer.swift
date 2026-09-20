@@ -43,6 +43,11 @@ struct NativeComposer: NSViewRepresentable {
         editor.directSlash = { [weak coordinator] in coordinator?.parent.directSlash() }
         editor.pasted = { [weak coordinator] in coordinator?.parent.pasted() }
         editor.attachFiles = { [weak coordinator] in coordinator?.parent.attachFiles($0) }
+        editor.attachmentDestination = { [weak coordinator] in
+            guard let parent = coordinator?.parent else { return nil }
+            // Snapshot the callbacks for this session before conversion yields.
+            return ComposerTextView.AttachmentDestination(attach: parent.attachFiles, reject: parent.inputRejected)
+        }
         editor.imageRejected = { [weak coordinator] in coordinator?.parent.inputRejected($0) }
         editor.registerForDraggedTypes([.fileURL, .png, .tiff])
         editor.completionKey = { [weak coordinator] in coordinator?.parent.completionKey($0) ?? false }
@@ -220,6 +225,11 @@ struct ComposerEditMeasurement {
     override func layout() { super.layout(); reportContentHeight() }
     override func becomeFirstResponder() -> Bool { let accepted = super.becomeFirstResponder(); if accepted { focused?() }; return accepted }
     var attachFiles: (([URL]) -> Void)?
+    struct AttachmentDestination {
+        var attach: ([URL]) -> Void
+        var reject: ((String) -> Void)?
+    }
+    var attachmentDestination: (() -> AttachmentDestination?)?
     /// Reported when a pasted or dropped image cannot be read; wired to the
     /// same notice the composer uses for text it refuses.
     var imageRejected: ((String) -> Void)?
@@ -238,21 +248,21 @@ struct ComposerEditMeasurement {
         guard let attachFiles else { return false }
         if let urls = Self.imageFiles(on: pasteboard) { attachFiles(urls); return true }
         guard let pasted = Self.pastedImage(on: pasteboard) else { return false }
+        let destination = attachmentDestination?() ?? AttachmentDestination(attach: attachFiles, reject: imageRejected)
         // Decoding a screenshot, re-encoding it and writing it out takes long
         // enough to freeze the window: a 4000x3000 paste is hundreds of
         // milliseconds. Only the bytes are taken here; the rest happens off
         // the main thread and the chip appears when it lands.
-        Task { @MainActor [weak self] in
+        Task { @MainActor in
             let written = await Task.detached(priority: .userInitiated) { Self.writePastedImage(pasted) }.value
-            guard let self else { return }
-            if let written { self.attachFiles?([written]) }
-            else { self.imageRejected?("That image could not be read. Copy it again, or attach the file instead.") }
+            if let written { destination.attach([written]) }
+            else { destination.reject?("That image could not be read. Copy it again, or attach the file instead.") }
         }
         return true
     }
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
         let pasteboard = sender.draggingPasteboard
-        return Self.imageFiles(on: pasteboard) != nil || Self.pastedImage(on: pasteboard) != nil ? .copy : super.draggingEntered(sender)
+        return Self.acceptsImageTypes(on: pasteboard) ? .copy : super.draggingEntered(sender)
     }
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         if pasteAttachments(from: sender.draggingPasteboard) { return true }
@@ -260,6 +270,10 @@ struct ComposerEditMeasurement {
     }
     /// Image bytes taken from the pasteboard without decoding them.
     struct PastedImage: Sendable { let data: Data; let isPNG: Bool }
+    /// Drag admission must not fetch/decode a promised screenshot's bytes.
+    static func acceptsImageTypes(on pasteboard: NSPasteboard) -> Bool {
+        pasteboard.availableType(from: [.fileURL, .png, .tiff]) != nil
+    }
     static func pastedImage(on pasteboard: NSPasteboard) -> PastedImage? {
         if let png = pasteboard.data(forType: .png) { return PastedImage(data: png, isPNG: true) }
         if let tiff = pasteboard.data(forType: .tiff) { return PastedImage(data: tiff, isPNG: false) }

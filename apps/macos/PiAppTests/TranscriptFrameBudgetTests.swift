@@ -307,6 +307,11 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         var deltas = 0
         var sum = Frame()
         var worst = Frame()
+        var durations: [Double] = []
+        var roots: [Double] = []
+        var placements: [Double] = []
+        var validationDurations: [Double] = []
+        var invalidations = 0
         var offset = 300
         while offset <= bytes.count {
             let text = String(decoding: bytes[0..<offset], as: UTF8.self)
@@ -315,9 +320,14 @@ final class TranscriptFrameBudgetTests: XCTestCase {
                 if deltas > 0 { session.messages[session.messages.count - 1] = row } else { session.messages.append(row) }
             }
             if frame.total > worst.total { worst = frame }
+            durations.append(frame.total)
+            roots.append(TranscriptLayoutClock.rootUpdateSeconds)
+            placements.append(TranscriptLayoutClock.placementSeconds)
             sum = sum + frame
             deltas += 1; offset += 300
             await Task.yield()
+            validationDurations.append(TranscriptLayoutClock.validationSeconds)
+            invalidations += TranscriptLayoutClock.intrinsicInvalidations
             // Every row above the turn the reply joins, taken once the
             // arriving row exists, so every later delta can be held to
             // touching nothing else. The last block of a turn carries the
@@ -351,6 +361,13 @@ final class TranscriptFrameBudgetTests: XCTestCase {
                      deltas, TranscriptLayoutClock.markdownUpdateSeconds * 1000 / Double(deltas),
                      TranscriptLayoutClock.markdownLayoutSeconds * 1000 / Double(deltas)))
         print("PERF streaming delta into \(rows) rows — worst \(worst.line)")
+        func distribution(_ values: [Double]) -> String {
+            let ordered = values.sorted()
+            func percentile(_ p: Double) -> Double { ordered[max(0, Int(ceil(Double(ordered.count) * p)) - 1)] * 1000 }
+            return String(format: "p50 %.2f / p95 %.2f / p99 %.2f / max %.2f ms",
+                          percentile(0.5), percentile(0.95), percentile(0.99), (ordered.last ?? 0) * 1000)
+        }
+        print("REVIEW delta \(distribution(durations)); root assignment \(distribution(roots)); placement \(distribution(placements)); deferred validation \(distribution(validationDurations)); \(invalidations) intrinsic invalidations")
         // The target is 8 ms. What is left is the arriving row's own native
         // layout — the Markdown blocks the delta actually added — plus one
         // pass over the page; this is the ceiling that catches a delta going
@@ -626,11 +643,11 @@ final class TranscriptFrameBudgetTests: XCTestCase {
 
     // MARK: 4 — Scrolling
 
-    /// A 2,000-row page scrolled top to bottom through the real scroll view,
-    /// a wheel step at a time, counting the steps that miss a 120 Hz frame.
+    /// A long source history scrolled through the real bounded display page,
+    /// a synthetic wheel step at a time. Report both counts: the app's 500-row
+    /// cap means a 2,000-message source is not a 2,000-row rendered document.
     @MainActor func testScrollingATwoThousandRowPageKeepsUpWithTheDisplay() async throws {
-        // The full 2,000-row page is the target; the suite runs a shorter
-        // page by default and PI_PERF_SCROLL_ROWS asks for the whole thing.
+        // PI_PERF_SCROLL_ROWS varies the source; production paging still applies.
         let rows = Int(testEnvironment("PI_PERF_SCROLL_ROWS") ?? "") ?? 400
         let session = Self.chat("scroll-budget", rows: rows)
         let pane = Pane(session); defer { pane.close() }
@@ -639,6 +656,8 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         await pane.settleUntilExact()
         let scroll = try XCTUnwrap(pane.scroll)
         let document = try XCTUnwrap(pane.document)
+        let renderedRows = document.retainedRows.count
+        XCTAssertEqual(renderedRows, min(rows, TranscriptPage.rowLimit))
         let travel = max(0, document.frame.height - scroll.contentView.bounds.height)
         // A trackpad delivers about 10 points per event at 120 Hz.
         let step: CGFloat = 10
@@ -662,8 +681,8 @@ final class TranscriptFrameBudgetTests: XCTestCase {
             await Task.yield()
             if steps % 16 == 0 { try? await Task.sleep(for: .milliseconds(1)) }
         }
-        print(String(format: "PERF scrolling %d rows: %d steps of %.0f points, %.2f ms mean, %.1f ms worst, %d over a 120 Hz frame (%.1f%%)",
-                     rows, steps, step, total * 1000 / Double(max(1, steps)), worst * 1000, over, Double(over) * 100 / Double(max(1, steps))))
+        print(String(format: "PERF scrolling %d rendered rows from %d source messages: %d synthetic steps of %.0f points, %.2f ms mean, %.1f ms worst, %d over 8.33 ms (%.1f%%)",
+                     renderedRows, rows, steps, step, total * 1000 / Double(max(1, steps)), worst * 1000, over, Double(over) * 100 / Double(max(1, steps))))
         // Reading a chat through for the first time builds each row's
         // SwiftUI tree as the reader reaches it — the work that used to be
         // done for the whole page before the chat appeared at all. Those are
@@ -1088,4 +1107,3 @@ private struct SelectedTranscriptWithStarterCard: View {
         }
     }
 }
-
