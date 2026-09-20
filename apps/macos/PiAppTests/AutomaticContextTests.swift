@@ -65,7 +65,9 @@ final class AutomaticContextTests: XCTestCase {
         let display = try XCTUnwrap(model.selected)
         let visible = model.displayedContext(display)
         for (key, value) in count { XCTAssertEqual(visible[key], value) }
-        XCTAssertEqual(visible, try XCTUnwrap(PreparedContextMetrics.context(from: display.footer.preparedContext?.summary ?? [:])))
+        let prepared=try XCTUnwrap(PreparedContextMetrics.context(from:display.footer.preparedContext?.summary ?? [:]))
+        for (key,value) in prepared { XCTAssertEqual(visible[key],value) }
+        XCTAssertEqual(visible["scope"]?.string,"next-input")
         XCTAssertEqual(ContextMeterPresentation(context: visible).warnings, ["Route is not bound"])
         XCTAssertTrue(model.hosts.isEmpty)
         try await close(model)

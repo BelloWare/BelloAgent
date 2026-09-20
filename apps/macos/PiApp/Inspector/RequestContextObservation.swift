@@ -4,9 +4,9 @@ struct RequestContextObservation {
     let value: [String: WireValue]
     init(_ value: [String: WireValue]) { self.value=value }
     var context: [String: WireValue]? {
-        guard let fingerprint=value["requestFingerprint"]?.string,
-              let capacity=value["contextWindow"]?.number, capacity.isFinite, capacity>0 else { return nil }
+        guard let capacity=value["contextWindow"]?.number, capacity.isFinite, capacity>0 else { return nil }
         let phase=value["phase"]?.string ?? "awaiting"
+        let fingerprint=value["requestFingerprint"]?.string
         let usage=value["usage"]?.object ?? [:], status=value["status"]?.object ?? [:]
         let input=usage["input"]?.number
         let reported=status["input"]?.string == "reported" && input.map { $0.isFinite && $0>=0 && $0.rounded()==$0 } == true
@@ -14,14 +14,15 @@ struct RequestContextObservation {
         result["contextWindow"] = .number(capacity)
         if reported {
             result["tokens"] = .number(input!); result["estimated"] = .bool(false)
-            result["method"] = .string("gateway-reported"); result["requestFingerprint"] = .string(fingerprint)
+            result["method"] = .string("gateway-reported"); result["requestFingerprint"] = fingerprint.map(WireValue.string)
             result["requestedModel"] = value["requestedModel"]; result["countedModel"] = value["effectiveModel"]
             let inputPhase=value["fieldPhase"]?.object?["input"]?.string
-            result["source"] = .string("LiteLLM reported request input" + (phase == "final" && inputPhase != "interim" ? " · last request" : phase == "interrupted" ? " · incomplete request" : " · interim"))
+            result["source"] = .string("LiteLLM reported request input" + (phase == "interrupted" ? " · incomplete request" : inputPhase == "interim" ? " · interim" : ""))
             result["warnings"] = .array(input!>capacity ? [.string("Reported input exceeds configured capacity; routing capacity may differ.")] : [])
         } else {
-            result["source"] = .string(phase == "interrupted" ? "Request estimate; usage incomplete" : "Request estimate; awaiting LiteLLM usage")
+            result["source"] = .string(phase == "preparing" ? "Preparing request input…" : phase == "interrupted" ? "Request estimate; usage incomplete" : "Request estimate; awaiting LiteLLM usage")
             result["awaitingUsage"] = .bool(phase != "interrupted")
+            if result["tokens"]?.number == nil { result["state"] = .string("pending") }
         }
         result["preparation"] = .string("Request " + (value["generation"]?.number.map { String(format: "%.0f", $0) } ?? "") + " · " + (value["attemptID"]?.string ?? ""))
         return result

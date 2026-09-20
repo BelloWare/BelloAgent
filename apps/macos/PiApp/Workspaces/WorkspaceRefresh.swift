@@ -38,6 +38,7 @@ extension WorkspaceModel {
                 // Ask for changes to the page this display holds rather than
                 // the page itself. The helper falls back to a whole page for
                 // any revision it did not just send, which is also the resync.
+                if let revision=view.footer.contextStateRevision { params["contextStateRevision"] = .string(revision) }
                 if let revision = view.footer.contextObservationRevision { params["contextObservationRevision"] = .string(revision) }
                 if requestedRevision != nil, !view.projectedRows.isEmpty { params["messageDelta"] = .bool(true) }
                 // Human-readable footer accounting refreshes at 4 Hz. Decide

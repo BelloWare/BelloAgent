@@ -45,6 +45,7 @@ extension WorkspaceModel {
         }
         let attachments = view.attachments, skills = view.skills
         let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString, previousState = view.state
+        view.beginContextSubmission(turnID)
         view.loading = true; view.compactionNotice = nil
         view.sendFailure = nil
         Task {
@@ -70,6 +71,7 @@ extension WorkspaceModel {
                 if !view.busy { view.state = "running" }
                 _ = try await host.request(steer ? "turn.steer" : "turn.submit", sessionID: item.id,
                                           params: TurnOverrides.params(for: item, base: ["text": .string(text), "clientTurnId": .string(turnID), "attachments": .array(attachments.map(\.wire)), "skills": .array(skills.map(\.wire))]), commandID: commandID)
+                view.acknowledgeContextSubmission(turnID)
                 if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID) }
                 if view.draft == text { view.draft = ""; view.attachments.removeAll { attachments.contains($0) }; view.skills.removeAll { skills.contains($0) }; view.directCommand = false; draftChanged(view) }
                 if let index = chats.firstIndex(where: { $0.id == item.id }), chats[index].titleWasEdited != true, chats[index].titleWasGenerated != true,
@@ -83,6 +85,7 @@ extension WorkspaceModel {
                 view.scrollAnchor = .init(id: view.messages.last?.id ?? "", offset: 0, followsBottom: true); view.viewportRequest += 1; anchorChanged(view)
                 refresh(item.id)
             } catch {
+                view.rejectContextSubmission(turnID)
                 // The failure sits in the conversation, under the messages, not in a fixed strip.
                 if case HostError.rejected(let code, _) = error, code == "not_running", steer {
                     view.sendFailure = "The run finished. Press Return to send this as a new message."

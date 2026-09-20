@@ -45,6 +45,8 @@ extension WorkspaceModel {
             for chat in self.chats where chat.workspaceID == workspace.id {
                 self.opened.remove(chat.id); self.displays[chat.id]?.captureAvailable = false
                 self.displays[chat.id]?.lastSequence = -1
+                self.displays[chat.id]?.observeContext([:],baseline:true)
+                self.displays[chat.id]?.footer.pendingContextSubmission=nil
                 if let view = self.displays[chat.id], view.hasWork, view.state != "error" { view.state = "interrupted"; view.runStatus = "interrupted"; view.queueCount = 0; view.uncertain = true; view.notice = "Host interrupted. Outcome uncertain. No command was replayed."; view.settleInterruptedRows() }
             }
         }

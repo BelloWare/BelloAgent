@@ -129,12 +129,18 @@ final class ContextAndSkillPolicyTests: XCTestCase {
         await model.clearPreparedContext(chat.id,revision:revision)
         XCTAssertEqual(model.displayedContext(display)["tokens"],preview["estimatedTokens"],"Closing inspection must not revert to unknown")
         display.draft = "Changed draft"
-        XCTAssertEqual(model.displayedContext(display),display.context,"An estimate for an old draft must not be presented as current")
+        XCTAssertNil(model.displayedContext(display)["tokens"]?.number,"An estimate for an old draft must not be presented as current")
         display.draft = "This remains unsent."
         XCTAssertEqual(model.displayedContext(display)["tokens"],preview["estimatedTokens"])
         display.observeContext(["seq":.number((preview["seq"]?.number ?? 0) + 1),"context":.object(["tokens":.number(3000),"contextWindow":.number(16000)])])
-        XCTAssertNil(display.footer.preparedContext,"New conversation activity invalidates a prepared estimate")
-        XCTAssertEqual(model.displayedContext(display)["tokens"]?.number,3000)
+        XCTAssertNotNil(display.footer.preparedContext,"Status-only activity does not invalidate input identity")
+        XCTAssertEqual(model.displayedContext(display)["tokens"],preview["estimatedTokens"])
+        var changed=try XCTUnwrap(state["contextState"]?.object)
+        changed["replayRevision"] = .number((changed["replayRevision"]?.number ?? 0)+1)
+        changed["count"] = .object(["state":.string("pending"),"tokens":.null])
+        display.observeContext(["contextStateRevision":.string("input-changed"),"contextState":.object(changed)])
+        XCTAssertNil(display.footer.preparedContext,"Committed input changes invalidate the preview")
+        XCTAssertNil(model.displayedContext(display)["tokens"]?.number)
         try await host.shutdownAndWait(); try await model.traces.close(); await model.store?.close()
         try FileManager.default.removeItem(at:folder)
     }
@@ -154,13 +160,13 @@ final class ContextAndSkillPolicyTests: XCTestCase {
         XCTAssertEqual(model.displayedContext(view)["tokens"]?.number,2100)
         model.chats[0].title = "Renamed"; model.chats[0].path = "/new-journal.jsonl"
         XCTAssertEqual(model.displayedContext(view)["tokens"]?.number,2100,"Presentation-only changes do not invalidate context")
-        model.chats[0].model = "second"; XCTAssertEqual(model.displayedContext(view),view.context)
+        model.chats[0].model = "second"; XCTAssertEqual(model.displayedContext(view)["tokens"],view.context["tokens"])
         model.chats[0].model = "first"
-        view.directCommand = true; XCTAssertEqual(model.displayedContext(view),view.context); view.directCommand = false
-        view.editingMessageID = "edit"; XCTAssertEqual(model.displayedContext(view),view.context); view.editingMessageID = nil
-        view.lastSequence = 4; XCTAssertEqual(model.displayedContext(view),view.context); view.lastSequence = 3
+        view.directCommand = true; XCTAssertEqual(model.displayedContext(view)["tokens"],view.context["tokens"]); view.directCommand = false
+        view.editingMessageID = "edit"; XCTAssertEqual(model.displayedContext(view)["tokens"],view.context["tokens"]); view.editingMessageID = nil
+        view.lastSequence = 4; XCTAssertEqual(model.displayedContext(view)["tokens"]?.number,2100,"Unrelated events retain the same input preview"); view.lastSequence = 3
         XCTAssertEqual(model.displayedContext(view)["tokens"]?.number,2100)
-        model.configuration.revision += 1; XCTAssertEqual(model.displayedContext(view),view.context)
+        model.configuration.revision += 1; XCTAssertEqual(model.displayedContext(view)["tokens"],view.context["tokens"])
         view.observeContext(["seq":.number(0),"context":.object(view.context)],baseline:true)
         XCTAssertNil(view.footer.preparedContext,"Reopening the helper invalidates the previous sequence epoch")
         XCTAssertTrue(model.hosts.isEmpty,"Reading meter state must not start helpers or call a model")

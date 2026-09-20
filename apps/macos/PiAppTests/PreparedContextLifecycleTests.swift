@@ -29,15 +29,15 @@ final class PreparedContextLifecycleTests: XCTestCase {
         let signature = signature("same draft")
         var builds = 0
         let first = Task {
-            try await requests.perform("chat", signature: signature, sequence: -1) {
+            try await requests.perform("chat", signature: signature) {
                 builds += 1; started.fulfill(); await gate.wait()
-                return ["revision": .string("shared"), "seq": .number(3)]
+                return ["revision": .string("shared"), "seq": .number(0)]
             }
         }
         await fulfillment(of: [started], timeout: 2)
         let newer = Task {
             joined.fulfill()
-            return try await requests.perform("chat", signature: signature, sequence: 3) {
+            return try await requests.perform("chat", signature: signature) {
                 builds += 1
                 return ["revision": .string("replacement"), "seq": .number(3)]
             }
@@ -55,7 +55,7 @@ final class PreparedContextLifecycleTests: XCTestCase {
         let oldSignature = signature("old draft"), newSignature = signature("new draft")
         var retainedRevision = "", completed: [String] = []
         let old = Task {
-            try await requests.perform("chat", signature: oldSignature, sequence: 0) {
+            try await requests.perform("chat", signature: oldSignature) {
                 started.fulfill(); await gate.wait()
                 retainedRevision = "old"; completed.append("old")
                 return ["revision": .string("old"), "seq": .number(0)]
@@ -64,7 +64,7 @@ final class PreparedContextLifecycleTests: XCTestCase {
         await fulfillment(of: [started], timeout: 2)
         let new = Task {
             queued.fulfill()
-            return try await requests.perform("chat", signature: newSignature, sequence: 0) {
+            return try await requests.perform("chat", signature: newSignature) {
                 retainedRevision = "new"; completed.append("new")
                 return ["revision": .string("new"), "seq": .number(0)]
             }
@@ -84,7 +84,7 @@ final class PreparedContextLifecycleTests: XCTestCase {
         let signature = signature("same draft")
         var builds = 0
         let automatic = Task {
-            try await requests.perform("chat", signature: signature, sequence: 0) {
+            try await requests.perform("chat", signature: signature) {
                 builds += 1; started.fulfill(); await gate.wait()
                 return ["revision": .string("retained"), "seq": .number(0)]
             }
@@ -92,7 +92,7 @@ final class PreparedContextLifecycleTests: XCTestCase {
         await fulfillment(of: [started], timeout: 2)
         let inspector = Task {
             joined.fulfill()
-            return try await requests.perform("chat", signature: signature, sequence: 0) {
+            return try await requests.perform("chat", signature: signature) {
                 builds += 1
                 return ["revision": .string("replacement"), "seq": .number(0)]
             }
@@ -104,6 +104,38 @@ final class PreparedContextLifecycleTests: XCTestCase {
         let result = try await inspector.value
         XCTAssertEqual(result["revision"], .string("retained"))
         XCTAssertEqual(builds, 1, "Cancelling the automatic waiter must not clear a snapshot another reader is awaiting")
+    }
+
+    @MainActor func testStartupEpochJoinAndChangedReplayInputsDoNotShareWrongSnapshot() async throws {
+        let requests=PreparedContextRequests(),gate=PreviewGate()
+        let started=expectation(description:"Startup preview"),joined=expectation(description:"Known input joins")
+        let initial=signature("same draft")
+        var known=initial
+        known.inputIdentity=ContextInputIdentity(["runtimeEpoch":.string("runtime"),"replayRevision":.number(1)])
+        let expected=known
+        var builds=0
+        let first=Task {
+            try await requests.perform("chat",signature:initial) {
+                builds += 1; started.fulfill(); await gate.wait()
+                return ["revision":.string("shared"),"runtimeEpoch":.string("runtime"),"replayRevision":.number(1)]
+            }
+        }
+        await fulfillment(of:[started],timeout:2)
+        let second=Task {
+            joined.fulfill()
+            return try await requests.perform("chat",signature:expected) {
+                builds += 1; return ["revision":.string("wrong replacement")]
+            }
+        }
+        await fulfillment(of:[joined],timeout:2); gate.release()
+        let firstResult=try await first.value,joinedResult=try await second.value
+        XCTAssertEqual(firstResult,joinedResult); XCTAssertEqual(builds,1)
+        var changed=expected
+        changed.inputIdentity=ContextInputIdentity(["runtimeEpoch":.string("runtime"),"replayRevision":.number(2)])
+        let fresh=try await requests.perform("chat",signature:changed) {
+            builds += 1; return ["revision":.string("new-input")]
+        }
+        XCTAssertEqual(fresh["revision"]?.string,"new-input"); XCTAssertEqual(builds,2)
     }
 
     private func signature(_ draft: String) -> AutomaticContextSignature {

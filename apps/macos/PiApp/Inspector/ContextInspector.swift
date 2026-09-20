@@ -24,19 +24,17 @@ struct ContextInspector: View {
     private var revision: String { summary["revision"]?.string ?? "" }
     private var items: [[String: WireValue]] { summary["items"]?.array?.compactMap(\.object) ?? [] }
     private var countedContext: [String: WireValue] { PreparedContextMetrics.context(from: summary) ?? [:] }
-    private var meter: ContextMeterPresentation { ContextMeterPresentation(context: countedContext) }
+    private var meter: ContextMeterPresentation { ContextMeterPresentation(context: model.displayedContext(session)) }
+    private var previewMeter: ContextMeterPresentation { ContextMeterPresentation(context:countedContext) }
 
     var body: some View {
         PiSheet("Context", subtitle: "Inspect instructions, tool schemas and every item in the prepared model input.", symbol:"square.stack.3d.up",width:1080,height:750) {
             VStack(alignment:.leading,spacing:PiSpacing.md) {
-                HStack(spacing:PiSpacing.lg) {
-                    Label(summary["mode"]?.string == "active-context" ? "Next request estimate during run" : "Next request preview",systemImage:"doc.text.magnifyingglass").font(PiFont.heading)
-                    if let model = summary["model"]?.string { Text(model).font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
-                    Spacer()
-                    if meter.fraction != nil {
-                        ContextRing(fraction:meter.fraction)
-                        Text(meter.fullLabel + " tokens").font(PiFont.caption.monospacedDigit()).help(meter.detailLabel)
-                    }
+                primaryHeader
+                Text(meter.detailLabel).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal:false,vertical:true)
+                if previewMeter.fraction != nil {
+                    Text(previewLabel)
+                        .font(PiFont.caption.weight(.semibold)).help(previewMeter.detailLabel)
                 }
                 Text(explanation).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal:false,vertical:true)
                 if !footer.requestObservation.isEmpty || !footer.lastRequestObservation.isEmpty {
@@ -52,7 +50,7 @@ struct ContextInspector: View {
                             .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).textSelection(.enabled)
                     }
                 }
-                if meter.fraction != nil { countDetails }
+                if previewMeter.fraction != nil { countDetails }
                 HSplitView {
                     VStack(spacing:PiSpacing.sm) {
                         ScrollView {
@@ -96,23 +94,38 @@ struct ContextInspector: View {
         .sheet(isPresented:$showCaptured) { InspectorView(model:model,sessionID:session.id,initialTab:"request") }
         .onDisappear { ticket += 1; let saved = revision; Task { await model.clearPreparedContext(session.id,revision:saved) } }
     }
+    private var previewLabel: String {
+        let model=summary["model"]?.string ?? ""
+        return "Separate next-input preview: " + previewMeter.fullLabel + " tokens" + (model.isEmpty ? "" : " · " + model)
+    }
+    private var primaryHeader: some View {
+                HStack(spacing:PiSpacing.lg) {
+                    Label("Context input",systemImage:"doc.text.magnifyingglass").font(PiFont.heading)
+                    if let model = meter.context["requestedModel"]?.string { Text(model).font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
+                    Spacer()
+                    if meter.fraction != nil {
+                        ContextRing(fraction:meter.fraction)
+                        Text(meter.fullLabel + " tokens").font(PiFont.caption.monospacedDigit()).help(meter.detailLabel)
+                    } else { Text(meter.detailLabel).font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
+                }
+    }
     private var countDetails: some View {
         VStack(alignment: .leading, spacing: PiSpacing.xs) {
             HStack(spacing: PiSpacing.md) {
-                Text(meter.methodLabel + (meter.estimated ? " · estimated" : " · counted"))
+                Text(previewMeter.methodLabel + (previewMeter.estimated ? " · estimated" : " · counted"))
                     .font(PiFont.caption.weight(.semibold)).foregroundStyle(Color.piInk)
-                if let model = meter.modelLabel { Text(model).font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
+                if let model = previewMeter.modelLabel { Text(model).font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
                 Spacer(minLength: 0)
             }
             if let source = countedContext["source"]?.string {
                 Text(source).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
             }
-            ForEach(Array(meter.warnings.enumerated()), id: \.offset) { _, warning in
+            ForEach(Array(previewMeter.warnings.enumerated()), id: \.offset) { _, warning in
                 Text(warning).font(PiFont.caption).foregroundStyle(Color.piWarning).fixedSize(horizontal: false, vertical: true)
             }
             DisclosureGroup("Counting details") {
                 VStack(alignment: .leading, spacing: PiSpacing.xs) {
-                    if let budget = meter.budgetLabel { Text(budget).font(PiFont.caption).fixedSize(horizontal: false, vertical: true) }
+                    if let budget = previewMeter.budgetLabel { Text(budget).font(PiFont.caption).fixedSize(horizontal: false, vertical: true) }
                     if let fingerprint = countedContext["requestFingerprint"]?.string {
                         Text("Request fingerprint: " + fingerprint).font(PiFont.micro.monospaced()).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     }
@@ -124,7 +137,7 @@ struct ContextInspector: View {
     }
     private var explanation: String {
         guard !revision.isEmpty else { return "This view reads the authoritative session context without generating a response or running tools." }
-        var value = summary["mode"]?.string == "active-context" ? "Frozen instructions for the running turn and current completed context. Streaming partial output and the unsent draft are excluded." : "The current conversation, refreshed instructions and tool schemas" + (summary["draftIncluded"]?.bool == true ? ", plus your unsent draft and selected skills/images." : ". No draft is included.")
+        var value = summary["mode"]?.string == "active-context" ? "Frozen instructions for the running turn and current completed context. Streaming partial output, incomplete tool groups and the unsent draft are excluded." : "The current conversation, refreshed instructions and tool schemas" + (summary["draftIncluded"]?.bool == true ? ", plus your unsent draft and selected skills/images." : ". No draft is included.")
         value += " No generation request is sent by this preview. Automatic compaction, source changes and future tool results can change the eventual request."
         if (summary["queueCount"]?.number ?? 0) > 0 { value += " Pending follow-ups and steering are not included." }
         if summary["credentialsRedacted"]?.bool == true { value += " Fields containing known credentials are fingerprinted." }

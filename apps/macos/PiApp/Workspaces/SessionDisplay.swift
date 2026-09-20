@@ -11,6 +11,11 @@ import Combine
     @Published var requestObservation: [String: WireValue] = [:]
     @Published var lastRequestObservation: [String: WireValue] = [:]
     var contextObservationRevision: String?
+    @Published var contextState: [String: WireValue] = [:]
+    var contextStateRevision: String?
+    @Published var pendingContextSubmission: String?
+    var contextSubmissionAcknowledged=false
+    var contextInputIdentity: ContextInputIdentity? { ContextInputIdentity(contextState) }
     @Published var preparedContext: PreparedContextMetrics?
     @Published var preparingContext = false
     @Published var metrics: [String: WireValue] = [:]
@@ -166,28 +171,66 @@ import Combine
     let footer = SessionMetrics()
     var context: [String: WireValue] { get { footer.context } set { footer.context = newValue } }
     func observeContext(_ snapshot: [String: WireValue], baseline: Bool = false) {
-        // A newly opened helper starts a new sequence epoch, even when the
-        // desktop still has this session's previous prepared estimate.
-        if baseline { footer.preparedContext = nil; footer.requestObservation = [:]; footer.lastRequestObservation = [:]; footer.contextObservationRevision = nil }
-        if let revision = snapshot["contextObservationRevision"]?.string, revision != footer.contextObservationRevision {
-            footer.contextObservationRevision = revision
-            let current = snapshot["requestObservation"]?.object ?? [:], last = snapshot["lastRequestObservation"]?.object ?? [:]
-            if footer.requestObservation != current { footer.requestObservation = current }
-            if footer.lastRequestObservation != last { footer.lastRequestObservation = last }
+        if baseline {
+            footer.preparedContext=nil; footer.context=[:]; footer.contextState=[:]
+            footer.requestObservation=[:]; footer.lastRequestObservation=[:]
+            footer.contextObservationRevision=nil; footer.contextStateRevision=nil
         }
-        if let context = snapshot["context"]?.object, context != self.context, acceptsContext(context) { self.context = context }
-        if let sequence = snapshot["seq"]?.number, let preview = footer.preparedContext, sequence > preview.sequence {
-            footer.preparedContext = nil
+        if let revision=snapshot["contextStateRevision"]?.string, let payload=snapshot["contextState"] {
+            if var state=payload.object, state["version"]?.number == 1,
+               state["sessionID"]?.string == id, let incoming=ContextInputIdentity(state),
+               let generation=state["generation"]?.number, generation.isFinite, generation >= 0, generation.rounded() == generation {
+                if let held=footer.contextInputIdentity {
+                    guard incoming.epoch == held.epoch, incoming.revision >= held.revision,
+                          generation >= (footer.contextState["generation"]?.number ?? -1) else { return }
+                    if incoming == held, generation == footer.contextState["generation"]?.number {
+                        for key in ["currentRequest","lastRequest","count"] where state[key] == nil { state[key]=footer.contextState[key] }
+                    }
+                }
+                if incoming != footer.contextInputIdentity { footer.preparedContext=nil }
+                footer.contextStateRevision=revision
+                if footer.contextState != state { footer.contextState=state }
+                if let supplied=state["count"], supplied.object ?? [:] != footer.context { footer.context=supplied.object ?? [:] }
+                for (key,current) in [("currentRequest",true),("lastRequest",false)] {
+                    if let supplied=state[key] {
+                        let value=supplied.object ?? [:]
+                        if current, footer.requestObservation != value { footer.requestObservation=value }
+                        if !current, footer.lastRequestObservation != value { footer.lastRequestObservation=value }
+                    }
+                }
+                if let pending=footer.pendingContextSubmission, state["turnID"]?.string == pending || (footer.contextSubmissionAcknowledged && !busy) {
+                    footer.pendingContextSubmission=nil
+                }
+            }
+            // A reset must carry a versioned epoch/revision envelope with a
+            // null currentRequest. An unkeyed null cannot retire live state.
+        }
+        if let revision=snapshot["contextObservationRevision"]?.string, revision != footer.contextObservationRevision {
+            footer.contextObservationRevision=revision
+            if footer.contextState.isEmpty {
+                // An omitted field is unchanged; an explicit null is a reset.
+                if let supplied=snapshot["requestObservation"] { footer.requestObservation=supplied.object ?? [:] }
+                if let supplied=snapshot["lastRequestObservation"] { footer.lastRequestObservation=supplied.object ?? [:] }
+            }
+        }
+        if footer.contextState.isEmpty, let supplied=snapshot["context"] {
+            let context=supplied.object ?? [:]
+            if context != self.context { self.context=context }
         }
     }
-    /// The helper's count flickers during a run: each appended message clears
-    /// it to "pending" and each prepared request replaces it with an estimate.
-    /// Keep the last settled count on screen; mid-run, only a count anchored on
-    /// gateway-reported usage may replace it. Compaction still resets the ring.
-    func acceptsContext(_ context: [String: WireValue]) -> Bool {
-        let hasCount = context["tokens"]?.number != nil
-        if !hasCount { return context["state"]?.string == "post-compaction" || self.context["tokens"]?.number == nil }
-        return !busy || context["method"]?.string == "usage-baseline"
+    /// Only idle submissions establish a new request. Follow-ups/steering leave
+    /// an already dispatched request and its capacity untouched.
+    func beginContextSubmission(_ turnID: String) {
+        guard !busy else { return }
+        footer.pendingContextSubmission=turnID; footer.contextSubmissionAcknowledged=false
+    }
+    func acknowledgeContextSubmission(_ turnID: String) {
+        guard footer.pendingContextSubmission == turnID else { return }
+        footer.contextSubmissionAcknowledged=true
+        if !busy { footer.pendingContextSubmission=nil }
+    }
+    func rejectContextSubmission(_ turnID: String) {
+        if footer.pendingContextSubmission == turnID { footer.pendingContextSubmission=nil }
     }
     var metrics: [String: WireValue] { get { footer.metrics } set { footer.metrics = newValue } }
     var turnTiming: [String: WireValue] { get { footer.turnTiming } set { footer.turnTiming = newValue } }

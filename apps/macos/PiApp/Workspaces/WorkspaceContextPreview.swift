@@ -29,15 +29,17 @@ extension WorkspaceModel {
         // A footer activation can arrive while an explicit inspector request is
         // awaiting configuration or helper startup. Both must share the same
         // helper snapshot, whose revision would otherwise expire on replacement.
-        return try await preparedContextRequests.perform(id, signature: signature, sequence: view.lastSequence) { [self] in
+        return try await preparedContextRequests.perform(id, signature: signature) { [self] in
             let host = try await open(item, automaticContext: automatic)
             defer { scheduleIdle(workspaceID:item.workspaceID,host:host) }
             if automatic { try requireAutomaticContext(id) }
+            let connection=host.connectionID
             let result = try await host.request("context.preview",sessionID:id,params:params).object ?? [:]
+            guard connection == host.connectionID else { throw HostError.failure("The helper restarted. Refresh the context preview.") }
             guard !Task.isCancelled, (!automatic || automaticContextEligible(id)), displays[id] === view, let current = record(id), ContextPreviewBinding(current) == ContextPreviewBinding(item),
                   configuration.revision == revision, view.editingMessageID == nil, view.directCommand == directCommand,
                   contextPreviewParams(current,view:view) == params,
-                  (result["seq"]?.number ?? -1) >= view.lastSequence else {
+                  self.previewMatchesInput(result, view: view), hosts[item.workspaceID] === host, host.isReady else {
                 if let snapshot = result["revision"] { _ = try? await host.request("context.preview.clear",sessionID:id,params:["revision":snapshot]) }
                 throw HostError.failure("The conversation, draft, model or settings changed. Refresh the context preview.")
             }
@@ -52,35 +54,35 @@ extension WorkspaceModel {
     private func contextPreviewParams(_ item: ChatRecord, view: SessionDisplay) -> [String: WireValue] {
         TurnOverrides.params(for:item,base:["text":.string(view.draft),"skills":.array(view.skills.map(\.wire)),"attachments":.array(view.attachments.map(\.wire))])
     }
-    func displayedContext(_ view: SessionDisplay) -> [String: WireValue] {
-        if view.runStatus == "compacting" {
-            return ["state": .string("pending"), "source": .string("Compacting context; summarizer usage is separate"), "tokens": .null]
-        }
-        let observation = RequestContextObservation(view.footer.requestObservation)
-        if view.busy, let current = observation.context { return current }
-        if let prepared = matchingPreparedContext(view) { return prepared.context }
-        if let last = observation.context { return last }
-        if view.footer.preparingContext {
-            return ["state": .string("pending"), "tokens": .null, "source": .string("Preparing the current request inputs")]
-        }
-        return view.context
+    func contextPresentation(_ view: SessionDisplay) -> ContextPresentation {
+        let presentation=ContextPresentation.resolve(state:view.footer.contextState,observation:view.footer.requestObservation,
+            preview:matchingPreparedContext(view)?.context,fallback:view.context,preparing:view.footer.preparingContext,
+            submissionPending:view.footer.pendingContextSubmission != nil,busy:view.busy,runStatus:view.runStatus)
+        ContextDiagnostics.shared.record(sessionID:view.id,state:view.footer.contextState,presentation:presentation)
+        return presentation
+    }
+    func displayedContext(_ view: SessionDisplay) -> [String: WireValue] { contextPresentation(view).context }
+    private func previewMatchesInput(_ summary: [String: WireValue], view: SessionDisplay) -> Bool {
+        guard let expected=view.footer.contextInputIdentity else { return ContextInputIdentity(summary) == nil || view.footer.contextState.isEmpty }
+        return ContextInputIdentity(summary) == expected
     }
     private func matchingPreparedContext(_ view: SessionDisplay) -> PreparedContextMetrics? {
         guard let preview = view.footer.preparedContext, let item = record(view.id),
               preview.binding == ContextPreviewBinding(item), preview.configurationRevision == configuration.revision,
               preview.directCommand == view.directCommand, view.editingMessageID == nil,
-              preview.params == contextPreviewParams(item,view:view), preview.sequence >= view.lastSequence,
+              preview.params == contextPreviewParams(item,view:view), previewMatchesInput(preview.summary,view:view),
+              (preview.summary["mode"]?.string == "active-context") == view.busy,
               Date().timeIntervalSince(preview.createdAt) <= 300 else { return nil }
         return preview
     }
 
     func automaticContextActivation(_ view: SessionDisplay) -> AutomaticContextActivation {
         AutomaticContextActivation(eligible: automaticContextEligible(view.id),
-            binding: record(view.id).map(ContextPreviewBinding.init), configurationRevision: configuration.revision)
+            binding: record(view.id).map(ContextPreviewBinding.init), configurationRevision: configuration.revision, inputIdentity:view.footer.contextInputIdentity)
     }
     private func automaticContextSignature(_ item: ChatRecord, view: SessionDisplay) -> AutomaticContextSignature {
         AutomaticContextSignature(binding: ContextPreviewBinding(item), params: contextPreviewParams(item, view: view),
-                                  configurationRevision: configuration.revision, directCommand: view.directCommand)
+                                  configurationRevision: configuration.revision, directCommand: view.directCommand, inputIdentity:view.footer.contextInputIdentity)
     }
     private func automaticContextEligible(_ id: String) -> Bool {
         guard !accountingStopped, !installPreparing, page == .chats, (focusedSessionID ?? selectedID) == id, !pendingChatIDs.contains(id),
@@ -135,7 +137,7 @@ extension WorkspaceModel {
                     try requireAutomaticContext(id)
                     guard automaticContextTask?.token == token, displays[id] === view,
                           let latest = record(id), automaticContextSignature(latest, view: view) == signature,
-                          (result["seq"]?.number ?? -1) >= view.lastSequence else { return }
+                          previewMatchesInput(result,view:view) else { return }
                     view.footer.preparedContext = PreparedContextMetrics(summary: result, binding: signature.binding,
                         params: signature.params, configurationRevision: signature.configurationRevision, directCommand: signature.directCommand)
                 } else { _ = try await preparedContext(id, automatic: true) }
@@ -170,33 +172,33 @@ extension WorkspaceModel {
     private struct Pending {
         let token: UUID
         let signature: AutomaticContextSignature
-        let sequence: Double
         let task: Task<[String: WireValue], Error>
     }
     private var pending: [String: Pending] = [:]
 
-    func perform(_ id: String, signature: AutomaticContextSignature, sequence: Double,
+    func perform(_ id: String, signature: AutomaticContextSignature,
                  operation: @escaping @MainActor () async throws -> [String: WireValue]) async throws -> [String: WireValue] {
         try Task.checkCancellation()
         while let current = pending[id] {
-            if current.signature == signature, current.sequence == sequence {
+            if current.signature == signature {
                 let result = try await current.task.value
                 try Task.checkCancellation()
                 return result
             }
             let result = try? await current.task.value
             try Task.checkCancellation()
-            // Startup/snapshot events can advance the desktop sequence while
-            // the shared request is being built. Reuse it when its actual
-            // helper sequence already covers the newer caller's observation.
-            if current.signature == signature, let result, (result["seq"]?.number ?? -1) >= sequence { return result }
+            // Startup may give an initially unbound caller its first epoch.
+            // Reuse only when the returned semantic identity satisfies the joiner.
+            var startup=current.signature; startup.inputIdentity=signature.inputIdentity
+            if current.signature.inputIdentity == nil, startup == signature, let result,
+               ContextInputIdentity(result) == signature.inputIdentity { return result }
         }
         let token = UUID()
         let task = Task { [self] in
             defer { if pending[id]?.token == token { pending.removeValue(forKey: id) } }
             return try await operation()
         }
-        pending[id] = Pending(token: token, signature: signature, sequence: sequence, task: task)
+        pending[id] = Pending(token: token, signature: signature, task: task)
         let result = try await task.value
         try Task.checkCancellation()
         return result
@@ -252,11 +254,13 @@ struct AutomaticContextSignature: Equatable {
     let params: [String: WireValue]
     let configurationRevision: Int64
     let directCommand: Bool
+    var inputIdentity: ContextInputIdentity? = nil
 }
 struct AutomaticContextActivation: Equatable {
     let eligible: Bool
     let binding: ContextPreviewBinding?
     let configurationRevision: Int64
+    var inputIdentity: ContextInputIdentity? = nil
 }
 struct AutomaticContextTask {
     let id: String

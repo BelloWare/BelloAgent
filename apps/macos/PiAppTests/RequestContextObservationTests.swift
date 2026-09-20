@@ -2,6 +2,24 @@ import XCTest
 @testable import PiApp
 
 final class RequestContextObservationTests: XCTestCase {
+    @MainActor func testFreshBusyHeuristicAndExplicitPendingDoNotReviveOldCount() {
+        let view=SessionDisplay(id:"s"); view.state="running"
+        view.context=["tokens":.number(12000),"contextWindow":.number(100000)]
+        view.observeContext(["context":.object(["tokens":.number(42000),"contextWindow":.number(100000),"method":.string("heuristic")])])
+        XCTAssertEqual(view.context["tokens"]?.number,42000)
+        view.observeContext(["context":.object(["tokens":.null,"state":.string("pending")])])
+        XCTAssertNil(view.context["tokens"]?.number,"An explicit reset must not retain the pre-reset count")
+        view.context=["tokens":.number(12000)]
+        view.observeContext([:],baseline:true)
+        XCTAssertTrue(view.context.isEmpty,"A reopened runtime must clear the old fallback")
+    }
+    @MainActor func testStatusOnlyEventDoesNotErasePreparedInput() {
+        let view=SessionDisplay(id:"s")
+        let item=ChatRecord(id:"s",workspaceID:"w",title:"Title",path:nil,profileID:"p")
+        view.footer.preparedContext=PreparedContextMetrics(summary:["seq":.number(1),"contextWindow":.number(100000),"count":.object(["tokens":.number(42000)])],binding:ContextPreviewBinding(item),params:[:],configurationRevision:0,directCommand:false)
+        view.observeContext(["seq":.number(200)])
+        XCTAssertEqual(view.footer.preparedContext?.context["tokens"]?.number,42000)
+    }
     private func observation(input: Double?, phase: String = "final") -> [String: WireValue] {
         ["attemptID":.string("a"),"requestFingerprint":.string("hash"),"contextWindow":.number(1000),"requestedModel":.string("auto-router"),"effectiveModel":.string("served"),"phase":.string(phase),
          "usage":.object(["input":input.map(WireValue.number) ?? .null,"output":.number(20),"cacheRead":.number(100),"reasoning":.number(10)]),

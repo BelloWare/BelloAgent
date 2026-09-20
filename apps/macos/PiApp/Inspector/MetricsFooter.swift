@@ -242,7 +242,7 @@ struct ContextMeterPresentation {
     let context: [String: WireValue]
     var capacity: Double? = nil
     private var counts: (tokens: Double, capacity: Double)? {
-        let configuredCapacity = context["requestFingerprint"]?.string == nil ? capacity ?? context["contextWindow"]?.number : context["contextWindow"]?.number
+        let configuredCapacity = context["scope"]?.string == "current-request" || context["scope"]?.string == "last-request" || context["requestFingerprint"]?.string != nil ? context["contextWindow"]?.number : capacity ?? context["contextWindow"]?.number
         guard let tokens = context["tokens"]?.number, tokens.isFinite, tokens >= 0,
               let maximum = configuredCapacity,
               maximum.isFinite, maximum > 0 else { return nil }
@@ -276,19 +276,21 @@ struct ContextMeterPresentation {
     var fraction: Double? { counts.map { $0.tokens / $0.capacity } }
     private var pending: Bool { ["post-compaction", "pending"].contains(context["state"]?.string ?? "") }
     var compactLabel: String {
-        guard let counts else { return pending ? "Context pending" : "Inspect context" }
-        return (estimated ? "≈" : "") + "\(compact(counts.tokens)) / \(compact(counts.capacity))" + (context["method"]?.string == "gateway-reported" ? " · reported" : context["awaitingUsage"]?.bool == true ? " · awaiting usage" : "")
+        guard let counts else { return pending ? (context["scope"] == nil ? "Context pending" : context["source"]?.string ?? "Context pending") : "Inspect context" }
+        let scopeLabel=context["scope"]?.string == "next-input" ? " · next input" : context["scope"]?.string == "last-request" ? " · last request" : context["scope"]?.string == "legacy" ? " · legacy estimate" : ""
+        return (estimated ? "≈" : "") + "\(compact(counts.tokens)) / \(compact(counts.capacity))" + (context["method"]?.string == "gateway-reported" ? " · reported" : context["awaitingUsage"]?.bool == true ? " · awaiting usage" : "") + scopeLabel
     }
     var fullLabel: String {
         guard let counts else { return compactLabel }
         return (estimated ? "≈" : "") + "\(counts.tokens.formatted(.number.precision(.fractionLength(0)))) / \(counts.capacity.formatted(.number.precision(.fractionLength(0))))"
     }
     var detailLabel: String {
-        guard let counts else { return pending ? "Context is waiting for the next prepared-request calculation" : "Click to calculate and inspect context; no response is generated" }
+        guard let counts else { return pending ? (context["source"]?.string ?? "Context is waiting for the next prepared-request calculation") : "Click to calculate and inspect context; no response is generated" }
         let source = context["source"]?.string ?? "Estimated conversation context"
+        let scope=context["scope"]?.string == "last-request" ? " · last request" : context["scope"]?.string == "next-input" ? " · next input" : ""
         let preparation = context["preparation"]?.string.map { " · " + $0 } ?? ""
         let warning = warnings.isEmpty ? "" : " · " + warnings.joined(separator: " ")
-        return fullLabel + String(format:" configured · %.1f%% · %@ · %@",counts.tokens / counts.capacity * 100,methodLabel,source) + preparation + warning
+        return fullLabel + String(format:" configured · %.1f%% · %@ · %@",counts.tokens / counts.capacity * 100,methodLabel,source) + scope + preparation + warning
     }
     private func compact(_ value: Double) -> String {
         if value >= 1_000_000 { return String(format:"%.1fM",value / 1_000_000).replacingOccurrences(of:".0M",with:"M") }
