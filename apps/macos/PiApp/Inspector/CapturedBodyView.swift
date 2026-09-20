@@ -145,12 +145,14 @@ struct CapturedBodyDocument: Sendable {
     let metadata: CapturedBodyMetadata
     let json: CapturedJSON?
     let eventStream: CapturedEventStream?
-    let combinedResponse: CombinedResponse?
+    var combinedResponse: CombinedResponse?
+    var combinationFinished = false
+    var hasResponseEvents = false
     var structured: CapturedJSON? { json ?? eventStream?.outline }
 
     func availableFormats(kind: String) -> [(CapturedBodyFormat, String)] {
         var result: [(CapturedBodyFormat, String)] = []
-        if kind == "response", combinedResponse != nil { result.append((.combined, "Combined JSON")) }
+        if kind == "response", combinedResponse != nil || !combinationFinished && hasResponseEvents { result.append((.combined, "Combined JSON")) }
         result += [(.json, eventStream == nil ? "JSON" : "Events"), (.text, "UTF-8"), (.hex, "Hex")]
         return result
     }
@@ -171,7 +173,7 @@ struct CapturedBodyDocument: Sendable {
         return structured(format: format)?.formatted ?? plain
     }
 
-    static func parse(bytes: Data, metadata: CapturedBodyMetadata) throws -> Self {
+    static func parse(bytes: Data, metadata: CapturedBodyMetadata, combine: Bool = true) throws -> Self {
         try Task.checkCancellation()
         var json: CapturedJSON?
         if let value = try? JSONSerialization.jsonObject(with: bytes, options: [.fragmentsAllowed]),
@@ -179,9 +181,10 @@ struct CapturedBodyDocument: Sendable {
             json = CapturedJSON(value: value, formatted: String(decoding: printed, as: UTF8.self))
         }
         let eventStream = json == nil ? try CapturedEventStream.parse(bytes) : nil
-        let combinedResponse = try eventStream.flatMap { try CombinedResponse.parse($0) }
+        let combinedResponse = combine ? try eventStream.flatMap { try CombinedResponse.parse($0) } : nil
         try Task.checkCancellation()
-        return Self(bytes: bytes, metadata: metadata, json: json, eventStream: eventStream, combinedResponse: combinedResponse)
+        return Self(bytes: bytes, metadata: metadata, json: json, eventStream: eventStream, combinedResponse: combinedResponse, combinationFinished: combine,
+                    hasResponseEvents: eventStream?.frames.contains(where: { ($0.event ?? ($0.json as? [String: Any])?["type"] as? String ?? "").hasPrefix("response.") }) == true)
     }
 }
 
@@ -245,7 +248,7 @@ enum CapturedBodyReader {
         guard before == (try await source.metadata()) else {
             throw HostError.failure("The capture changed while reading. Refresh and try again.")
         }
-        let parsing = Task.detached(priority: .userInitiated) { try CapturedBodyDocument.parse(bytes: bytes, metadata: before) }
+        let parsing = Task.detached(priority: .userInitiated) { try CapturedBodyDocument.parse(bytes: bytes, metadata: before, combine: false) }
         return try await withTaskCancellationHandler(operation: { try await parsing.value }, onCancel: { parsing.cancel() })
     }
 }
@@ -279,7 +282,19 @@ enum CapturedBodyReader {
             if !(error is CancellationError) { notice = error.localizedDescription }
         }
     }
-    func cancel() { generation += 1; loading = false }
+    func prepareCombined() async {
+        guard let document, document.combinedResponse == nil, let stream = document.eventStream else { return }
+        let revision = generation, id = document.id
+        let task = Task.detached(priority: .userInitiated) { try CombinedResponse.parse(stream) }
+        do {
+            let value = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+            guard !Task.isCancelled, revision == generation, self.document?.id == id else { return }
+            self.document?.combinedResponse = value
+            self.document?.combinationFinished = true
+        } catch { if revision == generation, !(error is CancellationError) { notice = error.localizedDescription } }
+    }
+    func cancel() { generation += 1; loading = false; document = nil }
+
 }
 
 enum CapturedBodyFormat: String, CaseIterable { case json, combined, text, hex }
@@ -297,7 +312,7 @@ struct CapturedBodyView: View {
     /// A card that ignores it must not be handed a second full copy of the body.
     var displayedText: Binding<String>? = nil
     @StateObject private var controller = CapturedBodyController()
-    @State private var format = CapturedBodyFormat.combined
+    @State private var format = CapturedBodyFormat.json
     @State private var selection = ""
     @State private var expandRevision = 0
     @State private var expandAll = false
@@ -341,6 +356,9 @@ struct CapturedBodyView: View {
                          ? "Select a value to see its full contents. Formatting is a derived view; retained bytes are unchanged."
                          : "Events appear in captured order. Expand a frame and its data to inspect JSON. This is a formatted view; UTF-8, Hex and exports preserve the retained bytes.")
                         .font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
+                } else if activeFormat == .combined {
+                    VStack { ProgressView(); Text("Combining captured response events…").font(PiFont.caption) }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     PagedTextView(text: activeFormat == .hex ? hex : utf8, accessibilityLabel: "Complete retained HTTP body")
                         .piInset(sunken: true)
@@ -368,6 +386,8 @@ struct CapturedBodyView: View {
         }
         .task(id: FormatSelection(format: activeFormat, document: controller.document?.id)) {
             selection = ""; expandAll = false; expandRevision = 0
+            if activeFormat == .combined { await controller.prepareCombined() }
+            guard !Task.isCancelled else { return }
             await updateHexIfNeeded()
             await updateUTF8IfNeeded()
             updateDisplayedText()

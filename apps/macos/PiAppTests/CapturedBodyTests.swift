@@ -133,6 +133,24 @@ final class CapturedBodyTests: XCTestCase {
         }
     }
 
+    @MainActor func testLoadingEventsDefersCombinedResponseUntilRequestedAndClosingReleasesIt() async throws {
+        let bytes = Data("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_lazy\",\"status\":\"completed\",\"output\":[]}}\n\n".utf8)
+        let controller = CapturedBodyController()
+        await controller.load(kind: "response", source: source(bytes))
+        let initial = try XCTUnwrap(controller.document)
+        XCTAssertEqual(initial.bytes, bytes)
+        XCTAssertNil(initial.combinedResponse)
+        XCTAssertFalse(initial.combinationFinished)
+        XCTAssertTrue(initial.availableFormats(kind: "response").contains { $0.0 == .combined })
+        await controller.prepareCombined()
+        let ready = try XCTUnwrap(controller.document)
+        XCTAssertEqual(ready.bytes, bytes)
+        XCTAssertEqual((ready.combinedResponse?.json.value as? [String: Any])?["id"] as? String, "resp_lazy")
+        XCTAssertTrue(ready.combinationFinished)
+        controller.cancel()
+        XCTAssertNil(controller.document)
+    }
+
     @MainActor func testSSEInvalidDataCommentsAndUnfinishedTailRemainVisible() throws {
         let text = ": keepalive\n\ndata: not JSON\n\ndata: [DONE]\n\nevent: response.completed\ndata: {\"response\":"
         let bytes = Data(text.utf8)
