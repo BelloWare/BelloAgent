@@ -41,6 +41,13 @@ instruction. SDK-era requirements remain in `docs/archive/PiSDK-Features.md`.
 
 ## 2. Required features and honest implementation status
 
+**Context meter, 0.1.66:** current-request input, historical request usage and
+next-input previews have distinct identities and labels. Opening the inspector
+uses the same primary meter as the footer and cannot change preflight state.
+Streaming/status events do not invalidate a matching preview. New submissions,
+compaction and helper restarts cannot revive an unrelated old count; valid lower
+reported input is accepted. See [implementation and CTX acceptance](docs/Context-Meter-Fix-2026-09-20.md).
+
 **Activity and disclosure, 0.1.65:** work/tool details start collapsed, archived
 chats have no unread indicators, and live menu rows show elapsed time, models,
 queues and reported session usage. Continuous streaming no longer starves popup

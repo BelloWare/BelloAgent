@@ -36,6 +36,17 @@ records optimized native/helper tests, explicit actor checks and publication.
 Current release records take precedence over the historical matrices below.
 Installation/update rehearsals remain skipped by owner instruction.
 
+## 0.1.66 context scope acceptance
+
+Read [CTX-01–CTX-20](Context-Meter-Fix-2026-09-20.md) and the
+[release validation](validation/Bello-Agent-0.1.66-2026-09-20.md). `ContextScopeTests`
+exists in both native and helper modules. Pair it with observations, automatic
+preview/lifecycle, context gateway, compaction safety and display/streaming tests.
+The held gateway compares actual dispatched bytes, fingerprint, preflight count
+and generation across repeated inspector preview/read/clear operations. Native
+scope tests cover optimistic send, prior reports, partial snapshots and resets.
+Do not replace these with a larger-number assertion: valid reports may decrease.
+
 ## 0.1.64 compaction acceptance
 
 See [the implementation record](Compaction-Implementation-2026-09-20.md) and

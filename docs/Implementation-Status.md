@@ -12,6 +12,15 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
+**Bello Agent 0.1.66/build 70 candidate:** context scope/revision fixes are
+implemented. The footer and primary inspector share one resolver; streaming
+activity cannot expire an unchanged preview, inspection cannot overwrite
+preflight state, and new submissions/resets cannot revive older request counts.
+Validation: **74 distinct optimized helper tests, 58 distinct actor-checked native
+tests and 26 packaged gateway tests passed**. Signing/publication verification is
+pending. See [implementation and CTX-01–CTX-20](Context-Meter-Fix-2026-09-20.md)
+and [release validation](validation/Bello-Agent-0.1.66-2026-09-20.md).
+
 **Bello Agent 0.1.65/build 69 is released and publicly verified** at
 [belloware.com](https://belloware.com/bello-agent.html), from source
 `852452e2cce24c70bd092ca059308e8c99265c2d` and website

@@ -8,6 +8,25 @@ Reported request usage, an estimate of the next request's context, live output a
 
 Gateway-reported usage is not independently verified billing. Context estimates remain estimates unless a compatible counting contract establishes otherwise. In particular, a model alias and a successful HTTP response do not establish the identity of an automatically selected backend.
 
+## Scope and lifetime fix in 0.1.66
+
+The footer and primary Context Inspector header share one `ContextPresentation`
+resolver. An active request's estimate/report is bound to its runtime epoch,
+generation, attempt and dispatch capacity. A completed request is explicitly
+historical while tools run. Idle counts describe a matching next-input preview;
+changed drafts show pending rather than borrowing the last request's usage.
+
+Preview validity uses committed replay-input revision and effective configuration,
+resource/tool/authorization and draft bindings, not the general event sequence.
+Opening or closing the inspector cannot write the preflight count. A compact
+versioned context envelope is independent of transcript and accounting payloads.
+The helper publishes preparing state before recorder waits and captures context
+state before awaited trace reads. Successful compaction alone invalidates replay;
+failed/cancelled summaries do not replace input or generation usage.
+
+See [CTX-01–CTX-20 evidence and limitations](Context-Meter-Fix-2026-09-20.md).
+This fixes freshness/scope, not tokenizer accuracy or automatic-route capacity.
+
 ## Implemented in 0.1.17
 
 `RequestContextCounter` consumes the provider request builder's output. The context ring, prepared inspector, dispatch preflight, retained-context sizing, and compaction-summary preflight use this service. Its result includes tokens, method, requested/counted model, a request fingerprint, uncertainty warnings, capacity, requested output budget, and safety margin. Opening an idle chat or changing its draft schedules the existing debounced preview; while a changed request is being prepared, the ring shows a pending count rather than another formula's result.
