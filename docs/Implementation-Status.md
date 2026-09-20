@@ -12,7 +12,14 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Bello Agent 0.1.67/build 71 is released and publicly verified** at
+**Bello Agent 0.1.68/build 72 is being prepared.** Copy selected session references
+from the selection bar or context menu. Single and multiple references include
+fresh retained tokens, cache/reasoning breakdowns, reported cost and coverage,
+without opening sessions or changing selection. **53 focused actor-checked
+native tests passed**. See
+[0.1.68 validation](validation/Bello-Agent-0.1.68-2026-09-20.md).
+
+**Bello Agent 0.1.67/build 71 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source
 `406bc17ff101ada6608f69b7a4b2a3f10ca0e3d2` and website
 `a8a84a6b39e2f8dd7d65dd82ece7876c07ac4940`. The DMG measures **8,228,882 bytes
