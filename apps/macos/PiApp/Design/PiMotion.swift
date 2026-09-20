@@ -3,9 +3,10 @@ import SwiftUI
 // MARK: - Motion
 
 /// Motion tokens shared by every view: three eased durations for state
-/// changes and two springs for things that move. `piAnimation` applies them
-/// and drops the animation when the reader asked for reduced motion.
+/// changes and two springs for things that move. App-owned motion stays enabled
+/// independently of macOS Reduce Motion, including in detached native row hosts.
 enum PiMotion {
+    static let reducesMotion = false
     static let quickMilliseconds = 140
     static let baseMilliseconds = 220
     static let slowMilliseconds = 320
@@ -24,10 +25,8 @@ enum PiMotion {
     }
     /// The same, for a group that opens downwards under its header.
     static var reveal: AnyTransition { arrival(from: .top) }
-    /// What every animated surface hands SwiftUI: the token, or nothing at
-    /// all when the reader has asked for reduced motion. One decision in one
-    /// place, so "Reduce Motion turns it off" is a rule a test can hold to
-    /// rather than fifteen ternaries that each have to be right.
+    /// An explicit local motion override can still suppress feedback in a
+    /// fixture or surface. The system accessibility preference is not consulted.
     static func honouring(_ animation: Animation, reduceMotion: Bool) -> Animation? {
         reduceMotion ? nil : animation
     }
@@ -35,7 +34,7 @@ enum PiMotion {
 private struct PiAnimated<Value: Equatable>: ViewModifier {
     let animation: Animation
     let value: Value
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     func body(content: Content) -> some View { content.animation(PiMotion.honouring(animation, reduceMotion: reduceMotion), value: value) }
 }
 /// Native text layout and scroll restoration must see the final geometry,
@@ -43,7 +42,7 @@ private struct PiAnimated<Value: Equatable>: ViewModifier {
 /// Local decorative animations inside the boundary may still opt in.
 private struct PiStableLayout: ViewModifier {
     let reduceMotionOverride: Bool?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     func body(content: Content) -> some View {
         content.transaction {
             $0.animation = nil
@@ -56,7 +55,7 @@ private struct PiStableLayout: ViewModifier {
 private struct PiStaggeredAppearance: ViewModifier {
     let index: Int
     @State private var shown = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     func body(content: Content) -> some View {
         content
             .opacity(shown || reduceMotion ? 1 : 0)
@@ -66,12 +65,22 @@ private struct PiStaggeredAppearance: ViewModifier {
     }
 }
 extension View {
-    /// `animation(_:value:)` that honours Reduce Motion.
+    /// `animation(_:value:)` using the app's motion policy.
     func piAnimation<Value: Equatable>(_ animation: Animation, value: Value) -> some View { modifier(PiAnimated(animation: animation, value: value)) }
     /// Do not interpolate native text or scroll geometry for an ancestor's animation.
     func piStableLayout(reduceMotion: Bool? = nil) -> some View { modifier(PiStableLayout(reduceMotionOverride: reduceMotion)) }
     /// Brief first-appearance feedback with a capped stagger; no motion when reduced.
     func piStaggered(_ index: Int) -> some View { modifier(PiStaggeredAppearance(index: index)) }
+}
+/// Separate from SwiftUI's read-only accessibilityReduceMotion value. Using an
+/// app-owned default also covers NSHostingViews created for virtualized rows,
+/// sheets, settings and the menu bar without relying on a main-window modifier.
+private struct PiReduceMotionKey: EnvironmentKey { static let defaultValue = PiMotion.reducesMotion }
+extension EnvironmentValues {
+    var piReduceMotion: Bool {
+        get { self[PiReduceMotionKey.self] }
+        set { self[PiReduceMotionKey.self] = newValue }
+    }
 }
 /// The namespace a list shares so its selection highlight glides from row to row.
 private struct PiSelectionNamespaceKey: EnvironmentKey { static var defaultValue: Namespace.ID? { nil } }

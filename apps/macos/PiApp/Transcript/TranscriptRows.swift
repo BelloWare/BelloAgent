@@ -64,7 +64,7 @@ struct FigureFlow: View {
 
 /// A small ring that turns while something is under way.
 struct SpinnerView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { context in
             let angle = reduceMotion ? 0.0 : context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.8) / 0.8 * 360
@@ -87,7 +87,7 @@ private struct RowActionsView: View {
     let message: TranscriptMessage
     let actions: TranscriptActions
     let visible: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     var body: some View {
         HStack(spacing: 4) {
             if visible {
@@ -192,7 +192,7 @@ struct MarkdownBodyView: View {
 
 /// Three pulsing dots before the first token arrives.
 struct WaitingDots: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     var body: some View {
         Group {
             if reduceMotion { dots(phase: 3) }
@@ -221,7 +221,7 @@ struct MarkdownBlockView: View {
     var headingTarget: MarkdownCopyTarget? = nil
     var nativeCodeChoice: Bool? = nil
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     var body: some View {
         switch block {
         case .paragraph(let text):
@@ -374,7 +374,7 @@ struct CopyButton: View {
     let visible: Bool
     @State private var copied = false
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     var body: some View {
         Button {
             NSPasteboard.general.clearContents()
@@ -978,7 +978,7 @@ struct BlockRowView: View {
     /// True while the document is moving this row between its two heights.
     var foldInMotion = false
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     private var open: Bool { disclosure.work }
     var body: some View {
         let reasoned = TranscriptActivity.blockReasoned(block)
@@ -1158,7 +1158,7 @@ struct LiveTurnBar: View {
     let turn: TurnSummary
     var state = "running"
     let onStop: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     private var label: String {
         switch state {
         case "queued": return "Waiting to start"

@@ -30,7 +30,7 @@ struct ProjectSidebarHeader: View, Equatable {
     nonisolated static func == (lhs: ProjectSidebarHeader, rhs: ProjectSidebarHeader) -> Bool { lhs.state == rhs.state }
     let model: WorkspaceModel
     let state: ProjectHeaderState
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 4) {
@@ -73,7 +73,7 @@ struct ProjectSidebarHeader: View, Equatable {
 struct ProjectSidebarActions: View {
     let model: WorkspaceModel
     let state: ProjectHeaderState
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     @ViewBuilder var body: some View {
         if !state.scratch {
             Button("New Chat", systemImage: "square.and.pencil") { model.newChat(in: state.projectID, topicID: nil) }.disabled(!state.available || !state.trusted)
@@ -119,7 +119,7 @@ struct TopicSidebarHeader: View, Equatable {
     /// Opens the group's own "Remove this topic?" question, which lives with
     /// the rows it is about rather than in a sheet over the window.
     let confirmRemove: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 4) {

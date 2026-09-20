@@ -14,7 +14,7 @@ struct ProjectSidebarGroup: View {
     let name: String
     var filter = ""
     var sidebarWidth: CGFloat = WindowChrome.sidebarWidth
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     @State private var dropTargeted = false
     private var query: String { filter.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var expanded: Bool { !query.isEmpty || model.projectIsExpanded(project.id) }
@@ -226,7 +226,7 @@ private struct SidebarSessionGroup: View, Equatable {
     let model: WorkspaceModel
     let projectID: String
     let contents: SidebarGroupContents
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             ForEach(contents.rows) { row in

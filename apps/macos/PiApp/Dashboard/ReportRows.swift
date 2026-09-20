@@ -66,7 +66,7 @@ struct ReportRequestRow: View {
     var message: () -> Void = {}
     var nested = false
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     private var tone: PiTone { item.outcome == "completed" ? .success : item.outcome == "failed" ? .danger : item.outcome == "running" ? .warning : .neutral }
     private func tokens(_ value: Double?) -> String { value.map { String(format: "%.0f", $0) } ?? "—" }
     private func ms(_ value: Double?) -> String { value.map { String(format: "%.0f ms", $0) } ?? "—" }
@@ -136,7 +136,7 @@ struct ReportModelRow: View {
     let detailed: Bool
     let filter: () -> Void
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     private func ms(_ value: Double?) -> String { value.map { String(format: "%.0f ms", $0) } ?? "—" }
     private var requestShare: Double { allRequests > 0 ? Double(summary.requests) / Double(allRequests) : 0 }
     private var costShare: Double? {
@@ -346,7 +346,7 @@ struct ReportSessionRow: View {
     let toggle: () -> Void
     let open: () -> Void
     @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     private var connectionCheck: Bool { !available && summary.sessionID.hasPrefix("connection-test-") }
     private func ms(_ value: Double?) -> String { value.map { String(format: "%.0f ms", $0) } ?? "—" }
     var body: some View {

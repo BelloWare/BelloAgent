@@ -65,7 +65,7 @@ struct SidebarChatRow: View, Equatable {
     let chat: ChatRecord
     let projectID: String
     let state: SidebarChatRowState
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     @State private var insertionAfter: Bool?
 
     /// A drag surface owns the pointer on draggable rows, so the press has to

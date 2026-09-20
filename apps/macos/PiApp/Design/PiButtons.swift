@@ -43,7 +43,7 @@ private struct PiPillSurface: ViewModifier {
 /// Flat brand-orange pill for the single primary action on a surface.
 struct PiPrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     var compact = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -76,7 +76,7 @@ private struct PiPrimarySurface: ViewModifier {
 /// Soft, bordered pill for secondary actions.
 struct PiSecondaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     var compact = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -95,7 +95,7 @@ struct PiSecondaryButtonStyle: ButtonStyle {
 /// Text-only action that lights up on hover.
 struct PiGhostButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     var tone: PiTone = .neutral
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -113,7 +113,7 @@ struct PiGhostButtonStyle: ButtonStyle {
 /// Destructive pill in a soft danger tint.
 struct PiDangerButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .semibold))

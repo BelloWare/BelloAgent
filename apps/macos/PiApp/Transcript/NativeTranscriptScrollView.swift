@@ -464,10 +464,10 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// Whether a disclosure is moving right now.
     var isMovingDisclosure: Bool { motion != nil }
     static var disclosureMotionDuration: TimeInterval { Double(PiMotion.baseMilliseconds) / 1_000 }
-    /// Whether a disclosure snaps rather than moves. The reader's Reduce
-    /// Motion setting decides it; a fixture overrides it to check both.
+    /// Use the same app policy as SwiftUI, independent of macOS Reduce Motion.
+    /// Fixtures may explicitly force either path to check geometry restoration.
     static var reducesMotionOverride: Bool?
-    static var reducesMotion: Bool { reducesMotionOverride ?? NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    static var reducesMotion: Bool { reducesMotionOverride ?? PiMotion.reducesMotion }
 
     private func disclosureChanged(_ row: TranscriptRowContainer) {
         markDirty(from: row.layoutIndex)

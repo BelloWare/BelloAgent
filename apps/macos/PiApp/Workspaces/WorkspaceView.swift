@@ -2,7 +2,7 @@ import SwiftUI
 
 struct WorkspaceView: View {
     @ObservedObject var model: WorkspaceModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     /// The sidebar keeps the width the user last dragged it to.
     @AppStorage("sidebarWidth") private var storedSidebarWidth: Double = Double(WindowChrome.sidebarWidth)
     @State private var draggingSidebarWidth: CGFloat?

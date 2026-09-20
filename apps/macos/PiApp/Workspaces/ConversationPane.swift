@@ -278,7 +278,7 @@ struct ConversationActionsMenu: View {
 
 /// The app mark with a soft pulse while a chat is being prepared and has nothing to show yet.
 struct LoadingMark: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     @State private var breathing = false
     var body: some View {
         VStack(spacing: PiSpacing.md) {

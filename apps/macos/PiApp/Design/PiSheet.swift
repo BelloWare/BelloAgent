@@ -22,7 +22,7 @@ struct PiSheet<Content: View, Actions: View, Footer: View>: View {
     @ViewBuilder var actions: Actions
     @ViewBuilder var footer: Footer
     @State private var badgeShown = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     @Environment(\.dismiss) private var dismiss
     init(_ title: String, subtitle: String? = nil, symbol: String? = nil, width: CGFloat? = nil, height: CGFloat? = nil, minWidth: CGFloat? = nil, minHeight: CGFloat? = nil, windowChrome: Bool = false, cancelDisabled: Bool = false,
          @ViewBuilder content: () -> Content, @ViewBuilder actions: () -> Actions = { EmptyView() }, @ViewBuilder footer: () -> Footer = { EmptyView() }) {

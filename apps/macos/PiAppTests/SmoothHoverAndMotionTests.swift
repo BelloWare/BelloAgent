@@ -58,10 +58,11 @@ extension SmoothShellTests {
 
     // MARK: 4. Motion
 
-    /// The tokens are the decided durations, and every animated surface in
-    /// the design system asks one question before it moves anything — which
-    /// answers "nothing" when the reader has asked for reduced motion.
-    @MainActor func testMotionTokensAreTheDecidedDurationsAndStopUnderReduceMotion() throws {
+    /// The app enables motion independently of the system preference, while
+    /// keeping an explicit local override and the established timing tokens.
+    @MainActor func testMotionTokensUseAppPolicyAndKeepExplicitLocalOverride() throws {
+        XCTAssertFalse(EnvironmentValues().piReduceMotion)
+        XCTAssertFalse(TranscriptNativeDocument.reducesMotion)
         func milliseconds(_ animation: Animation) -> Int? {
             let text = String(describing: animation)
             guard let range = text.range(of: "duration: ") else { return nil }
@@ -75,7 +76,7 @@ extension SmoothShellTests {
         XCTAssertEqual(milliseconds(PiMotion.slow), PiMotion.slowMilliseconds)
         for token in [PiMotion.quick, PiMotion.base, PiMotion.slow, PiMotion.spring, PiMotion.glide] {
             XCTAssertEqual(PiMotion.honouring(token, reduceMotion: false), token, "an ordinary reader keeps the motion")
-            XCTAssertNil(PiMotion.honouring(token, reduceMotion: true), "Reduce Motion must leave no animation behind")
+            XCTAssertNil(PiMotion.honouring(token, reduceMotion: true), "An explicit local override can still suppress animation")
         }
         XCTAssertNil(PiMotion.honouring(PiMotion.quick.delay(0.08), reduceMotion: true),
                      "a delayed token is still motion, and still goes")

@@ -221,7 +221,7 @@ struct SessionUsageView: View {
     let title: String
     @ObservedObject var controller: SessionUsageController
     @State private var showingDetails = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
 
     init(title: String, controller: SessionUsageController) {
         self.title = title; self.controller = controller

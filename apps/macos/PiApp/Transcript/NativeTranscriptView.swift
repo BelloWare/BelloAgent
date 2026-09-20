@@ -549,7 +549,7 @@ struct ContentGeometry: Equatable {
     func jumpToLatest() {
         followsBottom = true; jumping = true; detached = false
         pendingAnchor = nil; openingPlacementPending = false
-        let animated = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let animated = !PiMotion.reducesMotion
         scrollToBottom(animated: animated) { [weak self] in
             guard let self, self.jumping else { return }
             self.jumping = false
@@ -1198,7 +1198,7 @@ struct NativeTranscriptView: View {
     var onReadReply: (String, String) -> Void = { _, _ in }
     var onLoadEarlier: (String) -> Void = { _ in }
     @StateObject private var page = TranscriptPage()
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {

@@ -8,7 +8,7 @@ struct PiTabs<Tag: Hashable>: View {
     @Binding var selection: Tag
     let items: [(Tag, String)]
     @Namespace private var glide
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     var body: some View {
         HStack(spacing: 2) {
             ForEach(items, id: \.0) { item in
@@ -292,7 +292,7 @@ struct PiSelectableRow<Content: View>: View {
     @ViewBuilder var content: Content
     @State private var hovering = false
     @Environment(\.piSelectionNamespace) private var selectionNamespace
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     var body: some View {
         Button(action: action) {
             content

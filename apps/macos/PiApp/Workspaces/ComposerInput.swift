@@ -10,7 +10,7 @@ struct ComposerInput: View {
     @ObservedObject var draft: ComposerDraft
     /// The pane this bar sits in, for `ComposerBarMetrics`.
     let paneWidth: CGFloat
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     @State private var contentHeight: CGFloat = 0
     private let minimumHeight: CGFloat = 44
     private let maximumHeight: CGFloat = 240

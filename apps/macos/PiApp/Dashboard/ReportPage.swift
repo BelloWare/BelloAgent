@@ -8,7 +8,7 @@ import Charts
 struct ReportPage: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var report: ReportController
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.piReduceMotion) private var reduceMotion
     @State private var inspected: DashboardRequest?
     @State private var messageLookup: Task<Void, Never>?
     init(model: WorkspaceModel) { self.model = model; self.report = model.report }

@@ -310,7 +310,7 @@ final class TranscriptDisclosureTests: XCTestCase {
         assertStacked(fixture, "after the reader changed their mind")
     }
 
-    @MainActor func testReduceMotionSnapsTheDisclosureAsItAlwaysDid() async throws {
+    @MainActor func testExplicitMotionOverrideSnapsTheDisclosure() async throws {
         TranscriptNativeDocument.reducesMotionOverride = true
         defer { TranscriptNativeDocument.reducesMotionOverride = nil }
         let fixture = Fixture(messages: workingTurn(tools: 40, tail: 6)); defer { fixture.close() }
@@ -318,9 +318,9 @@ final class TranscriptDisclosureTests: XCTestCase {
         let block = try XCTUnwrap(fixture.blockRow)
         let open = block.frame.height
         block.toggleDisclosure(try XCTUnwrap(fixture.workPart))
-        XCTAssertFalse(fixture.document.isMovingDisclosure, "Reduce Motion means no motion at all")
+        XCTAssertFalse(fixture.document.isMovingDisclosure, "The explicit fixture override suppresses motion")
         XCTAssertLessThan(block.frame.height, open / 2, "the row is at its new height at once")
-        assertStacked(fixture, "with Reduce Motion on")
+        assertStacked(fixture, "with the fixture motion override")
     }
 
     @MainActor func testCollapsingATurnOfFortyToolCallsResizesItsRowInTheSamePass() async throws {
