@@ -149,23 +149,28 @@ private struct NativeHostedMarkdownBlock: View {
 }
 
 @MainActor final class NativeMarkdownContainer: NSView {
-    private struct Layout {
-        var width: CGFloat
-        var heights: [CGFloat]
-        var total: CGFloat
+    private final class Layout {
+        let width: CGFloat
+        var heights: [CGFloat] = []
+        var total: CGFloat = 0
+        var validPrefix = 0
+        init(width: CGFloat) { self.width = width }
     }
     private var blocks: [NativeMarkdownBlockHost] = []
     private var identities: [MarkdownBlockIdentity] = []
     var blockOwnerIdentities: [ObjectIdentifier] { blocks.map(ObjectIdentifier.init) }
     private var layouts: [Layout] = []
     private var laidOutWidth: CGFloat?
+    private var layoutDirtyFrom: Int? = 0
+    private(set) var aggregateMeasurementVisits = 0
+    private(set) var framePlacements = 0
     private var invalidationScheduled = false
     private var applyingLayout = false
     private weak var observedClip: NSClipView?
     nonisolated(unsafe) private var boundsObserver: NSObjectProtocol?
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: layouts.last(where: { $0.width == bounds.width })?.total ?? NSView.noIntrinsicMetric)
+        NSSize(width: NSView.noIntrinsicMetric, height: layouts.last(where: { $0.width == bounds.width && $0.validPrefix == blocks.count && $0.heights.count == blocks.count })?.total ?? NSView.noIntrinsicMetric)
     }
     /// Evidence for regressions: pure scrolling must reuse exact measurements.
     var blockMeasurementCount: Int { blocks.reduce(0) { $0 + $1.measurementCount } }
@@ -184,7 +189,9 @@ private struct NativeHostedMarkdownBlock: View {
         for index in ids.indices {
             while !seen.insert(ids[index]).inserted { ids[index].component += 1 }
         }
-        var changed = self.identities != ids, headingIndex = 0
+        var changedFrom = min(self.identities.count, ids.count), headingIndex = 0
+        for index in 0..<min(self.identities.count, ids.count) where self.identities[index] != ids[index] { changedFrom = index; break }
+        var changed = self.identities != ids
         let old = Dictionary(uniqueKeysWithValues: zip(self.identities, blocks))
         var next: [NativeMarkdownBlockHost] = []
         for (index, block) in source.enumerated() {
@@ -202,7 +209,7 @@ private struct NativeHostedMarkdownBlock: View {
                     guard range.lowerBound>=0, range.upperBound<=bytes.count else { return nil }
                     let start=bytes.index(bytes.startIndex,offsetBy:range.lowerBound), end=bytes.index(start,offsetBy:range.count)
                     return String(decoding:bytes[start..<end],as:UTF8.self)
-                }) { changed = true }
+                }) { changed = true; changedFrom = min(changedFrom, index) }
                 next.append(retained)
             } else { next.append(NativeMarkdownBlockHost(item: item)); changed = true }
         }
@@ -210,8 +217,10 @@ private struct NativeHostedMarkdownBlock: View {
         for (id, block) in old where !retained.contains(id) { block.view?.removeFromSuperview() }
         blocks = next; self.identities = ids
         guard changed else { return }
-        layouts.removeAll(keepingCapacity: true)
-        laidOutWidth = nil
+        // Completed blocks retain their exact width-specific heights. Only the
+        // changed suffix participates in aggregate sizing and frame placement.
+        for layout in layouts { layout.validPrefix = min(layout.validPrefix, changedFrom) }
+        layoutDirtyFrom = min(layoutDirtyFrom ?? changedFrom, changedFrom)
         needsLayout = true
         // Input changes can arrive during a parent's fittingSize pass. Let
         // SwiftUI finish that update before advertising a new intrinsic size.
@@ -225,15 +234,30 @@ private struct NativeHostedMarkdownBlock: View {
     }
 
     private func exactLayout(width: CGFloat) -> Layout {
-        if let cached = layouts.last(where: { $0.width == width }) { return cached }
+        let layout: Layout
+        if let cached = layouts.last(where: { $0.width == width }) { layout = cached }
+        else {
+            layout = Layout(width: width)
+            if layouts.count == 4 { layouts.removeFirst() }
+            layouts.append(layout)
+        }
+        guard layout.validPrefix < blocks.count || layout.heights.count != blocks.count else { return layout }
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownLayoutSeconds += TranscriptLayoutClock.now - clock } }
-        let heights = blocks.map { $0.measure(width: width).height }
-        let layout = Layout(width: width, heights: heights, total: heights.reduce(0, +) + CGFloat(max(0, blocks.count - 1)) * 10)
-        if layouts.count == 4 { layouts.removeFirst() }
-        layouts.append(layout)
+        let prefix = min(layout.validPrefix, blocks.count)
+        let oldSpacing = CGFloat(max(0, layout.heights.count - 1)) * 10
+        let removed = layout.heights[prefix...].reduce(0, +)
+        layout.total -= oldSpacing + removed
+        layout.heights.removeSubrange(prefix...)
+        for index in prefix..<blocks.count {
+            let height = blocks[index].measure(width: width).height
+            layout.heights.append(height); layout.total += height; aggregateMeasurementVisits += 1
+        }
+        layout.total += CGFloat(max(0, blocks.count - 1)) * 10
+        layout.validPrefix = blocks.count
         return layout
     }
+
     func measure(width proposed: CGFloat?) -> CGSize {
         if proposed == 0 { return .zero }
         let width = proposed.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? (bounds.width > 0 ? bounds.width : TranscriptMetrics.pageWidth)
@@ -244,14 +268,17 @@ private struct NativeHostedMarkdownBlock: View {
         guard bounds.width > 0, !applyingLayout else { return }
         applyingLayout = true
         defer { applyingLayout = false }
-        if laidOutWidth != bounds.width {
+        if laidOutWidth != bounds.width || layoutDirtyFrom != nil {
             let layout = exactLayout(width: bounds.width)
-            var y: CGFloat = 0
-            for (index, block) in blocks.enumerated() {
+            let first = laidOutWidth == bounds.width ? min(layoutDirtyFrom ?? 0, blocks.count) : 0
+            var y: CGFloat = first > 0 ? blocks[first - 1].frame.maxY + 10 : 0
+            for index in first..<blocks.count {
+                let block = blocks[index]
+                framePlacements += 1
                 block.frame = CGRect(x: 0, y: y, width: bounds.width, height: layout.heights[index])
                 y += layout.heights[index] + 10
             }
-            laidOutWidth = bounds.width
+            laidOutWidth = bounds.width; layoutDirtyFrom = nil
         }
         bindViewport()
         mountVisibleBlocks()

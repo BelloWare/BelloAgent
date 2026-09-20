@@ -4,6 +4,42 @@ import AppKit
 @testable import PiApp
 
 final class CapturedBodyTests: XCTestCase {
+    @MainActor func testLargeStreamIndexesWithoutJSONAndFullCopyUsesBoundedCache() async throws {
+        let source = (0..<20_000).map { "event: response.output_text.delta\ndata: {\"delta\":\"value \($0)\",\"nested\":{\"tokens\":\($0)}}\n\n" }.joined()
+        let bytes = Data(source.utf8), descriptor = metadata(bytes)
+        let document = try await CapturedBodyWorker.shared.run { try CapturedBodyDocument.parse(bytes: bytes, metadata: descriptor, combine: false) }
+        let stream = try XCTUnwrap(document.eventStream)
+        XCTAssertEqual(stream.frames.count, 20_000)
+        XCTAssertEqual(stream.storage.parsedFrames, 0, "Indexing must not parse or pretty-print invisible JSON")
+        XCTAssertEqual(stream.storage.cachedBytes, 0)
+        XCTAssertNil(stream.outline.eagerFormatted)
+        let copy = CapturedBodyCopySource(id: document.id, document: document, format: .json, hex: "", plain: "")
+        let rendered = try await copy.render()
+        XCTAssertTrue(rendered.contains("Event 20000")); XCTAssertTrue(rendered.contains("value 19999"))
+        XCTAssertLessThanOrEqual(stream.storage.cachedBytes, stream.storage.cacheLimit)
+        XCTAssertEqual(document.bytes, bytes)
+    }
+
+    @MainActor func testLazyNativeEventRowLoadsAndExpandsWithoutFormattingAllFrames() async throws {
+        let bytes = Data(String(repeating: "event: response.output_text.delta\ndata: {\"delta\":\"visible text\",\"nested\":{\"a\":1}}\n\n", count: 5_000).utf8)
+        let stream = try XCTUnwrap(CapturedEventStream.parse(bytes))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 350), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        var selection = ""
+        let hosted = NSHostingView(rootView: JSONOutlineView(json: stream.outline, selection: Binding(get: { selection }, set: { selection = $0 }), expandRevision: 0, expandAll: false))
+        window.contentView = hosted; window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        let outline = try await renderedOutline(in: hosted, window: window)
+        let root = try XCTUnwrap(outline.item(atRow: 0) as? JSONOutlineNode), frame = root.child(0)
+        for _ in 0..<100 where frame.prepared == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNotNil(frame.prepared)
+        XCTAssertEqual(frame.summary, "JSON data")
+        XCTAssertLessThan(stream.storage.parsedFrames, 100, "Only visible frame rows should parse")
+        outline.expandItem(frame)
+        XCTAssertEqual(frame.child(0).child(0).detail, "visible text")
+        XCTAssertGreaterThan(outline.numberOfRows, 5_001)
+    }
+
     @MainActor private func metadata(_ bytes: Data, state: String = "complete", observed: Int? = nil, hash: String = "unchanged") -> CapturedBodyMetadata {
         CapturedBodyMetadata(body: ["state": .string(state), "retainedBytes": .number(Double(bytes.count)),
                                     "observedBytes": .number(Double(observed ?? bytes.count))], hash: .string(hash))
@@ -434,7 +470,7 @@ final class CapturedBodyTests: XCTestCase {
             Text("Captured response").font(PiFont.title())
             CapturedHeadersView(headers: ["content-type": .string("text/event-stream"), "x-litellm-model-name": .string("openai/gpt-5.4-mini")])
             CapturedBodyView(model: model, sessionID: "preview", attemptID: attemptID, kind: "response", retained: true,
-                             displayedText: Binding(get: { displayed }, set: { displayed = $0 }))
+                             displayedText: Binding(get: { displayed }, set: { displayed = $0 }), initialFormat: .combined)
         }.padding(24).background(Color.piContent)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 780), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)

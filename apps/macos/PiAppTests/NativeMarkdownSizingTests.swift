@@ -4,6 +4,27 @@ import XCTest
 @testable import PiApp
 
 final class NativeMarkdownSizingTests: XCTestCase {
+    @MainActor func testStreamingTailUpdatesOnlyItsAggregateSuffix() {
+        let body = NativeMarkdownContainer()
+        var blocks = (0..<300).map { MarkdownBlock.paragraph(AttributedString("Completed paragraph \($0).")) }
+        let environment = TranscriptRowEnvironment()
+        body.update(blocks: blocks, style: .prose, capsWidth: true, streaming: true, headings: [], environment: environment)
+        let original = body.measure(width: 600)
+        body.frame = CGRect(origin: .zero, size: original); body.layoutSubtreeIfNeeded()
+        let owners = body.blockOwnerIdentities, before = body.aggregateMeasurementVisits, frames = body.framePlacements
+        blocks[299] = .paragraph(AttributedString(String(repeating: "Tail continues with more text. ", count: 20)))
+        body.update(blocks: blocks, style: .prose, capsWidth: true, streaming: true, headings: [], environment: environment)
+        let resized = body.measure(width: 600)
+        body.frame.size.height = resized.height; body.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(resized.height, original.height)
+        XCTAssertEqual(body.aggregateMeasurementVisits - before, 1)
+        XCTAssertEqual(body.framePlacements - frames, 1)
+        XCTAssertEqual(body.blockOwnerIdentities, owners)
+        // A width change still performs an exact measurement of every block.
+        _ = body.measure(width: 500)
+        XCTAssertEqual(body.aggregateMeasurementVisits - before, 301)
+    }
+
     @MainActor func testManyBlockAnswerKeepsExactGeometryAndFullCopySource() throws {
         let source = (0..<160).map { index in
             """

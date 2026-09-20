@@ -17,6 +17,7 @@ struct InspectorView: View {
     @State private var offset = 0
     @State private var total = 0
     @State private var text = ""
+    @State private var bodyCopySource: CapturedBodyCopySource?
     @State private var notice = ""
     @State private var retained = true
     @State private var next: Double?
@@ -62,7 +63,7 @@ struct InspectorView: View {
                         }
                         if isBody {
                             CapturedBodyView(model: model, sessionID: sessionID, attemptID: selectedID, kind: tab,
-                                             retained: retained, revision: loadRevision, displayedText: $text)
+                                             retained: retained, revision: loadRevision, copySource: $bodyCopySource)
                         } else { PagedTextView(text: text).piInset() }
                         HStack(spacing: PiSpacing.sm) {
                             if !isBody, total > 0 {
@@ -75,8 +76,8 @@ struct InspectorView: View {
                                 }
                             }
                             Spacer()
-                            Button { Task { if await confirm("Copy this inspector view?", "The clipboard may be read by other applications and clipboard history tools. This copies the displayed derived view, including any sensitive content.") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) } } } label: { Label("Copy View…", systemImage: "doc.on.doc") }
-                                .buttonStyle(.piSecondaryCompact).disabled(text.isEmpty)
+                            Button { Task { if await confirm("Copy this inspector view?", "The clipboard may be read by other applications and clipboard history tools. This copies the displayed derived view, including any sensitive content.") { if let value = await currentViewText() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(value, forType: .string) } } } } label: { Label("Copy View…", systemImage: "doc.on.doc") }
+                                .buttonStyle(.piSecondaryCompact).disabled(isBody ? bodyCopySource == nil : text.isEmpty)
                         }
                     }.frame(minWidth: 540).padding(.leading, PiSpacing.sm)
                 }
@@ -93,7 +94,7 @@ struct InspectorView: View {
                     Button { Task { await exportBodies() } } label: { Label("Export Retained Body Bytes…", systemImage: "shippingbox") }.disabled(selectedID.isEmpty)
                     Spacer()
                     PiTextField(placeholder: "Literal to redact from this view", text: $redaction, icon: "eye.slash", secure: true).frame(width: 260)
-                    Button("Preview Redacted Export…") { Task { await exportRedactedView() } }.disabled(text.isEmpty || redaction.isEmpty)
+                    Button("Preview Redacted Export…") { Task { await exportRedactedView() } }.disabled((isBody ? bodyCopySource == nil : text.isEmpty) || redaction.isEmpty)
                 }
             }
         }
@@ -171,7 +172,7 @@ struct InspectorView: View {
         let revision = loadRevision
         guard !selectedID.isEmpty else { text = "No captured attempts available."; return }
         // The complete-body view owns cancellable reads and formatted JSON.
-        if isBody { text = ""; total = 0; return }
+        if isBody { text = ""; bodyCopySource = nil; total = 0; return }
         let id = selectedID, requestedTab = tab, requestedOffset = offset, requestedRetained = retained
         Task { do {
             let value: [String: WireValue]
@@ -229,7 +230,18 @@ struct InspectorView: View {
             notice = "Exported \(saved.path)"
         } catch { notice = error.localizedDescription }
     }
+    private func currentViewText() async -> String? {
+        guard isBody else { return text }
+        guard let source = bodyCopySource else { return nil }
+        let attempt = selectedID, requestedTab = tab, revision = loadRevision
+        do {
+            let value = try await source.render()
+            guard !Task.isCancelled, attempt == selectedID, requestedTab == tab, revision == loadRevision, bodyCopySource?.id == source.id, bodyCopySource?.format == source.format else { return nil }
+            return value
+        } catch { if !(error is CancellationError) { notice = error.localizedDescription }; return nil }
+    }
     private func exportRedactedView() async {
+        guard let text = await currentViewText() else { return }
         let transformed = text.replacingOccurrences(of: redaction, with: "[REDACTED]")
         let preview = NSAlert(); preview.messageText = "Redacted derived-view preview"
         preview.informativeText = "Only your literal match is replaced. This is not a complete secret detector or a byte-exact body export. Inspect the preview before exporting."

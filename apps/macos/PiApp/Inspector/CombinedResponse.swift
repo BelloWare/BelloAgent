@@ -39,12 +39,13 @@ private struct ResponseCombination {
     private var lastSequencedEvent: [String: Any]?
 
     mutating func consume(_ frame: CapturedEventFrame) {
-        guard let data = frame.data, !data.isEmpty else { return }
+        let content = frame.content
+        guard let data = content.data, !data.isEmpty else { return }
         if !frame.terminated { unfinished = true }
         guard data != "[DONE]" else {
             return
         }
-        guard let event = frame.json as? [String: Any] else { hasIssue = true; return }
+        guard let event = content.json as? [String: Any] else { hasIssue = true; return }
         let bodyType = event["type"] as? String
         let headerType = frame.event.flatMap { $0 == "message" || $0.isEmpty ? nil : $0 }
         guard let type = bodyType ?? headerType else { hasIssue = true; return }
