@@ -1,6 +1,6 @@
 # Implementation status and remaining work
 
-Updated 2026-09-19. Repository `BelloWare/BelloAgent`, branch **main**. The original
+Updated 2026-09-20. Repository `BelloWare/BelloAgent`, branch **main**. The original
 `BelloWare/pi-app` implementation continued from `da6028153bea8d0b94a4b9a5bbae11158a64030d`
 before the repository migration; do not reset the current repository to that archived history.
 
@@ -12,14 +12,26 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
+**Unreleased performance follow-up, 2026-09-20:** display-linked disclosure motion
+survives streaming updates; resize completion reconciles unseen history in bounded
+idle work; both panes share input/visibility-aware preparation; large code fences
+use a persistent native text leaf; asynchronous image paste keeps its originating
+session. New measurements and regressions cover rich streaming, five sessions,
+and 20 concurrent gateway sessions with two histories, capture, an inspector, IME
+and resize. Rich-row, cold scrolling and large-table stalls remain; see the
+[review implementation record](Performance-Review-Implementation-2026-09-20.md).
+The owner requested source commits and push only: **no new release**; version and
+public artifacts remain 0.1.60/build 64. Do not spawn subagents unless explicitly
+requested by the owner in the current request.
+
 **Bello Agent 0.1.60/build 64 is publicly released** at
 [belloware.com](https://belloware.com/bello-agent.html), from source `ce252bcabe542efc58d87774f16bbe09b4a646d8`
 and website `4ceb9e8773b605931d15eceaf04b0e4947f6f2c7`. The DMG measures **7,824,296 bytes (7.46 MiB)**,
 SHA-256 `0cf92ca649e56a4293a404fa98a9d8fcbe547d2ee9a97222a04be124e1cc81c7`. Signing, notarization, packaged helper/catalog smoke,
 identical canonical/legacy feeds and downloaded archive SHA-256/Ed25519
 verification pass. Public verification: **2026-09-19 23:24:08 UTC**.
-Read the [0.1.60 release record](validation/Bello-Agent-0.1.60-2026-09-19.md). Source commits remain local;
-the website publication commit was pushed.
+Read the [0.1.60 release record](validation/Bello-Agent-0.1.60-2026-09-19.md). Its source
+is included in the performance review's starting commit, already on `origin/main`.
 
 **Bello Agent 0.1.59/build 63 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source `f24e92d0649ceba066ad62e0a9ba439a0e07aacc`

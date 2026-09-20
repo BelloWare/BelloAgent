@@ -28,11 +28,67 @@ installation results below remain historical evidence, not future release gates.
 The matrices and commands below are available coverage, not a requirement to
 execute every suite for every change. This policy supersedes older blanket gates.
 
-Updated 2026-09-19. **Use `main` in `BelloWare/BelloAgent`.** See the
+Updated 2026-09-20. **Use `main` in `BelloWare/BelloAgent`.** See the
 [implementation status](Implementation-Status.md) for the current public release,
 and the [latest deep review](Deep-Review-2026-09-19.md) for the crash/lifecycle audit.
 Current release records take precedence over the historical matrices below.
 Installation/update rehearsals remain skipped by owner instruction.
+
+## Unreleased 2026-09-20 performance acceptance
+
+Read the [performance implementation record](Performance-Review-Implementation-2026-09-20.md)
+for measurements, rejected prototypes and remaining stalls. This work is source-only;
+do not release or bump 0.1.60/build 64 without a new owner request.
+Validation totals: **83 distinct focused passes**, plus 12 unchanged parser/copy/
+cache-lifetime checks reused from the earlier successful Release selection. The
+final scheduler/load selection passed 16/16 and the isolated scroll/stream repeat
+passed 3/3. All exact geometry, source, capture, input and accounting assertions
+remain. Timing results are mixed; do not claim universal scrolling improvement.
+
+Use Release with `ENABLE_TESTABILITY=YES`, the existing native DerivedData and
+staged helper. Run native-window tests serially. Once the changed binary is built,
+use `xcodebuild test-without-building` for additional selections of that binary.
+Relevant suites:
+
+- Motion, resize and scheduling: `TranscriptDisclosureTests`,
+  `TranscriptStreamingStressTests`, `TranscriptIdleSchedulerTests`,
+  `TranscriptGeometryCacheTests`, `ReportNavigationTests`.
+- Text and input: `NativeCodeTextTests`, `NativeMarkdownSizingTests`,
+  `NativeMarkdownViewportTests`, `MarkdownStreamingTests`,
+  `TranscriptMarkdownTests`, `ComposerAttachmentDestinationTests`, and the
+  paste/marked-text/typing/two-chat cases in `ConversationPaneTests`.
+- Measurements and retention: `NativeTranscriptScrollingPerformanceTests`,
+  `FiveSessionWorkspacePerformanceTests`, and the streaming, disclosure-tick,
+  scrolling and page-retention cases in `TranscriptFrameBudgetTests`.
+
+The opt-in combined native/helper/gateway workload is:
+
+```sh
+PI_REVIEW_VISUAL_LOAD=1 TEST_RUNNER_PI_REVIEW_VISUAL_LOAD=1 \
+xcodebuild test -project PiApp.xcodeproj -scheme PiApp \
+  -configuration Release -destination 'platform=macOS,arch=arm64' \
+  -derivedDataPath "$PI_BUILD_ROOT/native-release" \
+  -only-testing:PiAppTests/CaptureMacIntegrationTests/testTwentyColdNativeSessionsStreamToolsAndPersistEveryExactBody \
+  ENABLE_TESTABILITY=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO
+```
+
+Leave that opt-in unset for the isolated capture/concurrency comparison. It uses
+20 real loopback sessions/tool round trips/exact captures; the two 300-row UI
+history prefixes are synthetic and do not enter provider context. The inspector
+contains 2 MiB of fixture JSON. IME is driven through native test APIs, not physical
+keyboard input. This is correctness/load evidence, not proof of a frame-rate target.
+
+For the scrolling-size variation, set both `PI_PERF_SCROLL_ROWS=2000` and
+`TEST_RUNNER_PI_PERF_SCROLL_ROWS=2000`. The production page cap still applies:
+**2,000 source messages produce 500 rendered rows**. The test now reports both.
+Keep visual readiness separate from exact offscreen settlement in tab/resize
+fixtures. Never compare a provisional row frame as if it were final, or weaken
+the final exact-geometry assertions to make timing tests pass.
+
+The work preserves helper/capture semantics, complete source and copy actions,
+cache limits and native selection. It does not establish physical 60/120 Hz
+cadence, VoiceOver, system-driven Reduce Motion, external-display moves or
+slow-storage behavior. No install/update or publication checks were run.
 
 ## Current 0.1.57 concurrent-session responsiveness acceptance
 

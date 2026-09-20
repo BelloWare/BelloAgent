@@ -108,8 +108,9 @@ Each native journal is append-only, exclusively locked and bounded. Its envelope
 Accounting presentation observes each chat independently. A changed retained
 total does not invalidate the workspace; only inserting, removing or replacing
 a live display changes the sidebar's retained/live binding. Native transcript
-reconciliation uses the page's own revision, and layout traverses mounted rows
-while preserving exact frames for detached history.
+reconciliation uses the page's own revision, and layout requires exact geometry
+for mounted rows. Offscreen width changes may use provisional frames until
+bounded idle reconciliation makes them exact.
 
 A process-local geometry cache can reuse verified immutable row measurements
 across tab returns. Full content, session identity, freshness, rendering
@@ -119,6 +120,30 @@ not hidden views or animations, with a 1,000-entry/16 MiB payload budget and a
 256 KiB per-entry limit. Viewport rows validate actual native layout on mounting.
 See the [five-session performance review](docs/Five-Session-Performance-Review-2026-09-19.md)
 for measurements and qualification of cold versus warm history loading.
+
+### Unreleased performance follow-up (2026-09-20)
+
+Disclosure geometry follows the view-associated AppKit display link rather than
+a fixed-frequency timer. Unrelated snapshots preserve motion; changed geometry
+retargets from the presented height. Reading anchors use the presented row frames.
+
+A window resize keeps the visible/anchored band exact, including at mouse-up.
+Offscreen rows remain explicitly provisional until idle reconciliation reaches
+them. They cannot be drawn or enter the shared exact cache. Main and side share
+one 1.5 ms optional-work admission budget, with a minimum interval between budgets,
+input/content quiet deadlines, visibility checks and fair rotation. A native sizing
+call is indivisible and may exceed this allowance. Reports hides the retained
+native transcript as well as the composer, suspending covered layout work.
+
+Markdown block isolation starts at eight blocks. Large code fences (at least
+16 KiB when mounted) use a persistent selectable TextKit leaf, exact width-keyed
+sizing and incremental byte-prefix updates. Small fences keep SwiftUI text; a
+mounted fence keeps its renderer when its length changes to retain selection.
+Source-based copy actions and the existing syntax-highlighting size limit remain.
+Many-block first sizing and large tables are still synchronous. The measured
+shared-sizing-host prototype was rejected because it slowed common workloads.
+See the [performance follow-up](docs/Performance-Review-Implementation-2026-09-20.md)
+for before/after evidence, rejected experiments and validation limits.
 
 ## 5. Context, tools and resources
 
