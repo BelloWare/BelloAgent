@@ -269,6 +269,10 @@ actor HTTPMCP: MCPTransport {
                 if expected == nil, status == 202 || status == 204 { return [:] }
                 guard (200..<300).contains(status) else { throw AgentError("mcp_http", "MCP HTTP \(status); no automatic reconnection or invocation replay") }
             case .bytes(let bytes, _):
+                // HTTPStream permits one body batch in flight. JSON needs EOF
+                // and SSE may span many batches; both must release ingress even
+                // when returning early on the matching response or throwing.
+                defer { transport.consumed(bytes.count) }
                 if sse {
                     for event in try parser.feed(bytes) {
                         let v = try JSON.parse(Data(event.data.utf8))

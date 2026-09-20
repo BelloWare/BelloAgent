@@ -62,8 +62,13 @@ class Fixture(http.server.BaseHTTPRequestHandler):
                 result = {'tools': [{'name': 'echo', 'description': 'Echo', 'inputSchema': {'type': 'object', 'properties': {'text': {'type': 'string'}}}}]}
             else:
                 result = {'content': [{'type': 'text', 'text': body['params']['arguments']['text']}]}
+            mode = self.headers.get('X-Fixture-MCP-Mode')
+            if mode and method == 'tools/list':
+                result['tools'][0]['description'] = 'large schema description ' * 6000
             output = encoded({'jsonrpc': '2.0', 'id': body['id'], 'result': result})
-            self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Mcp-Session-Id', 'fixture-session'); self.end_headers(); self.wfile.write(output); return
+            if mode == 'sse':
+                output = b': ' + b'padding ' * 12000 + b'\n\nevent: message\ndata: ' + output + b'\n\n'
+            self.send_response(200); self.send_header('Content-Type', 'text/event-stream' if mode == 'sse' else 'application/json'); self.send_header('Mcp-Session-Id', 'fixture-session'); self.end_headers(); self.wfile.write(output); return
         try:
             # limited-tool submits with a 2,048 ceiling; other profiles may carry their catalog ceiling or no limit at all.
             expected_output = 2048 if isinstance(body, dict) and body.get('model') == 'limited-tool' else None
@@ -616,8 +621,8 @@ class NativeIntegration(unittest.TestCase):
                 self.assertEqual(attempt['usage']['cacheWrite'],0)
                 self.assertEqual(attempt['usage']['raw']['total_tokens'],total)
                 context=self.peer.command('context.info',session=session)
-                self.assertEqual(context['cumulative'],{'input':38,'output':output})
-                self.assertEqual(sum(context['cumulative'].values()),total,'Reasoning and cache tokens must not be added twice')
+                self.assertEqual(context['cumulative'],{'input':38,'output':output,'inputStatus':'reported','outputStatus':'reported'})
+                self.assertEqual(sum(context['cumulative'][key] for key in ('input','output')),total,'Reasoning and cache tokens must not be added twice')
                 self.assertEqual(attempt['requestedModel'],'auto-router')
                 self.assertEqual(attempt['identity']['requestedAlias'],'auto-router')
                 self.assertEqual(attempt['identity']['status'],'reported')
@@ -974,6 +979,15 @@ class NativeIntegration(unittest.TestCase):
             result=self.peer.command('mcp.invoke',{'server':server,'tool':'echo','arguments':{'text':server}},'s')
             self.assertEqual(result['content'][0]['text'],server)
         self.peer.command('mcp.invoke',{'targets':[]},'s',fail=True)
+    def test_http_mcp_consumes_multiple_json_and_sse_ingress_batches(self):
+        self.open()
+        for mode in ('json', 'sse'):
+            self.peer.command('mcp.configure',{'config':{'servers':{'large':{'url':self.base+'/mcp','headers':{'X-Fixture-MCP-Mode':mode}}}}})
+            schemas=self.peer.command('mcp.describe',{'targets':[{'server':'large','tool':'echo'}]})
+            self.assertEqual(len(schemas['tools']),1)
+            result=self.peer.command('mcp.invoke',{'server':'large','tool':'echo','arguments':{'text':mode}},'s')
+            self.assertEqual(result['content'][0]['text'],mode)
+
     def test_command_identity_is_not_replayed(self):
         self.open();params={'clientTurnId':'turn','text':'once'}
         first=self.peer.command('turn.submit',params,'s',command_id='same');second=self.peer.command('turn.submit',params,'s',command_id='same');self.assertEqual(first,second)
