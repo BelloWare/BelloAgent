@@ -79,10 +79,11 @@ struct RequestContextCounter: Sendable {
     private var cache: [String: Cached] = [:]
 
     mutating func count(request: JSON, profile: Profile, baseline: RequestUsageBaseline? = nil, now: Date = Date()) throws -> RequestContextCount {
-        let fingerprint = try Self.fingerprint(request, profile:profile)
+        let identity = try Self.cacheIdentity(request: request, profile: profile)
         // A new measured baseline is new evidence even for the same request.
-        let cacheKey = fingerprint + (baseline.map { ":\($0.template):\($0.inputTokens):\(sha256(Data($0.itemHashes.joined().utf8))):\($0.model)" } ?? "")
+        let cacheKey = identity + (baseline.map { ":\($0.template):\($0.inputTokens):\(sha256(Data($0.itemHashes.joined().utf8))):\($0.model)" } ?? "")
         if let cached = cache[cacheKey], now.timeIntervalSince(cached.at) < 300 { return cached.value }
+        let fingerprint = try Self.fingerprint(request, profile: profile)
         let input = Self.items(request)
         var counter = InputHeuristic(model:profile.raw["routing"]["replayPolicy"].text == "pinned" ? profile.raw["routing"]["expectedModel"].text.map(Self.modelName) : nil)
         var method = "heuristic", countedModel: String?, tokens: Int

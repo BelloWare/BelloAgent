@@ -6,6 +6,34 @@ import CoreGraphics
 #endif
 
 final class RequestContextTests: XCTestCase {
+    func testCacheUsesExactUTF8AndInvalidatesEveryRequestAndProfileChange() throws {
+        let profile = try fixtureProfile()
+        let first: JSON = ["input": [["text": "caf\u{e9}"], ["text": "second"]], "tools": [["name": "read"]]]
+        let canonicallyEqual: JSON = ["input": [["text": "cafe\u{301}"], ["text": "second"]], "tools": [["name": "read"]]]
+        XCTAssertEqual(first, canonicallyEqual, "Swift String equality is deliberately insufficient for byte fingerprints")
+        var counter = RequestContextCounter()
+        let old = try counter.count(request: first, profile: profile)
+        let changed = try counter.count(request: canonicallyEqual, profile: profile)
+        XCTAssertNotEqual(old.requestFingerprint, changed.requestFingerprint)
+        XCTAssertEqual(changed.requestFingerprint, try RequestContextCounter.fingerprint(canonicallyEqual, profile: profile))
+        var reordered = first; reordered["input"] = .array(first["input"].list.reversed())
+        var instructions = first; instructions["instructions"] = "new rules"
+        var image = first; image["input"] = [["type": "input_image", "image_url": "data:image/png;base64,fixture"]]
+        for value in [reordered, instructions, image] {
+            let reused = try counter.count(request: value, profile: profile)
+            var oracle = RequestContextCounter()
+            let fresh = try oracle.count(request: value, profile: profile)
+            XCTAssertEqual(reused.json, fresh.json)
+            XCTAssertNotEqual(reused.requestFingerprint, old.requestFingerprint)
+        }
+        for name in ["revision", "headers", "routing", "modelId"] {
+            var raw = profile.raw
+            raw[name] = name == "headers" ? ["x-route": "new"] : name == "routing" ? ["replayPolicy": "portable"] : "changed"
+            let changedProfile = try Profile(raw)
+            XCTAssertNotEqual(try RequestContextCounter.cacheIdentity(request: first, profile: changedProfile), try RequestContextCounter.cacheIdentity(request: first, profile: profile))
+        }
+    }
+
     func testCountsTheBuiltRequestAndIgnoresDiscardedInternalBlocks() throws {
         let profile = try fixtureProfile()
         let user = ChatMessage(role: "user", content: [textBlock("Keep this input.")])
