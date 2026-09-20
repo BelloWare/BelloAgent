@@ -322,6 +322,110 @@ final class AppShellPerformanceTests: XCTestCase {
         XCTAssertGreaterThan(worstRebuild, 0, "the rows whose selection changed must redraw")
     }
 
+    @MainActor func testBulkArchiveKeepsNativeComposerAndTwentyStreamsResponsive() async throws {
+        let root = try scratch("shell-bulk-archive")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.workspaces = [WorkspaceRecord(id: "project", path: root.path, trusted: true)]
+        model.chats = (0..<540).map { ChatRecord(id: "chat\($0)", workspaceID: "project", title: "Chat \($0)", path: nil, profileID: "fixture", sidebarOrder: -Int64($0)) }
+        for row in model.chats { try await model.store?.put(row, kind: "chat", id: row.id) }
+        model.selectedID = "chat0"; model.focusedSessionID = "chat0"; model.selectedWorkspaceID = "project"
+        for index in 0..<21 {
+            let view = SessionDisplay(id: "chat\(index)")
+            view.state = index == 0 ? "idle" : "running"
+            view.messages = [TranscriptMessage(id: "m", role: "assistant", text: "Initial answer", state: index == 0 ? "settled" : "streaming")]
+            model.displays[view.id] = view
+        }
+        model.selected = model.displays["chat0"]
+        let (window, hosted) = self.window(model)
+        defer { window.contentView = nil; window.close() }
+        _ = await settle(hosted, window) { self.descendants(ComposerTextView.self, in: hosted).first != nil }
+        let editor = try XCTUnwrap(descendants(ComposerTextView.self, in: hosted).first)
+        window.makeFirstResponder(editor)
+        let store = try XCTUnwrap(model.store)
+        var release: CheckedContinuation<Void, Never>?
+        model.organizationWrite = { ids, change in
+            await withCheckedContinuation { release = $0 }
+            return try await store.updateChatOrganizations(ids: ids, change: change)
+        }
+        model.markedSessionIDs = Set((21..<521).map { "chat\($0)" })
+        let began = ProcessInfo.processInfo.systemUptime
+        model.archiveMarkedSessions(true)
+        let acknowledgment = (ProcessInfo.processInfo.systemUptime - began) * 1_000
+        XCTAssertTrue(model.markedSessionIDs.isEmpty)
+        while release == nil { await Task.yield() }
+        let indexComputations = model.sidebarIndex.computations
+        var frames: [Double] = []
+        for turn in 0..<120 {
+            if turn == 30 {
+                XCTAssertEqual(model.sidebarIndex.computations, indexComputations, "Text events cannot rebuild the structural index")
+                release?.resume(); release = nil
+            }
+            for index in 1...20 {
+                model.displays["chat\(index)"]?.messages = [TranscriptMessage(id: "m", role: "assistant", text: "Streaming answer \(turn)", state: "streaming")]
+            }
+            let start = ProcessInfo.processInfo.systemUptime
+            editor.insertText("字", replacementRange: NSRange(location: NSNotFound, length: 0))
+            draw(hosted, window)
+            frames.append((ProcessInfo.processInfo.systemUptime - start) * 1_000)
+            await runLoopTurn()
+        }
+        _ = await settle(hosted, window) { model.record("chat21")?.isArchived == true }
+        XCTAssertTrue(descendants(ComposerTextView.self, in: hosted).first === editor)
+        XCTAssertTrue(window.firstResponder === editor)
+        XCTAssertEqual(editor.string, String(repeating: "字", count: 120))
+        XCTAssertEqual(model.selectionRevision, 0)
+        let sorted = frames.sorted()
+        print("PERF native archive500+20streams acknowledgeMs=\(acknowledgment) inputDrawOpportunityP95Ms=\(sorted[Int(ceil(Double(sorted.count) * 0.95)) - 1]) p99Ms=\(sorted[Int(ceil(Double(sorted.count) * 0.99)) - 1]) maxMs=\(sorted.last ?? 0)")
+        for view in model.displays.values { view.state = "idle" }
+    }
+
+    /// Identical fixture is also run on the starting revision. Uses the public
+    /// sidebar action, durable SQLite, and the real window; no delayed test writer.
+    @MainActor func testBulkArchiveWholeWindowBaseline() async throws {
+        let root = try scratch("shell-bulk-baseline")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.workspaces = [WorkspaceRecord(id: "project", path: root.path, trusted: true)]
+        model.chats = (0..<540).map { ChatRecord(id: "chat\($0)", workspaceID: "project", title: "Chat \($0)", path: nil, profileID: "fixture", sidebarOrder: -Int64($0)) }
+        for row in model.chats { try await model.store?.put(row, kind: "chat", id: row.id) }
+        let selected = SessionDisplay(id: "chat0")
+        model.displays[selected.id] = selected; model.selected = selected
+        model.selectedID = selected.id; model.focusedSessionID = selected.id; model.selectedWorkspaceID = "project"
+        let (window, hosted) = self.window(model)
+        defer { window.contentView = nil; window.close() }
+        _ = await settle(hosted, window) { self.descendants(ComposerTextView.self, in: hosted).first != nil }
+        let editor = try XCTUnwrap(descendants(ComposerTextView.self, in: hosted).first)
+        window.makeFirstResponder(editor)
+        var publications = 0
+        let observation = model.$chats.dropFirst().sink { _ in publications += 1 }
+        defer { observation.cancel() }
+        model.markedSessionIDs = Set((1...500).map { "chat\($0)" })
+        draw(hosted, window)
+        let began = ProcessInfo.processInfo.systemUptime
+        model.archiveMarkedSessions(true)
+        let acknowledged = (ProcessInfo.processInfo.systemUptime - began) * 1_000
+        var frames: [Double] = [], inputs = 0
+        while model.chats.filter(\.isArchived).count != 500, ProcessInfo.processInfo.systemUptime - began < 15 {
+            let started = ProcessInfo.processInfo.systemUptime
+            editor.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0)); inputs += 1
+            draw(hosted, window)
+            frames.append((ProcessInfo.processInfo.systemUptime - started) * 1_000)
+            await runLoopTurn()
+        }
+        draw(hosted, window)
+        XCTAssertEqual(model.chats.filter(\.isArchived).count, 500)
+        XCTAssertEqual(editor.string, String(repeating: "x", count: inputs))
+        XCTAssertTrue(window.firstResponder === editor)
+        XCTAssertTrue(descendants(ComposerTextView.self, in: hosted).first === editor)
+        XCTAssertEqual(model.selectedID, "chat0")
+        let sorted = frames.sorted()
+        let p95 = sorted.isEmpty ? 0 : sorted[Int(ceil(Double(sorted.count) * 0.95)) - 1]
+        print("PERF native archive baseline: ackMs=\(acknowledged) completeMs=\((ProcessInfo.processInfo.systemUptime-began)*1_000) publications=\(publications) inputDrawP95Ms=\(p95) maxMs=\(sorted.last ?? 0) inputs=\(inputs)")
+    }
+
     // MARK: 4. What a streamed delta costs the shell
 
     @MainActor func testAStreamedDeltaDoesNotRepublishTheShell() async throws {
@@ -654,18 +758,22 @@ final class AppShellPerformanceTests: XCTestCase {
         for _ in 0..<40 { await Task.yield(); await runLoopTurn() }
         draw(hosted, window)
         for _ in 0..<10 { await runLoopTurn() }
-        let afterVisits = footprintBytes()
-        // Eviction and SwiftUI's own release both land a turn or two after
-        // the last click. Give them their turns before looking, or a page
-        // that is merely on its way out reads as a page that was kept.
-        for _ in 0..<12 where freed.filter({ !$0.value() }).count > model.displays.count + 1 {
+        // The app-owned transitions retain outgoing values until their timed
+        // completion. A fixed number of queue turns can finish before even one
+        // display frame in Release. Keep motion enabled and await bounded real
+        // settlement; do not weaken the retained-object limit.
+        let settlingAt = ProcessInfo.processInfo.systemUptime
+        while freed.filter({ !$0.value() }).count > model.displays.count + 1,
+              ProcessInfo.processInfo.systemUptime - settlingAt < 2 {
             draw(hosted, window)
-            for _ in 0..<10 { await Task.yield(); await runLoopTurn() }
+            try await Task.sleep(for: .milliseconds(16))
+            await runLoopTurn()
         }
+        let afterVisits = footprintBytes()
         let live = freed.filter { !$0.value() }.keys.sorted()
         print("PERF shell memory after visiting 50 chats: \(megabytes(baseline)) → \(megabytes(afterVisits)); "
               + "\(live.count) transcript pages alive, \(model.displays.count) displays, "
-              + "\(model.chatAccounting.values.count) retained accounting rows")
+              + "\(model.chatAccounting.values.count) retained accounting rows; settlement \(Int((ProcessInfo.processInfo.systemUptime - settlingAt) * 1_000)) ms")
         // The model keeps the last eight chats it showed. The window's
         // SwiftUI graph pins one more: the first chat was on screen before it
         // had any messages, and the empty-chat starter card holds its page

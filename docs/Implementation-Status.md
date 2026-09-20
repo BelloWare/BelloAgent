@@ -1,6 +1,6 @@
 # Implementation status and remaining work
 
-Updated 2026-09-20. Repository `BelloWare/BelloAgent`, branch **main**. The original
+Updated 2026-09-21. Repository `BelloWare/BelloAgent`, branch **main**. The original
 `BelloWare/pi-app` implementation continued from `da6028153bea8d0b94a4b9a5bbae11158a64030d`
 before the repository migration; do not reset the current repository to that archived history.
 
@@ -11,6 +11,15 @@ Sparkle update/relaunch rehearsals, including the signed owner/update rehearsal,
 unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
+
+**Unreleased Plan A smoothness work** batches archive/restore/pin, prevents
+intermediate chat navigation, orders overlapping organization changes, isolates
+live activity and usage reads, and lazily prepares captured SSE details. Exact
+Markdown suffix sizing reuses completed blocks. The native 500-chat archive
+fixture improves from 14.4 s/500 publications to 69 ms/one publication. Rich-row
+streaming and cold giant-answer sizing remain measurable limits, not a claimed
+general frame-rate improvement. See [Plan A implementation and validation](Plan-A-Smoothness-2026-09-21.md).
+No version bump or release is included in this task.
 
 **Bello Agent 0.1.68/build 72 is released and publicly verified** at
 [belloware.com](https://belloware.com/bello-agent.html), from source

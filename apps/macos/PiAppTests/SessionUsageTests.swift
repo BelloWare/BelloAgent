@@ -399,7 +399,7 @@ final class SessionUsageTests: XCTestCase {
             // Wait only in this opt-in visual test, not in controller regressions.
             try await Task.sleep(for: .milliseconds(180))
             hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-            XCTAssertEqual(hosted.bounds.width, 900, accuracy: 0.5)
+            XCTAssertEqual(hosted.bounds.width, 980, accuracy: 0.5)
             XCTAssertTrue(hosted.fittingSize.height.isFinite)
             try capture(window, to: root.appendingPathComponent(name + ".jpg"))
         }

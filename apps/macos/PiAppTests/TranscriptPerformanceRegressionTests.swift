@@ -117,10 +117,10 @@ final class TranscriptPerformanceRegressionTests: XCTestCase {
         for step in 1...4 {
             let streamed = TranscriptMessage(id: "stream:tail", role: "assistant", text: String(repeating: "New answer text.\n\n", count: step * 5), state: "streaming", turn: "latest-question")
             if step == 1 { session.messages.append(streamed) } else { session.messages[session.messages.count - 1] = streamed }
-            // The arriving reply's block is keyed by its settled row id, so the
-            // row survives the reply landing under that id.
+            // Journal IDs are opaque, including a literal "stream:" prefix.
+            // The same render identity survives the reply settling.
             try await settle(hosted, window: window) {
-                page.snapshot?.messages.last?.text == streamed.text && (page.rowFrame(of: "block:tail")?.height ?? 0) > 20
+                page.snapshot?.messages.last?.text == streamed.text && (page.rowFrame(of: TranscriptRenderIdentity.block(streamed.id).key)?.height ?? 0) > 20
             }
             try await Task.sleep(for: .milliseconds(30))
             hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
