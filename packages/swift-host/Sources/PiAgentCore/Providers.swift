@@ -154,6 +154,7 @@ public struct ProviderClient: ModelClient {
                     if status<200 || status>=300 { nonSSE.append(data.prefix(max(0, 65_536 - nonSSE.count))); continue }
                     if jsonBody { nonSSE.append(data);guard nonSSE.count<=16*1024*1024 else { throw AgentError("response_limit","JSON response exceeds 16 MiB") };continue }
                     for event in try parser.feed(data) {
+                        let receivedAt = stream.receivedAt(byteOffset: event.end, fallback: receivedAt)
                         await traces.event(attempt,event)
                         if event.data=="[DONE]" { continue }
                         let value=try JSON.parse(Data(event.data.utf8))

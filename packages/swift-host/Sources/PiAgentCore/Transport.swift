@@ -73,6 +73,10 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
     private let bufferLimit: Int, responseLimit: Int
     private var pendingBytes = 0, suspended = false
     private var ingressFailure: AgentError?
+    private var pendingBody = Data(), inFlight = false, consumedBytes = 0, deliveredBytes = 0
+    private var timingRuns: [(end: Int, at: Double)] = []
+    private var completed = false, completionError: Error?
+    private var delegateQueue: OperationQueue?
     init(budget: HTTPIngressBudget = .shared, bufferLimit: Int = 4 * 1024 * 1024, responseLimit: Int = 64 * 1024 * 1024) {
         self.budget = budget; self.bufferLimit = max(1, bufferLimit); self.responseLimit = max(1, responseLimit)
         super.init()
@@ -85,8 +89,37 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
         lock.lock(); defer { lock.unlock() }
         let released = min(max(0, count), pendingBytes)
         pendingBytes -= released; budget.release(released)
+        consumedBytes += released
+        timingRuns.removeAll { $0.end <= consumedBytes }
+        inFlight = false
         if suspended, pendingBytes <= bufferLimit / 8, ingressFailure == nil {
             suspended = false; task?.resume()
+        }
+        // Flush already-received bytes after the current capture ACK. This
+        // coalesces small callbacks without waiting for a future packet/ACK.
+        delegateQueue?.addOperation { [weak self] in self?.flushBody() }
+    }
+    func receivedAt(byteOffset: Int, fallback: Double) -> Double {
+        lock.lock(); defer { lock.unlock() }
+        return timingRuns.first(where: { $0.end >= byteOffset })?.at ?? fallback
+    }
+    /// One 32 KiB body batch in flight to the ordered consumer. All remaining
+    /// bytes are budgeted at ingress. Keep callback timestamps separately so
+    /// batching never changes the content/terminal timing boundaries.
+    private func flushBody() {
+        lock.lock()
+        guard !inFlight else { lock.unlock(); return }
+        if !pendingBody.isEmpty {
+            let count = min(32_768, pendingBody.count)
+            let bytes = pendingBody.subdata(in: pendingBody.startIndex..<(pendingBody.startIndex + count))
+            pendingBody.removeFirst(count); deliveredBytes += count; inFlight = true
+            let time = timingRuns.first(where: { $0.end >= deliveredBytes })?.at ?? nowMS()
+            lock.unlock(); yield(.bytes(bytes, time)); return
+        }
+        let done = completed, error = ingressFailure ?? completionError
+        lock.unlock()
+        if done {
+            if let error { continuation?.finish(throwing: error) } else { continuation?.finish() }
         }
     }
     private var continuation: AsyncThrowingStream<HTTPPart, Error>.Continuation?
@@ -104,7 +137,7 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
             let queue=OperationQueue(); queue.maxConcurrentOperationCount=1
             let session=URLSession(configuration: config, delegate:self, delegateQueue:queue)
             let task=session.dataTask(with: request)
-            lock.lock(); self.session=session; self.task=task; lock.unlock()
+            lock.lock(); self.session=session; self.task=task; self.delegateQueue=queue; lock.unlock()
             ended.enter()
             lock.lock(); observed["dispatch"] = JSON(nowMS()); observed["dispatchWallTimestamp"] = JSON(Date().timeIntervalSince1970); lock.unlock()
             task.resume()
@@ -144,27 +177,28 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
         let error: AgentError?
         if received > responseLimit {
             error = AgentError("response_limit", "Response exceeded the ingress byte limit; retained capture is an explicit partial prefix")
-        } else if data.count > bufferLimit - pendingBytes || !budget.reserve(data.count) {
+        } else if timingRuns.count >= 65_536 || data.count > bufferLimit - pendingBytes || !budget.reserve(data.count) {
             error = AgentError("stream_backpressure", "HTTP capture/parser queue reached its byte budget; retained capture is an explicit partial prefix")
         } else {
             error = nil; pendingBytes += data.count
+            pendingBody.append(data); timingRuns.append((received, time))
             observed["peakPendingBodyBytes"] = JSON(max(observed["peakPendingBodyBytes"].int ?? 0, pendingBytes))
             if !suspended, pendingBytes >= bufferLimit / 4 { suspended = true; dataTask.suspend() }
         }
         ingressFailure = error
         lock.unlock()
-        if let error { continuation?.finish(throwing: error); dataTask.cancel(); return }
-        yield(.bytes(data, time))
+        if error != nil { dataTask.cancel() }
+        flushBody()
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         lock.lock()
         observed["httpEnd"] = JSON(nowMS())
         observed["transportOutcome"] = JSON(ingressFailure != nil ? "error" : error == nil ? "eof" : (error as? URLError)?.code == .cancelled ? "cancelled" : "error")
-        let failure = ingressFailure
+        completed = true; completionError = error
         self.task=nil; self.session=nil; lock.unlock()
         ended.leave()
-        if let failure { continuation?.finish(throwing: failure) } else if let error { continuation?.finish(throwing:error) } else { continuation?.finish() }
+        flushBody()
         session.finishTasksAndInvalidate()
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {

@@ -7,6 +7,7 @@ require all requests to arrive before any can finish, so sequential execution
 cannot accidentally pass this test by returning fast canned responses.
 """
 import base64
+import collections
 import http.server
 import importlib.util
 import json
@@ -348,7 +349,11 @@ class TwentySessionIntegration(unittest.TestCase):
             if all(value['state'] in ('idle', 'error', 'paused') for value in states.values()):
                 return states
             time.sleep(.02)
-        self.fail('Not every concurrent session settled: ' + repr({k: v['state'] for k, v in states.items()}))
+        diagnostics = {'sessions': {k: v['state'] for k, v in states.items()},
+                       'gatewayRequests': len(self.scenario.requests), 'gatewayActive': self.scenario.active,
+                       'recorderPackets': [dict(collections.Counter(packet.get('type') for packet in peer.captures)) for peer in self.peers],
+                       'peerErrors': [peer.errors for peer in self.peers]}
+        self.fail('Not every concurrent session settled: ' + repr(diagnostics))
 
     def assert_captures(self, expected_attempts):
         attempts = {}

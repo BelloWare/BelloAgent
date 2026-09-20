@@ -10,8 +10,11 @@ private final class IngressFixtureProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         let size = Int(request.url!.lastPathComponent)!
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/octet-stream"])!, cacheStoragePolicy: .notAllowed)
-        for start in stride(from: 0, to: size, by: 32_768) {
-            client?.urlProtocol(self, didLoad: Data(repeating: 97, count: min(32_768, size - start)))
+        let small = request.url!.query == "small"
+        let chunk = small ? 1024 : 32_768
+        for start in stride(from: 0, to: size, by: chunk) {
+            if small { Thread.sleep(forTimeInterval: 0.001) }
+            client?.urlProtocol(self, didLoad: Data(repeating: small ? UInt8(start / chunk) : 97, count: min(chunk, size - start)))
         }
         client?.urlProtocolDidFinishLoading(self)
     }
@@ -70,5 +73,31 @@ final class HTTPIngressTests: XCTestCase {
         }
         XCTAssertEqual(budget.accounting.used, 0)
         XCTAssertLessThanOrEqual(budget.accounting.peak, budget.limit)
+    }
+    func testSlowRecorderCoalescesReceivedCallbacksWithoutChangingArrivalTimesOrBytes() async throws {
+        let budget = HTTPIngressBudget(limit: 1_048_576)
+        // Waiting before consuming simulates a durable recorder holding its
+        // first ACK, while callbacks already in flight continue to arrive.
+        let measured = HTTPStream(budget: budget)
+        let parts = measured.start(URLRequest(url: URL(string: "https://fixture.invalid/65536?small")!), configuration: configuration())
+        try await Task.sleep(for: .milliseconds(200))
+        var bytes = Data(), batches = 0, times: [Double] = []
+        for try await part in parts {
+            if case .bytes(let data, let receivedAt) = part {
+                batches += 1
+                XCTAssertLessThanOrEqual(data.count, 32_768)
+                times.append(measured.receivedAt(byteOffset: bytes.count + 1, fallback: receivedAt))
+                times.append(measured.receivedAt(byteOffset: bytes.count + data.count, fallback: receivedAt))
+                bytes.append(data); measured.consumed(data.count)
+            }
+        }
+        let expected = (0..<64).reduce(into: Data()) { $0.append(Data(repeating: UInt8($1), count: 1024)) }
+        XCTAssertEqual(bytes, expected)
+        XCTAssertLessThanOrEqual(batches, 4, "64 received callbacks should not require 64 capture ACKs")
+        XCTAssertEqual(times, times.sorted())
+        XCTAssertGreaterThan(try XCTUnwrap(times.last) - XCTUnwrap(times.first), 20,
+                             "Original callback times survive coalescing, independently of parse time")
+        XCTAssertEqual(budget.accounting.used, 0)
+        XCTAssertEqual(measured.observation()["responseObservedBytes"].int, bytes.count)
     }
 }
