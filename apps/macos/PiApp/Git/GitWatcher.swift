@@ -20,7 +20,8 @@ import CoreServices
     private let interval: TimeInterval
     private let onChange: () -> Void
     private let handle = GitWatchStream()
-    private var bridge: GitWatchBridge?
+    private(set) var bridge: GitWatchBridge?
+    private var generation = UUID()
     private let queue = DispatchQueue(label: "com.belloware.PiApp.git.watch", qos: .utility)
     private var lastCall = -Double.greatestFiniteMagnitude
     private var trailing: DispatchWorkItem?
@@ -61,22 +62,20 @@ import CoreServices
 
     func start() {
         guard !handle.isRunning else { return }
-        let root = root, gitDirectory = gitDirectory
-        let bridge = GitWatchBridge { [weak self] paths, flags in
+        let root = root, gitDirectory = gitDirectory, generation = UUID()
+        self.generation = generation
+        let bridge = GitWatchBridge { @Sendable [weak self] paths, flags in
             // The folder this stream is on stopped being the project's folder:
             // it was renamed, moved or deleted under the panel.
             let moved = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 }
             guard moved || paths.contains(where: { Self.isInteresting($0, under: root, gitDirectory: gitDirectory) }) else { return }
-            DispatchQueue.main.async { MainActor.assumeIsolated {
-                guard let self else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == generation, self.handle.isRunning else { return }
                 if moved { self.rootChanged() } else { self.changed() }
-            } }
+            }
         }
         self.bridge = bridge
-        var context = FSEventStreamContext(version: 0, info: Unmanaged.passRetained(bridge).toOpaque(),
-                                           retain: nil,
-                                           release: { pointer in if let pointer { Unmanaged<GitWatchBridge>.fromOpaque(pointer).release() } },
-                                           copyDescription: nil)
+        var context = gitWatchContext(bridge)
         let flags = UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagWatchRoot)
         let watched = [root] + (gitDirectory.map { [$0] } ?? [])
         guard let created = FSEventStreamCreate(kCFAllocatorDefault, gitWatchCallback, &context, watched as CFArray,
@@ -93,9 +92,11 @@ import CoreServices
     }
 
     func stop() {
+        generation = UUID()
         trailing?.cancel(); trailing = nil
         bridge?.invalidate(); bridge = nil
         handle.stop()
+        lastCall = -Double.greatestFiniteMagnitude
     }
 
     /// The project's folder was renamed, moved or deleted. This stream is on
@@ -123,9 +124,10 @@ import CoreServices
             lastCall = now; onChange(); return
         }
         guard trailing == nil else { return }
+        let generation = generation
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.handle.isRunning else { return }
+                guard let self, self.generation == generation, self.handle.isRunning else { return }
                 self.trailing = nil; self.lastCall = ProcessInfo.processInfo.systemUptime; self.onChange()
             }
         }
@@ -160,7 +162,7 @@ import CoreServices
 /// Owns the FSEvents stream so it is released even if the watcher is dropped
 /// without being stopped; the stream is not a Sendable type, and a nonisolated
 /// deinit may not reach into main-actor state.
-private final class GitWatchStream: @unchecked Sendable {
+final class GitWatchStream: @unchecked Sendable {
     private let lock = NSLock()
     private var stream: FSEventStreamRef?
     var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return stream != nil }
@@ -188,15 +190,32 @@ private final class GitWatchStream: @unchecked Sendable {
 /// Carries FSEvents' C callback to Swift. The stream owns a reference to it and
 /// gives it up when it is released, so a callback in flight never lands on a
 /// freed object; `invalidate` drops the handler before the stream is stopped.
-private final class GitWatchBridge: @unchecked Sendable {
+final class GitWatchBridge: @unchecked Sendable {
+    typealias Handler = @Sendable ([String], [FSEventStreamEventFlags]) -> Void
     private let lock = NSLock()
-    private var handler: (([String], [FSEventStreamEventFlags]) -> Void)?
-    init(handler: @escaping ([String], [FSEventStreamEventFlags]) -> Void) { self.handler = handler }
+    private var handler: Handler?
+    init(handler: @escaping Handler) { self.handler = handler }
     func deliver(_ paths: [String], _ flags: [FSEventStreamEventFlags]) {
         lock.lock(); let handler = handler; lock.unlock()
         handler?(paths, flags)
     }
     func invalidate() { lock.lock(); handler = nil; lock.unlock() }
+}
+
+// These are C callbacks, not UI closures. Let FSEvents retain the borrowed
+// context when it creates a stream, and balance that retain on any executor.
+// Failed creation leaves only the caller's ordinary Swift reference to release.
+func gitWatchContext(_ bridge: GitWatchBridge) -> FSEventStreamContext {
+    FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(bridge).toOpaque(),
+                         retain: retainGitWatchBridge, release: releaseGitWatchBridge, copyDescription: nil)
+}
+private func retainGitWatchBridge(_ pointer: UnsafeRawPointer?) -> UnsafeRawPointer? {
+    guard let pointer else { return nil }
+    _ = Unmanaged<GitWatchBridge>.fromOpaque(pointer).retain()
+    return pointer
+}
+private func releaseGitWatchBridge(_ pointer: UnsafeRawPointer?) {
+    if let pointer { Unmanaged<GitWatchBridge>.fromOpaque(pointer).release() }
 }
 
 private func gitWatchCallback(_ stream: ConstFSEventStreamRef, _ info: UnsafeMutableRawPointer?, _ count: Int,

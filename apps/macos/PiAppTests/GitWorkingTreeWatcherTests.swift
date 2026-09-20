@@ -1,9 +1,80 @@
 import XCTest
 import SwiftUI
 import AppKit
+import CoreServices
 @testable import PiApp
 
 extension GitPanelAuditTests {
+    func testLargeGitPatchFailsExplicitlyAndLeavesOtherReadsWorking() async throws {
+        let root = try repository("git-large-patch"); defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        let file = root.appendingPathComponent("large.txt")
+        try "original\n".write(to: file, atomically: true, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
+        try String(repeating: "changed\n", count: 2_500_000).write(to: file, atomically: true, encoding: .utf8)
+        let service = GitService()
+        do { _ = try await service.run(["diff", "--", "large.txt"], in: root.path); XCTFail("Oversized patch returned as complete") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("16 MiB"), error.localizedDescription) }
+        let status = try await service.run(["status", "--porcelain"], in: root.path)
+        XCTAssertTrue(status.text.contains("large.txt"))
+        let running = await service.processesRunning; XCTAssertEqual(running, 0)
+    }
+
+    @MainActor func testBackgroundWatchDeliveryCannotReachAReplacementGeneration() async throws {
+        let root = try repository("git-watch-generation")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var changes = 0
+        let watcher = GitWorkingTreeWatcher(root: root.path, interval: 0) {
+            MainActor.assertIsolated(); XCTAssertTrue(Thread.isMainThread); changes += 1
+        }
+        watcher.start(); defer { watcher.stop() }
+        let old = try XCTUnwrap(watcher.bridge)
+        let delivered = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            XCTAssertFalse(Thread.isMainThread)
+            old.deliver([root.path + "/external.txt"], [0]); delivered.signal()
+        }
+        // Hold MainActor until the old callback has queued its actor hop.
+        XCTAssertEqual(delivered.wait(timeout: .now() + 2), .success)
+        watcher.stop(); watcher.start()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(changes, 0, "An already-copied callback belongs to the old stream")
+        let current = try XCTUnwrap(watcher.bridge)
+        await Task.detached { current.deliver([root.path + "/external.txt"], [0]) }.value
+        try await eventually("deliver the current generation on MainActor") { changes == 1 }
+        await Task.detached { current.deliver([root.path + "/.git/objects/ab/cd"], [0]) }.value
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(changes, 1)
+    }
+
+    @MainActor func testFSEventsContextRetainAndFinalReleaseWorkOffMain() async throws {
+        let root = try repository("git-watch-release")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var bridge: GitWatchBridge? = GitWatchBridge { @Sendable _, _ in }
+        weak var observed = bridge
+        var context = gitWatchContext(try XCTUnwrap(bridge))
+        let stream = try XCTUnwrap(FSEventStreamCreate(nil, { _, _, _, _, _, _ in }, &context,
+            [root.path] as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.05, 0))
+        FSEventStreamSetDispatchQueue(stream, DispatchQueue(label: "test.watch.release"))
+        let started = FSEventStreamStart(stream)
+        let owner = GitWatchStream(); owner.adopt(stream)
+        bridge = nil
+        XCTAssertNotNil(observed, "FSEvents retains the borrowed context on creation")
+        await Task.detached { owner.stop() }.value
+        try await eventually("release the FSEvents context after queued callbacks drain") { observed == nil }
+        XCTAssertTrue(started)
+        // Invalidate/release before start is also a valid ownership path.
+        var unstarted: GitWatchBridge? = GitWatchBridge { @Sendable _, _ in }
+        weak var weakUnstarted = unstarted
+        var second = gitWatchContext(try XCTUnwrap(unstarted))
+        let created = try XCTUnwrap(FSEventStreamCreate(nil, { _, _, _, _, _, _ in }, &second,
+            [root.path] as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.05, 0))
+        unstarted = nil; XCTAssertNotNil(weakUnstarted)
+        FSEventStreamSetDispatchQueue(created, DispatchQueue(label: "test.watch.unstarted"))
+        FSEventStreamInvalidate(created); FSEventStreamRelease(created)
+        try await eventually("release an unstarted context") { weakUnstarted == nil }
+    }
+
     // MARK: Noticing the working tree
 
     /// The reader saves a file in their editor. The panel must show it without

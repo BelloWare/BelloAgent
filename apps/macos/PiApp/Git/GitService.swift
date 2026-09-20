@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// One line of `git status --porcelain=v2`: a tracked change, rename or
 /// untracked file. Index and worktree states are git's single-letter codes.
@@ -108,13 +109,9 @@ actor GitService {
         var text: String { String(decoding: stdout, as: UTF8.self) }
     }
 
-    /// Collects a pipe's bytes from its readability handler under a lock.
-    private final class Sink: @unchecked Sendable {
-        private let lock = NSLock()
-        private var data = Data()
-        func append(_ bytes: Data) { lock.lock(); data.append(bytes); lock.unlock() }
-        var value: Data { lock.lock(); defer { lock.unlock() }; return data }
-    }
+    static let ordinaryOutputLimit = 4 * 1024 * 1024
+    static let patchOutputLimit = 16 * 1024 * 1024
+    static let diagnosticOutputLimit = 65_536
 
     /// The running process, so a read whose result is no longer wanted is
     /// actually stopped. Clicking through history must not leave a queue of
@@ -123,6 +120,7 @@ actor GitService {
         private let lock = NSLock()
         private var process: Process?
         private var stopped = false
+        private var signalled = false
         var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
         /// False when the read was already cancelled, so nothing is launched.
         func adopt(_ value: Process) -> Bool {
@@ -131,8 +129,18 @@ actor GitService {
             process = value; return true
         }
         func stop() {
-            lock.lock(); let running = process; stopped = true; lock.unlock()
-            if running?.isRunning == true { running?.terminate() }
+            lock.lock(); stopped = true
+            guard !signalled, let running = process, running.isRunning else { lock.unlock(); return }
+            signalled = true; lock.unlock()
+            if running.isRunning {
+                let pid = running.processIdentifier
+                if getpgid(pid) == pid { kill(-pid, SIGTERM) } else { running.terminate() }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
+                    if running.isRunning {
+                        if getpgid(pid) == pid { kill(-pid, SIGKILL) } else { kill(pid, SIGKILL) }
+                    }
+                }
+            }
         }
     }
 
@@ -152,22 +160,53 @@ actor GitService {
         process.environment = environment
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout; process.standardError = stderr; process.standardInput = FileHandle.nullDevice
-        let errors = Sink()
-        stderr.fileHandleForReading.readabilityHandler = { handle in
-            let bytes = handle.availableData
-            if bytes.isEmpty { handle.readabilityHandler = nil } else { errors.append(bytes) }
-        }
+        let out = stdout.fileHandleForReading, err = stderr.fileHandleForReading
+        defer { try? out.close(); try? err.close() }
         guard handle.adopt(process) else { throw CancellationError() }
         do { try process.run() } catch { throw GitFailure(message: "git could not start: \(error.localizedDescription)") }
-        let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
-        let output = stdout.fileHandleForReading.readDataToEndOfFile()
+        let outputLimit = arguments.contains("diff") || arguments.contains("show") ? patchOutputLimit : ordinaryOutputLimit
+        let fds = [out.fileDescriptor, err.fileDescriptor]
+        for fd in fds { _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) }
+        var streams = [Data(), Data()], eof = [false, false]
+        var failure: String?, exitedAt: TimeInterval?
+        let started = ProcessInfo.processInfo.systemUptime
+        let deadline = started + (timeout.isFinite ? min(600, max(0.01, timeout)) : 20)
+        var scratch = [UInt8](repeating: 0, count: 65_536)
+        while true {
+            let now = ProcessInfo.processInfo.systemUptime
+            if now >= deadline, failure == nil { failure = "Git timed out; no partial output was applied."; handle.stop() }
+            if handle.isStopped, process.isRunning { handle.stop() }
+            if !process.isRunning {
+                if exitedAt == nil { exitedAt = now }
+                if eof.allSatisfy({ $0 }) { break }
+                if now - (exitedAt ?? now) >= 0.25 {
+                    failure = failure ?? "Git exited before its output pipes closed; incomplete output was not applied."; break
+                }
+            }
+            // Both pipes drain on this dedicated worker. Neither may deadlock
+            // the other, and only this worker reads or closes the descriptors.
+            for index in 0..<2 where !eof[index] {
+                let count = read(fds[index], &scratch, scratch.count)
+                if count > 0 {
+                    let limit = index == 0 ? outputLimit : diagnosticOutputLimit
+                    if count > limit - streams[index].count {
+                        if failure == nil {
+                            failure = index == 0 ? "Git output exceeded the \(limit / 1_048_576) MiB limit. Select a smaller diff or inspect it in the terminal. No partial result was applied." : "Git diagnostics exceeded 64 KiB. No partial result was applied."
+                            handle.stop()
+                        }
+                    } else if failure == nil { streams[index].append(contentsOf: scratch.prefix(count)) }
+                } else if count == 0 { eof[index] = true }
+                else if errno != EAGAIN, errno != EWOULDBLOCK, errno != EINTR {
+                    eof[index] = true; failure = failure ?? "Git output could not be read. No partial result was applied."; handle.stop()
+                }
+            }
+            var polls = fds.enumerated().map { pollfd(fd: eof[$0.offset] ? -1 : $0.element, events: Int16(POLLIN), revents: 0) }
+            _ = poll(&polls, nfds_t(polls.count), 20)
+        }
         process.waitUntilExit()
-        watchdog.cancel()
-        stderr.fileHandleForReading.readabilityHandler = nil
-        errors.append(stderr.fileHandleForReading.readDataToEndOfFile())
+        if let failure { throw GitFailure(message: failure) }
         if handle.isStopped { throw CancellationError() }
-        return Output(stdout: output, stderr: String(decoding: errors.value, as: UTF8.self), status: process.terminationStatus)
+        return Output(stdout: streams[0], stderr: String(decoding: streams[1], as: UTF8.self), status: process.terminationStatus)
     }
 
     /// Git's own threads. Waiting for a process is a blocking call, and a
