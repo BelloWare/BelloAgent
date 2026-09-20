@@ -213,6 +213,7 @@ struct MarkdownBlockView: View {
     let capsWidth: Bool
     var caret = false
     var headingTarget: MarkdownCopyTarget? = nil
+    var nativeCodeChoice: Bool? = nil
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
@@ -228,7 +229,7 @@ struct MarkdownBlockView: View {
             .frame(maxWidth: capsWidth ? TranscriptMetrics.proseWidth : .infinity, alignment: .leading)
             .onHover { hovering = $0 }
         case .code(let language, let code):
-            CodeBlockView(language: language, code: code, size: style.baseSize * 0.86).equatable()
+            CodeBlockView(language: language, code: code, size: style.baseSize * 0.86, streaming: caret, nativeChoice: nativeCodeChoice).equatable()
         case .list(let ordered, let start, let items):
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
@@ -317,9 +318,9 @@ struct CodeBlockView: View {
     var size: CGFloat = 12.5
     @State private var hovering = false
     @State private var usesNativeText: Bool
-    init(language: String?, code: String, size: CGFloat = 12.5) {
+    init(language: String?, code: String, size: CGFloat = 12.5, streaming: Bool = false, nativeChoice: Bool? = nil) {
         self.language = language; self.code = code; self.size = size
-        _usesNativeText = State(initialValue: NativeCodeText.enabled && code.utf8.count >= NativeCodeText.minimumBytes)
+        _usesNativeText = State(initialValue: nativeChoice ?? (NativeCodeText.enabled && (streaming || code.utf8.count >= NativeCodeText.minimumBytes)))
     }
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -404,23 +405,35 @@ private struct MarkdownTableView: View {
         guard alignments.indices.contains(column) else { return .leading }
         switch alignments[column] { case .center: return .center; case .right: return .trailing; case .left: return .leading }
     }
+    private var large: Bool { MarkdownTablePresentation.isLarge(header: header, rows: rows) }
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+        if large {
+            HStack {
+                Text("Preview · first \(min(rows.count, MarkdownTablePresentation.previewRows)) of \(rows.count.formatted()) rows · up to 8 columns")
+                    .font(.system(size: 11)).foregroundStyle(TranscriptPalette.muted)
+                Spacer()
+                Button("Open full table") { MarkdownTableWindow.open(header: header, rows: rows) }.buttonStyle(.plain)
+            }.textSelection(.disabled)
+        }
         ScrollView(.horizontal, showsIndicators: false) {
             Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
                 if !header.isEmpty {
-                    GridRow { ForEach(Array(header.enumerated()), id: \.offset) { index, cell in cellView(cell, column: index, header: true) } }
+                    GridRow { ForEach(Array((large ? Array(header.prefix(MarkdownTablePresentation.previewColumns)) : header).enumerated()), id: \.offset) { index, cell in cellView(cell, column: index, header: true) } }
                 }
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    GridRow { ForEach(Array(row.enumerated()), id: \.offset) { index, cell in cellView(cell, column: index, header: false) } }
+                ForEach(Array((large ? Array(rows.prefix(MarkdownTablePresentation.previewRows)) : rows).enumerated()), id: \.offset) { _, row in
+                    GridRow { ForEach(Array((large ? Array(row.prefix(MarkdownTablePresentation.previewColumns)) : row).enumerated()), id: \.offset) { index, cell in cellView(cell, column: index, header: false) } }
                 }
             }
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(TranscriptPalette.hair, lineWidth: 1))
         }
         .padding(.vertical, 2)
+        }
     }
     private func cellView(_ cell: AttributedString, column: Int, header: Bool) -> some View {
         Text(header ? bolded(cell) : cell)
-            .frame(maxWidth: .infinity, alignment: alignment(column))
+            .lineLimit(large ? 3 : nil)
+            .frame(maxWidth: large ? 320 : .infinity, alignment: alignment(column))
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(header ? TranscriptPalette.panel : Color.clear)
             .overlay(Rectangle().stroke(TranscriptPalette.hair, lineWidth: 0.5))
@@ -1198,7 +1211,7 @@ extension MarkdownBodyView: Equatable {
 }
 extension MarkdownBlockView: Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool {
-        a.block == b.block && a.style == b.style && a.capsWidth == b.capsWidth && a.caret == b.caret && a.headingTarget == b.headingTarget
+        a.block == b.block && a.style == b.style && a.capsWidth == b.capsWidth && a.caret == b.caret && a.headingTarget == b.headingTarget && a.nativeCodeChoice == b.nativeCodeChoice
     }
 }
 extension CodeBlockView: Equatable {

@@ -68,8 +68,37 @@ final class NativeMarkdownSizingTests: XCTestCase {
             let started = ProcessInfo.processInfo.systemUptime
             let size = body.measure(width: 620)
             print("REVIEW single \(label): \(source.utf8.count) bytes, sizing \((ProcessInfo.processInfo.systemUptime - started) * 1000) ms, height \(size.height)")
-            XCTAssertGreaterThan(size.height, 1000)
+            if label == "table" { XCTAssertLessThan(size.height, 1500, "Large tables intentionally render a bounded inline preview") }
+            else { XCTAssertGreaterThan(size.height, 1000) }
             XCTAssertEqual(body.measure(width: 620), size)
         }
+    }
+    @MainActor func testFullTableUsesVisibleCellsAndKeepsTheLastCellAndCompleteCopy() throws {
+        let previous = Set(NSApp.windows.map(ObjectIdentifier.init))
+        let header = [AttributedString("Key"), AttributedString("Value")]
+        let longCell = "Last cell\twith a quote \" and\n" + String(repeating: "中文🙂 ", count: 1000)
+        let rows = (0..<1500).map { [AttributedString("Row \($0)"), AttributedString($0 == 1499 ? longCell : "Value \($0)")] }
+        XCTAssertTrue(MarkdownTablePresentation.isLarge(header: header, rows: rows))
+        MarkdownTableWindow.open(header: header, rows: rows)
+        let window = try XCTUnwrap(NSApp.windows.first { !previous.contains(ObjectIdentifier($0)) && $0.title.hasPrefix("Table ·") })
+        defer { window.close() }
+        func descendants<T: NSView>(_ type: T.Type, _ view: NSView) -> [T] {
+            (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants(type, $0) }
+        }
+        let root = try XCTUnwrap(window.contentView)
+        root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let table = try XCTUnwrap(descendants(NSTableView.self, root).first)
+        XCTAssertEqual(table.numberOfRows, 1500)
+        XCTAssertGreaterThan(table.rows(in: table.visibleRect).length, 0)
+        XCTAssertLessThan(descendants(NSTextField.self, table).count, 100)
+        table.scrollRowToVisible(1499)
+        table.selectRowIndexes(IndexSet(integer: 1499), byExtendingSelection: false)
+        root.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        XCTAssertTrue(descendants(NSTextView.self, root).contains { $0.string.contains(longCell) })
+        let copied = MarkdownTablePresentation.tsv(header: ["Key", "Value"], rows: [["last", longCell]])
+        XCTAssertTrue(copied.hasSuffix("\""))
+        XCTAssertTrue(copied.contains("a quote \"\""))
+        XCTAssertTrue(copied.contains(String(repeating: "中文🙂 ", count: 1000)))
+        XCTAssertEqual(MarkdownTablePresentation.tsv(header: ["A"], rows: [["a\rb"]]), "A\n\"a\rb\"")
     }
 }

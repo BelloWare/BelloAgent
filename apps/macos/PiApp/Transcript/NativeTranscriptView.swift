@@ -668,23 +668,36 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     var onDisclosureChanged: (() -> Void)?
     private var measurementScale: CGFloat?
     private var restoredMeasurementNeedsValidation = false
-    /// What this row's work list measured when it was last open. Keyed by
-    /// everything that can change its height — the width it wrapped at, the
-    /// content of the turn, what is open inside it and the rendering
-    /// environment — so a fold is the only change that reuses it. `work` is
-    /// normalised out of the key: folding and unfolding is exactly what this
-    /// is for.
+    /// Geometry inside FoldedWork, independently of the reply prose and turn
+    /// footer. Usage that is actually inside the work list remains in this key:
+    /// a longer model name can wrap and must invalidate the measured height.
+    private struct ReplyWorkKey: Equatable {
+        var id: String
+        var thinking: String
+        var streaming: Bool
+        var tools: [ToolView]
+        var accounting: GatewayTotals?
+    }
     private struct WorkListKey: Equatable {
         var width: CGFloat
-        var item: TranscriptItem
-        var disclosure: TranscriptRowDisclosure
+        var replies: [ReplyWorkKey]
+        var openTools: Set<String>
+        var openReasoning: Set<String>
+        var inputs: [String: ToolInputDocument]
         var environment: TranscriptRowEnvironment
     }
     private var workList: (key: WorkListKey, height: CGFloat)?
     private var workListKey: WorkListKey {
-        var open = disclosure
-        open.work = true
-        return WorkListKey(width: width, item: item, disclosure: open, environment: environment)
+        let replies: [ReplyWorkKey]
+        if case .block(let block) = item {
+            replies = block.replies.map { reply in
+                let showsUsage = !(reply.tools ?? []).isEmpty || !(reply.thinking ?? "").isEmpty || reply.id != block.message?.id
+                return ReplyWorkKey(id: reply.id, thinking: reply.thinking ?? "", streaming: reply.isStreaming,
+                                    tools: reply.tools ?? [], accounting: showsUsage ? reply.accounting : nil)
+            }
+        } else { replies = [] }
+        return WorkListKey(width: width, replies: replies, openTools: disclosure.openTools,
+                           openReasoning: disclosure.openReasoning, inputs: disclosure.toolInputs, environment: environment)
     }
     /// How often this row has been able to reuse its work list's measured
     /// height instead of measuring sixty tool rows again.
@@ -881,8 +894,9 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         measurements.removeAll(keepingCapacity: true)
         estimate = nil
         if hosted != nil { awaitingViewportLayout = true }
-        // New content is a new work list; nothing it measured before applies.
-        workList = nil
+        // Prose, freshness and the turn footer still remeasure the outer row,
+        // but do not throw away unchanged tool/reasoning geometry.
+        if workList?.key != workListKey { workList = nil }
         restoredMeasurementNeedsValidation = false
         updateRoot()
         invalidateIntrinsicContentSize()

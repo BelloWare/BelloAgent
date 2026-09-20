@@ -312,7 +312,8 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         var placements: [Double] = []
         var validationDurations: [Double] = []
         var invalidations = 0
-        var offset = 300
+        let step = max(32, Int(testEnvironment("PI_PERF_DELTA_BYTES") ?? "") ?? 300)
+        var offset = step
         while offset <= bytes.count {
             let text = String(decoding: bytes[0..<offset], as: UTF8.self)
             let row = TranscriptMessage(id: "stream:x", role: "assistant", text: text, state: "streaming", turn: last)
@@ -324,7 +325,7 @@ final class TranscriptFrameBudgetTests: XCTestCase {
             roots.append(TranscriptLayoutClock.rootUpdateSeconds)
             placements.append(TranscriptLayoutClock.placementSeconds)
             sum = sum + frame
-            deltas += 1; offset += 300
+            deltas += 1; offset += step
             await Task.yield()
             validationDurations.append(TranscriptLayoutClock.validationSeconds)
             invalidations += TranscriptLayoutClock.intrinsicInvalidations
@@ -431,6 +432,18 @@ final class TranscriptFrameBudgetTests: XCTestCase {
             await pane.settle(turns: 2)
         }
         XCTAssertEqual(row.frame.height, open, accuracy: 1, "folding and unfolding must return the turn to its own height")
+        let cachedBeforeProse = row.workListReuses
+        let cardsBeforeProse = TranscriptLayoutClock.workListCardsMeasured
+        let original = session.messages[1]
+        for index in 0..<12 {
+            _ = pane.frame {
+                session.messages[1].text = original.text + String(repeating: " New prose only.", count: index + 1)
+            }
+            await pane.settle(turns: 2)
+        }
+        XCTAssertGreaterThan(row.workListReuses, cachedBeforeProse, "Prose must not discard exact work-list geometry")
+        XCTAssertEqual(TranscriptLayoutClock.workListCardsMeasured, cardsBeforeProse, "Unchanged tools must not be remeasured for a prose-only delta")
+
         print("PERF folding a 60-tool turn — \(fold.scaled(by: 1 / Double(rounds)).line)")
         print("PERF the turn's work list reused its measured height \(row.workListReuses) times over \(rounds * 2) clicks")
         print("PERF unfolding a 60-tool turn — \(unfold.scaled(by: 1 / Double(rounds)).line)")

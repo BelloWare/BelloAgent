@@ -39,9 +39,10 @@ private struct NativeMarkdownItem: Equatable {
 private struct NativeHostedMarkdownBlock: View {
     let item: NativeMarkdownItem
     let width: CGFloat
+    var nativeCodeChoice: Bool? = nil
     var body: some View {
         MarkdownBlockView(block: item.block, style: item.style, capsWidth: item.capsWidth,
-                          caret: item.caret, headingTarget: item.headingTarget)
+                          caret: item.caret, headingTarget: item.headingTarget, nativeCodeChoice: nativeCodeChoice)
             .frame(width: width, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .textSelection(.enabled)
@@ -55,8 +56,9 @@ private struct NativeHostedMarkdownBlock: View {
 }
 
 @MainActor private final class NativeMarkdownBlockHost {
-    let view: NSHostingView<NativeHostedMarkdownBlock>
+    private(set) var view: NSHostingView<NativeHostedMarkdownBlock>?
     private var item: NativeMarkdownItem
+    private var nativeCodeChoice: Bool?
     private var width: CGFloat = TranscriptMetrics.pageWidth
     private var sizes: [CGSize] = []
     var frame = CGRect.zero
@@ -64,16 +66,33 @@ private struct NativeHostedMarkdownBlock: View {
 
     init(item: NativeMarkdownItem) {
         self.item = item
-        view = NSHostingView(rootView: NativeHostedMarkdownBlock(item: item, width: TranscriptMetrics.pageWidth))
-        view.safeAreaRegions = []
-        view.sizingOptions = [.intrinsicContentSize]
-        applyAppearance()
+        if case .code(_, let code) = item.block {
+            nativeCodeChoice = NativeCodeText.enabled && (item.caret || code.utf8.count >= NativeCodeText.minimumBytes)
+        } else { nativeCodeChoice = nil }
     }
+    private func host() -> NSHostingView<NativeHostedMarkdownBlock> {
+        if let view { return view }
+        let next = NSHostingView(rootView: NativeHostedMarkdownBlock(item: item, width: width, nativeCodeChoice: nativeCodeChoice))
+        next.safeAreaRegions = []; next.sizingOptions = [.intrinsicContentSize]
+        view = next; applyAppearance()
+        return next
+    }
+    /// Geometry and source outlive the expensive native tree. No sizing
+    /// surrogate is shared, and a selected owner is excluded by the caller.
+    func releaseDetachedHost() { if view?.superview == nil { view = nil } }
     @discardableResult func update(_ item: NativeMarkdownItem) -> Bool {
         guard self.item != item else { return false }
+        // Retain the mounted leaf decision across idle host reclamation. A
+        // completed short fence that began live must recreate the same TextKit
+        // renderer, so its cached exact height still describes the new host.
+        if case .code(_, let code) = item.block {
+            if case .code = self.item.block {} else {
+                nativeCodeChoice = NativeCodeText.enabled && (item.caret || code.utf8.count >= NativeCodeText.minimumBytes)
+            }
+        } else { nativeCodeChoice = nil }
         self.item = item
         sizes.removeAll(keepingCapacity: true)
-        view.rootView = NativeHostedMarkdownBlock(item: item, width: width)
+        view?.rootView = NativeHostedMarkdownBlock(item: item, width: width, nativeCodeChoice: nativeCodeChoice)
         applyAppearance()
         return true
     }
@@ -83,13 +102,13 @@ private struct NativeHostedMarkdownBlock: View {
         let dark = item.environment.colorScheme == .dark
         let increased = item.environment.contrast == .increased
         let name: NSAppearance.Name = increased ? (dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua) : (dark ? .darkAqua : .aqua)
-        view.appearance = NSAppearance(named: name)
+        view?.appearance = NSAppearance(named: name)
     }
     func measure(width: CGFloat) -> CGSize {
         if let cached = sizes.last(where: { $0.width == width }) { return cached }
         if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownBlocksMeasured += 1 }
         setWidth(width)
-        let size = CGSize(width: width, height: max(1, ceil(view.fittingSize.height)))
+        let size = CGSize(width: width, height: max(1, ceil(host().fittingSize.height)))
         if sizes.count == 4 { sizes.removeFirst() }
         sizes.append(size)
         measurementCount += 1
@@ -98,10 +117,11 @@ private struct NativeHostedMarkdownBlock: View {
     func setWidth(_ width: CGFloat) {
         guard self.width != width else { return }
         self.width = width
-        view.rootView = NativeHostedMarkdownBlock(item: item, width: width)
+        view?.rootView = NativeHostedMarkdownBlock(item: item, width: width, nativeCodeChoice: nativeCodeChoice)
     }
     func place(in container: NSView) {
         setWidth(frame.width)
+        let view = host()
         if view.frame != frame { view.frame = frame }
         if view.superview !== container { container.addSubview(view) }
     }
@@ -127,8 +147,8 @@ private struct NativeHostedMarkdownBlock: View {
     /// Evidence for regressions: pure scrolling must reuse exact measurements.
     var blockMeasurementCount: Int { blocks.reduce(0) { $0 + $1.measurementCount } }
     var retainedBlockCount: Int { blocks.count }
-    var hostedBlockCount: Int { blocks.count }
-    var mountedBlockCount: Int { blocks.reduce(0) { $0 + ($1.view.superview === self ? 1 : 0) } }
+    var hostedBlockCount: Int { blocks.reduce(0) { $0 + ($1.view == nil ? 0 : 1) } }
+    var mountedBlockCount: Int { blocks.reduce(0) { $0 + ($1.view?.superview === self ? 1 : 0) } }
 
     deinit { if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
 
@@ -149,7 +169,7 @@ private struct NativeHostedMarkdownBlock: View {
             else { blocks.append(NativeMarkdownBlockHost(item: item)) }
         }
         if blocks.count > source.count {
-            for block in blocks.dropFirst(source.count) { block.view.removeFromSuperview() }
+            for block in blocks.dropFirst(source.count) { block.view?.removeFromSuperview() }
             blocks.removeLast(blocks.count - source.count)
         }
         guard changed else { return }
@@ -216,10 +236,10 @@ private struct NativeHostedMarkdownBlock: View {
         }
     }
     private func containsSelection(_ block: NativeMarkdownBlockHost) -> Bool {
-        guard let responder = window?.firstResponder as? NSView else { return false }
-        if responder === block.view || responder.isDescendant(of: block.view) { return true }
+        guard let view = block.view, let responder = window?.firstResponder as? NSView else { return false }
+        if responder === view || responder.isDescendant(of: view) { return true }
         if let editor = responder as? NSTextView, editor.isFieldEditor, let owner = editor.delegate as? NSView {
-            return owner === block.view || owner.isDescendant(of: block.view)
+            return owner === view || owner.isDescendant(of: view)
         }
         return false
     }
@@ -238,7 +258,26 @@ private struct NativeHostedMarkdownBlock: View {
         let visible = viewport.isNull ? viewport : viewport.insetBy(dx: 0, dy: -max(240, viewport.height / 2))
         for block in blocks {
             if (!visible.isNull && block.frame.intersects(visible)) || containsSelection(block) { block.place(in: self) }
-            else if block.view.superview === self { block.view.removeFromSuperview() }
+            else if block.view?.superview === self { block.view?.removeFromSuperview() }
         }
+        // Reclaim distant trees only during the shared input-quiet budget.
+        // Measurements stay exact. Visible/nearby trees and selection owners
+        // survive; reconstruction is required only after travelling well away.
+        let retention = viewport.isNull ? viewport : viewport.insetBy(dx: 0, dy: -max(720, viewport.height * 3))
+        let candidates = blocks.filter { $0.view != nil && $0.view?.superview == nil &&
+            (retention.isNull || !$0.frame.intersects(retention)) && !containsSelection($0) }
+        guard !candidates.isEmpty else { TranscriptIdleScheduler.shared.cancel(self); return }
+        var cursor = 0
+        TranscriptIdleScheduler.shared.request(self, after: ProcessInfo.processInfo.systemUptime + TranscriptNativeDocument.sliceQuietPeriod) { [weak self] in
+            guard let self else { return false }
+            while cursor < candidates.count {
+                let block = candidates[cursor]; cursor += 1
+                guard block.view != nil, block.view?.superview == nil, !self.containsSelection(block) else { continue }
+                block.releaseDetachedHost()
+                return cursor < candidates.count
+            }
+            return false
+        }
+
     }
 }

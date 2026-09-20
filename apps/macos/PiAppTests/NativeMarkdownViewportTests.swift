@@ -90,6 +90,13 @@ final class NativeMarkdownViewportTests: XCTestCase {
         let selection = editor.selectedRange
         await nextMainTurn()
         let measured = body.blockMeasurementCount
+        for _ in 0..<160 where body.hostedBlockCount > 40 {
+            try await Task.sleep(for: .milliseconds(16))
+            TranscriptIdleScheduler.shared.runReady()
+        }
+        XCTAssertLessThan(body.hostedBlockCount, 40, "Distant native trees are released after the shared idle budget; all block records remain")
+        XCTAssertEqual(body.retainedBlockCount, 160)
+        XCTAssertTrue(field.currentEditor() === editor, "Idle reclamation must keep the selected field alive")
 
         await scroll(to: initialHeight - outer.contentView.bounds.height, scroll: outer, hosted: hosted, window: window)
         XCTAssertTrue(window.firstResponder === editor)

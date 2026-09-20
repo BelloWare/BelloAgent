@@ -4,6 +4,37 @@ import XCTest
 @testable import PiApp
 
 final class NativeCodeTextTests: XCTestCase {
+    @MainActor func testStreamingFenceStartsNativeAndKeepsSelectionThroughGrowthAndCompletion() throws {
+        var source = "let selected = 1\n"
+        let host = NSHostingView(rootView: CodeBlockView(language: "swift", code: source, streaming: true).frame(width: 620).fixedSize(horizontal: false, vertical: true))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        func find(_ view: NSView) -> TranscriptCodeTextView? {
+            if let code = view as? TranscriptCodeTextView { return code }
+            return view.subviews.compactMap { find($0) }.first
+        }
+        host.layoutSubtreeIfNeeded()
+        let code = try XCTUnwrap(find(host))
+        XCTAssertTrue(window.makeFirstResponder(code))
+        let selected = (source as NSString).range(of: "selected")
+        code.setSelectedRange(selected)
+        var samples: [Double] = []
+        for index in 0..<160 {
+            source += "// v\(index) " + String(repeating: "x", count: 110) + "\n"
+            let start = ProcessInfo.processInfo.systemUptime
+            host.rootView = CodeBlockView(language: "swift", code: source, streaming: index < 159).frame(width: 620).fixedSize(horizontal: false, vertical: true)
+            host.layoutSubtreeIfNeeded(); _ = host.fittingSize
+            samples.append((ProcessInfo.processInfo.systemUptime - start) * 1000)
+            XCTAssertTrue(find(host) === code)
+            XCTAssertEqual(code.selectedRange(), selected)
+        }
+        XCTAssertEqual(code.string, source)
+        XCTAssertGreaterThan(source.utf8.count, NativeCodeText.minimumBytes)
+        let sorted = samples.sorted()
+        print("PERF growing live code samples=160 p50Ms=\(sorted[79]) p95Ms=\(sorted[151]) maxMs=\(sorted.last!)")
+    }
+
     @MainActor func testNativeCodeAppendsWithoutReplacingSelectionOrChangingLiteralSource() throws {
         let view = TranscriptCodeTextView()
         let code = "let value = \"中文🙂\" // literal https://example.invalid\nprint(value)\n"
