@@ -27,6 +27,7 @@ extension WorkspaceModel {
     }
     func releaseUpdateBarrier() { installPreparing = false }
     func shutdown() {
+        liveActivity.shutdown()
         cancelAutomaticContext()
         for pending in hostStarts.values { pending.task.cancel() }
         for pending in sessionOpenings.values { pending.task.cancel() }

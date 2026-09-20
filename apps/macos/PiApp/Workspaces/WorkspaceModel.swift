@@ -152,6 +152,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// The panel observes only committed activity/usage changes, never text or
     /// unrelated workspace presentation. Dirty IDs are projected once per window.
     let activityChanged = PassthroughSubject<Void, Never>()
+    let liveActivity = LiveActivityStore()
+    private var monitoredDisplays: [String: String] = [:]
     var activityRows: [String: MenuBarActivityRow] = [:]
     var activityDirtyIDs: Set<String> = []
     var activitySnapshot = MenuBarActivitySnapshot()
@@ -161,16 +163,24 @@ enum WorkspacePage: String, Sendable { case chats, report }
         if let id { activityDirtyIDs.insert(id) }
         else { activityDirtyIDs.formUnion(displays.keys); activityDirtyIDs.formUnion(unreadStates.keys); activityDirtyIDs.formUnion(activityRows.keys) }
         activityChanged.send()
+        // Read only the affected committed phase, never text or the chat array.
+        if let id, let view = displays[id], let item = record(id) {
+            let phase = view.uncertain ? "interrupted" : view.state == "error" ? "error" : view.state == "paused" ? "paused" : view.loading ? "starting" : view.busy ? (view.activity["phase"]?.string ?? (view.state == "queued" ? "queued" : "starting")) : "idle"
+            liveActivity.phase(phase, workspace: item.workspaceID, session: id)
+        }
     }
     private var activityObservers: [ObjectIdentifier: AnyCancellable] = [:]
     private func syncActivityObservers() {
         let live = Set(displays.values.map(ObjectIdentifier.init))
         guard live != Set(activityObservers.keys) else { return }
+        for (id, workspace) in monitoredDisplays where displays[id] == nil { liveActivity.forget(workspace: workspace, session: id); monitoredDisplays[id] = nil }
         activityObservers = activityObservers.filter { live.contains($0.key) }
         for view in displays.values where activityObservers[ObjectIdentifier(view)] == nil {
             let id = view.id
+            if let item = record(id) { monitoredDisplays[id] = item.workspaceID }
             activityObservers[ObjectIdentifier(view)] = view.activityChanges.merge(with: view.footer.activityChanges)
                 .sink { [weak self] _ in self?.noteActivityChanged(id) }
+            noteActivityChanged(id)
         }
         noteActivityChanged()
     }

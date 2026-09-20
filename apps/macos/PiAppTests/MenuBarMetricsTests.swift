@@ -95,7 +95,7 @@ final class MenuBarMetricsTests: XCTestCase {
 
     @MainActor func testStatusControllerSupportsBothMouseButtons() {
         XCTAssertEqual(MenuBarController.clickEvents, [.leftMouseUp, .rightMouseUp])
-        XCTAssertEqual(MenuBarChartMetric.allCases.map(\.title), ["Requests", "Cost", "Output tok/s"])
+        XCTAssertEqual(MenuBarChartMetric.allCases.map(\.title), ["Requests", "Tokens", "Cost", "Output tok/s"])
     }
 
     func testMenuBarBucketsSliceThePeriodAndCarryCostAndOutputRate() async throws {

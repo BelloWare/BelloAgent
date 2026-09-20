@@ -41,6 +41,7 @@ extension WorkspaceModel {
         host.onLoss = { [weak self, weak host] in
             guard let self, let host, self.hosts[workspace.id] === host else { return }
             self.boundHostConnections.removeValue(forKey: workspace.id)
+            self.liveActivity.disconnect(workspace.id)
             self.discardLostSides(workspaceID: workspace.id)
             for chat in self.chats where chat.workspaceID == workspace.id {
                 self.opened.remove(chat.id); self.displays[chat.id]?.captureAvailable = false

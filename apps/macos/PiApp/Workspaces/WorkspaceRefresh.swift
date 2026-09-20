@@ -33,6 +33,8 @@ extension WorkspaceModel {
                 guard current() else { return }
                 let visible = id == selectedID || sides[selectedID ?? ""]?.id == id
                 var params: [String: WireValue] = ["includeMessages": .bool(!view.browsingHistory)]
+                if let epoch = view.monitoringEpoch { params["monitoringEpoch"] = .string(epoch) }
+                if let cursor = view.monitoringCursor { params["monitoringCursor"] = .number(cursor) }
                 let requestedRevision = view.projectionRevision
                 if let requestedRevision { params["displayRevision"] = .string(requestedRevision) }
                 // Ask for changes to the page this display holds rather than
@@ -70,6 +72,10 @@ extension WorkspaceModel {
                     // find out by recounting every chat once a second.
                     // The same decision that asked the helper for the figures.
                     view.observeContext(result)
+                    if let monitoring = result["monitoring"]?.object {
+                        liveActivity.ingest(monitoring, workspace: item.workspaceID, session: id, connectionTest: item.connectionTest == true)
+                        view.monitoringEpoch = monitoring["epoch"]?.string; view.monitoringCursor = monitoring["cursor"]?.number
+                    }
                     if wantsMetrics {
                         view.footerUpdatedAt = now
                         if let timing = result["turnMetrics"]?.object, timing != view.turnTiming { view.turnTiming = timing }

@@ -122,6 +122,13 @@ final class CaptureMacIntegrationTests: XCTestCase {
         XCTAssertEqual(state["requests"]?.number, 40)
         XCTAssertEqual(state["textDeltas"]?.number, 660)
         XCTAssertEqual(state["errors"]?.array, []); XCTAssertEqual(state["cancelled"]?.array, [])
+        let monitoringDeadline = Date().addingTimeInterval(5)
+        while model.liveActivity.accumulator.completions.count < 40, Date() < monitoringDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(model.liveActivity.accumulator.completions.count, 40, "The hidden popup feed observes each real attempt exactly once")
+        XCTAssertTrue(model.liveActivity.accumulator.active.isEmpty)
+        XCTAssertEqual(model.liveActivity.publications, 0, "Concurrent ingestion must not publish into a hidden popup")
         let (capturedBytes, _) = try await URLSession.shared.data(from: URL(string: base + "/captures")!)
         let captures = try JSONDecoder().decode([[String: WireValue]].self, from: capturedBytes)
         XCTAssertEqual(captures.count, 40)

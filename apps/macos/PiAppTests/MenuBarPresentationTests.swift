@@ -171,7 +171,7 @@ final class MenuBarPresentationTests: XCTestCase {
             XCTAssertEqual(period, .day); XCTAssertEqual(offset, 0)
             reads += 1
             return snapshot
-        }, activity: { activity }, openApp: {}, openReport: {})
+        }, activity: { activity }, initialTab: .usage, openApp: {}, openReport: {})
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 428, height: 720), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .aqua)

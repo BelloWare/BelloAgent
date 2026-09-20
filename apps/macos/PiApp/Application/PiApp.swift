@@ -109,28 +109,18 @@ extension FocusedValues {
         // XCTest installs this controller with its isolated fixture model.
         guard ProcessInfo.processInfo.environment["PI_APP_TESTING"] != "1" else { return }
         menuBar.install {
-            VStack(spacing: 0) {
                 MenuBarMetricsView(load: { period, until, offset in
                     try await model.ensureConfiguration()
                     return try await model.traces.menuBarMetrics(period: period, until: until, offset: offset)
                 }, activity: { model.menuBarActivity() },
                    activityChanges: { model.menuBarActivityChanges },
+                   live: model.liveActivity,
                    openApp: revealWorkspace,
                    openReport: { revealWorkspace(); model.openReport() },
                    openSession: { id in
                        revealWorkspace()
                        Task { if model.side(id) != nil { await model.selectSide(id) } else { await model.select(id) } }
                    })
-                Divider()
-                HStack {
-                    Spacer()
-                    Button("Quit Bello Agent") { NSApplication.shared.terminate(nil) }
-                        .buttonStyle(.piGhost)
-                        .accessibilityIdentifier("menu-bar-quit")
-                }.padding(.horizontal, PiSpacing.md).padding(.vertical, PiSpacing.xs)
-            }
-            .frame(width: 428)
-            .background(Color.piContent)
         }
     }
     private func revealWorkspace() {

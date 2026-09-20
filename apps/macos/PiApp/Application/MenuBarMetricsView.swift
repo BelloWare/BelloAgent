@@ -5,8 +5,8 @@ import Charts
 
 typealias MenuBarMetricsLoader = @MainActor (MenuBarPeriod, Date, Int) async throws -> MenuBarSnapshot
 /// The status-bar charts switch between requests, reported cost and output rate.
-enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
-    var title: String { switch self { case .requests: "Requests"; case .cost: "Cost"; case .rate: "Output tok/s" } }
+enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rate
+    var title: String { switch self { case .requests: "Requests"; case .tokens: "Tokens"; case .cost: "Cost"; case .rate: "Output tok/s" } }
 }
 
 /// Queries run on the bounded read-only report worker. Closing the panel cancels
@@ -121,132 +121,26 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
     }
 }
 
-@MainActor struct MenuBarMetricsView: View {
-    @StateObject private var controller: MenuBarMetricsController
+@MainActor struct MenuBarUsageView: View {
+    @ObservedObject var controller: MenuBarMetricsController
     @State private var chartMetric = MenuBarChartMetric.requests
     @State private var showingUsageDetails = false
-    private let openApp: () -> Void
-    private let openReport: () -> Void
-    private let openSession: (String) -> Void
-
-    init(load: @escaping MenuBarMetricsLoader, activeSessions: @escaping @MainActor () -> Int = { 0 }, activity: (@MainActor () -> MenuBarActivitySnapshot)? = nil, activityChanges: (@MainActor () -> AnyPublisher<Void, Never>)? = nil, openApp: @escaping () -> Void, openReport: @escaping () -> Void, openSession: @escaping (String) -> Void = { _ in }) {
-        _controller = StateObject(wrappedValue: MenuBarMetricsController(load: load, activeSessions: activeSessions, activity: activity, activityChanges: activityChanges))
-        self.openApp = openApp; self.openReport = openReport; self.openSession = openSession
-    }
-
+    @State private var chartSelection: Date?
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: PiSpacing.sm) {
-                Image(nsImage: NSApplication.shared.applicationIconImage).resizable().frame(width: 30, height: 30)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Bello Agent").font(PiFont.title(18)).foregroundStyle(Color.piInk)
-                    Text("\(controller.activity.running) running · \(controller.activity.generating) generating").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                        .accessibilityIdentifier("menu-bar-running-count")
-                }
-                Spacer()
-                if controller.loading { ProgressView().controlSize(.small) }
-                PiIconButton(symbol: "arrow.clockwise", label: "Refresh activity and usage", size: 28) { controller.refresh() }
-            }.padding(PiSpacing.lg)
-            Rectangle().fill(Color.piHairline).frame(height: 1)
-            ScrollView {
-                VStack(alignment: .leading, spacing: PiSpacing.lg) {
-                    now(controller.activity)
-                    VStack(alignment: .leading, spacing: PiSpacing.md) {
-                        PiTabs(selection: $controller.period, items: MenuBarPeriod.allCases.map { ($0, $0.title) })
-                        if !controller.notice.isEmpty {
-                            Text(controller.notice).font(PiFont.caption).foregroundStyle(Color.piDanger)
-                                .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("menu-bar-metrics-error")
-                        }
-                        if let snapshot = controller.snapshot {
-                            usage(snapshot)
-                            charts(snapshot)
-                            distribution(snapshot)
-                            DisclosureGroup("Usage details", isExpanded: $showingUsageDetails) {
-                                VStack(alignment: .leading, spacing: PiSpacing.md) {
-                                    usageDetails(snapshot)
-                                    requestActivity(snapshot)
-                                    scope(snapshot)
-                                }.padding(.top, PiSpacing.sm)
-                            }.font(PiFont.caption.weight(.medium))
-                                .accessibilityIdentifier("menu-bar-usage-details")
-                        } else {
-                            VStack(spacing: PiSpacing.sm) {
-                                Image(systemName: "chart.bar.xaxis").font(.system(size: 26)).foregroundStyle(Color.piAccent)
-                                Text(controller.loading ? "Reading retained metrics…" : "Metrics unavailable")
-                                    .font(PiFont.title(17)).foregroundStyle(Color.piInk)
-                                Text("Uses local request metadata; no model call is made.")
-                                    .font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                            }.frame(maxWidth: .infinity, minHeight: 180)
-                        }
-                    }
-                }.padding(PiSpacing.lg)
-            }.frame(maxHeight: .infinity)
-            Rectangle().fill(Color.piHairline).frame(height: 1)
-            HStack(spacing: PiSpacing.sm) {
-                Button("Open Bello Agent", action: openApp).buttonStyle(.piPrimaryCompact)
-                Button("Report", action: openReport).buttonStyle(.piSecondaryCompact)
-                Spacer()
-            }.padding(PiSpacing.md)
-        }
-        .frame(width: 428, height: 720)
-        .background(Color.piContent)
-        .tint(Color.piAccent)
-        .background(WindowVisibilityReader(onChange: controller.setVisible))
-        .onDisappear { controller.setVisible(false) }
-        .accessibilityIdentifier("menu-bar-metrics")
-    }
-
-    /// Current work, using existing host state and reported accounting. Only
-    /// the tiny elapsed labels tick; clocks do not poll history or providers.
-    private func now(_ activity: MenuBarActivitySnapshot) -> some View {
-        let rows = activity.runningRows
-        return VStack(alignment: .leading, spacing: PiSpacing.sm) {
-            PiSectionHeader("Live activity", subtitle: rows.isEmpty ? "All quiet" : "\(activity.running) running · \(activity.generating) generating · \(activity.runningPending) queued inputs")
-            if rows.isEmpty {
-                Text("No sessions are running.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
+        VStack(alignment: .leading, spacing: PiSpacing.lg) {
+            PiTabs(selection: $controller.period, items: MenuBarPeriod.allCases.map { ($0, $0.title) }).id("period")
+            if !controller.notice.isEmpty { Text(controller.notice).font(PiFont.caption).foregroundStyle(Color.piDanger).accessibilityIdentifier("menu-bar-metrics-error") }
+            if let snapshot = controller.snapshot {
+                usage(snapshot).id("totals")
+                charts(snapshot).id("chart")
+                distribution(snapshot).id("models")
+                DisclosureGroup("Usage details", isExpanded: $showingUsageDetails) {
+                    VStack(alignment: .leading, spacing: PiSpacing.md) { usageDetails(snapshot); requestActivity(snapshot); scope(snapshot) }.padding(.top, PiSpacing.sm)
+                }.font(PiFont.caption).id("details").accessibilityIdentifier("menu-bar-usage-details")
+            } else {
+                Text(controller.loading ? "Reading retained metrics…" : "Metrics unavailable").font(PiFont.body).frame(maxWidth: .infinity, minHeight: 180)
             }
-            VStack(spacing: 4) {
-                ForEach(Array(rows.prefix(12))) { row in chatRow(row) }
-            }
-            if rows.count > 12 {
-                Text("Showing 12 of \(rows.count) chats. Open Bello Agent to see all.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-            }
-        }.accessibilityIdentifier("menu-bar-activity")
-    }
-    private func chatRow(_ row: MenuBarActivityRow) -> some View {
-        Button { openSession(row.id) } label: {
-            HStack(spacing: PiSpacing.sm) {
-                ZStack {
-                    if row.running { ProgressView().controlSize(.mini) }
-                    else if row.needsAttention { Image(systemName: "exclamationmark.circle.fill").font(.system(size: 12)).foregroundStyle(row.phase == "error" ? Color.piDanger : Color.piWarning) }
-                    else { UnreadDot() }
-                }.frame(width: 16, height: 16)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.title).font(PiFont.body.weight(.medium)).foregroundStyle(Color.piInk).lineLimit(1)
-                    Text([row.phaseLabel, row.workspace].filter { !$0.isEmpty }.joined(separator: " · "))
-                        .font(PiFont.caption).foregroundStyle(row.running ? Color.piAccent : Color.piInkSecondary).lineLimit(1)
-                    if !row.model.isEmpty {
-                        Text(row.model + (row.resolvedModel.map { " · last route: " + $0 } ?? ""))
-                            .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(1).help("Requested model: \(row.model)" + (row.resolvedModel.map { "\nLast reported route: " + $0 } ?? ""))
-                    }
-                    HStack(spacing: 6) {
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            if let elapsed = row.elapsed(at: context.date) { Text(TranscriptActivity.formatDuration(elapsed)).monospacedDigit() }
-                        }
-                        if let rate = row.latestRate { Text("Latest " + SessionRatePresentation.compactRate(rate)).help(SessionRatePresentation.explanation) }
-                        if row.followUps + row.steering > 0 { Text("\(row.followUps + row.steering) queued") }
-                    }.font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-                    if row.tokens != nil || row.costUSD != nil {
-                        Text("Session: \(menuBarTokens(row.tokens)) tokens · \(gatewayUSD(row.costUSD))")
-                            .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).monospacedDigit()
-                    }
-                }
-                Spacer(minLength: 6)
-                Image(systemName: "arrow.up.right").font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, PiSpacing.md).padding(.vertical, 7).piInset()
-        }.buttonStyle(.plain).piPointer().accessibilityLabel("Open \(row.title), \(row.phaseLabel)")
-            .accessibilityIdentifier("menu-bar-running-session-\(row.id)")
+        }.scrollTargetLayout()
     }
 
     /// Requests, cost or output rate per time slice of the selected period.
@@ -260,12 +154,17 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
                 if buckets.isEmpty {
                     Text("No dispatched requests in this scope.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary).frame(height: 110)
                 } else {
-                    Chart(buckets) { bucket in
+                    Chart {
+                        ForEach(buckets) { bucket in
                         switch chartMetric {
                         case .requests:
                             RectangleMark(xStart: .value("From", bucket.start), xEnd: .value("Until", bucket.end), yStart: .value("Count", 0), yEnd: .value("Count", bucket.requests))
                                 .foregroundStyle(Color.piBrandOrange).cornerRadius(2)
                                 .accessibilityLabel(bucket.start.formatted()).accessibilityValue("\(bucket.requests) requests")
+                        case .tokens:
+                            if let tokens = bucket.gateway.tokens?.total {
+                                RectangleMark(xStart: .value("From", bucket.start), xEnd: .value("Until", bucket.end), yStart: .value("Tokens", 0), yEnd: .value("Tokens", tokens)).foregroundStyle(Color.piAccent)
+                            }
                         case .cost:
                             if let cost = bucket.gateway.costUSD {
                                 RectangleMark(xStart: .value("From", bucket.start), xEnd: .value("Until", bucket.end), yStart: .value("USD", 0), yEnd: .value("USD", cost))
@@ -274,28 +173,44 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
                             }
                         case .rate:
                             if let rate = bucket.historicalRate.tokensPerSecond {
-                                LineMark(x: .value("Time", bucket.start), y: .value("tok/s", rate)).foregroundStyle(Color.piAccent).interpolationMethod(.monotone)
                                 PointMark(x: .value("Time", bucket.start), y: .value("tok/s", rate)).foregroundStyle(Color.piAccent).symbolSize(22)
                                     .accessibilityLabel(bucket.start.formatted()).accessibilityValue("\(menuBarRate(rate)) output tokens per second over \(bucket.historicalRate.samples) requests")
                             }
                         }
+                        }
+                        if let selected = selectedBucket(snapshot) { RuleMark(x: .value("Selected", selected.start)).foregroundStyle(Color.piInkTertiary) }
                     }
                     .chartXScale(domain: domain)
+                    .chartXSelection(value: $chartSelection)
+                    .focusable().onMoveCommand { direction in
+                        let index = selectedBucket(snapshot).flatMap { b in buckets.firstIndex { $0.id == b.id } } ?? buckets.count - 1
+                        let step = direction == .left ? -1 : direction == .right ? 1 : 0
+                        chartSelection = buckets[max(0, min(buckets.count - 1, index + step))].start
+                    }
                     .chartYAxis { AxisMarks(position: .leading) { AxisGridLine().foregroundStyle(Color.piHairline); AxisValueLabel().foregroundStyle(Color.piInkTertiary) } }
                     .chartXAxis { AxisMarks { AxisGridLine().foregroundStyle(Color.piHairline); AxisValueLabel(format: axisFormat).foregroundStyle(Color.piInkTertiary) } }
                     .frame(height: 110)
                     .accessibilityIdentifier("menu-bar-chart-\(chartMetric.rawValue)")
                 }
                 Text(chartCaption(snapshot)).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
+                if let bucket = selectedBucket(snapshot) {
+                    Text("\(bucket.start.formatted(date: .abbreviated, time: .shortened)): \(bucket.requests) requests · \(menuBarTokens(bucket.gateway.tokens?.total)) tokens · \(gatewayUSD(bucket.gateway.costUSD)) · \(menuBarRate(bucket.historicalRate.tokensPerSecond)) completed-request tok/s")
+                        .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
     private func chartCaption(_ snapshot: MenuBarSnapshot) -> String {
         switch chartMetric {
         case .requests: "\(snapshot.counts.dispatched) dispatched requests · tool rounds and compactions included"
+        case .tokens: "Input + output; cached input and reasoning are included once. \(snapshot.gateway.tokens?.samples ?? 0)/\(snapshot.gateway.requests) requests reported both."
         case .cost: "\(gatewayUSD(snapshot.gateway.costUSD)) reported · \(snapshot.gateway.costSamples)/\(snapshot.gateway.requests) requests reported cost"
         case .rate: "\(menuBarRate(snapshot.historicalRate.tokensPerSecond)) tok/s over \(snapshot.historicalRate.samples) completed requests · output tokens ÷ dispatch-to-completion time"
         }
+    }
+    private func selectedBucket(_ snapshot: MenuBarSnapshot) -> MenuBarBucket? {
+        guard let chartSelection else { return nil }
+        return snapshot.buckets.first { $0.start <= chartSelection && $0.end > chartSelection }
     }
 
     private func usage(_ snapshot: MenuBarSnapshot) -> some View {
@@ -357,29 +272,10 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
             if snapshot.models.isEmpty {
                 Text("No dispatched requests in this scope.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
             } else {
-                Chart(snapshot.models) { item in
-                    BarMark(x: .value("Requests", item.gateway.requests), y: .value("Model", modelChartLabel(item)))
-                        .foregroundStyle(item.resolvedModel == nil ? Color.piWarning : Color.piBrandOrange).cornerRadius(3)
-                        .annotation(position: .trailing, alignment: .leading, spacing: 4) {
-                            Text(item.requestShare.formatted(.percent.precision(.fractionLength(0)))).font(PiFont.micro.monospacedDigit()).foregroundStyle(Color.piInkSecondary)
-                        }
-                        .accessibilityLabel(modelChartLabel(item)).accessibilityValue("\(item.gateway.requests) requests")
-                }
-                .chartXAxis(.hidden)
-                .chartYAxis { AxisMarks(preset: .aligned) { value in
-                    // A long model id must not squeeze the bars out of the popover: one
-                    // line, cut in the middle, never wider than about two fifths of the chart.
-                    AxisValueLabel {
-                        Text(value.as(String.self) ?? "").font(PiFont.caption).foregroundStyle(Color.piInk)
-                            .lineLimit(1).truncationMode(.middle).frame(maxWidth: 156, alignment: .trailing)
-                    }
-                } }
-                .chartXScale(domain: 0...Double(max(1, snapshot.models.map(\.gateway.requests).max() ?? 1)) * 1.18)
-                .frame(height: CGFloat(snapshot.models.count) * 24 + 8)
-                .accessibilityIdentifier("menu-bar-model-chart")
             }
             ForEach(snapshot.models) { item in
-                VStack(alignment: .leading, spacing: 5) {
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 5) {
                     HStack(alignment: .firstTextBaseline) {
                         // Ids are cut in the middle so the numbers keep their column; the full id is in the tooltip.
                         Text(item.requestedAlias.isEmpty ? "Alias unavailable" : item.requestedAlias)
@@ -404,7 +300,14 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
                         .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
                     Text("\(menuBarRate(item.historicalRate.tokensPerSecond)) historical tok/s · \(item.historicalRate.samples) completed requests timed")
                         .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
-                }.padding(PiSpacing.md).piInset().accessibilityElement(children: .combine)
+                    }
+                } label: {
+                    HStack {
+                        Text(modelChartLabel(item)).lineLimit(1).truncationMode(.middle).help(modelChartLabel(item))
+                        Spacer(minLength: 8)
+                        Text(item.requestShare.formatted(.percent.precision(.fractionLength(0)))).monospacedDigit()
+                    }.font(PiFont.caption)
+                }.padding(PiSpacing.md).piInset()
             }
             if snapshot.modelGroups > MenuBarSnapshot.pageSize {
                 PiPager(previous: controller.previousPage, next: controller.nextPage, canPrevious: controller.offset > 0 && !controller.loading, canNext: snapshot.hasNext && !controller.loading) {
@@ -423,6 +326,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
     }
     private func scope(_ snapshot: MenuBarSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 4) {
+            Text("As of " + (snapshot.summaryReadAt ?? snapshot.until).formatted(date: .abbreviated, time: .standard))
             if let from = snapshot.from {
                 Text("\(from.formatted(date: .abbreviated, time: .shortened)) – \(snapshot.until.formatted(date: .abbreviated, time: .shortened))")
             }
@@ -434,7 +338,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
     }
 }
 
-private func menuBarRate(_ value: Double?) -> String {
+func menuBarRate(_ value: Double?) -> String {
     guard let value, value.isFinite, value >= 0 else { return "—" }
     return value.formatted(.number.precision(.fractionLength(1)))
 }

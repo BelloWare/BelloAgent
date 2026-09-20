@@ -19,9 +19,15 @@ struct MenuBarActivityRow: Identifiable, Equatable, Sendable {
     var costUSD: Double?
     var retryAttempt: Int?
     var retryLimit: Int?
+    var utility = false
+    var ttft: Double?
+    var uncertain = false
+    var errorDetail: String?
+    var actionable = true
     var running: Bool { ["starting", "model", "tool", "compacting", "stopping"].contains(phase) }
     var needsAttention: Bool { ["queued", "paused", "error"].contains(phase) }
     var phaseLabel: String {
+        if uncertain { return "Interrupted · review outcome" }
         if let retryAttempt, let retryLimit { return "Retrying · attempt \(retryAttempt) of \(retryLimit)" }
         switch phase {
         case "starting": return "Starting"
@@ -112,6 +118,10 @@ extension WorkspaceModel {
             row.startedAt = activityNumber(view.turnTiming["startedAt"])
             row.elapsedMs = activityNumber(view.turnTiming["elapsedMs"])
             row.latestRate = view.footer.timing.latest?.outputTokensPerSecond
+            row.ttft = view.footer.timing.latest?.ttftMilliseconds
+            row.utility = record.isBackgroundTask
+            row.uncertain = view.uncertain || view.state == "interrupted"
+            row.errorDetail = (view.failureMessage ?? (row.uncertain ? view.notice : nil)).map { String($0.prefix(512)) }
             row.tokens = totals?.tokens?.total
             row.costUSD = totals?.costUSD
             if view.runStatus == "retrying" {
