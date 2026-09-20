@@ -5,13 +5,19 @@ import Foundation
 // focused, and the displays of chats nobody is reading let go of.
 
 extension WorkspaceModel {
-    func select(_ id: String, revealInSidebar: Bool = true) async {
+    func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveFilter: Bool = false) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
-        PerformanceProbe.shared.observe("sessionSelectionCalls", milliseconds: 1)
+        PerformanceProbe.shared.count("sessionSelectionCalls")
         selectionRevision += 1
         let selection = selectionRevision
         if let previous = selectedID, previous != id, isPendingEmpty(previous) { discardPendingChat(previous) }
-        if revealInSidebar { revealProjectChat(item) } else { showArchivedSessions = item.isArchived }
+        if preserveArchiveFilter {
+            // Bulk archive's final pane can itself be archived. The old loop
+            // opened it while active, then left it open; retain that destination
+            // without briefly switching the sidebar to Archive.
+            setProjectExpanded(item.workspaceID, expanded: true)
+            if let topicID = effectiveTopicID(for: item) { setTopicExpanded(topicID, expanded: true) }
+        } else if revealInSidebar { revealProjectChat(item) } else { showArchivedSessions = item.isArchived }
         PerformanceProbe.shared.beginSelection(id, hasHistory: item.path != nil)
         selectedID = id; profileChoice = item.profileID
         clearFailureMark(sessionID: id)

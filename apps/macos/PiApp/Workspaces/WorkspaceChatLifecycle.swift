@@ -57,11 +57,23 @@ extension WorkspaceModel {
         guard pendingChatIDs.contains(id), let item = chats.first(where: { $0.id == id }) else { return }
         guard let store else { throw StoreError.unavailable }
         try await store.put(item, kind: "chat", id: id)
+        PerformanceProbe.shared.count("pendingChatCreationWrites")
+        // Navigation can discard a still-empty placeholder while this actor
+        // write is pending. Do not leave a resurrected desktop row on restart.
+        guard record(id) != nil else {
+            try await store.remove(kind: "chat", id: id)
+            PerformanceProbe.shared.count("pendingChatDiscardCleanupWrites")
+            pendingChatIDs.remove(id)
+            return
+        }
         if let index = chats.firstIndex(where: { $0.id == id }) {
             chats[index].topicID = effectiveTopicID(for: chats[index])
         }
         pendingChatIDs.remove(id)
-        if let draft = displays[id]?.savedDraft, !draft.text.isEmpty || !(draft.attachments ?? []).isEmpty { try await store.put(draft, kind: "draft", id: id) }
+        if let draft = displays[id]?.savedDraft, !draft.text.isEmpty || !(draft.attachments ?? []).isEmpty {
+            try await store.put(draft, kind: "draft", id: id)
+            PerformanceProbe.shared.count("pendingChatDraftWrites")
+        }
     }
     /// Drops a pending chat that never received a message. Nothing was written.
     func discardPendingChat(_ id: String) {

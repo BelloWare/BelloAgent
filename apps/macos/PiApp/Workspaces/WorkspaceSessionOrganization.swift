@@ -41,7 +41,7 @@ struct SidebarChatEntry: Identifiable {
 
     func invalidate() {
         archiveCounts = nil
-        PerformanceProbe.shared.observe("sidebarIndexInvalidations", milliseconds: 1)
+        PerformanceProbe.shared.count("sidebarIndexInvalidations")
         chatsByID = nil; sidesByID = nil; projectGroups = nil; chatOrder = nil
         if !entryLists.isEmpty { entryLists.removeAll(keepingCapacity: true) }
         if !groupChats.isEmpty { groupChats.removeAll(keepingCapacity: true); groupedProjects.removeAll(keepingCapacity: true) }

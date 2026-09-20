@@ -13,8 +13,28 @@ struct SessionReadState: Codable, Sendable, Equatable, Identifiable {
     var revision: Int64 = 0
 }
 
+struct SidebarReadCounts {
+    var unreadChats = 0
+    var dockChats = 0
+    var projects: Set<String> = []
+}
+
 extension WorkspaceModel {
-    var unreadCount: Int { unreadStates.keys.filter { unreadOutputCount(sessionID: $0) > 0 }.count }
+    private var sidebarReadCounts: SidebarReadCounts {
+        if let readBadgeCache { return readBadgeCache }
+        var counts = SidebarReadCounts()
+        for state in unreadStates.values {
+            guard let chat = record(state.id), !chat.isArchived, chat.connectionTest != true else { continue }
+            if state.unreadOutputs > 0 {
+                counts.unreadChats += 1
+                if state.unreadFailure != true { counts.dockChats += 1 }
+            }
+            if state.unreadOutputs > 0 || state.unreadFailure == true { counts.projects.insert(chat.workspaceID) }
+        }
+        readBadgeCache = counts
+        return counts
+    }
+    var unreadCount: Int { sidebarReadCounts.unreadChats }
     func unreadOutputCount(sessionID: String) -> Int {
         guard let item = record(sessionID), item.connectionTest != true, !item.isArchived else { return 0 }
         return unreadStates[sessionID]?.unreadOutputs ?? 0
@@ -22,9 +42,7 @@ extension WorkspaceModel {
     /// Whether a collapsed group has to show its dot. Driven from the unread
     /// states, which are few, rather than from every chat of the project.
     func projectHasUnread(_ projectID: String) -> Bool {
-        unreadStates.contains { id, state in
-            (state.unreadOutputs > 0 || state.unreadFailure == true) && record(id).map { $0.workspaceID == projectID && $0.connectionTest != true && !$0.isArchived } == true
-        }
+        sidebarReadCounts.projects.contains(projectID)
     }
     func unreadFailure(sessionID: String) -> Bool {
         guard let item = record(sessionID), item.connectionTest != true, !item.isArchived else { return false }
@@ -101,11 +119,8 @@ extension WorkspaceModel {
     /// many replies each holds. A chat whose run failed, and an archived chat,
     /// never count here. Archived chats also hide their sidebar marks.
     func updateDockBadge() {
-        PerformanceProbe.shared.observe("dockBadgeRecomputations", milliseconds: 1)
-        let total = unreadStates.values.filter { state in
-            guard state.unreadOutputs > 0, state.unreadFailure != true, let item = record(state.id), item.connectionTest != true, !item.isArchived else { return false }
-            return true
-        }.count
+        PerformanceProbe.shared.count("dockBadgeRecomputations")
+        let total = sidebarReadCounts.dockChats
         let label = total > 0 ? String(total) : nil
         if NSApp.dockTile.badgeLabel != label { NSApp.dockTile.badgeLabel = label }
     }

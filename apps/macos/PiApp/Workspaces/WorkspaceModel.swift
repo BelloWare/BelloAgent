@@ -12,10 +12,11 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// Every sidebar row, unread badge and menu-bar row looks a chat up by id.
     /// A linear scan made those lookups O(chats) each and the sidebar O(chats²).
     /// The sidebar index rebuilds its id table at most once per mutation, lazily.
-    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); chatsRevision &+= 1; noteActivityChanged() } }
+    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); chatsRevision &+= 1; readBadgeCache = nil; noteActivityChanged() } }
     /// A duplicate id keeps the first entry, matching `chats.first`.
     func chatRecord(_ id: String) -> ChatRecord? { sidebarIndex.chat(id, in: chats) }
-    @Published var unreadStates: [String: SessionReadState] = [:] { didSet { noteActivityChanged() } }
+    @Published var unreadStates: [String: SessionReadState] = [:] { didSet { readBadgeCache = nil; noteActivityChanged() } }
+    var readBadgeCache: SidebarReadCounts?
     var dirtyReadStates: Set<String> = []
     var readStateWrites: [String: Task<Void, Never>] = [:]
     @Published var profiles: [ProfileRecord] = [] { didSet { noteActivityChanged() } }
@@ -31,7 +32,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
     var organizationNavigationRevision = 0
     var organizationPresentationRevision = 0
     let organizationScheduler = SessionOrganizationScheduler()
-    var archiveStopQueue: [(String, SessionDisplay, HostSupervisor)] = []
+    var archiveStopQueue: [(String, Int, SessionDisplay, HostSupervisor)] = []
+    var archiveStopRevisions: [String: Int] = [:]
     var archiveStopWorkers = 0
     /// Optional delayed writer used by race/failure fixtures, never by production.
     var organizationWrite: (([String], ChatOrganizationChange) async throws -> ChatOrganizationBatch)?
@@ -123,7 +125,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
     @Published var resourceTargetSessionID: String?
     @Published var inspectorSessionID: String?
     @Published var messageViewerSessionID: String?
-    @Published var sides: [String: SideRecord] = [:] { didSet { sidebarIndex.invalidate() } }
+    @Published var sides: [String: SideRecord] = [:] { didSet { sidebarIndex.invalidate(); readBadgeCache = nil; noteActivityChanged() } }
     @Published var resourceLoading = false
     @Published var resourceNotice = ""
     /// Retained gateway totals for chats without a loaded display, keyed by chat id.

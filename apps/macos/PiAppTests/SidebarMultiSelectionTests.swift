@@ -114,8 +114,8 @@ final class SidebarMultiSelectionTests: XCTestCase {
         await model.store?.close()
     }
 
-    /// A bulk action runs one durable write at a time, so a chat can be deleted
-    /// while the loop is partway through it. The ones that are still there are
+    /// A bulk action crosses the store actor, so a chat can be deleted
+    /// while its write is pending. The ones that are still there are
     /// archived, and the reader is not told that the chat they just deleted
     /// could not be archived.
     @MainActor func testABulkActionSkipsAChatThatIsDeletedWhileItRuns() async throws {
@@ -127,7 +127,7 @@ final class SidebarMultiSelectionTests: XCTestCase {
         XCTAssertEqual(model.markedChats.count, 3)
 
         model.archiveMarkedSessions(true)
-        // The loop has not reached chat2 yet: it is awaiting its first write.
+        // The batch has not been admitted yet; deleting this target is a no-op.
         model.chats.removeAll { $0.id == "chat2" }
         try await eventually { model.record("chat1")?.isArchived == true && model.record("chat3")?.isArchived == true }
         XCTAssertNil(model.error, "A chat the reader deleted is nothing to report")

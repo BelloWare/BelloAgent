@@ -94,6 +94,36 @@ final class OrganizationBatchTests: XCTestCase {
         await store.close()
     }
 
+    @MainActor func testBusyArchivesBoundStopsAndRestoreSupersedesOnlyQueuedStops() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await model(root, count: 13); defer { model.shutdown() }
+        var commands: [[String: WireValue]] = []
+        let host = HostSupervisor(commandSender: { commands.append($0) })
+        try await host.connect(cwd: root, state: root.appendingPathComponent("host"))
+        model.hosts["p"] = host
+        for index in 1...12 {
+            let display = SessionDisplay(id: "chat\(index)")
+            display.state = index.isMultiple(of: 3) ? "compacting" : "running"
+            display.queueCount = index.isMultiple(of: 2) ? 1 : 0
+            model.displays[display.id] = display; model.opened.insert(display.id)
+        }
+        _ = try await model.enqueueOrganization((1...12).map { "chat\($0)" }, change: .archived(true)).value
+        for _ in 0..<200 where commands.count < 4 { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertEqual(commands.filter { $0["method"]?.string == "turn.stop" }.count, 4)
+        XCTAssertEqual(model.archiveStopWorkers, 4)
+        XCTAssertEqual(model.archiveStopQueue.count, 8)
+        XCTAssertTrue((1...12).allSatisfy { model.record("chat\($0)")?.isArchived == true }, "Metadata need not await a blocked helper acknowledgement")
+        _ = try await model.enqueueOrganization(["chat12"], change: .archived(false)).value
+        host.receive(.failed("Synthetic disconnected helper"), connectionID: try XCTUnwrap(host.connectionID))
+        for _ in 0..<200 where model.archiveStopWorkers > 0 { try await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertEqual(model.archiveStopWorkers, 0); XCTAssertTrue(model.archiveStopQueue.isEmpty)
+        XCTAssertEqual(model.displays["chat12"]?.state, "compacting", "Restore prevents an older queued Stop; already issued commands cannot be undone")
+        XCTAssertFalse(model.record("chat12")?.isArchived ?? true)
+        XCTAssertTrue(model.displays["chat1"]?.uncertain == true)
+        XCTAssertFalse(model.displays["chat1"]?.notice.isEmpty ?? true)
+        try await host.shutdownAndWait(); await model.store?.close()
+    }
+
     @MainActor func testArchiveAllKeepsFinalArchivedPaneAndFailureDoesNotPublish() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let model = try await model(root, count: 2); defer { model.shutdown() }
@@ -103,9 +133,51 @@ final class OrganizationBatchTests: XCTestCase {
         XCTAssertEqual(model.chats, before); XCTAssertEqual(model.selectionRevision, 0)
         model.organizationWrite = nil
         _ = try await model.enqueueOrganization(["chat0", "chat1"], change: .archived(true)).value
-        XCTAssertEqual(model.selectedID, "chat0"); XCTAssertEqual(model.focusedSessionID, "chat0")
-        XCTAssertFalse(model.showArchivedSessions); XCTAssertEqual(model.selectionRevision, 0)
+        XCTAssertEqual(model.selectedID, "chat1"); XCTAssertEqual(model.focusedSessionID, "chat1")
+        XCTAssertFalse(model.showArchivedSessions); XCTAssertFalse(model.projectShowsArchive("p")); XCTAssertEqual(model.selectionRevision, 1)
         await model.store?.close()
+    }
+
+    func testSelectionReducerMatchesLegacyPolicyForFirstMiddleLastAndAllTargets() {
+        let original = (0..<6).map { chat("chat\($0)", Int64($0)) } + [ChatRecord(id: "other", workspaceID: "other", title: "Other", path: nil, profileID: "gateway")]
+        for selected in original.map(\.id) {
+            for targets in [["chat0"], ["chat0", "chat2", "chat4"], ["chat5", "chat3", "chat1"], (0..<6).map({ "chat\($0)" }), (0..<6).reversed().map({ "chat\($0)" })] {
+                var before = original, expected = selected
+                for id in targets {
+                    guard let index = before.firstIndex(where: { $0.id == id }) else { continue }
+                    before[index].archivedAt = Date()
+                    if expected == id, let next = before.filter({ $0.workspaceID == before[index].workspaceID && !$0.isArchived }).sorted(by: ChatRecord.sidebarPrecedes).first { expected = next.id }
+                }
+                XCTAssertEqual(SessionOrganizationSelection.afterArchive(selected: selected, targets: targets, archived: Set(targets), records: before, includeBackground: false), expected)
+            }
+        }
+    }
+
+    @MainActor func testArchiveScaleMatrixHasOneCommitAndPublicationPerAction() async throws {
+        for count in [100, 1_000, 10_000] {
+            let root = try scratch()
+            let model = try await model(root, count: count)
+            for size in [1, 5, 25, 100, 500] where size <= count {
+                let ids = size == count ? (0..<size).map { "chat\($0)" } : (1...size).map { "chat\($0)" }
+                for archived in [true, false] {
+                    let revision = model.chatsRevision, commits = await model.store?.organizationCommits ?? 0
+                    let selections = model.selectionRevision
+                    let start = ProcessInfo.processInfo.systemUptime
+                    let operation = model.enqueueOrganization(ids, change: .archived(archived))
+                    let acknowledged = (ProcessInfo.processInfo.systemUptime - start) * 1_000
+                    let result = try await operation.value
+                    let afterCommits = await model.store?.organizationCommits ?? 0
+                    XCTAssertEqual(result.changed.count, size)
+                    XCTAssertEqual(model.chatsRevision - revision, 1)
+                    XCTAssertEqual(afterCommits - commits, 1)
+                    XCTAssertEqual(model.selectionRevision - selections, size == count && archived ? 1 : 0)
+                    if size < count { XCTAssertTrue(model.displays.isEmpty) }
+                    print("PERF organization store=\(count) targets=\(size) archive=\(archived) acknowledgeMs=\(acknowledged) transactionMs=\(result.transactionMilliseconds) endToEndMs=\((ProcessInfo.processInfo.systemUptime-start)*1_000)")
+                }
+            }
+            model.shutdown(); await model.store?.close()
+            try FileManager.default.removeItem(at: root)
+        }
     }
 
     func testBatchClassifiesMissingUnchangedAndInvalidRecordsAndSurvivesRestart() async throws {

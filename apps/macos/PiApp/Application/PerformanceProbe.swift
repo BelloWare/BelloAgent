@@ -5,10 +5,12 @@ import AppKit
 // text, requests, credentials or filesystem contents. Normal releases are inert.
 @MainActor final class PerformanceProbe {
     static let shared = PerformanceProbe()
+    nonisolated static let recordingEnabled = ProcessInfo.processInfo.environment["PI_APP_BENCHMARK_OUTPUT"] != nil
     let output: URL?
     var enabled: Bool { output != nil }
     private var samples: [String: [Double]] = [:]
     private var totals: [String: Int] = [:]
+    private var counters: [String: Int] = [:]
     private var selections: [String: Double] = [:]
     private var visibleSince: [String: Double] = [:]
     private var lastWrite = 0.0
@@ -30,6 +32,11 @@ import AppKit
             do { try await Task.sleep(for: .seconds(1)) } catch { return }
             self?.flushTask = nil; self?.flush()
         } }
+    }
+    func count(_ metric: String, by amount: Int = 1) {
+        guard enabled else { return }
+        counters[metric, default: 0] += amount
+        if Self.now - lastWrite > 1_000 { flush() }
     }
     func shellReady() {
         guard enabled, !wroteShell, let launch = NSRunningApplication.current.launchDate else { return }
@@ -54,7 +61,7 @@ import AppKit
         guard let output else { return }; flushTask?.cancel(); flushTask = nil
         guard writeTask == nil else { pendingWrite = true; return }
         lastWrite = Self.now; pendingWrite = false
-        let snapshot = samples, totals = totals, pid = ProcessInfo.processInfo.processIdentifier
+        let snapshot = samples, totals = totals, counters = counters, pid = ProcessInfo.processInfo.processIdentifier
         let build = ReleaseConfiguration.current.build, version = ReleaseConfiguration.current.version
         writeTask = Task {
           await Task.detached(priority: .utility) {
@@ -63,7 +70,7 @@ import AppKit
             return ["retainedSamples": Double(sorted.count), "p50": percentile(0.5), "p95": percentile(0.95), "p99": percentile(0.99), "max": sorted.last ?? 0]
         }
         let value: [String: Any] = ["pid": pid, "build": build, "version": version,
-                                   "metrics": reports, "samples": snapshot, "totalSamples": totals, "method": "Native edit event timestamp to NSTextView draw (Send is excluded); chat selection and oldest unsent host delta to native transcript snapshot application. Snapshot metrics end before deferred SwiftUI layout/display and must not be treated as visible paint. Native draw is a paint opportunity, not physical scanout. Bounded off-main statistics; no content logged."]
+                                   "counters": counters, "metrics": reports, "samples": snapshot, "totalSamples": totals, "method": "Native edit event timestamp to NSTextView draw (Send is excluded); chat selection and oldest unsent host delta to native transcript snapshot application. Snapshot metrics end before deferred SwiftUI layout/display and must not be treated as visible paint. Native draw is a paint opportunity, not physical scanout. Bounded off-main statistics; no content logged."]
         guard let bytes = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]) else { return }
         try? bytes.write(to: output, options: .atomic); try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: output.path)
           }.value
