@@ -104,6 +104,27 @@ disclosure survive restarts. Missing topic metadata must never hide history.
 Filtering finds topic names and chat titles; choosing a chat reveals its topic.
 Topics are organization metadata, not filesystem folders or permission scopes.
 
+Drag above/below a session to persist manual order within its topic/project,
+parent and pinned group. Show an insertion line. Marked sessions retain their
+relative order; moving a parent keeps children nested. New sessions appear above
+an ordered group. Topic-header drops still move complete branches. Rank updates
+are atomic organization writes and survive late title/model/path updates and
+restarts; pin/archive/topic moves reset only the moved session's old rank.
+
+A turn exposes **Copy Turn Info** as a clipboard action and context-menu item.
+Copy timing, validated call counts, usage, model reports and reporting coverage;
+label live figures and partial loaded history. The compact work summary counts
+logical calls, including repeated operations on the same path, across distinct
+assistant replies. It must not count argument deltas or duplicate result rows.
+A complete count survives bounded display cards; older incomplete history says
+“at least”. Unknown outcomes never imply successful file changes.
+
+While running, Return queues a follow-up and Command-Return steers; when idle,
+both send normally. Shift-Return inserts a newline. IME marked text and native
+Option/Control behavior take precedence. Plain Return/Tab accepts a completion
+without executing an unselected explicit-only skill. Buttons share this intent
+routing, and delayed acknowledgments keep their originating session/draft.
+
 Expose each session's model and cost distribution from its header and cost
 total in a resizable native window, reusing that session's window and keeping
 its scope when another chat is selected. Show tokens (input, output, reasoning,
@@ -126,7 +147,7 @@ Settings Test Connection saves first and targets a separate persisted, tools-dis
 chat in the app-owned No project group. It requires no project, cannot open sides
 or enable editing tools, and must not send into another chat after selection changes.
 
-Show context use as a circular indicator with a click-through inspector. The prepared-request preview must use authoritative context and the same provider request builder, expose included instructions, messages and tools, and clearly distinguish estimates/previews from actual captured requests. The ring must reuse the inspector's current matching estimate: idle previews include the unsent draft and selected skills, while running previews exclude unsent and queued turns. Invalidate that estimate when its inputs or conversation change. When a safe, idle tab is opened or selected, calculate its prepared context automatically after saved history and drafts load. Show calculation progress and reuse the matching estimate in the inspector. This may start the local helper, but sends no model request and executes no tools. Skip imported, untrusted, interrupted and active sessions; explicit inspection remains available. Never infer exact model context from rendered transcript text. Individual skill disabling is stored only in Bello Agent configuration and must not change Codex or shared skill files. Keep original skill policy restrictions effective.
+Show context use as a circular indicator with a click-through inspector. The prepared-request preview must use authoritative context and the same provider request builder, expose included instructions, messages and tools, and clearly distinguish estimates/previews from actual captured requests. Outside an observed generation request, the ring must reuse the inspector's current matching estimate: idle previews include the unsent draft and selected skills, while running previews exclude unsent and queued turns. Invalidate that estimate when its inputs or conversation change. When a safe, idle tab is opened or selected, calculate its prepared context automatically after saved history and drafts load. Show calculation progress and reuse the matching estimate in the inspector. This may start the local helper, but sends no model request and executes no tools. Skip imported, untrusted, interrupted and active sessions; explicit inspection remains available. Never infer exact model context from rendered transcript text. During generation, valid current-request input usage takes precedence, with its dispatch-time configured capacity; output/cached/reasoning breakdowns are never added again. Retain the dispatch estimate while waiting for LiteLLM, distinguish interim and incomplete observations, and expose the previous request in the inspector. This is generation usage, not proof of the next request's replay size. Preflight/compaction continue using the shared request-aware estimate. Usage-only updates must not rebuild transcript rows or depend on capture retention. Individual skill disabling is stored only in Bello Agent configuration and must not change Codex or shared skill files. Keep original skill policy restrictions effective.
 
 The main window uses a custom draggable area above the sidebar with reserved
 space for native close, minimize and full-screen controls. Hide the native title
@@ -220,3 +241,16 @@ budgets and coalesces received fragments before acknowledgement; durability is
 unchanged. Combined response generation waits until that view is selected.
 See the [review dispositions and measured limits](docs/Performance-Review-0.1.62-2026-09-20.md);
 this does not claim that all rich-row or cold giant-answer frame costs are solved.
+
+### Stable streaming Markdown (0.1.63)
+
+Show unfinished inline syntax literally until the block is settled. Establish a
+code leaf only after its fence info line is complete; retain it through growth,
+fence closure and completion. Confirm tables before rendering a grid. Reconcile
+final source through the canonical full-document parser, including later link
+definitions. Keep raw output, copied text, journals and HTTP bytes unchanged.
+Streaming messages keep one native container across the eight-block boundary;
+settled hosts retain identity/selection and caret blinking only repaints a
+separate decoration. Presentation is leading-plus-trailing, around 30 Hz per
+visible pane, with first content and terminal transitions immediate. Maintain
+16 KiB/8 KiB live previews and explicit access to retained full content.

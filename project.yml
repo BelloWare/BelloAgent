@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.62
-    CURRENT_PROJECT_VERSION: 66
+    MARKETING_VERSION: 0.1.63
+    CURRENT_PROJECT_VERSION: 67
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Faster capture and context checks, independent report queries, compact large tables, and steadier streaming code."
+    RELEASE_MESSAGE: "Drag to order chats, copy turn info, clearer tool counts and context usage, and stable streaming Markdown."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO

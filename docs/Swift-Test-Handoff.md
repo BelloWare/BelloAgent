@@ -36,6 +36,26 @@ records optimized native/helper tests, explicit actor checks and publication.
 Current release records take precedence over the historical matrices below.
 Installation/update rehearsals remain skipped by owner instruction.
 
+## 0.1.63 chat behavior and ordering acceptance
+
+See [the implementation record](Chat-Behavior-Implementation-2026-09-20.md) and
+[release validation](validation/Bello-Agent-0.1.63-2026-09-20.md). Focused additions:
+`ComposerSubmissionTests`, `ToolCallSummaryTests`, `RequestContextObservationTests`,
+`StreamingMarkdownStabilityTests`, `SessionOrderingTests`, helper
+`RequestObservationTests` and the request-aware observations/MCP scenarios in
+`scripts/test-native-host.py`. Retain native viewport, copy, disclosure, IME and
+streaming-stress coverage. Run the existing combined 20-session/two-pane workload
+with `PI_REVIEW_VISUAL_LOAD=1` when changing these integration boundaries.
+
+The rich-stream microbenchmark sets the pane's internal `presentationInterval`
+to zero **after native mounting**, and asserts each measured prefix reached the
+page with no pending presentation. Use `PI_PERF_DELTA_BYTES=64` (and its
+`TEST_RUNNER_` equivalent) for the 134-delta pre-coalescing baseline comparison.
+Do not compare skipped rendering work or different chunk sizes to that baseline. Production uses 30 Hz;
+first content and terminal events flush promptly, with one pending job per pane.
+Native windows remain serialized; use the cached optimized build for subsequent
+selections and keep actor checks enabled in the separate Debug fixture.
+
 ## 2026-09-20 performance acceptance (included in 0.1.61)
 
 Read the [performance implementation record](Performance-Review-Implementation-2026-09-20.md)
