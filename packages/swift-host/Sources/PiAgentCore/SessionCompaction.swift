@@ -110,6 +110,7 @@ extension AgentSession {
     }
     func compactionObservation(_ observation: RequestObservation) async {
         guard observation.purpose == "compaction" else { return }
+        monitor(observation)
         if !compactionAttemptIDs.contains(observation.attemptID) { compactionAttemptIDs.append(observation.attemptID) }
         if observation.phase == "awaiting" { await traces.operation(observation.attemptID,compactionState) }
     }

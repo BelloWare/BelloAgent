@@ -10,6 +10,9 @@ public struct RequestObservation: Sendable, Equatable {
     var fields: JSON = [:], fieldStatus: JSON = [:], fieldPhase: JSON = [:]
     var phase = "awaiting", sourceEvent = "dispatch"
     var receivedAt: Double = nowMS()
+    /// Checked trace metadata for monitoring only; deliberately absent from
+    /// `json`, which is the conversation context-observation contract.
+    var monitoring: JSON = [:]
 
     init(sessionID: String, turnID: String, attemptID: String, purpose: String, fingerprint: String, profile: Profile) {
         self.sessionID=sessionID; self.turnID=turnID; self.attemptID=attemptID; self.purpose=purpose

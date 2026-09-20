@@ -288,6 +288,16 @@ public actor TraceStore {
         t.gateway?.body(value,streaming:streaming,excluding: credentials.contains)
     }
     public func identity(_ id:String) -> JSON { guard let t = traces[id] else { return .null }; return t.credentials.metadata(t.identity?.json ?? .null) }
+    /// Only checked numerical/identity metadata crosses the popup boundary.
+    func monitoring(_ id: String) -> JSON {
+        guard let t = traces[id] else { return [:] }
+        let identity = t.credentials.metadata(t.identity?.json ?? .null), gateway = t.gateway?.json ?? .null
+        return ["identity":["status":identity["status"], "effectiveModel":identity["effectiveModel"]],
+                "gateway":["version":1, "cost":["status":gateway["cost"]["status"], "usd":gateway["cost"]["usd"]]],
+                "dispatch":t.dispatch.map { JSON($0) } ?? .null, "firstContent":t.firstContent.map { JSON($0) } ?? .null,
+                "modelComplete":t.completed.map { JSON($0) } ?? .null, "httpEnd":t.eof.map { JSON($0) } ?? .null,
+                "dispatchWall":t.dispatchWallTimestamp.map { JSON($0) } ?? .null]
+    }
     public func append(_ id:String, data:Data) async {
         guard let t=traces[id] else { return }; t.responseObserved += data.count
         let previousRedactions = t.responseCredentialRedactions

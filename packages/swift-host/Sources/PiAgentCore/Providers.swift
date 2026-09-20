@@ -146,13 +146,16 @@ public struct ProviderClient: ModelClient {
             try Task.checkCancellation()
             let parts = stream.start(request)
             observation.phase="awaiting"; observation.sourceEvent="dispatch"
-            await onObservation(observation)
             let dispatch = stream.observation()
             await traces.dispatched(attempt, at: dispatch["dispatch"].double ?? nowMS(), wall: dispatch["dispatchWallTimestamp"].double ?? Date().timeIntervalSince1970)
+            observation.receivedAt = dispatch["dispatch"].double ?? nowMS()
+            observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
             for try await part in parts {
                 try Task.checkCancellation()
                 switch part {
-                case .head(let code,let headers): status=code;jsonBody=headers["content-type"]?.contains("application/json") == true;await traces.head(attempt,status:code,headers:headers)
+                case .head(let code,let headers):
+                    status=code;jsonBody=headers["content-type"]?.contains("application/json") == true;await traces.head(attempt,status:code,headers:headers)
+                    observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
                 case .bytes(let data, let receivedAt):
                     defer { stream.consumed(data.count) }
                     lastBodyAt=receivedAt
@@ -166,13 +169,16 @@ public struct ProviderClient: ModelClient {
                         await traces.event(attempt,event)
                         if event.data=="[DONE]" { continue }
                         let value=try JSON.parse(Data(event.data.utf8))
-                        if profile.api == "openai-responses", observation.consume(value,streaming:true,at:receivedAt) { await onObservation(observation) }
+                        let observed = profile.api == "openai-responses" && observation.consume(value,streaming:true,at:receivedAt)
                         await traces.reported(attempt,value:value,streaming:true)
                         if ["response.failed", "error"].contains(value["type"].text ?? "") {
                             await traces.terminal(attempt,at:receivedAt)
                             providerFailure=ProviderAccumulator.failure(value)
                         }
-                        if providerFailure != nil { continue }
+                        if providerFailure != nil {
+                            if observed { observation.monitoring = await traces.monitoring(attempt); await onObservation(observation) }
+                            continue
+                        }
                         for delta in try accumulator.consume(value) {
                             switch delta {
                             case .text(let text): if !text.isEmpty { await traces.content(attempt,text:true,at:receivedAt) }
@@ -190,6 +196,7 @@ public struct ProviderClient: ModelClient {
                             }
                             await traces.terminal(attempt,at:receivedAt)
                         }
+                        if observed { observation.monitoring = await traces.monitoring(attempt); await onObservation(observation) }
                     }
                 }
             }
@@ -200,7 +207,7 @@ public struct ProviderClient: ModelClient {
             if let providerFailure { throw providerFailure }
             if jsonBody {
                 let value=try JSON.parse(nonSSE)
-                if profile.api == "openai-responses", observation.consume(value,streaming:false,at:lastBodyAt ?? nowMS()) { await onObservation(observation) }
+                if profile.api == "openai-responses" { _ = observation.consume(value,streaming:false,at:lastBodyAt ?? nowMS()) }
                 await traces.reported(attempt,value:value,streaming:false)
                 try accumulator.acceptJSON(value)
                 let reply=try accumulator.result()
@@ -215,13 +222,15 @@ public struct ProviderClient: ModelClient {
             result.message.providerBinding=try Self.replayBinding(profile); await traces.usage(attempt,result.usage)
             await traces.transport(attempt,observation:await stream.endObservation())
             await traces.finish(attempt,outcome:result.truncated ? "truncated":"completed",modelOutcome:result.truncated ? "truncated":"completed")
+            observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
             return result
         } catch {
             stream.cancel()
-            observation.interrupt(at:nowMS()); await onObservation(observation)
+            observation.interrupt(at:nowMS())
             let cancelled=Task.isCancelled || (error as? URLError)?.code == .cancelled
             await traces.transport(attempt,observation:await stream.endObservation())
             await traces.finish(attempt,outcome:cancelled ? "cancelled":"failed",modelOutcome:providerFailure != nil ? "failed":"interrupted")
+            observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
             if cancelled { throw CancellationError() }
             if let e=error as? AgentError { throw Self.safeFailure(AgentError(e.code,e.message,failure:e.failure,attemptID:attempt), credentials: credentials) }
             throw AgentError("provider_transport", Self.transportGuidance(error, attempt: attempt),failure:.transientTransport,attemptID:attempt)

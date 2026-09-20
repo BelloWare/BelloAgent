@@ -62,6 +62,7 @@ extension AgentSession {
         }
     }
     func observeOperation(_ observation: RequestObservation, generation: UInt64, operation: JSON) async {
+        monitor(observation)
         observe(observation,generation:generation)
         if observation.phase == "awaiting", !operation.isNull { await traces.operation(observation.attemptID,operation) }
     }

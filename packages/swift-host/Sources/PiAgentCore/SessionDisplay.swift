@@ -141,8 +141,11 @@ extension AgentSession {
     /// What the live bar says the session is doing right now, in the order a
     /// reader cares about: a stopped run before a busy one, and what the run
     /// is waiting on before the fact that it is running at all.
+    var activityPhase: String {
+        state=="error" ? "error" : state=="paused" ? "paused" : state=="stopping" ? "stopping" : runStatus=="compacting" ? "compacting" : runStatus=="waitingTool" ? "tool" : modelActive ? "model" : state=="running" ? "starting" : "idle"
+    }
     func activitySnapshot() -> JSON {
-        let phase = state=="error" ? "error" : state=="paused" ? "paused" : state=="stopping" ? "stopping" : runStatus=="compacting" ? "compacting" : runStatus=="waitingTool" ? "tool" : modelActive ? "model" : state=="running" ? "starting" : "idle"
+        let phase = activityPhase
         let names=Set(toolStates.values.filter { $0["state"].text=="running" }.compactMap { $0["name"].text }).sorted()
         return ["version":2,"phase":JSON(phase),"model":JSON(turnProfile.model),"modelActive":JSON(modelActive),
                 "pendingFollowUps":JSON(queue.count),"pendingSteering":JSON(steering.count),"queuePaused":JSON(queuePaused),
@@ -183,6 +186,7 @@ extension AgentSession {
             value["contextState"]=contextState()
         }
         value["compaction"]=compactionPresentation(compactionState)
+        value["monitoring"] = monitoring.page(since: params["monitoringCursor"].int, epoch: displayEpoch, requestedEpoch: params["monitoringEpoch"].text)
         // Page cursors describe a materialized projection only. A status-only
         // read must not build a hidden page merely to compute its byte limit.
         if let projection { value["before"]=projection.start>0 ? JSON(projection.start):.null }

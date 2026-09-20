@@ -84,6 +84,7 @@ public actor AgentSession {
     var publishedObservation: JSON = .null, lastRequestObservation: JSON = .null, observationEstimate: JSON = .null
     var observationGeneration: UInt64 = 0, observationRevision: UInt64 = 0
     var observationPublishedAt = 0.0
+    var monitoring = SessionMonitoringBuffer()
     var begin: Double?, end: Double?, parentInfo: JSON = .null, ephemeral=false, keepRequested=false
     var steeringMode="one-at-a-time", followUpMode="one-at-a-time"
     var closed=false
@@ -235,6 +236,7 @@ public actor AgentSession {
     /// history for a reader that has to catch up.
     static let retainedEvents = 4096, retainedEventSlack = 512
     func event(_ type: String, _ payload: JSON = [:]) {
+        monitoring.activity(activityPhase, at: nowMS())
         sequence += 1; events.append(["seq":JSON(sequence),"type":JSON(type),"payload":payload])
         if events.count > Self.retainedEvents+Self.retainedEventSlack { events.removeFirst(events.count-Self.retainedEvents) }
         changed(id,sequence)

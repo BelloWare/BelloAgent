@@ -460,6 +460,39 @@ class NativeIntegration(unittest.TestCase):
         self.assertIsNotNone(state['requestObservation']['estimate']['tokens'])
         self.assertEqual(self.settled('final-only')['requestObservation']['usage']['input'],3000)
 
+    def test_live_monitoring_preserves_fast_usage_and_tool_phases_without_transcripts(self):
+        for model in ('observation-early', 'observation-final'):
+            session = 'monitor-' + model
+            self.open(model=model, session=session)
+            self.peer.command('debug.mode', {'mode':'off'}, session)
+            self.submit(session)
+            state = self.settled(session)
+            page = state['monitoring']
+            self.assertFalse(page['gap'])
+            events = page['events']
+            self.assertIn('tool', [e.get('phase') for e in events if e['kind']=='phase'])
+            requests = [e for e in events if e['kind']=='request']
+            attempts = {e['attemptID'] for e in requests}
+            self.assertEqual(len(attempts), 3)
+            for attempt in attempts:
+                observations = [e for e in requests if e['attemptID']==attempt]
+                final = observations[-1]
+                self.assertEqual(final['phase'], 'final')
+                self.assertEqual(final['usage']['output'], 30)
+                self.assertEqual(final['usage']['reasoning'], 20)
+                self.assertGreater(final['telemetry']['modelComplete'], final['telemetry']['dispatch'])
+                self.assertEqual(final['telemetry']['identity']['effectiveModel'], 'resolved-fixture')
+                interim = [e for e in observations if e['phase']=='interim' and 'output' in e['usage']]
+                self.assertEqual([e['usage']['output'] for e in interim], [10,20] if model=='observation-early' else [])
+            unchanged = self.peer.command('session.status', {'includeMessages':False, 'includeMetrics':False,
+                'monitoringEpoch':page['epoch'], 'monitoringCursor':page['cursor']}, session)
+            self.assertEqual(unchanged['monitoring']['events'], [])
+            self.assertNotIn('messages', unchanged)
+            self.assertNotIn('latestAttempt', unchanged)
+            self.assertNotIn('fixture-secret', json.dumps(page))
+            self.assertNotIn('requestFingerprint', json.dumps(page))
+            self.peer.command('session.close',session=session)
+
     def test_responses_real_stream_tool_roundtrip_and_capture(self):
         self.open(model='tool');self.submit();value=self.settled()
         self.assertEqual(value['state'],'idle')

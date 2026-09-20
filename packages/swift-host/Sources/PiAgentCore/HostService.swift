@@ -209,7 +209,10 @@ public actor NativeHostService {
         }
         guard let session=sessions[id] else { throw AgentError("session_missing", "Session runtime is not loaded") }; touch(id)
         if method == "turn.stop" { await session.stop(); return ["accepted":true] }
-        if method == "session.status" { return await session.snapshot(["includeMessages":false]) }
+        if method == "session.status" {
+            var statusParams = params; statusParams["includeMessages"] = false
+            return await session.snapshot(statusParams)
+        }
         if method == "session.snapshot" { return await session.snapshot(params) }
         if method == "context.info" { return await session.inspectContext() }
         if method == "context.preview" { return try await session.prepareContext(params) }
