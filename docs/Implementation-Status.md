@@ -12,16 +12,23 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Bello Agent 0.1.66/build 70 candidate:** context scope/revision fixes are
-implemented. The footer and primary inspector share one resolver; streaming
-activity cannot expire an unchanged preview, inspection cannot overwrite
-preflight state, and new submissions/resets cannot revive older request counts.
-Validation: **74 distinct optimized helper tests, 58 distinct actor-checked native
-tests and 26 packaged gateway tests passed**. Signing/publication verification is
-pending. See [implementation and CTX-01–CTX-20](Context-Meter-Fix-2026-09-20.md)
+**Bello Agent 0.1.66/build 70 is released and publicly verified** at
+[belloware.com](https://belloware.com/bello-agent.html), from source
+`7802f901de59dc82c27abf1b36de8d99c7f39734` and website
+`c9024dc9cab9ff5acfe5aab39a83531186866534`. The DMG measures **8,229,443 bytes
+(7.85 MiB)**, SHA-256 `7a93a0556d65fb3e2665c8a7bebf2062890b82bd6ec337f4a16078d9fb5a42d4`.
+Signing/notarization, packaged helper smoke, product page, identical update feeds
+and downloaded archive SHA-256/Ed25519 verification pass. Public verification:
+**2026-09-20 10:52:26 UTC**. Cloudflare check **106066480488** succeeded.
+
+The footer and primary inspector share one context resolver; streaming activity
+cannot expire unchanged previews, inspection cannot overwrite preflight state,
+and new submissions/resets cannot revive older request counts. Validation:
+**74 distinct optimized helper tests, 58 distinct actor-checked native tests and
+26 packaged gateway tests passed**. See [implementation and CTX-01–CTX-20](Context-Meter-Fix-2026-09-20.md)
 and [release validation](validation/Bello-Agent-0.1.66-2026-09-20.md).
 
-**Bello Agent 0.1.65/build 69 is released and publicly verified** at
+**Bello Agent 0.1.65/build 69 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source
 `852452e2cce24c70bd092ca059308e8c99265c2d` and website
 `ab5b69a266aa6c0dceb772ceea3e7c43df0cd8e1`. The DMG measures **8,214,586 bytes
