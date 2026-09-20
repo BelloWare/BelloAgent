@@ -1,6 +1,7 @@
 # Bello Agent 0.1.62/build 66 acceptance — 2026-09-20
 
-Publication is pending. This record is completed after signed/public verification.
+Signed release validated; public verification is pending.
+Release source: `2ec983143943e68230b4fbe383702a8015422b8b`. Later documentation-only commits do not change the packaged source.
 
 ## Scope and environment
 
@@ -58,6 +59,13 @@ All gateway/archives are isolated fixtures; no production gateway was contacted.
   **461.79/570.22 ms**. Each point has three samples; these measure the append
   loop, not native disk fsync or whole-application throughput.
 
+- Final source with concurrent-close guard: **50 native Debug tests passed**,
+  zero failures, 20.510 s, with explicit `-enable-actor-data-race-checks`.
+  Covers read-worker cancellation/C callback ownership, two concurrent archive
+  closes followed by reopen, all 25 storage tests, 15 report UI tests, the new
+  table window and demand-driven combined view, and release configuration.
+  Debug timings are not used as the Release performance comparison.
+
 ### Final renderer samples
 
 The 134-delta/300-row follow-up measured mean 24.3 ms, p50/p95/max
@@ -103,3 +111,20 @@ regression checks reader cancellation, old-reader rejection and successful reope
 - No fresh-install or actual Sparkle update rehearsal, per standing owner policy.
   Signing, notarization, packaged helper smoke and public hashes/signatures remain
   required before this record is marked released.
+
+## Signed artifacts
+
+- Developer ID: Zhaofeng Wang, team `43TXHV3TM3`; hardened runtime and timestamp.
+- App and DMG notarizations accepted, both tickets stapled and validated.
+  App submission `70f9452a-21d2-4b6b-a20a-f67ad9219047`;
+  DMG submission `aedec28c-efd4-4173-a62c-2ccaf95798eb`.
+- Packaged native helper/catalog smoke, archive validation and Sparkle signing pass.
+- DMG: **8,030,328 bytes (7.66 MiB)**.
+- SHA-256: `896e7b488c70617aaa60aca496f68fae13a64f112ee5ee5ccf07c20000b93f76`.
+- App dSYM UUID: `6858B74E-C93C-358D-82AF-FACF557280DC`;
+  helper: `3EEFB9FB-06F6-32F9-9FAB-2615457C07AD`. Matching symbols remain beside
+  the local release artifacts for crash symbolication.
+- No test bundle is embedded in the shipped application. No install/update
+  rehearsal was run.
+
+Public product/download/feed checks are recorded after deployment.
