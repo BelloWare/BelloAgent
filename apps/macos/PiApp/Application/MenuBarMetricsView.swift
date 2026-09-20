@@ -31,6 +31,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
     private let interval: Duration
     private var task: Task<Void, Never>?
     private var activityObservation: AnyCancellable?
+    private var activityRefresh: Task<Void, Never>?
     private var visible = false
     private var generation = 0
     /// Test seam: how many times the rows have actually been counted.
@@ -40,20 +41,31 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
         self.load = load; self.readActiveSessions = activeSessions; self.readActivity = activity
         self.activityChanges = activityChanges; self.interval = interval; self.now = now
     }
-    deinit { task?.cancel() }
+    deinit { task?.cancel(); activityRefresh?.cancel() }
 
     func setVisible(_ value: Bool) {
         guard visible != value else { return }
         visible = value; restart()
         activityObservation = nil
+        activityRefresh?.cancel(); activityRefresh = nil
         guard value else { return }
         refreshActivity()
         // Counting every chat's phase, queue and unread state once a second
         // is work with nothing behind it. The workspace says when its rows
         // change; several changes in the same moment count once.
-        activityObservation = activityChanges?()
-            .debounce(for: .milliseconds(120), scheduler: RunLoop.main)
-            .sink { [weak self] _ in self?.refreshActivity() }
+        activityObservation = activityChanges?().sink { [weak self] _ in self?.scheduleActivityRefresh() }
+    }
+    /// A trailing debounce never fires while several sessions continuously
+    /// stream. Coalesce into a fixed window instead; read after @Published's
+    /// will-change notifications have actually committed their values.
+    private func scheduleActivityRefresh() {
+        guard visible, activityRefresh == nil else { return }
+        activityRefresh = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            guard let self, self.visible else { return }
+            self.activityRefresh = nil
+            self.refreshActivity()
+        }
     }
     func refresh() { if visible { refreshActivity() }; restart() }
     private func refreshActivity() {
@@ -129,7 +141,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Bello Agent").font(PiFont.title(18)).foregroundStyle(Color.piInk)
-                    Text("\(controller.activity.running) running · \(controller.activity.unreadChats) unread").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                    Text("\(controller.activity.running) running · \(controller.activity.generating) generating").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                         .accessibilityIdentifier("menu-bar-running-count")
                 }
                 Spacer()
@@ -185,13 +197,14 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
         .accessibilityIdentifier("menu-bar-metrics")
     }
 
-    /// Which chats are working, waiting on the user, or holding unread replies.
+    /// Current work, using existing host state and reported accounting. Only
+    /// the tiny elapsed labels tick; clocks do not poll history or providers.
     private func now(_ activity: MenuBarActivitySnapshot) -> some View {
-        let rows = activity.runningRows + activity.attentionRows + activity.unreadRows
+        let rows = activity.runningRows
         return VStack(alignment: .leading, spacing: PiSpacing.sm) {
-            PiSectionHeader("Now", subtitle: rows.isEmpty ? "All quiet" : "\(activity.running) running · \(activity.attentionRows.count) waiting · \(activity.unreadRows.count) unread")
+            PiSectionHeader("Live activity", subtitle: rows.isEmpty ? "All quiet" : "\(activity.running) running · \(activity.generating) generating · \(activity.runningPending) queued inputs")
             if rows.isEmpty {
-                Text("Running chats and unread replies appear here.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
+                Text("No sessions are running.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
             }
             VStack(spacing: 4) {
                 ForEach(Array(rows.prefix(12))) { row in chatRow(row) }
@@ -211,8 +224,23 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, cost, rate
                 }.frame(width: 16, height: 16)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.title).font(PiFont.body.weight(.medium)).foregroundStyle(Color.piInk).lineLimit(1)
-                    Text([row.running || row.needsAttention ? row.phaseLabel : "Unread reply", row.workspace].filter { !$0.isEmpty }.joined(separator: " · "))
+                    Text([row.phaseLabel, row.workspace].filter { !$0.isEmpty }.joined(separator: " · "))
                         .font(PiFont.caption).foregroundStyle(row.running ? Color.piAccent : Color.piInkSecondary).lineLimit(1)
+                    if !row.model.isEmpty {
+                        Text(row.model + (row.resolvedModel.map { " · last route: " + $0 } ?? ""))
+                            .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(1).help("Requested model: \(row.model)" + (row.resolvedModel.map { "\nLast reported route: " + $0 } ?? ""))
+                    }
+                    HStack(spacing: 6) {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            if let elapsed = row.elapsed(at: context.date) { Text(TranscriptActivity.formatDuration(elapsed)).monospacedDigit() }
+                        }
+                        if let rate = row.latestRate { Text("Latest " + SessionRatePresentation.compactRate(rate)).help(SessionRatePresentation.explanation) }
+                        if row.followUps + row.steering > 0 { Text("\(row.followUps + row.steering) queued") }
+                    }.font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
+                    if row.tokens != nil || row.costUSD != nil {
+                        Text("Session: \(menuBarTokens(row.tokens)) tokens · \(gatewayUSD(row.costUSD))")
+                            .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).monospacedDigit()
+                    }
                 }
                 Spacer(minLength: 6)
                 Image(systemName: "arrow.up.right").font(PiFont.micro).foregroundStyle(Color.piInkTertiary)

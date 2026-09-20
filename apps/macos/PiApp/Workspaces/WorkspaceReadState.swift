@@ -16,18 +16,18 @@ struct SessionReadState: Codable, Sendable, Equatable, Identifiable {
 extension WorkspaceModel {
     var unreadCount: Int { unreadStates.keys.filter { unreadOutputCount(sessionID: $0) > 0 }.count }
     func unreadOutputCount(sessionID: String) -> Int {
-        guard let item = record(sessionID), item.connectionTest != true else { return 0 }
+        guard let item = record(sessionID), item.connectionTest != true, !item.isArchived else { return 0 }
         return unreadStates[sessionID]?.unreadOutputs ?? 0
     }
     /// Whether a collapsed group has to show its dot. Driven from the unread
     /// states, which are few, rather than from every chat of the project.
     func projectHasUnread(_ projectID: String) -> Bool {
         unreadStates.contains { id, state in
-            (state.unreadOutputs > 0 || state.unreadFailure == true) && record(id).map { $0.workspaceID == projectID && $0.connectionTest != true } == true
+            (state.unreadOutputs > 0 || state.unreadFailure == true) && record(id).map { $0.workspaceID == projectID && $0.connectionTest != true && !$0.isArchived } == true
         }
     }
     func unreadFailure(sessionID: String) -> Bool {
-        guard let item = record(sessionID), item.connectionTest != true else { return false }
+        guard let item = record(sessionID), item.connectionTest != true, !item.isArchived else { return false }
         return unreadStates[sessionID]?.unreadFailure == true
     }
     /// A run ended in an error while the chat was not in front: mark it so the
@@ -78,7 +78,7 @@ extension WorkspaceModel {
         next.observedAssistantCount = count; next.latestAssistantID = latest
         // A reply that finished while another app is frontmost is easy to miss;
         // bounce the Dock icon once. The badge below carries the count.
-        // A failed run and an archived chat get the sidebar mark only, never the bounce.
+        // Archived chats retain read state for restore but show no unread marks.
         if next.unreadOutputs > (unreadStates[sessionID]?.unreadOutputs ?? 0), !NSApp.isActive, NSClassFromString("XCTestCase") == nil,
            snapshot["runStatus"]?.string != "failed", snapshot["state"]?.string != "error", !item.isArchived {
             NSApp.requestUserAttention(.informationalRequest)
@@ -99,7 +99,7 @@ extension WorkspaceModel {
 
     /// The Dock badge counts chats with unread replies, one per chat however
     /// many replies each holds. A chat whose run failed, and an archived chat,
-    /// keep their sidebar mark but never count here.
+    /// never count here. Archived chats also hide their sidebar marks.
     func updateDockBadge() {
         let total = unreadStates.values.filter { state in
             guard state.unreadOutputs > 0, state.unreadFailure != true, let item = record(state.id), item.connectionTest != true, !item.isArchived else { return false }

@@ -108,7 +108,7 @@ final class SidebarMetricsLayoutTests: XCTestCase {
     /// the wire names survives into the line.
     @MainActor func testRunStatesReachTheRowAsWordsAReaderKnows() {
         let expected: [(String, Bool, String)] = [
-            ("queued", false, "Waiting"), ("running", false, "Working"), ("tool", false, "Using a tool"),
+            ("queued", false, "Waiting"), ("running", false, "Working"), ("tool", false, "Working"),
             ("stopping", false, "Stopping"), ("compacting", false, "Compacting"), ("paused", false, "Paused"),
             ("interrupted", false, "Interrupted"), ("error", false, "Failed"), ("running", true, "Opening")
         ]

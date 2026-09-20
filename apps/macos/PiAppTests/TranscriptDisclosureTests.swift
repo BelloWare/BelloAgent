@@ -15,9 +15,15 @@ final class TranscriptDisclosureTests: XCTestCase {
         let document: TranscriptNativeDocument
         let window: NSWindow
 
-        init(messages: [TranscriptMessage], width: CGFloat = 780, height: CGFloat = 560) {
+        init(messages: [TranscriptMessage], width: CGFloat = 780, height: CGFloat = 560, openWork: Bool = true) {
             session = SessionDisplay(id: "disclosure")
             session.messages = messages
+            // Geometry/motion cases explicitly open the work being exercised.
+            if openWork {
+                for item in TranscriptActivity.blocks(of: messages) {
+                    if case .block(let block) = item { session.disclosure.setOpen(true, .work(block.key)) }
+                }
+            }
             page = TranscriptPage()
             page.state = "idle"
             page.bind(session)
@@ -106,6 +112,26 @@ final class TranscriptDisclosureTests: XCTestCase {
         }
         let bottom = (fixture.rows.last?.frame.maxY ?? 0) + 13
         XCTAssertEqual(fixture.document.frame.height, bottom, accuracy: 1, "\(what): the document is not as tall as its rows", file: file, line: line)
+    }
+
+    @MainActor func testWorkStartsCollapsedAndStreamingNeverRevealsDetails() async throws {
+        var messages = workingTurn(tools: 4)
+        messages[1].state = "streaming"
+        let fixture = Fixture(messages: messages, openWork: false); defer { fixture.close() }
+        await fixture.settle()
+        let row = try XCTUnwrap(fixture.blockRow), part = try XCTUnwrap(fixture.workPart)
+        let initialHeight = row.frame.height
+        XCTAssertFalse(fixture.session.disclosure.isOpen(part))
+        messages[1].tools?.append(ToolView(id: "new-tool", name: "bash", state: "running", input: "{\"command\":\"echo secret-detail\"}", output: "", durationMs: nil, truncated: false))
+        fixture.session.messages = messages; fixture.refresh(); await fixture.settle()
+        XCTAssertFalse(fixture.session.disclosure.isOpen(part))
+        XCTAssertEqual(row.frame.height, initialHeight, accuracy: 3, "New calls must not grow a folded work section")
+        row.toggleDisclosure(part); fixture.draw()
+        XCTAssertTrue(fixture.session.disclosure.isOpen(part))
+        XCTAssertGreaterThan(row.frame.height, initialHeight + 40)
+        XCTAssertFalse(fixture.session.disclosure.isOpen(.tool("new-tool")), "Opening work still leaves argument/result bodies folded")
+        row.toggleDisclosure(part); fixture.draw()
+        XCTAssertFalse(fixture.session.disclosure.isOpen(part))
     }
 
     // MARK: The motion a click starts
@@ -408,10 +434,10 @@ final class TranscriptDisclosureTests: XCTestCase {
     /// entries with them rather than growing the store forever.
     @MainActor func testDisclosureIsPerConversationAndForgetsRemovedRows() throws {
         let store = TranscriptDisclosure()
-        XCTAssertTrue(store.isOpen(.work("block:a1")), "a turn's work starts open")
+        XCTAssertFalse(store.isOpen(.work("block:a1")), "work starts collapsed")
         XCTAssertFalse(store.isOpen(.tool("t1")), "a tool card starts closed")
         store.toggle(.work("block:a1")); store.toggle(.tool("t1"))
-        XCTAssertFalse(store.isOpen(.work("block:a1"))); XCTAssertTrue(store.isOpen(.tool("t1")))
+        XCTAssertTrue(store.isOpen(.work("block:a1"))); XCTAssertTrue(store.isOpen(.tool("t1")))
         XCTAssertEqual(store.changedCount, 2)
         // Returning to the default drops the entry rather than remembering it.
         store.toggle(.work("block:a1"))
@@ -421,8 +447,8 @@ final class TranscriptDisclosureTests: XCTestCase {
 
         let first = SessionDisplay(id: "first"), second = SessionDisplay(id: "second")
         first.disclosure.toggle(.work("block:a1"))
-        XCTAssertFalse(first.disclosure.isOpen(.work("block:a1")))
-        XCTAssertTrue(second.disclosure.isOpen(.work("block:a1")), "another chat keeps its own state")
+        XCTAssertTrue(first.disclosure.isOpen(.work("block:a1")))
+        XCTAssertFalse(second.disclosure.isOpen(.work("block:a1")), "another chat stays collapsed")
     }
 
     /// What a collapse costs, printed for the release record: the click, its

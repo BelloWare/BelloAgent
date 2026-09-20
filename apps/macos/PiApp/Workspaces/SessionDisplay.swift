@@ -41,15 +41,19 @@ import Combine
         return rows
     }
     func publishTranscript() { transcriptChanges.send(presentedMessages) }
-    /// "Retrying (attempt 2 of 3) after: …" while the helper waits to retry a transient failure.
+    /// "Retrying (attempt 2 of 6) after: …" while the helper waits to retry a transient failure.
     @Published var retryNotice: String? { didSet { if retryNotice != oldValue { publishTranscript() } } }
+    private(set) var retryAttempt: Int?
+    private(set) var retryLimit: Int?
     /// A submission the host or app refused; cleared by the next send.
     @Published var sendFailure: String? { didSet { if sendFailure != oldValue { publishTranscript() } } }
     func observeRetry(_ snapshot: [String: WireValue]) {
         let retry = snapshot["retry"]?.object
+        retryAttempt = nil; retryLimit = nil
         let notice: String? = retry.flatMap { value in
             guard let rawAttempt = value["attempt"]?.number, let rawOf = value["of"]?.number,
                   let attempt = Int(exactly: rawAttempt), let of = Int(exactly: rawOf), attempt > 0, of >= attempt else { return nil }
+            retryAttempt = attempt; retryLimit = of
             let reason = value["reason"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return "Retrying (attempt \(attempt) of \(of))" + (reason.isEmpty ? "…" : " after: " + reason)
         }

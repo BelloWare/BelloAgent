@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 import AppKit
 import SwiftUI
 @testable import PiApp
@@ -55,6 +56,58 @@ final class MenuBarPresentationTests: XCTestCase {
         XCTAssertEqual(current.rows.count, 3, "Menu filtering must leave source session state intact")
     }
 
+    @MainActor func testContinuousChangesPublishWhileStreamingAndStopWhenHidden() async throws {
+        let changes = PassthroughSubject<Void, Never>()
+        let activityState = MenuActivityTestState()
+        let controller = MenuBarMetricsController(load: { _, _, _ in throw CaptureFailure.unavailable }, activity: {
+            MenuBarActivitySnapshot(rows: [MenuBarActivityRow(id: "live", title: "Live", workspace: "Project", phase: "model", model: "router", resolvedModel: nil, tools: [], followUps: activityState.pending, steering: 0, unread: 0)])
+        }, activityChanges: { changes.eraseToAnyPublisher() })
+        controller.setVisible(true)
+        defer { controller.setVisible(false) }
+        for index in 1...20 {
+            activityState.pending = index; changes.send()
+            try await Task.sleep(for: .milliseconds(40))
+            if index == 16 {
+                XCTAssertGreaterThan(controller.activity.runningPending, 0, "A continuous stream must not starve the live panel until it stops")
+            }
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(controller.activity.runningPending, 20)
+        XCTAssertLessThanOrEqual(controller.activityCounts, 6, "Events are coalesced rather than redrawing on each streamed delta")
+        activityState.pending = 99; changes.send(); controller.setVisible(false)
+        let count = controller.activityCounts
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(controller.activityCounts, count, "Closing cancels a pending refresh")
+    }
+
+    @MainActor func testLiveRowsUseReportedAccountingAndElapsedTimeWithoutByteBasedSpeed() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.workspaces = [WorkspaceRecord(id: "p", path: root.path, trusted: true)]
+        model.chats = [ChatRecord(id: "live", workspaceID: "p", title: "Live", path: nil, profileID: "profile")]
+        let view = SessionDisplay(id: "live"); view.state = "running"; view.runStatus = "running"
+        view.activity = ["phase": .string("model"), "model": .string("auto-router"), "modelActive": .bool(true), "estimatedOutputTokensPerSecond": .number(9999)]
+        view.turnTiming = ["startedAt": .number(10_000), "elapsedMs": .number(1_000)]
+        view.footer.timing = SessionTimingHistory(samples: [SessionTimingSample(id: "done", wall: Date(), ttftMilliseconds: 100, streamingMilliseconds: 200, outputTokens: 300, requestMilliseconds: 2_000)])
+        model.displays[view.id] = view
+        model.publishChatStats(GatewayTotals(requests: 1, costSamples: 1, costUSD: 0.0123), sessionID: view.id)
+        let live = model.menuBarActivity()
+        XCTAssertEqual(live.generating, 1)
+        let row = try XCTUnwrap(live.runningRows.first)
+        XCTAssertEqual(row.elapsed(at: Date(timeIntervalSince1970: 15)), 5_000)
+        XCTAssertEqual(row.latestRate, 150, "Use reported output including hidden reasoning, not visible bytes")
+        XCTAssertEqual(row.costUSD, 0.0123)
+        view.runStatus = "retrying"
+        view.observeRetry(["retry": .object(["attempt": .number(4), "of": .number(6), "reason": .string("Temporary failure")])])
+        let retrying = model.menuBarActivity()
+        XCTAssertEqual(retrying.generating, 0)
+        XCTAssertEqual(retrying.runningRows.first?.phaseLabel, "Retrying · attempt 4 of 6")
+        model.chats[0].archivedAt = Date()
+        XCTAssertTrue(model.menuBarActivity().runningRows.isEmpty)
+    }
+
     /// Optional visual evidence uses only this synthetic window, never the
     /// desktop or a user's project, archive, credentials, or gateway.
     @MainActor func testCaptureDefaultUsagePanelWhenRequested() async throws {
@@ -84,7 +137,7 @@ final class MenuBarPresentationTests: XCTestCase {
         }
         let snapshot = MenuBarSnapshot(period: .day, from: from, until: until, counts: DashboardCounts(dispatched: 10, completed: 10), gateway: totals(requests: 10, input: 20_000, output: 2_000, cost: 0.025), workspaces: 2, sessions: 3, compactionRequests: 0, costUnreported: 0, costInvalid: 0, costConflicts: 0, models: models, modelGroups: 2, offset: 0, historicalRate: HistoricalOutputRate(outputTokens: 2_000, generationMilliseconds: 50_000, samples: 10), buckets: buckets)
         let activity = MenuBarActivitySnapshot(rows: [
-            MenuBarActivityRow(id: "running", title: "Harden the payment retry loop", workspace: "pi-app", phase: "tool", model: "auto-router", resolvedModel: nil, tools: ["bash"], followUps: 1, steering: 0, unread: 0),
+            MenuBarActivityRow(id: "running", title: "Harden the payment retry loop", workspace: "pi-app", phase: "tool", model: "auto-router", resolvedModel: "openai/gpt-5.4-mini", tools: ["bash"], followUps: 1, steering: 0, unread: 0, startedAt: Date().timeIntervalSince1970 * 1_000 - 82_000, elapsedMs: 82_000, latestRate: 85, tokens: 18_421, costUSD: 0.042),
             MenuBarActivityRow(id: "paused", title: "Explain cache accounting", workspace: "pi-app", phase: "paused", model: "auto-router", resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: 0),
             MenuBarActivityRow(id: "unread", title: "Design notes for the queue", workspace: "Design Reference", phase: "idle", model: "auto-router", resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: 2),
         ], unreadChats: 1)
@@ -142,3 +195,5 @@ final class MenuBarPresentationTests: XCTestCase {
 }
 
 private func MenuPeriodStart(_ until: Date) -> Date { MenuBarPeriod.day.start(until: until) ?? until }
+
+@MainActor private final class MenuActivityTestState { var pending = 0 }

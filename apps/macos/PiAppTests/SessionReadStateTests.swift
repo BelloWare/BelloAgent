@@ -213,7 +213,7 @@ final class SessionReadStateTests: XCTestCase {
 
 extension SessionReadStateTests {
     /// A failed run marks the chat, but the Dock badge counts only replies in chats that are neither failed nor archived.
-    @MainActor func testFailedRunsAndArchivedChatsAreMarkedButNeverCountedInTheDock() async throws {
+    @MainActor func testArchivedChatsHideUnreadEverywhereWithoutDiscardingReadState() async throws {
         let base = testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()
         let root = URL(fileURLWithPath: base).appendingPathComponent("read-state-failure-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -241,6 +241,15 @@ extension SessionReadStateTests {
         // Archiving takes the chat out of the badge and the bounce, and it refuses to run.
         chat.archivedAt = Date(); model.chats[0] = chat; try await model.store?.put(chat, kind: "chat", id: chat.id)
         model.updateDockBadge(); XCTAssertNil(NSApp.dockTile.badgeLabel)
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0)
+        XCTAssertEqual(model.unreadCount, 0)
+        XCTAssertFalse(model.unreadFailure(sessionID: "chat"))
+        XCTAssertFalse(model.projectHasUnread("workspace"))
+        XCTAssertFalse(model.menuBarActivity().rows.contains { $0.id == "chat" })
+        XCTAssertEqual(model.unreadStates["chat"]?.unreadOutputs, 1, "Archive hides marks without pretending the output was read")
+        chat.archivedAt = nil; model.chats[0] = chat
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1, "Restoring keeps the original unread state")
+        chat.archivedAt = Date(); model.chats[0] = chat
         view.draft = "hello"
         model.send(sessionID: "chat")
         XCTAssertEqual(view.notice, WorkspaceModel.archivedNotice); XCTAssertFalse(view.loading); XCTAssertTrue(model.hosts.isEmpty)

@@ -11,20 +11,34 @@ struct MenuBarActivityRow: Identifiable, Equatable, Sendable {
     let followUps: Int
     let steering: Int
     let unread: Int
+    var modelActive = false
+    var startedAt: Double?
+    var elapsedMs: Double?
+    var latestRate: Double?
+    var tokens: Double?
+    var costUSD: Double?
+    var retryAttempt: Int?
+    var retryLimit: Int?
     var running: Bool { ["starting", "model", "tool", "compacting", "stopping"].contains(phase) }
     var needsAttention: Bool { ["queued", "paused", "error"].contains(phase) }
     var phaseLabel: String {
+        if let retryAttempt, let retryLimit { return "Retrying · attempt \(retryAttempt) of \(retryLimit)" }
         switch phase {
-        case "starting": "Starting"
-        case "model": "Generating"
-        case "tool": tools.isEmpty ? "Running tool" : tools.joined(separator: ", ")
-        case "compacting": "Compacting context"
-        case "stopping": "Stopping"
-        case "queued": "Waiting for project"
-        case "paused": "Paused · needs attention"
-        case "error": "Error · needs attention"
-        default: unread > 0 ? "\(unread) unread \(unread == 1 ? "reply" : "replies")" : "Idle"
+        case "starting": return "Starting"
+        case "model": return "Generating"
+        case "tool": return "Working"
+        case "compacting": return "Compacting context"
+        case "stopping": return "Stopping"
+        case "queued": return "Waiting for project"
+        case "paused": return "Paused · needs attention"
+        case "error": return "Error · needs attention"
+        default: return unread > 0 ? "\(unread) unread \(unread == 1 ? "reply" : "replies")" : "Idle"
         }
+    }
+    func elapsed(at date: Date) -> Double? {
+        guard running else { return nil }
+        guard let startedAt else { return elapsedMs }
+        return max(elapsedMs ?? 0, max(0, date.timeIntervalSince1970 * 1_000 - startedAt))
     }
 }
 
@@ -39,6 +53,7 @@ struct MenuBarActivitySnapshot: Equatable, Sendable {
     /// Idle chats with replies the user has not viewed yet.
     var unreadRows: [MenuBarActivityRow] { rows.filter { !$0.running && !$0.needsAttention && $0.unread > 0 } }
     var running: Int { runningRows.count }
+    var generating: Int { runningRows.filter { $0.modelActive && $0.retryAttempt == nil }.count }
     var runningPending: Int { runningRows.reduce(0) { $0 + $1.followUps + $1.steering } }
     var queuedChats: Int { rows.filter { $0.phase == "queued" }.count }
     var paused: Int { rows.filter { $0.phase == "paused" }.count }
@@ -51,7 +66,7 @@ extension WorkspaceModel {
     func menuBarActivity(now: Double = ProcessInfo.processInfo.systemUptime) -> MenuBarActivitySnapshot {
         var rows: [MenuBarActivityRow] = []
         for view in displays.values {
-            guard let record = record(view.id) else { continue }
+            guard let record = record(view.id), !record.isArchived, record.connectionTest != true else { continue }
             let raw = view.activity, unread = unreadOutputCount(sessionID: view.id)
             let phase: String
             if view.state == "error" { phase = "error" }
@@ -72,7 +87,19 @@ extension WorkspaceModel {
             let identity = view.metrics["identity"]?.object
             let resolved = view.metrics["requestedModel"]?.string == model && identity?["status"]?.string == "reported" ? identity?["effectiveModel"]?.string : nil
             let tools = (raw["toolNames"]?.array ?? []).compactMap(\.string)
-            rows.append(MenuBarActivityRow(id: view.id, title: record.title, workspace: workspace, phase: phase, model: model, resolvedModel: resolved != model ? resolved : nil, tools: tools, followUps: followUps, steering: steering, unread: unread))
+            let totals = chatStats[view.id]
+            var row = MenuBarActivityRow(id: view.id, title: record.title, workspace: workspace, phase: phase, model: model, resolvedModel: resolved != model ? resolved : nil, tools: tools, followUps: followUps, steering: steering, unread: unread)
+            row.modelActive = raw["modelActive"]?.bool == true
+            row.startedAt = activityNumber(view.turnTiming["startedAt"])
+            row.elapsedMs = activityNumber(view.turnTiming["elapsedMs"])
+            row.latestRate = view.footer.timing.latest?.outputTokensPerSecond
+            row.tokens = totals?.tokens?.total
+            row.costUSD = totals?.costUSD
+            if view.runStatus == "retrying" {
+                row.retryAttempt = view.retryAttempt
+                row.retryLimit = view.retryLimit
+            }
+            rows.append(row)
         }
         // Persistent unread badges do not require loading old transcript pages
         // or starting their helper. Keep those chats actionable after restart.
@@ -98,4 +125,9 @@ extension WorkspaceModel {
 private func activityCount(_ value: WireValue?) -> Int? {
     guard let value = value?.number, value.isFinite, value >= 0, value <= 100_000, value.rounded() == value else { return nil }
     return Int(value)
+}
+
+private func activityNumber(_ value: WireValue?) -> Double? {
+    guard let number = value?.number, number.isFinite, number >= 0 else { return nil }
+    return number
 }

@@ -31,6 +31,10 @@ final class NativeWorkListViewportTests: XCTestCase {
                          path: "apps/macos/PiApp/Sources/File\(index).swift")
             }
             session.messages = [TranscriptMessage(id: "u1", role: "user", text: "Work through the whole change.", at: 1_000, turn: "u1"), reply]
+            // These viewport checks exercise explicitly expanded work.
+            for item in TranscriptActivity.blocks(of: session.messages) {
+                if case .block(let block) = item { session.disclosure.setOpen(true, .work(block.key)) }
+            }
             page = TranscriptPage()
             page.state = "idle"
             page.bind(session)

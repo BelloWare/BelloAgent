@@ -167,7 +167,9 @@ extension WorkspaceModel {
         if let revision {
             guard chatStatsVersions[id] == revision else { return }
         } else { _ = beginChatStatsQuery(id) }
+        let changed = chatStats[id] != totals
         chatAccounting.publish(totals, sessionID: id)
+        if changed { noteActivityChanged() }
     }
 
     func refreshAccounting(_ view: SessionDisplay, workspaceID: String, includeMessages: Bool = true, query: (@MainActor () async throws -> SessionGatewayAccounting)? = nil) async {
@@ -184,7 +186,10 @@ extension WorkspaceModel {
             else { value = try await traces.gatewayAccounting(sessionID: view.id, workspaceID: workspaceID, messages: page, includeTiming: true) }
             guard !Task.isCancelled, view.accountingRevision == revision else { return }
             if view.footer.gateway != value.session { view.footer.gateway = value.session }
-            if let timing = value.timing, view.footer.timing != timing { view.footer.timing = timing }
+            if let timing = value.timing, view.footer.timing != timing {
+                view.footer.timing = timing
+                noteActivityChanged()
+            }
             publishChatStats(value.session, sessionID: view.id, revision: totalsRevision)
             if !view.footer.gatewayNotice.isEmpty { view.footer.gatewayNotice = "" }
             // Background sessions need current sidebar/session metrics, not a

@@ -102,7 +102,7 @@ enum PiSessionState {
         switch state {
         case "queued": return "Waiting"
         case "running": return "Working"
-        case "tool": return "Using a tool"
+        case "tool": return "Working"
         case "stopping": return "Stopping"
         case "compacting": return "Compacting"
         case "paused": return "Paused"

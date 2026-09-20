@@ -20,8 +20,8 @@ import Foundation
         static func tool(_ id: String) -> Part { Part(kind: .tool, id: id) }
         static func reasoning(_ id: String) -> Part { Part(kind: .reasoning, id: id) }
         static func compaction(_ id: String) -> Part { Part(kind: .compaction, id: id) }
-        /// A turn's work is open until the reader closes it; everything else starts closed.
-        var openByDefault: Bool { kind == .work }
+        /// Work, tool details, reasoning and compaction notes open only on request.
+        var openByDefault: Bool { false }
     }
     /// Only what the reader actually changed, so a long conversation keeps no
     /// entry for the rows it never touched.
@@ -50,7 +50,7 @@ import Foundation
 /// like any other content: when it differs the row is re-measured and re-laid
 /// out in the same pass as the click that changed it.
 struct TranscriptRowDisclosure: Equatable {
-    var work = true
+    var work = false
     var openTools: Set<String> = []
     var openReasoning: Set<String> = []
     var compaction = false
@@ -71,7 +71,6 @@ struct TranscriptRowDisclosure: Equatable {
         var value = TranscriptRowDisclosure()
         switch item {
         case .message(let message):
-            value.work = true
             value.compaction = store.isOpen(.compaction(message.id))
             for tool in message.tools ?? [] where store.isOpen(.tool(tool.id)) { value.openTools.insert(tool.id) }
             if store.isOpen(.reasoning(message.id)) { value.openReasoning.insert(message.id) }

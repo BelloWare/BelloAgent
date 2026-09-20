@@ -963,7 +963,7 @@ private struct FoldedWork: Layout {
 /// A reply in the order it happened: first what the model did before
 /// answering (its exposed reasoning, one row per tool call, the figures of
 /// each request), then the reply, then the figures of the turn. The work rows
-/// stay in view; the chevron on their header folds them.
+/// start folded; the chevron on their header reveals them.
 struct BlockRowView: View {
     let block: TranscriptBlock
     let actions: TranscriptActions
@@ -987,32 +987,11 @@ struct BlockRowView: View {
         let tokens = TranscriptActivity.tokens(of: accounting)
         let hasUsage = tokens != nil || accounting.costUSD != nil || accounting.model != nil
         let merged = block.turn != nil && block.turn!.replies == 1
-        let trail = block.live && !open ? Array(block.tools.suffix(3)) : []
         let settled = fresh && !block.live
         VStack(alignment: .leading, spacing: 4) {
             if hasWork {
                 VStack(alignment: .leading, spacing: 2) {
                     workHeader(reasoned: reasoned)
-                    if reasoned && !open, let teaser = TranscriptActivity.reasoningTeaser(block.replies.compactMap(\.thinking).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.last ?? "") {
-                        Text(teaser).font(.system(size: 12).italic()).foregroundStyle(TranscriptPalette.muted).lineLimit(1)
-                            .help("The reply's exposed reasoning begins like this; expand the line for all of it")
-                    }
-                    if !trail.isEmpty {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(trail) { tool in
-                                let description = TranscriptActivity.describe(tool), outcome = TranscriptActivity.outcome(of: tool)
-                                HStack(spacing: 6) {
-                                    if outcome == .running { SpinnerView() } else { Text(outcome == .done ? "✓" : "✕").font(.system(size: 11)).foregroundStyle(outcome == .done ? TranscriptPalette.muted : TranscriptPalette.danger).frame(width: 11) }
-                                    Text(description.verb).font(.system(size: 12, weight: .medium)).foregroundStyle(TranscriptPalette.text)
-                                    Text(description.object).font(description.kind == .command ? .system(size: 11.5, design: .monospaced) : .system(size: 12)).foregroundStyle(TranscriptPalette.muted).lineLimit(1).truncationMode(.middle)
-                                }
-                                .transition(.opacity.combined(with: .offset(y: 6)))
-                            }
-                        }
-                        .padding(.vertical, 2)
-                        .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: trail.map(\.id))
-                        .accessibilityLabel("Recent actions")
-                    }
                     // Every request of the block in order: reasoning, its tool calls,
                     // its figures. The list stays in the tree while closed, at zero
                     // height and clipped: tearing down and rebuilding sixty tool rows
@@ -1191,11 +1170,9 @@ struct LiveTurnBar: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let elapsed: Double? = turn.startedAt.map { max(turn.elapsedMs ?? 0, context.date.timeIntervalSince1970 * 1000 - $0) } ?? turn.elapsedMs
-            let current = turn.current.map(TranscriptActivity.describe)
             let usage = TranscriptActivity.usageBreakdown(turn.accounting)
             var parts: [Text] = [Text(label).foregroundColor(TranscriptPalette.text)]
             if let elapsed { parts.append(Text(TranscriptActivity.formatDuration(elapsed)).fontWeight(.semibold).foregroundColor(TranscriptPalette.text)) }
-            if let current { parts.append(Text(current.verb).fontWeight(.medium).foregroundColor(TranscriptPalette.text) + Text(" ") + Text(current.object).font(current.kind == .command ? .system(size: 11.5, design: .monospaced) : .system(size: 12))) }
             if let notice = turn.notice { parts.append(Text(notice).foregroundColor(TranscriptPalette.warning)) }
             if turn.replies > 0 || turn.tools > 0 { parts.append(Text(TurnLineView.counts(turn))) }
             if !usage.isEmpty { parts.append(Text(usage)) }
