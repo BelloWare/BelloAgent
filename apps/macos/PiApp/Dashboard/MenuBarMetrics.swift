@@ -1,13 +1,20 @@
 import Foundation
 
 enum MenuBarPeriod: String, CaseIterable, Identifiable, Hashable, Sendable {
-    case day, week, retained
+    case fiveMinutes, fifteenMinutes, hour, sixHours, day, week, retained
     var id: String { rawValue }
     var title: String {
-        switch self { case .day: "Last 24h"; case .week: "Last 7 days"; case .retained: "Retained" }
+        switch self {
+        case .fiveMinutes: "5m"; case .fifteenMinutes: "15m"; case .hour: "1h"; case .sixHours: "6h"
+        case .day: "Last 24h"; case .week: "Last 7 days"; case .retained: "Retained"
+        }
     }
     func start(until: Date) -> Date? {
         switch self {
+        case .fiveMinutes: until.addingTimeInterval(-300)
+        case .fifteenMinutes: until.addingTimeInterval(-900)
+        case .hour: until.addingTimeInterval(-3600)
+        case .sixHours: until.addingTimeInterval(-21600)
         case .day: until.addingTimeInterval(-86400)
         case .week: until.addingTimeInterval(-7 * 86400)
         case .retained: nil
@@ -15,6 +22,7 @@ enum MenuBarPeriod: String, CaseIterable, Identifiable, Hashable, Sendable {
     }
     /// Hourly for a day, six-hourly for a week, and 24 even slices of everything retained.
     var bucketCount: Int { self == .week ? 28 : 24 }
+    static let monitorPeriods: [Self] = [.fiveMinutes, .fifteenMinutes, .hour, .sixHours, .day]
 }
 
 /// One time slice of the status-bar charts: requests, reported cost and the
@@ -62,6 +70,7 @@ struct MenuBarModelDistribution: Sendable, Identifiable, Equatable {
     /// Share of all gateway-reported cost in the scope, including other pages.
     /// Missing model cost or a zero/unknown scope total has no meaningful share.
     var costShare: Double? = nil
+    var outputShare: Double? = nil
     /// Nearest-rank medians of this route's own requests, so a slow model
     /// never hides behind a fast one in a blended figure.
     var ttftP50: Double? = nil
@@ -114,18 +123,19 @@ struct UsageSnapshotKey: Hashable, Sendable {
     let period: MenuBarPeriod
     let sessionID: String?
     let workspaceID: String?
+    var from: Date? = nil
 }
 
 extension PayloadArchive {
-    func menuBarMetrics(period: MenuBarPeriod, until: Date = Date(), offset: Int = 0) async throws -> MenuBarSnapshot {
-        try await readUsageMetrics(period: period, until: until, offset: offset)
+    func menuBarMetrics(period: MenuBarPeriod, until: Date = Date(), offset: Int = 0, from: Date? = nil, workspaceID: String? = nil) async throws -> MenuBarSnapshot {
+        try await readUsageMetrics(period: period, until: until, offset: offset, workspaceID: workspaceID, from: from)
     }
     func sessionMetrics(sessionID: String, workspaceID: String, until: Date = Date(), offset: Int = 0) async throws -> MenuBarSnapshot {
         guard [sessionID, workspaceID].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 128 && !$0.utf8.contains(where: { $0 < 32 || $0 == 127 }) }) else { throw CaptureFailure.unavailable }
         return try await readUsageMetrics(period: .retained, until: until, offset: offset, sessionID: sessionID, workspaceID: workspaceID)
     }
-    private func readUsageMetrics(period: MenuBarPeriod, until: Date, offset: Int, sessionID: String? = nil, workspaceID: String? = nil) async throws -> MenuBarSnapshot {
-        let key = UsageSnapshotKey(period: period, sessionID: sessionID, workspaceID: workspaceID)
+    private func readUsageMetrics(period: MenuBarPeriod, until: Date, offset: Int, sessionID: String? = nil, workspaceID: String? = nil, from: Date? = nil) async throws -> MenuBarSnapshot {
+        let key = UsageSnapshotKey(period: period, sessionID: sessionID, workspaceID: workspaceID, from: from)
         let generation = usageReadGeneration
         let previous = usageSnapshots[key]
         // Pages reuse a recent summary/chart observation. The normal refresh
@@ -133,7 +143,7 @@ extension PayloadArchive {
         let cached = offset > 0 ? previous.flatMap { until.timeIntervalSince($0.until) >= 0 && until.timeIntervalSince($0.until) < 10 ? $0 : nil } : nil
         let value = try await dashboardReader().run(consumer: sessionID == nil ? "menuUsage" : "sessionUsage") {
             try $0.usageMetrics(period: period, until: cached?.until ?? until, offset: offset,
-                               sessionID: sessionID, workspaceID: workspaceID, cached: cached, includeLatency: sessionID != nil)
+                               sessionID: sessionID, workspaceID: workspaceID, cached: cached, includeLatency: sessionID != nil, from: from)
         }
         try Task.checkCancellation()
         guard generation == usageReadGeneration else { throw CancellationError() }
@@ -147,13 +157,14 @@ extension PayloadArchive {
 }
 
 extension DashboardQueryEngine {
-    func usageMetrics(period: MenuBarPeriod, until: Date, offset: Int, sessionID: String? = nil, workspaceID: String? = nil, cached: MenuBarSnapshot? = nil, includeLatency: Bool = false) throws -> MenuBarSnapshot {
+    func usageMetrics(period: MenuBarPeriod, until: Date, offset: Int, sessionID: String? = nil, workspaceID: String? = nil, cached: MenuBarSnapshot? = nil, includeLatency: Bool = false, from override: Date? = nil) throws -> MenuBarSnapshot {
         guard until.timeIntervalSince1970.isFinite, until.timeIntervalSince1970 >= 0,
               (0...100_000).contains(offset), offset % MenuBarSnapshot.pageSize == 0 else { throw CaptureFailure.unavailable }
         try Task.checkCancellation()
+        if let override { guard override.timeIntervalSince1970.isFinite, override.timeIntervalSince1970 >= 0, override < until else { throw CaptureFailure.unavailable } }
         var timeAndIdentity = "wall<?"
         var values: [CaptureSQLValue] = [.real(until.timeIntervalSince1970)]
-        if let start = period.start(until: until) { timeAndIdentity += " AND wall>=?"; values.append(.real(start.timeIntervalSince1970)) }
+        if let start = override ?? period.start(until: until) { timeAndIdentity += " AND wall>=?"; values.append(.real(start.timeIntervalSince1970)) }
         if let sessionID { timeAndIdentity += " AND session=?"; values.append(.text(sessionID)) }
         if let workspaceID { timeAndIdentity += " AND workspace=?"; values.append(.text(workspaceID)) }
         let scope = "metrics_retained=1 AND " + timeAndIdentity
@@ -211,7 +222,8 @@ extension DashboardQueryEngine {
         let rows = try db.rows("""
         \(normalized)
         SELECT api,alias,resolved_model,resolution_status,\(PayloadArchive.gatewayAggregateSQL),\(PayloadArchive.historicalOutputRateSQL),
-          SUM(COUNT(*)) OVER() AS route_all_requests,SUM(SUM(cost_usd)) OVER() AS route_all_cost
+          SUM(COUNT(*)) OVER() AS route_all_requests,SUM(SUM(cost_usd)) OVER() AS route_all_cost,
+          SUM(SUM(output_tokens)) OVER() AS route_all_output
         FROM selected \(grouping)
         ORDER BY requests DESC,alias COLLATE BINARY,api COLLATE BINARY,resolution_status COLLATE BINARY,resolved_model COLLATE BINARY
         LIMIT \(MenuBarSnapshot.pageSize) OFFSET ?
@@ -224,8 +236,11 @@ extension DashboardQueryEngine {
             // each share's denominator from the same query as its numerator.
             if let cost = gateway.costUSD, let allCost = row["route_all_cost"]?.double, allCost.isFinite, allCost > 0 { share = cost / allCost }
             else { share = nil }
+            let outputShare: Double?
+            if let output = gateway.tokens?.output, let allOutput = row["route_all_output"]?.double, allOutput.isFinite, allOutput > 0 { outputShare = output / allOutput }
+            else { outputShare = nil }
             return MenuBarModelDistribution(api: api, requestedAlias: alias, resolvedModel: row["resolved_model"]?.string, identityStatus: status, gateway: gateway, allRequests: Int(row["route_all_requests"]?.number ?? 0),
-                                            historicalRate: PayloadArchive.historicalOutputRate(row), costShare: share)
+                                            historicalRate: PayloadArchive.historicalOutputRate(row), costShare: share, outputShare: outputShare)
         }
         if includeLatency, !models.isEmpty {
             let key = "api,alias,resolved_model,resolution_status"
@@ -244,7 +259,7 @@ extension DashboardQueryEngine {
             }
         }
         try Task.checkCancellation()
-        let from = cached?.from ?? period.start(until: until) ?? summary["first_wall"]?.double.map { Date(timeIntervalSince1970: $0) }
+        let from = cached?.from ?? override ?? period.start(until: until) ?? summary["first_wall"]?.double.map { Date(timeIntervalSince1970: $0) }
         var buckets: [MenuBarBucket] = cached?.buckets ?? []
         if cached == nil, let from, until.timeIntervalSince(from) >= 1 {
             let width = until.timeIntervalSince(from) / Double(period.bucketCount)

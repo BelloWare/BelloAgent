@@ -4,6 +4,7 @@ import Combine
 import Charts
 
 typealias MenuBarMetricsLoader = @MainActor (MenuBarPeriod, Date, Int) async throws -> MenuBarSnapshot
+typealias MenuBarScopedMetricsLoader = @MainActor (MenuBarPeriod, Date, Int, Date?, String?) async throws -> MenuBarSnapshot
 /// The status-bar charts switch between requests, reported cost and output rate.
 enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rate
     var title: String { switch self { case .requests: "Requests"; case .tokens: "Tokens"; case .cost: "Cost"; case .rate: "Output tok/s" } }
@@ -22,6 +23,9 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
     @Published private(set) var activeSessions = 0
     @Published private(set) var activity = MenuBarActivitySnapshot()
     private let load: MenuBarMetricsLoader
+    private let scopedLoad: MenuBarScopedMetricsLoader?
+    private(set) var selectedRange: ClosedRange<Date>?
+    private(set) var workspaceID: String?
     private let readActiveSessions: @MainActor () -> Int
     private let readActivity: (@MainActor () -> MenuBarActivitySnapshot)?
     /// What says the panel's rows may have changed. Without one the panel
@@ -37,8 +41,9 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
     /// Test seam: how many times the rows have actually been counted.
     private(set) var activityCounts = 0
 
-    init(load: @escaping MenuBarMetricsLoader, activeSessions: @escaping @MainActor () -> Int = { 0 }, activity: (@MainActor () -> MenuBarActivitySnapshot)? = nil, activityChanges: (@MainActor () -> AnyPublisher<Void, Never>)? = nil, interval: Duration = .seconds(10), now: @escaping () -> Date = { Date() }) {
+    init(load: @escaping MenuBarMetricsLoader, scopedLoad: MenuBarScopedMetricsLoader? = nil, period: MenuBarPeriod = .day, activeSessions: @escaping @MainActor () -> Int = { 0 }, activity: (@MainActor () -> MenuBarActivitySnapshot)? = nil, activityChanges: (@MainActor () -> AnyPublisher<Void, Never>)? = nil, interval: Duration = .seconds(10), now: @escaping () -> Date = { Date() }) {
         self.load = load; self.readActiveSessions = activeSessions; self.readActivity = activity
+        self.scopedLoad = scopedLoad; self.period = period
         self.activityChanges = activityChanges; self.interval = interval; self.now = now
     }
     deinit { task?.cancel(); activityRefresh?.cancel() }
@@ -68,6 +73,12 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
         }
     }
     func refresh() { if visible { refreshActivity() }; restart() }
+    /// One committed selection, never one SQL query per drag pixel. Hide the
+    /// old totals until the new scope arrives; cancellation rejects stale reads.
+    func setScope(range: ClosedRange<Date>?, workspaceID: String?) {
+        guard selectedRange != range || self.workspaceID != workspaceID else { return }
+        selectedRange = range; self.workspaceID = workspaceID; offset = 0; snapshot = nil; restart()
+    }
     private func refreshActivity() {
         activityCounts += 1
         // Reassigning an unchanged snapshot republishes it and redraws the
@@ -93,12 +104,14 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
         task?.cancel(); task = nil; generation += 1; loading = false
         guard visible else { return }
         let generation = generation, period = period, offset = offset
-        let load = load, now = now, interval = interval
+        let load = load, scopedLoad = scopedLoad, range = selectedRange, workspace = workspaceID, now = now, interval = interval
         loading = true; notice = ""
         task = Task { [weak self] in
             while !Task.isCancelled {
                 do {
-                    let value = try await load(period, now(), offset)
+                    let value: MenuBarSnapshot
+                    if let scopedLoad { value = try await scopedLoad(period, range?.upperBound ?? now(), offset, range?.lowerBound, workspace) }
+                    else { value = try await load(period, now(), offset) }
                     try Task.checkCancellation()
                     guard let self, self.generation == generation else { return }
                     // Reassigning an identical snapshot every interval redrew
@@ -128,7 +141,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
     @State private var chartSelection: Date?
     var body: some View {
         VStack(alignment: .leading, spacing: PiSpacing.lg) {
-            PiTabs(selection: $controller.period, items: MenuBarPeriod.allCases.map { ($0, $0.title) }).id("period")
+            PiTabs(selection: $controller.period, items: [MenuBarPeriod.day, .week, .retained].map { ($0, $0.title) }).id("period")
             if !controller.notice.isEmpty { Text(controller.notice).font(PiFont.caption).foregroundStyle(Color.piDanger).accessibilityIdentifier("menu-bar-metrics-error") }
             if let snapshot = controller.snapshot {
                 usage(snapshot).id("totals")

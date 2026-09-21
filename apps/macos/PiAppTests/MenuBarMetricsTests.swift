@@ -11,6 +11,28 @@ private final class MenuMetricsClock: @unchecked Sendable {
 @MainActor private final class MenuMetricsActivity { var count = 2 }
 
 final class MenuBarMetricsTests: XCTestCase {
+    func testMonitorPresetsAndBrushScopeFilterSameRequestsModelsAndTotals() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = try await configured(root)
+        defer { Task { try? await archive.close() } }
+        try await save(archive, value(wall: 999_000, cost: 0.1, usage: ["output": .number(100)]))
+        try await save(archive, value(wall: 999_800, cost: 0.2, usage: ["output": .number(200)]))
+        try await save(archive, value(wall: 999_850, cost: 9, usage: ["output": .number(9000)]), workspace: "other")
+        let five = try await archive.menuBarMetrics(period: .fiveMinutes, until: until)
+        XCTAssertEqual(five.gateway.requests, 2)
+        let selected = try await archive.menuBarMetrics(period: .fiveMinutes, until: Date(timeIntervalSince1970: 999_900), from: Date(timeIntervalSince1970: 999_700), workspaceID: "workspace")
+        XCTAssertEqual(selected.gateway.requests, 1); XCTAssertEqual(selected.gateway.tokens?.output, 200)
+        XCTAssertEqual(selected.gateway.costUSD, 0.2); XCTAssertEqual(selected.models.first?.gateway.tokens?.output, 200)
+        XCTAssertEqual(selected.buckets.reduce(0) { $0 + $1.requests }, 1)
+        XCTAssertEqual(selected.from, Date(timeIntervalSince1970: 999_700))
+        XCTAssertEqual(selected.buckets.last?.end, Date(timeIntervalSince1970: 999_900))
+        for (period, duration) in zip(MenuBarPeriod.monitorPeriods, [300.0, 900, 3600, 21600, 86400]) {
+            XCTAssertEqual(period.start(until: until), until.addingTimeInterval(-duration))
+        }
+        do { _ = try await archive.menuBarMetrics(period: .hour, until: until, from: until); XCTFail("Reject empty brush range") } catch { }
+        try await archive.close()
+    }
+
     func testNewRoutePageUsesItsOwnCostAndRequestDenominators() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await configured(root)
