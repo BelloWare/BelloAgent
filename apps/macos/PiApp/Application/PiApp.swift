@@ -112,7 +112,11 @@ extension FocusedValues {
                 MenuBarMetricsView(load: { period, until, offset in
                     try await model.ensureConfiguration()
                     return try await model.traces.menuBarMetrics(period: period, until: until, offset: offset)
-                }, activity: { model.menuBarActivity() },
+                }, scopedLoad: { period, until, offset, from, workspace in
+                    try await model.ensureConfiguration()
+                    return try await model.traces.menuBarMetrics(period: period, until: until, offset: offset, from: from, workspaceID: workspace)
+                }, projects: { model.workspaces.map { MonitorProject(id: $0.id, title: URL(fileURLWithPath: $0.path).lastPathComponent) } },
+                   activity: { model.menuBarActivity() },
                    activityChanges: { model.menuBarActivityChanges },
                    live: model.liveActivity,
                    openApp: revealWorkspace,

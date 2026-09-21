@@ -12,6 +12,14 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
+**Unreleased after 0.1.70: Live Monitor B.** The owner's selected popup now
+supports automatic light/dark appearance, project and 5m–24h ranges, per-model
+reported TPS history, retained output/cost/cache totals and model distribution.
+Dragging the chart zooms its time axis and retained accounting together; reset,
+double-click and keyboard controls restore the range. See
+[implementation and validation](Live-Monitor-B-2026-09-21.md).
+The published version remains 0.1.70.
+
 **Bello Agent 0.1.70/build 74 is released and publicly verified** at
 [belloware.com](https://belloware.com/bello-agent.html), from source
 `2d2b6f6118f00b44b1656565ff5ff49b72845da1` and website

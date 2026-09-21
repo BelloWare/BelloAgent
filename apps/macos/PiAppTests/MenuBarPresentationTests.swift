@@ -167,18 +167,21 @@ final class MenuBarPresentationTests: XCTestCase {
             MenuBarActivityRow(id: "unread", title: "Design notes for the queue", workspace: "Design Reference", phase: "idle", model: "auto-router", resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: 2),
         ], unreadChats: 1)
         var reads = 0
-        let view = MenuBarMetricsView(load: { period, _, offset in
+        let controller = MenuBarMetricsController(load: { period, _, offset in
             XCTAssertEqual(period, .day); XCTAssertEqual(offset, 0)
             reads += 1
             return snapshot
-        }, activity: { activity }, initialTab: .usage, openApp: {}, openReport: {})
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 428, height: 720), styleMask: [.borderless], backing: .buffered, defer: false)
+        }, activity: { activity })
+        let view = MenuBarMetricsView(load: { _,_,_ in throw CaptureFailure.unavailable }, usageController: controller, initialTab: .usage, openApp: {}, openReport: {})
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 720), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .aqua)
         let hosted = NSHostingView(rootView: view)
         window.contentView = hosted
-        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        defer { controller.setVisible(false); window.orderOut(nil); window.contentView = nil; window.close() }
         window.center(); window.orderFront(nil)
+        try await Task.sleep(for: .milliseconds(150))
+        controller.setVisible(true) // Explicit fixture visibility on an occluded XCTest desktop.
         for _ in 0..<20 where reads == 0 {
             try await Task.sleep(for: .milliseconds(20))
         }
@@ -188,7 +191,7 @@ final class MenuBarPresentationTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(300))
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         XCTAssertTrue(window.isVisible)
-        XCTAssertEqual(hosted.bounds.width, 428, accuracy: 0.5)
+        XCTAssertEqual(hosted.bounds.width, 480, accuracy: 0.5)
         XCTAssertEqual(hosted.bounds.height, 720, accuracy: 0.5)
         XCTAssertFalse(hosted.needsLayout)
 
@@ -196,7 +199,7 @@ final class MenuBarPresentationTests: XCTestCase {
         let symbol = try XCTUnwrap(dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage"))
         let create = unsafeBitCast(symbol, to: ListImage.self)
         let image = try XCTUnwrap(create(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber), CGWindowImageOption.boundsIgnoreFraming.rawValue)?.takeRetainedValue())
-        XCTAssertGreaterThanOrEqual(image.width, 428)
+        XCTAssertGreaterThanOrEqual(image.width, 480)
         let jpeg = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.82]))
         let folder = URL(fileURLWithPath: path, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

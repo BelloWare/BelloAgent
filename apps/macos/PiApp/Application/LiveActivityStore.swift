@@ -77,6 +77,7 @@ struct LivePopupSnapshot: Equatable, Sendable {
     var requests: [LiveRequestState] = []
     var completions: [LiveCompletion] = []
     var buckets: [LiveActivityBucket] = []
+    var rateHistory = LiveRateHistory()
     var disconnected = false
     var gaps = 0
     var activeRequests: Int { requests.count }
@@ -104,6 +105,7 @@ struct LiveActivityAccumulator {
     private(set) var active: [LiveAttemptKey: LiveRequestState] = [:]
     private(set) var completions: [LiveCompletion] = []
     private(set) var buckets: [LiveActivityBucket] = []
+    private var rateHistory = LiveRateHistory()
     private var cursors: [LiveSessionKey: (epoch: String, sequence: Int)] = [:]
     private var settledGenerations: [LiveSessionKey: Int] = [:]
     private var interrupted = false
@@ -131,6 +133,7 @@ struct LiveActivityAccumulator {
             buckets.append(LiveActivityBucket(id: id, wall: wall.addingTimeInterval(Double(id) - now), peak: counts, last: counts, gap: missing || !disconnected.isEmpty))
         }
         trim(); lastTime = now; lastWall = wall; interrupted = false
+        sampleRates(at: now, wall: wall, gap: missing || !disconnected.isEmpty)
     }
     mutating func phase(_ phase: String, session: LiveSessionKey, at now: Double, wall: Date) {
         advance(at: now, wall: wall)
@@ -149,6 +152,7 @@ struct LiveActivityAccumulator {
             active[key]?.baselineAt = nil; active[key]?.baselineOutput = nil; active[key]?.intervalRate = nil
         }
         if !buckets.isEmpty { buckets[buckets.count - 1].gap = true }
+        sampleRates(at: now, wall: wall, gap: true)
         lastTime = now; lastWall = wall
     }
     mutating func disconnect(_ workspace: String, at now: Double, wall: Date) {
@@ -246,7 +250,20 @@ struct LiveActivityAccumulator {
                 amendBucket(bucket, request: value, by: 1)
             }
         } else if value.dispatched { active[key] = value }
+        sampleRates(at: now, wall: wall, gap: interrupted || !disconnected.isEmpty)
         trim()
+    }
+    private mutating func sampleRates(at now: Double, wall: Date, gap: Bool) {
+        var rates: [LiveRateKey: Double] = [:]
+        var missing: Set<String> = []
+        var reported = 0
+        for request in active.values {
+            guard let rate = request.currentRate(at: now) else { missing.insert(request.id.session.workspace); continue }
+            let model = request.model ?? "\(request.alias) · \(request.identityStatus)"
+            rates[LiveRateKey(workspace: request.id.session.workspace, model: model), default: 0] += rate
+            reported += 1
+        }
+        rateHistory.record(at: wall, rates: rates, active: active.count, reported: reported, gap: gap, missingWorkspaces: missing)
     }
     private mutating func amendBucket(_ id: Int, request: LiveRequestState, by sign: Int) {
         guard let index = buckets.firstIndex(where: { $0.id == id }) else { return }
@@ -270,7 +287,7 @@ struct LiveActivityAccumulator {
         var requests = Array(active.values)
         for i in requests.indices where requests[i].currentRate(at: now) == nil { requests[i].intervalRate = nil }
         requests.sort { $0.id.attempt < $1.id.attempt }
-        return LivePopupSnapshot(observedAt: wall, lastObservationAt: lastObservationAt, counts: counts, requests: requests, completions: completions, buckets: buckets, disconnected: !disconnected.isEmpty, gaps: gaps)
+        return LivePopupSnapshot(observedAt: wall, lastObservationAt: lastObservationAt, counts: counts, requests: requests, completions: completions, buckets: buckets, rateHistory: rateHistory, disconnected: !disconnected.isEmpty, gaps: gaps)
     }
     static func number(_ value: WireValue?) -> Double? { value?.number.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } }
     static func integer(_ value: WireValue?) -> Int? {

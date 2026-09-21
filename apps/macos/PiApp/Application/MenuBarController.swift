@@ -25,7 +25,7 @@ import SwiftUI
         item.button?.sendAction(on: Self.clickEvents)
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(rootView: MenuBarPanelFrame(layout: layout, content: content()))
-        popover.contentSize = NSSize(width: 428, height: 720)
+        popover.contentSize = NSSize(width: MenuBarPanelLayout.width, height: 720)
     }
 
     @objc private func toggle(_ sender: Any?) {
@@ -33,7 +33,7 @@ import SwiftUI
         if popover.isShown { close() }
         else {
             layout.height = MenuBarPanelLayout.height(available: button.window?.screen?.visibleFrame.height ?? 744)
-            popover.contentSize = NSSize(width: 428, height: layout.height)
+            popover.contentSize = NSSize(width: MenuBarPanelLayout.width, height: layout.height)
             onOpen?()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()

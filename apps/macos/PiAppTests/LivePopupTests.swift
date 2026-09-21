@@ -183,22 +183,24 @@ final class LivePopupTests: XCTestCase {
             model.liveActivity.ingest(page([event(1, output: 10, purpose: i == 0 ? "compaction" : "turn")]), workspace: "project", session: view.id)
         }
         var reads = 0
-        let view = MenuBarMetricsView(load: { _,_,_ in reads += 1; throw CaptureFailure.unavailable }, activity: { model.menuBarActivity() }, activityChanges: { model.menuBarActivityChanges }, live: model.liveActivity, openApp: {}, openReport: {})
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 428, height: 576), styleMask: [.borderless], backing: .buffered, defer: false)
+        let monitor = MenuBarMetricsController(load: { _,_,_ in reads += 1; throw CaptureFailure.unavailable }, period: .fifteenMinutes, activity: { model.menuBarActivity() }, activityChanges: { model.menuBarActivityChanges })
+        let view = MenuBarMetricsView(load: { _,_,_ in throw CaptureFailure.unavailable }, live: model.liveActivity, monitorController: monitor, openApp: {}, openReport: {})
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 576), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let hosted = NSHostingView(rootView: view.environment(\.menuBarHeight, 576))
         window.contentView = hosted; window.center()
-        defer { window.contentView = nil; window.close() }
+        defer { monitor.setVisible(false); window.contentView = nil; window.close() }
         // Let the native hosting view actually mount before measuring warm
         // opens. Immediate orderFront/layout calls alone can time only enqueueing.
         window.orderFront(nil); model.liveActivity.setVisible(true)
         try await Task.sleep(for: .milliseconds(150))
+        monitor.setVisible(true)
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         var openings: [Double] = [], updates: [Double] = [], opportunities: [Double] = []
         for _ in 0..<8 {
-            window.orderOut(nil); model.liveActivity.setVisible(false)
+            window.orderOut(nil); model.liveActivity.setVisible(false); monitor.setVisible(false)
             let start = ProcessInfo.processInfo.systemUptime
-            model.liveActivity.setVisible(true); window.orderFront(nil); hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            model.liveActivity.setVisible(true); monitor.setVisible(true); window.orderFront(nil); hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             try await Task.sleep(for: .milliseconds(16))
             hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             openings.append((ProcessInfo.processInfo.systemUptime - start) * 1_000)
@@ -238,12 +240,102 @@ final class LivePopupTests: XCTestCase {
                 try capture(window, to: URL(fileURLWithPath: folder).appendingPathComponent(name + ".jpg"))
             }
         }
-        window.orderOut(nil); model.liveActivity.setVisible(false)
+        window.orderOut(nil); model.liveActivity.setVisible(false); monitor.setVisible(false)
         try await Task.sleep(for: .milliseconds(300))
         let publications = model.liveActivity.publications, hiddenReads = reads
         try await Task.sleep(for: .milliseconds(1100))
         XCTAssertEqual(model.liveActivity.publications, publications); XCTAssertEqual(reads, hiddenReads)
     }
+    @MainActor func testMonitorDesignLightDarkAndNativeZoomWithReportedFixture() async throws {
+        var seconds = 1.0
+        let date = date
+        let live = LiveActivityStore(now: { seconds }, wall: { date.addingTimeInterval(seconds) }, observeSleep: false)
+        defer { live.shutdown() }
+        let names = ["GPT-5.4 mini", "Claude Sonnet", "GPT-5.4"]
+        let titles = ["API refactor", "UI review", "Release notes"]
+        var totals = [0.0, 0.0, 0.0]
+        for i in 0..<3 { live.phase("model", workspace: "project", session: "s\(i)") }
+        for tick in 1...900 {
+            seconds = Double(tick)
+            for i in 0..<3 {
+                totals[i] += Double(25 + i * 15) + sin(Double(tick) / 33) * 8
+                live.ingest(page([event(tick, output: totals[i].rounded(), at: seconds * 1_000, model: names[i])]), workspace: "project", session: "s\(i)")
+            }
+        }
+        func gateway(output: Double, cost: Double) -> GatewayTotals {
+            var g = GatewayTotals(requests: 12, costSamples: 12, costUSD: cost)
+            g.tokens = GatewayTokenTotals(input: 72_000, output: output, total: 72_000 + output, inputSamples: 12, outputSamples: 12, samples: 12)
+            g.cacheReadTokens = 48_000; g.cacheReadSamples = 12; g.uncachedInputReportedTokens = 24_000; g.uncachedInputSamples = 12
+            return g
+        }
+        let models = names.enumerated().map { i, name in
+            MenuBarModelDistribution(api: "openai-responses", requestedAlias: "auto-router", resolvedModel: name, identityStatus: "reported", gateway: gateway(output: [24_100, 14_460, 9_640][i], cost: [0.62, 0.372, 0.248][i]), allRequests: 36, costShare: [0.5, 0.3, 0.2][i], outputShare: [0.5, 0.3, 0.2][i])
+        }
+        let activity = MenuBarActivitySnapshot(rows: titles.enumerated().map { i, title in
+            var row = MenuBarActivityRow(id: "s\(i)", title: title, workspace: "Bello Agent", phase: "model", model: "auto-router", resolvedModel: names[i], tools: [], followUps: 0, steering: 0, unread: 0)
+            row.workspaceID = "project"; return row
+        })
+        var queries: [(Date?, Date)] = []
+        let monitor = MenuBarMetricsController(load: { _,_,_ in throw CaptureFailure.unavailable }, scopedLoad: { period, until, _, from, _ in
+            queries.append((from, until))
+            return MenuBarSnapshot(period: period, from: from ?? period.start(until: until), until: until, counts: DashboardCounts(dispatched: 36, completed: 36), gateway: gateway(output: 48_200, cost: 1.24), workspaces: 1, sessions: 3, compactionRequests: 0, costUnreported: 0, costInvalid: 0, costConflicts: 0, models: models, modelGroups: 3, offset: 0, historicalRate: HistoricalOutputRate(outputTokens: 48_200, generationMilliseconds: 430_000, samples: 36))
+        }, period: .fifteenMinutes, activity: { activity }, interval: .seconds(60), now: { date.addingTimeInterval(seconds) })
+        let view = MenuBarMetricsView(load: { _,_,_ in throw CaptureFailure.unavailable }, projects: { [MonitorProject(id: "project", title: "Bello Agent")] }, live: live, monitorController: monitor, openApp: {}, openReport: {})
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 720), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let hosted = NSHostingView(rootView: view.environment(\.colorScheme, .light))
+        window.contentView = hosted; window.center(); window.orderFront(nil)
+        defer { monitor.setVisible(false); window.contentView = nil; window.close() }
+        try await Task.sleep(for: .milliseconds(150))
+        // The XCTest desktop may be occluded by the lock screen. Explicitly
+        // publish the isolated fixture; production uses the visibility reader.
+        live.setVisible(true); monitor.setVisible(true)
+        for _ in 0..<100 where monitor.snapshot == nil { await Task.yield() }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(queries.count, 1); XCTAssertEqual(live.snapshot.currentRates(workspace: nil).reported, 3)
+        func surfaces(_ view: NSView) -> [MonitorChartInteraction.Surface] {
+            var pending = [view], result: [MonitorChartInteraction.Surface] = []
+            while let candidate = pending.popLast() {
+                if let surface = candidate as? MonitorChartInteraction.Surface { result.append(surface) }
+                pending.append(contentsOf: candidate.subviews)
+            }
+            return result
+        }
+        for (appearance, name) in [(NSAppearance.Name.aqua, "bello-monitor-light"), (.darkAqua, "bello-monitor-dark")] {
+            window.appearance = NSAppearance(named: appearance)
+            hosted.rootView = view.environment(\.colorScheme, appearance == .darkAqua ? .dark : .light)
+            try await Task.sleep(for: .milliseconds(150))
+            hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            XCTAssertEqual(hosted.bounds.width, 480, accuracy: 0.5)
+            let surface = try XCTUnwrap(surfaces(hosted).first)
+            XCTAssertGreaterThan(surface.plot.width, 300)
+            if let folder = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") {
+                try capture(window, to: URL(fileURLWithPath: folder).appendingPathComponent(name + ".jpg"))
+            }
+        }
+        let surface = try XCTUnwrap(surfaces(hosted).first)
+        let plot = surface.plot
+        func pointer(_ type: NSEvent.EventType, fraction: Double) throws -> NSEvent {
+            let point = surface.convert(CGPoint(x: plot.minX + plot.width * fraction, y: plot.midY), to: nil)
+            return try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        }
+        surface.mouseDown(with: try pointer(.leftMouseDown, fraction: 0.25))
+        surface.mouseDragged(with: try pointer(.leftMouseDragged, fraction: 0.75))
+        XCTAssertEqual(queries.count, 1)
+        surface.mouseUp(with: try pointer(.leftMouseUp, fraction: 0.75))
+        for _ in 0..<100 where queries.count < 2 { await Task.yield() }
+        XCTAssertEqual(queries.count, 2, "Native brush commits one scoped read")
+        XCTAssertEqual(try XCTUnwrap(monitor.selectedRange).upperBound.timeIntervalSince(try XCTUnwrap(monitor.selectedRange).lowerBound), 450, accuracy: 0.1)
+        try await Task.sleep(for: .milliseconds(200))
+        hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let zoomedSurface = try XCTUnwrap(surfaces(hosted).first)
+        XCTAssertEqual(zoomedSurface.domain.lowerBound.timeIntervalSince1970, try XCTUnwrap(monitor.selectedRange).lowerBound.timeIntervalSince1970, accuracy: 0.1, "The rendered chart scale must follow the brush, not only its caption")
+        XCTAssertEqual(zoomedSurface.domain.upperBound.timeIntervalSince1970, try XCTUnwrap(monitor.selectedRange).upperBound.timeIntervalSince1970, accuracy: 0.1)
+        if let folder = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") {
+            try capture(window, to: URL(fileURLWithPath: folder).appendingPathComponent("bello-monitor-zoomed.jpg"))
+        }
+    }
+
     @MainActor private func capture(_ window: NSWindow, to url: URL) throws {
         typealias Capture = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         let address = try XCTUnwrap(dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage"))

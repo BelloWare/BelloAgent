@@ -24,6 +24,7 @@ struct MenuBarActivityRow: Identifiable, Equatable, Sendable {
     var uncertain = false
     var errorDetail: String?
     var actionable = true
+    var workspaceID: String?
     var running: Bool { ["starting", "model", "tool", "compacting", "stopping"].contains(phase) }
     var needsAttention: Bool { ["queued", "paused", "error"].contains(phase) }
     var phaseLabel: String {
@@ -115,6 +116,7 @@ extension WorkspaceModel {
             let totals = view.footer.gateway.requests > 0 ? view.footer.gateway : chatStats[view.id]
             var row = MenuBarActivityRow(id: view.id, title: record.title, workspace: workspace, phase: phase, model: model, resolvedModel: resolved != model ? resolved : nil, tools: tools, followUps: followUps, steering: steering, unread: unread)
             row.modelActive = raw["modelActive"]?.bool == true
+            row.workspaceID = record.workspaceID
             row.startedAt = activityNumber(view.turnTiming["startedAt"])
             row.elapsedMs = activityNumber(view.turnTiming["elapsedMs"])
             row.latestRate = view.footer.timing.latest?.outputTokensPerSecond

@@ -111,7 +111,12 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
                 do {
                     let value: MenuBarSnapshot
                     if let scopedLoad { value = try await scopedLoad(period, range?.upperBound ?? now(), offset, range?.lowerBound, workspace) }
-                    else { value = try await load(period, now(), offset) }
+                    else {
+                        // Legacy loaders cannot express a selected interval or
+                        // project. Never label their broader totals as scoped.
+                        guard range == nil, workspace == nil else { throw CaptureFailure.unavailable }
+                        value = try await load(period, now(), offset)
+                    }
                     try Task.checkCancellation()
                     guard let self, self.generation == generation else { return }
                     // Reassigning an identical snapshot every interval redrew
