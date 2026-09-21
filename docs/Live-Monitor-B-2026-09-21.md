@@ -1,7 +1,8 @@
 # Live Monitor B
 
 The owner selected concept B and requested light/dark appearance and chart
-selection zoom. This is an unreleased source change after 0.1.70.
+selection zoom. This is included in [0.1.71](validation/Bello-Agent-0.1.71-2026-09-21.md),
+along with fresh conversation loading and history paging.
 
 The native status popup now leads with project scope, 5m / 15m / 1h / 6h / 24h
 ranges, current reported output rate, completed-request average rate, output

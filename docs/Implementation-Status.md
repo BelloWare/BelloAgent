@@ -12,7 +12,19 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Preparing 0.1.71: fresh conversation loading and Live Monitor B.** Ordinary
+**Bello Agent 0.1.71/build 75 is released and publicly verified**, from source
+`3a29daf223fb2101be105ad24a7a6bdba01d2596` and website
+`1f73d9a39a585d1b2f169ced01d2e07bd576bb1f`. The signed/notarized installer is
+**8,677,864 bytes (8.28 MiB)**, SHA-256
+`d521989403074e10e1e44c0a4604e603a5e9be4f1b4c213444e0bbb51e048f44`.
+Public page, identical update feeds and downloaded hash/Ed25519 checks passed
+at **2026-09-21 03:26:17 UTC**; Cloudflare check **106203773143** succeeded.
+Validation: **196 native, 11 optimized helper and 27 executable gateway tests
+passed**; one optional screenshot check was skipped. Source commits remain
+local under current policy; the website commit was pushed. See the
+[release record and performance limits](validation/Bello-Agent-0.1.71-2026-09-21.md).
+
+**Fresh conversation loading and Live Monitor B.** Ordinary
 selection/revisit loads the latest three display turns with generation-owned
 loading, safe drafts/Stop, explicit earlier/newer/retry controls and a bounded
 moving history window. Native Markdown prepares visible sections first and
@@ -25,9 +37,12 @@ reported TPS history, retained output/cost/cache totals and model distribution.
 Dragging the chart zooms its time axis and retained accounting together; reset,
 double-click and keyboard controls restore the range. See
 [implementation and validation](Live-Monitor-B-2026-09-21.md).
-The published version remains 0.1.70.
+Indexed saved-file selection reached a useful native draw at **66.23 ms p95**
+in the fixed coding-history fixture. The combined 20-stream/two-large-pane
+fixture preserves captures and composition but still shows heavy-view latency
+spikes; this release does not claim every proposed frame/input budget is met.
 
-**Bello Agent 0.1.70/build 74 is released and publicly verified** at
+**Bello Agent 0.1.70/build 74 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source
 `2d2b6f6118f00b44b1656565ff5ff49b72845da1` and website
 `ac2adbed59741fd4c674ed71b4f59c1e0c7912fa`. The DMG measures **8,464,726 bytes

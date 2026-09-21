@@ -1,7 +1,6 @@
 # Bello Agent 0.1.71 / build 75
 
-Candidate validated on 2026-09-21. Publication provenance is filled after the
-signed artifacts and public deployment are verified.
+Released and publicly verified on **2026-09-21 03:26:17 UTC**.
 
 ## Scope
 
@@ -74,7 +73,21 @@ remain excluded by standing owner instruction.
 
 ## Publication
 
-Pending signed app/DMG notarization, packaged-helper smoke, feed validation,
-website deployment and public download hash/signature verification. Source
-commits remain local under the current release policy; only the website
-publication is pushed.
+- Packaged source commit: `3a29daf223fb2101be105ad24a7a6bdba01d2596`.
+- Website commit: `1f73d9a39a585d1b2f169ced01d2e07bd576bb1f`, pushed to its
+  configured `main` upstream. Cloudflare check **106203773143** succeeded,
+  completed at 2026-09-21 03:25:17 UTC.
+- Developer ID signing, app/DMG notarization and stapling, Gatekeeper, packaged
+  helper/catalog smoke and feed validation passed. The staged application has
+  no XCTest bundles. Notary app ID: `3fdaaffe-eb41-458f-8d7b-7bbf9c0cd0ca`;
+  DMG ID: `be313025-6668-40eb-83c6-a9fe70c2a53c`.
+- `BelloAgent-0.1.71.dmg`: **8,677,864 bytes (8.28 MiB)**;
+  SHA-256 `d521989403074e10e1e44c0a4604e603a5e9be4f1b4c213444e0bbb51e048f44`.
+- The public product page links 0.1.71. Downloaded canonical and legacy feeds
+  are byte-identical to each other and the local signed feed. The public DMG
+  matches the local SHA-256 and passes Sparkle Ed25519 verification. A final
+  signed installer was copied to the session outbox.
+
+Source commits remain local under the current release policy; only the website
+publication was pushed. The public source link continues to point to the
+repository's last explicitly pushed revision until a source push is requested.
