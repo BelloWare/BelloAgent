@@ -20,7 +20,7 @@ struct ComposerInput: View {
     private var editing: Bool { session.editingMessageID != nil }
     /// A draft of any size is checked for its first non-whitespace character;
     /// trimming a long draft would copy it on every keystroke.
-    private var canSend: Bool { session.draftReady && !((!draft.text.contains { !$0.isWhitespace } && session.skills.isEmpty) || session.loading || model.installPreparing || (editing && (session.busy || !session.queue.isEmpty))) }
+    private var canSend: Bool { session.draftReady && !((!draft.text.contains { !$0.isWhitespace } && session.skills.isEmpty) || session.loading || model.installPreparing || (editing && model.editBlocker(session) != nil)) }
     private var queues: Bool { !editing && (session.busy || !session.queue.isEmpty) }
     @State private var sendPulse = false
     private func submit(intent: ComposerSubmissionIntent = .followUp) {
@@ -35,12 +35,14 @@ struct ComposerInput: View {
         VStack(alignment: .leading, spacing: PiSpacing.sm) {
             if session.completionVisible { completions.transition(AnyTransition.scale(scale: 0.98, anchor: .bottom).combined(with: .opacity)) }
             VStack(spacing: 0) {
-                if editing { EditingBanner(session: session) { model.cancelEdit(sessionID: session.id) }.transition(AnyTransition.move(edge: .top).combined(with: .opacity)) }
+                if session.editPreparing && !editing { Text("Loading the complete original input…").font(PiFont.caption).padding(8) }
+                if editing { EditingBanner(session: session, blocker: model.editBlocker(session)) { model.cancelEdit(sessionID: session.id) }.transition(AnyTransition.move(edge: .top).combined(with: .opacity)) }
                 if session.runStatus == "compacting" || session.compactionNotice != nil {
                     CompactionBanner(session: session) { session.compactionNotice = nil }.transition(AnyTransition.move(edge: .top).combined(with: .opacity))
                 }
                 if !session.attachments.isEmpty || !session.skills.isEmpty { chips.padding(.horizontal, PiSpacing.md).padding(.top, PiSpacing.md).transition(.opacity) }
-                NativeComposer(text: $draft.text, send: { submit(intent: $0) }, sessionID: session.id, completion: { _ in model.commandChanged(session) },
+                NativeComposer(text: $draft.text, send: { submit(intent: $0) }, sessionID: session.id, completion: { _ in },
+                    locationChanged: { model.composerMoved($0, editor: $1, view: session) },
                     directSlash: { session.directCommand = true }, pasted: { session.directCommand = false; session.completionVisible = false },
                     completionKey: { model.completionKey($0, modifiers: $1, view: session) }, focused: { if model.focusedSessionID != session.id { model.focusedSessionID = session.id } }, accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer", inputRejected: { session.notice = $0 },
                     attachFiles: { model.attachImageFiles($0, sessionID: session.id) },
@@ -79,7 +81,7 @@ struct ComposerInput: View {
                             .scaleEffect(sendPulse && !reduceMotion ? 0.92 : 1)
                             .piAnimation(PiMotion.quick, value: canSend)
                             .piAnimation(PiMotion.quick, value: sendPulse)
-                    }.buttonStyle(.plain).piPointer().disabled(!canSend).help(queues ? "Queue Follow-up" : editing ? "Resend Edited Message" : "Send")
+                    }.buttonStyle(.plain).piPointer().disabled(!canSend).help(editing ? model.editBlocker(session) ?? "Resend Edited Message" : queues ? "Queue Follow-up" : "Send")
                     if session.busy {
                         Button { model.stop(sessionID: session.id) } label: {
                             Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))
@@ -166,27 +168,40 @@ struct ComposerInput: View {
     }
 
     private var completions: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(Array(model.completions(session).enumerated()), id: \.element.id) { index, choice in
-                Button { model.chooseCompletion(choice, view: session) } label: {
-                    HStack(spacing: PiSpacing.sm) {
-                        Image(systemName: choice.skill == nil ? "terminal" : "command").font(.system(size: 11, weight: .semibold)).foregroundStyle(index == session.completionIndex ? Color.piAccent : Color.piInkSecondary).frame(width: 16)
-                        Text("/" + choice.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.piInk)
-                        Text(choice.detail).lineLimit(1).truncationMode(.middle).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                        Spacer()
-                    }.padding(.horizontal, PiSpacing.sm).padding(.vertical, 6).frame(maxWidth: .infinity)
-                        .background(index == session.completionIndex ? Color.piAccentSoft : Color.clear, in: RoundedRectangle(cornerRadius: PiRadius.sm, style: .continuous))
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain).piPointer()
+        let choices = model.completions(session)
+        return VStack(alignment: .leading, spacing: 2) {
+            ScrollViewReader { reader in
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(choices) { choice in
+                            Button { model.chooseCompletion(choice, view: session) } label: {
+                                HStack(spacing: PiSpacing.sm) {
+                                    Image(systemName: choice.skill == nil ? "terminal" : "command").frame(width: 16)
+                                    Text("/" + choice.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.piInk)
+                                    Text(choice.detail).lineLimit(1).truncationMode(.middle).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                                    Spacer()
+                                }.padding(.horizontal, PiSpacing.sm).padding(.vertical, 6).frame(maxWidth: .infinity)
+                                    .background(choice.id == session.completionSelectionID ? Color.piAccentSoft : Color.clear, in: RoundedRectangle(cornerRadius: PiRadius.sm))
+                                    .contentShape(Rectangle())
+                            }.buttonStyle(.plain).piPointer().id(choice.id)
+                        }
+                    }
+                }.frame(height: min(224, CGFloat(max(1, choices.count)) * 30))
+                    .onChange(of: session.completionSelectionID) { _, id in if let id { reader.scrollTo(id) } }
             }
             HStack {
-                Text(model.resourceLoading ? "Discovering skills…" : "↑↓ Choose · Tab or Return Select · Select skills before ⌘↩ · Esc Dismiss").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
+                Text(session.skillCatalog.state == .loading ? "Discovering skills…" : session.skillCatalog.state == .failed ? "Discovery failed" : choices.isEmpty ? "No matches" : "\(choices.count) results · ↑↓ Choose · Tab/Return Select")
+                    .font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
                 Spacer()
+                if session.skillCatalog.state == .failed || session.skillCatalog.state == .partial {
+                    Button("Retry") { Task { await model.loadSkillCatalog(refresh: true, sessionID: session.id) } }.buttonStyle(.piGhost)
+                }
                 Button("All Skills…") { model.inspectResources(session.id) }.buttonStyle(.piGhost)
             }.padding(.horizontal, PiSpacing.sm).padding(.top, 4)
-        }
-        .padding(PiSpacing.sm)
-        .piElevated(radius: PiRadius.md)
-        .accessibilityElement(children: .contain).accessibilityLabel("Slash command suggestions")
+            if !session.skillCatalog.notice.isEmpty && session.skillCatalog.state != .loading {
+                Text(session.skillCatalog.notice).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(2).help(session.skillCatalog.notice)
+            }
+        }.padding(PiSpacing.sm).piElevated(radius: PiRadius.md)
+            .accessibilityElement(children: .contain).accessibilityLabel("Slash command suggestions")
     }
 }

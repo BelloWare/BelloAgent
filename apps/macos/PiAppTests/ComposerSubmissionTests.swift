@@ -94,6 +94,14 @@ final class ComposerSubmissionTests: XCTestCase {
             if state["state"]?.string == "paused" { break }
             try await Task.sleep(for: .milliseconds(10))
         }
+        // The next assertions deliberately simulate stale UI run state. Stop
+        // live snapshot publication so an unrelated cancellation observation
+        // cannot race those assignments or open an uncertainty-review sheet.
+        for _ in 0..<200 where view.snapshotInFlight { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertFalse(view.snapshotInFlight)
+        view.snapshotInFlight = true
+        defer { view.snapshotInFlight = false }
+        view.uncertain = false
         view.state = "running"; view.draft = "preserved stale steer"
         key(36, .command, editor: editor); try await accepted()
         XCTAssertEqual(view.draft, "preserved stale steer")

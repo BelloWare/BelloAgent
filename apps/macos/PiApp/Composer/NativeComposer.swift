@@ -7,6 +7,7 @@ struct NativeComposer: NSViewRepresentable {
     /// The chat this composer belongs to, so typing anywhere in the window can find the right one.
     var sessionID = ""
     var completion: (String) -> Void = { _ in }
+    var locationChanged: (ComposerLocation, ComposerTextView) -> Void = { _, _ in }
     var directSlash: () -> Void = {}
     var pasted: () -> Void = {}
     var completionKey: (UInt16, NSEvent.ModifierFlags) -> Bool = { _, _ in false }
@@ -77,6 +78,9 @@ struct NativeComposer: NSViewRepresentable {
         private var applyingModelText = false
         private var rejectedModelText: String?
         private var focusRevision = 0
+        private var locationRevision = 0
+        private var draftRevision: UInt64 = 0
+        private let editorGeneration = UUID()
         /// The text the editor and the model last agreed on, in the app's own
         /// storage. `NSTextView.string` hands back a fresh UTF-16 bridge each
         /// time; comparing the draft against one of those decodes the whole
@@ -84,7 +88,23 @@ struct NativeComposer: NSViewRepresentable {
         /// Comparing against this copy is a pointer check in the usual case.
         private var settled: String?
         init(_ parent: NativeComposer) { self.parent = parent }
-        func adopt(_ text: String) { settled = text }
+        func adopt(_ text: String) { if settled != text { draftRevision &+= 1 }; settled = text }
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let editor = notification.object as? ComposerTextView else { return }
+            scheduleLocation(editor)
+        }
+        private func scheduleLocation(_ editor: ComposerTextView) {
+            locationRevision += 1; let revision = locationRevision
+            // Selection can arrive during updateNSView; publish afterwards.
+            Task { @MainActor [weak self, weak editor] in
+                guard let self, let editor, revision == self.locationRevision else { return }
+                let location = ComposerLocation(sessionID: editor.sessionID, editorGeneration: self.editorGeneration,
+                    draftRevision: self.draftRevision, selectedRangeUTF16: editor.selectedRange(),
+                    markedRangeUTF16: editor.hasMarkedText() ? editor.markedRange() : nil)
+                editor.completionLocation = location
+                self.parent.locationChanged(location, editor)
+            }
+        }
         /// The editor's text in the app's own UTF-8 storage, so every later
         /// comparison is a memcmp rather than a UTF-16 decode. AppKit's own
         /// UTF-8 buffer is an order of magnitude faster than transcoding the
@@ -103,7 +123,7 @@ struct NativeComposer: NSViewRepresentable {
         func applyModelText(_ text: String, to editor: ComposerTextView) {
             guard !editor.hasMarkedText(), settled != text, rejectedModelText != text else { return }
             let current = Self.contents(of: editor)
-            guard current != text else { settled = text; return }
+            guard current != text else { adopt(text); return }
             rejectedModelText = nil
             // insertText preserves native undo, but synchronously invokes the
             // delegate. A model-to-view refresh must not publish that same text
@@ -111,7 +131,7 @@ struct NativeComposer: NSViewRepresentable {
             applyingModelText = true; defer { applyingModelText = false }
             editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.textStorage?.length ?? 0))
             let applied = Self.contents(of: editor)
-            settled = applied
+            adopt(applied); scheduleLocation(editor)
             if applied != text { rejectedModelText = text }
         }
         func focusChanged(_ editor: ComposerTextView) {
@@ -153,9 +173,10 @@ struct NativeComposer: NSViewRepresentable {
             // construction: comparing it against the draft first would cost a
             // full decode of the document for nothing.
             let text = Self.contents(of: editor)
-            settled = text
+            adopt(text)
             parent.text = text
             if !editor.hasMarkedText() { parent.completion(text) }
+            if let editor = editor as? ComposerTextView { scheduleLocation(editor) }
         }
     }
 }
@@ -199,6 +220,35 @@ struct ComposerEditMeasurement {
     }
     /// The chat this editor belongs to (see `WindowPresentationController.redirectTyping`).
     var sessionID = ""
+    var completionLocation: ComposerLocation?
+
+    /// Text and explicit skill authorization form one native undo operation.
+    func replaceCompletion(range: NSRange, with replacement: String, skills: [SkillChip],
+                           display: SessionDisplay, changed: @escaping @MainActor @Sendable () -> Void) {
+        let before = NativeComposer.Coordinator.contents(of: self), beforeSkills = display.skills, beforeRange = selectedRange()
+        let after = (before as NSString).replacingCharacters(in: range, with: replacement)
+        applySkillEdit(text: after, skills: skills, selection: NSRange(location: range.location + (replacement as NSString).length, length: 0),
+                       previous: (before, beforeSkills, beforeRange), display: display, changed: changed)
+    }
+    private func applySkillEdit(text: String, skills: [SkillChip], selection: NSRange,
+                               previous: (String, [SkillChip], NSRange), display: SessionDisplay, changed: @escaping @MainActor @Sendable () -> Void) {
+        guard sessionID == display.id else { return }
+        breakUndoCoalescing()
+        undoManager?.disableUndoRegistration()
+        insertText(text, replacementRange: NSRange(location: 0, length: textStorage?.length ?? 0))
+        setSelectedRange(selection); display.draft = text; display.skills = skills
+        display.directCommand = false; display.completionVisible = false; changed()
+        undoManager?.enableUndoRegistration()
+        undoManager?.registerUndo(withTarget: self) { [weak display] editor in
+            MainActor.assumeIsolated {
+                guard let display else { return }
+                editor.applySkillEdit(text: previous.0, skills: previous.1, selection: previous.2,
+                                      previous: (text, skills, selection), display: display, changed: changed)
+            }
+        }
+        undoManager?.setActionName("Select Skill")
+        window?.makeFirstResponder(self)
+    }
     private var measurement = ComposerEditMeasurement()
     var send: ((ComposerSubmissionIntent) -> Void)?
     var directSlash: (() -> Void)?

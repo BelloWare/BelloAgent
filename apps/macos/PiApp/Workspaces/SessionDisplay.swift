@@ -90,6 +90,13 @@ import Combine
     @Published var directCommand = false
     @Published var completionVisible = false
     @Published var completionIndex = 0
+    @Published var completionSelectionID: String?
+    @Published var skillCatalog = SkillCatalog()
+    var completionToken: SlashCompletionToken?
+    var composerLocation: ComposerLocation?
+    weak var composerEditor: ComposerTextView?
+    var completionParse: Task<Void, Never>?
+    var codeClassification: (generation: UUID, revision: UInt64, offset: Int, outside: Bool)?
     @Published var state = "idle" { didSet { if state != oldValue { activityChanges.send() } } }
     @Published var runStatus = "idle" { didSet { if runStatus != oldValue { activityChanges.send() } } }
     /// Bumped when the pane should move keyboard focus into the composer.
@@ -255,13 +262,24 @@ import Combine
     /// Edit-and-resend: the user message whose text is loaded in the composer, and the draft it replaced.
     @Published var editingMessageID: String?
     var draftBeforeEdit: DraftRecord?
+    var editGeneration = UUID()
+    @Published var editPreparing = false
+    @Published var editSubmitting = false
+    @Published var editInputReviewRequired = false
+    @Published var editMissingAttachments: Set<String> = []
+    @Published var editNotice = ""
+    var editSourceTimeline: String?
+    var editSourceTextDigest: String?
     var savedDraft: DraftRecord {
-        let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills) }
+        let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills, sourceTimeline: editSourceTimeline, sourceTextDigest: editSourceTextDigest, inputReviewRequired: editInputReviewRequired) }
         return DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, edit: edit)
     }
     func restoreDraft(_ saved: DraftRecord) {
         draft = saved.text; attachments = saved.attachments ?? []; skills = saved.skills ?? []; directCommand = false
         editingMessageID = saved.edit?.messageID
+        editSourceTimeline = saved.edit?.sourceTimeline; editSourceTextDigest = saved.edit?.sourceTextDigest
+        editInputReviewRequired = saved.edit?.inputReviewRequired ?? false
+        editGeneration = UUID(); editPreparing = false; editSubmitting = false; editNotice = ""; editMissingAttachments = []
         draftBeforeEdit = saved.edit.map { DraftRecord(id: id, text: $0.originalText, attachments: $0.originalAttachments, skills: $0.originalSkills) }
     }
     var displayObservedAt: Double?

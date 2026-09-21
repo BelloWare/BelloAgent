@@ -132,6 +132,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
     @Published var sides: [String: SideRecord] = [:] { didSet { sidebarIndex.invalidate(); readBadgeCache = nil; noteActivityChanged() } }
     @Published var resourceLoading = false
     @Published var resourceNotice = ""
+    var editTargetRead: (@MainActor (String, String) async throws -> [String: WireValue])?
+    var skillCatalogLoads: [String: (token: UUID, scope: String, task: Task<Void, Never>)] = [:]
     /// Retained gateway totals for chats without a loaded display, keyed by chat id.
     let chatAccounting = SessionAccountingCache()
     var chatStats: [String: GatewayTotals] { chatAccounting.values }

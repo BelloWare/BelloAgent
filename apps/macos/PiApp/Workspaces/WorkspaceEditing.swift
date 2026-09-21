@@ -27,44 +27,91 @@ extension WorkspaceModel {
         messageDetailSessionID = sessionID; messageDetailID = messageID; showMessageDetail = true
     }
 
-    /// Loads a user message into the composer. Nothing is sent until Send.
+    /// Entering an edit is read-only; active work can finish while the user
+    /// prepares a replacement. Sending additionally requires an empty queue.
+    func editEntryBlocker(_ view: SessionDisplay) -> String? {
+        guard let item = record(view.id) else { return "This conversation is unavailable." }
+        if item.imported { return "Imported originals are read-only. Continue as a separate chat before editing." }
+        if item.isArchived { return WorkspaceModel.archivedNotice }
+        if isEphemeral(view.id) { return "Keep this side chat before editing its messages." }
+        if view.editSubmitting { return "Waiting for the edit acknowledgement." }
+        return nil
+    }
+    /// Eligibility is shared by the composer button, keyboard and send path.
+    func editBlocker(_ view: SessionDisplay) -> String? {
+        if let reason = editEntryBlocker(view) { return reason }
+        if view.editPreparing { return "Loading the complete original input…" }
+        if view.editSubmitting || view.loading || installPreparing { return "Waiting for the current operation to finish." }
+        if view.busy || !view.queue.isEmpty || view.queueCount > 0 { return "Wait for the current run and queue to finish before resending an edited message." }
+        if view.editInputReviewRequired { return "Original skill or image selections were not recorded. Review and reselect them, or choose Use text only." }
+        if view.attachments.contains(where: { view.editMissingAttachments.contains($0.id) }) { return "An original attachment is missing or changed. Replace or remove its chip." }
+        return nil
+    }
+    /// Always resolve the retained occurrence, not the three-turn display or a
+    /// truncated row. Entering edit mode has no conversation mutations.
     func editMessage(_ messageID: String, sessionID: String) {
         guard let view = displays[sessionID], let item = record(sessionID) else { return }
-        guard !item.imported else { error = "Imported originals are read-only. Continue as a separate chat before editing a message."; return }
-        guard !isEphemeral(sessionID) else { view.notice = "Keep this side chat before editing its messages."; return }
-        guard let message = view.messages.first(where: { $0.id == messageID }), message.role == "user", message.kind == nil, !message.isStreaming else { return }
-        guard !view.loading, side(sessionID)?.keeping != true else { return }
-        if message.truncated == true {
-            view.loading = true
-            Task {
-                defer { view.loading = false }
-                do { let text = try await fullEditText(messageID, sessionID: sessionID); beginEdit(messageID, text: text, view: view) }
-                catch { view.notice = "The complete message could not be loaded for editing: " + error.localizedDescription }
+        if let shown = view.messages.first(where: { $0.id == messageID }), shown.role != "user" || shown.kind != nil || shown.isStreaming { return }
+        if let reason = editEntryBlocker(view) { view.notice = reason; view.editNotice = reason; return }
+        let generation = UUID(), draft = view.savedDraft
+        let focusOrigin = focusedSessionID ?? selectedID
+        view.editGeneration = generation; view.editPreparing = true; view.editNotice = "Loading the complete original input…"
+        Task {
+            defer { if view.editGeneration == generation { view.editPreparing = false } }
+            do {
+                let result: [String: WireValue]
+                if let editTargetRead { result = try await editTargetRead(sessionID, messageID) }
+                else if let host = hosts[item.workspaceID], opened.contains(sessionID) {
+                    var prepared = try await host.request("session.edit.prepare", sessionID: sessionID, params: ["messageId": .string(messageID)]).object ?? [:]
+                    var full = prepared["text"]?.string ?? "", next = prepared["next"]?.nonnegativeInteger
+                    let total = prepared["totalCharacters"]?.nonnegativeInteger ?? (full as NSString).length
+                    guard total <= 262_144 else { throw HostError.failure("The original input exceeds the editor limit.") }
+                    while let offset = next {
+                        guard view.editGeneration == generation, view.draft == draft.text else { return }
+                        guard offset == (full as NSString).length, offset < total else { throw HostError.failure("Edit preparation did not advance.") }
+                        let page = try await host.request("session.edit.prepare", sessionID: sessionID,
+                            params: ["messageId": .string(messageID), "offset": .number(Double(offset)), "sourceTimeline": prepared["sourceTimeline"] ?? .null, "sourceTextDigest": prepared["sourceTextDigest"] ?? .null]).object ?? [:]
+                        guard let part = page["text"]?.string, !part.isEmpty, page["totalCharacters"]?.nonnegativeInteger == total,
+                              page["sourceTimeline"] == prepared["sourceTimeline"], page["sourceTextDigest"] == prepared["sourceTextDigest"] else { throw HostError.failure("The original input changed during preparation.") }
+                        full += part; guard full.utf8.count <= 262_144 else { throw HostError.failure("The original input exceeds the editor limit.") }
+                        next = page["next"]?.nonnegativeInteger
+                    }
+                    guard (full as NSString).length == total else { throw HostError.failure("The original input is incomplete.") }
+                    prepared["text"] = .string(full); result = prepared
+                } else {
+                    guard let path = item.path else { throw HostError.failure("The original message has no retained journal.") }
+                    result = try await history.editTarget(path: path, id: messageID)
+                }
+                guard view.editGeneration == generation, view.draft == draft.text, view.attachments == draft.attachments ?? [], view.skills == draft.skills ?? [] else { return }
+                guard result["messageId"]?.string == messageID, let text = result["text"]?.string, text.utf8.count <= 262_144 else { throw HostError.failure("The complete original input is unavailable.") }
+                let input = result["input"]?.object
+                guard input == nil || input?["version"]?.number == 1 else { throw HostError.failure("Update Bello Agent to edit this input format.") }
+                let attachments = try input?["attachments"].map { try JSONDecoder().decode([AttachmentRecord].self, from: JSONEncoder().encode($0)) } ?? []
+                let skills = try input?["skills"].map { try JSONDecoder().decode([SkillChip].self, from: JSONEncoder().encode($0)) } ?? []
+                let missing = await Task.detached(priority: .userInitiated) {
+                    Set(attachments.filter { original in
+                        guard let actual = try? AttachmentRecord.inspect(URL(fileURLWithPath: original.path)) else { return true }
+                        return actual.sha256 != original.sha256 || actual.bytes != original.bytes
+                    }.map(\.id))
+                }.value
+                guard view.editGeneration == generation, view.draft == draft.text, view.attachments == draft.attachments ?? [], view.skills == draft.skills ?? [] else { return }
+                if view.editingMessageID == nil { view.draftBeforeEdit = draft }
+                view.editingMessageID = messageID; view.editSourceTimeline = result["sourceTimeline"]?.string; view.editSourceTextDigest = result["sourceTextDigest"]?.string
+                view.draft = text; view.attachments = attachments; view.skills = skills; view.editMissingAttachments = missing
+                view.editInputReviewRequired = result["legacyInputs"]?.bool ?? false
+                view.directCommand = false; view.completionVisible = false; view.editNotice = "Context inspection shows the current unedited branch until Send."
+                if (focusedSessionID ?? selectedID) == focusOrigin, focusOrigin == sessionID { focusedSessionID = sessionID; view.composerFocusRequest += 1 }
+                draftChanged(view)
+            } catch {
+                guard view.editGeneration == generation, view.draft == draft.text, view.attachments == draft.attachments ?? [], view.skills == draft.skills ?? [] else { return }
+                view.editNotice = error.localizedDescription; view.notice = "The complete message could not be loaded for editing: " + error.localizedDescription
             }
-        } else { beginEdit(messageID, text: message.text, view: view) }
-    }
-    private func fullEditText(_ messageID: String, sessionID: String) async throws -> String {
-        var text = "", offset = 0
-        repeat {
-            let (part, total) = try await messagePage(id: messageID, field: "text", offset: offset, sessionID: sessionID)
-            guard total <= 262_144, !part.isEmpty || total == 0 else { throw HostError.failure("The original message exceeds the editor limit or is incomplete.") }
-            text += part; offset += (part as NSString).length
-            guard text.utf8.count <= 262_144 else { throw HostError.failure("The original message exceeds the 256 KiB submission limit.") }
-            if offset >= total { return text }
-        } while true
-    }
-    private func beginEdit(_ messageID: String, text: String, view: SessionDisplay) {
-        if view.editingMessageID == nil { view.draftBeforeEdit = view.savedDraft }
-        view.editingMessageID = messageID
-        view.draft = text; view.attachments = []; view.skills = []; view.directCommand = false; view.completionVisible = false
-        focusedSessionID = view.id
-        // Editing a message is typing: the cursor lands in the composer with the text.
-        view.composerFocusRequest += 1
-        if view.busy || !view.queue.isEmpty { view.notice = "Editing waits for the current run and queue to finish before resending." }
-        draftChanged(view)
+        }
     }
     func cancelEdit(sessionID: String) {
-        guard let view = displays[sessionID], view.editingMessageID != nil, !view.loading else { return }
+        guard let view = displays[sessionID], !view.editSubmitting else { return }
+        view.editGeneration = UUID(); view.editPreparing = false
+        guard view.editingMessageID != nil else { return }
         finishEdit(view)
     }
     private func finishEdit(_ view: SessionDisplay) {
@@ -73,10 +120,11 @@ extension WorkspaceModel {
         draftChanged(view)
     }
     /// Resends the edited message with `turn.edit`. Preconditions mirror the
-    /// host: idle session, empty queue, message still in the current context.
+    /// host: idle session, empty queue, retained user on the selected timeline.
     func sendEdit(sessionID: String? = nil) {
         guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), let view = displays[id], let messageID = view.editingMessageID, let store else { return }
-        guard !view.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !view.skills.isEmpty, !view.loading, !installPreparing, side(id)?.keeping != true else { return }
+        if let reason = editBlocker(view) { view.notice = reason; view.editNotice = reason; return }
+        guard !view.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !view.skills.isEmpty else { view.editNotice = "Enter a replacement message or select a skill."; return }
         guard !item.imported, !isEphemeral(id) else { view.notice = "Continue or keep this chat before editing its messages."; return }
         guard !item.isArchived else { view.notice = WorkspaceModel.archivedNotice; return }
         guard !view.busy, view.queue.isEmpty, view.queueCount == 0 else { view.notice = "Wait for the current run and queue to finish before resending an edited message."; return }
@@ -94,10 +142,13 @@ extension WorkspaceModel {
         let attachments = view.attachments, skills = view.skills
         let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString, previousState = view.state
         let savedDraft = view.savedDraft
-        let params = TurnOverrides.params(for: item, base: Self.editTurnParams(messageID: messageID, text: text, turnID: turnID, attachments: attachments, skills: skills))
-        view.loading = true; view.compactionNotice = nil
+        var params = TurnOverrides.params(for: item, base: Self.editTurnParams(messageID: messageID, text: text, turnID: turnID, attachments: attachments, skills: skills))
+        if let timeline = view.editSourceTimeline { params["editSourceTimeline"] = .string(timeline) }
+        if let digest = view.editSourceTextDigest { params["editSourceTextDigest"] = .string(digest) }
+        let generation = view.editGeneration
+        view.loading = true; view.editSubmitting = true; view.compactionNotice = nil
         Task {
-            defer { view.loading = false }
+            defer { view.loading = false; view.editSubmitting = false }
             var dispatched = false
             do {
                 let connection = Result { try connectionLease(for: item) }
@@ -112,11 +163,24 @@ extension WorkspaceModel {
                 if !view.busy { view.state = "queued" }
                 _ = try await host.request(Self.editTurnMethod, sessionID: item.id, params: params, commandID: commandID)
                 if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID) }
-                finishEdit(view)
-                latest(sessionID: item.id)
+                if view.editGeneration == generation, view.editingMessageID == messageID {
+                    if view.draft == text, view.attachments == attachments, view.skills == skills { finishEdit(view) }
+                    else {
+                        // The original occurrence is now abandoned. Keep the
+                        // newer edits attached to the accepted replacement so
+                        // their next Send can amend it after the run finishes.
+                        view.editingMessageID = turnID
+                        view.editSourceTimeline = nil; view.editSourceTextDigest = nil
+                        view.editNotice = "Edit accepted. Your newer changes now edit the replacement. Cancel restores the original unsent draft."
+                        draftChanged(view)
+                    }
+                }
+                followSubmittedTurn(item.id)
             } catch {
                 view.notice = error.localizedDescription
-                if case HostError.rejected(let code, _) = error { try? await store.remove(kind: "pending:\(item.id)", id: commandID); view.state = code == "connection_unavailable" ? "interrupted" : previousState }
+                if view.editGeneration == generation { view.editNotice = error.localizedDescription }
+                if case HostError.rejected(let code, _) = error, code == "journal_uncertain" { view.uncertain = true; view.state = "interrupted" }
+                else if case HostError.rejected(let code, _) = error { try? await store.remove(kind: "pending:\(item.id)", id: commandID); view.state = code == "connection_unavailable" ? "interrupted" : previousState }
                 else { view.uncertain = dispatched; view.state = dispatched ? "interrupted" : previousState }
             }
         }
@@ -152,19 +216,21 @@ struct CompactionBanner: View {
 
 struct EditingBanner: View {
     @ObservedObject var session: SessionDisplay
+    var blocker: String? = nil
     let cancel: () -> Void
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "pencil.line").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.piAccent)
-            Text("Editing an earlier message").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Color.piInk)
-            Text("· replies after it will be replaced in context").font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.tail)
-            Spacer(minLength: 4)
-            Button("Cancel", action: cancel).buttonStyle(.piGhost).keyboardShortcut(.cancelAction)
-        }
-        .padding(.leading, 12).padding(.trailing, 4).padding(.vertical, 3)
-        .background(Color.piAccentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .padding(.horizontal, 8).padding(.top, 8)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Editing an earlier message. Replies after it will be replaced in context.")
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "pencil.line").foregroundStyle(Color.piAccent)
+                Text("Editing an earlier message").font(.system(size: 11.5, weight: .semibold))
+                Spacer(minLength: 4)
+                Button("Cancel", action: cancel).buttonStyle(.piGhost).keyboardShortcut(.cancelAction).disabled(session.editSubmitting)
+            }
+            Text(blocker ?? session.editNotice).font(PiFont.caption).foregroundStyle(blocker == nil ? Color.piInkSecondary : Color.piDanger).fixedSize(horizontal: false, vertical: true)
+            if session.editInputReviewRequired {
+                Button("Use text only / I've reselected the needed inputs") { session.editInputReviewRequired = false }.buttonStyle(.piGhost)
+            }
+        }.padding(8).background(Color.piAccentSoft, in: RoundedRectangle(cornerRadius: 10)).padding(.horizontal, 8).padding(.top, 8)
+            .accessibilityElement(children: .contain).accessibilityLabel("Editing an earlier message")
     }
 }

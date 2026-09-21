@@ -9,8 +9,11 @@ extension WorkspaceModel {
         guard page == .chats, let view = displays[sessionID], view.draftReady, !view.loading, !installPreparing else { return }
         if view.editingMessageID != nil { sendEdit(sessionID: sessionID); return }
         // Bypassing the completion list with Command-Return is not a skill grant.
+        if intent == .steer, view.completionVisible {
+            view.notice = "Select or dismiss the skill suggestions before steering."; return
+        }
         if let command = LeadingCommand.parse(view.draft, directInput: view.directCommand),
-           !LeadingCommand.reserved.contains(command.name) {
+           !LeadingCommand.reserved.contains(command.name), intent == .steer || (command.arguments.isEmpty && view.completionVisible) {
             view.completionVisible = true
             view.notice = "Select the skill with Tab or Return before submitting."
             Task { await loadSkillCatalog(sessionID: sessionID) }

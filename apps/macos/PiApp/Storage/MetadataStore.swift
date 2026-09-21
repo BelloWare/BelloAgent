@@ -707,6 +707,9 @@ struct MessageEditDraft: Codable, Sendable {
     var originalText: String
     var originalAttachments: [AttachmentRecord]?
     var originalSkills: [SkillChip]?
+    var sourceTimeline: String? = nil
+    var sourceTextDigest: String? = nil
+    var inputReviewRequired: Bool? = nil
 }
 struct CommandIntent: Codable, Sendable, Equatable { var id: String; var sessionID: String; var turnID: String; var text: String; var state: String; var epoch: String?; var attachments: [AttachmentRecord]?; var skills: [SkillChip]? }
 struct ProfileRecord: Codable, Sendable, Identifiable, Hashable {

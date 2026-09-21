@@ -20,6 +20,8 @@ final class SideTests: XCTestCase {
         await model.select(parent.id)
         let view = try XCTUnwrap(model.selected)
         view.draft = "/side"; view.directCommand = true; view.completionVisible = true
+        view.completionToken = SlashCompletionToken.local(in: view.draft as NSString, at: ComposerLocation(sessionID: view.id, editorGeneration: UUID(), draftRevision: 1, selectedRangeUTF16: NSRange(location: 5, length: 0), markedRangeUTF16: nil), directInput: true)
+        model.updateCompletionSelection(view)
         XCTAssertTrue(model.completionKey(36, view: view), "Exact /side should execute on the first Return")
         XCTAssertEqual(view.draft, "")
         // An empty side is only on screen until its first message: no helper session, no chat record.
@@ -52,6 +54,8 @@ final class SideTests: XCTestCase {
         XCTAssertEqual(draft?.text, "Saved unfinished question")
 
         view.draft = "/fork"; view.directCommand = true; view.completionVisible = true
+        view.completionToken = SlashCompletionToken.local(in: view.draft as NSString, at: ComposerLocation(sessionID: view.id, editorGeneration: UUID(), draftRevision: 2, selectedRangeUTF16: NSRange(location: 5, length: 0), markedRangeUTF16: nil), directInput: true)
+        model.updateCompletionSelection(view)
         XCTAssertTrue(model.completionKey(36, view: view), "Exact /fork should also execute on the first Return")
         for _ in 0..<500 where view.loading { try await Task.sleep(for: .milliseconds(10)) }
         let fork = try XCTUnwrap(model.chats.first { $0.id != parent.id && $0.id != side.id })

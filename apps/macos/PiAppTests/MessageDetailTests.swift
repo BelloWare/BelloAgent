@@ -85,8 +85,12 @@ final class MessageDetailTests: XCTestCase {
         view.attachments = [originalAttachment]; view.skills = [originalSkill]
         model.editMessage("a1", sessionID: "chat"); XCTAssertNil(view.editingMessageID, "Only user messages can be edited")
         model.editMessage("b1", sessionID: "chat"); XCTAssertNil(view.editingMessageID, "Marker rows are display-only")
+        model.editTargetRead = { session, id in
+            ["messageId": .string(id), "text": .string("first question"), "sourceTimeline": .string("fixture"), "sourceTextDigest": .string("fixture")]
+        }
         let focus = view.composerFocusRequest
         model.editMessage("u1", sessionID: "chat")
+        while view.editPreparing { await Task.yield() }
         XCTAssertEqual(view.editingMessageID, "u1"); XCTAssertEqual(view.draft, "first question"); XCTAssertEqual(view.draftBeforeEdit?.text, "unsent draft")
         XCTAssertGreaterThan(view.composerFocusRequest, focus, "Editing a message puts the cursor in the composer")
         XCTAssertTrue(view.attachments.isEmpty); XCTAssertTrue(view.skills.isEmpty, "An unrelated draft's skills must never authorize an edited turn")
@@ -123,7 +127,8 @@ final class MessageDetailTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let text = String(repeating: "full message 🌍 ", count: 5000), path = root.appendingPathComponent("session.jsonl")
         let entry: [String: WireValue] = ["id": .string("u1"), "type": .string("message"), "message": .object(["role": .string("user"), "content": .string(text)])]
-        var bytes = try JSONEncoder().encode(entry); bytes.append(10); try bytes.write(to: path)
+        var bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"chat\"}\n".utf8)
+        bytes.append(try JSONEncoder().encode(entry)); bytes.append(10); try bytes.write(to: path)
         let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         model.chats = [ChatRecord(id: "chat", workspaceID: "w", title: "t", path: path.path, profileID: "p")]
@@ -131,9 +136,9 @@ final class MessageDetailTests: XCTestCase {
         view.messages = [TranscriptMessage.project(id: "u1", message: entry["message"]!.object!)]
         XCTAssertEqual(view.messages[0].truncated, true)
         model.editMessage("u1", sessionID: "chat")
-        XCTAssertTrue(view.loading); XCTAssertNil(view.editingMessageID); XCTAssertEqual(view.draft, "unsent")
-        for _ in 0..<200 where view.loading { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertFalse(view.loading); XCTAssertEqual(view.editingMessageID, "u1"); XCTAssertEqual(view.draft, text)
+        XCTAssertTrue(view.editPreparing); XCTAssertNil(view.editingMessageID); XCTAssertEqual(view.draft, "unsent")
+        for _ in 0..<200 where view.editPreparing { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(view.editPreparing); XCTAssertEqual(view.editingMessageID, "u1"); XCTAssertEqual(view.draft, text)
         XCTAssertEqual(view.draftBeforeEdit?.text, "unsent")
     }
     @MainActor func testBodyCopyRequiresEveryPageOfOneStableRetainedBody() async throws {

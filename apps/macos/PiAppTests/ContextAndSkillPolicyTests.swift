@@ -42,6 +42,8 @@ final class ContextAndSkillPolicyTests: XCTestCase {
         XCTAssertTrue(a.skills.isEmpty,"A stale catalog row cannot put a disabled skill back into the draft")
         let saved = try await vault.load(); XCTAssertEqual(saved.disabledSkills,[skill.id]); XCTAssertTrue(saved.resources.isEmpty)
         try await model.setSkillEnabledInBelloAgent(skill,enabled:true)
+        model.chats = [ChatRecord(id: a.id, workspaceID: "fixture", title: "A", profileID: "profile")]
+        a.skillCatalog = SkillCatalog(state: .ready, scope: model.skillScope(sessionID: a.id, workspaceID: "fixture"), revision: "fresh", entries: [SkillSearch.Entry(skill)])
         model.addSkill(skill,view:a); XCTAssertEqual(a.skills,[skill.chip])
         XCTAssertEqual(storage.writes,2,"Only the app's injected vault was written")
     }

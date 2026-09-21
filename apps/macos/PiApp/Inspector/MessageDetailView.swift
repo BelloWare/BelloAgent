@@ -16,6 +16,7 @@ struct MessageDetailView: View {
     @Environment(\.dismiss) private var dismiss
     private var message: TranscriptMessage? { model.displays[sessionID]?.messages.first { $0.id == messageID } }
     private var editable: Bool { message?.role == "user" && message?.kind == nil && message?.isStreaming != true && model.record(sessionID)?.imported != true }
+    private var editBlocker: String? { model.displays[sessionID].flatMap(model.editEntryBlocker) }
     var body: some View {
         PiSheet("Message details", subtitle: "Message \(PiFormat.shortID(messageID)) · session \(PiFormat.shortID(sessionID)) · app ↔ configured endpoint", symbol: "text.magnifyingglass", width: 960, height: 740) {
             ScrollView {
@@ -35,7 +36,7 @@ struct MessageDetailView: View {
             }
         } actions: {
             Button("Refresh") { Task { await load() } }.disabled(loading)
-            if editable { Button { model.editMessage(messageID, sessionID: sessionID); dismiss() } label: { Label("Modify request…", systemImage: "pencil.line") } }
+            if editable { Button { model.editMessage(messageID, sessionID: sessionID); dismiss() } label: { Label("Modify request…", systemImage: "pencil.line") }.disabled(editBlocker != nil).help(editBlocker ?? "Modify the complete original input") }
             Button { openInspector() } label: { Label("Open request inspector", systemImage: "ladybug") }
             Button("Done") { dismiss() }
         }

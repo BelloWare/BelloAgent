@@ -4,6 +4,7 @@ import SQLite3
 struct HistoryOffset: Codable {
     var id: String; var parent: String?; var offset: UInt64; var length: Int; var type: String?
     var fromMessageID: String?; var keptIDs: [String]?; var role: String? = nil
+    var selectedPrefix: [String]? = nil; var contextSelection: [String]? = nil
 }
 
 /// Rebuildable read-only source index. Offset/branch tables spill to a private
@@ -94,6 +95,14 @@ final class HistoryOffsetIndex: @unchecked Sendable {
             try append(ref)
         }
     }
+    func selectTimeline(_ ids: [String]) throws {
+        guard Set(ids).count == ids.count else { throw StoreError.unreadableRecord }
+        try execute("DELETE FROM visible"); count = 0
+        for id in ids {
+            guard try hasSeen(id), let ref = try ref(id) else { throw StoreError.unreadableRecord }
+            try append(ref)
+        }
+    }
     private func scalar(_ sql: String) throws -> Int {
         let statement = try query(sql); defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { throw StoreError.unreadableRecord }
@@ -108,6 +117,15 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         // primary-key lookups rather than OFFSET walks over a long journal.
         try execute("CREATE TABLE ordered(n INTEGER PRIMARY KEY, id TEXT UNIQUE, role TEXT); INSERT INTO ordered SELECT ROW_NUMBER() OVER(ORDER BY n)-1,id,role FROM visible; DROP TABLE visible; ALTER TABLE ordered RENAME TO visible; DROP TABLE chain; COMMIT")
         count = try scalar("SELECT count(*) FROM visible")
+    }
+    func timelineIDs() throws -> [String] {
+        let statement = try query("SELECT id FROM visible ORDER BY n"); defer { sqlite3_finalize(statement) }
+        var ids: [String] = []
+        while try next(statement) {
+            guard ids.count < 100_000, let text = sqlite3_column_text(statement, 0) else { throw StoreError.unreadableRecord }
+            ids.append(String(cString: text))
+        }
+        return ids
     }
     func index(of id: String) throws -> Int? { try ordinal(of: id) }
     func at(_ index: Int) throws -> HistoryOffset {

@@ -8,6 +8,12 @@ struct ResourceInspector: View {
     @State private var query = ""
     @State private var management = false
     @State private var selectedID = ""
+    @State private var searchEntries: [SkillSearch.Entry] = []
+    @State private var detailTask: Task<Void, Never>?
+    @State private var detailGeneration = UUID()
+    @State private var originID: String?
+    @State private var refreshGeneration = UUID()
+    @State private var isPresented = false
     @State private var detail = ""
     @State private var bodyOffset = 0
     @State private var nextBody: Double?
@@ -38,30 +44,32 @@ struct ResourceInspector: View {
         } footer: {
             if tab != "mcp" {
                 VStack(alignment: .leading, spacing: 4) {
-                    PiStatusLine(text: notice.isEmpty ? model.resourceNotice : notice)
+                    PiStatusLine(text: notice.isEmpty ? originID.flatMap({ model.displays[$0]?.skillCatalog.notice }) ?? "" : notice)
                     Text("Skill switches apply only to Bello Agent across all projects. Shared skill files and Codex settings are never changed. Running requests retain their frozen inputs; new and queued turns use the updated policy.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
                 }
             } else {
                 Text("Configuration can launch programs with your permissions. Invocation requires an editing chat and is serialized per project. Read-only chats can discover tools but cannot invoke them. Annotations are not authorization.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
             }
         }
-        .task { await loadOptions(); await refresh() }
+        .task { isPresented = true; originID = model.resourceTargetSessionID ?? model.selectedID; await loadOptions(); await refresh() }
+        .onReceive(model.$resourceCatalog) { values in
+            guard isPresented, model.resourceCatalogSessionID == originID else { return }
+            searchEntries = values.map(SkillSearch.Entry.init); reconcileSelection(); loadBody()
+        }
+        .onChange(of: query) { _, _ in reconcileSelection() }
+        .onChange(of: management) { _, _ in reconcileSelection() }
+        .onDisappear { isPresented = false; detailTask?.cancel(); detailGeneration = UUID(); refreshGeneration = UUID() }
         .onChange(of: selectedID) { _, _ in bodyOffset = 0; loadBody() }
         .onChange(of: tab) { _, value in if value == "settings" { Task { await loadOptions() } } }
     }
-    private var selected: SkillDescriptor? { model.resourceCatalog.first { $0.id == selectedID } }
-    /// Read from `body`, so it runs on every keystroke. Concatenating three
-    /// strings per catalog entry and running a locale-aware search over the
-    /// result made the filter field lag on a large catalog.
+    private var selected: SkillDescriptor? { filtered.first { $0.id == selectedID } }
     private var filtered: [SkillDescriptor] {
-        let needle = query.trimmingCharacters(in: .whitespaces)
-        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
-        return model.resourceCatalog.filter {
-            guard management || !["disabled", "needsAttention"].contains($0.policy) else { return false }
-            guard !needle.isEmpty else { return true }
-            return $0.name.range(of: needle, options: options) != nil
-                || $0.path.range(of: needle, options: options) != nil
-                || $0.description.range(of: needle, options: options) != nil
+        SkillSearch.search(searchEntries, query: query, actionable: !management)
+    }
+    private func reconcileSelection() {
+        if !filtered.contains(where: { $0.id == selectedID }) {
+            detailTask?.cancel(); detailGeneration = UUID(); detail = ""; nextBody = nil
+            selectedID = filtered.first?.id ?? ""
         }
     }
     private static func policyTone(_ policy: String) -> PiTone {
@@ -109,7 +117,7 @@ struct ResourceInspector: View {
                         }
                     }.padding(PiSpacing.sm)
                 }
-                .overlay { if filtered.isEmpty { Text(model.resourceLoading ? "Discovering skills…" : "No skills match").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) } }
+                .overlay { if filtered.isEmpty { Text(emptyNotice).font(PiFont.caption).foregroundStyle(Color.piInkTertiary) } }
                 .piInset().frame(minWidth: 290, idealWidth: 340, maxWidth: 430).padding(.trailing, PiSpacing.sm)
                 VStack(alignment: .leading, spacing: PiSpacing.sm) {
                     if let skill = selected {
@@ -128,11 +136,11 @@ struct ResourceInspector: View {
                                 }
                                 HStack(spacing: PiSpacing.sm) {
                                     Button {
-                                        if let view = model.resourceTarget {
-                                            model.addSkill(skill, view: view, fromCommand: LeadingCommand.begins(view.draft, directInput: view.directCommand)); dismiss()
+                                        if let view = originID.flatMap({ model.displays[$0] }) {
+                                            if model.addSkill(skill, view: view) { dismiss() }
                                         }
                                     } label: { Label("Select for Draft", systemImage: "plus.circle") }
-                                        .buttonStyle(.piPrimary).disabled(!skill.canSelect || model.resourceTarget == nil || model.resourceTarget?.skills.count == 8)
+                                        .buttonStyle(.piPrimary).disabled(originID.flatMap({ model.displays[$0] }).map { !model.canSelectSkill(skill, view: $0) || $0.skills.count == 8 || $0.skills.contains(where: { $0.id == skill.id }) } ?? true)
                                     PiMenuButton(title: "Project Policy", icon: "checkmark.shield") {
                                         Button("Explicit Only") { policy(skill, key: "explicitOnly", enabled: true) }
                                         Button("Remove App Explicit-only Override") { policy(skill, key: "explicitOnly", enabled: false) }
@@ -211,14 +219,19 @@ struct ResourceInspector: View {
                         saved["codexHome"] = .string(home)
                         saved["fallbackNames"] = fallbacks.trimmingCharacters(in: .whitespaces).isEmpty ? nil : .array(fallbacks.split(separator: ",").map { .string($0.trimmingCharacters(in: .whitespaces)) })
                         saved["maxInstructionBytes"] = overrideBudget ? .number(Double(byteLimit)) : nil
-                        try await model.saveResourceSettings(saved); options = saved; notice = "Saved. New user turns use the new settings."; await refresh()
+                        try await model.saveResourceSettings(saved, sessionID: originID); options = saved; notice = "Saved. New user turns use the new settings."; await refresh()
                     } catch { notice = error.localizedDescription } }
                 }.buttonStyle(.piPrimary)
             }.padding(2)
         }
     }
     private func loadOptions() async {
-        if let id = model.selectedWorkspaceID { options = (try? await model.editableResourceSettings(workspaceID: id)) ?? [:] }
+        let origin = originID
+        if let id = origin.flatMap(model.record)?.workspaceID ?? model.selectedWorkspaceID {
+            let loaded = (try? await model.editableResourceSettings(workspaceID: id)) ?? [:]
+            guard isPresented, origin == originID, !Task.isCancelled else { return }
+            options = loaded
+        }
         home = options["codexHome"]?.string ?? ""; fallbacks = options["fallbackNames"]?.array?.compactMap(\.string).joined(separator: ", ") ?? ""
         byteLimit = options["maxInstructionBytes"]?.nonnegativeInteger ?? 32768; overrideBudget = options["maxInstructionBytes"] != nil
     }
@@ -239,7 +252,7 @@ struct ResourceInspector: View {
             defer { policyBusy = false }
             await loadOptions(); var ids = Set(options[key]?.array?.compactMap(\.string) ?? [])
             if enabled { ids.insert(skill.id) } else { ids.remove(skill.id) }; options[key] = .array(ids.sorted().map(WireValue.string))
-            try await model.saveResourceSettings(options); await refresh()
+            try await model.saveResourceSettings(options, sessionID: originID); await refresh()
         } catch { policyBusy = false; notice = error.localizedDescription } }
     }
     private func setEnabled(_ skill: SkillDescriptor, enabled: Bool) {
@@ -252,20 +265,45 @@ struct ResourceInspector: View {
         } catch { notice = error.localizedDescription } }
     }
     private func refresh() async {
-        await model.loadSkillCatalog(refresh: true)
+        let origin = originID, offset = sourceOffset, generation = UUID(); refreshGeneration = generation
+        await model.loadSkillCatalog(refresh: true, sessionID: origin)
+        guard isPresented, origin == originID, generation == refreshGeneration, !Task.isCancelled else { return }
+        if let catalog = origin.flatMap({ model.displays[$0]?.skillCatalog }) {
+            searchEntries = catalog.entries; notice = catalog.notice; reconcileSelection()
+        }
         do {
-            snapshot = try await model.resourceRequest(params: ["sourceOffset": .number(Double(sourceOffset)), "refresh": .bool(true)])
-            if !model.resourceCatalog.contains(where: { $0.id == selectedID }) { selectedID = filtered.first?.id ?? "" }
+            let page = try await model.resourceRequest(params: ["sourceOffset": .number(Double(offset)), "refresh": .bool(true)], sessionID: origin)
+            guard isPresented, origin == originID, generation == refreshGeneration, offset == sourceOffset, !Task.isCancelled else { return }
+            snapshot = page
+            reconcileSelection()
             loadBody()
-        } catch { notice = error.localizedDescription }
+        } catch {
+            guard isPresented, origin == originID, generation == refreshGeneration, offset == sourceOffset, !Task.isCancelled else { return }
+            notice = error.localizedDescription
+        }
+    }
+    private var emptyNotice: String {
+        switch originID.flatMap({ model.displays[$0]?.skillCatalog.state }) {
+        case .loading: "Discovering skills…"
+        case .failed: "Skill discovery failed. Refresh Sources to retry."
+        case .partial: "No matches in the discovered sources. See discovery details below."
+        default: "No skills match"
+        }
     }
     private func loadBody() {
-        let id = selectedID, offset = bodyOffset
+        detailTask?.cancel(); let generation = UUID(); detailGeneration = generation
+        let id = selectedID, offset = bodyOffset, origin = originID
         guard !id.isEmpty else { detail = "Select a skill to inspect its source and policy."; nextBody = nil; return }
-        Task { do {
-            let page = try await model.resourceRequest("resources.skill.read", params: ["skillId": .string(id), "offset": .number(Double(offset))])
-            guard id == selectedID, offset == bodyOffset else { return }; detail = page["text"]?.string ?? ""; nextBody = page["next"]?.number
-        } catch { detail = error.localizedDescription } }
+        let hash = selected?.contentHash, metadata = selected?.metadataHash
+        detail = "Loading skill source…"; nextBody = nil
+        detailTask = Task { do {
+            let page = try await model.resourceRequest("resources.skill.read", params: ["skillId": .string(id), "offset": .number(Double(offset))], sessionID: origin)
+            guard !Task.isCancelled, generation == detailGeneration, id == selectedID, offset == bodyOffset, origin == originID, hash == selected?.contentHash, metadata == selected?.metadataHash else { return }
+            detail = page["text"]?.string ?? ""; nextBody = page["next"]?.number
+        } catch {
+            guard !Task.isCancelled, generation == detailGeneration, id == selectedID, offset == bodyOffset, origin == originID, hash == selected?.contentHash, metadata == selected?.metadataHash else { return }
+            detail = error.localizedDescription
+        } }
     }
 }
 
