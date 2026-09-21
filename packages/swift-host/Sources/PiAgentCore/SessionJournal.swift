@@ -19,7 +19,9 @@ final class SessionJournal {
     private let handle: FileHandle
     private var lockFD: Int32
     private var poisoned = false
+    var writeOutcomeUncertain: Bool { poisoned }
     private var tail: String?, bytes: UInt64
+    var head: String? { tail }
     private var unsynced = false
     /// Test seams: how many records were written and how many times they were
     /// forced to stable storage, so the batching contract is assertable

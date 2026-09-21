@@ -18,6 +18,8 @@ public struct ChatMessage: Codable, Sendable {
     public var isError: Bool = false
     public var replayEligible: Bool = true
     public var displayText: String? = nil
+    /// Original explicit inputs, without expanded skill bodies or image bytes.
+    public var userInput: JSON? = nil
     public var sourceMessageIDs: [String]? = nil
     public var requestAttemptIDs: [String]? = nil
     /// Display-only classification: "compaction" for a summary written by
@@ -64,6 +66,7 @@ public struct ChatMessage: Codable, Sendable {
         if let toolCallId { value["toolCallId"] = JSON(toolCallId) }
         if let toolName { value["toolName"] = JSON(toolName) }
         if let displayText { value["nativeDisplayText"] = JSON(displayText) }
+        if let userInput { value["nativeUserInput"] = userInput }
         if let requestAttemptIDs { value["nativeRequestAttemptIds"] = .array(requestAttemptIDs.map { JSON($0) }) }
         if let kind { value["nativeKind"] = JSON(kind) }
         if let detail { value["nativeDetail"] = JSON(detail) }
@@ -81,6 +84,7 @@ public struct ChatMessage: Codable, Sendable {
         toolCallId = pi["toolCallId"].text; toolName = pi["toolName"].text; isError = pi["isError"].flag ?? false
         replayEligible = pi["nativeReplayEligible"].flag ?? true; displayText = pi["nativeDisplayText"].text
         if !pi["nativeCompaction"].isNull, pi["nativeCompaction"]["version"].int != 2 { throw AgentError("session_damaged","Unsupported inherited compaction metadata version") }
+        userInput = pi["nativeUserInput"].isNull ? nil : pi["nativeUserInput"]
         requestAttemptIDs = pi["nativeRequestAttemptIds"].isNull ? nil : pi["nativeRequestAttemptIds"].list.compactMap(\.text)
         kind = pi["nativeKind"].text; detail = pi["nativeDetail"].text
         timestamp = pi["timestamp"].double; toolStats = pi["nativeToolStats"].isNull ? nil : pi["nativeToolStats"]

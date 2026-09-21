@@ -47,12 +47,12 @@ public actor NativeHostService {
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
             hello=true
-            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":"1.0.0","piBehaviorReference":"0.85.1","limits":["frameBytes":1048576,"captureBytes":134217728],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","queue.edit","tool-input","queue.read"]]); return
+            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":"1.0.0","piBehaviorReference":"0.85.1","limits":["frameBytes":1048576,"captureBytes":134217728],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read"]]); return
         }
         let id=frame["commandId"].text ?? ""
         guard hello, frame["v"].int == 1, frame["kind"].text == "command", frame["hostEpoch"].text == epoch, !id.isEmpty, id.utf8.count <= 128, let method=frame["method"].text, frame["params"].isNull || frame["params"].isObject else { reply(id,.failure(AgentError("invalid_command", "Invalid command or stale host epoch"))); return }
         let fingerprint=sha256(Data(frame.removing(["commandId"]).encoded().utf8))
-        let readOnly = method == "clock.sync" || method == "runtime.info" || method == "resources.inspect" || method == "resources.skill.read" || method.hasPrefix("session.content.") || ["session.status","session.snapshot","session.history","session.message.read","session.tool.input","queue.read","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"].contains(method)
+        let readOnly = method == "clock.sync" || method == "runtime.info" || method == "resources.inspect" || method == "resources.skill.read" || method.hasPrefix("session.content.") || ["session.status","session.snapshot","session.history","session.message.read","session.edit.prepare","session.tool.input","queue.read","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"].contains(method)
         if fingerprints[id] == nil {
             if let previous = mutationLedger.fingerprint(for: id) {
                 reply(id,.failure(AgentError(previous == fingerprint ? "command_result_expired" : "command_conflict", "Previously observed mutation will not be replayed; reconcile session state"))); return
@@ -155,7 +155,7 @@ public actor NativeHostService {
         }
         if method == "resources.inspect" {
             var applied: String?; if let id=sessionID, let session=sessions[id] { applied=await session.resourceRevision }
-            let available=await nativeTools.capabilityIDs(readOnly:sessionID.flatMap { sessions[$0]?.readOnly } ?? false)
+            let available=await nativeTools.capabilityIDs(readOnly:sessionID.flatMap { sessions[$0]?.readOnly } ?? params["readOnly"].flag ?? false)
             return try await resources.inspect(params,applied:applied,tools:available)
         }
         if method == "resources.skill.read" { return try await resources.readSkill(required(params["skillId"],"skill id"),offset:boundedInt(params["offset"],maximum:262144)) }
@@ -213,6 +213,7 @@ public actor NativeHostService {
             var statusParams = params; statusParams["includeMessages"] = false
             return await session.snapshot(statusParams)
         }
+        if method == "session.edit.prepare" { return try await session.prepareEdit(identity(params["messageId"]),offset:boundedInt(params["offset"],maximum:262144),expectedTimeline:params["sourceTimeline"].text,expectedTextDigest:params["sourceTextDigest"].text) }
         if method == "session.snapshot" { return await session.snapshot(params) }
         if method == "context.info" { return await session.inspectContext() }
         if method == "context.preview" { return try await session.prepareContext(params) }
@@ -269,7 +270,7 @@ public actor NativeHostService {
             let selected=try await resources.freeze(params["skills"].list,text:text,tools:tools)
             let overrides=try Self.turnOverrides(params)
             let input=Submission(commandID:commandID,turnID:try identity(params["clientTurnId"]),text:text,attachments:params["attachments"].list,skills:selected,model:overrides.model,thinkingLevel:overrides.thinkingLevel,contextWindow:overrides.contextWindow,maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit)
-            if method == "turn.edit" { return try await session.edit(fromMessageID:try identity(params["messageId"]),input:input) }
+            if method == "turn.edit" { return try await session.edit(fromMessageID:try identity(params["messageId"]),input:input,expectedTimeline:params["editSourceTimeline"].text,expectedTextDigest:params["editSourceTextDigest"].text) }
             return try await session.submit(input,steer:method == "turn.steer")
         }
         if method == "queue.remove" { try await session.removeQueued(required(params["turnId"],"turn id")); return ["accepted":true] }
@@ -346,6 +347,12 @@ public actor NativeHostService {
         var chain:[JSON]=[],cursor=leaf
         while let id=cursor,let record=records[id] { chain.append(record);cursor=record["parentId"].text }
         chain.reverse()
+        if chain.contains(where: { $0["customType"].text == "pi-app.native.v1" }) {
+            let replay = try ConversationReplay(chain)
+            let messages = replay.context.map { "[\($0.role)]\n" + ($0.displayText ?? $0.text) }
+            let text = messages.suffix(40).joined(separator: "\n\n"), retained = preview(text, bytes: 65536)
+            return ["path":JSON(file.path),"sessionId":header["id"],"nativeReplay":false,"damaged":false,"text":JSON(retained),"draft":JSON(retained),"truncated":JSON(retained.utf8.count < text.utf8.count || messages.count > 40),"provenance":["sourcePath":JSON(file.path),"sourceSHA256":JSON(sha256(data)),"portable":true],"notice":"Portable text of the selected branch. Original unchanged. Review before sending.","sha256":JSON(sha256(data))]
+        }
         // Select the active leaf only, then replay compaction and branch
         // boundaries in order so the preview shows the live context.
         var active:[JSON]=[]

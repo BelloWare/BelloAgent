@@ -25,7 +25,7 @@ extension AgentSession {
                 // and all message bytes, but never authorize its command twice.
                 try prepared.append(record.removing(["id","parentId","timestamp","nativeState"]),id:try identity(record["id"]))
             }
-            try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(boundary.map { JSON($0.id) })]])
+            try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(boundary.map { JSON($0.id) }),"visibleIDs":.array(EditReplayPlan.forkTimeline(visible:visible.map(\.id),boundary:boundary.map(\.id)).map { JSON($0) })]])
             try prepared.append(["type":"custom","customType":"pi-app.fork-origin.v1","data":origin])
             try prepared.append(["type":"custom","customType":"pi-app.native.state.v1","data":["active":false,"queue":[],"steering":[],"commands":[],"queuePaused":false,"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode)]])
             try prepared.publish(to:destination)

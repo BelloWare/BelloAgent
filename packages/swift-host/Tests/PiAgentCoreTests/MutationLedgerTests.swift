@@ -64,3 +64,39 @@ final class MutationLedgerTests: XCTestCase {
         await host.shutdown()
     }
 }
+
+extension MutationLedgerTests {
+    func testLostEditAcknowledgementReusesOneVersionedBranchAndTurnIdentity() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("state"), path = directory.appendingPathComponent("edit.jsonl"), profile = try fixtureProfile()
+        do {
+            let journal = try SessionJournal(url: path, id: "edit", cwd: root, binding: profile.binding, create: true)
+            try journal.append(["type":"message","message":["role":"user","content":"safe"]], id: "first")
+            try journal.append(["type":"message","message":["role":"assistant","content":"safe answer"]], id: "answer")
+            try journal.append(["type":"message","message":["role":"user","content":"old target"]], id: "target")
+            try journal.append(["type":"message","message":["role":"assistant","content":"discarded"]], id: "future")
+            try journal.append(["type":"compaction","summary":"unsafe summary","nativeKeptIDs":[]], id: "summary")
+        }
+        let replies = MutationReplies(), host = NativeHostService(emit: { replies.emit($0) })
+        await host.receive(["v":1,"kind":"hello","major":1]); let epoch = await host.epoch
+        func send(_ id: String, _ method: String, _ params: JSON, session: String? = nil) async -> JSON {
+            var frame: JSON = ["v":1,"kind":"command","hostEpoch":JSON(epoch),"commandId":JSON(id),"method":JSON(method),"params":params]
+            if let session { frame["sessionId"] = JSON(session) }
+            await host.receive(frame); return await replies.reply(id)
+        }
+        _ = await send("workspace", "workspace.open", ["cwd":JSON(root.path),"directory":JSON(directory.path)])
+        let opened = await send("open", "session.open", ["path":JSON(path.path),"profile":profile.raw,"apiKey":"fixture"], session: "edit")
+        XCTAssertEqual(opened["ok"].flag, true, opened.encoded())
+        let params: JSON = ["messageId":"target","clientTurnId":"replacement","text":"new request"]
+        let accepted = await send("edit-command", "turn.edit", params, session: "edit")
+        XCTAssertEqual(accepted["ok"].flag, true, accepted.encoded())
+        // The transport lost this acknowledgement. Retry its exact identity.
+        let replayed = await send("edit-command", "turn.edit", params, session: "edit")
+        XCTAssertEqual(replayed, accepted)
+        _ = await send("stop", "turn.stop", [:], session: "edit")
+        await host.shutdown()
+        let records = try Data(contentsOf: path).split(separator: 10).map { try JSON.parse(Data($0)) }
+        XCTAssertEqual(records.filter { $0["type"].text == "branch" }.count, 1)
+        XCTAssertLessThanOrEqual(records.filter { $0["type"].text == "message" && $0["id"].text == "replacement" }.count, 1)
+    }
+}

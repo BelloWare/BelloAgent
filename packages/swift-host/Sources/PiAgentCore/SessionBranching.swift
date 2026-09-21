@@ -10,47 +10,55 @@ extension AgentSession {
     /// The journal keeps every record; only the live context and the displayed
     /// timeline drop the abandoned tail. Nothing is written unless the new
     /// submission is itself acceptable.
-    public func edit(fromMessageID messageID: String, input: Submission) throws -> JSON {
+    public func edit(fromMessageID messageID: String, input: Submission, expectedTimeline: String? = nil, expectedTextDigest: String? = nil) async throws -> JSON {
         guard isIdle else { throw AgentError("session_busy", "Edit requires an idle session with empty queues") }
         guard !ephemeral else { throw AgentError("side_ephemeral", "Keep this side chat before editing its messages; a branch must be durable") }
         try validate(input,steer:false)
-        guard let position=context.firstIndex(where:{$0.id == messageID}), context[position].role == "user" else { throw AgentError("edit_target", "Edit requires a user message in the current context") }
+        guard try input.savedValue.data().count < 8 * 1024 * 1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
+        let capturedHead = journal?.head
+        try await resources.validate(input.skills, tools: await tools.capabilityIDs(readOnly: readOnly))
+        guard isIdle, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }
+        try validate(input,steer:false)
         guard let journal else { throw AgentError("session_closed", "Session runtime is unloaded") }
-        // A summary written before the replayed protected input can itself
-        // depend on that input. Editing it must also abandon that summary.
-        let byID=Dictionary(history.map { ($0.id,$0) },uniquingKeysWith:{_,b in b})
-        func dependsOnEditedInput(_ message: ChatMessage) -> Bool {
-            func dependencies(_ message: ChatMessage) -> [String] {
-                guard let metadata=message.compaction else { return [] }
-                return (metadata["dependencyIDs"].isNull ? metadata["sourceIDs"] : metadata["dependencyIDs"]).list.compactMap(\.text)
-            }
-            var pending=dependencies(message), seen=Set<String>()
-            while let id=pending.popLast() {
-                if id==messageID { return true }
-                if seen.insert(id).inserted, let source=byID[id] { pending += dependencies(source) }
-            }
-            return false
-        }
-        let keptIDs=context[..<position].filter { !dependsOnEditedInput($0) }.map(\.id)
+        let plan = try Self.planEdit(messageID, history: history, visible: visible, context: context)
+        let images = try loadImages(input.attachments)
+        let effective = try profile.overriding(model: input.model, thinkingLevel: input.thinkingLevel, contextWindow: input.contextWindow, maxOutputTokens: input.maxOutputTokens, modelOutputLimit: input.modelOutputLimit)
+        guard images.isEmpty || effective.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
+        guard expectedTimeline == nil || expectedTimeline == plan.sourceTimeline else { throw AgentError("edit_changed", "The selected branch changed. Select the message again.") }
+        let target = history.first { $0.id == messageID }
+        let textDigest = sha256(Data((target?.displayText ?? target?.text ?? "").utf8))
+        guard expectedTextDigest == nil || expectedTextDigest == textDigest else { throw AgentError("edit_changed", "The original message changed. Select it again.") }
+        let byID = Dictionary(history.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let targetDigest = try byID[messageID].map { sha256(try $0.pi.data()) }
+        let branch = HistoricalBranch(fromMessageId: messageID, keptIds: plan.replay, selectedTimelinePrefix: plan.displayPrefix,
+                                      sourceTimelineDigest: plan.sourceTimeline, sourceJournalHead: journal.head, targetDigest: targetDigest)
+        var record = try JSON.parse(JSONEncoder().encode(branch)); record["type"] = "branch"
         let oldCommands=commands
         queue.append(input); commandState(input,"queued")
         let markerID: String
         do {
             // Publish the branch and accepted replacement atomically. No
             // separate queue append may fail after hiding the previous tail.
-            let record: JSON=["type":"branch","fromMessageId":JSON(messageID),"keptIds":.array(keptIDs.map { JSON($0) }),"nativeState":try savedState(active:false)]
+            record["nativeState"] = try savedState(active:false)
             markerID=try journal.append(record)
-        } catch { queue.removeLast(); commands=oldCommands; throw error }
-        applyBranch(from:messageID,keptIDs:Set(keptIDs),markerID:markerID)
+        } catch {
+            queue.removeLast(); commands=oldCommands
+            if journal.writeOutcomeUncertain { throw AgentError("journal_uncertain", "The edit may have been saved, but journal synchronization failed. Reopen or recover the preserved journal before sending again.") }
+            throw error
+        }
+        Self.adoptBranch(plan, history: &history, visible: &visible, context: &context, markerID: markerID)
+        invalidateDisplay(allRows: true); replayInputsChanged(); contextRecovery = .null; compactionState = .null
+        boundary = context; contextBaseline = nil; currentContextCount = nil; clearRequestObservation()
+        retrySubmission = nil; activeSubmission = nil; partialID = nil; partialText = ""; partialThinking = ""; resetPartialRow(); currentTurnID = ""; taskRootID = nil
         recordDisplayChange(markerID, at: displayClock())
-        event("context.branched",["fromMessageId":JSON(messageID),"kept":JSON(keptIDs.count)])
+        event("context.branched",["fromMessageId":JSON(messageID),"kept":JSON(plan.replay.count)])
         event("queue.changed"); queuePaused=false; launch()
         return ["accepted":true,"turnId":JSON(input.turnID),"queued":false,"queueCount":JSON(queue.count),"delivery":"start"]
     }
     func applyBranch(from messageID: String, keptIDs: Set<String>, markerID: String) {
         Self.branch(history:&history,context:&context,visible:&visible,from:messageID,keptIDs:keptIDs,markerID:markerID)
         invalidateDisplay(allRows: true)
-        replayInputsChanged(); contextRecovery = .null
+        replayInputsChanged(); contextRecovery = .null; compactionState = .null
         boundary=context; contextBaseline=nil; currentContextCount=nil; clearRequestObservation()
     }
     /// Shared by live edits and journal replay (the synchronous initializer

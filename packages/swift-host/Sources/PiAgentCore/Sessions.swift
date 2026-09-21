@@ -154,18 +154,27 @@ public actor AgentSession {
             } else if item["type"].text == "branch" {
                 // Replay an edit: the live context becomes exactly the kept ids and
                 // the abandoned tail leaves the displayed timeline, never the journal.
+                if !item["nativeBranchVersion"].isNull {
+                    let plan = try Self.restoreBranch(item, history: history, visible: visible, context: context)
+                    Self.adoptBranch(plan, history: &history, visible: &visible, context: &context, markerID: try identity(item["id"]))
+                } else {
                 let ordered=try CompactionCheckpoint.identities(item["keptIds"]), ids=Set(ordered)
                 guard context.filter({ ids.contains($0.id) }).map(\.id)==ordered else { throw AgentError("session_damaged","Branch references missing, abandoned or reordered messages") }
                 Self.branch(history:&history,context:&context,visible:&visible,from:item["fromMessageId"].text ?? "",keptIDs:ids,markerID:try identity(item["id"]))
                 // New branches publish their replacement queue in the same
                 // durable record. A crash before delivery restores it paused.
+                }
                 if !item["nativeState"].isNull { stateRecord=item["nativeState"] }
+                contextRecovery = .null; compactionState = .null
             } else if item["customType"].text == "pi-app.native.state.v1" { stateRecord=item["data"] }
             else if item["customType"].text == "pi-app.context-recovery.v1" { contextRecovery=item["data"] }
             else if item["customType"].text == "pi-app.native.context.v1" {
                 let byID=Dictionary(history.map { ($0.id,$0) },uniquingKeysWith:{_,b in b})
                 let ids=try CompactionCheckpoint.identities(item["data"]["ids"])
                 context=try ids.map { guard let message=byID[$0] else { throw AgentError("session_damaged","Unknown context reference") }; return message }
+                let selected = EditReplayPlan.forkTimeline(visible: visible.map(\.id), boundary: ids)
+                if !item["data"]["visibleIDs"].isNull, try CompactionCheckpoint.identities(item["data"]["visibleIDs"]) != selected { throw AgentError("session_damaged", "Fork timeline does not match the complete boundary") }
+                visible = selected.compactMap { byID[$0] }
             } else if ["pi-app.side-origin.v1", "pi-app.fork-origin.v1"].contains(item["customType"].text ?? "") {
                 parentInfo=item["data"]
                 if item["customType"].text == "pi-app.fork-origin.v1" { contextRecovery = .null; compactionState = .null }

@@ -78,3 +78,51 @@ final class EditRecoveryTests: XCTestCase {
         await reopened.close()
     }
 }
+
+private extension AgentSession {
+    func installEditWriteFailure(sync: Bool) throws {
+        guard let path else { throw AgentError("fixture", "Missing journal") }
+        journal = nil
+        journal = try SessionJournal(url: URL(fileURLWithPath: path), id: id, cwd: cwd, binding: profile.binding, create: false,
+            beforeAppend: { record in if !sync, record["type"].text == "branch" { throw AgentError("fixture_write", "Definite write refusal") } },
+            beforeSynchronize: { if sync { throw AgentError("fixture_sync", "Uncertain synchronization") } })
+    }
+}
+extension EditRecoveryTests {
+    func testEditWriteFailureDistinguishesRejectionFromUncertainDurableCommit() async throws {
+        for synchronize in [false, true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+            let profile = try fixtureProfile(), directory = root.appendingPathComponent("state"), traces = TraceStore(), resources = Resources(cwd: root, home: root)
+            let session = try AgentSession(id: "fault", profile: profile, apiKey: "fixture", cwd: root, directory: directory, readOnly: true, resources: resources, client: ScriptClient([answer("old reply")]), tools: RecordingTools(), traces: traces, autoCompaction: false)
+            _ = try await session.submit(Submission(commandID: "old", turnID: "old", text: "original"), steer: false); try await eventually { !(await session.isRunning) }
+            let path = await session.path!, before = try Data(contentsOf: URL(fileURLWithPath: path)), context = await session.context
+            try await session.installEditWriteFailure(sync: synchronize)
+            do { _ = try await session.edit(fromMessageID: "old", input: Submission(commandID: "edit", turnID: "edit", text: "replacement")); XCTFail("Injected write must fail") }
+            catch let error as AgentError { XCTAssertEqual(error.code, synchronize ? "journal_uncertain" : "fixture_write") }
+            let after = await session.context; XCTAssertEqual(context.map(\.id), after.map(\.id))
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+            if !synchronize { XCTAssertEqual(bytes, before) }
+            else { XCTAssertEqual(try bytes.split(separator: 10).map { try JSON.parse(Data($0)) }.filter { $0["type"].text == "branch" }.count, 1) }
+            await session.close()
+            let noCalls = ScriptClient([]), reopened = try AgentSession(id: "fault", profile: profile, apiKey: "fixture", cwd: root, directory: directory, readOnly: true, resources: resources, client: noCalls, tools: RecordingTools(), traces: traces, resumePath: path, autoCompaction: false)
+            let snapshot = await reopened.snapshot(), calls = await noCalls.count
+            XCTAssertEqual(snapshot["queueCount"].int, synchronize ? 1 : 0); XCTAssertEqual(calls, 0)
+            if synchronize { XCTAssertEqual(snapshot["state"].text, "paused") }
+            await reopened.close()
+        }
+    }
+    func testIndependentSummaryCannotRecallDiscardedFutureFromItsBroadSourceList() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = ScriptClient([answer(String(repeating: "early task evidence ", count: 500)), answer("target reply"), answer("safe earlier summary"), answer("edited reply")])
+        let session = try AgentSession(id: "recall", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)
+        for id in ["first", "target"] {
+            _ = try await session.submit(Submission(commandID: id, turnID: id, text: id), steer: false); try await eventually { !(await session.isRunning) }
+        }
+        try await session.compact(); try await eventually { !(await session.isRunning) }
+        _ = try await session.edit(fromMessageID: "target", input: Submission(commandID: "replacement", turnID: "replacement", text: "replacement")); try await eventually { !(await session.isRunning) }
+        let sources = await session.retainedHistorySources()
+        XCTAssertTrue(sources.values.contains { $0.id == "first" }); XCTAssertFalse(sources.values.contains { $0.id == "target" })
+        XCTAssertFalse(sources.values.contains { $0.text == "target reply" })
+        await session.close()
+    }
+}

@@ -23,7 +23,10 @@ extension AgentSession {
         while let id=pending.popLast() {
             guard seen.insert(id).inserted, let message=byID[id] else { continue }
             result[CompactionSourceBuilder.reference(message)]=message
-            pending += message.compaction?["sourceIDs"].list.compactMap(\.text) ?? []
+            // sourceIDs includes protected/future inputs outside the summary.
+            // After rollback only the summary's proven causal sources may be recalled.
+            pending += (message.compaction?["summarySourceIDs"].list.compactMap(\.text) ?? [])
+                + (message.compaction?["dependencyIDs"].list.compactMap(\.text) ?? [])
         }
         return result
     }
