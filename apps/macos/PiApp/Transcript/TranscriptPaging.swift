@@ -3,13 +3,27 @@ import Foundation
 /// How a live page from the helper joins the rows already on screen. The
 /// helper sends only the newest window of a conversation; rows the reader
 /// scrolled up to (prepended from an earlier page) stay in front of it as long
-/// as the two still touch. A window that no longer overlaps what is shown, as
-/// after an edit-and-resend branch, replaces the display.
+/// as the two still touch. Missing overlap preserves the reader's range until
+/// an explicit source handoff, gap load, or validated branch reload.
 enum TranscriptPaging {
     static func merge(previous: [TranscriptMessage], live: [TranscriptMessage]) -> [TranscriptMessage] {
-        guard let firstLive = live.first, let cut = previous.firstIndex(where: { $0.id == firstLive.id }), cut > 0 else { return live }
+        guard !previous.isEmpty else { return live }
+        guard let firstLive = live.first, let cut = previous.firstIndex(where: { $0.id == firstLive.id }) else { return previous }
         let liveIDs = Set(live.map(\.id))
         return previous[..<cut].filter { !liveIDs.contains($0.id) } + live
+    }
+    static func size(_ message: TranscriptMessage) -> Int {
+        message.text.utf8.count + (message.thinking?.utf8.count ?? 0) + (message.tools ?? []).reduce(0) { $0 + $1.input.utf8.count + $1.output.utf8.count } + 512
+    }
+    static func window(_ messages: [TranscriptMessage], keepingEarlier: Bool) -> [TranscriptMessage] {
+        var result: [TranscriptMessage] = [], bytes = 0
+        for row in (keepingEarlier ? messages : Array(messages.reversed())) {
+            let size = size(row)
+            guard result.count < HistoryWindowPolicy.residentRows,
+                  result.isEmpty || bytes + size <= HistoryWindowPolicy.residentBytes else { break }
+            result.append(row); bytes += size
+        }
+        return keepingEarlier ? result : result.reversed()
     }
     /// Rows of an earlier page that are not already shown, in page order.
     static func prefix(earlier: [TranscriptMessage], shown: [TranscriptMessage]) -> [TranscriptMessage] {

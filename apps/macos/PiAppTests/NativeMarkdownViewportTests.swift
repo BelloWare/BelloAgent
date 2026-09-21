@@ -109,7 +109,7 @@ final class NativeMarkdownViewportTests: XCTestCase {
         await scroll(to: 0, scroll: outer, hosted: hosted, window: window)
         XCTAssertTrue(field.currentEditor() === editor)
         XCTAssertEqual(editor.selectedRange, selection)
-        XCTAssertEqual(body.blockMeasurementCount, measured, "Scrolling reuses exact block measurements")
+        XCTAssertLessThan(body.blockMeasurementCount - measured, 20, "Only newly visited blocks are measured; the unchanged middle stays provisional")
         XCTAssertEqual(outer.contentView.bounds.minY, 0, accuracy: 0.5)
         XCTAssertEqual(hosted.frame.height, initialHeight, accuracy: 0.5)
 
@@ -181,6 +181,29 @@ final class NativeMarkdownViewportTests: XCTestCase {
         defer { board.releaseGlobally() }
         XCTAssertTrue(code.writeSelection(to: board, types: code.writablePasteboardTypes))
         XCTAssertEqual(board.string(forType: .string), "result0")
+    }
+
+    @MainActor func testProvisionalCorrectionsPreserveLogicalBlockAndLatestScrollWins() async throws {
+        let (_, window, outer, hosted) = fixture()
+        defer { window.contentView = nil; window.close() }
+        await settle(hosted, scroll: outer, window: window)
+        let body = try XCTUnwrap(descendants(NativeMarkdownContainer.self, in: hosted).first)
+        XCTAssertGreaterThan(body.provisionalBlockCount, 80)
+        outer.contentView.scroll(to: NSPoint(x: 0, y: hosted.frame.height * 0.45))
+        hosted.layoutSubtreeIfNeeded()
+        let anchor = try XCTUnwrap(body.logicalAnchor)
+        await settle(hosted, scroll: outer, window: window)
+        XCTAssertEqual(body.logicalAnchor?.block, anchor.block)
+        XCTAssertEqual(body.logicalAnchor?.offset ?? 0, anchor.offset, accuracy: 1)
+        outer.contentView.scroll(to: NSPoint(x: 0, y: hosted.frame.height * 0.25))
+        hosted.layoutSubtreeIfNeeded()
+        // A second gesture occurs before the first correction's queued callback.
+        outer.contentView.scroll(to: NSPoint(x: 0, y: hosted.frame.height * 0.8))
+        hosted.layoutSubtreeIfNeeded()
+        let newer = try XCTUnwrap(body.logicalAnchor)
+        await settle(hosted, scroll: outer, window: window)
+        XCTAssertEqual(body.logicalAnchor?.block, newer.block)
+        XCTAssertEqual(body.logicalAnchor?.offset ?? 0, newer.offset, accuracy: 1)
     }
 
 }

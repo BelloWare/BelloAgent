@@ -31,6 +31,13 @@ import Combine
     /// Committed activity only: text, draft, selection and context rendering do not enter this stream.
     let activityChanges = PassthroughSubject<Void, Never>()
     let id: String
+    let presentation = ConversationPresentation()
+    @Published var presentationGeneration = UUID()
+    @Published var historyState: ConversationLoadState = .dormant
+    @Published var historyProgress: String?
+    @Published var olderPage = ConversationPageBoundary()
+    @Published var newerPage = ConversationPageBoundary()
+    @Published var draftReady = true
     var completionTracker = SessionCompletionTracker()
     var monitoringEpoch: String?
     var monitoringCursor: Double?
@@ -41,6 +48,7 @@ import Combine
     /// last send failure where the conversation stopped. Errors live in the
     /// flow of the chat, not in a strip pinned above it.
     var presentedMessages: [TranscriptMessage] {
+        if historyState == .loading { return [] }
         var rows = messages
         if let retryNotice { rows.append(TranscriptMessage(id: "notice:retry:" + id, role: "system", text: retryNotice, kind: "notice")) }
         if let failureMessage {
@@ -172,6 +180,7 @@ import Combine
     /// Set once the first page has been checked to begin at a user message.
     var pageStartEnsured = false
     @Published var loading = false { didSet { if loading != oldValue { activityChanges.send() } } }
+    var pinnedHistoryIDs: Set<String> = []
     var scrollAnchor: TranscriptAnchor?
     @Published var viewportRequest = 0
     let footer = SessionMetrics()

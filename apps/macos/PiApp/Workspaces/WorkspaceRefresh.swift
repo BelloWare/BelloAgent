@@ -35,6 +35,7 @@ extension WorkspaceModel {
                 var params: [String: WireValue] = ["includeMessages": .bool(!view.browsingHistory)]
                 if let epoch = view.monitoringEpoch { params["monitoringEpoch"] = .string(epoch) }
                 if let cursor = view.monitoringCursor { params["monitoringCursor"] = .number(cursor) }
+                let generation = view.presentationGeneration
                 let requestedRevision = view.projectionRevision
                 if let requestedRevision { params["displayRevision"] = .string(requestedRevision) }
                 // Ask for changes to the page this display holds rather than
@@ -88,9 +89,9 @@ extension WorkspaceModel {
                     // Decoding and applying the page happen off the main
                     // actor; only the finished rows cross back to it.
                     var incoming: [TranscriptMessage]?, resyncNeeded = false
-                    if !view.browsingHistory {
+                    if !view.browsingHistory, view.presentationGeneration == generation {
                         if let value = result["messages"] {
-                            incoming = await Task.detached { (try? TranscriptMessage.page(value)) ?? [] }.value
+                            incoming = try await Task.detached { try TranscriptMessage.page(value) }.value
                         } else if let patch = result["messageDelta"] {
                             let held = view.projectedRows
                             let applied = await Task.detached { TranscriptRowUpdates.apply(patch, to: held) }.value
@@ -98,12 +99,21 @@ extension WorkspaceModel {
                         }
                     }
                     guard current() else { return }
-                    if let projected = incoming, !view.browsingHistory {
+                    if let projected = incoming, !view.browsingHistory, view.presentationGeneration == generation {
+                        let incarnation = result["historyIncarnation"]?.string, lineage = result["historyLineage"]?.string
+                        if let held = view.presentation.identity, let lineage, held.lineage != lineage {
+                            view.newerPage.error = "This conversation's branch changed. Use Latest to reload."
+                            view.browsingHistory = true
+                        } else {
+                        let overlaps = view.messages.isEmpty || projected.contains { row in view.messages.contains { $0.id == row.id } }
+                        if !overlaps, let last = view.messages.last, let incarnation, let lineage {
+                            view.newerPage = .init(cursor: .init(incarnation: incarnation, lineage: lineage, entry: last.id))
+                            view.browsingHistory = true
+                        }
                         view.historyRevision = nil
                         view.projectedRows = projected
                         // Rows the reader scrolled up to stay in front of the helper's window.
-                        var messages = TranscriptPaging.merge(previous: view.messages, live: projected)
-                        let prepended = messages.count - projected.count
+                        var messages = TranscriptPaging.window(TranscriptPaging.merge(previous: view.messages, live: projected), keepingEarlier: false)
                         // Touch only the rows whose accounting actually moved:
                         // writing every row copies the whole page's storage and
                         // retains every string in it, once per streamed token.
@@ -118,11 +128,16 @@ extension WorkspaceModel {
                             if accountingChanged { scheduleAccounting(id, workspaceID: item.workspaceID) }
                         }
                         view.projectionRevision = result["displayRevision"]?.string
-                        if view.before != nil { view.before = nil }
-                        // The next earlier page starts before the earliest row shown, not before the window.
-                        let before = result["before"]?.number.map { $0 - Double(prepended) }.flatMap { $0 > 0 ? $0 : nil }
-                        if view.hostBefore != before { view.hostBefore = before }
-                        if !view.pageStartEnsured, view.messages.first?.role != "user" { Task { await self.ensurePageStartsAtTurn(sessionID: id) } }
+                        if let before = result["before"] { view.hostBefore = before.number }
+                        if overlaps, let incarnation, let lineage, let first = messages.first {
+                            view.presentation.identity = (incarnation, lineage)
+                            let liveOlder = try ConversationHistoryPage.cursor(result["historyOlder"])
+                            if messages.first?.id == projected.first?.id { view.olderPage = .init(cursor: liveOlder) }
+                            else if view.olderPage.cursor != nil { view.olderPage.cursor = .init(incarnation: incarnation, lineage: lineage, entry: first.id) }
+                            view.before = view.olderPage.cursor?.entry
+                        }
+                        if view.historyState == .dormant || view.historyState == .empty { view.historyState = messages.isEmpty ? .empty : .preparing }
+                        }
                     } else if resyncNeeded {
                         // The update does not fit the page held here. Forget
                         // the cursor so the next read is a whole page.

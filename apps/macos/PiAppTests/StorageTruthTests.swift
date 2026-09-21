@@ -170,21 +170,20 @@ final class StorageTruthTests: XCTestCase {
         await reader.setIndexRecordLimit(50)
         let page = try await reader.read(path: path.path)
         XCTAssertNil(page.notice, "an intact conversation is never reported as damaged")
-        let limit = try XCTUnwrap(page.limitNotice)
-        XCTAssertTrue(limit.contains("longer than"), limit)
-        XCTAssertTrue(limit.contains("searchable"), limit)
-        XCTAssertEqual(page.total, 50)
-        // Search and copying both keep working over the part that is indexed.
+        XCTAssertNil(page.limitNotice)
+        XCTAssertEqual(page.total, 120)
+        XCTAssertEqual(page.messages.last?.id, "m119")
+        // The disk-backed index covers the complete supported conversation.
         let found = try await reader.searchContent(path: path.path, query: "message 4", start: 0)
         XCTAssertFalse(found.hits.isEmpty)
         let revision = try XCTUnwrap(page.revision).stamp
         let copied = try await reader.copyContentPage(path: path.path, first: 1, last: 3, cursor: .init(index: 1, offset: 0), revision: revision)
         XCTAssertFalse(copied.text.isEmpty)
-        // A partial count must not manufacture unread replies.
-        XCTAssertNil(page.assistantMessageCount)
+        // An index work segment must not hide the authoritative full count.
+        XCTAssertEqual(page.assistantMessageCount, 60)
         XCTAssertNotNil(page.revision, "a bounded index is still a stable revision")
         let safe = try await reader.allowsAutomaticContext(path: path.path, id: "fixture")
-        XCTAssertFalse(safe, "automatic context cannot vouch for a tail it never read")
+        XCTAssertFalse(safe, "this imported fixture has no native replay marker")
     }
 
     @MainActor func testChatsTheSidebarCouldNotListAreReportedOnce() async throws {

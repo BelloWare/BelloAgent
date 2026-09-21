@@ -25,7 +25,7 @@ struct ConversationPane: View {
     private var projectAvailable: Bool { model.workspace(for: chat.workspaceID) != nil }
     /// A chat with nothing in it yet shows what it is connected to and where to start.
     private var showsStarter: Bool {
-        session.messages.isEmpty && !session.busy && !session.loading && session.failureMessage == nil && session.sendFailure == nil
+        session.historyState == .empty && session.messages.isEmpty && !session.busy && !session.loading && session.failureMessage == nil && session.sendFailure == nil
             && !chat.imported && !chat.isBackgroundTask && projectAvailable && (side == nil || side?.pending == true)
     }
     var body: some View {
@@ -46,7 +46,10 @@ struct ConversationPane: View {
                                                             retry: { model.action("turn.retry", params: model.record(session.id).map { TurnOverrides.params(for: $0) } ?? [:], sessionID: session.id) }),
                                  onAnchorChanged: { anchor in session.scrollAnchor = anchor; model.anchorChanged(session) },
                                  onReadReply: { sessionID, messageID in model.acknowledgeVisibleReply(sessionID: sessionID, messageID: messageID) },
-                                 onLoadEarlier: { sessionID in model.loadEarlier(sessionID: sessionID) })
+                                 onLoadEarlier: { sessionID in model.loadEarlier(sessionID: sessionID) },
+                                 onLoadNewer: { model.loadNewer(sessionID: $0) },
+                                 onLatest: { model.latest(sessionID: $0) },
+                                 onViewportReady: { model.historyViewportReady($0, generation: $1) })
                 // A card whose arguments the host had to cut asks it for the
                 // rest when the reader opens it.
                 .task(id: session.id) {
@@ -64,8 +67,21 @@ struct ConversationPane: View {
                 }
                 .overlay {
                     ZStack {
-                        if session.loading && session.messages.isEmpty { LoadingMark().transition(.opacity) }
-                    }.piAnimation(PiMotion.quick, value: session.loading)
+                        if session.historyState.loading || session.loading && session.messages.isEmpty {
+                            Color.piContent
+                            VStack(spacing: PiSpacing.md) {
+                                LoadingMark()
+                                if let progress = session.historyProgress { Text(progress).font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
+                            }.transition(.opacity)
+                        } else if case .failed(let error) = session.historyState {
+                            Color.piContent
+                            VStack(spacing: PiSpacing.md) {
+                                Text("Couldn’t load this conversation").font(PiFont.heading)
+                                Text(error).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).textSelection(.enabled)
+                                Button("Retry") { model.reloadHistory(session.id) }.buttonStyle(.piSecondaryCompact)
+                            }.padding(PiSpacing.lg)
+                        }
+                    }.piAnimation(PiMotion.quick, value: session.historyState.loading)
                 }
             if !session.queue.isEmpty { queuePanel.transition(PiMotion.arrival(from: .bottom)) }
             if model.terminalVisible, side == nil, let workspace = model.workspace(for: chat.workspaceID), !workspace.isScratch {

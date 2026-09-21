@@ -27,6 +27,8 @@ extension WorkspaceModel {
     }
     func releaseUpdateBarrier() { installPreparing = false }
     func shutdown() {
+        navigationTask?.cancel(); navigationTask = nil
+        for view in displays.values { view.presentation.cancel() }
         liveActivity.shutdown()
         cancelAutomaticContext()
         for pending in hostStarts.values { pending.task.cancel() }

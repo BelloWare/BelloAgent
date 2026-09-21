@@ -80,20 +80,12 @@ extension WorkspaceModel {
     }
     func revealConversationHit(_ id: String, hit: ContentHit) async throws {
         guard let item = record(id), let view = displays[id] else { throw StoreError.invalidRecord }
-        let wasBrowsing = view.browsingHistory
-        var loaded = false
+        let generation = view.presentationGeneration
+        let page = try await readConversationWindow(item, cursor: nil, around: hit.id)
+        guard !Task.isCancelled, displays[id] === view, view.presentationGeneration == generation else { return }
+        adoptInitialHistory(page, into: view, around: hit.id)
         view.browsingHistory = true
-        defer { if !loaded { view.browsingHistory = wasBrowsing } }
-        if opened.contains(id), let host = hosts[item.workspaceID] {
-            let result = try await host.request("session.history", sessionID: id, params: ["before": .number(Double(hit.position))]).object ?? [:]
-            view.messages = try TranscriptMessage.page(result["messages"] ?? .array([]))
-            view.hostBefore = result["before"]?.number
-        } else if let path = item.path {
-            let page = try await history.read(path: path, around: hit.id); view.messages = page.messages; view.before = page.before
-        } else { throw HostError.failure("This conversation has no saved history to open.") }
-        loaded = true
-        view.scrollAnchor = .init(id: hit.id, offset: 0, followsBottom: false); view.viewportRequest += 1; anchorChanged(view)
-        await refreshAccounting(view, workspaceID: item.workspaceID)
+        anchorChanged(view)
     }
 
     /// Navigates from the report to a message: opens its chat, scrolls to the
@@ -129,6 +121,17 @@ extension WorkspaceModel {
         func current() -> Bool {
             !Task.isCancelled && revision == messageNavigationRevision && page == .chats && selectedID == parentID && focusedSessionID == sessionID &&
             record(sessionID) != nil && record(sessionID)?.path == item.path && displays[sessionID] === view && view.messages.map(\.id) == expectedMessageIDs
+        }
+        if historyLookup == nil {
+            do {
+                let generation = view.presentationGeneration
+                let window = try await readConversationWindow(item, cursor: nil, around: messageID)
+                guard current(), view.presentationGeneration == generation else { return false }
+                adoptInitialHistory(window, into: view, around: messageID)
+                view.browsingHistory = true; anchorChanged(view)
+                return true
+            } catch is CancellationError { return false }
+            catch { if current() { showMessageDetail(sessionID, messageID: messageID) }; return current() }
         }
         if let path = item.path, !opened.contains(sessionID) {
             let loaded: HistoryPage?

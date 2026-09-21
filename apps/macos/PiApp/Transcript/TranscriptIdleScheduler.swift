@@ -66,6 +66,7 @@ import AppKit
         jobs.removeAll { $0.owner == nil || $0.owner === owner }
         reschedule()
     }
+    var remainingInputQuietTime: TimeInterval { max(0, inputQuietUntil - clock()) }
     func pauseForInput() {
         inputQuietUntil = clock() + TranscriptNativeDocument.sliceQuietPeriod
         reschedule()

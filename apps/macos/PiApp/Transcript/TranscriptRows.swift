@@ -325,19 +325,25 @@ struct CodeBlockView: View {
     let code: String
     var size: CGFloat = 12.5
     @State private var hovering = false
+    @State private var section = 0
+    private let streaming: Bool
     @State private var usesNativeText: Bool
     init(language: String?, code: String, size: CGFloat = 12.5, streaming: Bool = false, nativeChoice: Bool? = nil) {
-        self.language = language; self.code = code; self.size = size
+        self.language = language; self.code = code; self.size = size; self.streaming = streaming
         _usesNativeText = State(initialValue: nativeChoice ?? (NativeCodeText.enabled && (streaming || code.utf8.count >= NativeCodeText.minimumBytes)))
     }
     var body: some View {
+        let slices = CodeBlockSections.ranges(code, enabled: !streaming)
+        let index = min(section, max(0, slices.count - 1))
+        let shown = slices.isEmpty ? code : String(decoding: Array(code.utf8)[slices[index]], as: UTF8.self)
+        VStack(alignment: .leading, spacing: 0) {
         ZStack(alignment: .topTrailing) {
             // Keep the chosen leaf for this block's mounted lifetime. Crossing
             // the size threshold while selecting/streaming must not replace
             // the native selection owner. Reopened large fences use TextKit.
             Group {
-                if usesNativeText { NativeCodeText(source: code, language: language, size: size) }
-                else { Text(SyntaxHighlighter.attributed(code, language: language, size: size)).lineSpacing(size * 0.4) }
+                if usesNativeText { NativeCodeText(source: shown, language: language, size: size) }
+                else { Text(SyntaxHighlighter.attributed(shown, language: language, size: size)).lineSpacing(size * 0.4) }
             }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14).padding(.top, 31).padding(.bottom, 10)
@@ -355,6 +361,15 @@ struct CodeBlockView: View {
             // toolbar text creates extra AppKit text fields in every code fence.
             .textSelection(.disabled)
             .padding(.trailing, 8).padding(.top, 5)
+        }
+        if slices.count > 1 {
+            HStack {
+                Button("Previous section") { section = max(0, index - 1) }.disabled(index == 0)
+                Text("Code section \(index + 1) of \(slices.count) · Copy includes the full code")
+                    .font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                Button("Next section") { section = min(slices.count - 1, index + 1) }.disabled(index + 1 == slices.count)
+            }.buttonStyle(.plain).padding(10).accessibilityIdentifier("codeSectionNavigation")
+        }
         }
         .background(TranscriptPalette.codeBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(TranscriptPalette.hair, lineWidth: 1))
@@ -1224,7 +1239,7 @@ extension MarkdownBlockView: Equatable {
     }
 }
 extension CodeBlockView: Equatable {
-    nonisolated static func == (a: Self, b: Self) -> Bool { a.code == b.code && a.language == b.language && a.size == b.size }
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.code == b.code && a.language == b.language && a.size == b.size && a.streaming == b.streaming }
 }
 extension ActionRowView: Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool { a.tool == b.tool && a.open == b.open && a.fetched == b.fetched }
@@ -1234,4 +1249,23 @@ extension ActivityGroupView: Equatable {
 }
 extension ReasoningView: Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool { a.thinking == b.thinking && a.streaming == b.streaming && a.open == b.open }
+}
+
+/// Bounded full-code sections use UTF-8 source offsets, never truncated stored
+/// code. Page switches are deliberate; streaming retains its existing leaf.
+enum CodeBlockSections {
+    static func ranges(_ source: String, enabled: Bool = true) -> [Range<Int>] {
+        let bytes = Array(source.utf8)
+        guard enabled, bytes.count > 32_768 else { return [] }
+        var ranges: [Range<Int>] = [], start = 0
+        while start < bytes.count {
+            var end = min(bytes.count, start + 8192)
+            if end < bytes.count {
+                if let newline = bytes[start..<end].lastIndex(of: 10), newline > start { end = newline + 1 }
+                else { while end > start && bytes[end] & 0xC0 == 0x80 { end -= 1 } }
+            }
+            ranges.append(start..<end); start = end
+        }
+        return ranges
+    }
 }

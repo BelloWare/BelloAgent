@@ -40,10 +40,10 @@ import AppKit
     static func permits(_ item: TranscriptItem) -> Bool {
         switch item {
         case .message(let message):
-            return !message.isStreaming && message.kind != "compaction"
+            return !message.isStreaming && message.kind != "compaction" && message.text.utf8.count <= 32_768
         case .block(let block):
             return !block.live && block.turn?.live != true && block.tools.isEmpty &&
-                block.replies.allSatisfy { ($0.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && ($0.tools ?? []).isEmpty }
+                block.replies.allSatisfy { $0.text.utf8.count <= 32_768 && ($0.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && ($0.tools ?? []).isEmpty }
         }
     }
 

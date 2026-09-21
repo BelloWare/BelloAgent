@@ -62,12 +62,13 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         let hosted: NSHostingView<NativeTranscriptView>
         let session: SessionDisplay
 
-        init(_ session: SessionDisplay, state: String = "idle", width: CGFloat = 900, height: CGFloat = 700) {
+        init(_ session: SessionDisplay, state: String = "idle", width: CGFloat = 900, height: CGFloat = 700,
+             onReady: @escaping (String, UUID) -> Void = { _, _ in }, onEarlier: @escaping (String) -> Void = { _ in }) {
             self.session = session
             window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled, .resizable],
                               backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            hosted = NSHostingView(rootView: NativeTranscriptView(session: session, state: state, actions: TranscriptActions()))
+            hosted = NSHostingView(rootView: NativeTranscriptView(session: session, state: state, actions: TranscriptActions(), onLoadEarlier: onEarlier, onViewportReady: onReady))
             window.contentView = hosted
             window.makeKeyAndOrderFront(nil)
         }

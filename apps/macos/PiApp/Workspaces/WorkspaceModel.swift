@@ -29,6 +29,10 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// Owned by `WorkspaceSelection.swift`: which `select` call is current, so
     /// a slower one cannot finish over a newer selection.
     var selectionRevision = 0
+    var navigationTask: Task<Void, Never>?
+    /// Deterministic source delay/failure seam. Production uses the live helper
+    /// or the shared read-only history actor below, without launching a runtime.
+    var historyWindowLoader: (@Sendable (String, ConversationCursor?, Bool, String?) async throws -> ConversationHistoryPage)?
     var organizationNavigationRevision = 0
     var organizationPresentationRevision = 0
     let organizationScheduler = SessionOrganizationScheduler()

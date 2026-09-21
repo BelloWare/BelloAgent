@@ -6,7 +6,7 @@ import Foundation
 extension WorkspaceModel {
     /// Snapshot the originating pane's intent synchronously, before any helper await.
     func submitComposer(intent: ComposerSubmissionIntent, sessionID: String) {
-        guard page == .chats, let view = displays[sessionID], !view.loading, !installPreparing else { return }
+        guard page == .chats, let view = displays[sessionID], view.draftReady, !view.loading, !installPreparing else { return }
         if view.editingMessageID != nil { sendEdit(sessionID: sessionID); return }
         // Bypassing the completion list with Command-Return is not a skill grant.
         if let command = LeadingCommand.parse(view.draft, directInput: view.directCommand),
@@ -145,86 +145,4 @@ extension WorkspaceModel {
         Task { do { _ = try await host.request("turn.stop", sessionID: item.id); refresh(item.id) }
             catch { view.state = "interrupted"; view.uncertain = true; view.notice = error.localizedDescription } }
     }
-    /// Prepends the page before the earliest row shown, keeping the reader's
-    /// place. The page asks for this as the reader nears the top; the header
-    /// button asks explicitly. Live updates keep arriving underneath.
-    func loadEarlier(sessionID: String? = nil) {
-        Task { _ = await loadEarlierPage(sessionID: sessionID) }
-    }
-    /// A page that begins in the middle of a turn hides the question that
-    /// started it, which is exactly what a short chat with many tool calls
-    /// looks like; earlier pages are pulled in until a user message leads.
-    func ensurePageStartsAtTurn(sessionID id: String, refreshAfterRepair: Bool = true) async {
-        guard let view = displays[id], !view.pageStartEnsured else { return }
-        view.pageStartEnsured = true
-        var pages = 0
-        while pages < 4, let first = view.messages.first, first.role != "user", view.hostBefore != nil || view.before != nil, displays[id] === view {
-            guard await loadEarlierPage(sessionID: id, startingTurnOnly: true) else { break }
-            pages += 1
-        }
-        if pages > 0, refreshAfterRepair, displays[id] === view, let item = record(id) {
-            await refreshAccounting(view, workspaceID: item.workspaceID)
-        }
-    }
-    /// One earlier page; true when rows were prepended.
-    func loadEarlierPage(sessionID: String? = nil, startingTurnOnly: Bool = false) async -> Bool {
-        guard let id = sessionID ?? selectedID, let item = record(id), let view = displays[id], !view.loadingEarlier else { return false }
-        view.loadingEarlier = true
-        defer { view.loadingEarlier = false }
-        do {
-            var earlier: [TranscriptMessage] = [], hostPage = false
-            if opened.contains(item.id), let host = hosts[item.workspaceID] {
-                hostPage = true
-                guard let before = view.hostBefore else { return false }
-                let value = try await host.request("session.history", sessionID: item.id, params: ["before": .number(before)]).object ?? [:]
-                earlier = try TranscriptMessage.page(value["messages"] ?? .array([]))
-                guard displays[id] === view else { return false }
-                view.hostBefore = value["before"]?.number
-            } else if let path = item.path, let before = view.before {
-                let page = try await history.read(path: path, before: before)
-                guard displays[id] === view else { return false }
-                earlier = page.messages; view.before = page.before
-                if view.historyRevision != page.revision { view.historyRevision = nil }
-            } else { return false }
-            var prefix = TranscriptPaging.prefix(earlier: earlier, shown: view.messages)
-            guard !prefix.isEmpty else { return false }
-            if startingTurnOnly, let user = prefix.lastIndex(where: { $0.role == "user" }), user > prefix.startIndex {
-                prefix = Array(prefix[user...])
-                // Automatic repair needs only this turn, not every older row
-                // returned in the page. Keep its omitted rows pageable later.
-                if hostPage, let first = prefix.first,
-                   let omitted = earlier.firstIndex(where: { $0.id == first.id }) {
-                    view.hostBefore = (view.hostBefore ?? 0) + Double(omitted)
-                } else { view.before = prefix.first?.id }
-            }
-            for index in prefix.indices { prefix[index].accounting = view.messageAccounting[prefix[index].id] }
-            // A deliberate older-page request anchors its first visible row.
-            // Automatic turn repair preserves the reader's existing intent;
-            // inventing a detached first-row anchor would jump a newly opened
-            // chat away from its newest turn before layout finishes.
-            if !startingTurnOnly, let first = view.messages.first {
-                let offset = view.scrollAnchor?.id == first.id ? (view.scrollAnchor?.offset ?? 0) : 0
-                view.scrollAnchor = .init(id: first.id, offset: offset, followsBottom: false)
-            }
-            view.messages = prefix + view.messages
-            view.viewportRequest += 1
-            if !startingTurnOnly { anchorChanged(view) }
-            if !startingTurnOnly { await refreshAccounting(view, workspaceID: item.workspaceID) }
-            return true
-        } catch { self.error = error.localizedDescription; return false }
-    }
-    func latest(sessionID: String? = nil) { if let id = sessionID ?? selectedID {
-        if let view = displays[id], let item = record(id) {
-            view.browsingHistory = false; view.projectionRevision = nil
-            // A nil anchor would be reloaded from SQLite by select() before an
-            // asynchronous deletion finished. Persist the explicit bottom intent.
-            view.scrollAnchor = .init(id: view.messages.last?.id ?? "", offset: 0, followsBottom: true); view.viewportRequest += 1; anchorChanged(view)
-            // Drop the pages scrolled up to; the helper's window or the file tail is the display again.
-            if opened.contains(id) { view.messages = Array(view.messages.suffix(60)); view.hostBefore = nil }
-            else if let path = item.path {
-                Task { if let page = try? await history.read(path: path), displays[id] === view { view.messages = page.messages; view.before = page.before; view.viewportRequest += 1 } }
-            }
-        }
-        if opened.contains(id) { refresh(id) } else { Task { await select(id) } }
-    } }
 }

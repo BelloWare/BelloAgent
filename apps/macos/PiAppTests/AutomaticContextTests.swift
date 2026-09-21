@@ -11,7 +11,7 @@ final class AutomaticContextTests: XCTestCase {
             return Self.summary(tokens: 321)
         }
         try await model.store?.put(DraftRecord(id: "a", text: "Saved unsent draft"), kind: "draft", id: "a")
-        await model.select("a")
+        await model.select("a"); await presentationReady(model)
         let pending = try XCTUnwrap(model.automaticContextTask)
         let display = try XCTUnwrap(model.selected)
         XCTAssertTrue(display.footer.preparingContext)
@@ -21,7 +21,7 @@ final class AutomaticContextTests: XCTestCase {
         XCTAssertEqual(model.displayedContext(try XCTUnwrap(model.selected))["tokens"], .number(321))
         XCTAssertFalse(display.footer.preparingContext)
         XCTAssertEqual(display.draft, "Saved unsent draft")
-        await model.select("a")
+        await model.select("a"); await presentationReady(model)
         XCTAssertNil(model.automaticContextTask, "Reopening a tab reuses its matching fresh estimate")
         XCTAssertEqual(calls, 1); XCTAssertTrue(model.hosts.isEmpty)
         try await close(model)
@@ -34,12 +34,12 @@ final class AutomaticContextTests: XCTestCase {
             if item.id == "a" { await withCheckedContinuation { continuation = $0 } }
             return Self.summary(tokens: item.id == "a" ? 111 : 222)
         }
-        await model.select("a")
+        await model.select("a"); await presentationReady(model)
         let first = try XCTUnwrap(model.automaticContextTask)
         let deadline = Date().addingTimeInterval(3)
         while continuation == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
         let release = try XCTUnwrap(continuation)
-        await model.select("b")
+        await model.select("b"); await presentationReady(model)
         let second = try XCTUnwrap(model.automaticContextTask)
         release.resume()
         await first.task.value; await second.task.value
@@ -59,7 +59,7 @@ final class AutomaticContextTests: XCTestCase {
         model.automaticContextOperation = { _, _ in
             var summary = Self.summary(tokens: 9999); summary["count"] = .object(count); return summary
         }
-        await model.select("a")
+        await model.select("a"); await presentationReady(model)
         let pending = try XCTUnwrap(model.automaticContextTask)
         await pending.task.value
         let display = try XCTUnwrap(model.selected)
@@ -81,7 +81,7 @@ final class AutomaticContextTests: XCTestCase {
             countedDrafts.append(text)
             return Self.summary(tokens: Double(100 + text.utf8.count))
         }
-        await model.select("a")
+        await model.select("a"); await presentationReady(model)
         let initial = try XCTUnwrap(model.automaticContextTask)
         await initial.task.value
         let active = try XCTUnwrap(model.selected)
@@ -142,14 +142,14 @@ final class AutomaticContextTests: XCTestCase {
         let model = try await fixture(); defer { model.shutdown() }
         model.automaticContextOperation = { _, _ in XCTFail("An unsafe chat must not prepare automatically"); return Self.summary(tokens: 1) }
         model.workspaces[0].trusted = false
-        await model.select("a"); XCTAssertNil(model.automaticContextTask)
+        await model.select("a"); await presentationReady(model); XCTAssertNil(model.automaticContextTask)
         model.workspaces[0].trusted = true; model.chats[0].imported = true
-        await model.select("a"); XCTAssertNil(model.automaticContextTask)
+        await model.select("a"); await presentationReady(model); XCTAssertNil(model.automaticContextTask)
         model.chats[0].imported = false
         model.displays["a"]?.state = "running"
-        await model.select("a"); XCTAssertNil(model.automaticContextTask)
+        await model.select("a"); await presentationReady(model); XCTAssertNil(model.automaticContextTask)
         model.displays["a"]?.state = "interrupted"
-        await model.select("a"); XCTAssertNil(model.automaticContextTask)
+        await model.select("a"); await presentationReady(model); XCTAssertNil(model.automaticContextTask)
         XCTAssertTrue(model.hosts.isEmpty)
         try await close(model)
     }
@@ -220,7 +220,7 @@ final class AutomaticContextTests: XCTestCase {
 
     @MainActor func testAutomaticPackagedPreviewPersistsNewJournalWithoutDispatchAndCanReopen() async throws {
         let model = try await fixture(); defer { model.shutdown() }
-        await model.select("a")
+        await model.select("a"); await presentationReady(model)
         let first = try XCTUnwrap(model.automaticContextTask)
         await first.task.value
         let display = try XCTUnwrap(model.selected)
@@ -240,13 +240,38 @@ final class AutomaticContextTests: XCTestCase {
         try await host.shutdownAndWait()
         model.hosts.removeValue(forKey: item.workspaceID); model.opened.remove(item.id)
         display.footer.preparedContext = nil
-        await model.select(item.id)
+        await model.select(item.id); await presentationReady(model)
         let reopened = try XCTUnwrap(model.automaticContextTask)
         await reopened.task.value
         XCTAssertNotNil(display.footer.preparedContext, "A selected saved tab calculates again after helper eviction")
         XCTAssertEqual(model.record(item.id)?.path, path)
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), before, "Read-only context does not append messages or repair history")
         try await close(model)
+    }
+
+    @MainActor func testOptionalPreviewWaitsForUsefulDestinationGeometry() async throws {
+        let model = try await fixture(); defer { model.shutdown() }
+        var calls = 0
+        model.automaticContextOperation = { _, _ in calls += 1; return Self.summary(tokens: 123) }
+        model.historyWindowLoader = { _, _, _, _ in
+            try ConversationHistoryPage(.object(["version":.number(2), "incarnation":.string("fixture"), "lineage":.string("root"),
+                "older":.null, "newer":.null, "messages":.array([.object(["id":.string("u"), "role":.string("user"), "text":.string("Question")])])]))
+        }
+        await model.select("a")
+        XCTAssertEqual(model.selected?.historyState, .preparing)
+        XCTAssertNil(model.automaticContextTask); XCTAssertEqual(calls, 0)
+        await presentationReady(model)
+        let pending = try XCTUnwrap(model.automaticContextTask); await pending.task.value
+        XCTAssertEqual(calls, 1)
+        try await close(model)
+    }
+
+    @MainActor private func presentationReady(_ model: WorkspaceModel) async {
+        guard let view = model.selected else { return }
+        if view.presentation.readyAt == nil { model.historyViewportReady(view.id, generation: view.presentationGeneration) }
+        // Simulate the native viewport callback, then allow deferred optional
+        // work to be admitted. It must not run during source/layout hydration.
+        await view.presentation.secondary?.value
     }
 
     @MainActor private func fixture() async throws -> WorkspaceModel {

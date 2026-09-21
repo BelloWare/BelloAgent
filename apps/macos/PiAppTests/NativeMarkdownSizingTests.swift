@@ -20,12 +20,12 @@ final class NativeMarkdownSizingTests: XCTestCase {
         XCTAssertEqual(body.aggregateMeasurementVisits - before, 1)
         XCTAssertEqual(body.framePlacements - frames, 1)
         XCTAssertEqual(body.blockOwnerIdentities, owners)
-        // A width change still performs an exact measurement of every block.
+        // A width change rebuilds every descriptor, with only its initial band measured exactly.
         _ = body.measure(width: 500)
         XCTAssertEqual(body.aggregateMeasurementVisits - before, 301)
     }
 
-    @MainActor func testManyBlockAnswerKeepsExactGeometryAndFullCopySource() throws {
+    @MainActor func testManyBlockAnswerPreparesVisibleGeometryAndKeepsFullCopySource() throws {
         let source = (0..<160).map { index in
             """
             ## Section \(index)
@@ -48,11 +48,11 @@ final class NativeMarkdownSizingTests: XCTestCase {
                     environment: TranscriptRowEnvironment())
         let start = ProcessInfo.processInfo.systemUptime
         let size = body.measure(width: 620)
-        print("REVIEW Markdown \(source.utf8.count) bytes / \(parsed.count) blocks: exact sizing \((ProcessInfo.processInfo.systemUptime - start) * 1000) ms, retained hosts \(body.hostedBlockCount)")
-        XCTAssertEqual(body.hostedBlockCount, parsed.count)
-        XCTAssertEqual(body.blockMeasurementCount, parsed.count)
+        print("REVIEW Markdown \(source.utf8.count) bytes / \(parsed.count) blocks: initial sizing \((ProcessInfo.processInfo.systemUptime - start) * 1000) ms, retained hosts \(body.hostedBlockCount)")
+        XCTAssertEqual(body.hostedBlockCount, 6)
+        XCTAssertEqual(body.blockMeasurementCount, 6)
         XCTAssertEqual(body.measure(width: 620), size)
-        XCTAssertEqual(body.blockMeasurementCount, parsed.count, "A repeated width uses each block's exact record")
+        XCTAssertEqual(body.blockMeasurementCount, 6, "A repeated width keeps provisional blocks separate from exact measurements")
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 620, height: 560))
         body.frame = NSRect(origin: .zero, size: size); scroll.documentView = body
         let window = NSWindow(contentRect: scroll.frame, styleMask: [.titled], backing: .buffered, defer: false)
@@ -63,9 +63,9 @@ final class NativeMarkdownSizingTests: XCTestCase {
             scroll.contentView.scroll(to: NSPoint(x: 0, y: (size.height - 560) * position))
             body.needsLayout = true; body.layoutSubtreeIfNeeded()
             XCTAssertLessThan(body.mountedBlockCount, 40)
-            for host in body.subviews {
+            for host in body.subviews where !(host is NSProgressIndicator) {
                 XCTAssertEqual(host.frame.height, ceil(host.fittingSize.height), accuracy: 1,
-                               "The descriptor's measured height must match the actual selectable host")
+                               "Every mounted block must have exact native geometry")
             }
         }
         // Section controls keep their existing 64 KiB scan limit. Large
@@ -90,7 +90,7 @@ final class NativeMarkdownSizingTests: XCTestCase {
             let size = body.measure(width: 620)
             print("REVIEW single \(label): \(source.utf8.count) bytes, sizing \((ProcessInfo.processInfo.systemUptime - started) * 1000) ms, height \(size.height)")
             if label == "table" { XCTAssertLessThan(size.height, 1500, "Large tables intentionally render a bounded inline preview") }
-            else { XCTAssertGreaterThan(size.height, 1000) }
+            else { XCTAssertLessThan(size.height, 8000, "A huge fence uses bounded source sections with full copy") }
             XCTAssertEqual(body.measure(width: 620), size)
         }
     }

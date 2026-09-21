@@ -5,8 +5,8 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.70
-    CURRENT_PROJECT_VERSION: 74
+    MARKETING_VERSION: 0.1.71
+    CURRENT_PROJECT_VERSION: 75
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
@@ -28,6 +28,7 @@ targets:
     platform: macOS
     sources:
       - apps/macos/PiApp
+      - packages/swift-host/Sources/PiAgentCore/HistoryWindowPolicy.swift
       - path: catalogs/bello-agent.models.json
         buildPhase: resources
     postBuildScripts:

@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// A long reply retains every block and its exact height, while only the part
+/// A long reply retains every block and its measured or provisional height, while only the part
 /// near the outer conversation viewport participates in native scrolling.
 /// This is not another scroll view and does not truncate the source or copy
 /// targets. Small replies keep the simpler SwiftUI stack.
@@ -115,6 +115,16 @@ private struct NativeHostedMarkdownBlock: View {
         let name: NSAppearance.Name = increased ? (dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua) : (dark ? .darkAqua : .aqua)
         view?.appearance = NSAppearance(named: name)
     }
+    func estimate(width: CGFloat) -> CGFloat {
+        switch item.block {
+        case .paragraph(let text): return TranscriptRowEstimate.prose(String(text.characters), width: min(width, TranscriptMetrics.proseWidth), size: item.style.baseSize)
+        case .heading(let level, let text, _): return TranscriptRowEstimate.prose(String(text.characters), width: width, size: item.style.baseSize * (level == 1 ? 1.5 : 1.3)) + 10
+        case .code(_, let code): return min(12_000, CGFloat(code.utf8.filter { $0 == 10 }.count + 1) * 18 + 40)
+        case .table(_, _, let rows): return CGFloat(rows.count + 1) * 28 + 20
+        case .list(_, _, let items): return CGFloat(items.count) * 40
+        case .quote(let blocks): return CGFloat(blocks.count) * 60
+        }
+    }
     func measure(width: CGFloat) -> CGSize {
         if let cached = sizes.last(where: { $0.width == width }) { return cached }
         if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownBlocksMeasured += 1 }
@@ -154,6 +164,7 @@ private struct NativeHostedMarkdownBlock: View {
         var heights: [CGFloat] = []
         var total: CGFloat = 0
         var validPrefix = 0
+        var provisional: Set<Int> = []
         init(width: CGFloat) { self.width = width }
     }
     private var blocks: [NativeMarkdownBlockHost] = []
@@ -166,8 +177,31 @@ private struct NativeHostedMarkdownBlock: View {
     private(set) var framePlacements = 0
     private var invalidationScheduled = false
     private var applyingLayout = false
+    private var resolvingViewport = false
+    private var resolveScheduled = false
+    private var pendingAnchor: (anchor: LogicalAnchor, clipY: CGFloat, generation: Int)?
+    private var contentGeneration = 0
+    private var loadingSection: NSProgressIndicator?
+    var hasProvisionalGeometry: Bool { layouts.last?.provisional.isEmpty == false }
+    var visibleContentPrepared: Bool {
+        guard let clip = observedClip, let layout = layouts.last(where: { $0.width == bounds.width }) else { return blocks.isEmpty }
+        let viewport = convert(clip.bounds, from: clip)
+        guard !resolveScheduled else { return false }
+        return !layout.provisional.contains { blocks.indices.contains($0) && blocks[$0].frame.intersects(viewport) }
+    }
+    var provisionalBlockCount: Int { layouts.last?.provisional.count ?? 0 }
+    /// A logical source/block identity, independent of estimated row heights.
+    struct LogicalAnchor: Equatable { var block: MarkdownBlockIdentity; var offset: CGFloat }
+    var logicalAnchor: LogicalAnchor? {
+        guard let clip = observedClip else { return nil }
+        let y = convert(clip.bounds, from: clip).minY
+        guard let index = blocks.firstIndex(where: { $0.frame.maxY > y }), identities.indices.contains(index) else { return nil }
+        return LogicalAnchor(block: identities[index], offset: blocks[index].frame.minY - y)
+    }
     private weak var observedClip: NSClipView?
     nonisolated(unsafe) private var boundsObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var frameObservers: [NSObjectProtocol] = []
+    private var frameCorrectionScheduled = false
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize {
         NSSize(width: NSView.noIntrinsicMetric, height: layouts.last(where: { $0.width == bounds.width && $0.validPrefix == blocks.count && $0.heights.count == blocks.count })?.total ?? NSView.noIntrinsicMetric)
@@ -178,7 +212,10 @@ private struct NativeHostedMarkdownBlock: View {
     var hostedBlockCount: Int { blocks.reduce(0) { $0 + ($1.view == nil ? 0 : 1) } }
     var mountedBlockCount: Int { blocks.reduce(0) { $0 + ($1.view?.superview === self ? 1 : 0) } }
 
-    deinit { if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
+    deinit {
+        if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
+        for observer in frameObservers { NotificationCenter.default.removeObserver(observer) }
+    }
 
     func update(blocks source: [MarkdownBlock], style: MarkdownStyle, capsWidth: Bool, streaming: Bool,
                 headings: [MarkdownCopyTarget], environment: TranscriptRowEnvironment, identities: [MarkdownBlockIdentity]? = nil, sourceText: String? = nil, sourceRanges: [Range<Int>]? = nil) {
@@ -217,9 +254,11 @@ private struct NativeHostedMarkdownBlock: View {
         for (id, block) in old where !retained.contains(id) { block.view?.removeFromSuperview() }
         blocks = next; self.identities = ids
         guard changed else { return }
+        contentGeneration += 1
+        pendingAnchor = nil
         // Completed blocks retain their exact width-specific heights. Only the
         // changed suffix participates in aggregate sizing and frame placement.
-        for layout in layouts { layout.validPrefix = min(layout.validPrefix, changedFrom) }
+        for layout in layouts { layout.validPrefix = min(layout.validPrefix, changedFrom); layout.provisional = layout.provisional.filter { $0 < changedFrom } }
         layoutDirtyFrom = min(layoutDirtyFrom ?? changedFrom, changedFrom)
         needsLayout = true
         // Input changes can arrive during a parent's fittingSize pass. Let
@@ -250,7 +289,11 @@ private struct NativeHostedMarkdownBlock: View {
         layout.total -= oldSpacing + removed
         layout.heights.removeSubrange(prefix...)
         for index in prefix..<blocks.count {
-            let height = blocks[index].measure(width: width).height
+            // Descriptor estimates never enter a shared exact-size cache.
+            // A giant message prepares a few blocks, then only the viewport.
+            let deferred = blocks.count > 32 && index >= 6
+            let height = deferred ? max(20, blocks[index].estimate(width: width)) : blocks[index].measure(width: width).height
+            if deferred { layout.provisional.insert(index) } else { layout.provisional.remove(index) }
             layout.heights.append(height); layout.total += height; aggregateMeasurementVisits += 1
         }
         layout.total += CGFloat(max(0, blocks.count - 1)) * 10
@@ -281,6 +324,11 @@ private struct NativeHostedMarkdownBlock: View {
             laidOutWidth = bounds.width; layoutDirtyFrom = nil
         }
         bindViewport()
+        if let pending = pendingAnchor {
+            if pending.generation == contentGeneration, observedClip?.bounds.minY == pending.clipY {
+                restoreLogicalAnchor(pending.anchor)
+            } else { pendingAnchor = nil }
+        }
         mountVisibleBlocks()
     }
     override func viewDidMoveToWindow() {
@@ -292,12 +340,112 @@ private struct NativeHostedMarkdownBlock: View {
         let clip = enclosingScrollView?.contentView
         guard observedClip !== clip else { return }
         if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
+        for observer in frameObservers { NotificationCenter.default.removeObserver(observer) }
+        frameObservers = []
         boundsObserver = nil; observedClip = clip
         guard let clip else { return }
         clip.postsBoundsChangedNotifications = true
         boundsObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.mountVisibleBlocks() }
         }
+        // A hosting ancestor can adopt its new intrinsic height without
+        // relaying out this already-sized child. Its coordinate rebase still
+        // changes the text under the viewport, so observe just this chain.
+        var ancestor = superview
+        while let view = ancestor, view !== clip {
+            view.postsFrameChangedNotifications = true
+            frameObservers.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.scheduleFrameCorrection() }
+            })
+            ancestor = view.superview
+        }
+    }
+    private func scheduleFrameCorrection() {
+        guard pendingAnchor != nil, !frameCorrectionScheduled else { return }
+        frameCorrectionScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.frameCorrectionScheduled = false
+            guard let pending = self.pendingAnchor, pending.generation == self.contentGeneration,
+                  self.observedClip?.bounds.minY == pending.clipY else { self.pendingAnchor = nil; return }
+            self.restoreLogicalAnchor(pending.anchor)
+            self.mountVisibleBlocks()
+        }
+    }
+    private func resolveVisibleBlocks(in viewport: CGRect) {
+        guard !resolvingViewport, !viewport.isNull, let layout = layouts.last(where: { $0.width == bounds.width }),
+              !layout.provisional.isEmpty else { return }
+        let candidates = layout.provisional.sorted().filter { blocks.indices.contains($0) && blocks[$0].frame.intersects(viewport) }
+        guard !candidates.isEmpty else { loadingSection?.removeFromSuperview(); return }
+        if candidates.count > 4 {
+            let spinner = loadingSection ?? NSProgressIndicator()
+            spinner.style = .spinning; spinner.controlSize = .small; spinner.isIndeterminate = true
+            spinner.setAccessibilityLabel("Preparing this section")
+            spinner.frame = CGRect(x: 8, y: max(viewport.minY + 8, blocks[candidates[4]].frame.minY), width: 16, height: 16)
+            if spinner.superview == nil { addSubview(spinner) }
+            spinner.startAnimation(nil); loadingSection = spinner
+        } else { loadingSection?.stopAnimation(nil); loadingSection?.removeFromSuperview() }
+        resolvingViewport = true
+        // Several native layout passes can happen before SwiftUI adopts the
+        // new intrinsic height. Keep one logical position through that batch,
+        // unless the reader has moved the clip in the meantime.
+        let retained = pendingAnchor.flatMap { pending in
+            pending.generation == contentGeneration && observedClip?.bounds.minY == pending.clipY ? pending.anchor : nil
+        }
+        let anchor = retained ?? logicalAnchor, generation = contentGeneration
+        var changedFrom = blocks.count
+        for index in candidates.prefix(4) {
+            let height = blocks[index].measure(width: bounds.width).height
+            layout.total += height - layout.heights[index]; layout.heights[index] = height
+            layout.provisional.remove(index); changedFrom = min(changedFrom, index)
+        }
+        layoutDirtyFrom = min(layoutDirtyFrom ?? changedFrom, changedFrom)
+        // Reposition descriptors synchronously, but ask the enclosing hosting
+        // row to resize after this native layout callback has returned.
+        var y: CGFloat = 0
+        for index in blocks.indices {
+            blocks[index].frame = CGRect(x: 0, y: y, width: bounds.width, height: layout.heights[index])
+            y += layout.heights[index] + 10
+        }
+        if let anchor { restoreLogicalAnchor(anchor) }
+        if let anchor, let clip = observedClip { pendingAnchor = (anchor, clip.bounds.minY, generation) }
+        resolvingViewport = false
+        guard !resolveScheduled else { return }
+        resolveScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.resolveScheduled = false
+            let pending = self.pendingAnchor
+            let mayRestore = pending?.generation == self.contentGeneration && self.observedClip?.bounds.minY == pending?.clipY
+            if !mayRestore { self.pendingAnchor = nil }
+            self.resolvingViewport = true
+            self.invalidateIntrinsicContentSize()
+            self.needsLayout = true
+            self.superview?.layoutSubtreeIfNeeded()
+            if mayRestore, let pending { self.restoreLogicalAnchor(pending.anchor) }
+            self.resolvingViewport = false
+            self.mountVisibleBlocks()
+        }
+    }
+    private func restoreLogicalAnchor(_ anchor: LogicalAnchor) {
+        guard let clip = observedClip, let index = identities.firstIndex(of: anchor.block) else { return }
+        let wasResolving = resolvingViewport
+        resolvingViewport = true
+        defer { resolvingViewport = wasResolving }
+        // NSHostingView/NSClipView can have the opposite vertical direction to
+        // this flipped native surface. Convert the displacement, not a point
+        // assumed to be the clip's top edge.
+        let currentTop = convert(clip.bounds, from: clip).minY
+        let desiredTop = blocks[index].frame.minY - anchor.offset
+        let delta = convert(NSPoint(x: 0, y: desiredTop), to: clip).y - convert(NSPoint(x: 0, y: currentTop), to: clip).y
+        let newY = clip.bounds.minY + delta
+        if abs(newY - clip.bounds.minY) > 0.5 {
+            clip.scroll(to: NSPoint(x: clip.bounds.minX, y: max(0, newY)))
+            enclosingScrollView?.reflectScrolledClipView(clip)
+        }
+        // The hosting row may adopt its final height on a later pass. Keep
+        // this identity through that rebase too; any new scroll supersedes it.
+        pendingAnchor = (anchor, clip.bounds.minY, contentGeneration)
     }
     private func containsSelection(_ block: NativeMarkdownBlockHost) -> Bool {
         guard let view = block.view, let responder = window?.firstResponder as? NSView else { return false }
@@ -319,9 +467,11 @@ private struct NativeHostedMarkdownBlock: View {
             // Keep its data and exact sizes, but no native text views mounted.
             viewport = .null
         }
-        let visible = viewport.isNull ? viewport : viewport.insetBy(dx: 0, dy: -max(240, viewport.height / 2))
-        for block in blocks {
-            if (!visible.isNull && block.frame.intersects(visible)) || containsSelection(block) { block.place(in: self) }
+        let visible = viewport.isNull ? viewport : viewport.insetBy(dx: 0, dy: -max(120, viewport.height / 4))
+        resolveVisibleBlocks(in: visible)
+        let provisional = layouts.last(where: { $0.width == bounds.width })?.provisional ?? []
+        for (index, block) in blocks.enumerated() {
+            if ((!visible.isNull && block.frame.intersects(visible)) || containsSelection(block)) && !provisional.contains(index) { block.place(in: self) }
             else if block.view?.superview === self { block.view?.removeFromSuperview() }
         }
         // Reclaim distant trees only during the shared input-quiet budget.

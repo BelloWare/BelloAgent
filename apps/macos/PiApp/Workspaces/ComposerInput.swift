@@ -20,7 +20,7 @@ struct ComposerInput: View {
     private var editing: Bool { session.editingMessageID != nil }
     /// A draft of any size is checked for its first non-whitespace character;
     /// trimming a long draft would copy it on every keystroke.
-    private var canSend: Bool { !((!draft.text.contains { !$0.isWhitespace } && session.skills.isEmpty) || session.loading || model.installPreparing || (editing && (session.busy || !session.queue.isEmpty))) }
+    private var canSend: Bool { session.draftReady && !((!draft.text.contains { !$0.isWhitespace } && session.skills.isEmpty) || session.loading || model.installPreparing || (editing && (session.busy || !session.queue.isEmpty))) }
     private var queues: Bool { !editing && (session.busy || !session.queue.isEmpty) }
     @State private var sendPulse = false
     private func submit(intent: ComposerSubmissionIntent = .followUp) {
@@ -45,7 +45,7 @@ struct ComposerInput: View {
                     completionKey: { model.completionKey($0, modifiers: $1, view: session) }, focused: { if model.focusedSessionID != session.id { model.focusedSessionID = session.id } }, accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer", inputRejected: { session.notice = $0 },
                     attachFiles: { model.attachImageFiles($0, sessionID: session.id) },
                     heightChanged: { height in if abs(contentHeight - height) >= 1 { contentHeight = height } }, focusToken: session.composerFocusRequest)
-                    .id(session.id).frame(height: min(maximumHeight, max(minimumHeight, contentHeight)))
+                    .id(session.id).disabled(!session.draftReady).frame(height: min(maximumHeight, max(minimumHeight, contentHeight)))
                     .onChange(of: draft.text) { _, _ in model.draftChanged(session) }
                     // The keyboard hints are the empty composer's placeholder; they leave once typing starts.
                     .overlay(alignment: .topLeading) {
@@ -56,7 +56,7 @@ struct ComposerInput: View {
                     }
                 let form = barForm
                 HStack(spacing: ComposerBarMetrics.spacing) {
-                    PiIconButton(symbol: "photo.badge.plus", label: "Attach Image…", size: 28, filled: true) { model.attachImages(sessionID: session.id) }.disabled(!model.supportsImages(session.id))
+                    PiIconButton(symbol: "photo.badge.plus", label: "Attach Image…", size: 28, filled: true) { model.attachImages(sessionID: session.id) }.disabled(!session.draftReady || !model.supportsImages(session.id))
                     PiIconButton(symbol: "command", label: "Skills…", size: 28, filled: true) { model.inspectResources(session.id) }
                     Spacer()
                     runControlRow(form.runControls)

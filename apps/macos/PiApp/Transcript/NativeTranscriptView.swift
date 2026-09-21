@@ -30,6 +30,7 @@ struct ContentGeometry: Equatable {
 
     struct Snapshot: Equatable {
         var sessionID: String
+        var generation: UUID? = nil
         var messages: [TranscriptMessage]
         var items: [TranscriptItem]
         var fresh: Set<String>
@@ -55,6 +56,7 @@ struct ContentGeometry: Equatable {
     var onAnchorChanged: (TranscriptAnchor?) -> Void = { _ in }
     var onReadReply: (String, String) -> Void = { _, _ in }
     var onLoadEarlier: (String) -> Void = { _ in }
+    var onViewportReady: (String, UUID) -> Void = { _, _ in }
 
     private var subscription: AnyCancellable?
     private var pendingPresentation: (messages: [TranscriptMessage], request: Int)?
@@ -66,6 +68,7 @@ struct ContentGeometry: Equatable {
     var presentationInterval: TimeInterval = 1 / 30
 
     private(set) var sessionID: String?
+    private(set) var generation: UUID?
     /// The bound session's disclosure store, used by the native document.
     private(set) var disclosure: TranscriptDisclosure?
     /// The bound session's fetched tool-argument documents.
@@ -82,7 +85,7 @@ struct ContentGeometry: Equatable {
     private var openingPlacementPending = false
     private var seen: Set<String> = []
     private var completedAssistant: String?
-    private var firstRow = "", earlierRequested = ""
+    private var firstRow = ""
     private var jumping = false
     private var sequence = 0
     /// Row frames relative to the content, so they stay valid while the page scrolls.
@@ -130,7 +133,7 @@ struct ContentGeometry: Equatable {
     // MARK: Session binding
 
     func bind(_ session: SessionDisplay) {
-        guard sessionID != session.id else { return }
+        guard sessionID != session.id || generation != session.presentationGeneration else { return }
         subscription?.cancel(); subscription = nil
         presentationTask?.cancel(); presentationTask = nil; pendingPresentation = nil
         presentationSession = session; lastPresentationAt = 0
@@ -141,7 +144,7 @@ struct ContentGeometry: Equatable {
         // made for would hold it for the window's lifetime.
         toolInputs?.onChanged = nil
         disclosure = nil; toolInputs = nil
-        sessionID = session.id; viewportRequest = nil; disclosure = session.disclosure
+        sessionID = session.id; generation = session.presentationGeneration; viewportRequest = nil; disclosure = session.disclosure
         toolInputs = session.toolInputs
         // A document landing changes what an open card can show, and so its
         // row's height: republish so the document reconciles and re-measures.
@@ -156,22 +159,13 @@ struct ContentGeometry: Equatable {
     }
     private func reset() {
         initialized = false; followsBottom = true; pendingAnchor = nil; openingPlacementPending = false
-        seen = []; completedAssistant = nil; firstRow = ""; earlierRequested = ""; jumping = false
+        settleScheduled = false; readCheckScheduled = false
+        seen = []; completedAssistant = nil; firstRow = ""; jumping = false
     }
 
     /// The newest rows that fit the display limits, dropping the oldest first.
     nonisolated static func displayPage(_ messages: [TranscriptMessage]) -> [TranscriptMessage] {
-        var page = Array(messages.suffix(rowLimit))
-        func size(_ message: TranscriptMessage) -> Int {
-            message.text.utf8.count + (message.thinking?.utf8.count ?? 0) + (message.tools ?? []).reduce(0) { $0 + $1.input.utf8.count + $1.output.utf8.count } + 256
-        }
-        var total = page.reduce(0) { $0 + size($1) }
-        while total > byteLimit, page.count > 1 {
-            let drop = max(1, page.count / 8)
-            total -= page.prefix(drop).reduce(0) { $0 + size($1) }
-            page.removeFirst(drop)
-        }
-        return page
+        TranscriptPaging.window(messages, keepingEarlier: true)
     }
 
     /// One leading and one trailing presentation per pane, not a debounce:
@@ -204,11 +198,14 @@ struct ContentGeometry: Equatable {
     }
 
     private func receive(_ messages: [TranscriptMessage], viewportRequest request: Int, from session: SessionDisplay) {
-        guard session.id == sessionID else { return }
+        guard session.id == sessionID, session.presentationGeneration == generation else { return }
         if viewportRequest != request {
             // A jump to the latest page or a prepended earlier page: the page starts over from the session's anchor.
             viewportRequest = request
             reset()
+        }
+        if snapshot?.messages.first?.id != messages.first?.id, viewportRequest == request {
+            preserveReadingPositionForLayout()
         }
         let page = Self.displayPage(messages)
         let items = snapshot.flatMap { TranscriptActivity.patched($0.items, from: $0.messages, to: page) } ?? TranscriptActivity.blocks(of: page)
@@ -229,7 +226,7 @@ struct ContentGeometry: Equatable {
             openingPlacementPending = followsBottom && !busy && !page.isEmpty
         }
         let completed = TranscriptActivity.latestCompletedAssistant(page)
-        if initialized, let completed, completed != completedAssistant {
+        if initialized, !session.browsingHistory, let completed, completed != completedAssistant, page.last?.id != snapshot?.messages.last?.id {
             AccessibilityNotification.Announcement("Reply complete").post()
         }
         completedAssistant = completed
@@ -239,7 +236,7 @@ struct ContentGeometry: Equatable {
         frames = frames.filter { ids.contains($0.key) }
         sequence += 1
         lastPresentationAt = ProcessInfo.processInfo.systemUptime
-        let next = Snapshot(sessionID: session.id, messages: page, items: items, fresh: fresh, sequence: sequence)
+        let next = Snapshot(sessionID: session.id, generation: generation, messages: page, items: items, fresh: fresh, sequence: sequence)
         let live = Self.liveTurn(in: items, busy: busy)
         // The scroll document always adopts its final geometry immediately.
         // Animating a complete snapshot also animates every existing row's
@@ -380,6 +377,17 @@ struct ContentGeometry: Equatable {
             return
         }
     }
+    var preferredOpeningRowID: String? {
+        guard openingPlacementPending else { return nil }
+        return snapshot?.items.last(where: { if case .message(let row) = $0 { return row.role == "user" }; return false })?.id
+    }
+    func pinSelectedRow(_ item: TranscriptItem?) {
+        switch item {
+        case .message(let row): presentationSession?.pinnedHistoryIDs = [row.id]
+        case .block(let block): presentationSession?.pinnedHistoryIDs = Set(block.replies.map(\.id))
+        case nil: presentationSession?.pinnedHistoryIDs = []
+        }
+    }
     /// A row's frame in content coordinates, for tests.
     func rowFrame(of id: String) -> CGRect? { frames[id] }
     /// The row the reader is on and where it sits, for a layout that has to
@@ -407,8 +415,9 @@ struct ContentGeometry: Equatable {
         guard !settleScheduled else { return }
         settleScheduled = true
         // After the document commits the new rows, never inside an AppKit layout callback.
+        let generation = generation
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.generation == generation else { return }
             self.settleScheduled = false
             self.settle()
         }
@@ -492,8 +501,13 @@ struct ContentGeometry: Equatable {
         if !jumping, detached != !followsBottom { detached = !followsBottom }
     }
     private func requestEarlierIfNearTop(scrollY: CGFloat) {
-        guard scrollY < Self.earlierThreshold, !firstRow.isEmpty, earlierRequested != firstRow, let sessionID else { return }
-        earlierRequested = firstRow
+        guard scrollY < Self.earlierThreshold, !firstRow.isEmpty, let sessionID, let session = presentationSession,
+              !session.historyState.loading, !session.olderPage.loading, session.olderPage.error == nil,
+              session.olderPage.cursor != nil, session.presentation.readyAt != nil else { return }
+        if content.height <= viewport.height + Self.earlierThreshold {
+            guard session.presentation.automaticFills < HistoryWindowPolicy.automaticFills else { return }
+            session.presentation.automaticFills += 1
+        }
         onLoadEarlier(sessionID)
     }
     private func scheduleReport() {
@@ -550,8 +564,9 @@ struct ContentGeometry: Equatable {
         followsBottom = true; jumping = true; detached = false
         pendingAnchor = nil; openingPlacementPending = false
         let animated = !PiMotion.reducesMotion
+        let generation = generation
         scrollToBottom(animated: animated) { [weak self] in
-            guard let self, self.jumping else { return }
+            guard let self, self.generation == generation, self.jumping else { return }
             self.jumping = false
             // The document may have grown while the animation was targeting
             // its earlier bottom. Keep following the latest content instead
@@ -563,15 +578,41 @@ struct ContentGeometry: Equatable {
         // A scroll the system abandons must not leave the pill hidden.
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(1_500))
-            guard let self, self.jumping else { return }
+            guard let self, self.generation == generation, self.jumping else { return }
             self.jumping = false
             self.evaluateFollowing()
         }
     }
 
+    /// Native document commits final visible geometry before lifting the loading
+    /// cover. The next run-loop opportunity is not physical frame presentation.
+    func visibleBandLaidOut(ready: @escaping () -> Bool) {
+        guard let id = sessionID, let generation, presentationSession?.historyState == .preparing else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.generation == generation, self.sessionID == id,
+                  self.presentationSession?.historyState == .preparing else { return }
+            self.settle()
+            guard !self.openingPlacementPending, self.pendingAnchor == nil, ready() else { return }
+            self.onViewportReady(id, generation)
+            // The prepared tree may already be cached beneath the loading
+            // cover. Request one destination draw after lifting that cover.
+            self.scrollView?.documentView?.needsDisplay = true
+            self.requestEarlierIfNearTop(scrollY: self.scrollY)
+        }
+    }
+    func destinationDrawOpportunity() -> Bool {
+        guard let session = presentationSession, session.presentationGeneration == generation,
+              session.historyState == .ready else { return false }
+        session.presentation.drawOpportunityAt = PerformanceProbe.now
+        PerformanceProbe.shared.observe("selectionDestinationDrawMs", milliseconds: PerformanceProbe.now - session.presentation.startedAt)
+        return true
+    }
+
     // MARK: Read receipts
 
     private var canRead: Bool {
+        guard let session = presentationSession, session.presentationGeneration == generation,
+              session.historyState == .ready || session.historyState == .dormant else { return false }
         guard let host = hostView, let window = host.window else { return false }
         let surface: NSView = scrollView ?? host
         return TranscriptReadVisibility.permits(appActive: NSApp.isActive, keyWindow: window.isKeyWindow, windowVisible: window.isVisible,
@@ -758,6 +799,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     private(set) var intrinsicValidationCount = 0
     private(set) var sharedMeasurementHits = 0
     var itemID: String { item.id }
+    var contentItem: TranscriptItem { item }
     /// What the hosted content actually needs at this width, for checks that a
     /// row never draws more than its own frame holds.
     var hostedFittingHeight: CGFloat { ceil(host().fittingSize.height) }
@@ -1124,6 +1166,22 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         }
         if let hosted, hosted.frame != bounds { hosted.frame = bounds }
     }
+    var hasProvisionalMarkdown: Bool {
+        func provisional(_ view: NSView) -> Bool {
+            if let markdown = view as? NativeMarkdownContainer, markdown.hasProvisionalGeometry { return true }
+            for child in view.subviews { if provisional(child) { return true } }
+            return false
+        }
+        guard let hosted else { return false }; return provisional(hosted)
+    }
+    var visibleContentPrepared: Bool {
+        func prepared(_ view: NSView) -> Bool {
+            if let markdown = view as? NativeMarkdownContainer { return markdown.visibleContentPrepared }
+            for child in view.subviews { if !prepared(child) { return false } }
+            return true
+        }
+        guard let hosted else { return false }; return prepared(hosted)
+    }
     fileprivate func contentSizeChanged() {
         if TranscriptLayoutClock.recording { TranscriptLayoutClock.intrinsicInvalidations += 1 }
         // The host also invalidates while answering fittingSize. That call
@@ -1171,7 +1229,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
                 self.measuring = false
                 self.restoredMeasurementNeedsValidation = false
                 if height == cached.height {
-                    if let cache = self.geometryCache, let sessionID = self.geometrySessionID,
+                    if !self.hasProvisionalMarkdown, let cache = self.geometryCache, let sessionID = self.geometrySessionID,
                        let scale = self.window?.backingScaleFactor, self.measurementScale == scale {
                         cache.store(cached, sessionID: sessionID, item: self.item, fresh: self.fresh, environment: self.environment,
                                     disclosure: self.disclosure, backingScale: scale)
@@ -1190,24 +1248,28 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
 }
 
 struct NativeTranscriptView: View {
-    let session: SessionDisplay
+    @ObservedObject var session: SessionDisplay
     /// The session's run state, observed by the pane and handed down so the live bar follows it.
     var state = "idle"
     let actions: TranscriptActions
     var onAnchorChanged: (TranscriptAnchor?) -> Void = { _ in }
     var onReadReply: (String, String) -> Void = { _, _ in }
     var onLoadEarlier: (String) -> Void = { _ in }
+    var onLoadNewer: (String) -> Void = { _ in }
+    var onLatest: (String) -> Void = { _ in }
+    var onViewportReady: (String, UUID) -> Void = { _, _ in }
     @StateObject private var page = TranscriptPage()
     @Environment(\.piReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
+            if session.olderPage.available { boundaryControl(earlier: true) }
             if let error = page.projectionError { PiNote(error).padding(8) }
             TranscriptScrollSurface(snapshot: page.snapshot, page: page, actions: actions)
                 .overlay(alignment: .bottom) {
                     ZStack {
-                        if page.detached, page.snapshot?.items.isEmpty == false {
-                            LatestPill { page.jumpToLatest() }.padding(.bottom, 12).transition(.opacity.combined(with: .offset(y: 6)).combined(with: .scale(scale: 0.92)))
+                        if page.detached || session.newerPage.available, page.snapshot?.items.isEmpty == false {
+                            LatestPill { if session.browsingHistory || session.newerPage.available { onLatest(session.id) } else { page.jumpToLatest() } }.padding(.bottom, 12).transition(.opacity.combined(with: .offset(y: 6)).combined(with: .scale(scale: 0.92)))
                         }
                     }
                     .animation(reduceMotion ? nil : PiMotion.spring, value: page.detached)
@@ -1215,7 +1277,9 @@ struct NativeTranscriptView: View {
             // Parent panel or status changes must not animate the document's
             // frame. Row disclosures and the Latest pill set their own motion.
             .transaction { $0.animation = nil }
-            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, onStop: actions.stop, reduceMotion: reduceMotion)
+            if session.newerPage.available { boundaryControl(earlier: false) }
+            LiveTurnBarSlot(turn: session.browsingHistory ? nil : page.liveTurn, state: page.state, onStop: actions.stop, reduceMotion: reduceMotion)
+                .id(session.presentationGeneration)
         }
         // The run state is read where it is used, never from the value this
         // body happened to be built with: a task runs a turn of the run loop
@@ -1223,12 +1287,30 @@ struct NativeTranscriptView: View {
         // overwritten by a stale "idle" that nothing corrects — no spinner, no
         // elapsed time and no Stop for the whole run.
         .onChange(of: state, initial: true) { _, value in page.state = value }
-        .task(id: session.id) {
-            page.onAnchorChanged = onAnchorChanged; page.onReadReply = onReadReply; page.onLoadEarlier = onLoadEarlier
+        .task(id: session.presentationGeneration) {
+            page.onAnchorChanged = onAnchorChanged; page.onReadReply = onReadReply; page.onLoadEarlier = onLoadEarlier; page.onViewportReady = onViewportReady
             page.state = session.state
             page.bind(session)
         }
     }
+    private func boundaryControl(earlier: Bool) -> some View {
+        let boundary = earlier ? session.olderPage : session.newerPage
+        let direction = earlier ? "earlier" : "newer"
+        return VStack(spacing: 3) {
+            HStack(spacing: 6) {
+                if boundary.loading { ProgressView().controlSize(.mini) }
+                Button(boundary.loading ? "Loading \(direction)…" : boundary.error != nil ? "Retry loading \(direction)" : "Load \(direction)") {
+                    if earlier { onLoadEarlier(session.id) } else { onLoadNewer(session.id) }
+                }.buttonStyle(.plain).foregroundStyle(Color.piAccent).disabled(boundary.loading)
+                    .accessibilityIdentifier(earlier ? "loadEarlierHistory" : "loadNewerHistory")
+                if earlier, let input = session.presentation.partialTurnInput {
+                    Button("Earlier work in this turn") { actions.inspect(input) }.buttonStyle(.plain).foregroundStyle(Color.piInkSecondary)
+                }
+            }
+            if let error = boundary.error { Text(error).foregroundStyle(Color.piWarning).textSelection(.enabled) }
+        }.font(PiFont.caption).padding(6).frame(maxWidth: .infinity).background(Color.piContent)
+    }
+
 
 
 }
@@ -1285,6 +1367,7 @@ private struct LiveTurnBarSlot: View {
         // While the run is going the bar's own figures keep up with it; the
         // slot and the slide are decided by whether there is a run at all.
         .onChange(of: turn) { _, value in if let value, shown != nil { shown = value } }
+        .onDisappear { leaving?.cancel(); leaving = nil }
     }
 }
 

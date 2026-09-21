@@ -69,6 +69,20 @@ final class TranscriptDisclosureTests: XCTestCase {
             }
             draw()
         }
+        func settleExactGeometry() async {
+            let original = scroll.contentView.bounds.origin
+            // Offscreen preparation is optional and pauses under occlusion.
+            // Visit each provisional row before asserting the whole document's
+            // exact frames, as a reader traversing the page would do.
+            for row in rows where document.isApproximate(row.itemID) {
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: row.frame.minY))
+                NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+                await settle(turns: 2)
+            }
+            scroll.contentView.scroll(to: original)
+            await settle()
+            XCTAssertEqual(document.approximateRowCount, 0, "Visited rows retain exact geometry")
+        }
         func close() { window.contentView = nil; window.close() }
     }
 
@@ -401,6 +415,11 @@ final class TranscriptDisclosureTests: XCTestCase {
     @MainActor func testACollapsedTurnStaysCollapsedThroughStreamingAndScrolling() async throws {
         let fixture = Fixture(messages: workingTurn(tools: 30, tail: 14)); defer { fixture.close() }
         await fixture.settle()
+        // The idle page opens at its latest question. Put the earlier work
+        // header in the viewport before exercising the user's click.
+        fixture.scroll.contentView.scroll(to: .zero)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: fixture.scroll)
+        await fixture.settleExactGeometry()
         let block = try XCTUnwrap(fixture.blockRow)
         let expanded = block.frame.height
         block.toggleDisclosure(try XCTUnwrap(fixture.workPart))
@@ -413,7 +432,7 @@ final class TranscriptDisclosureTests: XCTestCase {
         reply.tools?.append(ToolView(id: "t-late", name: "read", state: "completed", input: "{}", output: "late output", durationMs: 4, truncated: false))
         fixture.session.messages = fixture.session.messages.map { $0.id == "a1" ? reply : $0 }
         fixture.refresh()
-        await fixture.settle()
+        await fixture.settleExactGeometry()
         let after = try XCTUnwrap(fixture.blockRow)
         XCTAssertEqual(after.frame.height, collapsed, accuracy: 24, "new tool output must not reopen a turn the reader closed")
         assertStacked(fixture, "after new tool output")
@@ -424,7 +443,7 @@ final class TranscriptDisclosureTests: XCTestCase {
         await fixture.settle()
         fixture.scroll.contentView.setBoundsOrigin(.zero)
         fixture.scroll.reflectScrolledClipView(fixture.scroll.contentView)
-        await fixture.settle()
+        await fixture.settleExactGeometry()
         let returned = try XCTUnwrap(fixture.blockRow)
         XCTAssertEqual(returned.frame.height, collapsed, accuracy: 24, "a chat keeps what the reader closed while scrolling")
         assertStacked(fixture, "after scrolling away and back")

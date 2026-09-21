@@ -47,52 +47,22 @@ final class WorkspaceLoadingTests: XCTestCase {
         model.shutdown(); try await model.traces.close(); await model.store?.close()
     }
 
-    @MainActor func testColdTurnRepairLoadsOnlyItsStartingTurnAndWarmReturnKeepsManualPages() async throws {
+    @MainActor func testFreshThreeTurnSelectionAndWarmRevisitStayBounded() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("history.jsonl"); try journal(1_001, path: path)
         let model = try await fixture(root: root, path: path)
-        let coldStart = ProcessInfo.processInfo.systemUptime
+        let started = ProcessInfo.processInfo.systemUptime
         await model.select("a")
-        let cold = (ProcessInfo.processInfo.systemUptime - coldStart) * 1_000
         let view = try XCTUnwrap(model.selected)
-        XCTAssertEqual(view.messages.count, 61, "The preceding user is the last row of the first older page; do not render four full pages")
-        XCTAssertEqual(view.messages.first?.id, "m940")
-        XCTAssertEqual(view.before, "m940", "Rows omitted from automatic prefetch must remain manually pageable")
-        XCTAssertNil(view.scrollAnchor, "Automatic turn repair must not invent a detached anchor at an old assistant row")
+        XCTAssertEqual(view.messages.map(\.id), (996..<1001).map { "m\($0)" })
+        model.historyViewportReady("a", generation: view.presentationGeneration)
         let loaded = await model.loadEarlierPage(sessionID: "a")
-        XCTAssertTrue(loaded)
-        XCTAssertEqual(view.messages.count, 121, "Manual paging still loads the full earlier60")
-        XCTAssertEqual(view.messages.first?.id, "m880")
-        XCTAssertEqual(view.before, "m880")
-        view.scrollAnchor = .init(id: "m902", offset: 17, followsBottom: false)
-        let ids = view.messages.map(\.id), request = view.viewportRequest
-        await model.select("b")
-        let warmStart = ProcessInfo.processInfo.systemUptime
-        await model.select("a")
-        let warm = (ProcessInfo.processInfo.systemUptime - warmStart) * 1_000
-        XCTAssertEqual(view.messages.map(\.id), ids)
-        XCTAssertEqual(view.scrollAnchor?.id, "m902"); XCTAssertEqual(view.scrollAnchor?.offset, 17)
-        XCTAssertEqual(view.viewportRequest, request, "A warm tab does not restart transcript placement")
-        XCTAssertTrue(model.hosts.isEmpty, "Browsing history does not create a runtime")
-        print(String(format: "PERF archive selection 1001 rows: cold %.2f ms / 61 shown; warm %.2f ms / 121 retained", cold, warm))
-        try await close(model)
-    }
-
-    @MainActor func testAutomaticTurnRepairPreservesFollowingAndDetachedReadingIntent() async throws {
-        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        let path = root.appendingPathComponent("history.jsonl"); try journal(1_001, path: path)
-        let model = try await fixture(root: root, path: path)
-        let page = try await model.history.read(path: path.path), view = SessionDisplay(id: "a")
-        model.displays[view.id] = view
-        for following in [true, false] {
-            let anchor = TranscriptAnchor(id: following ? "m1000" : "m950", offset: following ? 0 : 21, followsBottom: following)
-            view.messages = page.messages; view.before = page.before; view.pageStartEnsured = false; view.scrollAnchor = anchor
-            await model.ensurePageStartsAtTurn(sessionID: view.id)
-            XCTAssertEqual(view.messages.count, 61)
-            XCTAssertEqual(view.scrollAnchor?.id, anchor.id)
-            XCTAssertEqual(view.scrollAnchor?.offset, anchor.offset)
-            XCTAssertEqual(view.scrollAnchor?.followsBottom, following)
-        }
+        XCTAssertTrue(loaded); XCTAssertEqual(view.messages.count, 11)
+        view.scrollAnchor = .init(id: "m990", offset: 17, followsBottom: false)
+        await model.select("b"); await model.select("a")
+        XCTAssertEqual(view.messages.count, 5); XCTAssertNil(view.scrollAnchor)
+        XCTAssertTrue(model.hosts.isEmpty)
+        print("FRESH selection+revisit source ms \((ProcessInfo.processInfo.systemUptime-started)*1000)")
         try await close(model)
     }
 
@@ -111,7 +81,7 @@ final class WorkspaceLoadingTests: XCTestCase {
         try await close(model)
     }
 
-    @MainActor func testAutomaticTurnRepairPreservesEveryPrecedingToolInTheSameTurn() async throws {
+    @MainActor func testOversizedTurnUsesExplicitContinuationInsteadOfRepairBackfill() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("tools.jsonl"), encoder = JSONEncoder()
         var bytes = try encoder.encode(["type": WireValue.string("session"), "version": .number(3), "id": .string("a")]); bytes.append(10)
@@ -126,14 +96,10 @@ final class WorkspaceLoadingTests: XCTestCase {
         let model = try await fixture(root: root, path: path)
         await model.select("a")
         let view = try XCTUnwrap(model.selected)
-        XCTAssertEqual(view.messages.map(\.id), (20..<121).map { "m\($0)" })
-        XCTAssertEqual(view.messages.first?.role, "user")
-        XCTAssertEqual(view.messages.filter { $0.role == "tool" }.count, 50)
-        XCTAssertEqual(view.before, "m20")
-        let earlier = await model.loadEarlierPage(sessionID: "a")
-        XCTAssertTrue(earlier)
-        XCTAssertEqual(view.messages.map(\.id), (0..<121).map { "m\($0)" }, "Manual paging can still expose the previous turn")
-        XCTAssertNil(view.before)
+        XCTAssertEqual(view.messages.count, 60); XCTAssertEqual(view.presentation.partialTurnInput, "m20")
+        model.historyViewportReady("a", generation: view.presentationGeneration)
+        while view.olderPage.cursor != nil { let loaded = await model.loadEarlierPage(sessionID: "a"); XCTAssertTrue(loaded) }
+        XCTAssertEqual(view.messages.map(\.id), (0..<121).map { "m\($0)" })
         try await close(model)
     }
 
@@ -221,7 +187,7 @@ final class WorkspaceLoadingTests: XCTestCase {
         XCTAssertEqual(view.id, "a"); XCTAssertEqual(view.draft, "Saved A")
         XCTAssertEqual(view.composerFocusRequest, 1, "Only the current selection may refocus the composer or publish readiness")
         XCTAssertEqual(model.displays["b"]?.composerFocusRequest, 0)
-        XCTAssertTrue(view.contextSelectionReady)
+        XCTAssertTrue(view.draftReady)
         try await close(model)
     }
 }

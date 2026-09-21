@@ -67,6 +67,7 @@ extension WorkspaceModel {
             error = "Wait for the current side to finish opening before starting another."; return
         }
         let id = UUID().uuidString, view = SessionDisplay(id: id)
+        view.historyState = .empty; view.selectionMetadataLoaded = true
         var info = SideRecord(id: id, parentID: parentID, workspaceID: parent.workspaceID, profileID: parent.profileID, title: parent.title + " — side", model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
         info.topicID = effectiveTopicID(for: parent)
         if question.isEmpty {
@@ -144,7 +145,11 @@ extension WorkspaceModel {
         if let shown = sides[parentID], !shown.kept || shown.keeping { error = "Wait for the current side to finish opening before switching."; return }
         if selectedID != parentID { await select(parentID) }
         guard selectedID == parentID else { return }
+        if let previous = sides[parentID] { displays[previous.id]?.presentation.cancel() }
         let view = displays[id] ?? SessionDisplay(id: id); view.used = Date(); displays[id] = view
+        view.presentation.begin(); view.presentationGeneration = view.presentation.generation
+        view.historyState = .loading; view.draftReady = view.selectionMetadataLoaded
+        view.browsingHistory = true; view.publishTranscript()
         var info = SideRecord(id: id, parentID: parentID, workspaceID: child.workspaceID, profileID: child.profileID, title: child.title, kept: true, model: child.model, thinkingLevel: child.thinkingLevel, contextWindow: child.contextWindow, maxOutputTokens: child.maxOutputTokens, modelOutputLimit: child.modelOutputLimit, outputBudgetVersion: child.outputBudgetVersion)
         info.topicID = effectiveTopicID(for: child)
         info.boundary = ["parentSessionId": .string(parentID)]
@@ -152,35 +157,38 @@ extension WorkspaceModel {
         page = .chats; focusedSessionID = id
         revealProjectChat(child)
         await loadSideDisplay(child, view: view)
-        view.composerFocusRequest += 1
-        scheduleAutomaticContext(id)
     }
     /// Restores a saved child's draft, anchor, pending intents and history into
     /// its display, mirroring what selecting a chat does for the main pane.
-    private func loadSideDisplay(_ child: ChatRecord, view: SessionDisplay) async {
-        let id = child.id
-        do {
-            if !opened.contains(id) { view.captureMode = try await capturePreference(sessionID: id).mode; view.captureAvailable = false }
-            if let draft = try await store?.get(DraftRecord.self, kind: "draft", id: id), view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil { view.restoreDraft(draft) }
-            if view.scrollAnchor == nil { view.scrollAnchor = try await store?.get(TranscriptAnchor.self, kind: "anchor", id: id) }
-            view.recovered = try await store?.list(CommandIntent.self, kind: "pending:\(id)") ?? []
-            view.uncertain = !view.recovered.isEmpty
-            let anchor = view.scrollAnchor.flatMap { $0.followsBottom ? nil : $0.id }
-            if let path = child.path, !opened.contains(id) || (view.messages.isEmpty && anchor != nil) {
-                let historySequence = view.lastSequence
-                let page = try await history.read(path: path, around: anchor)
-                guard sides[child.parentSessionID ?? ""]?.id == id else { return }
-                if page.notice == nil, let count = page.assistantMessageCount {
-                    observeAssistantOutputs(sessionID: id, snapshot: ["assistantMessageCount": .number(Double(count)), "latestAssistantMessageId": page.latestAssistantMessageID.map(WireValue.string) ?? .null])
+    func loadSideDisplay(_ child: ChatRecord, view: SessionDisplay) async {
+        let id = child.id, generation = view.presentationGeneration
+        let task = Task { [weak self, weak view] in
+            guard let self, let view else { return }
+            @MainActor func current() -> Bool { !Task.isCancelled && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentationGeneration == generation }
+            do {
+                let oldDraft = view.savedDraft
+                let metadata = try await self.store?.selectionMetadata(id: id, draft: !view.selectionMetadataLoaded, anchor: !view.selectionMetadataLoaded && view.scrollAnchor == nil)
+                guard current() else { return }
+                if !view.selectionMetadataLoaded {
+                    if let draft = metadata?.draft, view.draft == oldDraft.text && view.attachments == (oldDraft.attachments ?? []) && view.skills == (oldDraft.skills ?? []),
+                       view.draft.isEmpty && view.attachments.isEmpty && view.skills.isEmpty && view.editingMessageID == nil { view.restoreDraft(draft) }
+                    if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
+                    view.selectionMetadataLoaded = true
                 }
-                view.browsingHistory = anchor.map { target in page.messages.contains { $0.id == target } } ?? false
-                view.messages = page.messages; view.before = page.before; view.notice = page.notice ?? "Saved side · Host unloaded"
-                if page.notice == nil, !opened.contains(id), view.lastSequence == historySequence { view.observeRetainedFailure(page.failureMessage) }
-            }
-            await refreshAccounting(view, workspaceID: child.workspaceID)
-            if opened.contains(id) { refresh(id) }
-        } catch { view.notice = "History could not be read. Original files were preserved. \(error.localizedDescription)" }
+                view.recovered = metadata?.recovered ?? []; view.uncertain = !view.recovered.isEmpty
+                view.draftReady = true
+                if self.focusedSessionID == id { view.composerFocusRequest += 1 }
+                let page = try await self.readConversationWindow(child, cursor: nil)
+                guard current() else { return }
+                self.adoptInitialHistory(page, into: view)
+                if self.opened.contains(id) { self.refresh(id) }
+            } catch is CancellationError { }
+            catch { if current() { view.historyState = .failed(error.localizedDescription); view.notice = error.localizedDescription } }
+        }
+        view.presentation.navigation = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
+
     func keepSide(_ id: String) {
         guard let info = side(id), !info.kept, !info.keeping, !info.pending, let view = displays[id], !view.loading, hosts[info.workspaceID] != nil else { return }
         guard view.hasWork else { performKeepSide(id, whenFinished: false); return }
@@ -288,6 +296,7 @@ extension WorkspaceModel {
             }
             try await store.put(view.savedDraft, kind: "draft", id: id)
             if let anchor = view.scrollAnchor { try await store.put(anchor, kind: "anchor", id: id) }
+            view.presentation.cancel()
             sides.removeValue(forKey: info.parentID)
             if focusedSessionID == id { focusedSessionID = info.parentID }
             // The cursor goes back to the chat the side came from.

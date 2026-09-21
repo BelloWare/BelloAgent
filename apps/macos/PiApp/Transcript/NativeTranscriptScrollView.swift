@@ -219,6 +219,21 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// How many rows the last pass left standing at an earlier width or at an
     /// estimate.
     var approximateRowCount: Int { approximate.count }
+    var visibleContentPrepared: Bool {
+        guard let clip = enclosingScrollView?.contentView, !rows.isEmpty else { return rows.isEmpty }
+        let viewport = convert(clip.bounds, from: clip)
+        let visible = rows.filter { $0.frame.intersects(viewport) }
+        return !visible.isEmpty && visible.allSatisfy { !approximate.contains($0.itemID) && $0.visibleContentPrepared }
+    }
+    private var drawnGeneration: UUID?
+    /// Native draw opportunity, distinct from the earlier layout callback and
+    /// from physical display scanout. No source content enters the probe.
+    override func viewWillDraw() {
+        super.viewWillDraw()
+        if let generation = snapshot?.generation, generation != drawnGeneration, visibleContentPrepared {
+            if page?.destinationDrawOpportunity() == true { drawnGeneration = generation }
+        }
+    }
     func isApproximate(_ id: String) -> Bool { approximate.contains(id) }
     /// Whether the page is following the newest row, for the scroll view
     /// deciding whether a content-inset change should move the reader.
@@ -268,7 +283,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         // repaints an unchanged transcript for surrounding workspace state.
         // Environment and independent native intrinsic-size/width updates
         // still reach every affected row through their own paths.
-        guard self.snapshot?.sessionID != snapshot?.sessionID || self.snapshot?.sequence != snapshot?.sequence || self.environment != environment else { return }
+        guard (self.snapshot?.sessionID != snapshot?.sessionID || self.snapshot?.generation != snapshot?.generation) || self.snapshot?.sequence != snapshot?.sequence || self.environment != environment else { return }
         let projected = snapshot?.items ?? []
         guard Set(projected.map(\.id)).count == projected.count, Set(rows.map(\.itemID)).count == rows.count else {
             let page = page, revision = page?.snapshot?.sequence
@@ -284,7 +299,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         contentChangedAt = ProcessInfo.processInfo.systemUptime
         // A different rendering environment changes every row's height.
         if self.environment != environment { dirtyFrom = 0; motionNeedsRetarget = true }
-        if self.snapshot?.sessionID != snapshot?.sessionID {
+        if (self.snapshot?.sessionID != snapshot?.sessionID || self.snapshot?.generation != snapshot?.generation) {
             finishDisclosureMotion(settling: false)
             for row in rows { row.onHeightInvalidated = nil; row.onHeightValidated = nil; row.removeFromSuperview(); page?.rowGone(row.itemID) }
             rows = []
@@ -654,6 +669,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.mountSeconds += TranscriptLayoutClock.now - clock } }
         var buffered = clip.bounds.insetBy(dx: 0, dy: -max(240, clip.bounds.height / 2))
         let selected = rowOwningFirstResponder()
+        page?.pinSelectedRow(selected?.contentItem)
         // No estimate is ever drawn: a row standing at one that the reader has
         // reached is measured now, whatever the slice budget says, and the page
         // placed again around it. Each round makes at least one more row exact,
@@ -751,6 +767,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         let buffer = max(240, viewportHeight / 2)
         let bottom = max(0, total - viewportHeight)
         var wanted: [CGFloat] = []
+        if let opening = page?.preferredOpeningRowID, let index = rows.firstIndex(where: { $0.itemID == opening }) { wanted.append(tops[index]) }
         if let anchor = page?.readingAnchorRow, let index = rows.firstIndex(where: { $0.itemID == anchor.id }) {
             wanted.append(tops[index] - CGFloat(anchor.offset))
         } else if page?.followsBottom ?? true {
@@ -867,6 +884,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         // Anchor and viewport stay exact at every width; unseen rows are
         // reconciled later, including after mouse-up and interrupted drags.
         let selected = rowOwningFirstResponder()
+        page?.pinSelectedRow(selected?.contentItem)
         let deferring = liveResizing
         let viewportHeight = enclosingScrollView?.contentView.bounds.height ?? 0
         // A row can borrow an exact height another pane already measured, and
@@ -894,7 +912,14 @@ final class TranscriptNativeScrollView: NSScrollView {
         // measured them all at another one. Either way the reader can only
         // see a screenful, and the rest can stand until a slice reaches them.
         let unmeasured = firstPlaced > 0 ? 0 : rows.reduce(0) { $0 + ($1.hasMeasurement(width: nextWidth) ? 0 : 1) }
-        let slicing = (unmeasured > Self.sliceThreshold || !approximate.isEmpty || deferring) && firstPlaced == 0
+        var plainBytes = 0
+        let rich = rows.contains { row in
+            let messages: [TranscriptMessage]
+            switch row.contentItem { case .message(let m): messages = [m]; case .block(let b): messages = b.replies }
+            plainBytes += messages.reduce(0) { $0 + $1.text.utf8.count }
+            return plainBytes > 32_768 || messages.contains { !$0.text.isEmpty && ($0.text.utf8.count > 8192 || $0.text.contains("```") || $0.text.contains("~~~") || $0.text.contains("\n#") || $0.text.contains("|")) || !($0.tools ?? []).isEmpty || !($0.thinking ?? "").isEmpty }
+        }
+        let slicing = (unmeasured > Self.sliceThreshold || (rich && unmeasured > 0) || !approximate.isEmpty || deferring) && firstPlaced == 0
         // A long chat that opens at its newest row is parked there by this very
         // pass, so it need not also measure the top of the history the reader
         // would otherwise see for one frame.
@@ -986,5 +1011,6 @@ final class TranscriptNativeScrollView: NSScrollView {
             page?.contentChanged(ContentGeometry(top: -scroll.contentView.bounds.minY, height: size.height))
         }
         marker.locate()
+        page?.visibleBandLaidOut { [weak self] in self?.visibleContentPrepared ?? false }
     }
 }
