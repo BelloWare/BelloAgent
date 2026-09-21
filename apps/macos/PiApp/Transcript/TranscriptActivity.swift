@@ -84,10 +84,10 @@ struct TurnSummary: Equatable, Sendable {
 
 /// One prose reply and the work that produced it: the reasoning-only and
 /// tool-only replies before it, plus its own reasoning and tool calls. A
-/// trailing block with no prose holds work the turn ended on. Tool-result
-/// rows disappear; their output lives on the call.
+/// trailing block with no prose can hold a terminal task receipt. New ordered
+/// responses use local part rows; legacy responses retain a local work group.
 struct TranscriptBlock: Equatable, Sendable, Identifiable {
-    enum Presentation: Equatable, Sendable { case reply, work, body, summary }
+    enum Presentation: Equatable, Sendable { case reply, work, body, summary, timeline }
     var id: String
     /// Stays the id of the block's first row for its whole life, so the view keeps the block mounted (and open) as its reply arrives.
     var key: String
@@ -108,6 +108,7 @@ struct TranscriptBlock: Equatable, Sendable, Identifiable {
     var presentation: Presentation = .reply
     var task: TaskPresentationRecord? = nil
     var taskSummary: TurnSummary? = nil
+    var part: ResponseTimeline.Segment? = nil
     var replies: [TranscriptMessage] { activity + (message.map { [$0] } ?? []) }
 }
 

@@ -499,6 +499,9 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         }
         await pane.settle(turns: 8)
 
+        row.toggleDisclosure(.work(block.key))
+        document.advanceDisclosureMotion(to:1)
+        await pane.settleUntilExact()
         let measurementsBefore = pane.rows.reduce(0) { $0 + $1.measurementCount }
         let builtBefore = document.rowsBuiltCount
         let open = row.frame.height
@@ -1093,8 +1096,8 @@ private struct SelectedFooterOnly: View {
     var realAction = false
     var body: some View {
         if let session = model.selected {
-            MetricsFooter(model: model, session: session, contextWindow: nil, outputReserve: nil, compact: false) {
-                if realAction { model.inspect(session.id) }
+            MetricsFooter(model: model, session: session, contextWindow: nil, outputReserve: nil, compact: false) { [model, realAction, id = session.id] in
+                if realAction { model.inspect(id) }
             }
         }
     }

@@ -62,12 +62,14 @@ final class NativeTranscriptDocumentTests: XCTestCase {
                 if consecutive >= 3 { return }
                 try await Task.sleep(for: .milliseconds(10))
             }
+            print("VIEWPORT FAILURE offset=\(offset) bottom=\(bottom) follow=\(page.followsBottom) anchor=\(scroll.transcriptReading.readingAnchor as Any)")
             XCTFail("The native document did not settle to the expected viewport", file: file, line: line)
             throw NSError(domain: "NativeTranscriptDocumentTests", code: 1)
         }
 
         func detach(at rowID: String, clipped: CGFloat = 9) throws {
             let row = try XCTUnwrap(page.rowFrame(of: rowID))
+            page.readerWillNavigate(upward: true)
             scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: row.minY + clipped))
             scroll.reflectScrolledClipView(scroll.contentView)
             NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)

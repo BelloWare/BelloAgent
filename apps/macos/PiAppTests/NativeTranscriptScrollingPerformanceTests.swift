@@ -127,6 +127,7 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
 
         @MainActor func step(to requested: CGFloat) async -> (total: Double, sync: Double) {
             let start = ProcessInfo.processInfo.systemUptime
+            page.readerWillNavigate(upward: requested < scroll.contentView.bounds.minY)
             scroll.contentView.scroll(to: NSPoint(x: 0, y: requested))
             scroll.reflectScrolledClipView(scroll.contentView)
             NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
@@ -185,6 +186,9 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
         XCTAssertLessThan(viewsBefore.all, 2_000, "Loaded history must not mount every offscreen native text field")
         XCTAssertLessThan(viewsAfter.all, 2_000, "Scrolling into another region must keep the native view tree bounded")
         let p95 = ordered[Int(Double(ordered.count - 1) * 0.95)]
+        print(String(format: "SCROLL PERCENTILES %@ p50=%.3f p95=%.3f p99=%.3f maxSync=%.3f ms", label,
+                     ordered[Int(Double(ordered.count - 1) * 0.50)], p95,
+                     ordered[Int(Double(ordered.count - 1) * 0.99)], synchronousTimes.max() ?? 0))
         let validations = rowsAfter.reduce(0) { $0 + $1.intrinsicValidationCount } - validationsBefore
         print(String(format: "SCROLL PERF %@: %d steps, total mean %.3f ms, p95 %.3f ms, max %.3f ms; synchronous mean %.3f ms; exact-width cache misses %d; intrinsic validations %d; NSViews %d -> %d; selectable fields %d -> %d; row hosts %d -> %d; document %.0f pt", label, times.count, times.reduce(0, +) / Double(times.count), p95, ordered.last ?? 0, synchronousTimes.reduce(0, +) / Double(synchronousTimes.count), remeasurements, validations, viewsBefore.all, viewsAfter.all, viewsBefore.selectable, viewsAfter.selectable, rowsBefore.count, rowsAfter.count, documentHeight))
     }

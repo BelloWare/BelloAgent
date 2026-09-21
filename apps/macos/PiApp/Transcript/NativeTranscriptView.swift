@@ -41,9 +41,15 @@ struct ContentGeometry: Equatable {
 
     @Published private(set) var snapshot: Snapshot?
     @Published var projectionError: String?
-    var liveTurn: TurnSummary? { snapshot?.liveTurn }
+    var liveTurn: TurnSummary? {
+        if let turn = snapshot?.liveTurn { return turn }
+        // Older helpers and the brief pre-snapshot phase only report run state.
+        // Keep activity visible without borrowing historical usage or claiming a task completion.
+        guard snapshot?.lifecycle?.active == nil, snapshot?.lifecycle?.recent.isEmpty != false else { return nil }
+        return Self.liveTurn(in: [], busy: busy)
+    }
     @Published private(set) var detached = false
-    var state = "idle"
+    @Published var state = "idle"
     var busy: Bool { ["queued", "running", "stopping", "compacting"].contains(state) }
 
     var onAnchorChanged: (TranscriptAnchor?) -> Void = { _ in }
@@ -68,10 +74,16 @@ struct ContentGeometry: Equatable {
     private(set) var toolInputs: TranscriptToolInputs?
     private var viewportRequest: Int?
     private var initialized = false
-    private(set) var followsBottom = true { didSet { scrollView?.transcriptReading.following = followsBottom } }
+    private(set) var followsBottom = true { didSet { scrollView?.transcriptReading.following = followsBottom || explicitDestination } }
     private var readerNavigationStarted = false
     private var upwardNavigation = false
-    private var pendingAnchor: TranscriptAnchor? { didSet { pendingAnchorRow = nil } }
+    private var explicitDestination = false
+    private var pendingAnchor: TranscriptAnchor? { didSet {
+        pendingAnchorRow = nil
+        if pendingAnchor == nil { explicitDestination = false }
+        scrollView?.transcriptReading.following = followsBottom || explicitDestination
+    } }
+
     /// Which row holds the pending anchor, worked out once. Resolving it for
     /// every row of the page as its frame arrives is quadratic in the page,
     /// and every row's frame arrives on every reflow.
@@ -179,7 +191,7 @@ struct ContentGeometry: Equatable {
     }
 
     private func present(_ input: TranscriptPresentationInput, viewportRequest request: Int, from session: SessionDisplay) {
-        let textDelta = viewportRequest == request && Self.sameLifecycle(snapshot?.lifecycle, input.lifecycle) &&
+        let textDelta = projectionError == nil && viewportRequest == request && Self.sameLifecycle(snapshot?.lifecycle, input.lifecycle) &&
             TaskTranscriptPlan.cosmetic(from: snapshot?.messages ?? [], to: input.messages)
         let delay = presentationInterval - (ProcessInfo.processInfo.systemUptime - lastPresentationAt)
         if textDelta, delay > 0 {
@@ -204,8 +216,10 @@ struct ContentGeometry: Equatable {
         let messages = input.messages
         if viewportRequest != request {
             // A jump to the latest page or a prepended earlier page: the page starts over from the session's anchor.
+            let navigating = viewportRequest != nil
             viewportRequest = request
             reset()
+            explicitDestination = navigating && session.scrollAnchor?.followsBottom == false
         }
         if snapshot?.messages.first?.id != messages.first?.id, viewportRequest == request {
             preserveReadingPositionForLayout()
@@ -412,7 +426,7 @@ struct ContentGeometry: Equatable {
     /// scroll. The frame notification can fire while the hosting scroll view is
     /// still updating (that is where 0.1.47 crashed), so the landing is deferred.
     private func documentResized() {
-        if followsBottom || pendingAnchor != nil { scheduleSettle() }
+        if followsBottom || explicitDestination { scheduleSettle() }
     }
 
     private func scheduleSettle() {
@@ -1005,12 +1019,21 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         let disclosure = disclosureStore.map { TranscriptRowDisclosure.of(item, in: $0, inputs: toolInputs) } ?? .default
         guard self.item != item || self.fresh != fresh || self.environment != environment || self.disclosure != disclosure else { return false }
         let oldItem = self.item
+        let fixedClosedPart: Bool = {
+            guard case .block(let old) = self.item, case .block(let new) = item,
+                  old.presentation == .timeline, new.presentation == .timeline,
+                  let a = old.part, let b = new.part,
+                  !["text", "refusal", "status"].contains(a.part.kind) else { return false }
+            return !self.disclosure.work && !disclosure.work && self.environment == environment && self.fresh == fresh &&
+                a.part.kind == b.part.kind && a.part.name == b.part.name && a.state == b.state
+        }()
         let fixedClosedWork: Bool = {
             guard case .block(let old) = self.item, case .block(let new) = item else { return false }
             return old.presentation == .work && new.presentation == .work && !self.disclosure.work && !disclosure.work &&
                 self.environment == environment && self.fresh == fresh
         }()
         self.item = item; self.fresh = fresh; self.environment = environment; self.disclosure = disclosure
+        if fixedClosedPart { return false }
         if fixedClosedWork {
             workList = nil
             if case .block(let old) = oldItem, case .block(let new) = item,

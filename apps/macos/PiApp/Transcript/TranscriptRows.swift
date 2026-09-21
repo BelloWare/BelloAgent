@@ -541,6 +541,9 @@ struct MessageRowView: View {
     @State private var hovering = false
     var body: some View {
         switch message.kind {
+        case "execution": ExecutionTimelineRow(message:message, actions:actions, open:disclosure.compaction, toggle:{ toggle(.compaction(message.id)) })
+        case "toolResult": ToolResultTimelineRow(message:message, open:disclosure.compaction, toggle:{ toggle(.compaction(message.id)) })
+        case "requestInfo": RequestTimelineInfo(message:message, actions:actions)
         case "compaction": CompactionRowView(message: message, actions: actions, open: disclosure.compaction, toggle: { toggle(.compaction(message.id)) })
         case "branch": BranchRowView(message: message)
         case "failure": FailureRowView(message: message, actions: actions)
@@ -1017,10 +1020,8 @@ private struct FoldedWork: Layout {
     }
 }
 
-/// A reply in the order it happened: first what the model did before
-/// answering (its exposed reasoning, one row per tool call, the figures of
-/// each request), then the reply, then the figures of the turn. The work rows
-/// start folded; the chevron on their header reveals them.
+/// One chronological response part, a local legacy disclosure, or an
+/// explicitly terminal task aggregate. Returned work starts folded.
 struct BlockRowView: View {
     let block: TranscriptBlock
     let actions: TranscriptActions
@@ -1038,7 +1039,9 @@ struct BlockRowView: View {
     @Environment(\.piReduceMotion) private var reduceMotion
     private var open: Bool { disclosure.work }
     var body: some View {
-        if block.presentation == .body, let message = block.message {
+        if block.presentation == .timeline, let part = block.part, let message = block.message {
+            TimelinePartRow(part:part, message:message, actions:actions, open:disclosure.work, toggle:{ toggle(.work(block.key)) })
+        } else if block.presentation == .body, let message = block.message {
             MessageRowView(message:message, actions:actions, inlineAccounting:false, disclosure:disclosure, toggle:toggle).equatable().padding(.bottom,10)
         } else if block.presentation == .summary, let turn = block.turn {
             StableTurnSummaryView(turn:turn, actions:actions)
@@ -1120,7 +1123,7 @@ struct BlockRowView: View {
                 Image(systemName:block.live ? "circle.dotted" : block.task?.outcome == "completed" ? "checkmark.circle" : block.task?.outcome == "failed" ? "exclamationmark.circle" : "circle")
                     .frame(width:14)
             } else if block.live && block.tools.contains(where: { TranscriptActivity.outcome(of: $0) == .running }) { SpinnerView() }
-            Text(block.presentation == .work ? workLabel : ToolCallSummary(rows:block.replies).label(reasoned:reasoned) ?? "Working")
+            Text(block.key.hasPrefix("legacy:") ? "Legacy response · part order unavailable" : block.presentation == .work ? workLabel : ToolCallSummary(rows:block.replies).label(reasoned:reasoned) ?? "Working")
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(hovering ? TranscriptPalette.text : TranscriptPalette.muted)
                 .lineLimit(1).truncationMode(.tail).frame(height:20).help(workLabel)
             Button { toggle(.work(block.key)) } label: {

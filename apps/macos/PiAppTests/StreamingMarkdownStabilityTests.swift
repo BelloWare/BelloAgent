@@ -173,7 +173,8 @@ extension StreamingMarkdownStabilityTests {
 
 extension StreamingMarkdownStabilityTests {
     @MainActor func testSelectedLiteralBoldKeepsItsSelectionAfterCanonicalCompletion() async throws {
-        let raw="Select **bold** here", rendered="Select bold here"
+        for (raw, rendered) in [("Select **bold** here", "Select bold here"),
+                                ("**one** **two** **three** **bold**", "one two three bold")] {
         let window=NSWindow(contentRect:NSRect(x:0,y:0,width:620,height:240),styleMask:[.titled],backing:.buffered,defer:false)
         window.isReleasedWhenClosed=false
         let host=NSHostingView(rootView:MarkdownBodyView(source:raw,streaming:true))
@@ -192,5 +193,6 @@ extension StreamingMarkdownStabilityTests {
         XCTAssertTrue(field.currentEditor() === editor)
         XCTAssertEqual(editor.string,rendered)
         XCTAssertEqual(editor.selectedRange,(rendered as NSString).range(of:"bold"))
+        }
     }
 }

@@ -36,9 +36,10 @@ final class ToolCallSummaryTests: XCTestCase {
         var legacy = row; legacy.toolCallCount = nil
         XCTAssertTrue(ToolCallSummary(rows: [legacy]).label?.hasPrefix("at least 32 tool calls") == true)
         let items = TranscriptActivity.blocks(of: [row, .init(id: "final", role: "assistant", text: "Done")])
-        let block = try XCTUnwrap(items.compactMap { if case .block(let b) = $0, b.presentation == .work { return b }; return nil }.first)
-        XCTAssertEqual(block.taskSummary?.tools, 64); XCTAssertEqual(ToolCallSummary(rows: block.replies).total, 64)
-        XCTAssertNil(block.turn, "Legacy rows without task-terminal evidence cannot assert completion")
+        let summary = TaskTranscriptPlan.summary([row],task:nil)
+        XCTAssertEqual(summary.tools,64)
+        XCTAssertEqual(items.compactMap { if case .block(let b)=$0{return b.part};return nil }.count,64)
+        XCTAssertTrue(items.allSatisfy { if case .block(let b)=$0{return b.turn == nil};return true },"Legacy rows cannot assert task completion")
     }
 }
 
@@ -46,10 +47,7 @@ extension ToolCallSummaryTests {
     @MainActor func testTurnInformationCopyIncludesCountsTimingUsageAndUncertainty() throws {
         let rows=[TranscriptMessage(id:"u",role:"user",text:"ask",at:1000),
                   TranscriptMessage(id:"a",role:"assistant",text:"answer",state:"streaming",at:2000,turn:"u",modelMs:750,toolCallCount:4)]
-        let blocks=TranscriptActivity.blocks(of:rows)
-        let turn=try XCTUnwrap(blocks.compactMap { item -> TurnSummary? in
-            if case .block(let block)=item { return block.taskSummary }; return nil
-        }.last)
+        let turn=TaskTranscriptPlan.summary(rows,task:nil)
         let copied=TurnLineView.copyText(turn,model:"gateway-model")
         XCTAssertTrue(copied.contains("4 tool calls")); XCTAssertTrue(copied.contains("Model time:"))
         XCTAssertTrue(copied.contains("Started:")); XCTAssertTrue(copied.contains("gateway-model"))

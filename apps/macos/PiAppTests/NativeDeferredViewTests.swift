@@ -23,12 +23,14 @@ final class NativeDeferredViewTests: XCTestCase {
     @MainActor func testOutlinePublishesOnlyTheLatestSelectionAfterTheNativeUpdate() async throws {
         var selection = "", writes: [String] = []
         let coordinator = JSONOutlineView.Coordinator(selection: Binding(get: { selection }, set: { selection = $0; writes.append($0) }))
+        coordinator.documentID = UUID()
         coordinator.root = JSONOutlineNode(key: "$", value: ["first": "one", "second": "two"])
         let scroll = outline(coordinator), view = try XCTUnwrap(scroll.documentView as? NSOutlineView)
         view.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         view.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
         XCTAssertTrue(writes.isEmpty, "Native selection must not publish during a SwiftUI update")
         await drainDeferredUpdates()
+        for _ in 0..<100 where writes.isEmpty { try await Task.sleep(for:.milliseconds(5)) }
         XCTAssertEqual(writes, ["two"], "Superseded selections must not briefly replace the current detail")
         XCTAssertEqual(selection, "two")
     }

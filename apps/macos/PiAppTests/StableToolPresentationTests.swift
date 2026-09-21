@@ -53,10 +53,10 @@ final class StableToolPresentationTests: XCTestCase {
         XCTAssertNil(view.failureMessage); XCTAssertNil(view.sendFailure)
         XCTAssertTrue(sawTools); XCTAssertTrue(sawPreparing); XCTAssertEqual(falseFooters,0)
         for stage in [main,narrow] {
-            XCTAssertEqual(work(stage.page.snapshot?.items ?? []).count,1)
+            XCTAssertTrue(work(stage.page.snapshot?.items ?? []).isEmpty, "Ordered responses never become a task-wide work group")
             XCTAssertEqual(terminal(stage.page.snapshot?.items ?? []).count,1)
             XCTAssertNil(stage.page.liveTurn)
-            XCTAssertEqual(stage.page.snapshot?.items.filter { if case .block(let b) = $0 { return b.presentation == .body }; return false }.count,2)
+            XCTAssertEqual(stage.page.snapshot?.items.filter { if case .block(let b) = $0 { return b.presentation == .timeline && b.part?.part.kind == "text" }; return false }.count,2)
         }
         XCTAssertEqual(view.taskPresentation?.recent.last?.issuedCalls,2)
         let completed = try XCTUnwrap(view.taskPresentation?.recent.last)
@@ -81,7 +81,10 @@ final class StableToolPresentationTests: XCTestCase {
         let retained = try await HistoryReader().read(path:path,targetTurns:3)
         XCTAssertEqual(retained.taskRecords.count,1)
         let restored = TaskTranscriptPlan.items(retained.messages,lifecycle:projection(nil,recent:retained.taskRecords))
-        XCTAssertEqual(work(restored).count,1); XCTAssertEqual(terminal(restored).count,1)
+        XCTAssertTrue(work(restored).isEmpty); XCTAssertEqual(terminal(restored).count,1)
+        let liveParts = main.page.snapshot!.items.compactMap { if case .block(let b) = $0 { return b.part }; return nil }
+        let savedParts = restored.compactMap { if case .block(let b) = $0 { return b.part }; return nil }
+        XCTAssertEqual(savedParts, liveParts, "Observed IDs, order and scope survive native history loading")
         print("TOOL_GATEWAY_NATIVE panes=2 requests=\(attempts.count) issuedCalls=\(view.taskPresentation?.recent.last?.issuedCalls ?? -1) falseTerminal=\(falseFooters) publications=\(publications) checkedBodies=\(attempts.count * 2)")
     }
     private func task(_ root: String = "u", execution: String = "e", phase: String = "model", outcome: String? = nil, last: String? = nil) -> TaskPresentationRecord {
@@ -102,10 +105,11 @@ final class StableToolPresentationTests: XCTestCase {
         let session = SessionDisplay(id:"phase-fixture")
         session.taskPresentation = projection(task())
         session.messages = [row("u", "Fixture task", role:"user", state:"complete"), row("a", "Visible prose")]
+        session.messages[1].tools = [ToolView(id:"call",name:"read",state:"preparing",input:"",output:"",truncated:false)]
         let stage = TranscriptStreamingStressTests.Stage(session)
         defer { stage.window.close() }
         stage.page.presentationInterval = 0; stage.page.state = "running"; stage.refresh()
-        let body = try XCTUnwrap(stage.row("block:a")), header = try XCTUnwrap(stage.row("work:1:ue"))
+        let body = try XCTUnwrap(stage.row("block:a")), header = try XCTUnwrap(stage.row("legacy:a"))
         let height = header.measure(width:640).height, proseHeight = body.measure(width:640).height
         let measurements = body.measurementCount
         for index in 0..<1000 {
@@ -128,7 +132,7 @@ final class StableToolPresentationTests: XCTestCase {
         XCTAssertNil(stage.row("block:next"))
         session.messages[2].tools = [ToolView(id:"call",name:"read",state:"completed",input:"{}",output:"ok",truncated:false)]
         session.messages[2].state = "complete"; stage.refresh()
-        XCTAssertEqual(work(stage.page.snapshot!.items).count,1)
+        XCTAssertEqual(work(stage.page.snapshot!.items).map(\.key),["legacy:a", "legacy:next"])
         session.messages.append(row("final","Final prose",state:"complete"))
         let end = task(phase:"terminal", outcome:"completed",last:"final")
         session.taskPresentation = projection(nil,recent:[end]); stage.refresh()
@@ -147,12 +151,13 @@ final class StableToolPresentationTests: XCTestCase {
         var steering = row("steer","Steering",role:"user",state:"complete"); steering.turn = "steer"; rows.insert(steering,at:8)
         var active = task(phase:"tools"); active.issuedCalls = 15
         let items = TaskTranscriptPlan.items(rows,lifecycle:projection(active))
-        XCTAssertEqual(work(items).count,1); XCTAssertEqual(work(items).first?.taskSummary?.tools,15); XCTAssertTrue(terminal(items).isEmpty)
+        XCTAssertEqual(work(items).map(\.key),(0..<15).map { "legacy:a\($0)" })
+        XCTAssertEqual(TaskTranscriptPlan.summary(rows,task:active).tools,15); XCTAssertTrue(terminal(items).isEmpty)
         var ended = active; ended.outcome = "completed"; ended.endedAt = 5000; ended.lastSourceID = "a14"
         let next = task("next",execution:"e2")
         rows.append(row("next","Follow up",role:"user",state:"complete",root:"next",execution:"e2"))
         let chained = TaskTranscriptPlan.items(rows,lifecycle:projection(next,recent:[ended]))
-        XCTAssertEqual(work(chained).count,2); XCTAssertEqual(terminal(chained).count,1)
+        XCTAssertEqual(work(chained).count,16); XCTAssertEqual(terminal(chained).count,1)
         let historyOnly = TaskTranscriptPlan.items(Array(rows.prefix(4)),lifecycle:projection(next,recent:[ended]))
         XCTAssertTrue(terminal(historyOnly).isEmpty,"A suffix outside the loaded window cannot move its footer here")
         XCTAssertEqual(TaskTranscriptPlan.live(projection(next,recent:[ended]))?.taskKey,"4:nexte2")
@@ -210,11 +215,11 @@ final class StableToolPresentationTests: XCTestCase {
         let failed = task(phase:"terminal",outcome:"failed",last:"u")
         var retry = task(execution:"retry",phase:"retrying"); retry.anchorSourceID = "u"
         let live = TaskTranscriptPlan.items(rows,lifecycle:projection(retry,recent:[failed]))
-        XCTAssertEqual(work(live).map(\.key),["work:1:ue","work:1:uretry"])
+        XCTAssertEqual(work(live).map(\.key),["work:1:uretry"])
         XCTAssertEqual(terminal(live).count,1)
         retry.outcome = "failed"; retry.endedAt = 5000; retry.lastSourceID = "u"
         let done = TaskTranscriptPlan.items(rows,lifecycle:projection(nil,recent:[failed,retry]))
-        XCTAssertEqual(work(done).map(\.key),work(live).map(\.key))
+        XCTAssertTrue(work(done).isEmpty, "Terminal receipts do not invent missing response parts")
         XCTAssertEqual(terminal(done).count,2)
         XCTAssertEqual(TaskTranscriptPlan.items(rows,lifecycle:projection(nil,recent:[failed,retry,retry])),done,"Duplicate receipts never duplicate chrome")
         var summary = TaskTranscriptPlan.summary(rows,task:retry); summary.accounting.costUSD = 0.000001

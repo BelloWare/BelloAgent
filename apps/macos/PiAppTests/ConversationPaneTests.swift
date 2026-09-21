@@ -204,6 +204,7 @@ extension ConversationPaneTests {
         let viewA = SessionDisplay(id: a.id), viewB = SessionDisplay(id: b.id)
         viewA.messages = [TranscriptMessage(id: "a1", role: "user", text: "Alpha question", at: 1000, turn: "a1")]
         viewB.messages = [TranscriptMessage(id: "b1", role: "user", text: "Beta question", at: 1000, turn: "b1")]
+        viewA.historyState = .ready; viewB.historyState = .ready
         model.displays[a.id] = viewA; model.displays[b.id] = viewB
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

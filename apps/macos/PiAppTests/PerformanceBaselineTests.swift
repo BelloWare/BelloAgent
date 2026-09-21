@@ -61,7 +61,7 @@ final class PerformanceBaselineTests: XCTestCase {
             return message
         }
         let items = clock("blocks(of:) 500 rows") { TranscriptActivity.blocks(of: messages) }
-        XCTAssertEqual(items.count, 500)
+        XCTAssertEqual(items.count, 750, "Each legacy work group remains local to its response")
         _ = clock("display page 500 rows") { TranscriptPage.displayPage(messages) }
     }
 

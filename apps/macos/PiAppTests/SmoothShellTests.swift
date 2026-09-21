@@ -53,7 +53,18 @@ final class SmoothShellTests: XCTestCase {
             display.messages = Shell.conversation(rows: rows, prefix: chat.id)
             display.draft = "An unsent draft for " + chat.title
             display.selectionMetadataLoaded = true
+            display.historyState = .ready
             model.displays[chat.id] = display
+        }
+        // Fresh selection loads an authoritative history page even for a
+        // retained display. This rendering fixture serves its seeded source.
+        model.historyWindowLoader = { [weak model] id, _, _, _ in
+            try await MainActor.run {
+                var page = try ConversationHistoryPage(.object(["version": .number(2), "messages": .array([]),
+                    "incarnation": .string("fixture:" + id), "lineage": .string("root"), "older": .null, "newer": .null]))
+                page.messages = model?.displays[id]?.messages ?? []
+                return page
+            }
         }
         model.opened = Set(chats.map(\.id))
         return (model, project, chats)

@@ -10,7 +10,7 @@ enum ConversationContent {
         if entry["type"]?.string == "compaction" { return "## Compaction\n\n\(entry["summary"]?.string ?? "")\n\n" }
         let message = entry["message"]?.object ?? [:], content = message["content"]
         let timeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }
-        if let timeline {
+        if let timeline, timeline.supported {
             let title = message["nativeDetail"]?.string ?? message["role"]?.string ?? "Operation"
             let evidence = "## \(title)\n\n" + timeline.retainedText + "\n\n"
             // If a source exceeds retained event bounds, preserve the original

@@ -72,9 +72,10 @@ final class NativeTranscriptSafetyTests: XCTestCase {
         let message = TranscriptMessage.project(id: "answer", message: record)
         let item = try XCTUnwrap(TranscriptActivity.blocks(of: [message]).first)
         guard case .block(let block) = item else { return XCTFail("Expected the retained assistant's block") }
-        XCTAssertEqual(block.modelMs, 1e100, "The fixture must reach the formatter through the actual history projection")
-        XCTAssertEqual(TranscriptActivity.formatDuration(block.modelMs), "")
-        XCTAssertEqual(TranscriptActivity.formatDuration(try XCTUnwrap(block.taskSummary).modelMs), "")
+        XCTAssertEqual(message.modelMs, 1e100, "The fixture must reach the formatter through the actual history projection")
+        XCTAssertEqual(TranscriptActivity.formatDuration(message.modelMs!), "")
+        XCTAssertEqual(TranscriptActivity.formatDuration(TaskTranscriptPlan.summary([message],task:nil).modelMs), "")
+        XCTAssertNil(block.turn, "Legacy model duration cannot manufacture terminal task evidence")
         XCTAssertEqual(TranscriptActivity.formatDuration(Double.greatestFiniteMagnitude), "")
         XCTAssertEqual(TranscriptActivity.formatDuration(72_000), "1m 12s")
     }

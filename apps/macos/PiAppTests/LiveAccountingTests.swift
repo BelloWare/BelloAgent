@@ -317,8 +317,8 @@ final class LiveAccountingTests: XCTestCase {
         XCTAssertEqual(view.messageAccounting["row-101"]?.costUSD, 0.001, "An answer remains attributed when its input is outside the native page")
         XCTAssertEqual(view.messageAccounting["row-201"]?.costUSD, 0.002)
         XCTAssertNil(view.messageAccounting["row-200"], "A visible input does not duplicate its visible answer's request")
-        XCTAssertNil(view.messageAccounting["row-1"], "Hidden prefetched rows do not expand the bounded SQL target set")
-        XCTAssertEqual(view.messageAccounting.count, 2)
+        XCTAssertEqual(view.messageAccounting["row-1"]?.costUSD,0.004,"The retained earlier window includes this answer")
+        XCTAssertEqual(view.messageAccounting.count, 3)
         try await model.traces.close(); await model.store?.close()
     }
 

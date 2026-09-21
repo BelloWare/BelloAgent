@@ -112,7 +112,7 @@ struct ConversationPane: View {
             // was opened from. In half a window that is two of everything; it
             // keeps the two figures that are its own.
             MetricsFooter(model: model, session: session, contextWindow: chat.contextWindow ?? profile?.contextWindow,
-                          outputReserve: chat.maxOutputTokens ?? profile?.maxOutputTokens, compact: side != nil) { model.inspect(session.id) }
+                          outputReserve: chat.maxOutputTokens ?? profile?.maxOutputTokens, compact: side != nil) { [model, id = session.id] in model.inspect(id) }
         }
         // The follow-up panel and the terminal slide in and out from the
         // bottom of the pane. Both take their room from below the

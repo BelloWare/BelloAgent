@@ -56,39 +56,39 @@ final class TranscriptActivityTests: XCTestCase {
         XCTAssertEqual(TranscriptActivity.summarizeWork([], reasoned: true), "Reasoned"); XCTAssertEqual(TranscriptActivity.summarizeWork([bash], reasoned: true), "Reasoned · 1 tool call"); XCTAssertNil(TranscriptActivity.summarizeWork([], reasoned: false))
     }
 
-    func testTaskWorkAndProseHaveSeparateStableSourceOwnership() {
+    func testLocalLegacyWorkAndProseHaveSeparateStableSourceOwnership() {
         let rows = [message("u", "user", "Go", turn:"u"),
                     message("a1", "assistant", "", tools:[tool("same", "read")], turn:"u"),
                     message("a2", "assistant", "Visible prose", tools:[tool("same", "read")], turn:"u"),
                     message("a3", "assistant", "", thinking:"More reasoning", turn:"u")]
         let items = TranscriptActivity.blocks(of:rows), values = blocks(items)
-        XCTAssertEqual(items.map(\.id), ["u", "work:1:uunresolved", "block:a2"])
-        XCTAssertEqual(values[0].activity.map(\.id), ["a1","a2","a3"])
-        XCTAssertEqual(values[0].taskSummary?.tools,2,"Call IDs are scoped by source assistant")
-        XCTAssertEqual(values[1].message?.id,"a2"); XCTAssertTrue(values[1].tools.isEmpty)
+        XCTAssertEqual(items.map(\.id), ["u", "legacy:a1", "legacy:a2", "block:a2", "legacy:a3"])
+        XCTAssertEqual(values.filter { $0.presentation == .work }.flatMap(\.activity).map(\.id), ["a1","a2","a3"])
+        XCTAssertEqual(TaskTranscriptPlan.summary(rows,task:nil).tools,2,"Call IDs are scoped by source assistant")
+        XCTAssertEqual(values[2].message?.id,"a2"); XCTAssertTrue(values[2].tools.isEmpty)
         XCTAssertTrue(values.allSatisfy { $0.turn == nil },"Completed message state alone cannot prove task completion")
         XCTAssertEqual(values[0].taskSummary?.partial,true)
         let later = TranscriptActivity.blocks(of:rows+[message("a4","assistant","Final",turn:"u")])
         XCTAssertEqual(later.map(\.id), items.map(\.id)+["block:a4"])
     }
 
-    func testStatusRowsDoNotSplitTaskWorkOrManufactureTerminalEvidence() {
+    func testStatusRowsStayAtTheirActualPositionWithoutManufacturingTerminalEvidence() {
         let rows = [message("u","user","Go",turn:"u"), message("a1","assistant","First",turn:"u",modelMs:700),
                     message("c","system","Summary",kind:"compaction"), message("n","system","Retry",kind:"notice"),
                     message("a2","assistant","Second",turn:"u"), message("f","system","Failure",kind:"failure")]
         let items = TranscriptActivity.blocks(of:rows), values = blocks(items)
-        XCTAssertEqual(items.map(\.id),["u","work:1:uunresolved","block:a1","c","n","block:a2","f"])
-        XCTAssertEqual(values.filter { $0.presentation == .work }.count,1)
-        XCTAssertEqual(values[0].taskSummary?.modelMs,700)
+        XCTAssertEqual(items.map(\.id),["u","block:a1","c","n","block:a2","f"])
+        XCTAssertEqual(values.filter { $0.presentation == .work }.count,0)
+        XCTAssertEqual(TaskTranscriptPlan.summary(rows,task:nil).modelMs,700)
         XCTAssertTrue(values.allSatisfy { $0.turn == nil })
         let partial = blocks(TranscriptActivity.blocks(of:[message("a","assistant","Earlier task",turn:"old"),message("b","assistant","Another task",turn:"new")]))
-        XCTAssertEqual(partial.filter { $0.presentation == .work }.count,2)
+        XCTAssertEqual(partial.filter { $0.presentation == .work }.count,0)
         XCTAssertTrue(partial.filter { $0.presentation == .work }.allSatisfy { $0.taskSummary?.partial == true })
     }
 
-    func testRepliesCarryTheirOwnUsageAndTheTurnLineSumsEveryComponent() {
+    func testRepliesCarryTheirOwnUsageAndTheTurnLineSumsEveryComponent() throws {
         let models = GatewayModelSummary(names: ["gpt-5.4"], nameCount: 1, reportedRequests: 1, unreportedRequests: 0, conflictingRequests: 0, incompleteRequests: 0)
-        let items = TranscriptActivity.blocks(of: [
+        let rows = [
             message("u", "user", "Go", at: 1_000),
             message("a1", "assistant", "", tools: [tool("t", "read", input: "{\"path\":\"a\"}", durationMs: 5)], accounting: reported(), at: 2_000),
             message("a2", "assistant", "Done", accounting: reported { a in
@@ -97,16 +97,19 @@ final class TranscriptActivityTests: XCTestCase {
                 a.models = models
             }, at: 3_000),
             message("a3", "assistant", "Extra", at: 4_000),
-        ])
-        let first = blocks(items)[0], last = blocks(items)[1]
-        XCTAssertEqual(first.accounting.requests, 2); XCTAssertEqual(first.accounting.input, 100); XCTAssertEqual(first.accounting.cached, 20); XCTAssertEqual(first.accounting.uncached, 80)
-        XCTAssertEqual(first.accounting.output, 523); XCTAssertEqual(first.accounting.reasoning, 30); XCTAssertEqual(first.accounting.total, 623); XCTAssertEqual(first.accounting.costUSD, 0.001421875)
-        XCTAssertEqual(first.accounting.model, "gpt-5.4"); XCTAssertEqual(first.accounting.modelMessageID, "a2")
+        ]
+        let items = TranscriptActivity.blocks(of: rows)
+        let total = TaskTranscriptPlan.summary(rows,task:nil)
+        let accounting = TranscriptActivity.aggregate(rows)
+        let last = try XCTUnwrap(blocks(items).last)
+        XCTAssertEqual(accounting.requests, 2); XCTAssertEqual(accounting.input, 100); XCTAssertEqual(accounting.cached, 20); XCTAssertEqual(accounting.uncached, 80)
+        XCTAssertEqual(accounting.output, 523); XCTAssertEqual(accounting.reasoning, 30); XCTAssertEqual(accounting.total, 623); XCTAssertEqual(accounting.costUSD, 0.001421875)
+        XCTAssertEqual(accounting.model, "gpt-5.4"); XCTAssertEqual(accounting.modelMessageID, "a2")
         XCTAssertEqual(last.accounting.requests, 0)
-        XCTAssertEqual(TranscriptActivity.tokens(of: first.accounting), 623)
-        XCTAssertEqual(TranscriptActivity.usageBreakdown(first.taskSummary!.accounting), "in 100 · 20 cached · 80 uncached · out 523 · 30 reasoning (1/2) · $0.00142", "only one of the two requests reported reasoning")
-        let single = blocks(TranscriptActivity.blocks(of: [message("u", "user", "Go", at: 1_000), message("a", "assistant", "Done", accounting: reported { $0.cacheReadTokens = 8; $0.models = models }, at: 3_000)]))[0]
-        XCTAssertEqual(TranscriptActivity.usageBreakdown(single.taskSummary!.accounting), "in 38 · 8 cached · 30 uncached · out 423 · $0.00042")
+        XCTAssertEqual(TranscriptActivity.tokens(of: accounting), 623)
+        XCTAssertEqual(TranscriptActivity.usageBreakdown(total.accounting), "in 100 · 20 cached · 80 uncached · out 523 · 30 reasoning (1/2) · $0.00142", "only one of the two requests reported reasoning")
+        let single = TaskTranscriptPlan.summary([message("u", "user", "Go", at: 1_000), message("a", "assistant", "Done", accounting: reported { $0.cacheReadTokens = 8; $0.models = models }, at: 3_000)],task:nil)
+        XCTAssertEqual(TranscriptActivity.usageBreakdown(single.accounting), "in 38 · 8 cached · 30 uncached · out 423 · $0.00042")
         let partial = TranscriptActivity.aggregate([message("x", "assistant", "", accounting: reported { a in a.costSamples = 0; a.costUSD = nil; a.cacheReadSamples = 0; a.cacheReadTokens = nil; a.tokens = GatewayTokenTotals(input: 5, output: nil, total: nil, inputSamples: 1, outputSamples: 0, samples: 0) })])
         XCTAssertNil(partial.costUSD); XCTAssertEqual(partial.input, 5); XCTAssertNil(partial.output); XCTAssertNil(partial.total); XCTAssertNil(partial.uncached); XCTAssertNil(partial.reasoning)
         XCTAssertEqual(TranscriptActivity.usageBreakdown(partial), "in 5")

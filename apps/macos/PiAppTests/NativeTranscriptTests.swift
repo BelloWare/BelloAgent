@@ -25,7 +25,7 @@ final class NativeTranscriptTests: XCTestCase {
         let page = TranscriptPage()
         page.bind(session)
         XCTAssertEqual(page.snapshot?.sessionID, "chat")
-        XCTAssertEqual(page.snapshot?.items.map(\.id), ["u1", "work:2:u1unresolved", "block:a1"], "work and prose have separate stable owners")
+        XCTAssertEqual(page.snapshot?.items.map(\.id), ["u1", "block:a1"], "work and prose have separate stable owners")
         XCTAssertTrue(page.snapshot?.fresh.isEmpty == true, "a restored page arrives settled")
         XCTAssertNil(page.liveTurn)
         session.messages.append(TranscriptMessage(id: "stream:a2", role: "assistant", text: "", state: "streaming", turn: "u1"))

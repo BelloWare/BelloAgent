@@ -229,6 +229,7 @@ final class FreshPresentationTests: XCTestCase {
         XCTAssertTrue(document.retainedRows.contains { $0.itemID == "m0" }, "The requested prefix must reach the actual native document")
         XCTAssertFalse(document.retainedRows.contains { $0.itemID == "m1098" }, "Far newer content is evicted, not the newly fetched prefix")
         let target = try XCTUnwrap(page.rowFrame(of: "m0")), scroll = try XCTUnwrap(pane.scroll)
+        page.readerWillNavigate(upward: true)
         scroll.contentView.scroll(to: NSPoint(x: 0, y: target.minY))
         NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
         await pane.settle()

@@ -83,6 +83,28 @@ final class StableReadingTests: XCTestCase {
         }
     }
 
+    @MainActor func testCanonicalInlineMarkupKeepsTheSameMiddleCharacter() async throws {
+        let text = (0..<90).map { "Part \($0) **bold** and [linked text](https://example.com) 中文🙂. " }.joined()
+        let session = SessionDisplay(id: "canonical-middle")
+        session.messages = [.init(id: "u", role: "user", text: "Read"), .init(id: "a", role: "assistant", text: text, state: "streaming")]
+        let stage = TranscriptStreamingStressTests.Stage(session, width: 640, height: 440)
+        defer { stage.close() }
+        stage.page.presentationInterval = 0
+        await stage.settle(turns: 2)
+        stage.readerScroll(to: stage.document.frame.height * 0.4)
+        let body = try XCTUnwrap(descendants(NativeMarkdownContainer.self, stage.document).first)
+        stage.scroll.transcriptReading.capture(body)
+        let anchor = try XCTUnwrap(stage.scroll.transcriptReading.readingAnchor)
+        XCTAssertGreaterThan(try XCTUnwrap(anchor.sourceUTF16Range).location, 100)
+        session.messages[1].state = "complete"
+        stage.refresh()
+        for _ in 0..<3 {
+            await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+            stage.window.displayIfNeeded()
+        }
+        XCTAssertEqual(body.displacement(of: anchor) ?? .infinity, 0, accuracy: 1 / stage.window.backingScaleFactor)
+    }
+
     @MainActor func testCompletionCopyMetadataDoesNotDemotePreparedBlocks() throws {
         let source = "## Heading\n\n" + (0..<80).map { "Paragraph \($0) stays put." }.joined(separator: "\n\n")
         let blocks = TranscriptMarkdown.blocks(source, style: .prose)

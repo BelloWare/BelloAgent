@@ -212,6 +212,7 @@ extension ConversationPaneTests {
         /// set it once and hope nothing polls inside the window.
         func holdRunning(_ turns: Int = 12) async {
             for _ in 0..<turns {
+                session.taskPresentation = nil
                 if session.state != "running" { session.state = "running" }
                 draw(); await Task.yield(); try? await Task.sleep(for: .milliseconds(20))
             }

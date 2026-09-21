@@ -74,7 +74,9 @@ private struct NativeHostedMarkdownBlock: View {
     private var nativeCodeChoice: Bool?
     private let decoration = MarkdownBlockDecoration()
     private weak var selectionEditor: NSTextView?
-    private var restoredSelection: (range: NSRange, rendered: String)?
+    private var restoredSelection: (range: NSRange, original: NSRange, rendered: String)?
+    private var selectionRevision = 0
+    private var reconciliationSource: String?
     private var width: CGFloat = TranscriptMetrics.pageWidth
     private var sizes: [CGSize] = []
     var frame = CGRect.zero
@@ -101,11 +103,19 @@ private struct NativeHostedMarkdownBlock: View {
         guard self.item != item else { return false }
         decoration.update(caret: item.caret, target: item.headingTarget)
         guard !self.item.hasSameGeometry(as: item) else { self.item = item; return false }
-        if case .paragraph(let oldText)=self.item.block, case .paragraph(let newText)=item.block,
-           let host=view, let editor=host.window?.firstResponder as? NSTextView,
-           let field=editor.delegate as? NSTextField, field.isDescendant(of:host),
-           let raw=source(), let range=MarkdownSelection.canonicalRange(editor.selectedRange(), literal:String(oldText.characters), source:raw, rendered:String(newText.characters), keepsSoftBreaks:item.style.keepsSoftBreaks) {
-            selectionEditor=editor; restoredSelection=(range,String(newText.characters))
+        selectionRevision &+= 1
+        restoredSelection = nil; selectionEditor = nil
+        if case .paragraph(let oldText) = self.item.block, case .paragraph(let newText) = item.block {
+            let old = String(oldText.characters), new = String(newText.characters)
+            if !new.hasPrefix(old) { reconciliationSource = source() }
+            if let editor = view?.window?.firstResponder as? NSTextView,
+               textOwners.contains(where: { ($0 as? NSTextField)?.currentEditor() === editor }),
+               let raw = reconciliationSource,
+               let range = MarkdownSelection.canonicalRange(editor.selectedRange(), literal: old, source: raw,
+                    rendered: new, keepsSoftBreaks: item.style.keepsSoftBreaks) {
+                selectionEditor = editor
+                restoredSelection = (range, editor.selectedRange(), new)
+            }
         }
         // Retain the mounted leaf decision across idle host reclamation. A
         // completed short fence that began live must recreate the same TextKit
@@ -119,6 +129,10 @@ private struct NativeHostedMarkdownBlock: View {
         sizes.removeAll(keepingCapacity: true)
         view?.rootView = NativeHostedMarkdownBlock(item: item, width: width, decoration: decoration, nativeCodeChoice: nativeCodeChoice)
         applyAppearance()
+        // The field editor is updated by SwiftUI after the hosting root. A
+        // bounded next-run-loop correction preserves the same editor without
+        // replacing its contents or taking focus from a newer reader gesture.
+        scheduleSelectionRestore(revision: selectionRevision, remaining: 2)
         return true
     }
     private func applyAppearance() {
@@ -150,7 +164,7 @@ private struct NativeHostedMarkdownBlock: View {
         restoreSelection()
         return size
     }
-    struct CharacterAnchor: Equatable { var owner: Int; var range: NSRange; var displacement: CGFloat }
+    struct CharacterAnchor: Equatable { var owner: Int; var range: NSRange; var displacement: CGFloat; var rendered: String }
     private var textOwners: [NSView] {
         func visit(_ view: NSView) -> [NSView] {
             if view is NSTextView || view is NSTextField { return [view] }
@@ -186,14 +200,21 @@ private struct NativeHostedMarkdownBlock: View {
             let screenRect = owner.accessibilityFrame(for: range)
             guard !screenRect.isEmpty else { continue }
             let local = surface.convert(window.convertFromScreen(screenRect), from: nil)
-            return CharacterAnchor(owner: ordinal, range: range, displacement: local.minY - viewportTop)
+            return CharacterAnchor(owner: ordinal, range: range, displacement: local.minY - viewportTop, rendered: (owner as? NSTextField)?.stringValue ?? (owner as? NSTextView)?.string ?? "")
         }
         return nil
     }
     func characterTop(_ anchor: CharacterAnchor, in surface: NSView) -> CGFloat? {
         guard let owner = textOwners.indices.contains(anchor.owner) ? textOwners[anchor.owner] : nil,
               let window = surface.window else { return nil }
-        let screen = owner.accessibilityFrame(for: anchor.range)
+        let rendered = (owner as? NSTextField)?.stringValue ?? (owner as? NSTextView)?.string ?? ""
+        let range: NSRange
+        if !rendered.hasPrefix(anchor.rendered), let raw = reconciliationSource,
+           let mapped = MarkdownSelection.canonicalRange(anchor.range, literal: anchor.rendered, source: raw,
+                rendered: rendered, keepsSoftBreaks: item.style.keepsSoftBreaks) {
+            range = mapped
+        } else { range = anchor.range }
+        let screen = owner.accessibilityFrame(for: range)
         guard !screen.isEmpty else { return nil }
         return surface.convert(window.convertFromScreen(screen), from: nil).minY - anchor.displacement
     }
@@ -216,7 +237,22 @@ private struct NativeHostedMarkdownBlock: View {
         // Do not modify attributed content or take first responder away from
         // the user. SwiftUI owns the text update; we restore only its selection.
         guard editor.string == selection.rendered else { return }
+        let length = editor.string.utf16.count
+        let clippedStart = min(selection.original.location, length)
+        let clipped = NSRange(location: clippedStart, length: min(selection.original.length, length - clippedStart))
+        guard [selection.original, selection.range, clipped].contains(editor.selectedRange()) else {
+            restoredSelection = nil; selectionEditor = nil
+            return
+        }
         editor.setSelectedRange(selection.range); restoredSelection=nil; selectionEditor=nil
+    }
+    private func scheduleSelectionRestore(revision: Int, remaining: Int) {
+        guard restoredSelection != nil, remaining > 0 else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.selectionRevision == revision else { return }
+            self.restoreSelection()
+            self.scheduleSelectionRestore(revision: revision, remaining: remaining - 1)
+        }
     }
 }
 

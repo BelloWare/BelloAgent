@@ -65,10 +65,10 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             output = []
             if round_number == 0:
                 output.append(message('Stable first prose 中文🙂', 'prose-0'))
-                emit({'type': 'response.output_text.delta', 'delta': output[0]['content'][0]['text']})
+                emit({'type': 'response.output_text.delta', 'output_index': 0, 'item_id': output[0]['id'], 'content_index': 0, 'delta': output[0]['content'][0]['text']})
                 time.sleep(.1)
             elif round_number == 1:
-                emit({'type': 'response.reasoning_summary_text.delta', 'delta': 'Checking another tool.'})
+                emit({'type': 'response.reasoning_summary_text.delta', 'output_index': 0, 'item_id': 'reasoning', 'summary_index': 0, 'delta': 'Checking another tool.'})
                 output.append({'type': 'reasoning', 'id': 'reasoning', 'summary': [{'type': 'summary_text', 'text': 'Checking another tool.'}]})
             if round_number < 2:
                 args = json.dumps({'command': 'sleep 0.3; printf phase-tool-ok'})
@@ -81,7 +81,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 output.append(call)
             else:
                 output.append(message('Task finished after both actual tool results.', 'prose-final'))
-                emit({'type': 'response.output_text.delta', 'delta': output[0]['content'][0]['text']})
+                emit({'type': 'response.output_text.delta', 'output_index': 0, 'item_id': output[0]['id'], 'content_index': 0, 'delta': output[0]['content'][0]['text']})
             time.sleep(.1)
             emit({'type': 'response.completed', 'response': dict(response, status='completed', output=output,
                   usage={'input_tokens': 100, 'output_tokens': 40, 'total_tokens': 140,

@@ -79,6 +79,7 @@
 		3F23051F38EA906DB2A9E8D2 /* UpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5D8748BDD60677C6F9DB836 /* UpdateController.swift */; };
 		3FCCBCB2ACBD996DAB6FEB96 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 12BC8D421DC9A6DCD18ED92B /* Sparkle */; };
 		411CAA0DAD99C6BDCB21A996 /* GatewayAccounting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D032F1A3FFEA8A35451E518 /* GatewayAccounting.swift */; };
+		41EB0436B76F93B4790F57EC /* TimelinePartRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8BE2861E65142ECABB0397A /* TimelinePartRow.swift */; };
 		426D174C0053C4E46858DF37 /* HostTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF183F853B2BDC8059D5039E /* HostTransport.swift */; };
 		426F31A4E97B22C2D4BC1523 /* WorkspaceManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0240051F720E8E5A77D8B2B3 /* WorkspaceManagerView.swift */; };
 		42F498138CFA935836E6F1CA /* SidebarGroups.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC5CF597441A108EE1D6B3 /* SidebarGroups.swift */; };
@@ -337,6 +338,7 @@
 		F6D847C256BAA5BA808B253A /* WindowVisibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6219CF22C9D7F631F780C718 /* WindowVisibility.swift */; };
 		F6E959C30B779E6A23956876 /* ReportRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0B6C1DFB73CFDAFC7F3E590 /* ReportRows.swift */; };
 		F76194C42210F51AFEC7FFB4 /* ConversationErrorStripTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D191CAD187D8F54C0F31253 /* ConversationErrorStripTests.swift */; };
+		F78437261A2459DBEF148538 /* ResponseTimelinePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31A2E56B50A7CB82D663D8BB /* ResponseTimelinePresentationTests.swift */; };
 		F810A73752D1C2BF0C653DE0 /* WorkspaceConcurrencyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABE2CEB5F75EC41AEDC697A9 /* WorkspaceConcurrencyTests.swift */; };
 		F82917C5D4EEE3C49FE585D6 /* WorkspaceSessionOrganization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73FBA5FF8548033D25100B8F /* WorkspaceSessionOrganization.swift */; };
 		F8FC99565F35D2D1180607E0 /* NativeCodeTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 497CD2AF387A3D4E010D0A4F /* NativeCodeTextTests.swift */; };
@@ -416,6 +418,7 @@
 		2C2E7DC083302046F6A8A8F9 /* TranscriptMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptMarkdownTests.swift; sourceTree = "<group>"; };
 		2D43B519AC6F5C6AED73D19F /* FreshPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreshPresentationTests.swift; sourceTree = "<group>"; };
 		2F5D5471F98FC65F0BFCE6AE /* NativeTranscriptScrollingPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptScrollingPerformanceTests.swift; sourceTree = "<group>"; };
+		31A2E56B50A7CB82D663D8BB /* ResponseTimelinePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResponseTimelinePresentationTests.swift; sourceTree = "<group>"; };
 		3340991EFCCE90766E50E09B /* HardeningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HardeningTests.swift; sourceTree = "<group>"; };
 		3381B77FFF7B0A812BFE83D9 /* PreparedContextLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparedContextLifecycleTests.swift; sourceTree = "<group>"; };
 		33DA5603258F73BF50E37E97 /* NativeWorkListViewportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeWorkListViewportTests.swift; sourceTree = "<group>"; };
@@ -578,6 +581,7 @@
 		A5639D83C26A60B212F8C617 /* PiApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiApp.swift; sourceTree = "<group>"; };
 		A72F85E8A46CB44E5A0F3BC1 /* GitPanelDiffCaptureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitPanelDiffCaptureTests.swift; sourceTree = "<group>"; };
 		A8647B3FE9F0358A7828C18B /* DesignContrastTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignContrastTests.swift; sourceTree = "<group>"; };
+		A8BE2861E65142ECABB0397A /* TimelinePartRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePartRow.swift; sourceTree = "<group>"; };
 		A8F8EFE1743B3FD7C2925470 /* SessionReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReference.swift; sourceTree = "<group>"; };
 		A95C20D941AB5283002FA94A /* LiveActivityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityStore.swift; sourceTree = "<group>"; };
 		A9D02F4433B4FD22A318BC04 /* ToolCallSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolCallSummary.swift; sourceTree = "<group>"; };
@@ -925,6 +929,7 @@
 				614DCEBE7F26389A933CB544 /* StreamingMarkdownState.swift */,
 				9782CB430B4DF00C356141DE /* SyntaxHighlighter.swift */,
 				6B337EF0C8D778050BA7AF57 /* TaskTranscriptPlan.swift */,
+				A8BE2861E65142ECABB0397A /* TimelinePartRow.swift */,
 				A9D02F4433B4FD22A318BC04 /* ToolCallSummary.swift */,
 				C587D588560B4BE67D413C98 /* TranscriptActivity.swift */,
 				647DAB639CB6BB55020C122C /* TranscriptCopy.swift */,
@@ -1125,6 +1130,7 @@
 				1B640CB5874643AC443BB149 /* ReportPageTests.swift */,
 				697C5999F093A6457E1B28F8 /* ReportWorkerPerformanceTests.swift */,
 				B97738F61D9F091D410CF246 /* RequestContextObservationTests.swift */,
+				31A2E56B50A7CB82D663D8BB /* ResponseTimelinePresentationTests.swift */,
 				EBBE242E5027D3D06BB6C33F /* ReviewConcurrentInteractionLoad.swift */,
 				F325534D88F59553D4D4032C /* RoutingConfigurationTests.swift */,
 				F1D8BFCBFF58FB58A8B7928E /* SessionAccountingCacheTests.swift */,
@@ -1444,6 +1450,7 @@
 				295EFBABF72B68A91180C485 /* TerminalScreen.swift in Sources */,
 				7CCC97C8F40B1B1E55957494 /* TerminalScreenReading.swift in Sources */,
 				6D8B372FAC3BF178B7E90CE3 /* TerminalView.swift in Sources */,
+				41EB0436B76F93B4790F57EC /* TimelinePartRow.swift in Sources */,
 				F12B481CDC2348D23E76AF59 /* ToolCallSummary.swift in Sources */,
 				123A186ECB3B408B8403CDFD /* TopicRecord.swift in Sources */,
 				1DCDF7F5164A6F002CA291B3 /* TopicSessionDrag.swift in Sources */,
@@ -1595,6 +1602,7 @@
 				64A10C62424EC36F7E6606F8 /* ReportPageTests.swift in Sources */,
 				9CCFA9DA3485F6006B94A500 /* ReportWorkerPerformanceTests.swift in Sources */,
 				F3A3AD24EAD1774745590D05 /* RequestContextObservationTests.swift in Sources */,
+				F78437261A2459DBEF148538 /* ResponseTimelinePresentationTests.swift in Sources */,
 				E1816F663DFC891AF8FD2ECD /* ReviewConcurrentInteractionLoad.swift in Sources */,
 				2EAD6050103DE234170B4E78 /* RoutingConfigurationTests.swift in Sources */,
 				91FD0E5B1BD5765E3A886BA8 /* SessionAccountingCacheTests.swift in Sources */,

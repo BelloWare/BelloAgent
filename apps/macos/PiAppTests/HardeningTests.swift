@@ -58,25 +58,25 @@ final class HardeningTests: XCTestCase {
         try await model.store?.put(TranscriptAnchor(id: "m10", offset: -12, followsBottom: false), kind: "anchor", id: "fixture")
         await model.select("fixture")
         // An unloaded chat opens at its newest page; an old reading position outside it is dropped.
-        XCTAssertEqual(model.selected?.messages.last?.id, "m99"); XCTAssertEqual(model.selected?.messages.first?.id, "m82"); XCTAssertEqual(model.selected?.before, "m82")
+        XCTAssertEqual(model.selected?.messages.last?.id, "m99"); XCTAssertEqual(model.selected?.messages.first?.id, "m97"); XCTAssertEqual(model.selected?.before, "m97")
         XCTAssertFalse(model.selected?.browsingHistory == true); XCTAssertTrue(model.hosts.isEmpty)
         XCTAssertNil(model.selected?.scrollAnchor, "A position outside the page would leave the reader at the page top")
         XCTAssertLessThanOrEqual(model.selected?.messages.reduce(0) { $0 + $1.text.utf8.count } ?? 0, 300_000)
         // Scrolling up prepends the page before the first row without starting a host.
         let view = try XCTUnwrap(model.selected)
-        model.loadEarlier(sessionID: "fixture")
-        for _ in 0..<500 where view.messages.first?.id == "m82" { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(view.messages.first?.id, "m64"); XCTAssertEqual(view.messages.last?.id, "m99"); XCTAssertEqual(view.before, "m64")
-        XCTAssertEqual(view.scrollAnchor?.id, "m82"); XCTAssertEqual(view.scrollAnchor?.followsBottom, false)
+        model.historyViewportReady("fixture", generation: view.presentationGeneration)
+        let loaded = await model.loadEarlierPage(sessionID:"fixture")
+        XCTAssertTrue(loaded)
+        XCTAssertEqual(view.messages.first?.id, "m94"); XCTAssertEqual(view.messages.last?.id, "m99"); XCTAssertEqual(view.before, "m94")
+        XCTAssertNil(view.scrollAnchor,"A model-only page read leaves viewport ownership to its pane")
         XCTAssertTrue(model.hosts.isEmpty)
         model.latest(sessionID: "fixture")
-        for _ in 0..<500 where view.messages.first?.id == "m64" { try await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<500 where view.messages.first?.id == "m94" { try await Task.sleep(for: .milliseconds(10)) }
         await model.select("fixture")
-        XCTAssertEqual(model.selected?.messages.last?.id, "m99"); XCTAssertEqual(model.selected?.messages.first?.id, "m82"); XCTAssertFalse(model.selected?.browsingHistory == true)
+        XCTAssertEqual(model.selected?.messages.last?.id, "m99"); XCTAssertEqual(model.selected?.messages.first?.id, "m97"); XCTAssertFalse(model.selected?.browsingHistory == true)
         let earlier = try await model.history.read(path: path.path, before: "m10")
         XCTAssertEqual(earlier.messages.last?.id, "m9")
-        let latest = try await model.history.read(path: path.path, around: "missing")
-        XCTAssertEqual(latest.messages.last?.id, "m99")
+        do { _ = try await model.history.read(path:path.path,around:"missing"); XCTFail("A lost boundary must not silently jump to the latest page") } catch { }
         let found = try await model.history.searchContent(path: path.path, query: "", start: 0)
         XCTAssertEqual(found.hits.count, 100); XCTAssertEqual(found.total, 100)
         let copied = try await model.history.copyContentPage(path: path.path, first: 11, last: 11, cursor: .init(index: 11, offset: 0), revision: found.revision)
