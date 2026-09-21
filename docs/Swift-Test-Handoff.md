@@ -36,6 +36,24 @@ records optimized native/helper tests, explicit actor checks and publication.
 Current release records take precedence over the historical matrices below.
 Installation/update rehearsals remain skipped by owner instruction.
 
+## 0.1.71 fresh presentation and history acceptance
+
+Read [SS01–SS10, PG01–PG20 and UX01–UX15](Fresh-Session-Loading-2026-09-21.md).
+Use native `FreshPresentationTests`, `WorkspaceLoadingTests`, `StorageTruthTests`,
+`AutomaticContextTests`, `WorkspaceRefreshLifecycleTests`, `SideTests`, native
+document/scroll/Markdown/disclosure tests and the report/read-receipt boundaries.
+Helper `HistoryWindowTests` and `DisplayObservationTests` cover the version-2
+turn-aware page/envelope contract. Keep the executable Responses/capture suite.
+
+Measure both the fifty fresh native UI generations and the cold-then-indexed
+saved-file selection fixture in Release, without simultaneous compilation.
+Their draw opportunity ends after useful geometry, not at source snapshot
+publication. Preserve the two-scroll logical Markdown anchor regression; a
+hosting ancestor's later intrinsic-height adoption must not shift the reader.
+Optional idle measurement may pause when a fixture window is occluded: visit
+provisional offscreen rows before asserting their exact geometry. Do not remove
+stacking/selection/copy assertions or call provisional heights exact.
+
 ## 0.1.66 context scope acceptance
 
 Read [CTX-01–CTX-20](Context-Meter-Fix-2026-09-20.md) and the

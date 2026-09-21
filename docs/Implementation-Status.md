@@ -12,7 +12,14 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Unreleased after 0.1.70: Live Monitor B.** The owner's selected popup now
+**Preparing 0.1.71: fresh conversation loading and Live Monitor B.** Ordinary
+selection/revisit loads the latest three display turns with generation-owned
+loading, safe drafts/Stop, explicit earlier/newer/retry controls and a bounded
+moving history window. Native Markdown prepares visible sections first and
+preserves logical reading anchors through deferred sizing. Source indexing is
+cancellable and no longer silently stops at 100,000 records. See the
+[implementation and 45 acceptance dispositions](Fresh-Session-Loading-2026-09-21.md).
+The owner's selected popup now
 supports automatic light/dark appearance, project and 5m–24h ranges, per-model
 reported TPS history, retained output/cost/cache totals and model distribution.
 Dragging the chart zooms its time axis and retained accounting together; reset,

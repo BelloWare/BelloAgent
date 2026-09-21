@@ -117,6 +117,21 @@ or to include unsaved drafts and in-flight streamed output.
 
 ## 3. Interaction and safety
 
+Opening or revisiting a chat creates a fresh transcript presentation, initially
+showing the latest three delivered-input turns (up to 60 rows and a 256 KiB page
+envelope). Clicking the already-selected chat or returning from Reports keeps its
+current page. Explicit message links open the requested bounded range. Drafts,
+helper work, tools, accounting and full exports remain independent of this window.
+Loading, known-empty and failed states are distinct; restore composer metadata
+first and keep Stop usable. Earlier/newer controls share stable exclusive cursors,
+retry in place, and retain a reader-centered window of at most 500 rows/about 4 MB.
+A long turn exposes its initiating input and continuation rather than silently
+cutting off history. Large-source indexing is cancellable, reports progress, and
+never labels a safety stop or index segment as the end of the conversation.
+Long Markdown answers measure visible blocks first; huge settled code fences use
+browsable source sections and full-code copy. See the
+[fresh-presentation implementation and acceptance](docs/Fresh-Session-Loading-2026-09-21.md).
+
 Usage Report is a dedicated page inside the main window. Its default view is a
 small summary, time range, chart and request list; filters and detailed timings
 expand on demand. Active narrowing remains visible when filters are collapsed.

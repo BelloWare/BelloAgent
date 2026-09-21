@@ -638,11 +638,13 @@ geometry: streaming below the viewport must not move the reader's rows.
 Starting in 0.1.55, an AppKit scroll document retains the exact frames and row
 hosts, but attaches only the viewport and a small surrounding buffer. Selected
 native text stays attached outside that buffer so scrolling does not discard
-selection. Replies with at least 32 top-level Markdown blocks similarly limit
-attached block hosts without truncating content or copy targets. Native reflow
+selection. Long Markdown replies similarly limit attached block hosts without truncating
+content or copy targets. Native reflow
 preserves the visible row and pixel offset, including when an earlier disclosure
-changes height while scrolling. Full geometry is measured when content or width
-changes; scrolling reuses the cached geometry.
+changes height while scrolling. Visible geometry is measured when content or width changes; valid exact geometry
+is reused. Since 0.1.71, distant blocks in large answers retain provisional
+geometry separately and resolve near the viewport, preserving a logical source
+block and offset. Provisional sizes never enter the shared exact cache.
 
 What the reader has opened or closed in a conversation (a turn's work, one tool
 call's card, exposed reasoning, a compaction note) is conversation state, not
@@ -1210,8 +1212,8 @@ records measured improvements and deferred work separately. Tool-list height
 identity excludes unrelated prose. A live code fence starts with a persistent
 native text leaf; small already-complete fences keep their previous renderer.
 Many-block answers retain lightweight source/geometry records while distant,
-unselected native hosts can be reclaimed by the shared idle scheduler. Cold
-inner-block geometry is still exact and still requires a full measurement.
+unselected native hosts can be reclaimed by the shared idle scheduler. That version still measured all cold inner-block geometry; 0.1.71 replaces that
+path with visible-block preparation and separately tracked provisional heights.
 
 Tables above 40 rows or eight columns show a labeled 20-row/eight-column inline
 preview. The full native table window reuses visible cells, offers complete cell
@@ -1311,3 +1313,48 @@ streams. Only elapsed labels tick once per second; clocks perform no database,
 provider or transcript queries. Reported accounting signals update live rows,
 and hiding the popup cancels its pending refresh and archive polling. Historical
 charts and model distribution retain their independent bounded query cadence.
+
+## 17. Fresh transcript presentations in 0.1.71
+
+`ConversationPresentation` owns a UUID generation and cancellable navigation,
+older/newer and optional-read tasks. It does not own the agent runtime. Ordinary
+selection/revisit publishes loading before any await, restores composer metadata,
+and asks one read-only adapter for the latest three display turns. Re-selecting
+the same chat and returning from Reports are idempotent. Saved sides get their
+own generations. Late results, focus, viewport and progress callbacks validate
+ownership; closing or leaving a pane cancels its presentation tasks.
+
+`HistoryWindowPolicy` is compiled by the native app and helper. Delivered user
+inputs (including steering) delimit display turns. Version-2 `session.history`
+returns an exclusive older/newer cursor, incarnation, branch lineage, start/end
+coverage, messages and a partial-turn input reference. Latest/around/older/newer
+share 3-turn, 60-row and 256 KiB encoded-envelope bounds. Legacy numeric calls
+retain their adapter. Display windows never become replay context or export scope.
+
+`HistoryReader` uses a private derived SQLite offset/visible-position index with
+bounded page cache and eight retained indexes. Full supported files are indexed;
+the former 100,000-record ceiling is a cancellation/progress segment only. The
+128 MiB file and 32 MiB record safety bounds remain. Compact replay-validation
+metadata is temporary and source-size-bounded; this is not a constant-memory
+parser for arbitrary files. File incarnation plus committed-prefix SHA-256 lets
+ordinary appends preserve cursors and rejects rewrites. Source handoff passes
+stable entry IDs and lineage, never numeric file positions. Browsing remains
+read-only; incomplete tails and missing identities are explicit failures.
+
+The reader-centered resident window admits requested rows at the appropriate edge
+and evicts the opposite edge within 500 rows/about 4 MB. Selection and a current
+reading anchor are pinned. Admission failure leaves the page/cursor intact.
+Nonoverlapping live snapshots expose a gap instead of replacing history. Latest
+fetches a fresh source window. Visible Earlier/Retry/Newer controls share the
+same single-flight loaders; initial short-viewport fill admits at most two pages.
+
+The native document measures rich pages near the viewport even below 32 rows;
+small plain pages retain a bounded fast path. Large Markdown containers keep
+source identities and provisional descriptors, resolving four visible blocks per
+step. Settled code fences beyond 32 KiB use UTF-8-safe sections of at most 8 KiB,
+with full-copy source preserved. Visible exact layout and placement gate readiness;
+a separate probe records a native draw opportunity, not physical scanout.
+Optional context/accounting work starts after readiness and input quiet. Existing
+motion policy and per-session disclosure ownership remain intact. See
+[implementation/acceptance](docs/Fresh-Session-Loading-2026-09-21.md) for measured
+costs and unperformed physical-device checks.
