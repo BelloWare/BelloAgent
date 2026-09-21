@@ -323,12 +323,7 @@ enum TranscriptActivity {
         return text + "M"
     }
     static func formatTurnCost(_ value: Double) -> String {
-        if value == 0 { return "$0" }
-        if value >= 1 { return String(format: "$%.2f", value) }
-        if value >= 0.01 { return String(format: "$%.3f", value) }
-        var text = String(format: "%.5f", value)
-        while text.hasSuffix("0") { text.removeLast() }
-        return "$" + text
+        compactGatewayUSD(value)
     }
     /// The first sentence of exposed reasoning, bounded, for the reply line's teaser.
     static func reasoningTeaser(_ text: String, max: Int = 90) -> String? {

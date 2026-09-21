@@ -191,6 +191,19 @@ func gatewayUSD(_ value: Double?) -> String {
     return "$" + text + " USD"
 }
 
+/// Compact turn/footer amount. Reported zero is meaningful, and a positive
+/// micro-cost must never round into zero or an empty fractional part.
+func compactGatewayUSD(_ value: Double?) -> String {
+    guard let value, value.isFinite, value >= 0 else { return "cost n/a" }
+    if value == 0 { return "$0" }
+    if value >= 1 { return String(format: "$%.2f", value) }
+    if value >= 0.01 { return String(format: "$%.3f", value) }
+    if value < 0.00001 { return String(gatewayUSD(value).dropLast(4)) }
+    var text = String(format: "%.5f", value)
+    while text.hasSuffix("0") { text.removeLast() }
+    return "$" + text
+}
+
 extension PayloadArchive {
     static let gatewayAggregateSQL = """
     COUNT(*) AS requests,COUNT(cost_usd) AS cost_samples,SUM(cost_usd) AS cost_usd,

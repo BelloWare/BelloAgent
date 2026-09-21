@@ -173,6 +173,24 @@ final class TranscriptActivityTests: XCTestCase {
         XCTAssertEqual(TranscriptActivity.formatTurnCost(0), "$0"); XCTAssertEqual(TranscriptActivity.formatTurnCost(0.0004), "$0.0004"); XCTAssertEqual(TranscriptActivity.formatTurnCost(0.0123), "$0.012"); XCTAssertEqual(TranscriptActivity.formatTurnCost(2), "$2.00")
     }
 
+    func testTurnInfoAndSessionFooterPreserveZeroAndMicroCosts() {
+        for (value, expected) in [(0.0, "$0"), (0.000001, "$0.000001"), (0.00000001, "$0.00000001")] {
+            let accounting = reported { $0.costUSD = value }
+            let turn = TranscriptActivity.aggregate([message("a", "assistant", "Done", accounting: accounting)])
+            XCTAssertTrue(TranscriptActivity.usageBreakdown(turn).hasSuffix(expected))
+            XCTAssertEqual(TranscriptActivity.formatTurnCost(value), expected)
+            XCTAssertEqual(compactGatewayUSD(accounting.costUSD), expected)
+            XCTAssertTrue(TranscriptActivity.accountingPresentation(accounting).usage.hasSuffix(expected + " USD"))
+        }
+        XCTAssertEqual(compactGatewayUSD(1e-10), "$1e-10")
+        XCTAssertEqual(compactGatewayUSD(nil), "cost n/a")
+        XCTAssertEqual(compactGatewayUSD(-1), "cost n/a")
+        XCTAssertEqual(compactGatewayUSD(.nan), "cost n/a")
+        XCTAssertEqual(compactGatewayUSD(.infinity), "cost n/a")
+        let missing = reported { $0.costUSD = nil; $0.costSamples = 0 }
+        XCTAssertFalse(TranscriptActivity.accountingPresentation(missing).usage.contains("$"))
+    }
+
     func testDiffsTeasersAndClocks() {
         let edit = tool("e", "edit", input: "{\"path\":\"/repo/src/retry.swift\",\"oldText\":\"let a = 1\\nlet b = 2\\nlet c = 3\",\"newText\":\"let a = 1\\nlet b = 20\\nlet c = 3\\nlet d = 4\"}", output: "ok", durationMs: 3, path: "/repo/src/retry.swift", added: 2, removed: 1)
         XCTAssertEqual(TranscriptActivity.lineDiff("let a = 1\nlet b = 2\nlet c = 3", "let a = 1\nlet b = 20\nlet c = 3\nlet d = 4"), [

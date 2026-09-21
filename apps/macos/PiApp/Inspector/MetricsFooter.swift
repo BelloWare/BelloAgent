@@ -187,9 +187,7 @@ struct MetricsFooter: View {
         return budget + elapsed + split
     }
     private var compactCost: String {
-        guard let value = footer.gateway.costUSD, value.isFinite, value >= 0 else { return "cost n/a" }
-        if value == 0 { return "$0" }
-        return value < 0.01 ? String(format: "$%.4f", value) : String(format: "$%.2f", value)
+        compactGatewayUSD(footer.gateway.costUSD)
     }
     private var displayedContext: [String: WireValue] { model.displayedContext(session) }
     private var contextMeter: ContextMeterPresentation {
