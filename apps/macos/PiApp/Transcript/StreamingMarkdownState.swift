@@ -34,7 +34,10 @@ final class StreamingMarkdownState {
         let restarted = identity != messageID || (streaming && (wasStreaming == false || !next.hasPrefix(source)))
         let replacement = restarted || self.style != style || !next.hasPrefix(source)
         if replacement { generation &+= 1; settled.removeAll(keepingCapacity: true) }
-        if restarted { records = [] }
+        // A terminal payload can replace, rather than extend, the streamed
+        // source. Equal text or equal offsets in that new source are not the
+        // old blocks; only append/finalization may retain their identities.
+        if replacement { records = [] }
         source = next; self.style = style; messageID = identity; wasStreaming = streaming; revision &+= 1
         if streaming {
             var nextSettled: [(range: Range<Int>, records: [StreamingMarkdownRecord])] = []
@@ -64,7 +67,6 @@ final class StreamingMarkdownState {
             records = canonical.map { value in
                 let prior = records.first { !used.contains($0.id) &&
                     ($0.id.sourceOffset == value.id.sourceOffset || ($0.range.contains(value.id.sourceOffset) && Self.sameContainer($0.block, value.block))) }
-                    ?? records.first { !used.contains($0.id) && $0.block == value.block }
                 var id = prior?.id ?? value.id
                 while !used.insert(id).inserted { id.component += 1 }
                 return StreamingMarkdownRecord(id: id, range: value.range, block: value.block, provisional: false)

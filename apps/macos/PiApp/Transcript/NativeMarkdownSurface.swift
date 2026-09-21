@@ -76,7 +76,7 @@ private struct NativeHostedMarkdownBlock: View {
     private weak var selectionEditor: NSTextView?
     private var restoredSelection: (range: NSRange, original: NSRange, rendered: String)?
     private var selectionRevision = 0
-    private var reconciliationSource: String?
+    private var reconciliation: MarkdownSelection.Reconciliation?
     private var width: CGFloat = TranscriptMetrics.pageWidth
     private var sizes: [CGSize] = []
     var frame = CGRect.zero
@@ -99,7 +99,7 @@ private struct NativeHostedMarkdownBlock: View {
     /// Geometry and source outlive the expensive native tree. No sizing
     /// surrogate is shared, and a selected owner is excluded by the caller.
     func releaseDetachedHost() { if view?.superview == nil { view = nil } }
-    @discardableResult func update(_ item: NativeMarkdownItem, source: () -> String? = { nil }) -> Bool {
+    @discardableResult func update(_ item: NativeMarkdownItem, source: () -> MarkdownSelection.Source? = { nil }) -> Bool {
         guard self.item != item else { return false }
         decoration.update(caret: item.caret, target: item.headingTarget)
         guard !self.item.hasSameGeometry(as: item) else { self.item = item; return false }
@@ -107,12 +107,14 @@ private struct NativeHostedMarkdownBlock: View {
         restoredSelection = nil; selectionEditor = nil
         if case .paragraph(let oldText) = self.item.block, case .paragraph(let newText) = item.block {
             let old = String(oldText.characters), new = String(newText.characters)
-            if !new.hasPrefix(old) { reconciliationSource = source() }
+            if !new.hasPrefix(old) {
+                reconciliation = source().map {
+                    MarkdownSelection.Reconciliation(previous: old, source: $0, rendered: new, keepsSoftBreaks: item.style.keepsSoftBreaks)
+                }
+            }
             if let editor = view?.window?.firstResponder as? NSTextView,
                textOwners.contains(where: { ($0 as? NSTextField)?.currentEditor() === editor }),
-               let raw = reconciliationSource,
-               let range = MarkdownSelection.canonicalRange(editor.selectedRange(), literal: old, source: raw,
-                    rendered: new, keepsSoftBreaks: item.style.keepsSoftBreaks) {
+               !new.hasPrefix(old), let range = reconciliation?.range(editor.selectedRange()) {
                 selectionEditor = editor
                 restoredSelection = (range, editor.selectedRange(), new)
             }
@@ -213,9 +215,7 @@ private struct NativeHostedMarkdownBlock: View {
               let window = surface.window, owner.window === window else { return nil }
         let rendered = (owner as? NSTextField)?.stringValue ?? (owner as? NSTextView)?.string ?? ""
         let range: NSRange
-        if !rendered.hasPrefix(anchor.rendered), let raw = reconciliationSource,
-           let mapped = MarkdownSelection.canonicalRange(anchor.range, literal: anchor.rendered, source: raw,
-                rendered: rendered, keepsSoftBreaks: item.style.keepsSoftBreaks) {
+        if !rendered.hasPrefix(anchor.rendered), let mapped = reconciliation?.range(anchor.range, from: anchor.rendered, to: rendered) {
             range = mapped
         } else { range = anchor.range }
         let screen = owner.accessibilityFrame(for: range)
@@ -359,10 +359,7 @@ private struct NativeHostedMarkdownBlock: View {
             if let retained = old[ids[index]] {
                 if retained.update(item, source: {
                     guard let sourceText, let sourceRanges, sourceRanges.indices.contains(index) else { return nil }
-                    let range=sourceRanges[index], bytes=sourceText.utf8
-                    guard range.lowerBound>=0, range.upperBound<=bytes.count else { return nil }
-                    let start=bytes.index(bytes.startIndex,offsetBy:range.lowerBound), end=bytes.index(start,offsetBy:range.count)
-                    return String(decoding:bytes[start..<end],as:UTF8.self)
+                    return MarkdownSelection.Source(sourceText, bytes: sourceRanges[index])
                 }) { changed = true; changedFrom = min(changedFrom, index) }
                 next.append(retained)
             } else { next.append(NativeMarkdownBlockHost(item: item)); changed = true }
