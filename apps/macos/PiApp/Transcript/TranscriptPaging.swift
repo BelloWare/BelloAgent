@@ -65,6 +65,10 @@ enum TranscriptPaging {
     static var rootUpdates = 0
     static var hostBuildSeconds = 0.0
     static var hostBuilds = 0
+    static var hostReleaseSeconds = 0.0
+    static var viewportLayoutSeconds = 0.0
+    static var rowAttachmentSeconds = 0.0
+    static var rowDetachmentSeconds = 0.0
     static var placementSeconds = 0.0
     static var validationSeconds = 0.0
     static var intrinsicInvalidations = 0
@@ -76,6 +80,8 @@ enum TranscriptPaging {
         markdownUpdateSeconds = 0; markdownLayoutSeconds = 0; markdownBlocksMeasured = 0; workListCardsMeasured = 0
         mountSeconds = 0; rowLoopSeconds = 0; rowSizingPasses = 0; rowSizingSeconds = 0
         rootUpdateSeconds = 0; rootUpdates = 0; hostBuildSeconds = 0; hostBuilds = 0
+        hostReleaseSeconds = 0; viewportLayoutSeconds = 0
+        rowAttachmentSeconds = 0; rowDetachmentSeconds = 0
         placementSeconds = 0; validationSeconds = 0; intrinsicInvalidations = 0
     }
 }

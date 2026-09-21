@@ -178,6 +178,8 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
             return (key, try XCTUnwrap(page.rowFrame(of: key)))
         }
         let viewsBefore = viewCounts(in: hosted)
+        TranscriptLayoutClock.reset(); TranscriptLayoutClock.recording = true
+        defer { TranscriptLayoutClock.recording = false }
         var times: [Double] = [], synchronousTimes: [Double] = []
         // Three smooth 40-step traversals in different parts of the document.
         // 96-point increments are closer to actual continuous scrolling than a
@@ -216,6 +218,14 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
         print(String(format: "SCROLL PERCENTILES %@ p50=%.3f p95=%.3f p99=%.3f maxSync=%.3f ms", label,
                      ordered[Int(Double(ordered.count - 1) * 0.50)], p95,
                      ordered[Int(Double(ordered.count - 1) * 0.99)], synchronousTimes.max() ?? 0))
+        print(String(format: "SCROLL PHASES %@ mount=%.2f build=%.2f placement=%.2f validation=%.2f rowSizing=%.2f markdownUpdate=%.2f markdownLayout=%.2f viewportLayout=%.2f release=%.2f attach=%.2f detach=%.2f ms; builds=%d mounts=%d sizing=%d", label,
+                     TranscriptLayoutClock.mountSeconds * 1000, TranscriptLayoutClock.hostBuildSeconds * 1000,
+                     TranscriptLayoutClock.placementSeconds * 1000, TranscriptLayoutClock.validationSeconds * 1000,
+                     TranscriptLayoutClock.rowSizingSeconds * 1000, TranscriptLayoutClock.markdownUpdateSeconds * 1000,
+                     TranscriptLayoutClock.markdownLayoutSeconds * 1000, TranscriptLayoutClock.viewportLayoutSeconds * 1000,
+                     TranscriptLayoutClock.hostReleaseSeconds * 1000, TranscriptLayoutClock.rowAttachmentSeconds * 1000,
+                     TranscriptLayoutClock.rowDetachmentSeconds * 1000, TranscriptLayoutClock.hostBuilds,
+                     TranscriptLayoutClock.mountedRows, TranscriptLayoutClock.rowSizingPasses))
         let validations = rowsAfter.reduce(0) { $0 + $1.intrinsicValidationCount } - validationsBefore
         print(String(format: "SCROLL PERF %@: %d steps, total mean %.3f ms, p95 %.3f ms, max %.3f ms; synchronous mean %.3f ms; exact-width cache misses %d; intrinsic validations %d; NSViews %d -> %d; selectable fields %d -> %d; row hosts %d -> %d; document %.0f pt", label, times.count, times.reduce(0, +) / Double(times.count), p95, ordered.last ?? 0, synchronousTimes.reduce(0, +) / Double(synchronousTimes.count), remeasurements, validations, viewsBefore.all, viewsAfter.all, viewsBefore.selectable, viewsAfter.selectable, rowsBefore.count, rowsAfter.count, documentHeight))
     }

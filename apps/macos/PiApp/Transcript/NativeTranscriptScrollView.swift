@@ -713,7 +713,9 @@ final class TranscriptNativeScrollView: NSScrollView {
                 || (row.superview != nil && row.needsMountedValidation && nearby))
             if needed, row.superview == nil {
                 if TranscriptLayoutClock.recording { TranscriptLayoutClock.mountedRows += 1 }
+                let started = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
                 addSubview(row)
+                if TranscriptLayoutClock.recording { TranscriptLayoutClock.rowAttachmentSeconds += TranscriptLayoutClock.now - started }
                 row.prepareToDraw()
             }
             if needed, row.superview != nil, row.awaitingViewportLayout {
@@ -723,8 +725,16 @@ final class TranscriptNativeScrollView: NSScrollView {
                 row.layoutForViewport()
             }
             if !needed, !preparingMotion, motion == nil {
-                if row.superview != nil { row.removeFromSuperview() }
-                if !nearby { row.releaseHost() }
+                if row.superview != nil {
+                    let started = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
+                    row.removeFromSuperview()
+                    if TranscriptLayoutClock.recording { TranscriptLayoutClock.rowDetachmentSeconds += TranscriptLayoutClock.now - started }
+                }
+                if !nearby {
+                    let started = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
+                    row.releaseHost()
+                    if TranscriptLayoutClock.recording { TranscriptLayoutClock.hostReleaseSeconds += TranscriptLayoutClock.now - started }
+                }
                 else if !row.isHosted { cold = true }
             }
         }

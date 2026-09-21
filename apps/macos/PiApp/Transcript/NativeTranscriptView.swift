@@ -940,6 +940,8 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     /// nothing here; a borrowed height is confirmed once, the first time the
     /// row is actually drawn.
     func layoutForViewport() {
+        let started = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
+        defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.viewportLayoutSeconds += TranscriptLayoutClock.now - started } }
         let hosted = host()
         if hosted.needsLayout || needsLayout {
             nativeSizingPasses += 1
