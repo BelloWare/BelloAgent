@@ -7,6 +7,24 @@ later correction explicitly requires the same reasoning effort, the model's
 allowed output cap, no visible-length target, and summary instructions last.
 No subagents, live-provider credentials, installation or updater rehearsal used.
 
+Owner correction, 2026-09-21 (after 0.1.74): recorded unknown tool outcomes and
+warning phrases in tool text no longer block compaction or checkpoint restore.
+Compaction preserves their source metadata and never invokes historical tools.
+The original uncertainty-blocking requirement below is superseded by this change.
+
+Validation for this unreleased correction: **28 helper tests pass** in
+`CompactionSafetyTests`, `CompactionTaskRegressionTests` and `QueueHandoffTests`.
+New regressions exercise manual/threshold compaction with unknown results,
+checkpoint restore, successful reads containing warning text, retained outcome
+metadata and zero historical tool invocations. Two existing queue assertions
+were updated to the automatic post-compaction handoff released in 0.1.74;
+pending text still cannot enter the frozen summary, removed text never runs,
+and only the intended session receives the queued message. The first wider run
+exposed those stale expectations; the final 28-case run passes. Reproduction:
+`swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests" --filter 'CompactionSafetyTests|CompactionTaskRegressionTests|QueueHandoffTests'`.
+Logs are in session scratch `compaction-outcome-{check,regression,regression-final}.log`.
+No native UI change, deployment, installation or updater test is part of this correction.
+
 ## Behavior and schema
 
 - One user task can compact between complete assistant/tool batches. A current
@@ -14,7 +32,8 @@ No subagents, live-provider credentials, installation or updater rehearsal used.
   context. Follow-ups establish a new task; steering keeps its original root.
   Legacy inputs with ambiguous ownership are protected conservatively.
 - Complete assistant/call/result groups are indivisible, with occurrence-scoped
-  call IDs. Missing or uncertain results block compaction for review. A giant
+  call IDs. Missing/malformed call-result pairs block compaction. Recorded unknown
+  outcomes remain historical data and do not block it. A giant
   newest group can be summarized; it does not impose an impossible retention floor.
 - Sources include bounded tool arguments, recorded outcomes, image metadata,
   prior summaries and explicit omissions. `history_read` accepts only reachable

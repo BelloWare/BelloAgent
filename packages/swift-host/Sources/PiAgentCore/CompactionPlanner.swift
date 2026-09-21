@@ -59,15 +59,9 @@ enum CompactionPlanner {
             while !pending.isEmpty {
                 guard index < messages.count, messages[index].role == "toolResult", let id=messages[index].toolCallId,
                       pending.remove(id) != nil else { throw damaged("An assistant/tool batch is incomplete; inspect its effects before compacting") }
-                let tool=messages[index]
-                let lower=tool.text.lowercased()
-                guard tool.toolStats?["outcome"].text != "unknown",
-                      !lower.contains("outcome unknown"), !lower.contains("outcome may be unknown"),
-                      !lower.contains("outcome is unknown"),
-                      !lower.contains("effects may already have occurred") else {
-                    throw AgentError("compact_unsafe", "A tool has an uncertain outcome. Inspect its effects before compacting or continuing; no tool was replayed.")
-                }
-                group.append(tool); index += 1
+                // Recorded outcomes and tool text are historical data for the
+                // summary, not prerequisites for compacting a complete group.
+                group.append(messages[index]); index += 1
             }
             result.append(ReplayGroup(messages:group))
         }

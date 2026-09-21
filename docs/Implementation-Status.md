@@ -12,6 +12,14 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
+**Unreleased follow-up, 2026-09-21:** at the owner's request, compaction and
+checkpoint restore no longer reject recorded unknown tool outcomes or phrases
+in tool output. Call/result pairing validation and the existing outcome metadata
+remain. **28 focused helper tests pass**, including manual/automatic compaction,
+successful reads containing warning text, retained unknown results, no historical
+tool invocation, queue handoff and concurrent compaction. See the owner correction
+in [the compaction record](Compaction-Implementation-2026-09-20.md).
+
 **Bello Agent 0.1.74/build 78 is released and publicly verified:** selected
 assistant text opens an unsent quoted side draft. Elapsed time uses a consistent
 uptime clock, and its display sits before Generating response. Pending follow-ups

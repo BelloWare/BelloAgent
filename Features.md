@@ -94,8 +94,9 @@ still shares its independent eight-physical-request budget across all chunks.
 
 **Compaction, 0.1.64:** one long user task can compact between complete model/tool
 batches. Original task input and delivered steering remain verbatim. Complete
-assistant/call/result groups are retained or summarized together; uncertain tool
-effects require inspection. Large sources use bounded evidence excerpts and
+assistant/call/result groups are retained or summarized together. Recorded unknown
+outcomes and warning phrases in tool output do not block compaction; their recorded
+status and evidence remain available to the summary. Large sources use bounded evidence excerpts and
 chunk/merge requests, with eight physical summary attempts per operation.
 `history_read` retrieves retained evidence in UTF-8 pages without rerunning tools.
 Summary output has no fixed 4,096-token cap: use the selected model ceiling,

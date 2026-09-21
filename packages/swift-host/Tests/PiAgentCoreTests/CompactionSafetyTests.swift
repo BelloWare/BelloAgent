@@ -84,7 +84,7 @@ final class CompactionSafetyTests: XCTestCase {
         var raw=try fixtureProfile().raw; raw["contextWindow"]=JSON(window); raw["maxOutputTokens"]=256
         return try AgentSession(id:UUID().uuidString,profile:Profile(raw),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),seed:messages,compactionPolicy:policy)
     }
-    func testAtomicGroupsAllowRepeatedCallIDsButRejectOrphansAndUncertainResults() throws {
+    func testAtomicGroupsAllowRecordedOutcomesButRejectOrphans() throws {
         let a=toolReply(["write","edit"]).message
         func result(_ id:String) -> ChatMessage { var m=ChatMessage(role:"toolResult",content:[textBlock("written")]);m.toolCallId=id;m.toolStats=["outcome":"completed"];return m }
         let r1=result("call-0"),r2=result("call-1"),b=toolReply(["write"]).message,r3=result("call-0")
@@ -93,9 +93,54 @@ final class CompactionSafetyTests: XCTestCase {
         XCTAssertThrowsError(try CompactionPlanner.groups([a,r1]))
         XCTAssertThrowsError(try CompactionPlanner.groups([r1]))
         var unknown=r2;unknown.toolStats=["outcome":"unknown"]
-        XCTAssertThrowsError(try CompactionPlanner.groups([a,r1,unknown]))
+        let uncertainMessages=[a,r1,unknown]
+        let uncertainGroups=try CompactionPlanner.groups(uncertainMessages)
+        XCTAssertEqual(uncertainGroups[0].messages.last?.toolStats?["outcome"].text,"unknown")
+        let checkpoint:JSON=["id":"summary","summary":"Earlier work","nativeKeptIDs":.array(uncertainMessages.map { JSON($0.id) })]
+        let restored=try CompactionCheckpoint.restore(checkpoint,context:uncertainMessages)
+        XCTAssertEqual(restored.kept.last?.toolStats?["outcome"].text,"unknown")
         let source=try CompactionSourceBuilder.records(groups,policy:CompactionPolicy()).joined()
         for required in ["write","edit","arguments","value","observedOutcome","completed","owningAssistantId","history_read"] { XCTAssertTrue(source.contains(required),required) }
+    }
+    func testSuccessfulToolOutputCanMentionUncertainOutcomes() throws {
+        let assistant=toolReply(["read"]).message
+        var result=ChatMessage(role:"toolResult",content:[textBlock("Documentation: outcome unknown; outcome may be unknown; outcome is unknown; effects may already have occurred.")])
+        result.toolCallId="call-0";result.toolName="read";result.toolStats=["outcome":"completed"]
+        let groups=try CompactionPlanner.groups([assistant,result])
+        XCTAssertEqual(groups[0].messages.last?.text,result.text)
+        let records=try CompactionSourceBuilder.records(groups,policy:CompactionPolicy())
+        let observed=try JSON.parse(Data(records[1].utf8))
+        XCTAssertEqual(observed["observedOutcome"].text,"completed")
+    }
+    func testManualAndAutomaticCompactionAllowUnknownOutcomesWithoutReplayingTools() async throws {
+        let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
+        for automatic in [false,true] {
+            var raw=try fixtureProfile().raw;raw["contextWindow"]=6000;raw["maxOutputTokens"]=256
+            let client=SummaryProbe(),tools=CountingCompactionTools()
+            let assistant=toolReply(["write"]).message
+            var result=ChatMessage(role:"toolResult",content:[textBlock("Interrupted before the result was recorded. Outcome unknown.\n"+String(repeating:"Historical evidence. ",count:4000))])
+            result.toolCallId="call-0";result.toolName="write";result.isError=true;result.toolStats=["outcome":"unknown"]
+            let s=try AgentSession(id:UUID().uuidString,profile:Profile(raw),apiKey:"synthetic",cwd:root,
+                directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),
+                client:client,tools:tools,traces:TraceStore(),seed:seed(count:0)+[assistant,result])
+            if automatic { _=try await s.submit(Submission(commandID:"continue",turnID:"continue",text:"Continue the task"),steer:false) }
+            else { try await s.compact() }
+            try await eventually { !(await s.isRunning) }
+            let snapshot=await s.snapshot(),requests=await client.requests,purposes=await client.purposes
+            let calls=await tools.count,history=await s.history
+            XCTAssertEqual(snapshot["state"].text,"idle",snapshot["preflightError"].encoded())
+            XCTAssertEqual(snapshot["compaction"]["phase"].text,"completed")
+            XCTAssertEqual(snapshot["compaction"]["reason"].text,automatic ? "threshold":"manual")
+            XCTAssertEqual(calls,0,"Compaction must never invoke the historical tool")
+            XCTAssertEqual(history.first { $0.id==result.id }?.toolStats?["outcome"].text,"unknown")
+            let summaries=zip(requests,purposes).filter { $0.1=="compaction" }.map(\.0)
+            XCTAssertFalse(summaries.isEmpty)
+            let source=summaries.flatMap { $0["input"].list }.flatMap { $0["content"].list }.compactMap { $0["text"].text }.joined()
+            XCTAssertTrue(source.contains("\"observedOutcome\":\"unknown\""))
+            XCTAssertTrue(summaries.allSatisfy { $0["tools"].list.isEmpty })
+            XCTAssertEqual(purposes.filter { $0=="turn" }.count,automatic ? 1:0)
+            await s.close()
+        }
     }
     func testGiantLastGroupAndSteeringRemainSafe() throws {
         let original=seed(count:0)
@@ -191,9 +236,14 @@ final class CompactionSafetyTests: XCTestCase {
         _=try await s.submit(Submission(commandID:"removed",turnID:"removed",text:"PENDING SECRET removed"),steer:false)
         try await s.removeQueued("removed")
         await client.release();try await eventually { !(await s.isRunning) }
-        let state=await s.snapshot(),requests=await client.requests,context=await s.context
-        XCTAssertEqual(state["queueCount"].int,1);XCTAssertEqual(context.first?.kind,"compaction")
-        XCTAssertFalse(requests.contains { $0.encoded().contains("PENDING SECRET") });await s.close()
+        let state=await s.snapshot(),requests=await client.requests,purposes=await client.purposes,context=await s.context
+        // Successful compaction hands pending work to the normal run loop.
+        // The accepted edit belongs there, never in the frozen summary source.
+        XCTAssertEqual(state["queueCount"].int,0);XCTAssertEqual(context.first?.kind,"compaction")
+        let summaries=zip(requests,purposes).filter { $0.1=="compaction" }.map(\.0)
+        XCTAssertFalse(summaries.contains { $0.encoded().contains("PENDING SECRET") })
+        XCTAssertEqual(context.filter { $0.id=="queued" }.map(\.text),["PENDING SECRET edited constraint"])
+        XCTAssertFalse(requests.contains { $0.encoded().contains("PENDING SECRET removed") });await s.close()
     }
     func testStopBeforeCommitPreservesContextAndQueuedInput() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
@@ -362,7 +412,8 @@ final class CompactionSafetyTests: XCTestCase {
         for (index,s) in sessions.enumerated() {
             try await eventually { !(await s.isRunning) }
             let state=await s.snapshot(),context=await s.context
-            XCTAssertEqual(state["queueCount"].int,index==1 ? 1:0)
+            XCTAssertEqual(state["queueCount"].int,0)
+            XCTAssertEqual(context.filter { $0.id=="future" }.map(\.text),index==1 ? ["Only session one receives this"]:[])
             XCTAssertEqual(context.first?.kind,index==0 ? nil:"compaction",state["preflightError"].encoded())
             let recovery=await s.contextRecovery;XCTAssertTrue(recovery.isNull);await s.close()
         }
