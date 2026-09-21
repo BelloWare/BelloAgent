@@ -12,6 +12,20 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
+**Unreleased stable tool streaming, 2026-09-21:** each task keeps one compact work
+row and separate stable prose rows. Empty/tool-only replies no longer create
+temporary prose placeholders. A Turn summary requires durable terminal evidence;
+model completion, tool rounds and a queued successor cannot create false completion.
+The fixed-height dock adopts phase/outcome with the same decoded row snapshot.
+Tool fragments coalesce without remeasuring unchanged prose, and full tool details
+are scoped by their owning reply. Helper restart and historical branches retain
+honest outcome/coverage labels. Validation: 82 distinct helper and 107 distinct
+Debug native cases pass; 49 optimized native cases pass, with two optional pointer
+checks skipped. Exact HTTP bodies match the request-aware local gateway. See
+[implementation, measurements and all 49 acceptance dispositions](Stable-Tool-Streaming-2026-09-21.md),
+including physical-input and deployed-gateway verification limits. Changes remain
+local and unreleased; the preceding feature work is preserved.
+
 **Unreleased inline skills and historical edit rollback, 2026-09-21:** suggestions
 follow the native caret and share ranked metadata search with the inspector.
 Per-composer discovery cannot drop another pane's load; explicit token/chip

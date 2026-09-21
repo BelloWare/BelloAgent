@@ -36,6 +36,31 @@ records optimized native/helper tests, explicit actor checks and publication.
 Current release records take precedence over the historical matrices below.
 Installation/update rehearsals remain skipped by owner instruction.
 
+## Unreleased stable tool-streaming acceptance
+
+Read [L01–L14, G01–G15, M01–M12 and P01–P08](Stable-Tool-Streaming-2026-09-21.md).
+Stage the changed helper, then run `TaskPresentationTests`, retry/recovery,
+compaction, history/snapshot and steering regressions. Native
+`StableToolPresentationTests` includes a real-helper/request-aware gateway,
+two mounted panes, exact captured-byte comparisons, 1,000-fragment coalescing,
+native selection/draw, scoped argument fetches and once-only announcements.
+Pair it with native activity/disclosure/document/scroll, refresh lifecycle,
+wire-row updates and composer submission suites; focused commands are in the record.
+Use Debug with actor checks and Release, preserving incremental build caches.
+
+Work starts collapsed and tool disclosure IDs include their assistant source.
+Fixture actions must explicitly open the work row before its card, and a fake
+`busy = false` is no longer terminal evidence. New history fixtures should provide
+real lifecycle evidence; legacy journals must remain unresolved rather than
+invent success. Source-selected history windows retain the reading anchor instead
+of dropping its prefix merely because a live suffix arrived.
+
+The 30-sample draw measurement is mounted AppKit work, not physical display FPS.
+Two optional pointer-environment checks remain skipped; deployed LiteLLM,
+physical input under concurrent streams and the remaining workload-specific
+gates are explicitly listed in the acceptance record. No release/install/update
+rehearsal is part of this implementation-only change.
+
 ## Unreleased inline skills and historical edit acceptance
 
 Read [S01–S25 and E01–E28](Inline-Skills-and-Historical-Edits-2026-09-21.md).
