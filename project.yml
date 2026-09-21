@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.74
-    CURRENT_PROJECT_VERSION: 78
+    MARKETING_VERSION: 0.1.75
+    CURRENT_PROJECT_VERSION: 79
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Reliable queued follow-ups, accurate elapsed time, and quoted side chats from selected response text."
+    RELEASE_MESSAGE: "Compaction continues with recorded unknown tool outcomes and no longer blocks on warning phrases in tool output."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO

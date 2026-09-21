@@ -1,0 +1,6 @@
+<h2>Bello Agent 0.1.75</h2>
+<ul>
+  <li>Removes the uncertain-tool-outcome check that could block manual or automatic compaction and checkpoint restoration.</li>
+  <li>Successful tool output containing phrases such as “outcome unknown” no longer causes a false compaction failure.</li>
+  <li>Recorded outcomes remain available as historical evidence. Compaction preserves tool-call/result pairing and does not rerun historical tools.</li>
+</ul>
