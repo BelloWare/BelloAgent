@@ -64,6 +64,7 @@ extension AgentSession {
                     do {
                         reply=try await client.complete(profile:effectiveProfile,apiKey:apiKey,messages:questions(records),instructions:"",tools:[],sessionID:id,turnID:currentTurnID,purpose:"compaction",onObservation:{ [weak self] in await self?.compactionObservation($0) },onDelta:{ [weak self] in await self?.compactionDelta($0) })
                     } catch let error as AgentError {
+                        operationStatus("Summary request failed: " + error.message)
                         if let attempt=error.attemptID, !compactionAttemptIDs.contains(attempt) { compactionAttemptIDs.append(attempt) }
                         if error.failure?.contextRejection == true {
                             capacity=min(capacity,max(1,measured.tokens*2/3)); repack=true
@@ -75,6 +76,11 @@ extension AgentSession {
                 }
                 if repack { try validateCompaction(revision,profile:originalProfile); continue }
                 guard let reply else { throw AgentError("compact_failed","Summary response is missing") }
+                operationStatus("Summary HTTP response completed")
+                if reply.message.responseTimeline == nil, !reply.message.text.isEmpty {
+                    presentationOrdinal += 1
+                    compactionDelta(.part(ResponsePartEvent(attemptID:reply.message.requestAttemptIDs?.first ?? compactionPresentationID ?? id,ordinal:presentationOrdinal,itemID:"summary",kind:"text",update:"replace",text:reply.message.text,observedAt:nowMS(),evidence:"canonical")))
+                }
                 cumulativeUsage.observe(reply.usage)
                 for attempt in reply.message.requestAttemptIDs ?? [] where !compactionAttemptIDs.contains(attempt) { compactionAttemptIDs.append(attempt) }
                 let outcome=summaryOutcome(reply,cap:effectiveProfile.maxOutput)

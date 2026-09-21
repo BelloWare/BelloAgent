@@ -30,7 +30,7 @@ enum CompactionCheckpoint {
         summary.id=try identity(record["id"]); summary.kind="compaction"
         summary.detail=compactionDetail(tokens:record["tokensBefore"].int,kept:kept.count)
         summary.requestAttemptIDs=record["nativeRequestAttemptIds"].list.compactMap(\.text)
-        summary.compaction=metadata.isNull ? nil : metadata
+        summary.compaction=metadata.isNull ? nil : metadata; summary.operationID=metadata["operationId"].text
         summary.taskRootID=metadata["taskRootId"].text
         return (summary,kept)
     }

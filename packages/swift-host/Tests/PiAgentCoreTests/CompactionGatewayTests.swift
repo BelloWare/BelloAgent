@@ -54,6 +54,16 @@ final class CompactionGatewayTests: XCTestCase {
         XCTAssertGreaterThan(output,4096);XCTAssertEqual(total.output,output)
         XCTAssertEqual(state["compaction"]["attemptOutcomes"].list.filter { $0["reason"].text=="max_output_tokens" }.count,1)
         XCTAssertTrue(state["requestObservation"].isNull,"Summary usage must not replace normal-request context usage")
+        let operations = await s.history.filter { $0.kind == "execution" && $0.operationID != nil }
+        XCTAssertEqual(operations.count,1)
+        let operation = try XCTUnwrap(operations.first)
+        XCTAssertEqual(operation.responseTimeline?.terminal,"completed")
+        XCTAssertEqual(operation.operationID,context.first?.operationID)
+        XCTAssertTrue(operation.responseTimeline?.segments.contains { $0.part.kind == "text" && !$0.text.isEmpty } == true)
+        XCTAssertTrue(operation.responseTimeline?.segments.contains { $0.part.kind == "status" && $0.text.contains("validated") } == true)
+        XCTAssertGreaterThan(operation.responseTimeline?.segments.filter { $0.part.kind == "status" }.count ?? 0,4)
+        let retained = try await s.messageRead(id:operation.id,field:"text",offset:0)
+        XCTAssertTrue(retained["text"].text?.contains("Timeline evidence") == true)
         await s.close()
     }
     func testOneTaskCompactsRecoversAgainstIndependentGatewayAndReopensWithoutRepeatingTools() async throws {
@@ -96,9 +106,29 @@ final class CompactionGatewayTests: XCTestCase {
         }
         let defs=await s.sessionDefinitions(),request=try ProviderClient.requestBody(profile:profile,messages:context,instructions:"",tools:defs,sessionID:"compaction-golden")
         XCTAssertNoThrow(try CompactionPlanner.validateRequest(request))
+        let originalHistory = await s.history
+        let ordered = originalHistory.filter { $0.responseTimeline != nil }
+        XCTAssertFalse(ordered.isEmpty)
+        for message in ordered where message.kind == nil {
+            XCTAssertTrue(message.responseTimeline!.segments.allSatisfy { $0.part.sessionOrdinal != nil })
+        }
+        let presentation = originalHistory.filter { ["execution", "requestLedger"].contains($0.kind ?? "") }
+        XCTAssertTrue(presentation.allSatisfy { !$0.replayEligible })
+        XCTAssertTrue(context.allSatisfy { !["execution", "requestLedger"].contains($0.kind ?? "") })
+        for operation in presentation where operation.operationID != nil {
+            XCTAssertEqual(operation.responseTimeline?.terminal,"completed")
+            let start = try XCTUnwrap(originalHistory.firstIndex { $0.id == operation.id })
+            let adopted = try XCTUnwrap(originalHistory.firstIndex { $0.kind == "compaction" && $0.operationID == operation.operationID })
+            XCTAssertLessThan(start,adopted,"Operation is located before adoption, not relocated to the summary's replay position")
+        }
         await s.close();await sibling.close()
         let noReplay=ScriptClient([]),reopened=try AgentSession(id:"compaction-golden",profile:profile,apiKey:"synthetic-compaction-key",cwd:root,directory:state,readOnly:false,resources:Resources(cwd:root,home:root),client:noReplay,tools:tools,traces:traces,resumePath:path)
         let restored=await reopened.context,calls=await noReplay.count
-        XCTAssertEqual(restored.map(\.id),context.map(\.id));XCTAssertEqual(restored.map(\.text),context.map(\.text));XCTAssertEqual(calls,0);await reopened.close()
+        XCTAssertEqual(restored.map(\.id),context.map(\.id));XCTAssertEqual(restored.map(\.text),context.map(\.text));XCTAssertEqual(calls,0)
+        let historyAfter = await reopened.history.filter { $0.responseTimeline != nil }
+        XCTAssertEqual(historyAfter.map(\.id),ordered.map(\.id))
+        XCTAssertEqual(historyAfter.map(\.responseTimeline),ordered.map(\.responseTimeline))
+        XCTAssertEqual(try String(contentsOf:root.appendingPathComponent("counter.txt"),encoding:.utf8),"once\n")
+        await reopened.close()
     }
 }

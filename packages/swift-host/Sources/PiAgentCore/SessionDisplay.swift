@@ -16,6 +16,7 @@ extension AgentSession {
     /// arrived instead of the whole row again.
     struct StreamingRowState {
         let id: String, text: String, thinking: String, cards: UInt64, truncated: Bool
+        var timeline: ResponseTimeline? = nil
     }
     struct DisplayProjection {
         let start: Int
@@ -57,10 +58,12 @@ extension AgentSession {
             let text=partialTextPreview ?? { let value=preview(partialText,bytes:Self.streamedTextBytes); partialTextPreview=value; return value }()
             let thinking=partialThinkingPreview ?? { let value=preview(partialThinking,bytes:Self.streamedThinkingBytes); partialThinkingPreview=value; return value }()
             let truncated=partialText.utf8.count>Self.streamedTextBytes || partialThinking.utf8.count>Self.streamedThinkingBytes || partialToolSeen.count>cards.count
-            let value = boundedDisplayRow(["id":JSON(partialID),"role":"assistant","turn":JSON(currentTurnID),"taskRootID":taskRootID.map { JSON($0) } ?? .null,"taskExecutionID":activeTaskPresentation.map { JSON($0.executionID) } ?? .null,"at":partialStartedAt.map { JSON($0) } ?? .null,"text":JSON(text),"thinking":JSON(thinking),"tools":.array(cards),"state":"streaming","toolCallCount":0,"truncated":JSON(truncated)])
+            var value = boundedDisplayRow(["id":JSON(partialID),"role":"assistant","turn":JSON(currentTurnID),"taskRootID":taskRootID.map { JSON($0) } ?? .null,"taskExecutionID":activeTaskPresentation.map { JSON($0.executionID) } ?? .null,"at":partialStartedAt.map { JSON($0) } ?? .null,"text":JSON(text),"thinking":JSON(thinking),"tools":.array(cards),"state":"streaming","toolCallCount":0,"truncated":JSON(truncated)])
+            let timeline = partialTimeline.segments.isEmpty ? nil : partialTimeline.projected()
+            if let timeline { value["responseTimeline"] = (try? JSON.parse(JSONEncoder().encode(timeline))) ?? .null }
             displayRowVersion &+= 1
             _=append(DisplayRow(value:value,bytes:(try? value.data().count) ?? 1_048_576,version:displayRowVersion))
-            streaming=StreamingRowState(id:partialID,text:value["text"].text ?? "",thinking:value["thinking"].text ?? "",cards:partialCardsVersion,truncated:value["truncated"].flag ?? false)
+            streaming=StreamingRowState(id:partialID,text:value["text"].text ?? "",thinking:value["thinking"].text ?? "",cards:partialCardsVersion,truncated:value["truncated"].flag ?? false,timeline:timeline)
         }
         // JSON array size is the encoded row sizes plus brackets and commas.
         // Walk backwards until the suffix is full rather than projecting rows
@@ -103,7 +106,7 @@ extension AgentSession {
     /// case the whole page is sent instead.
     func messagePatch(_ projection: DisplayProjection) -> JSON? {
         guard let base=sentRevision else { return nil }
-        var rows: [JSON]=[], appends: [JSON]=[]
+        var rows: [JSON]=[], appends: [JSON]=[], parts: [JSON]=[]
         for (index,entry) in projection.settled.enumerated() where sentVersions[entry.id] != entry.version {
             guard projection.messages.indices.contains(index) else { return nil }
             rows.append(projection.messages[index])
@@ -113,10 +116,21 @@ extension AgentSession {
             guard projection.messages.indices.contains(index) else { return nil }
             if let sent=sentStreaming, sent.id == streaming.id, sent.cards == streaming.cards, sent.truncated == streaming.truncated,
                let text=appendedText(sent.text,streaming.text), let thinking=appendedText(sent.thinking,streaming.thinking) {
+                if let timeline = streaming.timeline {
+                    let prior = sent.timeline
+                    let old = Dictionary((prior?.segments ?? []).map { ($0.id,$0) }, uniquingKeysWith: { _,last in last })
+                    let changed = timeline.segments.filter { old[$0.id] != $0 }
+                    if !changed.isEmpty || prior?.terminal != timeline.terminal || prior?.coverage != timeline.coverage || prior?.omittedEvents != timeline.omittedEvents {
+                        var part: JSON = ["id":JSON(streaming.id),"version":1,"coverage":JSON(timeline.coverage),"omittedEvents":JSON(timeline.omittedEvents),"terminal":timeline.terminal.map { JSON($0) } ?? .null,
+                                          "segments": (try? JSON.parse(JSONEncoder().encode(changed))) ?? []]
+                        if prior?.segments.map(\.id) != timeline.segments.map(\.id) { part["order"] = .array(timeline.segments.map { JSON($0.id) }) }
+                        parts.append(part)
+                    }
+                }
                 if !text.isEmpty || !thinking.isEmpty { appends.append(["id":JSON(streaming.id),"text":JSON(text),"thinking":JSON(thinking)]) }
             } else { rows.append(projection.messages[index]) }
         }
-        var patch: JSON=["base":JSON(base),"rows":.array(rows),"appends":.array(appends)]
+        var patch: JSON=["base":JSON(base),"rows":.array(rows),"appends":.array(appends),"parts":.array(parts)]
         let order=projection.settled.map(\.id)+(projection.streaming.map { [$0.id] } ?? [])
         if order != sentOrder { patch["order"] = .array(order.map { JSON($0) }) }
         return patch

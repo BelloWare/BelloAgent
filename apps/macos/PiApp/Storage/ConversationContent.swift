@@ -9,6 +9,18 @@ enum ConversationContent {
     static func text(_ entry: [String: WireValue]) -> String {
         if entry["type"]?.string == "compaction" { return "## Compaction\n\n\(entry["summary"]?.string ?? "")\n\n" }
         let message = entry["message"]?.object ?? [:], content = message["content"]
+        let timeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }
+        if let timeline {
+            let title = message["nativeDetail"]?.string ?? message["role"]?.string ?? "Operation"
+            let evidence = "## \(title)\n\n" + timeline.retainedText + "\n\n"
+            // If a source exceeds retained event bounds, preserve the original
+            // complete canonical content too, explicitly separate from arrival order.
+            if !timeline.segments.contains(where: \.truncated) && timeline.omittedEvents == 0 { return evidence }
+            var canonical = entry
+            var plain = message; plain.removeValue(forKey: "nativeResponseTimeline")
+            canonical["message"] = .object(plain)
+            return evidence + "## Canonical retained content (arrival order unavailable)\n\n" + text(canonical)
+        }
         let body = content?.string ?? (content?.array ?? []).map { value -> String in
             let block = value.object ?? [:]
             switch block["type"]?.string {

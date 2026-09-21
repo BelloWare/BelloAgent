@@ -48,8 +48,9 @@ actor HistoryReader {
         var version: Int?; var customType: String?; var pendingWork: PendingWork?
         var nativeCompactionVersion: Int?; var nativeCompaction: Checkpoint?
         var historicalBranch: HistoricalBranch?; var selectedTimeline: [String]?
+        var presentationTarget: String?
         var taskTerminal: TaskPresentationRecord?
-        struct Checkpoint: Decodable { var version: Int; var sourceIDs: [String]; var protectedIDs: [String]; var keptIDs: [String]; var dependencyIDs: [String]?; var summarySourceIDs: [String]? }
+        struct Checkpoint: Decodable { var operationId: String?; var version: Int; var sourceIDs: [String]; var protectedIDs: [String]; var keptIDs: [String]; var dependencyIDs: [String]?; var summarySourceIDs: [String]? }
         struct PendingItem: Decodable {}
         struct PendingWork: Decodable {
             var active: Bool?; var queue: [PendingItem]?; var steering: [PendingItem]?
@@ -64,14 +65,15 @@ actor HistoryReader {
         struct MessageRole: Decodable {
             struct Block: Decodable { var type: String?; var id: String? }
             var role: String?; var toolCallId: String?; var calls: [String]; var contentIndexed: Bool; var nativeReplayEligible: Bool?
-            var nativeKind: String?; var nativeCompaction: Checkpoint?
-            private enum CodingKeys: String, CodingKey { case role, toolCallId, content, nativeReplayEligible, nativeKind, nativeCompaction }
+            var nativeKind: String?; var nativeOperationID: String?; var nativeCompaction: Checkpoint?
+            private enum CodingKeys: String, CodingKey { case role, toolCallId, content, nativeReplayEligible, nativeKind, nativeCompaction, nativeOperationID }
             init(from decoder: Decoder) throws {
                 let value = try decoder.container(keyedBy: CodingKeys.self)
                 role = try value.decodeIfPresent(String.self, forKey: .role)
                 toolCallId = try value.decodeIfPresent(String.self, forKey: .toolCallId)
                 nativeReplayEligible = try value.decodeIfPresent(Bool.self, forKey: .nativeReplayEligible)
                 nativeKind = try value.decodeIfPresent(String.self, forKey: .nativeKind)
+                nativeOperationID = try value.decodeIfPresent(String.self, forKey: .nativeOperationID)
                 nativeCompaction = try value.decodeIfPresent(Checkpoint.self, forKey: .nativeCompaction)
                 // String-form user content is valid. Only normalized call IDs
                 // are indexed; text/provider content is never retained here.
@@ -100,6 +102,10 @@ actor HistoryReader {
                 if value.contains(.nativeBranchVersion) { historicalBranch = try HistoricalBranch(from: decoder) }
             }
             else if customType == "pi-app.native.state.v1" { pendingWork = try value.decodeIfPresent(PendingWork.self, forKey: .data) }
+            else if customType == "pi-app.presentation.update.v1" {
+                struct Target: Decodable { var id: String }
+                presentationTarget = try value.decode(Target.self, forKey: .data).id
+            }
             else if customType == "pi-app.task-terminal.v1" {
                 let task = try value.decode(TaskPresentationRecord.self, forKey:.data)
                 guard task.valid, task.terminal else { throw StoreError.unreadableRecord }
@@ -158,7 +164,11 @@ actor HistoryReader {
     func setIndexRecordLimit(_ value: Int) { indexRecordLimit = max(1, value); indexes.removeAll(); recency.removeAll() }
     /// The projection each caller asks for, from one decoded journal record.
     private static func projection(_ value: [String: WireValue], field: String) -> String {
-        let content = value["message"]?.object?["content"], blocks = content?.array ?? []
+        let message = value["message"]?.object ?? [:]
+        let content = message["content"], blocks = content?.array ?? []
+        if field != "thinking", ["execution", "requestLedger"].contains(message["nativeKind"]?.string ?? "") {
+            return ConversationContent.text(value)
+        }
         if field != "thinking", value["type"]?.string == "branch" { return branchText }
         if field != "thinking", value["type"]?.string == "compaction" { return "Conversation summary:\n" + (value["summary"]?.string ?? "") }
         if field == "thinking" { return blocks.compactMap { $0.object?["type"]?.string == "thinking" ? $0.object?["thinking"]?.string : nil }.joined() }
@@ -268,6 +278,7 @@ actor HistoryReader {
         }
         try file.seek(toOffset: 0)
         var pending = Data(), position: UInt64 = 0
+        var presentation: [String: WireValue]?
         while let chunk = try file.read(upToCount: 65_536), !chunk.isEmpty {
             try Task.checkCancellation()
             var start = chunk.startIndex
@@ -278,15 +289,27 @@ actor HistoryReader {
                 // record written without an id is addressed by its offset — the
                 // same identity the page that displayed it was given.
                 if let value = try? JSONDecoder().decode(WireValue.self, from: pending).object,
-                   value["type"]?.string != "session", (value["id"]?.string ?? "record-\(position)") == id {
+                   value["type"]?.string != "session", (value["id"]?.string ?? "record-\(position)") == id ||
+                    (value["customType"]?.string == "pi-app.presentation.update.v1" && value["data"]?.object?["id"]?.string == id && presentation != nil) {
+                    if ["execution", "requestLedger"].contains(value["message"]?.object?["nativeKind"]?.string ?? "") {
+                        presentation = value
+                    } else {
                     decodedRecords += 1
                     let text = Self.projection(value, field: field) as NSString
                     decoded = (key, text)
                     return (try UnicodePage.slice(text, offset: offset), text.length)
+                    }
                 }
                 position += UInt64(pending.count + 1); pending.removeAll(keepingCapacity: true); start = chunk.index(after: index)
             }
             pending.append(chunk[start...]); guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }
+        }
+        if let presentation {
+            guard try stamp(file) == identity else { throw StoreError.unreadableRecord }
+            decodedRecords += 1
+            let text = Self.projection(presentation, field: field) as NSString
+            decoded = (key, text)
+            return (try UnicodePage.slice(text, offset: offset), text.length)
         }
         throw HostError.failure("The retained message is unavailable")
     }
@@ -332,6 +355,7 @@ actor HistoryReader {
         var replayNodes: [String: ReplayNode] = [:], selectedTimeline: [String] = []
         var contextSafe = true, callCount = 0
         var progressAt = ProcessInfo.processInfo.systemUptime
+        var presentationOperations: [String:String] = [:]
         while let chunk = try file.read(upToCount: 65_536), !chunk.isEmpty {
             try Task.checkCancellation()
             var start = chunk.startIndex
@@ -357,7 +381,16 @@ actor HistoryReader {
                         if value.id == nil || parent != leaf { linear = false }
                         if let parent, try branch.ref(parent) == nil { throw StoreError.unreadableRecord }
                         try branch.insert(Ref(id: id, parent: parent, offset: offset, length: pending.count, type: value.type,
-                                       fromMessageID: value.fromMessageId, keptIDs: value.keptIds, role: value.message?.role, selectedPrefix: value.historicalBranch?.selectedTimelinePrefix, contextSelection: value.contextIDs.map { EditReplayPlan.forkTimeline(visible: selectedTimeline, boundary: $0) }))
+                                       fromMessageID: value.fromMessageId, keptIDs: value.keptIds, role: value.message?.role, presentation:["execution","requestLedger"].contains(value.message?.nativeKind ?? ""), selectedPrefix: value.historicalBranch?.selectedTimelinePrefix, contextSelection: value.contextIDs.map { EditReplayPlan.forkTimeline(visible: selectedTimeline, boundary: $0) }))
+                        if let target = value.presentationTarget {
+                            guard var original = try branch.ref(target), original.presentation else { throw StoreError.unreadableRecord }
+                            original.offset = offset; original.length = pending.count
+                            try branch.replaceMetadata(original)
+                        }
+                        if let operation = value.message?.nativeOperationID, value.type == "message" { presentationOperations[operation] = id }
+                        if value.type == "compaction", let operation = value.nativeCompaction?.operationId, let target = presentationOperations[operation], var original = try branch.ref(target) {
+                            original.adopted = true; try branch.replaceMetadata(original)
+                        }
                         // Replay only the active context's compact tool metadata.
                         // A result in an abandoned branch cannot prove that an
                         // active call is paired and safe to resume without repair.
@@ -511,9 +544,12 @@ actor HistoryReader {
                 message = TranscriptMessage.project(id: ref.id, message: ["role": .string("system"), "content": .string("Conversation summary:\n" + (value["summary"]?.string ?? ""))])
                 let kept = Set(value["nativeKeptIDs"]?.array?.compactMap(\.string) ?? []).count
                 let tokens = value["tokensBefore"]?.number.map { String(format: "%.0f", $0) } ?? "unknown"
+                message.operationID = value["nativeCompaction"]?.object?["operationId"]?.string
                 message.kind = "compaction"; message.detail = "Compacted \(tokens) tokens · \(kept) message\(kept == 1 ? "" : "s") kept"
             }
             else { message = TranscriptMessage.project(id: ref.id, message: value["message"]?.object ?? [:]) }
+            if ref.adopted { message.responseTimeline?.finish("completed"); message.detail="Compaction · Checkpoint durably adopted" }
+            if ref.presentation, message.responseTimeline?.terminal == nil { message.detail=(message.detail ?? "Operation") + " · no terminal receipt" }
             var count = try JSONEncoder().encode(message).count
             if messages.isEmpty && bytes + count + 1 > HistoryWindowPolicy.envelopeBytes {
                 message.text = String(message.text.prefix(1024)); message.thinking = nil; message.tools = nil; message.truncated = true

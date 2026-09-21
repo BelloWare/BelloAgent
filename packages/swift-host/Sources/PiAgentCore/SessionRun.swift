@@ -68,6 +68,7 @@ extension AgentSession {
         }
     }
     func observeOperation(_ observation: RequestObservation, generation: UInt64, operation: JSON) async {
+        startResponseLedger(observation)
         monitor(observation)
         observe(observation,generation:generation)
         if observation.phase == "awaiting", !operation.isNull { await traces.operation(observation.attemptID,operation) }
@@ -123,8 +124,9 @@ extension AgentSession {
                         let requestStart=nowMS()
                         do {
                             completed=try await completeWithRetries(profile:dispatchProfile,messages:context,instructions:instructions,tools:definitions,turnID:currentTurnID,purpose:titleTask ? "title" : "turn",operation:["logicalRequestId":JSON(operationID),"recovered":JSON(recovered),"recovery":recovered ? contextRecovery : .null],onDelta:{ [weak self] delta in await self?.delta(delta) },reset:{
-                                if let partialID, !partialText.isEmpty || !partialThinking.isEmpty {
+                                if let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty {
                                     var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]])
+                                    partial.responseTimeline=partialTimeline; partial.responseTimeline?.finish("interrupted")
                                     partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"
                                     partial.requestAttemptIDs=requestObservation.map { [$0.attemptID] }
                                     try append(partial)
@@ -139,9 +141,10 @@ extension AgentSession {
                             guard error.failure?.contextRejection == true, autoCompaction, !titleTask, !recovered, canCompact, !Task.isCancelled else { throw error }
                             // Recovery surrounds only this failed model operation.
                             // The completed tool batch is never entered a second time.
-                            if let partialID, !partialText.isEmpty || !partialThinking.isEmpty {
+                            if let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty {
                                 var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]])
-                                partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"; partial.requestAttemptIDs=error.attemptID.map { [$0] }
+                                partial.responseTimeline=partialTimeline; partial.responseTimeline?.finish("interrupted")
+                                    partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"; partial.requestAttemptIDs=error.attemptID.map { [$0] }
                                 try append(partial)
                             }
                             partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); modelActive=false
@@ -159,7 +162,12 @@ extension AgentSession {
                     guard let reply=completed else { throw AgentError("provider_failed","No model response") }
                     turnModelMs += modelMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, modelMs)
                     modelActive=false
-                    var assistant=reply.message; assistant.id=partialID ?? assistant.id; assistant.modelMs=modelMs; partialID=nil; currentAttemptIDs=assistant.requestAttemptIDs ?? []
+                    if partialTimeline.segments.isEmpty, let timeline=reply.message.responseTimeline { partialTimeline=timeline }
+                    partialTimeline.finish(reply.truncated ? "incomplete":"completed")
+                    saveResponseLedger(persist:true,terminal:reply.truncated ? "incomplete":"completed"); partialLedgerID=nil
+                    var assistant=reply.message
+                    if !partialTimeline.segments.isEmpty { assistant.responseTimeline=partialTimeline }
+                    assistant.id=partialID ?? assistant.id; assistant.modelMs=modelMs; partialID=nil; currentAttemptIDs=assistant.requestAttemptIDs ?? []
                     // A reply cut at the output budget is a complete row with a reason, not a failed run.
                     if reply.truncated { assistant.stopReason="length" }
                     try append(assistant); cumulativeUsage.observe(reply.usage)
@@ -178,7 +186,7 @@ extension AgentSession {
                         let fields=toolInputFields(call.arguments)
                         setToolState(call.id,merging(["id":JSON(call.id),"name":JSON(call.name),"state":"running","output":"","durationMs":.null,"truncated":JSON(fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false)],fields))
                         recordDisplayChange(toolStateOwners[call.id], at: displayClock())
-                        event("tool_execution_start")
+                        event("tool_execution_queued")
                         do { let result=try await invokeTool(call); try recordTool(call,result:result,started:start,state:result["isError"].flag == true ? "failed" : "completed") }
                         catch {
                             let cancelled=Task.isCancelled || error is CancellationError
@@ -207,10 +215,10 @@ extension AgentSession {
             queuePaused=true; runStatus=Task.isCancelled || error is CancellationError ? "cancelled" : "failed"; state=runStatus == "cancelled" ? "paused" : "error"
             errorMessage=(error as? AgentError)?.message ?? (runStatus == "cancelled" ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
             if let activeSubmission { commandState(activeSubmission,runStatus) }
-            if let partialID, !partialText.isEmpty || !partialThinking.isEmpty {
-                var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]]); partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"
-                let latest = await traces.latest(id)
-                if latest["turnId"].text == currentTurnID, let attempt = latest["attemptId"].text { partial.requestAttemptIDs=[attempt] }
+            if let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty {
+                var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]]); partial.responseTimeline=partialTimeline; partial.responseTimeline?.finish("interrupted")
+                                    partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"
+                partial.requestAttemptIDs = partialTimeline.segments.first.map { [$0.part.attemptID] } ?? requestObservation.map { [$0.attemptID] }
                 // Publishing links can suspend below. Once the durable row
                 // exists, its former streaming placeholder must not duplicate
                 // the same row ID in snapshots taken during that suspension.

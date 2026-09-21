@@ -30,6 +30,24 @@ enum TranscriptRowUpdates {
             if !thinking.isEmpty || row.thinking != nil { row.thinking = (row.thinking ?? "") + thinking }
             rows[id] = row
         }
+        for part in update["parts"]?.array ?? [] {
+            guard let fields = part.object, fields["version"]?.number == 1,
+                  let id = fields["id"]?.string, var row = rows[id],
+                  let raw = fields["segments"],
+                  let changed = try? JSONDecoder().decode([ResponseTimeline.Segment].self, from: JSONEncoder().encode(raw)) else { return nil }
+            var timeline = row.responseTimeline ?? ResponseTimeline()
+            guard timeline.supported, Set(changed.map(\.id)).count == changed.count else { return nil }
+            var segments = Dictionary(timeline.segments.map { ($0.id,$0) }, uniquingKeysWith: { _,last in last })
+            for segment in changed { segments[segment.id] = segment }
+            let ids = fields["order"]?.array?.compactMap(\.string) ?? timeline.segments.map(\.id)
+            guard ids.count <= ResponseTimeline.maximumSegments, Set(ids).count == ids.count, ids.allSatisfy({ segments[$0] != nil }) else { return nil }
+            timeline.segments = ids.compactMap { segments[$0] }
+            timeline.coverage = fields["coverage"]?.string ?? timeline.coverage
+            timeline.omittedEvents = fields["omittedEvents"]?.number.flatMap(Int.init(exactly:)) ?? timeline.omittedEvents
+            timeline.terminal = fields["terminal"]?.string
+            guard timeline.supported else { return nil }
+            row.responseTimeline = timeline; rows[id] = row
+        }
         if let sent = update["order"]?.array {
             order = sent.compactMap(\.string)
             guard order.count == sent.count else { return nil }

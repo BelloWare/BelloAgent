@@ -112,6 +112,7 @@
 		54D3712345AF02140621A33B /* NativeTranscriptDocumentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1B2AA8816B75673F6434294 /* NativeTranscriptDocumentTests.swift */; };
 		555BA01794D58E16F58F5129 /* Attachments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6663D82E5EC8EAC4A690C9BA /* Attachments.swift */; };
 		5594D247E3A6130022ACC83C /* UIScreenshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 948E9262D16C801481EC5E92 /* UIScreenshotTests.swift */; };
+		57A2C094CA45E6534F9AB808 /* ResponseTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7CC1F4407686A53957225D5 /* ResponseTimeline.swift */; };
 		57DE250C7E3AAA2DA66E3E8A /* SessionDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = D182E500F0F7BAF8407EACF0 /* SessionDisplay.swift */; };
 		5822A0AF0A0988BE038034BC /* ProfileSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBF84EE04447891F18EE359E /* ProfileSettings.swift */; };
 		58DF487B20137F495D043DE6 /* HostSupervisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 715FCE722F0F4DB4D1FAA412 /* HostSupervisorTests.swift */; };
@@ -624,6 +625,7 @@
 		C6CD294FDA98129F30173552 /* TranscriptUpdateIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptUpdateIsolationTests.swift; sourceTree = "<group>"; };
 		C6DE6B257384174C30C80BC1 /* SessionOrderDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionOrderDrop.swift; sourceTree = "<group>"; };
 		C792828E792086EBEDDFD376 /* ComposerBarLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerBarLayout.swift; sourceTree = "<group>"; };
+		C7CC1F4407686A53957225D5 /* ResponseTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResponseTimeline.swift; sourceTree = "<group>"; };
 		C8900FB9C09F92FC2FDD8AE8 /* ManualCompactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualCompactionTests.swift; sourceTree = "<group>"; };
 		C8B6AFCE68EECE8EAB1A9390 /* RoutingConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutingConfiguration.swift; sourceTree = "<group>"; };
 		C8C63E0AAF557F7059A57B2A /* ConversationContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationContentView.swift; sourceTree = "<group>"; };
@@ -969,6 +971,7 @@
 			children = (
 				DB266734D75FA20E14DE71D2 /* EditReplayPlan.swift */,
 				415AD6DE43661A5A3B7BB8D3 /* HistoryWindowPolicy.swift */,
+				C7CC1F4407686A53957225D5 /* ResponseTimeline.swift */,
 				4EE4C08410FAB24B02C593CA /* TaskPresentation.swift */,
 			);
 			name = PiAgentCore;
@@ -1409,6 +1412,7 @@
 				F6E959C30B779E6A23956876 /* ReportRows.swift in Sources */,
 				A131D0779F6833AC6DAAAAF9 /* RequestContextObservation.swift in Sources */,
 				D4E428E217D63259D53F4898 /* ResourceInspector.swift in Sources */,
+				57A2C094CA45E6534F9AB808 /* ResponseTimeline.swift in Sources */,
 				D46211E8967D7A0FA7992976 /* RoutingConfiguration.swift in Sources */,
 				1F4FB65AA9B8E93883BB317C /* SecretStore.swift in Sources */,
 				57DE250C7E3AAA2DA66E3E8A /* SessionDisplay.swift in Sources */,

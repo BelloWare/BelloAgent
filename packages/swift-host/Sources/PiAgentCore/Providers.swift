@@ -139,6 +139,7 @@ public struct ProviderClient: ModelClient {
         observation.phase="preparing"; observation.sourceEvent="capture.ready"
         await onObservation(observation)
         let stream=HTTPStream();var parser=SSEParser(), accumulator=ProviderAccumulator(api:profile.api)
+        var displayEvents = ProviderDisplayEvents(api:profile.api,attempt:attempt)
         var status=0,jsonBody=false,nonSSE=Data(),receivedBytes=0
         var lastBodyAt:Double?
         var providerFailure:AgentError?
@@ -179,8 +180,11 @@ public struct ProviderClient: ModelClient {
                             if observed { observation.monitoring = await traces.monitoring(attempt); await onObservation(observation) }
                             continue
                         }
-                        for delta in try accumulator.consume(value) {
+                        let deltas = try accumulator.consume(value)
+                        for part in displayEvents.consume(value, at: receivedAt) { try await onDelta(.part(part)) }
+                        for delta in deltas {
                             switch delta {
+                            case .part: break
                             case .text(let text): if !text.isEmpty { await traces.content(attempt,text:true,at:receivedAt) }
                             case .thinking(let text): if !text.isEmpty { await traces.content(attempt,text:false,at:receivedAt) }
                             case .tool(_,let name,let args): if !name.isEmpty || !args.isEmpty { await traces.content(attempt,text:false,at:receivedAt) }
@@ -210,6 +214,7 @@ public struct ProviderClient: ModelClient {
                 if profile.api == "openai-responses" { _ = observation.consume(value,streaming:false,at:lastBodyAt ?? nowMS()) }
                 await traces.reported(attempt,value:value,streaming:false)
                 try accumulator.acceptJSON(value)
+                for part in displayEvents.consume(value, at: lastBodyAt, json: true) { try await onDelta(.part(part)) }
                 let reply=try accumulator.result()
                 if let time=lastBodyAt {
                     if !reply.message.thinking.isEmpty || !reply.calls.isEmpty { await traces.content(attempt,text:false,at:time) }
@@ -218,6 +223,7 @@ public struct ProviderClient: ModelClient {
                 }
             }
             var result=try accumulator.result(); result.message.requestAttemptIDs=[attempt]
+            result.message.responseTimeline=displayEvents.timeline
             result.message.providerIdentity=await traces.identity(attempt)
             result.message.providerBinding=try Self.replayBinding(profile); await traces.usage(attempt,result.usage)
             await traces.transport(attempt,observation:await stream.endObservation())

@@ -33,6 +33,9 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     var toolCallCount: Int? = nil
     var taskRootID: String? = nil
     var taskExecutionID: String? = nil
+    var presentationSourceID: String? = nil
+    var operationID: String? = nil
+    var responseTimeline: ResponseTimeline? = nil
     private static func bounded(_ text: String, bytes: Int) -> String {
         var prefix = Data(text.utf8.prefix(bytes))
         while !prefix.isEmpty { if let value = String(data: prefix, encoding: .utf8) { return value }; prefix.removeLast() }
@@ -45,7 +48,7 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         let thinking = blocks.compactMap { $0.object?["type"]?.string == "thinking" ? $0.object?["thinking"]?.string : nil }.joined()
         let role = message["role"]?.string ?? "system"
         let toolBlocks = blocks.filter { $0.object?["type"]?.string == "toolCall" }
-        return .init(id: id, role: role == "toolResult" ? "tool" : ["user", "assistant", "system"].contains(role) ? role : "system", text: bounded(text, bytes: 16_384), thinking: bounded(thinking, bytes: 8192),
+        var result = TranscriptMessage(id: id, role: role == "toolResult" ? "tool" : ["user", "assistant", "system"].contains(role) ? role : "system", text: bounded(text, bytes: 16_384), thinking: bounded(thinking, bytes: 8192),
                      tools: toolBlocks.prefix(32).compactMap { value in
             guard let block = value.object, block["type"]?.string == "toolCall", let toolID = block["id"]?.string else { return nil }
             // Cut each long value on its own rather than the encoded document,
@@ -58,6 +61,24 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         }, state: stopReason, truncated: text.utf8.count > 16_384 || thinking.utf8.count > 8192 || toolBlocks.count > 32, stopReason: stopReason,
                      at: message["timestamp"]?.number, turn: message["nativeTurn"]?.string, modelMs: message["nativeModelMs"]?.number, toolCallCount: role == "assistant" ? toolBlocks.count : nil,
                      taskRootID: message["nativeTaskRoot"]?.string, taskExecutionID: message["nativeTaskExecution"]?.string)
+        result.presentationSourceID = message["nativePresentationSourceID"]?.string
+        result.operationID = message["nativeOperationID"]?.string ?? message["nativeCompaction"]?.object?["operationId"]?.string
+        result.kind = message["nativeKind"]?.string
+        if role == "toolResult" { result.kind="toolResult"; result.detail="Tool result · " + (message["toolName"]?.string ?? "tool") }
+        result.detail = message["nativeDetail"]?.string ?? result.detail
+        result.responseTimeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }?.projected()
+        if result.responseTimeline == nil, role == "assistant", content?.array != nil {
+            result.responseTimeline = ResponseTimeline.canonical(blocks.compactMap { part in
+                let block=part.object ?? [:]
+                switch block["type"]?.string {
+                case "text": return ("text",block["text"]?.string ?? "",nil,nil)
+                case "thinking": return ("reasoningText",block["thinking"]?.string ?? "",nil,nil)
+                case "toolCall": return ("toolArguments",block["arguments"]?.pretty ?? "{}",block["id"]?.string,block["name"]?.string)
+                default: return nil
+                }
+            },sourceID:id).projected()
+        }
+        return result
     }
 }
 
@@ -110,6 +131,9 @@ extension TranscriptMessage {
         row.toolCallCount = try optionalInt(fields["toolCallCount"])
         row.taskRootID = try optionalString(fields["taskRootID"])
         row.taskExecutionID = try optionalString(fields["taskExecutionID"])
+        row.presentationSourceID = try optionalString(fields["presentationSourceID"])
+        row.operationID = try optionalString(fields["operationID"])
+        if let timeline = fields["responseTimeline"], timeline != .null { row.responseTimeline = try JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode(timeline)) }
         return row
     }
     private static func tool(_ value: WireValue) throws -> ToolView {

@@ -183,7 +183,8 @@ final class ContractTests: XCTestCase {
         let reopenedStatus = await reopened.snapshot(["includeMessages": false])
         XCTAssertEqual(reopenedStatus["latestSuccessfulCompaction"], evidence, "First-open callers can baseline retained success without a false new notice")
         let page=await reopened.historyPage(before:nil)
-        XCTAssertEqual(page["messages"].list.filter { $0["kind"].text != nil }.count,1)
+        XCTAssertEqual(page["messages"].list.filter { $0["kind"].text == "compaction" }.count,1)
+        XCTAssertEqual(page["messages"].list.filter { $0["kind"].text == "execution" }.count,1)
         await reopened.close()
     }
 
@@ -191,8 +192,8 @@ final class ContractTests: XCTestCase {
     /// and side runtime, and never refuses one or unloads another to make room.
     func testAWorkspaceKeepsEveryOpenedSessionLoaded() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
-        var unloaded:[String]=[]
-        let host=NativeHostService(emit:{ frame in if frame["type"].text == "session.unloaded" { unloaded.append(frame["sessionId"].text ?? "") } })
+        let recorder=UnloadedSessionRecorder()
+        let host=NativeHostService(emit:{ frame in if frame["type"].text == "session.unloaded" { recorder.append(frame["sessionId"].text ?? "") } })
         _=try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(root.appendingPathComponent("state").path),"mcp":["servers":[:]]])
         let profile=try fixtureProfile().raw
         for index in 1...6 {
@@ -203,7 +204,15 @@ final class ContractTests: XCTestCase {
             let snapshot=try await host.command("session.snapshot",sessionID:"chat-\(index)",params:[:])
             XCTAssertEqual(snapshot["state"].text,"idle","chat \(index) is still loaded")
         }
+        let unloaded = recorder.values
         XCTAssertTrue(unloaded.isEmpty,"no chat was unloaded to make room: \(unloaded)")
         await host.shutdown()
     }
+}
+
+private final class UnloadedSessionRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+    var values: [String] { lock.lock(); defer { lock.unlock() }; return stored }
+    func append(_ value: String) { lock.lock(); defer { lock.unlock() }; stored.append(value) }
 }

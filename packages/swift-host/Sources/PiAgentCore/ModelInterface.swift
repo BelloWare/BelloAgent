@@ -29,7 +29,7 @@ public struct ModelReply: Sendable {
     public var terminal: ModelTerminalOutcome?
     public init(message: ChatMessage, calls: [ToolCall] = [], usage: JSON = [:], truncated: Bool = false, terminal: ModelTerminalOutcome? = nil) { self.message=message; self.calls=calls; self.usage=usage; self.truncated=truncated; self.terminal=terminal }
 }
-public enum StreamDelta: Sendable { case text(String), thinking(String), tool(String, String, String) }
+public enum StreamDelta: Sendable { case text(String), thinking(String), tool(String, String, String), part(ResponsePartEvent) }
 public protocol ModelClient: Sendable {
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply

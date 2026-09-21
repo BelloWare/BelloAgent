@@ -30,10 +30,11 @@ extension AgentSession {
     static let editingTools: Set<String> = ["write", "edit", "bash"]
     static func isEditing(_ call: ToolCall) -> Bool { editingTools.contains(call.name) || (call.name == "mcp" && call.arguments["action"].text == "invoke") }
     func invokeTool(_ call: ToolCall) async throws -> JSON {
-        if call.name == "history_read", !titleTask, !(tools is DisabledTools) { return try historyRead(call.arguments) }
+        if call.name == "history_read", !titleTask, !(tools is DisabledTools) { showToolInvocation(call); return try historyRead(call.arguments) }
         let update: @Sendable (JSON) async -> Void = { [weak self] update in await self?.toolUpdate(call.id,update) }
-        guard !readOnly, Self.isEditing(call) else { return try await tools.invoke(call,readOnly:readOnly,onUpdate:update) }
+        guard !readOnly, Self.isEditing(call) else { showToolInvocation(call); return try await tools.invoke(call,readOnly:readOnly,onUpdate:update) }
         try await editingGate.acquire()
+        showToolInvocation(call)
         do { let result=try await tools.invoke(call,readOnly:readOnly,onUpdate:update); await editingGate.release(); return result }
         catch { await editingGate.release(); throw error }
     }

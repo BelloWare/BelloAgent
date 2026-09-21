@@ -39,6 +39,12 @@ extension AgentSession {
         compactionAttemptIDs=[]; compactionPhysicalAttempts=0
         compactionState=["operationId":JSON(UUID().uuidString),"phase":"planning","reason":JSON(reason),"httpAttempts":0,"durable":JSON(journal != nil)]
         if reason == "context-rejection" { compactionState["recovery"]=contextRecovery }
+        compactionPresentationID = UUID().uuidString
+        var operation = ChatMessage(role:"system",content:[])
+        operation.id=compactionPresentationID!; operation.kind="execution"; operation.operationID=compactionState["operationId"].text
+        operation.detail="Compaction · preparing"; operation.responseTimeline=ResponseTimeline()
+        try appendPresentation(operation)
+        operationStatus("Preparing · " + reason)
         runStatus="compacting"; event("compaction_start")
         defer { modelActive=false; runStatus="running"; event("compaction_end") }
         do {
@@ -76,6 +82,7 @@ extension AgentSession {
             let request=try body(candidate), after=try contextCounter.count(request:request,profile:originalProfile)
             guard after.inputFits, after.tokens < before.tokens else { throw AgentError("compact_no_progress", "Summary did not sufficiently reduce this request. Original context and tool results are retained; choose a larger model or make an explicit handoff.") }
             try CompactionPlanner.validateRequest(request)
+            operationStatus("Candidate summary validated")
             var metadata=compactionState
             metadata["version"]=2; metadata["phase"]="completed"; metadata["sourceContextRevision"]=JSON(before.requestFingerprint)
             metadata["taskRootId"]=taskRootID.map { JSON($0) } ?? .null
@@ -88,6 +95,7 @@ extension AgentSession {
             metadata["keptIDs"] = .array(retained.map { JSON($0.id) })
             metadata["before"]=before.json; metadata["after"]=after.json; metadata["recovery"]=contextRecovery
             metadata["summaryAttemptIds"] = .array(compactionAttemptIDs.map { JSON($0) })
+            summary.operationID=compactionState["operationId"].text
             summary.kind="compaction"; summary.detail=compactionDetail(tokens:before.tokens,kept:retained.count)
             summary.requestAttemptIDs=compactionAttemptIDs; summary.compaction=metadata; summary.taskRootID=taskRootID
             let record: JSON=["type":"compaction","nativeCompactionVersion":2,"nativeCompaction":metadata,"summary":JSON(text),
@@ -98,7 +106,9 @@ extension AgentSession {
             try journal?.append(record,id:summary.id,flush:true)
             context=[summary]+retained; history.append(summary); visible.append(summary); boundary=context
             replayInputsChanged(reason:"compaction-committed"); contextBaseline=nil; currentContextCount=after; clearRequestObservation()
-            compactionState=metadata; invalidateDisplay(allRows:true); recordDisplayChange(summary.id,at:displayClock())
+            compactionState=metadata
+            operationStatus("Checkpoint durably adopted",terminal:"completed")
+            invalidateDisplay(allRows:true); recordDisplayChange(summary.id,at:displayClock())
             for attempt in compactionAttemptIDs { pendingRequestLinks[attempt,default:[]].append(summary.id) }
             event("context.compacted")
             try Task.checkCancellation()
@@ -108,17 +118,35 @@ extension AgentSession {
                 compactionState["phase"]=JSON(Task.isCancelled ? "cancelled" : "failed")
                 compactionState["errorCode"]=JSON((error as? AgentError)?.code ?? "cancelled")
                 compactionState["error"]=JSON((error as? AgentError)?.message ?? "Compaction interrupted; original context retained.")
+                operationStatus(compactionState["error"].text ?? "Interrupted",terminal:Task.isCancelled ? "cancelled":"failed")
             }
             throw error
         }
     }
-    func compactionDelta(_: StreamDelta) {
+    func compactionDelta(_ value: StreamDelta) {
+        if case .part(var part) = value, let id = compactionPresentationID,
+           var row = history.first(where: { $0.id == id }) {
+            presentationOrdinal += 1; part.sessionOrdinal=presentationOrdinal
+            var timeline=row.responseTimeline ?? ResponseTimeline()
+            let previous=timeline.segments.last?.id
+            let changed=timeline.consume(part)
+            if changed {
+                row.responseTimeline=timeline
+                try? updatePresentation(row,persist:previous != timeline.segments.last?.id || part.update == "end" || part.update == "replace")
+            }
+        }
         if nowMS()-compactionProgressAt>=250 { compactionProgressAt=nowMS(); event("compaction_progress") }
     }
     func compactionObservation(_ observation: RequestObservation) async {
         guard observation.purpose == "compaction" else { return }
         monitor(observation)
-        if !compactionAttemptIDs.contains(observation.attemptID) { compactionAttemptIDs.append(observation.attemptID) }
+        if !compactionAttemptIDs.contains(observation.attemptID) {
+            compactionAttemptIDs.append(observation.attemptID)
+            operationStatus("\(compactionState["phase"].text == "merging" ? "Merge":"Summary") request · chunk \(compactionState["chunk"].int ?? 1) · attempt \(compactionPhysicalAttempts)")
+            if let id=compactionPresentationID, var row=history.first(where: { $0.id == id }) {
+                row.requestAttemptIDs=compactionAttemptIDs; try? updatePresentation(row,persist:true)
+            }
+        }
         if observation.phase == "awaiting" { await traces.operation(observation.attemptID,compactionState) }
     }
 }

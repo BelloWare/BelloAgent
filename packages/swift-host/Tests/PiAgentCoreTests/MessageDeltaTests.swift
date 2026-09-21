@@ -126,7 +126,7 @@ final class MessageDeltaTests: XCTestCase {
         let appends = await session.journalAppendCount, syncs = await session.journalSynchronizationCount
         print("PERF journal-turn appends=\(appends) fsyncs=\(syncs) idleAppends=\(idleAppends)")
         XCTAssertGreaterThan(appends, syncs, "A run's records must share one flush, not one each")
-        XCTAssertLessThanOrEqual(syncs, idleSyncs + 2, "A settled turn needs one flush, not one per record")
+        XCTAssertEqual(syncs, idleSyncs + 3, "Admission, the durable task-terminal receipt, and idle state each flush once; tool presentation records add no flushes")
         let stored = await session.path
         let path = try XCTUnwrap(stored)
         let before = await session.snapshot()

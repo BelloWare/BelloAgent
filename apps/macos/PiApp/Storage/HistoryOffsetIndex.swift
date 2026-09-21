@@ -4,6 +4,8 @@ import SQLite3
 struct HistoryOffset: Codable {
     var id: String; var parent: String?; var offset: UInt64; var length: Int; var type: String?
     var fromMessageID: String?; var keptIDs: [String]?; var role: String? = nil
+    var presentation = false
+    var adopted = false
     var selectedPrefix: [String]? = nil; var contextSelection: [String]? = nil
 }
 
@@ -47,6 +49,9 @@ final class HistoryOffsetIndex: @unchecked Sendable {
     func insert(_ ref: HistoryOffset) throws {
         try done(query("INSERT INTO refs VALUES(?,?)", strings: [ref.id], data: JSONEncoder().encode(ref)))
         recordCount += 1
+    }
+    func replaceMetadata(_ ref: HistoryOffset) throws {
+        try done(query("UPDATE refs SET payload=?2 WHERE id=?1", strings: [ref.id], data: JSONEncoder().encode(ref)))
     }
     func ref(_ id: String) throws -> HistoryOffset? {
         let statement = try query("SELECT payload FROM refs WHERE id=?", strings: [id]); defer { sqlite3_finalize(statement) }

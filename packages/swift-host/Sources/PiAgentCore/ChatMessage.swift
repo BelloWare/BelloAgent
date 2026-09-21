@@ -13,6 +13,9 @@ public struct ChatMessage: Codable, Sendable {
     public var providerItems: [JSON]? = nil
     public var providerIdentity: JSON? = nil
     public var providerBinding: JSON? = nil
+    public var presentationSourceID: String? = nil
+    public var operationID: String? = nil
+    public var responseTimeline: ResponseTimeline? = nil
     public var toolCallId: String? = nil
     public var toolName: String? = nil
     public var isError: Bool = false
@@ -53,6 +56,9 @@ public struct ChatMessage: Codable, Sendable {
     public var thinking: String { content.filter { $0["type"].text == "thinking" }.compactMap { $0["thinking"].text }.joined() }
     public var pi: JSON {
         var value: JSON = ["role": JSON(role), "content": .array(content), "timestamp": JSON(timestamp ?? Date().timeIntervalSince1970 * 1000), "nativeReplayEligible": JSON(replayEligible)]
+        if let presentationSourceID { value["nativePresentationSourceID"] = JSON(presentationSourceID) }
+        if let operationID { value["nativeOperationID"] = JSON(operationID) }
+        if let responseTimeline { value["nativeResponseTimeline"] = (try? JSON.parse(JSONEncoder().encode(responseTimeline))) ?? .null }
         if let toolStats { value["nativeToolStats"] = toolStats }
         if let turn { value["nativeTurn"] = JSON(turn) }
         if let modelMs { value["nativeModelMs"] = JSON(modelMs) }
@@ -83,6 +89,8 @@ public struct ChatMessage: Codable, Sendable {
         providerItems = pi["nativeProviderItems"].isNull ? nil : pi["nativeProviderItems"].list
         providerIdentity = pi["nativeProviderIdentity"].isNull ? nil : pi["nativeProviderIdentity"]
         providerBinding = pi["nativeProviderBinding"].isNull ? nil : pi["nativeProviderBinding"]
+        presentationSourceID = pi["nativePresentationSourceID"].text; operationID = pi["nativeOperationID"].text
+        responseTimeline = try? JSONDecoder().decode(ResponseTimeline.self, from: pi["nativeResponseTimeline"].data())
         toolCallId = pi["toolCallId"].text; toolName = pi["toolName"].text; isError = pi["isError"].flag ?? false
         replayEligible = pi["nativeReplayEligible"].flag ?? true; displayText = pi["nativeDisplayText"].text
         if !pi["nativeCompaction"].isNull, pi["nativeCompaction"]["version"].int != 2 { throw AgentError("session_damaged","Unsupported inherited compaction metadata version") }
@@ -106,6 +114,18 @@ public struct ChatMessage: Codable, Sendable {
         }
         let full = displayText ?? text
         var value: JSON = ["id": JSON(id), "role": JSON(role == "toolResult" ? "tool" : role), "text": JSON(preview(full)), "thinking": JSON(preview(thinking, bytes: 8192)), "tools": .array(Array(tools.prefix(ToolInputDisplay.projectedCards))), "state": JSON(state), "truncated": JSON(full.utf8.count > 16384 || thinking.utf8.count > 8192 || tools.count > ToolInputDisplay.projectedCards)]
+        if let presentationSourceID { value["presentationSourceID"] = JSON(presentationSourceID) }
+        if let operationID { value["operationID"] = JSON(operationID) }
+        if role == "toolResult" { value["kind"] = "toolResult"; value["detail"] = JSON("Tool result · " + (toolName ?? "tool") + " · " + (toolStats?["outcome"].text ?? (isError ? "failed":"recorded"))) }
+        let responseTimeline = responseTimeline ?? (role == "assistant" ? ResponseTimeline.canonical(content.compactMap { part in
+            switch part["type"].text {
+            case "text": return ("text",part["text"].text ?? "",nil,nil)
+            case "thinking": return ("reasoningText",part["thinking"].text ?? "",nil,nil)
+            case "toolCall": return ("toolArguments",part["arguments"].encoded(),part["id"].text,part["name"].text)
+            default: return nil
+            }
+        },sourceID:id) : nil)
+        if let responseTimeline { value["responseTimeline"] = (try? JSON.parse(JSONEncoder().encode(responseTimeline.projected()))) ?? .null }
         if role == "assistant" { value["toolCallCount"] = JSON(tools.count) }
         if let kind { value["kind"] = JSON(kind) }
         if let stopReason { value["stopReason"] = JSON(stopReason) }
@@ -116,5 +136,16 @@ public struct ChatMessage: Codable, Sendable {
         if let taskExecutionID { value["taskExecutionID"] = JSON(taskExecutionID) }
         if let modelMs { value["modelMs"] = JSON(modelMs) }
         return value
+    }
+}
+
+// Presentation records have no model-facing content. Their retained display
+// source is read explicitly; ordinary assistant full-text reads stay complete.
+extension ChatMessage {
+    var retainedDisplayText: String {
+        if ["execution", "requestLedger"].contains(kind ?? ""), let responseTimeline {
+            return (detail ?? "Operation") + "\n\n" + responseTimeline.retainedText
+        }
+        return displayText ?? text
     }
 }

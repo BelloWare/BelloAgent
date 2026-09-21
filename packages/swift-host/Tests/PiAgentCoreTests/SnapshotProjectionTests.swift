@@ -3,12 +3,18 @@ import XCTest
 
 private actor ProjectionClient: ModelClient {
     private var callback: (@Sendable (StreamDelta) async throws -> Void)?
+    private var observation: (@Sendable (RequestObservation) async -> Void)?
+    func observe(_ value: RequestObservation) async { await observation?(value) }
     private var completed = false
     private var failure: AgentError?
     var ready: Bool { callback != nil }
     func emit(_ text: String) async throws { try await callback?(.text(text)) }
     func finish() { completed = true }
     func fail() { failure=AgentError("fixture_failure","Fixture failure") }
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        observation = onObservation
+        return try await complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,turnID:turnID,purpose:purpose,onDelta:onDelta)
+    }
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
         callback = onDelta
         while !completed && failure == nil { try await Task.sleep(nanoseconds: 1_000_000) }
@@ -20,9 +26,11 @@ private actor ProjectionClient: ModelClient {
 private actor ProjectionLinkGate {
     private var pending: CheckedContinuation<Bool,Never>?
     private var released=false
+    private var armed=false
+    func arm() { armed=true }
     var waiting: Bool { pending != nil }
     func accept(_ packet: JSON) async -> Bool {
-        guard packet["type"].text=="links", !packet["outputMessageIds"].list.isEmpty, !released else { return true }
+        guard armed, packet["type"].text=="links", !packet["outputMessageIds"].list.isEmpty, !released else { return true }
         return await withCheckedContinuation { pending=$0 }
     }
     func release(accepted: Bool = true) { released=true; pending?.resume(returning:accepted); pending=nil }
@@ -173,9 +181,11 @@ final class SnapshotProjectionTests: XCTestCase {
             addTeardownBlock { await gate.release(); await session.close() }
             _=try await session.submit(Submission(commandID:"start",turnID:"start",text:"Question"),steer:false)
             try await eventually { await client.ready }
-            _=await traces.begin(session:id,turn:"start",profile:profile,purpose:"turn",body:Data(),headers:[:])
+            let attempt = await traces.begin(session:id,turn:"start",profile:profile,purpose:"turn",body:Data(),headers:[:])
+            await client.observe(RequestObservation(sessionID:id,turnID:"start",attemptID:attempt,purpose:"turn",fingerprint:"fixture",profile:profile))
             try await client.emit("Keep this partial reply")
             _=await session.snapshot()
+            await gate.arm()
             if failure { await client.fail() } else { await session.stop() }
             try await eventually { await gate.waiting }
             let during=await session.snapshot()

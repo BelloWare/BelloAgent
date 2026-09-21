@@ -11,6 +11,8 @@ extension AgentSession {
     /// Clears everything the streaming row is built from: its tool cards, the
     /// count of calls it has seen, and the two cached bounded documents.
     func resetPartialRow() {
+        saveResponseLedger(persist:true,terminal:"interrupted")
+        partialTimeline = ResponseTimeline(); partialLedgerID = nil
         partialTools=[:]; partialToolOrder=[]; partialToolSeen=[]
         partialCardsVersion &+= 1; partialTextPreview=nil; partialThinkingPreview=nil
     }
@@ -18,6 +20,13 @@ extension AgentSession {
         let observedAt = displayClock()
         var changed = false
         switch value {
+        case .part(var part):
+            presentationOrdinal += 1; part.sessionOrdinal=presentationOrdinal
+            let previous = partialTimeline.segments.last?.id
+            changed = partialTimeline.consume(part)
+            if changed, previous != partialTimeline.segments.last?.id || part.update == "end" || part.update == "replace" {
+                saveResponseLedger(persist:true)
+            }
         case .text(let text):
             // The row shows a bounded prefix of a string that only grows, so a
             // token can only change what the reader sees while the reply is

@@ -46,6 +46,9 @@ public actor AgentSession {
     var runTask: Task<Void,Never>?, state="idle", runStatus="idle", errorMessage: String?, queuePaused=false
     /// While a transient gateway failure is being retried: attempt, total and the reason.
     var retryInfo: JSON = .null
+    var partialTimeline = ResponseTimeline()
+    var partialLedgerID: String?, compactionPresentationID: String?
+    var presentationOrdinal = 0
     var sequence=0, partialID: String?, partialText="", partialThinking="", partialTools: [String:JSON]=[:], toolStates: [String:JSON]=[:]
     /// The bounded previews the projection puts in the streaming row, kept
     /// across deltas: recomputing them per token copied the whole reply so far.
@@ -146,7 +149,7 @@ public actor AgentSession {
         var stateRecord: JSON?
         for item in opened.loaded {
             if item["type"].text == "message" {
-                let message=try ChatMessage(id:required(item["id"],"message id"),pi:item["message"]); history.append(message); context.append(message); visible.append(message)
+                let message=try ChatMessage(id:required(item["id"],"message id"),pi:item["message"]); history.append(message); if !["execution","requestLedger"].contains(message.kind ?? "") { context.append(message) }; visible.append(message)
                 if message.role=="assistant" { assistantMessageCount += 1; latestAssistantMessageID=message.id }
                 for attempt in message.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(message.id) }
             } else if item["type"].text == "compaction" {
@@ -154,6 +157,11 @@ public actor AgentSession {
                 let summary=restored.summary, kept=restored.kept
                 for attempt in summary.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(summary.id) }
                 context=[summary]+kept; history.append(summary); visible.append(summary)
+                if let operation = summary.operationID, let position = history.firstIndex(where: { $0.kind == "execution" && $0.operationID == operation }) {
+                    history[position].responseTimeline?.finish("completed"); history[position].detail="Compaction · Checkpoint durably adopted"
+                    let replacement=history[position]
+                    if let index=visible.firstIndex(where: { $0.id == replacement.id }) { visible[index]=replacement }
+                }
                 compactionState=summary.compaction ?? .null
                 if let recovery=summary.compaction?["recovery"], !recovery.isNull { contextRecovery=recovery }
             } else if item["type"].text == "branch" {
@@ -171,6 +179,13 @@ public actor AgentSession {
                 }
                 if !item["nativeState"].isNull { stateRecord=item["nativeState"] }
                 contextRecovery = .null; compactionState = .null
+            } else if item["customType"].text == "pi-app.presentation.update.v1" {
+                let target = try identity(item["data"]["id"])
+                if let position = history.firstIndex(where: { $0.id == target }), ["execution","requestLedger"].contains(history[position].kind ?? "") {
+                    var replacement = try ChatMessage(id:target,pi:item["message"]); replacement.replayEligible=false
+                    history[position]=replacement
+                    if let index=visible.firstIndex(where: { $0.id == target }) { visible[index]=replacement }
+                }
             } else if item["customType"].text == "pi-app.task-terminal.v1" {
                 let task = try JSONDecoder().decode(TaskPresentationRecord.self, from: item["data"].data())
                 guard task.valid, task.terminal else { throw AgentError("session_damaged", "Invalid task completion evidence") }
@@ -190,6 +205,18 @@ public actor AgentSession {
                 if item["customType"].text == "pi-app.fork-origin.v1" { contextRecovery = .null; compactionState = .null }
             }
         }
+        // A process restart cannot manufacture terminal evidence. Retained
+        // parts stay in place, with an explicit gap after the last checkpoint.
+        for index in history.indices {
+            let prior = history[index]
+            guard ["execution","requestLedger"].contains(prior.kind ?? ""), prior.responseTimeline?.terminal == nil else { continue }
+            history[index].responseTimeline?.finish("interrupted")
+            history[index].responseTimeline?.coverage = "partial"
+            history[index].detail = (history[index].kind == "requestLedger" ? "Request":"Compaction") + " interrupted · no terminal receipt"
+            let replacement=history[index]
+            if let shown = visible.firstIndex(where: { $0.id == replacement.id }) { visible[shown] = replacement }
+        }
+        presentationOrdinal = history.compactMap(\.responseTimeline).flatMap(\.segments).map { $0.part.sessionOrdinal ?? $0.part.ordinal }.max() ?? 0
         if let saved=stateRecord {
             if !saved["taskPresentation"].isNull,
                var task = try? JSONDecoder().decode(TaskPresentationRecord.self, from: saved["taskPresentation"].data()),
