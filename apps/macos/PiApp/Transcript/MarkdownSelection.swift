@@ -27,18 +27,24 @@ enum MarkdownSelection {
     final class Reconciliation {
         private let previous: String
         private let source: Source
+        private let previousSource: Source
         private let rendered: String
         private let keepsSoftBreaks: Bool
         private lazy var oldMap: TextMap? = {
-            if source.fragment.hasPrefix(previous) {
+            if previousSource.fragment.hasPrefix(previous) {
                 return TextMap(text: previous, spans: [Span(
                     output: NSRange(location: 0, length: previous.utf16.count),
                     input: NSRange(location: source.range.location, length: previous.utf16.count))])
             }
             // Settled streaming fragments are parsed independently. A later
             // document-scoped definition can change their inline rendering.
-            guard let map = Self.parse(source.fragment, scope: NSRange(location: 0, length: source.fragment.utf16.count),
-                                       origin: source.range.location, keepsSoftBreaks: keepsSoftBreaks),
+            if let map = Self.parse(previousSource.fragment, scope: NSRange(location: 0, length: previousSource.fragment.utf16.count),
+                                    origin: source.range.location, keepsSoftBreaks: keepsSoftBreaks), map.text == previous { return map }
+            // Already-canonical content may itself depend on definitions
+            // outside this paragraph. Consult the prior document, not the
+            // current range, which may now include an appended definition.
+            guard let map = Self.parse(previousSource.document, scope: previousSource.range,
+                                       origin: source.range.location - previousSource.range.location, keepsSoftBreaks: keepsSoftBreaks),
                   map.text == previous else { return nil }
             return map
         }()
@@ -48,8 +54,9 @@ enum MarkdownSelection {
             return map
         }()
 
-        init(previous: String, source: Source, rendered: String, keepsSoftBreaks: Bool) {
+        init(previous: String, source: Source, previousSource: Source? = nil, rendered: String, keepsSoftBreaks: Bool) {
             self.previous = previous; self.source = source; self.rendered = rendered; self.keepsSoftBreaks = keepsSoftBreaks
+            self.previousSource = previousSource ?? source
         }
 
         func range(_ selection: NSRange, from previous: String, to rendered: String) -> NSRange? {

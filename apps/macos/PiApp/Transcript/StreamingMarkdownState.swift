@@ -32,12 +32,14 @@ final class StreamingMarkdownState {
     func update(_ next: String, style: MarkdownStyle, streaming: Bool, identity: String = "") -> [StreamingMarkdownRecord] {
         guard next != source || self.style != style || streaming != wasStreaming || identity != messageID else { return records }
         let restarted = identity != messageID || (streaming && (wasStreaming == false || !next.hasPrefix(source)))
+        let terminalReplacement = wasStreaming == true && !streaming && !next.hasPrefix(source)
         let replacement = restarted || self.style != style || !next.hasPrefix(source)
         if replacement { generation &+= 1; settled.removeAll(keepingCapacity: true) }
         // A terminal payload can replace, rather than extend, the streamed
         // source. Equal text or equal offsets in that new source are not the
-        // old blocks; only append/finalization may retain their identities.
-        if replacement { records = [] }
+        // old blocks. Already-canonical editable/detail views still reconcile
+        // their existing containers (e.g. an edit inside a selected code fence).
+        if restarted || terminalReplacement { records = [] }
         source = next; self.style = style; messageID = identity; wasStreaming = streaming; revision &+= 1
         if streaming {
             var nextSettled: [(range: Range<Int>, records: [StreamingMarkdownRecord])] = []

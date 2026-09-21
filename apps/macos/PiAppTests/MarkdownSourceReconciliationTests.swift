@@ -31,9 +31,27 @@ final class MarkdownSourceReconciliationTests: XCTestCase {
         XCTAssertTrue(Set(original.map(\.id)).isDisjoint(with: replacement.map(\.id)), "Equal text or an equal offset cannot make a replaced source the original block")
     }
 
+    func testLastParagraphUsesItsPreviousScopeWhenDefinitionJoinsCanonicalRange() throws {
+        let original = "First **strong** with [label][ref] here.\n\n"
+        let document = original + "[ref]: https://example.com/target\n"
+        let previous = "First strong with [label][ref] here."
+        let rendered = "First strong with label here."
+        let source = try XCTUnwrap(MarkdownSelection.Source(document, bytes: 0..<document.utf8.count))
+        let oldSource = try XCTUnwrap(MarkdownSelection.Source(document, bytes: 0..<original.utf8.count))
+        let map = MarkdownSelection.Reconciliation(previous: previous, source: source, previousSource: oldSource,
+                                                  rendered: rendered, keepsSoftBreaks: false)
+        XCTAssertEqual(map.range((previous as NSString).range(of: "label")), (rendered as NSString).range(of: "label"))
+    }
+
     @MainActor func testLateReferenceDefinitionKeepsSelectionAndUnchangedNativeOwner() async throws {
-        let original = "First **strong** with [label][ref] here.\n\nUnchanged paragraph."
-        let completed = original + "\n\n[ref]: https://example.com/target\n"
+        try await checkReferenceSelection(hasFollowingParagraph: true)
+        try await checkReferenceSelection(hasFollowingParagraph: false)
+    }
+
+    @MainActor private func checkReferenceSelection(hasFollowingParagraph: Bool) async throws {
+        let text = "First **strong** with [label][ref] here.\n\n"
+        let original = text + (hasFollowingParagraph ? "Unchanged paragraph." : "[ref]: https://example.com/target\n")
+        let completed = hasFollowingParagraph ? original + "\n\n[ref]: https://example.com/target\n" : original
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: MarkdownBodyView(source: original, streaming: true, sourceIdentity: "reply"))
@@ -45,7 +63,8 @@ final class MarkdownSourceReconciliationTests: XCTestCase {
         }
         _ = host.fittingSize; host.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         let first = try XCTUnwrap(fields(host).first { $0.stringValue.contains("[label][ref]") })
-        let unchanged = try XCTUnwrap(fields(host).first { $0.stringValue == "Unchanged paragraph." })
+        let unchanged = fields(host).first { $0.stringValue == "Unchanged paragraph." }
+        if hasFollowingParagraph { XCTAssertNotNil(unchanged) }
         first.selectText(nil)
         let editor = try XCTUnwrap(first.currentEditor())
         editor.selectedRange = (first.stringValue as NSString).range(of: "label")
@@ -58,7 +77,7 @@ final class MarkdownSourceReconciliationTests: XCTestCase {
         XCTAssertTrue(first.currentEditor() === editor)
         XCTAssertEqual(first.stringValue, "First strong with label here.")
         XCTAssertEqual(editor.selectedRange, (first.stringValue as NSString).range(of: "label"), "Resolve document-scoped references without moving the selected source text")
-        XCTAssertTrue(fields(host).contains { $0 === unchanged }, "A dependent paragraph cannot replace an unaffected paragraph's owner")
+        if let unchanged { XCTAssertTrue(fields(host).contains { $0 === unchanged }, "A dependent paragraph cannot replace an unaffected paragraph's owner") }
     }
 
     @MainActor func testLateReferenceDefinitionKeepsUnselectedMiddleCharacterAtDrawTime() async throws {

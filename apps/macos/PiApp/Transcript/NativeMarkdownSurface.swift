@@ -99,7 +99,8 @@ private struct NativeHostedMarkdownBlock: View {
     /// Geometry and source outlive the expensive native tree. No sizing
     /// surrogate is shared, and a selected owner is excluded by the caller.
     func releaseDetachedHost() { if view?.superview == nil { view = nil } }
-    @discardableResult func update(_ item: NativeMarkdownItem, source: () -> MarkdownSelection.Source? = { nil }) -> Bool {
+    @discardableResult func update(_ item: NativeMarkdownItem,
+                                  source: () -> (previous: MarkdownSelection.Source?, current: MarkdownSelection.Source)? = { nil }) -> Bool {
         guard self.item != item else { return false }
         decoration.update(caret: item.caret, target: item.headingTarget)
         guard !self.item.hasSameGeometry(as: item) else { self.item = item; return false }
@@ -109,7 +110,8 @@ private struct NativeHostedMarkdownBlock: View {
             let old = String(oldText.characters), new = String(newText.characters)
             if !new.hasPrefix(old) {
                 reconciliation = source().map {
-                    MarkdownSelection.Reconciliation(previous: old, source: $0, rendered: new, keepsSoftBreaks: item.style.keepsSoftBreaks)
+                    MarkdownSelection.Reconciliation(previous: old, source: $0.current, previousSource: $0.previous,
+                                                     rendered: new, keepsSoftBreaks: item.style.keepsSoftBreaks)
                 }
             }
             if let editor = view?.window?.firstResponder as? NSTextView,
@@ -271,6 +273,8 @@ private struct NativeHostedMarkdownBlock: View {
     }
     private var blocks: [NativeMarkdownBlockHost] = []
     private var identities: [MarkdownBlockIdentity] = []
+    private var priorSourceText: String?
+    private var priorSourceRanges: [Range<Int>]?
     var blockOwnerIdentities: [ObjectIdentifier] { blocks.map(ObjectIdentifier.init) }
     private var layouts: [Layout] = []
     private var laidOutWidth: CGFloat?
@@ -346,7 +350,7 @@ private struct NativeHostedMarkdownBlock: View {
         var changedFrom = min(self.identities.count, ids.count), headingIndex = 0
         for index in 0..<min(self.identities.count, ids.count) where self.identities[index] != ids[index] { changedFrom = index; break }
         var changed = self.identities != ids
-        let old = Dictionary(uniqueKeysWithValues: zip(self.identities, blocks))
+        let old = Dictionary(uniqueKeysWithValues: zip(self.identities, blocks.enumerated()))
         var next: [NativeMarkdownBlockHost] = []
         for (index, block) in source.enumerated() {
             var heading: MarkdownCopyTarget?
@@ -356,17 +360,24 @@ private struct NativeHostedMarkdownBlock: View {
             }
             let item = NativeMarkdownItem(block: block, style: style, capsWidth: capsWidth,
                                           caret: streaming && index == source.count - 1, headingTarget: heading, environment: environment)
-            if let retained = old[ids[index]] {
+            if let prior = old[ids[index]] {
+                let retained = prior.element
                 if retained.update(item, source: {
-                    guard let sourceText, let sourceRanges, sourceRanges.indices.contains(index) else { return nil }
-                    return MarkdownSelection.Source(sourceText, bytes: sourceRanges[index])
+                    guard let sourceText, let sourceRanges, sourceRanges.indices.contains(index),
+                          let current = MarkdownSelection.Source(sourceText, bytes: sourceRanges[index]) else { return nil }
+                    var previous: MarkdownSelection.Source?
+                    if let priorSourceText, let priorSourceRanges, priorSourceRanges.indices.contains(prior.offset) {
+                        previous = MarkdownSelection.Source(priorSourceText, bytes: priorSourceRanges[prior.offset])
+                    }
+                    return (previous, current)
                 }) { changed = true; changedFrom = min(changedFrom, index) }
                 next.append(retained)
             } else { next.append(NativeMarkdownBlockHost(item: item)); changed = true }
         }
         let retained = Set(ids)
-        for (id, block) in old where !retained.contains(id) { block.view?.removeFromSuperview() }
+        for (id, prior) in old where !retained.contains(id) { prior.element.view?.removeFromSuperview() }
         blocks = next; self.identities = ids
+        priorSourceText = sourceText; priorSourceRanges = sourceRanges
         guard changed else { return }
         // Completed blocks retain their exact width-specific heights. Only the
         // changed suffix participates in aggregate sizing and frame placement.
