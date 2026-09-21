@@ -83,16 +83,22 @@ enum TaskTranscriptPlan {
             startedAt:started, endedAt:ended, elapsedMs:started.flatMap { s in ended.map { max(0, $0-s) } },
             modelMs:task?.modelMs ?? replies.reduce(0) { $0 + ($1.modelMs ?? 0) },
             toolMs:task?.toolMs ?? tools.reduce(0) { $0 + ($1.durationMs ?? 0) }, live:task.map { !$0.terminal } ?? false,
-            files:TranscriptActivity.changedFiles(tools), partial:partial, accounting:TranscriptActivity.aggregate(replies),
-            requests:replies, current:nil, notice:task?.detail)
+            files:TranscriptActivity.changedFiles(tools), partial:partial, accounting:TranscriptActivity.aggregate(rows),
+            requests:rows.filter { $0.role == "assistant" || $0.accounting != nil }, current:nil, notice:task?.detail)
         summary.toolCountPartial = task == nil && (calls.partial || partial)
         summary.taskKey = task?.key; summary.phase = task?.phase; summary.outcome = task?.outcome
         if let name = task?.currentTool { summary.current = ToolView(id:"current", name:name, state:"running", input:"", output:"", truncated:false) }
         return summary
     }
 
-    static func live(_ lifecycle: TaskPresentationProjection?) -> TurnSummary? {
-        if let task = lifecycle?.active { return summary([], task:task) }
+    static func live(_ lifecycle: TaskPresentationProjection?, messages: [TranscriptMessage] = []) -> TurnSummary? {
+        if let task = lifecycle?.active {
+            // The lifecycle owns execution identity, not accounting. Join only
+            // this execution's rows, including interim reports and tool rounds.
+            // A retry or another loaded turn must never donate its figures.
+            let rows = messages.filter { $0.taskRootID == task.rootID && $0.taskExecutionID == task.executionID }
+            return summary(rows, task:task)
+        }
         guard let phase = lifecycle?.utilityPhase else { return nil }
         var result = summary([], task:nil); result.live = true; result.phase = phase
         result.taskKey = "utility:" + (lifecycle?.epoch ?? ""); return result

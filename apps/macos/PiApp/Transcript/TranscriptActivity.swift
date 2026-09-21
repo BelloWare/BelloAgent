@@ -45,6 +45,9 @@ struct TurnAccounting: Equatable, Sendable {
     var reasoning: Double? = nil, reasoningSamples = 0
     var total: Double? = nil, totalSamples = 0
     var costUSD: Double? = nil, costSamples = 0
+    var reasoningCostUSD: Double? = nil, reasoningCostSamples = 0
+    var cacheWrite: Double? = nil, cacheWriteSamples = 0
+    var cacheHits = 0, cacheMisses = 0, cacheUnreported = 0, cacheConflicts = 0
     /// The last reported model name, and the request it came from, for the reply line's model link.
     var model: String? = nil, modelMessageID: String? = nil
 }
@@ -512,6 +515,10 @@ enum TranscriptActivity {
             add(\.cached, \.cachedSamples, a.cacheReadTokens, a.cacheReadSamples)
             if let uncached = uncachedInput(a) { add(\.uncached, \.uncachedSamples, uncached, a.uncachedInputSamples ?? a.requests) }
             add(\.costUSD, \.costSamples, a.costUSD, a.costSamples)
+            add(\.reasoningCostUSD, \.reasoningCostSamples, a.reasoningCostUSD, a.reasoningCostSamples ?? 0)
+            add(\.cacheWrite, \.cacheWriteSamples, a.cacheWriteTokens, a.cacheWriteSamples)
+            sum.cacheHits += a.cacheHits; sum.cacheMisses += a.cacheMisses
+            sum.cacheUnreported += a.cacheUnreported; sum.cacheConflicts += a.cacheConflicts
             if let name = a.models?.names.first { sum.model = name; sum.modelMessageID = message.id }
         }
         return sum

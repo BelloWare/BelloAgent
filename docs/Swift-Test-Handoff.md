@@ -36,6 +36,18 @@ records optimized native/helper tests, explicit actor checks and publication.
 Current release records take precedence over the historical matrices below.
 Installation/update rehearsals remain skipped by owner instruction.
 
+## 0.1.73 turn info and manual compaction
+
+Run native `TurnInfoTests` and `ManualCompactionTests` with the freshly staged
+helper. The latter uses `fixtures/native/manual_compaction.py` and checks actual
+Responses requests and exact captures for menu/slash/connection-default cases.
+Include the stable-tool, activity, update-isolation, native document and composer
+boundaries. `CompactionTaskRegressionTests` rejects malformed overrides before
+state mutation; pair it with existing compaction safety/budget/gateway tests.
+Turn info wraps in narrow panes; the live dock reserves its metric rows and
+does not resize as zero or micro-cost values arrive. See the
+[0.1.73 validation record](validation/Bello-Agent-0.1.73-2026-09-21.md).
+
 ## 0.1.72 stable tool-streaming acceptance
 
 Read [L01–L14, G01–G15, M01–M12 and P01–P08](Stable-Tool-Streaming-2026-09-21.md).

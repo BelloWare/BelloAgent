@@ -111,6 +111,14 @@ could introduce.
 
 ## Evidence and limits
 
+The 0.1.73 follow-up restores gateway-reported token/cost figures in the fixed
+live dock, wraps terminal figures directly in the transcript, and replaces the
+details prose with a metric/value/coverage table. It joins live accounting by
+task root and execution rather than leaving the dock's request rows empty.
+This supersedes the 0.1.72 phase/time/Stop-only presentation; work and prose
+identity/finality rules are unchanged. See the
+[follow-up validation](validation/Bello-Agent-0.1.73-2026-09-21.md).
+
 The before-change mounted native probe reproduced one false terminal footer,
 a 24-point work-header insertion and placeholder reclassification:
 

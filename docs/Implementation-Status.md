@@ -12,6 +12,15 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
+**0.1.73/build 77 is prepared:** the generating dock again shows reported usage
+and cost; completed turns wrap their timing, token breakdown and cost directly.
+Info opens a detailed table with coverage, cache, reasoning cost and request
+inspection. Manual compaction now freezes the originating session's selected
+model, reasoning effort and output/capacity settings through the helper command.
+Focused validation: 55 helper, 39 distinct actor-checked native and 13 optimized
+native cases pass, plus 12 website staging tests. Publication is pending; see
+[the 0.1.73 record](validation/Bello-Agent-0.1.73-2026-09-21.md).
+
 **Bello Agent 0.1.72/build 76 is released and publicly verified**, from source
 `b5d0b86bba594e34f837904d2af7b971da9f7ef6` and website
 `0fddf033603b3d83cd6249d81b09ae56e9b52d86`. The signed/notarized installer is

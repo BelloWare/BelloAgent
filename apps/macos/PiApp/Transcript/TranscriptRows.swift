@@ -1135,37 +1135,28 @@ struct BlockRowView: View {
     }
 }
 
-/// A stable terminal slot. Late accounting patches the same one-line fields;
-/// all detailed usage, timestamps, warnings and copy actions remain available.
+/// A terminal slot independent of the prose above it. Figures wrap between
+/// fields so narrower panes keep usage visible; Info opens the detailed table.
 struct StableTurnSummaryView: View {
     let turn: TurnSummary
     let actions: TranscriptActions
-    @State private var open = false
     var body: some View {
-        HStack(spacing:8) {
-            Button { open.toggle() } label: {
-                HStack(spacing:6) {
-                    Text("Turn · " + (turn.outcome == "completed" ? "Completed" : turn.outcome == "cancelled" ? "Stopped" : turn.outcome == "output-limited" ? "Output limit reached" : turn.outcome?.capitalized ?? "Outcome unavailable"))
-                    if let elapsed = turn.elapsedMs { Text(TranscriptActivity.formatDuration(elapsed)).monospacedDigit() }
-                    if let tokens = TranscriptActivity.tokens(of:turn.accounting) { Text(TranscriptActivity.formatTokenCount(tokens) + " tokens") }
-                    if let cost = turn.accounting.costUSD { Text(TranscriptActivity.formatTurnCost(cost)) }
-                    Image(systemName:"info.circle")
-                }.lineLimit(1)
-            }.buttonStyle(.plain)
-            Spacer(minLength:0)
-            Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(TurnLineView.copyText(turn), forType:.string) } label: { Image(systemName:"doc.on.doc") }
-                .buttonStyle(.plain).help("Copy Turn Info")
-        }.font(.system(size:12, weight:.medium)).foregroundStyle(TranscriptPalette.muted).frame(height:28)
-        .padding(.top,6).padding(.bottom,10)
-        .popover(isPresented:$open) {
-            ScrollView { VStack(alignment:.leading,spacing:10) {
-                if let notice = turn.notice { Text(notice).foregroundStyle(TranscriptPalette.warning).textSelection(.enabled) }
-                TurnLineView(turn:turn, actions:actions)
-                ForEach(turn.requests) { reply in
-                    if let accounting = reply.accounting { MessageAccountingView(accounting:accounting, onInspect:{ actions.inspect(reply.id) }) }
-                }
-            }.padding(16) }.frame(width:560, height:300)
-        }.help(turn.notice ?? "Show full turn timing, usage, model and request details")
+        VStack(alignment:.leading,spacing:4) {
+            FigureFlow(items: header, font:.system(size:12,weight:.medium),color:TranscriptPalette.muted)
+            FigureFlow(items:TurnInfoPresentation.inlineFigures(turn).map { .text(Text($0)) },font:.system(size:12,weight:.medium))
+            if let notice = turn.notice { Text(notice).font(.system(size:12)).foregroundStyle(TranscriptPalette.warning).textSelection(.enabled) }
+        }.padding(.top,6).padding(.bottom,10).fixedSize(horizontal:false,vertical:true)
+    }
+    private var header: [FigureItem] {
+        var items: [FigureItem] = [.text(Text("Turn · " + TurnInfoPresentation.outcome(turn)))]
+        if let elapsed = turn.elapsedMs { items.append(.text(Text(TranscriptActivity.formatDuration(elapsed)))) }
+        items.append(.text(Text(TurnLineView.counts(turn))))
+        items.append(.view(TurnInfoButton(turn:turn,actions:actions),dotted:false))
+        items.append(.view(Button {
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(TurnLineView.copyText(turn),forType:.string)
+        } label: { Image(systemName:"doc.on.doc").frame(width:20,height:20) }
+            .buttonStyle(.plain).help("Copy Turn Info").accessibilityLabel("Copy Turn Info"),dotted:false))
+        return items
     }
 }
 
@@ -1250,6 +1241,7 @@ struct TurnLineView: View {
 struct LiveTurnBar: View {
     let turn: TurnSummary
     var state = "running"
+    var actions = TranscriptActions()
     let onStop: () -> Void
     @Environment(\.piReduceMotion) private var reduceMotion
     private var label: String {
@@ -1265,20 +1257,40 @@ struct LiveTurnBar: View {
     }
     var body: some View {
         TimelineView(.periodic(from:.now, by:1)) { context in
-            HStack(spacing:8) {
-                SpinnerView().frame(width:14)
-                Text(label).lineLimit(1).truncationMode(.tail).help(label).accessibilityLabel(label)
-                Spacer(minLength:4)
-                if let started = turn.startedAt {
-                    Text(TranscriptActivity.formatDuration(max(0, context.date.timeIntervalSince1970 * 1000 - started)))
-                        .monospacedDigit().lineLimit(1).frame(width:58, alignment:.trailing)
-                }
-                Button("Stop", action:onStop).buttonStyle(TranscriptStopStyle()).frame(width:48).accessibilityLabel("Stop the current run")
-            }.font(.system(size:12, weight:.medium)).foregroundStyle(TranscriptPalette.muted)
-                .frame(height:28).padding(.horizontal,10).padding(.vertical,6)
+            var current = turn
+            if let started = turn.startedAt { current.elapsedMs = max(0,context.date.timeIntervalSince1970 * 1000-started) }
+            return VStack(spacing:4) {
+                HStack(spacing:6) {
+                    SpinnerView().frame(width:14)
+                    Text(label).lineLimit(1).truncationMode(.tail).help(label).accessibilityLabel(label)
+                    Spacer(minLength:4)
+                    Text(current.elapsedMs.map(TranscriptActivity.formatDuration) ?? "—")
+                        .monospacedDigit().lineLimit(1).frame(width:58,alignment:.trailing)
+                    TurnInfoButton(turn:current,actions:actions)
+                    Button("Stop", action:onStop).buttonStyle(TranscriptStopStyle()).frame(width:48).accessibilityLabel("Stop the current run")
+                }.frame(height:28)
+                HStack(spacing:12) {
+                    metric("Tokens",TurnInfoPresentation.tokenLabel(turn))
+                    metric("Cost",TurnInfoPresentation.costLabel(turn))
+                }.frame(height:20)
+                HStack(spacing:12) {
+                    metric("In",turn.accounting.input.map(TranscriptActivity.formatTokenCount) ?? "—")
+                    metric("Out",turn.accounting.output.map(TranscriptActivity.formatTokenCount) ?? "—")
+                }.frame(height:20)
+            }.font(.system(size:12,weight:.medium)).foregroundStyle(TranscriptPalette.muted)
+                .padding(.horizontal,10).padding(.vertical,6)
                 .background(TranscriptPalette.surface,in:RoundedRectangle(cornerRadius:10))
                 .overlay(RoundedRectangle(cornerRadius:10).stroke(TranscriptPalette.hair,lineWidth:1))
+                .help(turn.partial ? "Gateway reports for loaded requests only; more in turn info." : "Gateway-reported usage so far. Final reports may arrive when the request finishes.")
         }.accessibilityElement(children:.contain)
+    }
+    private func metric(_ name: String, _ value: String) -> some View {
+        HStack(spacing:4) {
+            Text(name).foregroundStyle(TranscriptPalette.faint)
+            Text(value).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+                .help(name + ": " + value).accessibilityLabel(name + ": " + value)
+            Spacer(minLength:0)
+        }.frame(maxWidth:.infinity,alignment:.leading)
     }
 }
 

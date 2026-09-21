@@ -47,7 +47,13 @@ Empty/tool-only replies create no temporary prose or action placeholder. A Turn
 summary appears only after a recorded task outcome, including failure, stop,
 interruption and output limit. Tool rounds, retry waits, steering and automatic
 compaction keep the task active; queued follow-ups have distinct executions.
-The live dock keeps phase, elapsed time and Stop in fixed-height slots. Closed
+The live dock keeps phase, elapsed time, gateway-reported tokens/cost and Stop
+in fixed-height slots. Turn summaries show timing, input/output/cache/reasoning
+tokens and cost directly, wrapping to fit narrow panes. Info opens a table with
+reported coverage, cache state, reasoning cost and per-request inspection. Zero
+and micro-costs remain visible; unreported usage stays pending/unreported.
+Manual compaction uses the originating session's selected model, effort,
+context capacity, output budget and model output ceiling, frozen at dispatch. Closed
 details stay closed; argument fragments and late usage cannot move existing prose.
 Old histories without terminal evidence show an unavailable outcome, and partial
 history remains labelled. See [the lifecycle contract and acceptance record](docs/Stable-Tool-Streaming-2026-09-21.md).

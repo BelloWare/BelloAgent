@@ -241,7 +241,7 @@ struct ContentGeometry: Equatable {
         frames = frames.filter { ids.contains($0.key) }
         sequence += 1
         lastPresentationAt = ProcessInfo.processInfo.systemUptime
-        let next = Snapshot(sessionID: session.id, generation: generation, messages: page, items: items, fresh: fresh, sequence: sequence, lifecycle: input.lifecycle, liveTurn: TaskTranscriptPlan.live(input.lifecycle))
+        let next = Snapshot(sessionID: session.id, generation: generation, messages: page, items: items, fresh: fresh, sequence: sequence, lifecycle: input.lifecycle, liveTurn: TaskTranscriptPlan.live(input.lifecycle, messages: messages))
         // The scroll document always adopts its final geometry immediately.
         // Animating a complete snapshot also animates every existing row's
         // position and races AppKit's exact anchor/bottom placement. Controls
@@ -1297,7 +1297,7 @@ struct NativeTranscriptView: View {
             // frame. Row disclosures and the Latest pill set their own motion.
             .transaction { $0.animation = nil }
             if session.newerPage.available { boundaryControl(earlier: false) }
-            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, onStop: actions.stop, reduceMotion: reduceMotion)
+            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, onStop: actions.stop, reduceMotion: reduceMotion)
                 .id(session.presentationGeneration)
         }
         // The run state is read where it is used, never from the value this
@@ -1345,6 +1345,7 @@ struct NativeTranscriptView: View {
 private struct LiveTurnBarSlot: View {
     let turn: TurnSummary?
     let state: String
+    let actions: TranscriptActions
     let onStop: () -> Void
     let reduceMotion: Bool
     @State private var arrived = false
@@ -1353,7 +1354,7 @@ private struct LiveTurnBarSlot: View {
         // inserts a terminal summary also releases (or retargets) this slot.
         Group {
             if let turn {
-                LiveTurnBar(turn:turn, state:state, onStop:onStop)
+                LiveTurnBar(turn:turn, state:state, actions:actions, onStop:onStop)
                     .padding(.horizontal,16).padding(.bottom,8)
                     .opacity(arrived ? 1 : 0).offset(y:arrived ? 0 : 14)
                     .onAppear { if reduceMotion { arrived = true } else { withAnimation(PiMotion.base) { arrived = true } } }
