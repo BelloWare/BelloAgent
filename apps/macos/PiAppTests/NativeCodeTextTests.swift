@@ -122,4 +122,39 @@ final class NativeCodeTextTests: XCTestCase {
         XCTAssertEqual(heights[0], heights[1], accuracy: 1, "The optimized leaf must retain the full fence height")
     }
 
+    @MainActor func testHighlightingResumesAtSafeLexicalCheckpointAndPreservesUTF16Selection() throws {
+        for (language, opening, ending) in [("swift", "/* open\ncomment", "\nclosed */\nlet result = 42\n"),
+                                              ("python", "value = \"\"\"open\n中文🙂", "\nclosed\"\"\"\nprint(value)\n"),
+                                              ("typescript", "const value = `open\n🙂", "\nclosed`;\nconst x = 3;\n")] {
+            let prefix = String(repeating: language == "python" ? "# stable prefix\n" : "// stable prefix\n", count: 40)
+            let first = prefix + opening
+            let view = TranscriptCodeTextView()
+            view.update(source: first, language: language, size: 13, environment: .init())
+            view.setSelectedRange(NSRange(location: 5, length: 4))
+            let original = try XCTUnwrap(view.textStorage).attributedSubstring(from: NSRange(location: 0, length: 100))
+            let visits = view.highlightedScalarVisits
+            let final = first + ending
+            view.update(source: final, language: language, size: 13, environment: .init())
+            let full = TranscriptCodeTextView()
+            full.update(source: final, language: language, size: 13, environment: .init())
+            XCTAssertEqual(view.textStorage, full.textStorage, "Incremental attributes equal canonical scan, \(language)")
+            XCTAssertEqual(view.textStorage?.attributedSubstring(from: NSRange(location: 0, length: 100)), original)
+            XCTAssertEqual(view.selectedRange(), NSRange(location: 5, length: 4))
+            // Python uses # comments, but these punctuation-delimited prefix
+            // lines still have neutral checkpoints.
+            XCTAssertLessThan(view.highlightedScalarVisits - visits, 150)
+            XCTAssertGreaterThan(view.lastAttributeRange.location, 100)
+        }
+    }
+
+    @MainActor func testCodeHighlightLimitDoesNotStripPrefixStyle() throws {
+        let view = TranscriptCodeTextView()
+        let prefix = "let meaning = 42\n" + String(repeating: "// stable line\n", count: 1000)
+        view.update(source: prefix, language: "swift", size: 13, environment: .init())
+        let color = try XCTUnwrap(view.textStorage?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+        view.update(source: prefix + String(repeating: "// new line\n", count: 1000), language: "swift", size: 13, environment: .init())
+        XCTAssertEqual(view.textStorage?.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, color)
+    }
+
+
 }

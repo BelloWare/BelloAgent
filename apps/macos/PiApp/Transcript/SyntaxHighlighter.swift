@@ -62,11 +62,17 @@ enum SyntaxHighlighter {
 
     /// Tokens as ranges over the code's unicode scalars, in order and non-overlapping.
     static func tokens(_ code: String, language: Language) -> [Token] {
-        guard code.utf8.count <= limit else { return [] }
+        scan(code, language: language).tokens
+    }
+    struct Scan { var tokens: [Token]; var checkpoints: [Int] }
+    /// A checkpoint is outside a string/comment and has no pending declaration
+    /// word. Re-entering here has the same lexical state as scanning the prefix.
+    static func scan(_ code: String, language: Language, from start: Int = 0) -> Scan {
+        guard code.utf8.count <= limit else { return Scan(tokens: [], checkpoints: []) }
         let grammar = grammar(language)
         let scalars = Array(code.unicodeScalars)
         var tokens: [Token] = []
-        var index = 0
+        var index = start, checkpoints = [start]
         func startsWith(_ prefix: String, at position: Int) -> Bool {
             let needle = Array(prefix.unicodeScalars)
             guard position + needle.count <= scalars.count else { return false }
@@ -136,8 +142,9 @@ enum SyntaxHighlighter {
             }
             if !scalar.properties.isWhitespace { previousWord = "" }
             index += 1
+            if scalar == "\n", previousWord.isEmpty { checkpoints.append(index) }
         }
-        return tokens
+        return Scan(tokens: tokens, checkpoints: checkpoints)
     }
 
     /// The code as styled text: a monospaced base with the palette's colours on

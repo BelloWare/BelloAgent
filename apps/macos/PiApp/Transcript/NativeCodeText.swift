@@ -30,6 +30,9 @@ struct NativeCodeText: NSViewRepresentable {
     private var environment: TranscriptRowEnvironment?
     private var sizes: [CGSize] = []
     private(set) var appendCount = 0
+    private var checkpoint = 0
+    private(set) var highlightedScalarVisits = 0
+    private(set) var lastAttributeRange = NSRange(location: 0, length: 0)
     convenience init() { self.init(frame: .zero, textContainer: nil) }
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
         // Unlike NSTextView(frame:), the designated initializer does not
@@ -70,21 +73,25 @@ struct NativeCodeText: NSViewRepresentable {
             storage.append(NSAttributedString(string: suffix, attributes: base))
             appendCount += 1
         } else { storage.setAttributedString(NSAttributedString(string: next, attributes: base)) }
-        // Highlighting is deliberately bounded by the existing scanner limit.
-        // Crossing that limit removes old colours, never truncates the code.
-        if next.utf8.count <= SyntaxHighlighter.limit || source.utf8.count <= SyntaxHighlighter.limit || !sameStyle {
-            storage.setAttributes(base, range: NSRange(location: 0, length: storage.length))
-        }
-        if let name = language, let grammar = SyntaxHighlighter.language(named: name), next.utf8.count <= SyntaxHighlighter.limit {
+        // Resume only at a scanner-certified neutral lexical state. Preserve
+        // attributes before that checkpoint. Oversized tails remain plain;
+        // crossing the cap never strips already validated prefix colours.
+        var dirtyStart = append ? previousLength : 0
+        var bound = next.utf8.index(next.utf8.startIndex, offsetBy: min(next.utf8.count, SyntaxHighlighter.limit))
+        while bound != next.utf8.startIndex, bound.samePosition(in: next.unicodeScalars) == nil { bound = next.utf8.index(before: bound) }
+        let bounded = String(next[..<bound])
+        if let name = language, let grammar = SyntaxHighlighter.language(named: name),
+           !append || source.utf8.count < SyntaxHighlighter.limit {
+            let start = append ? checkpoint : 0
+            let scan = SyntaxHighlighter.scan(bounded, language: grammar, from: start)
+            let scalars = Array(bounded.unicodeScalars)
+            highlightedScalarVisits += max(0, scalars.count - start)
             var offsets = [0], offset = 0
-            offsets.reserveCapacity(next.unicodeScalars.count + 1)
-            for scalar in next.unicodeScalars {
-                offset += scalar.value > 0xffff ? 2 : 1
-                offsets.append(offset)
-            }
-            for token in SyntaxHighlighter.tokens(next, language: grammar) {
-                let range = NSRange(location: offsets[token.range.lowerBound],
-                                    length: offsets[token.range.upperBound] - offsets[token.range.lowerBound])
+            for scalar in scalars { offset += scalar.value > 0xffff ? 2 : 1; offsets.append(offset) }
+            dirtyStart = offsets[min(start, offsets.count - 1)]
+            storage.setAttributes(base, range: NSRange(location: dirtyStart, length: storage.length - dirtyStart))
+            for token in scan.tokens {
+                let range = NSRange(location: offsets[token.range.lowerBound], length: offsets[token.range.upperBound] - offsets[token.range.lowerBound])
                 let color: Color
                 switch token.kind {
                 case .keyword: color = TranscriptPalette.keyword
@@ -96,7 +103,9 @@ struct NativeCodeText: NSViewRepresentable {
                 }
                 storage.addAttribute(.foregroundColor, value: NSColor(color), range: range)
             }
-        }
+            checkpoint = scan.checkpoints.last(where: { $0 < scalars.count }) ?? start
+        } else if !append { checkpoint = 0 }
+        lastAttributeRange = NSRange(location: dirtyStart, length: storage.length - dirtyStart)
         storage.endEditing()
         source = next; self.language = language; pointSize = size; self.environment = environment
         sizes.removeAll(keepingCapacity: true)
