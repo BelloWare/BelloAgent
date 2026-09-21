@@ -20,6 +20,20 @@ final class ResponseTimelinePresentationTests: XCTestCase {
         let after=TaskTranscriptPlan.items([rows[0],reply],lifecycle:nil)
         XCTAssertEqual(before.compactMap { if case .block(let b)=$0{return b};return nil },after.compactMap { if case .block(let b)=$0{return b};return nil })
     }
+    func testCosmeticPlannerPatchMatchesFullChronologyWithoutRebuildingOtherResponses() throws {
+        var response = TranscriptMessage(id:"r",role:"assistant",text:"First",state:"streaming")
+        response.responseTimeline = parts()
+        let earlier = TranscriptMessage(id:"old",role:"assistant",text:"Earlier answer",thinking:"Earlier reasoning")
+        let before = [TranscriptMessage(id:"u",role:"user",text:"Ask"),earlier,response]
+        let items = TaskTranscriptPlan.items(before,lifecycle:nil)
+        var after = before
+        after[2].responseTimeline?.segments[3].text += " growing arguments"
+        after[2].responseTimeline?.segments[3].revision += 1
+        let patch = try XCTUnwrap(TranscriptActivity.patched(items,from:before,to:after))
+        XCTAssertEqual(patch,TaskTranscriptPlan.items(after,lifecycle:nil))
+        after[2].accounting = GatewayTotals()
+        XCTAssertNil(TranscriptActivity.patched(items,from:before,to:after),"Late totals take the complete planner")
+    }
     func testPartPatchUpdatesOnlyItsStableSegment() throws {
         var reply=TranscriptMessage(id:"r",role:"assistant",text:"")
         reply.responseTimeline=parts()

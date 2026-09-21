@@ -125,8 +125,9 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
         let bottom = documentHeight - scroll.contentView.bounds.height
         XCTAssertGreaterThan(bottom, 4_000)
 
-        @MainActor func step(to requested: CGFloat) async -> (total: Double, sync: Double) {
+        @MainActor func step(to requested: CGFloat) async -> (total: Double, sync: Double, prepared: Int) {
             let start = ProcessInfo.processInfo.systemUptime
+            let provisionalBefore = descendants(NativeMarkdownContainer.self, in: hosted).reduce(0) { $0 + $1.provisionalBlockCount }
             page.readerWillNavigate(upward: requested < scroll.contentView.bounds.minY)
             scroll.contentView.scroll(to: NSPoint(x: 0, y: requested))
             scroll.reflectScrolledClipView(scroll.contentView)
@@ -137,12 +138,37 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
             let resumedAt = ProcessInfo.processInfo.systemUptime
             hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             synchronous += ProcessInfo.processInfo.systemUptime - resumedAt
-            return ((ProcessInfo.processInfo.systemUptime - start) * 1000, synchronous * 1000)
+            let provisionalAfter = descendants(NativeMarkdownContainer.self, in: hosted).reduce(0) { $0 + $1.provisionalBlockCount }
+            return ((ProcessInfo.processInfo.systemUptime - start) * 1000, synchronous * 1000,
+                    max(0, provisionalBefore - provisionalAfter))
         }
 
         // Both directions and widely separated positions warm the same exact
         // layout. This must not turn into a test of only the initially visible row.
         for fraction in [0.25, 0.5, 0.75, 0.95, 0.5, 0.05] { _ = await step(to: bottom * fraction) }
+        // A row can have exact outer geometry while its large Markdown
+        // surface still has provisional inner blocks. Warm the actual measured
+        // traversal, not just six isolated destinations. Cold preparation is
+        // allowed to correct estimates; steady scrolling must reuse exact text.
+        let warmStart = ProcessInfo.processInfo.systemUptime
+        var prepared = 0, warmPasses = 0
+        repeat {
+            prepared = 0; warmPasses += 1
+            for fraction in [0.08, 0.45, 0.83] {
+                let start = min(bottom - 4_000, max(0, bottom * fraction))
+                for index in 0..<40 {
+                    let displacement = CGFloat(index < 20 ? index : 39 - index) * 96
+                    prepared += await step(to: min(bottom, max(0, start + displacement))).prepared
+                }
+            }
+            // Estimates can expose an additional edge block on the return
+            // pass. Require convergence before claiming this is a steady-layout
+            // benchmark. Cold preparation's source stability has separate,
+            // draw-time assertions in StableReadingTests.
+        } while prepared > 0 && warmPasses < 5
+        XCTAssertEqual(prepared, 0, "The measured traversal must have finished provisional preparation")
+        print(String(format: "SCROLL PREPARE %@ actual-traversal %d passes, %.3f ms", label, warmPasses,
+                     (ProcessInfo.processInfo.systemUptime - warmStart) * 1000))
         let rowsBefore = (document as? TranscriptNativeDocument)?.retainedRows ?? descendants(TranscriptRowContainer.self, in: hosted)
         let measurementsBefore = Dictionary(uniqueKeysWithValues: rowsBefore.map { ($0.itemID, $0.measurementCount) })
         let validationsBefore = rowsBefore.reduce(0) { $0 + $1.intrinsicValidationCount }
@@ -163,6 +189,7 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
                 let target = min(bottom, max(0, start + displacement))
                 let time = await step(to: target)
                 times.append(time.total); synchronousTimes.append(time.sync)
+                XCTAssertEqual(time.prepared, 0, "Steady scrolling must not still be measuring provisional blocks")
                 XCTAssertEqual(scroll.contentView.bounds.origin.y, target, accuracy: 0.5, "Scrolling unchanged content must land where the reader moved")
                 XCTAssertEqual(document.frame.height, documentHeight, accuracy: 0.5, "Scrolling must not change the height of already loaded content")
             }

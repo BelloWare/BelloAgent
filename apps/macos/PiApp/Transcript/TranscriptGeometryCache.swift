@@ -40,8 +40,11 @@ import AppKit
     static func permits(_ item: TranscriptItem) -> Bool {
         switch item {
         case .message(let message):
-            return !message.isStreaming && message.kind != "compaction" && message.text.utf8.count <= 32_768
+            return !message.isStreaming && !["compaction", "execution", "toolResult"].contains(message.kind ?? "") &&
+                message.responseTimeline == nil && (message.tools ?? []).isEmpty &&
+                (message.thinking ?? "").isEmpty && message.text.utf8.count <= 32_768
         case .block(let block):
+            if let part = block.part, !["text", "refusal"].contains(part.part.kind) { return false }
             return !block.live && block.turn?.live != true && block.tools.isEmpty &&
                 block.replies.allSatisfy { $0.text.utf8.count <= 32_768 && ($0.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && ($0.tools ?? []).isEmpty }
         }
@@ -59,6 +62,12 @@ import AppKit
         case .block(let block):
             messages = block.replies + (block.turn?.requests ?? [])
             extra += text(block.id) + text(block.key) + text(block.turnID) + text(block.accounting.model) + text(block.accounting.modelMessageID)
+            if let part = block.part {
+                let evidence = part.part
+                extra += 256 + text(part.id) + text(part.text) + text(part.state)
+                extra += text(evidence.attemptID) + text(evidence.itemID) + text(evidence.kind) + text(evidence.update)
+                extra += text(evidence.text) + text(evidence.callID) + text(evidence.name) + text(evidence.evidence) + text(evidence.reconcilesPartKey)
+            }
             if let turn = block.turn {
                 extra += text(turn.notice) + text(turn.accounting.model) + text(turn.accounting.modelMessageID)
                 if let current = turn.current { extra += tool(current) }

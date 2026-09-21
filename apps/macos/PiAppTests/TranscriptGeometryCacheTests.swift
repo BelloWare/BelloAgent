@@ -59,11 +59,44 @@ final class TranscriptGeometryCacheTests: XCTestCase {
                         TranscriptMessage(id: "stream:reply", role: "assistant", text: "Still changing", state: "streaming")]
         var items = messages.flatMap { TranscriptActivity.blocks(of: [$0]) }
         items.append(.message(TranscriptMessage(id: "compaction", role: "system", text: "Expandable summary", kind: "compaction")))
+        var immutableBodies = 0
         for item in items {
-            XCTAssertFalse(TranscriptGeometryCache.permits(item))
+            let plainBody: Bool
+            if case .block(let block) = item { plainBody = block.presentation == .body && !block.live }
+            else { plainBody = false }
+            XCTAssertEqual(TranscriptGeometryCache.permits(item), plainBody)
+            if plainBody { immutableBodies += 1 }
             cache.store(CGSize(width: 700, height: 10_000), sessionID: "session", item: item, fresh: false, environment: TranscriptRowEnvironment(), backingScale: 2)
         }
-        XCTAssertEqual(cache.count, 0, "Open tool/reasoning/compaction details must never become another pane's default row height")
+        XCTAssertEqual(immutableBodies, 2, "Separated settled prose can share its exact geometry")
+        XCTAssertEqual(cache.count, immutableBodies, "Local tool/reasoning/compaction heights cannot leak into another pane")
+    }
+
+    @MainActor func testTimelineDisclosureGeometryAndEvidenceStayWithinCacheContract() {
+        let cache = TranscriptGeometryCache(countLimit: 20, byteLimit: 4_000, entryByteLimit: 3_000)
+        let timeline = ResponseTimeline.canonical([
+            (kind: "text", text: "Plain response", callID: nil, name: nil),
+            (kind: "reasoningSummary", text: "Expandable reasoning", callID: nil, name: nil),
+            (kind: "toolArguments", text: "{}", callID: "call", name: "read")], sourceID: "r")
+        var response = TranscriptMessage(id: "r", role: "assistant", text: "Plain response")
+        response.responseTimeline = timeline
+        let parts = TaskTranscriptPlan.items([response], lifecycle: nil).filter {
+            if case .block(let block) = $0 { return block.part != nil }; return false
+        }
+        for item in parts {
+            guard case .block(let block) = item else { continue }
+            XCTAssertEqual(TranscriptGeometryCache.permits(item), block.part?.part.kind == "text")
+            cache.store(CGSize(width: 600, height: 100), sessionID: "s", item: item, fresh: false, environment: .init(), backingScale: 2)
+        }
+        XCTAssertEqual(cache.count, 1)
+        for kind in ["execution", "toolResult", "compaction"] {
+            XCTAssertFalse(TranscriptGeometryCache.permits(.message(.init(id: kind, role: "system", text: "Details", kind: kind))))
+        }
+        if case .block(var heavy) = parts[0] {
+            heavy.part?.part.itemID = String(repeating: "large-id", count: 1_000)
+            cache.store(CGSize(width: 600, height: 100), sessionID: "s", item: .block(heavy), fresh: false, environment: .init(), backingScale: 2)
+            XCTAssertEqual(cache.count, 0, "Retained timeline metadata participates in the payload limit")
+        }
     }
 
     @MainActor private final class Fixture {

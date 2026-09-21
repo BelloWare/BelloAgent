@@ -225,7 +225,10 @@ struct ContentGeometry: Equatable {
             preserveReadingPositionForLayout()
         }
         let page = Self.displayPage(messages)
-        let items = TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle)
+        let patched = snapshot.flatMap { current in
+            Self.sameLifecycle(current.lifecycle, input.lifecycle) ? TranscriptActivity.patched(current.items, from: current.messages, to: page) : nil
+        }
+        let items = patched ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle)
         guard Set(page.map(\.id)).count == page.count, Set(items.map(\.id)).count == items.count else {
             projectionError = "This conversation contains conflicting row identities. The last valid page is retained; inspect the session file to repair it. No history was deleted."
             return
@@ -238,8 +241,12 @@ struct ContentGeometry: Equatable {
             seen.insert(message.id)
         }
         if !initialized {
-            if let anchor = session.scrollAnchor { followsBottom = anchor.followsBottom; pendingAnchor = anchor.followsBottom ? nil : anchor }
-            else { followsBottom = true; pendingAnchor = nil }
+            if let anchor = session.scrollAnchor {
+                // Restoring a saved position is an explicit destination too.
+                // Geometry from the initial top-of-page mount must not win.
+                explicitDestination = !anchor.followsBottom
+                followsBottom = anchor.followsBottom; pendingAnchor = anchor.followsBottom ? nil : anchor
+            } else { followsBottom = true; pendingAnchor = nil }
             openingPlacementPending = followsBottom && !busy && !page.isEmpty
         }
         let completed = TranscriptActivity.latestCompletedAssistant(page)
@@ -324,7 +331,7 @@ struct ContentGeometry: Equatable {
         self.scrollView = scrollView
         guard let scrollView else { return }
         scrollView.transcriptReading.bind(scope: (sessionID ?? "") + ":" + (generation?.uuidString ?? ""))
-        scrollView.transcriptReading.following = followsBottom
+        scrollView.transcriptReading.following = followsBottom || explicitDestination
         let center = NotificationCenter.default
         scrollView.contentView.postsBoundsChangedNotifications = true
         scrollObservers.append(center.addObserver(forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: .main) { [weak self] _ in

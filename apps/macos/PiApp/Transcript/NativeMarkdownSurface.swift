@@ -173,8 +173,11 @@ private struct NativeHostedMarkdownBlock: View {
         return view.map { visit($0) } ?? []
     }
     func characterAnchor(in surface: NSView, viewportTop: CGFloat) -> CharacterAnchor? {
-        guard let window = surface.window else { return nil }
-        for (ordinal, owner) in textOwners.enumerated() {
+        // Cached exact descriptors can outlive a detached native host. Its
+        // accessibility rectangles are not in this surface's current geometry.
+        guard let view, view.superview === surface, view.frame == frame,
+              let window = surface.window else { return nil }
+        for (ordinal, owner) in textOwners.enumerated() where owner.window === window {
             let rect = surface.convert(owner.bounds, from: owner)
             guard viewportTop >= rect.minY, viewportTop < rect.maxY else { continue }
             let screen = window.convertPoint(toScreen: surface.convert(NSPoint(x: rect.minX + 2, y: viewportTop + 2), to: nil))
@@ -205,8 +208,9 @@ private struct NativeHostedMarkdownBlock: View {
         return nil
     }
     func characterTop(_ anchor: CharacterAnchor, in surface: NSView) -> CGFloat? {
-        guard let owner = textOwners.indices.contains(anchor.owner) ? textOwners[anchor.owner] : nil,
-              let window = surface.window else { return nil }
+        guard let view, view.superview === surface, view.frame == frame,
+              let owner = textOwners.indices.contains(anchor.owner) ? textOwners[anchor.owner] : nil,
+              let window = surface.window, owner.window === window else { return nil }
         let rendered = (owner as? NSTextField)?.stringValue ?? (owner as? NSTextView)?.string ?? ""
         let range: NSRange
         if !rendered.hasPrefix(anchor.rendered), let raw = reconciliationSource,

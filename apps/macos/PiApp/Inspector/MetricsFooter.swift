@@ -48,9 +48,11 @@ struct MetricsFooter: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .clipped()
         .accessibilityElement(children: .contain)
-        .sheet(isPresented: $showContext) { ContextInspector(model: model, session: session) }
-        .task(id: model.automaticContextActivation(session)) { model.scheduleAutomaticContext(session.id) }
-        .onDisappear { model.cancelAutomaticContext(session.id) }
+        .sheet(isPresented: $showContext) { [weak model, weak session] in
+            if let model, let session { ContextInspector(model: model, session: session) }
+        }
+        .task(id: model.automaticContextActivation(session)) { [weak model, id = session.id] in model?.scheduleAutomaticContext(id) }
+        .onDisappear { [weak model, id = session.id] in model?.cancelAutomaticContext(id) }
         .help(SessionRatePresentation.explanation + " The context ring uses the helper's matching request count; inspect it for its method, model and uncertainty.")
     }
 
@@ -66,7 +68,8 @@ struct MetricsFooter: View {
         }.accessibilityIdentifier("compactMetricsFooter")
     }
     private var contextControl: some View {
-        Button { showContext = true } label: {
+        let presented = $showContext
+        return Button { presented.wrappedValue = true } label: {
             HStack(spacing: 7) {
                 ContextRing(fraction: contextFraction)
                 Text(compactContext).lineLimit(1).monospacedDigit().fixedSize().contentTransition(.numericText()).piAnimation(PiMotion.base, value: compactContext)
@@ -94,7 +97,8 @@ struct MetricsFooter: View {
             .accessibilityLabel(session.notice)
     }
     private func bar(full: Bool) -> some View {
-        HStack(spacing: PiSpacing.md) {
+        let disclosure = $expanded
+        return HStack(spacing: PiSpacing.md) {
             contextControl
             if full {
                 dot
@@ -108,7 +112,7 @@ struct MetricsFooter: View {
                 PiBadge(text: full ? (session.captureAvailable ? "" : "Next: ") + captureTitle : "", tone: captureTone, icon: session.captureAvailable ? "record.circle.fill" : "record.circle")
             }.buttonStyle(.plain).piPointer().help("Capture: " + captureTitle + ". Bounded HTTP-body capture; the inspector shows coverage and retained traces")
             PiIconButton(symbol: "chevron.up", label: expanded ? "Hide details" : "Show details", size: 22) {
-                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { expanded.toggle() }
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { disclosure.wrappedValue.toggle() }
             }.rotationEffect(.degrees(expanded ? 180 : 0))
         }
     }

@@ -621,7 +621,33 @@ enum TranscriptActivity {
 
     static func patched(_ items: [TranscriptItem], from previous: [TranscriptMessage], to page: [TranscriptMessage]) -> [TranscriptItem]? {
         guard TaskTranscriptPlan.cosmetic(from: previous, to: page) else { return nil }
-        return TaskTranscriptPlan.items(page, lifecycle: nil)
+        let changed = zip(previous, page).filter { $0 != $1 }.map { $1 }
+        guard changed.allSatisfy({ $0.role == "assistant" && $0.kind == nil }),
+              zip(previous, page).allSatisfy({ $0.accounting == $1.accounting }) else { return nil }
+        if changed.isEmpty { return items }
+        let sources = Set(changed.map(\.id))
+        var replacements: [String: TranscriptItem] = [:]
+        for message in changed {
+            for item in TaskTranscriptPlan.items([message], lifecycle: nil) {
+                guard replacements.updateValue(item, forKey: item.id) == nil else { return nil }
+            }
+        }
+        var affected = Set<String>()
+        for item in items {
+            switch item {
+            case .message(let message): if sources.contains(message.id) { affected.insert(item.id) }
+            case .block(let block):
+                let ownsSource = block.replies.contains { sources.contains($0.id) }
+                if block.taskSummary?.requests.contains(where: { sources.contains($0.id) }) == true,
+                   block.presentation != .work || block.task != nil { return nil }
+                if block.turn?.requests.contains(where: { sources.contains($0.id) }) == true { return nil }
+                if ownsSource { affected.insert(item.id) }
+            }
+        }
+        // Membership changes, legacy grouping changes and terminal aggregates
+        // take the complete planner. Ordinary part fragments touch local rows.
+        guard affected == Set(replacements.keys) else { return nil }
+        return items.map { replacements[$0.id] ?? $0 }
     }
     static func blocks(of messages: [TranscriptMessage], lifecycle: TaskPresentationProjection? = nil) -> [TranscriptItem] {
         TaskTranscriptPlan.items(messages, lifecycle: lifecycle)
