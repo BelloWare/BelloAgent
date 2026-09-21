@@ -45,7 +45,7 @@ extension AgentSession {
         var rows: [DisplayRow]=[], bytes=2, retainedCount=0, retainedIDs=Set<String>()
         func append(_ row: DisplayRow) -> Bool {
             let next=bytes+row.bytes+(rows.isEmpty ? 0:1)
-            guard rows.isEmpty || next<=300_000 else { return false }
+            guard next<=HistoryWindowPolicy.envelopeBytes - HistoryWindowPolicy.metadataAllowance else { return false }
             bytes=next; rows.append(row); return true
         }
         var streaming: StreamingRowState?
@@ -56,22 +56,23 @@ extension AgentSession {
             let text=partialTextPreview ?? { let value=preview(partialText,bytes:Self.streamedTextBytes); partialTextPreview=value; return value }()
             let thinking=partialThinkingPreview ?? { let value=preview(partialThinking,bytes:Self.streamedThinkingBytes); partialThinkingPreview=value; return value }()
             let truncated=partialText.utf8.count>Self.streamedTextBytes || partialThinking.utf8.count>Self.streamedThinkingBytes || partialToolSeen.count>cards.count
-            let value:JSON=["id":JSON(partialID),"role":"assistant","text":JSON(text),"thinking":JSON(thinking),"tools":.array(cards),"state":"streaming","toolCallCount":0,"truncated":JSON(truncated)]
+            let value = boundedDisplayRow(["id":JSON(partialID),"role":"assistant","text":JSON(text),"thinking":JSON(thinking),"tools":.array(cards),"state":"streaming","toolCallCount":0,"truncated":JSON(truncated)])
             displayRowVersion &+= 1
             _=append(DisplayRow(value:value,bytes:(try? value.data().count) ?? 1_048_576,version:displayRowVersion))
-            streaming=StreamingRowState(id:partialID,text:text,thinking:thinking,cards:partialCardsVersion,truncated:truncated)
+            streaming=StreamingRowState(id:partialID,text:value["text"].text ?? "",thinking:value["thinking"].text ?? "",cards:partialCardsVersion,truncated:value["truncated"].flag ?? false)
         }
         // JSON array size is the encoded row sizes plus brackets and commas.
         // Walk backwards until the suffix is full rather than projecting rows
         // that will immediately be dropped. Retain its one boundary candidate
         // so a changing partial does not rebuild that same excluded row.
         var settled: [(id: String, version: UInt64)]=[]
-        for message in visible.suffix(60).reversed() {
+        let recent = HistoryWindowPolicy.range(count: visible.count, isUser: { visible[$0].role == "user" })
+        for message in visible[recent].reversed() {
             let row: DisplayRow
             if let cached=displayRows[message.id] { row=cached }
             else {
                 displayRowProjectionCount += 1
-                let value=displayMessage(message)
+                let value=boundedDisplayRow(displayMessage(message))
                 displayRowVersion &+= 1
                 row=DisplayRow(value:value,bytes:(try? value.data().count) ?? 1_048_576,version:displayRowVersion)
                 displayRows[message.id]=row
@@ -85,6 +86,15 @@ extension AgentSession {
         let result=DisplayProjection(start:visible.count-retainedCount,messages:rows.reversed().map(\.value),settled:settled.reversed(),streaming:streaming)
         displayProjection=result
         return result
+    }
+    /// Budget encoded JSON, including escaping and tool cards. A large first
+    /// row cannot bypass the envelope. Full source reads remain available.
+    func boundedDisplayRow(_ source: JSON) -> JSON {
+        guard (try? source.data().count) ?? Int.max > HistoryWindowPolicy.envelopeBytes - HistoryWindowPolicy.metadataAllowance else { return source }
+        var row = source
+        row["text"] = JSON(encodedPreview(row["text"].text ?? "", bytes: 4096))
+        row["thinking"] = ""; row["tools"] = []; row["truncated"] = true
+        return row
     }
     /// What changed since the page the reader already holds: the rows whose
     /// content is new, the tokens appended to the row still arriving, and the
@@ -189,7 +199,13 @@ extension AgentSession {
         value["monitoring"] = monitoring.page(since: params["monitoringCursor"].int, epoch: displayEpoch, requestedEpoch: params["monitoringEpoch"].text)
         // Page cursors describe a materialized projection only. A status-only
         // read must not build a hidden page merely to compute its byte limit.
-        if let projection { value["before"]=projection.start>0 ? JSON(projection.start):.null }
+        if let projection {
+            value["before"]=projection.start>0 ? JSON(projection.start):.null
+            let lineage = visible.last(where: { $0.kind == "branch" })?.id ?? "root"
+            value["historyIncarnation"] = JSON(displayEpoch); value["historyLineage"] = JSON(lineage)
+            value["historyOlder"] = projection.start > 0 && projection.start < visible.count ?
+                ["incarnation":JSON(displayEpoch),"lineage":JSON(lineage),"entry":JSON(visible[projection.start].id)] : .null
+        }
         // A completed compaction is a committed summary in active context, not
         // merely the end of a failed/cancelled attempt or a historical row.
         // Include it in status-only and unchanged-projection snapshots too.

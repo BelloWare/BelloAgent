@@ -9,6 +9,47 @@ extension AgentSession {
         while (try? JSON.array(messages).data().count) ?? 0 > 300000, messages.count>1 { messages.removeFirst();start += 1 }
         return ["messages":.array(messages),"before":start>0 ? JSON(start):.null,"total":JSON(visible.count)]
     }
+    /// Versioned browsing contract; older numeric callers retain their adapter.
+    public func historyWindow(_ params: JSON) throws -> JSON {
+        let lineage = visible.last(where: { $0.kind == "branch" })?.id ?? "root"
+        let cursor: ConversationCursor? = params["cursor"].isNull ? nil : try JSONDecoder().decode(ConversationCursor.self, from: params["cursor"].data())
+        if let cursor, cursor.incarnation != displayEpoch || cursor.lineage != lineage {
+            throw AgentError("history_changed", "This conversation changed. Reload the visible history.")
+        }
+        let entry = cursor?.entry ?? params["entry"].text
+        if let oldLineage = params["lineage"].text, oldLineage != lineage { throw AgentError("history_changed", "The conversation branch changed during source handoff") }
+        let boundary = entry.flatMap { id in visible.firstIndex { $0.id == id } }
+        if entry != nil && boundary == nil { throw AgentError("history_changed", "The history boundary is no longer available. Reload history.") }
+        let target = params["around"].text
+        let around = target.flatMap { id in visible.firstIndex { $0.id == id } }
+        if target != nil && around == nil { throw AgentError("message_missing", "That message is outside the current branch. Its retained content is still inspectable.") }
+        let forward = params["direction"].text == "newer" || around != nil
+        let range = HistoryWindowPolicy.range(count: visible.count, before: forward ? nil : boundary,
+                                              after: forward ? boundary : nil, around: around, isUser: { visible[$0].role == "user" })
+        var rows: [JSON] = [], bytes = HistoryWindowPolicy.metadataAllowance
+        var start = forward ? range.lowerBound : range.upperBound, end = start
+        let positions = forward ? Array(range) : Array(range.reversed())
+        for index in positions {
+            let row = boundedDisplayRow(displayMessage(visible[index]))
+            let size = try row.data().count
+            guard bytes + size + 1 <= HistoryWindowPolicy.envelopeBytes else { break }
+            bytes += size + 1
+            if forward { rows.append(row); end = index + 1 }
+            else { rows.insert(row, at: 0); start = index }
+        }
+        func boundaryValue(_ entry: String) throws -> JSON {
+            try JSON.parse(JSONEncoder().encode(ConversationCursor(incarnation: displayEpoch, lineage: lineage, entry: entry)))
+        }
+        var result: JSON = ["version":2,"messages":.array(rows),"total":JSON(visible.count),
+            "incarnation":JSON(displayEpoch),"lineage":JSON(lineage),"start":JSON(start),"end":JSON(end),
+            "older": start > 0 && !rows.isEmpty ? try boundaryValue(visible[start].id) : .null,
+            "newer": end < visible.count && !rows.isEmpty ? try boundaryValue(visible[end - 1].id) : .null]
+        if start < visible.count && visible[start].role != "user", let input = visible[..<start].last(where: { $0.role == "user" }) {
+            result["partialTurnInput"] = JSON(input.id)
+        }
+        guard try result.data().count + 1024 <= HistoryWindowPolicy.envelopeBytes else { throw AgentError("page_limit", "History page metadata exceeds the display budget") }
+        return result
+    }
     /// The complete display input for one tool call: the arguments as a
     /// JSON-safe document at the tool's own bound (64 KiB for tools that carry
     /// file content, 8 KiB otherwise). Display snapshots carry only a 4 KiB
