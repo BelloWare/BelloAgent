@@ -48,7 +48,10 @@ summary appears only after a recorded task outcome, including failure, stop,
 interruption and output limit. Tool rounds, retry waits, steering and automatic
 compaction keep the task active; queued follow-ups have distinct executions.
 The live dock keeps phase, elapsed time, gateway-reported tokens/cost and Stop
-in fixed-height slots. Turn summaries show timing, input/output/cache/reasoning
+in fixed-height slots, with duration before the generating-response label.
+Elapsed task time uses monotonic uptime; calendar start/finish stamps are
+separate optional observations. Interrupted tasks have no invented finish time.
+Turn summaries show timing, input/output/cache/reasoning
 tokens and cost directly, wrapping to fit narrow panes. Info opens a table with
 reported coverage, cache state, reasoning cost and per-request inspection. Zero
 and micro-costs remain visible; unreported usage stays pending/unreported.
@@ -247,6 +250,18 @@ blocks and Markdown sections can be copied as their original source. Omit the
 LiteLLM/API/model-ID/editing badges from the conversation title.
 
 Normal Send while busy means Queue follow-up; Steer is separate and explicit. Both queues default to one-at-a-time delivery. Cancellation is not proof that a tool had no effects. Pending work pauses after failure, cancellation or restart; it is not silently resent. Main and side have independent conversation/cancellation state. Editing sessions share a workspace execution gate.
+
+Messages accepted during manual compaction or final run cleanup must continue
+automatically after successful settlement. An idle retained queue always offers
+an explicit Send queued/Resume action; failed or stopped queues stay paused.
+
+Selecting text in an assistant response opens an anchored **Ask in side chat**
+popover. Quote the rendered selection into an unsent side draft and focus its
+native composer; do not submit until the user sends a question. Preserve the
+parent draft and model/effort settings, append to an unfinished side draft, and
+retain a previous saved side when opening a new child. The action supports native
+prose and code selection and does not offer nested, imported, archived or
+connection-test side chats. Ordinary selection and copying remain available.
 
 Support at least 20 concurrent session model streams, both within one project
 and across projects. Bursts of startup, snapshot and capture work must not lose

@@ -229,7 +229,7 @@ struct ContentGeometry: Equatable {
         if initialized, !session.browsingHistory, snapshot?.lifecycle?.epoch == input.lifecycle?.epoch,
            snapshot?.lifecycle?.timeline == input.lifecycle?.timeline {
             var old = Set((snapshot?.lifecycle?.recent ?? []).map(\.key))
-            for task in input.lifecycle?.recent ?? [] where task.outcome == "completed" && (task.endedAt ?? 0) >= completionBaselineAt {
+            for task in input.lifecycle?.recent ?? [] where task.outcome == "completed" && (task.endedAtUnixMs ?? 0) >= completionBaselineAt {
                 if old.insert(task.key).inserted { announceCompletion() }
             }
         }

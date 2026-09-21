@@ -1,5 +1,26 @@
 # Bello Agent — Native Swift implementation and continuation design
 
+Selection, task clocks and queue handoff follow-up (2026-09-21): assistant prose
+has a geometry-only selection marker. One native input observer per mounted
+conversation reads the settled UTF-16 selection from AppKit's field editor or
+code text view and presents a transient popover. It creates no extra text host,
+does not publish per-selection transcript state and dismisses on navigation.
+The captured selection opens a normal pending child side, appending quoted prose
+to its draft without submission or interpreting slash/skill text as commands.
+
+Task lifecycle `startedAt`/`endedAt` retain their original uptime-ms contract.
+New optional `startedAtUnixMs`/`endedAtUnixMs` fields provide calendar stamps;
+old journal receipts remain readable with their elapsed duration. Live duration
+uses uptime in the app too. Interrupted receipts do not claim a finish timestamp
+or duration, including legacy receipts with mixed-clock ends. Streaming row
+`at` and completion-announcement comparisons use calendar timestamps.
+
+The helper rechecks unpaused pending work after its last cleanup suspension,
+after clearing run ownership. A successful compaction/run hands it to the next
+run atomically; Stop, errors and durability failures still pause delivery. The
+native queue offers Send queued for an idle unpaused queue, including queues
+stranded by an older helper; paused work continues to require Resume.
+
 Updated: 2026-09-21. Work on `main` in `BelloWare/BelloAgent`. Read [Features.md](Features.md), [implementation status](docs/Implementation-Status.md), and [test handoff](docs/Swift-Test-Handoff.md).
 
 **Sections 1–9 describe the native implementation and its acceptance boundaries.** The archived SDK-era design at `docs/archive/PiSDK-Design.md` is historical. Current source and [implementation status](docs/Implementation-Status.md) establish what exists; deterministic fixtures do not establish compatibility with an unspecified deployment or signed-release readiness.

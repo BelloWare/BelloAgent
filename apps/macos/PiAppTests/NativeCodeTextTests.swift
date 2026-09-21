@@ -103,14 +103,16 @@ final class NativeCodeTextTests: XCTestCase {
         XCTAssertTrue(view.string.hasSuffix("last line 中文🙂"))
         XCTAssertEqual(view.appendCount, 1)
     }
-    @MainActor func testLargeFenceUsesNativeTextWithTheSameCompleteHeight() {
+    @MainActor func testLargeStreamingFenceUsesNativeTextWithTheSameCompleteHeight() {
         let prior = NativeCodeText.enabled
         defer { NativeCodeText.enabled = prior }
         let source = (0..<2500).map { "let value\($0) = inspect(index: \($0))" }.joined(separator: "\n")
         var heights: [CGFloat] = []
         for native in [false, true] {
             NativeCodeText.enabled = native
-            let host = NSHostingView(rootView: CodeBlockView(language: "swift", code: source).frame(width: 620).fixedSize(horizontal: false, vertical: true))
+            // Completed giant fences now use bounded code sections. An active
+            // fence is still continuous: compare both renderers in that mode.
+            let host = NSHostingView(rootView: CodeBlockView(language: "swift", code: source, streaming: true).frame(width: 620).fixedSize(horizontal: false, vertical: true))
             let start = ProcessInfo.processInfo.systemUptime
             let size = host.fittingSize
             print("REVIEW large fence native=\(native): fitting \((ProcessInfo.processInfo.systemUptime - start) * 1000) ms, height \(size.height)")

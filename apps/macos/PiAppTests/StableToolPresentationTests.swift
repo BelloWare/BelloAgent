@@ -36,6 +36,9 @@ final class StableToolPresentationTests: XCTestCase {
             publications += 1
             let items = TaskTranscriptPlan.items(input.messages,lifecycle:input.lifecycle)
             if let active = input.lifecycle?.active {
+                let live = TurnInfoPresentation.live(TaskTranscriptPlan.summary(input.messages,task:active),at:Date())
+                XCTAssertNotNil(active.startedAtUnixMs,"The packaged helper supplies calendar stamps separately from uptime")
+                XCTAssertLessThan(live.elapsedMs ?? .infinity,60000,"A real gateway turn must not display an epoch-sized duration")
                 sawTools = sawTools || active.phase == "tools"
                 sawPreparing = sawPreparing || active.preparingCalls > 0
                 falseFooters += items.filter { if case .block(let b) = $0 { return b.presentation == .summary && b.task?.key == active.key }; return false }.count
@@ -56,6 +59,9 @@ final class StableToolPresentationTests: XCTestCase {
             XCTAssertEqual(stage.page.snapshot?.items.filter { if case .block(let b) = $0 { return b.presentation == .body }; return false }.count,2)
         }
         XCTAssertEqual(view.taskPresentation?.recent.last?.issuedCalls,2)
+        let completed = try XCTUnwrap(view.taskPresentation?.recent.last)
+        XCTAssertNotNil(completed.endedAtUnixMs)
+        XCTAssertLessThan(try XCTUnwrap(completed.elapsedMilliseconds()),60000)
         var attempts: [[String:WireValue]] = []
         for _ in 0..<500 {
             attempts = try await model.traces.list(sessionID:chat.id)
@@ -290,7 +296,7 @@ final class StableToolPresentationTests: XCTestCase {
         main.messages[1].state = "complete"; first.refresh(); second.refresh()
         XCTAssertEqual(announcements,0,"A completed assistant with pending continuation is not a completed task")
         var end = task(phase:"terminal",outcome:"completed",last:"a")
-        end.endedAt = Date().timeIntervalSince1970 * 1000
+        end.endedAtUnixMs = Date().timeIntervalSince1970 * 1000
         main.taskPresentation = projection(nil,recent:[end]); first.refresh()
         XCTAssertNil(first.page.liveTurn); XCTAssertEqual(second.page.liveTurn?.phase,"tools")
         XCTAssertEqual(second.page.liveTurn?.taskKey,sideProjection.active?.key)
@@ -299,7 +305,7 @@ final class StableToolPresentationTests: XCTestCase {
         main.messages[1].accounting = GatewayTotals(); first.refresh()
         XCTAssertEqual(announcements,1,"Late metrics and duplicate terminal state do not repeat announcements")
         XCTAssertTrue(terminal(second.page.snapshot!.items).isEmpty)
-        var old = end; old.executionID = "old"; old.endedAt = 4000
+        var old = end; old.executionID = "old"; old.endedAt = 4000; old.endedAtUnixMs = nil
         main.taskPresentation?.recent.insert(old,at:0)
         XCTAssertEqual(announcements,1,"Loading historical terminal evidence is silent")
         second.show(SessionDisplay(id:"idle"))

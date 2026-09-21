@@ -49,6 +49,31 @@ extension WorkspaceModel {
         guard let parent = record(id) else { return false }
         return !parent.imported && parent.connectionTest != true && parent.workspaceID != WorkspaceRecord.scratchID
     }
+    func canQuoteReply(_ id: String) -> Bool {
+        guard !installPreparing, canOpenSide(id), side(id) == nil, let parent = record(id),
+              !parent.isArchived, !parent.isBackgroundTask, workspace(for: parent.workspaceID) != nil else { return false }
+        return true
+    }
+    /// Selection is quoted as unsent prose, never interpreted as a slash/skill
+    /// command. Reuse an unfinished side draft without overwriting it; a saved
+    /// side keeps its history while a new child opens beside the parent.
+    func openQuotedSide(parentID: String, quote: TranscriptQuote) {
+        guard selectedID == parentID, canQuoteReply(parentID), !quote.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let existing = sides[parentID]
+        if let existing, existing.keeping || (!existing.pending && !existing.kept) || displays[existing.id]?.loading == true {
+            error = "Wait for the current side to finish opening before quoting another response."; return
+        }
+        let existingDraft = existing.flatMap { $0.pending ? displays[$0.id]?.draft : nil } ?? ""
+        let quoted = quote.text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n").map { "> " + $0 }.joined(separator: "\n")
+        let draft = existingDraft + (existingDraft.isEmpty ? "" : "\n\n") + quoted + "\n\n"
+        guard draft.utf8.count <= 262_144 else { error = "The quoted draft exceeds 256 KiB. Select a shorter passage."; return }
+        openSide(parentID: parentID)
+        guard let info = sides[parentID], info.pending, let view = displays[info.id] else { return }
+        view.draft = draft; view.directCommand = false; view.completionVisible = false; view.completionToken = nil
+        draftChanged(view)
+        focusedSessionID = info.id; view.composerFocusRequest += 1
+    }
     func openSide(parentID: String? = nil, question: String = "") {
         guard !installPreparing, let parentID = parentID ?? selectedID, let parent = record(parentID), !parent.imported else { error = "Continue an imported original as a separate chat before opening a side."; return }
         guard canOpenSide(parentID) else { error = "Connection-test chats keep tools disabled and cannot open side chats."; return }

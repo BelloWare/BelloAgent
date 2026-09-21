@@ -194,7 +194,8 @@ public actor AgentSession {
             if !saved["taskPresentation"].isNull,
                var task = try? JSONDecoder().decode(TaskPresentationRecord.self, from: saved["taskPresentation"].data()),
                task.valid, !task.terminal, !recentTaskPresentations.contains(where: { $0.key == task.key }) {
-                task.outcome = "interrupted"; task.phase = "terminal"; task.endedAt = max(task.startedAt, nowMS())
+                task.outcome = "interrupted"; task.phase = "terminal"; task.endedAt = task.startedAt
+                task.endedAtUnixMs = nil // No terminal receipt; the actual finish time is unknown.
                 let retained = visible.filter { $0.taskExecutionID == task.executionID && $0.taskRootID == task.rootID }
                 task.lastSourceID = retained.last?.id ?? task.anchorSourceID
                 let replies = retained.filter { $0.role == "assistant" }

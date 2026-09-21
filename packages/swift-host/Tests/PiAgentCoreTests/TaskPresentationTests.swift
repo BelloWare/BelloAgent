@@ -39,6 +39,8 @@ final class TaskPresentationTests: XCTestCase {
         for index in 1...15 {
             try await eventually { await tools.invoked == index }
             let value=try await lifecycle(session), active=try XCTUnwrap(value.active)
+            XCTAssertLessThan(abs(try XCTUnwrap(active.startedAtUnixMs) - Date().timeIntervalSince1970 * 1000),60000)
+            XCTAssertLessThan(try XCTUnwrap(active.elapsedMilliseconds(atUptimeMs:nowMS())),60000)
             XCTAssertTrue(value.valid); XCTAssertTrue(value.recent.isEmpty); XCTAssertEqual(active.phase,"tools")
             XCTAssertEqual(active.issuedCalls,index); XCTAssertEqual(active.replies,index)
             XCTAssertEqual(active.rootID,"u"); if let key { XCTAssertEqual(active.key,key) } else { key=active.key }
@@ -49,6 +51,9 @@ final class TaskPresentationTests: XCTestCase {
         let done=try await lifecycle(session)
         XCTAssertNil(done.active); XCTAssertNil(done.utilityPhase); XCTAssertEqual(done.recent.count,1)
         XCTAssertEqual(done.recent.first?.outcome,"completed"); XCTAssertEqual(done.recent.first?.issuedCalls,15)
+        let receipt=try XCTUnwrap(done.recent.first)
+        XCTAssertNotNil(receipt.endedAtUnixMs)
+        XCTAssertLessThan(try XCTUnwrap(receipt.elapsedMilliseconds()),60000)
         let built=await session.displayProjectionBuildCount; XCTAssertEqual(built,0,"Hidden status never projects the task's full history")
         let savedPath=await session.path
         let path=try XCTUnwrap(savedPath)
@@ -81,6 +86,7 @@ final class TaskPresentationTests: XCTestCase {
         let partial=await session.snapshot(), projected=try XCTUnwrap(partial["messages"].list.last)
         XCTAssertEqual(projected["turn"].text,"u"); XCTAssertEqual(projected["taskRootID"].text,"u")
         XCTAssertNotNil(projected["taskExecutionID"].text); XCTAssertNotNil(projected["at"].double)
+        XCTAssertLessThan(abs(try XCTUnwrap(projected["at"].double) - Date().timeIntervalSince1970 * 1000),60000)
         await session.stop(); try await eventually { !(await session.isRunning) }
         let stopped=try await lifecycle(session); XCTAssertNil(stopped.active); XCTAssertEqual(stopped.recent.last?.outcome,"cancelled")
         await session.close()
@@ -132,6 +138,7 @@ final class TaskPresentationTests: XCTestCase {
         let value=try await lifecycle(restored)
         XCTAssertNil(value.active); XCTAssertNil(value.utilityPhase)
         XCTAssertEqual(value.recent.last?.outcome,"interrupted")
+        XCTAssertNil(value.recent.last?.elapsedMilliseconds()); XCTAssertNil(value.recent.last?.endedAtUnixMs)
         XCTAssertEqual(value.recent.last?.issuedCalls,1,"Reconstruct counters beyond the last pre-request state checkpoint")
         let stillRunning=await restored.isRunning; XCTAssertFalse(stillRunning)
         XCTAssertTrue(value.recent.last?.detail?.contains("no work was replayed") == true)

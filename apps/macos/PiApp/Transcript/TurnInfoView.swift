@@ -4,6 +4,13 @@ import AppKit
 /// Render the same reported observations inline, in the live dock, and in its
 /// details table. Missing reports stay distinct from a reported zero.
 enum TurnInfoPresentation {
+    static func live(_ turn: TurnSummary, at date: Date, uptimeMs: Double = ProcessInfo.processInfo.systemUptime * 1000) -> TurnSummary {
+        guard turn.live else { return turn }
+        var current = turn
+        if let start = turn.liveStartedUptimeMs { current.elapsedMs = DurationObservation.valid(uptimeMs - start) }
+        else if let start = turn.startedAt { current.elapsedMs = DurationObservation.valid(date.timeIntervalSince1970 * 1000 - start) }
+        return current
+    }
     struct Row: Identifiable, Equatable {
         var name: String
         var value: String

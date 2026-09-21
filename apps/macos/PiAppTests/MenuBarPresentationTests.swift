@@ -121,7 +121,8 @@ final class MenuBarPresentationTests: XCTestCase {
         let live = model.menuBarActivity()
         XCTAssertEqual(live.generating, 1)
         let row = try XCTUnwrap(live.runningRows.first)
-        XCTAssertEqual(row.elapsed(at: Date(timeIntervalSince1970: 15)), 5_000)
+        XCTAssertEqual(row.startedUptimeMs,10_000)
+        XCTAssertEqual(row.elapsed(atUptimeMs:15_000), 5_000)
         XCTAssertEqual(row.latestRate, 150, "Use reported output including hidden reasoning, not visible bytes")
         XCTAssertEqual(row.costUSD, 0.0123)
         view.runStatus = "retrying"
@@ -162,7 +163,7 @@ final class MenuBarPresentationTests: XCTestCase {
         }
         let snapshot = MenuBarSnapshot(period: .day, from: from, until: until, counts: DashboardCounts(dispatched: 10, completed: 10), gateway: totals(requests: 10, input: 20_000, output: 2_000, cost: 0.025), workspaces: 2, sessions: 3, compactionRequests: 0, costUnreported: 0, costInvalid: 0, costConflicts: 0, models: models, modelGroups: 2, offset: 0, historicalRate: HistoricalOutputRate(outputTokens: 2_000, generationMilliseconds: 50_000, samples: 10), buckets: buckets)
         let activity = MenuBarActivitySnapshot(rows: [
-            MenuBarActivityRow(id: "running", title: "Harden the payment retry loop", workspace: "pi-app", phase: "tool", model: "auto-router", resolvedModel: "openai/gpt-5.4-mini", tools: ["bash"], followUps: 1, steering: 0, unread: 0, startedAt: Date().timeIntervalSince1970 * 1_000 - 82_000, elapsedMs: 82_000, latestRate: 85, tokens: 18_421, costUSD: 0.042),
+            MenuBarActivityRow(id: "running", title: "Harden the payment retry loop", workspace: "pi-app", phase: "tool", model: "auto-router", resolvedModel: "openai/gpt-5.4-mini", tools: ["bash"], followUps: 1, steering: 0, unread: 0, startedUptimeMs: ProcessInfo.processInfo.systemUptime * 1_000 - 82_000, elapsedMs: 82_000, latestRate: 85, tokens: 18_421, costUSD: 0.042),
             MenuBarActivityRow(id: "paused", title: "Explain cache accounting", workspace: "pi-app", phase: "paused", model: "auto-router", resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: 0),
             MenuBarActivityRow(id: "unread", title: "Design notes for the queue", workspace: "Design Reference", phase: "idle", model: "auto-router", resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: 2),
         ], unreadChats: 1)

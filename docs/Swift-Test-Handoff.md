@@ -36,6 +36,18 @@ records optimized native/helper tests, explicit actor checks and publication.
 Current release records take precedence over the historical matrices below.
 Installation/update rehearsals remain skipped by owner instruction.
 
+## 0.1.74 quoted side drafts, queue handoff and clocks
+
+Run `TranscriptQuoteSelectionTests`, `TurnInfoTests`, `WorkspaceFailureTests`
+and the affected menu-bar, native code/viewport, side and stable-tool boundaries.
+Use `TaskPresentationTests` and `QueueHandoffTests` with queue editing/recovery
+and manual-compaction regressions. Stage the helper before the mounted local
+gateway case. Keep uptime elapsed observations separate from optional Unix
+display timestamps; never fabricate completion on a recovered interruption.
+The quote action must preserve exact native selection/copy and existing drafts,
+and cannot send until the user submits. See the
+[0.1.74 validation record](validation/Bello-Agent-0.1.74-2026-09-21.md).
+
 ## 0.1.73 turn info and manual compaction
 
 Run native `TurnInfoTests` and `ManualCompactionTests` with the freshly staged

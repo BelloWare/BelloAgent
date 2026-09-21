@@ -77,6 +77,9 @@ struct TurnSummary: Equatable, Sendable {
     var taskKey: String? = nil
     var phase: String? = nil
     var outcome: String? = nil
+    /// Only a currently running task may compare this with this boot's uptime.
+    /// startedAt/endedAt above remain optional Unix-ms calendar observations.
+    var liveStartedUptimeMs: Double? = nil
 }
 
 /// One prose reply and the work that produced it: the reasoning-only and

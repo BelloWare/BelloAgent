@@ -43,7 +43,8 @@ struct ConversationPane: View {
                                                             },
                                                             stop: { model.stop(sessionID: session.id) },
                                                             // The retry carries this chat's current model, effort and budgets, as a send would.
-                                                            retry: { model.action("turn.retry", params: model.record(session.id).map { TurnOverrides.params(for: $0) } ?? [:], sessionID: session.id) }),
+                                                            retry: { model.action("turn.retry", params: model.record(session.id).map { TurnOverrides.params(for: $0) } ?? [:], sessionID: session.id) },
+                                                            quoteReply: quoteReplyAction),
                                  onAnchorChanged: { anchor in session.scrollAnchor = anchor; model.anchorChanged(session) },
                                  onReadReply: { sessionID, messageID in model.acknowledgeVisibleReply(sessionID: sessionID, messageID: messageID) },
                                  onLoadEarlier: { sessionID in model.loadEarlier(sessionID: sessionID) },
@@ -127,6 +128,11 @@ struct ConversationPane: View {
         // HSplitView gives each pane its own native hosting surface. Remove
         // that surface's titlebar inset too, not only the outer window inset.
         .ignoresSafeArea(.container, edges: .top)
+    }
+
+    private var quoteReplyAction: ((TranscriptQuote) -> Void)? {
+        guard model.canQuoteReply(session.id) else { return nil }
+        return { quote in model.openQuotedSide(parentID: session.id, quote: quote) }
     }
 
     /// Plain words for what the side shares; the identifiers stay in the tooltip.

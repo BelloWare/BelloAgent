@@ -12,7 +12,7 @@ struct MenuBarActivityRow: Identifiable, Equatable, Sendable {
     let steering: Int
     let unread: Int
     var modelActive = false
-    var startedAt: Double?
+    var startedUptimeMs: Double?
     var elapsedMs: Double?
     var latestRate: Double?
     var tokens: Double?
@@ -28,7 +28,7 @@ struct MenuBarActivityRow: Identifiable, Equatable, Sendable {
     var running: Bool { ["starting", "model", "tool", "compacting", "stopping"].contains(phase) }
     var needsAttention: Bool { ["queued", "paused", "error"].contains(phase) }
     var phaseLabel: String {
-        if uncertain { return "Interrupted · review outcome" }
+        if uncertain && phase != "error" { return "Interrupted · review outcome" }
         if let retryAttempt, let retryLimit { return "Retrying · attempt \(retryAttempt) of \(retryLimit)" }
         switch phase {
         case "starting": return "Starting"
@@ -42,10 +42,10 @@ struct MenuBarActivityRow: Identifiable, Equatable, Sendable {
         default: return unread > 0 ? "\(unread) unread \(unread == 1 ? "reply" : "replies")" : "Idle"
         }
     }
-    func elapsed(at date: Date) -> Double? {
+    func elapsed(atUptimeMs now: Double = ProcessInfo.processInfo.systemUptime * 1000) -> Double? {
         guard running else { return nil }
-        guard let startedAt else { return elapsedMs }
-        return max(elapsedMs ?? 0, max(0, date.timeIntervalSince1970 * 1_000 - startedAt))
+        guard let startedUptimeMs, let elapsed = DurationObservation.valid(now - startedUptimeMs) else { return elapsedMs }
+        return max(elapsedMs ?? 0, elapsed)
     }
 }
 
@@ -117,7 +117,7 @@ extension WorkspaceModel {
             var row = MenuBarActivityRow(id: view.id, title: record.title, workspace: workspace, phase: phase, model: model, resolvedModel: resolved != model ? resolved : nil, tools: tools, followUps: followUps, steering: steering, unread: unread)
             row.modelActive = raw["modelActive"]?.bool == true
             row.workspaceID = record.workspaceID
-            row.startedAt = activityNumber(view.turnTiming["startedAt"])
+            row.startedUptimeMs = activityNumber(view.turnTiming["startedAt"])
             row.elapsedMs = activityNumber(view.turnTiming["elapsedMs"])
             row.latestRate = view.footer.timing.latest?.outputTokensPerSecond
             row.ttft = view.footer.timing.latest?.ttftMilliseconds

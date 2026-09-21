@@ -5,8 +5,14 @@ import Foundation
 public struct TaskPresentationRecord: Codable, Equatable, Sendable {
     public var rootID: String
     public var executionID: String
+    /// Monotonic system-uptime milliseconds, retained for elapsed durations.
+    /// These have never been Unix timestamps; keep the v1 wire contract.
     public var startedAt: Double
     public var endedAt: Double?
+    /// Calendar observations are separate. Older v1 receipts lack these;
+    /// their elapsed duration remains usable, but their clock time is unknown.
+    public var startedAtUnixMs: Double?
+    public var endedAtUnixMs: Double?
     public var outcome: String?
     public var phase: String = "preparing"
     public var activeInputID: String?
@@ -25,12 +31,21 @@ public struct TaskPresentationRecord: Codable, Equatable, Sendable {
     public static func identity(_ root: String, _ execution: String) -> String { "\(root.utf8.count):" + root + execution }
     public var key: String { Self.identity(rootID, executionID) }
     public var terminal: Bool { outcome != nil }
-    public init(rootID: String, executionID: String = UUID().uuidString, startedAt: Double) {
+    public init(rootID: String, executionID: String = UUID().uuidString, startedAt: Double, startedAtUnixMs: Double? = nil) {
         self.rootID = rootID; self.executionID = executionID; self.startedAt = startedAt; self.anchorSourceID = rootID
+        self.startedAtUnixMs = startedAtUnixMs
+    }
+    /// A runtime interruption has no observed finish, including after a reboot
+    /// when the saved uptime belongs to a different boot. Do not fabricate it.
+    public func elapsedMilliseconds(atUptimeMs now: Double? = nil) -> Double? {
+        guard outcome != "interrupted", let end = endedAt ?? now, startedAt.isFinite, startedAt >= 0,
+              end.isFinite, end >= startedAt else { return nil }
+        return end - startedAt
     }
     public var valid: Bool {
         !rootID.isEmpty && rootID.utf8.count <= 256 && !executionID.isEmpty && executionID.utf8.count <= 256 &&
         startedAt.isFinite && startedAt >= 0 && (endedAt.map { $0.isFinite && $0 >= startedAt } ?? true) &&
+        [startedAtUnixMs, endedAtUnixMs].allSatisfy { $0.map { $0.isFinite && $0 >= 0 } ?? true } &&
         issuedCalls >= 0 && preparingCalls >= 0 && replies >= 0 && modelMs.isFinite && modelMs >= 0 && toolMs.isFinite && toolMs >= 0 &&
         [activeInputID, anchorSourceID, assistantID, attemptID, operationID, lastSourceID].allSatisfy { $0.map { !$0.isEmpty && $0.utf8.count <= 512 } ?? true } &&
         (detail?.utf8.count ?? 0) <= 8192 && (currentTool?.utf8.count ?? 0) <= 1024 && phase.utf8.count <= 64 &&

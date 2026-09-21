@@ -3,6 +3,42 @@ import SwiftUI
 @testable import PiApp
 
 final class TurnInfoTests: XCTestCase {
+    @MainActor func testLiveDurationUsesUptimeAndCalendarStampsRemainSeparate() throws {
+        let wall = 1_789_992_600_000.0, uptime = 432_100_000.0
+        var task = TaskPresentationRecord(rootID:"u", executionID:"e", startedAt:uptime, startedAtUnixMs:wall)
+        task.phase = "model"
+        let turn = TaskTranscriptPlan.summary([],task:task)
+        // The old code subtracted uptime from epoch time (about 497,139 h).
+        for date in [wall + 12500, wall - 86_400_000, wall + 86_400_000] {
+            let live = TurnInfoPresentation.live(turn,at:Date(timeIntervalSince1970:date/1000),uptimeMs:uptime+12500)
+            XCTAssertEqual(live.elapsedMs,12500)
+            XCTAssertEqual(TranscriptActivity.formatDuration(try XCTUnwrap(live.elapsedMs)),"13s")
+            XCTAssertEqual(live.startedAt,wall)
+        }
+        task.endedAt = uptime + 12500; task.endedAtUnixMs = wall + 12500; task.outcome = "completed"
+        let completed = TaskTranscriptPlan.summary([],task:task)
+        XCTAssertEqual(completed.elapsedMs,12500); XCTAssertEqual(completed.endedAt,wall+12500)
+        XCTAssertNil(completed.liveStartedUptimeMs)
+        // Legacy receipts have the same uptime duration but no calendar stamps.
+        task.startedAtUnixMs = nil; task.endedAtUnixMs = nil
+        let legacy = TaskTranscriptPlan.summary([],task:task)
+        XCTAssertEqual(legacy.elapsedMs,12500); XCTAssertNil(legacy.startedAt); XCTAssertNil(legacy.endedAt)
+        XCTAssertFalse(TurnInfoPresentation.rows(legacy).contains { $0.name == "Started" || $0.name == "Finished" })
+    }
+    @MainActor func testInterruptedTurnDoesNotInventDurationOrFinishTime() throws {
+        let session = SessionDisplay(id:"s")
+        let active = TaskPresentationRecord(rootID:"u",executionID:"e",startedAt:432_100_000,startedAtUnixMs:1_789_992_600_000)
+        session.taskPresentation = TaskPresentationProjection(sessionID:"s",epoch:"epoch",timeline:"root",sequence:1,sourceRevision:"1",active:active,recent:[])
+        session.settleInterruptedRows()
+        let settled = try XCTUnwrap(session.taskPresentation?.recent.last)
+        XCTAssertTrue(settled.valid); XCTAssertEqual(settled.outcome,"interrupted")
+        let turn = TaskTranscriptPlan.summary([],task:settled)
+        XCTAssertNil(turn.elapsedMs); XCTAssertNil(turn.endedAt)
+        XCTAssertEqual(TurnInfoPresentation.rows(turn).first { $0.name == "Duration" }?.value,"Unavailable")
+        // Existing interrupted receipts may already have the mixed-clock end.
+        var old = settled; old.endedAt = 1_789_992_600_000
+        XCTAssertNil(TaskTranscriptPlan.summary([],task:old).elapsedMs)
+    }
     private func record() -> TaskPresentationRecord {
         TaskPresentationRecord(rootID:"u",executionID:"e",startedAt:1000)
     }
@@ -85,6 +121,7 @@ final class TurnInfoTests: XCTestCase {
         }
         var running = turn; running.live = true; running.phase = "model"; running.outcome = nil
         running.startedAt = Date().timeIntervalSince1970 * 1000 - 12500; running.endedAt = nil
+        running.liveStartedUptimeMs = ProcessInfo.processInfo.systemUptime * 1000 - 12500
         let overview = NSHostingView(rootView:VStack(alignment:.leading,spacing:20) {
             LiveTurnBar(turn:running,onStop:{})
             StableTurnSummaryView(turn:turn,actions:TranscriptActions())

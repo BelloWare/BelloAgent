@@ -2,6 +2,14 @@ import XCTest
 @testable import PiApp
 
 final class WorkspaceFailureTests: XCTestCase {
+    @MainActor func testIdleWaitingQueueAlwaysOffersExplicitSendAndBusyDoesNot() {
+        let display = SessionDisplay(id:"waiting")
+        XCTAssertFalse(display.canResumeQueue)
+        display.queue = [["turnId":.string("q"),"text":.string("Follow up")]]
+        XCTAssertTrue(display.canResumeQueue,"An unpaused idle queue from an older helper must not be stranded")
+        display.state = "running"; XCTAssertFalse(display.canResumeQueue)
+        display.state = "error"; display.queuePaused = true; XCTAssertTrue(display.canResumeQueue)
+    }
     @MainActor func testFailedSnapshotShowsErrorWhileQueueStillRequiresResume() {
         let display = SessionDisplay(id: "failed")
         display.observeRunState(["state": .string("paused"), "runStatus": .string("failed"), "queuePaused": .bool(true), "preflightError": .string("Provider rejected the model.\nChoose another model.")])

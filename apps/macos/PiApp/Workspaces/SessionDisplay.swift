@@ -114,7 +114,7 @@ import Combine
     @Published var composerFocusRequest = 0
     @Published var failureMessage: String? { didSet { if failureMessage != oldValue { publishTranscript() } } }
     @Published var queuePaused = false { didSet { if queuePaused != oldValue { publishTranscript() } } }
-    var canResumeQueue: Bool { !busy && (queuePaused || ["paused", "interrupted"].contains(state)) }
+    var canResumeQueue: Bool { !busy && (!queue.isEmpty || queuePaused || ["paused", "interrupted"].contains(state)) }
     func observeRunState(_ snapshot: [String: WireValue]) {
         let rawState = snapshot["state"]?.string ?? "idle", run = snapshot["runStatus"]?.string ?? rawState
         // Older helpers reported failed runs as paused. Keep the run's outcome
@@ -137,7 +137,8 @@ import Combine
         if var lifecycle = taskPresentation {
             lifecycle.utilityPhase = nil
             if var active = lifecycle.active {
-                active.outcome = "interrupted"; active.phase = "terminal"; active.endedAt = max(active.startedAt, Date().timeIntervalSince1970 * 1000)
+                active.outcome = "interrupted"; active.phase = "terminal"; active.endedAt = active.startedAt
+                active.endedAtUnixMs = nil
                 active.detail = "Connection ended without a terminal receipt. Inspect tool effects before continuing."
                 active.lastSourceID = messages.last(where: { $0.taskExecutionID == active.executionID })?.id ?? active.lastSourceID ?? active.anchorSourceID
                 lifecycle.active = nil; lifecycle.recent.append(active)

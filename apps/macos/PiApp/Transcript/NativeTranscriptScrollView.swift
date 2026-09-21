@@ -129,6 +129,9 @@ final class TranscriptNativeScrollView: NSScrollView {
 @MainActor final class TranscriptNativeDocument: NSView {
     private weak var page: TranscriptPage?
     private let actionRelay = TranscriptActionRelay()
+    private(set) lazy var quoteSelection = TranscriptQuoteSelectionController(scope: self) { [weak self] quote in
+        self?.actionRelay.current.quoteReply?(quote)
+    }
     private let geometryCache: TranscriptGeometryCache
     /// What the reader opened or closed, shared by every row of this chat.
     private var disclosure: TranscriptDisclosure?
@@ -276,6 +279,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.updateSeconds += TranscriptLayoutClock.now - clock } }
         updateInvocationCount += 1
         actionRelay.current = actions
+        quoteSelection.setEnabled(actions.quoteReply != nil)
         if let disclosure, self.disclosure !== disclosure { self.disclosure = disclosure }
         if let toolInputs, self.toolInputs !== toolInputs { self.toolInputs = toolInputs }
         // TranscriptPage owns this monotonically increasing revision. Avoid
@@ -300,6 +304,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         // A different rendering environment changes every row's height.
         if self.environment != environment { dirtyFrom = 0; motionNeedsRetarget = true }
         if (self.snapshot?.sessionID != snapshot?.sessionID || self.snapshot?.generation != snapshot?.generation) {
+            quoteSelection.dismiss()
             finishDisclosureMotion(settling: false)
             for row in rows { row.onHeightInvalidated = nil; row.onHeightValidated = nil; row.removeFromSuperview(); page?.rowGone(row.itemID) }
             rows = []
@@ -624,6 +629,7 @@ final class TranscriptNativeScrollView: NSScrollView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        quoteSelection.attach()
         marker.locate()
         observeViewport()
         if window == nil { finishDisclosureMotion(settling: false) }
@@ -632,6 +638,7 @@ final class TranscriptNativeScrollView: NSScrollView {
     }
     override func viewDidHide() {
         super.viewDidHide()
+        quoteSelection.dismiss()
         TranscriptIdleScheduler.shared.visibilityChanged()
     }
     override func viewDidUnhide() {

@@ -14,6 +14,8 @@ struct TranscriptActions {
     var stop: () -> Void = {}
     /// Runs the failed turn again from where it stopped.
     var retry: () -> Void = {}
+    /// Nil for panes that cannot create a child conversation.
+    var quoteReply: ((TranscriptQuote) -> Void)? = nil
 }
 
 enum TranscriptMetrics {
@@ -537,6 +539,7 @@ struct MessageRowView: View {
             } else if !(message.role == "assistant" && message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(message.tools ?? []).isEmpty) {
                 // A reply that only called tools keeps its row for anchors and receipts, but shows no body.
                 MarkdownBodyView(source: message.text, streaming: message.isStreaming, copyTargets: copyTargets, sourceIdentity: message.id).equatable()
+                    .background { if message.role == "assistant" { TranscriptQuoteRegion(messageID: message.id) } }
             }
             if message.truncated == true {
                 Text("Display preview truncated. Full retained content is available in the native message viewer.").font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted)
@@ -1257,15 +1260,14 @@ struct LiveTurnBar: View {
     }
     var body: some View {
         TimelineView(.periodic(from:.now, by:1)) { context in
-            var current = turn
-            if let started = turn.startedAt { current.elapsedMs = max(0,context.date.timeIntervalSince1970 * 1000-started) }
+            let current = TurnInfoPresentation.live(turn, at: context.date)
             return VStack(spacing:4) {
                 HStack(spacing:6) {
                     SpinnerView().frame(width:14)
+                    Text(current.elapsedMs.map(TranscriptActivity.formatDuration) ?? "—")
+                        .monospacedDigit().lineLimit(1).frame(width:58,alignment:.leading)
                     Text(label).lineLimit(1).truncationMode(.tail).help(label).accessibilityLabel(label)
                     Spacer(minLength:4)
-                    Text(current.elapsedMs.map(TranscriptActivity.formatDuration) ?? "—")
-                        .monospacedDigit().lineLimit(1).frame(width:58,alignment:.trailing)
                     TurnInfoButton(turn:current,actions:actions)
                     Button("Stop", action:onStop).buttonStyle(TranscriptStopStyle()).frame(width:48).accessibilityLabel("Stop the current run")
                 }.frame(height:28)

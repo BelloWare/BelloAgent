@@ -118,7 +118,7 @@ extension AgentSession {
                     while completed == nil {
                         try Task.checkCancellation()
                         let dispatchProfile=try turnProfile.dispatching(count)
-                        partialID=UUID().uuidString; partialStartedAt=nowMS(); activeTaskPresentation?.operationID=operationID
+                        partialID=UUID().uuidString; partialStartedAt=Date().timeIntervalSince1970 * 1000; activeTaskPresentation?.operationID=operationID
                         partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus="running"; modelActive=true; event("message_start")
                         let requestStart=nowMS()
                         do {
@@ -129,7 +129,7 @@ extension AgentSession {
                                     partial.requestAttemptIDs=requestObservation.map { [$0.attemptID] }
                                     try append(partial)
                                 }
-                                partialID=UUID().uuidString; partialStartedAt=nowMS()
+                                partialID=UUID().uuidString; partialStartedAt=Date().timeIntervalSince1970 * 1000
                                 partialText=""; partialThinking=""; resetPartialRow()
                                 if let partialID { recordDisplayChange(partialID, at: displayClock()) }
                             })
@@ -225,8 +225,15 @@ extension AgentSession {
         modelActive=false; partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); end=nowMS(); runTask=nil
         retrySubmission = runStatus == "idle" ? nil : activeSubmission; activeSubmission=nil
         if let pending=pendingConfiguration { apply(profile:pending.profile, apiKey:pending.apiKey) }
-        do { try persistState(active:false) } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; state="error"; runStatus="failed" }
+        do { try persistState(active:false) } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; state="error"; runStatus="failed"; queuePaused=true }
         event("agent_settled")
+        // submit() may accept another message while the last request links
+        // are being flushed above. It sees a runTask and queues instead of
+        // launching. Manual compaction also bypasses the follow-up loop.
+        // Recheck after the final await and hand off atomically, or those
+        // accepted messages can sit idle forever. Failed/stopped work stays
+        // paused and still requires an explicit Resume.
+        if !closed, !queuePaused, state == "idle", !queue.isEmpty || !steering.isEmpty { launch() }
         if keepRequested && ephemeral && isIdle { do { _ = try keepNow() } catch { errorMessage="Could not keep side; in-memory content is intact"; event("side.keep-failed") } }
     }
 }

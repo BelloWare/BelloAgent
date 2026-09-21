@@ -13,7 +13,7 @@ extension AgentSession {
     }
     func beginPresentedTask(_ root: String) {
         guard !titleTask else { return }
-        activeTaskPresentation = TaskPresentationRecord(rootID: root, startedAt: nowMS())
+        activeTaskPresentation = TaskPresentationRecord(rootID: root, startedAt: nowMS(), startedAtUnixMs: Date().timeIntervalSince1970 * 1000)
         activeTaskPresentation?.activeInputID = root
     }
     func observePresentedMessage(_ message: ChatMessage) {
@@ -35,6 +35,7 @@ extension AgentSession {
     func finishPresentedTask(_ outcome: String, detail: String? = nil) throws {
         guard var task = activeTaskPresentation else { return }
         task.phase = "terminal"; task.outcome = outcome; task.endedAt = nowMS()
+        task.endedAtUnixMs = Date().timeIntervalSince1970 * 1000
         task.lastSourceID = task.lastSourceID ?? task.anchorSourceID
         task.detail = detail.map { preview($0, bytes: 2048) }; task.preparingCalls = 0; task.currentTool = nil
         let value = try JSON.parse(JSONEncoder().encode(task))

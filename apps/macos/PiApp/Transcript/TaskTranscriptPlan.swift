@@ -78,15 +78,16 @@ enum TaskTranscriptPlan {
         let replies = rows.filter { $0.role == "assistant" }, tools = replies.flatMap { $0.tools ?? [] }
         let calls = ToolCallSummary(rows:replies)
         let partial = task == nil || rows.first?.id != task?.rootID || replies.count < (task?.replies ?? 0)
-        let started = task?.startedAt ?? rows.first?.at, ended = task?.endedAt
+        let started = task == nil ? rows.first?.at : task?.startedAtUnixMs, ended = task?.endedAtUnixMs
         var summary = TurnSummary(replies:task?.replies ?? replies.count, tools:task?.issuedCalls ?? calls.total,
-            startedAt:started, endedAt:ended, elapsedMs:started.flatMap { s in ended.map { max(0, $0-s) } },
+            startedAt:started, endedAt:ended, elapsedMs:task?.elapsedMilliseconds(),
             modelMs:task?.modelMs ?? replies.reduce(0) { $0 + ($1.modelMs ?? 0) },
             toolMs:task?.toolMs ?? tools.reduce(0) { $0 + ($1.durationMs ?? 0) }, live:task.map { !$0.terminal } ?? false,
             files:TranscriptActivity.changedFiles(tools), partial:partial, accounting:TranscriptActivity.aggregate(rows),
             requests:rows.filter { $0.role == "assistant" || $0.accounting != nil }, current:nil, notice:task?.detail)
         summary.toolCountPartial = task == nil && (calls.partial || partial)
         summary.taskKey = task?.key; summary.phase = task?.phase; summary.outcome = task?.outcome
+        summary.liveStartedUptimeMs = task.flatMap { $0.terminal ? nil : $0.startedAt }
         if let name = task?.currentTool { summary.current = ToolView(id:"current", name:name, state:"running", input:"", output:"", truncated:false) }
         return summary
     }

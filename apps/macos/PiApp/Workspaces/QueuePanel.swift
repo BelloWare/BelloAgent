@@ -46,11 +46,11 @@ struct QueuePanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Label(session.busy ? "Waiting for this run to finish · \(items.count)" : "Waiting to send · \(items.count)", systemImage: "tray.full").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
+                Label(session.busy ? "Waiting for this run to finish · \(items.count)" : session.queuePaused ? "Paused · \(items.count)" : "Waiting to send · \(items.count)", systemImage: "tray.full").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
                 if followUps.count > 1 { Text("Drag to reorder").font(PiFont.micro).foregroundStyle(Color.piInkTertiary) }
                 Spacer()
                 if session.canResumeQueue {
-                    Button { model.action("queue.resume", sessionID: session.id) } label: { Label("Resume", systemImage: "play.fill") }.buttonStyle(.piSecondaryCompact)
+                    Button { model.action("queue.resume", sessionID: session.id) } label: { Label(session.queuePaused ? "Resume" : "Send queued", systemImage: "play.fill") }.buttonStyle(.piSecondaryCompact)
                 }
             }
             if !steering.isEmpty {
