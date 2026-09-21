@@ -16,7 +16,8 @@ The successful installation checks recorded below are historical evidence.
 unsent quoted side draft. Elapsed time uses a consistent uptime clock, and its
 display sits before Generating response. Pending follow-ups progress after
 compaction/cleanup; failed or stopped work keeps its explicit Resume boundary.
-Focused helper and actor-checked native regressions pass. See the
+Focused validation passes: 17 helper, 43 actor-checked native, 21 optimized
+native and 12 website staging tests. See the
 [0.1.74 record](validation/Bello-Agent-0.1.74-2026-09-21.md). Publication is pending.
 
 **Bello Agent 0.1.73/build 77 is released and publicly verified:** the generating dock again shows reported usage

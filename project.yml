@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.73
-    CURRENT_PROJECT_VERSION: 77
+    MARKETING_VERSION: 0.1.74
+    CURRENT_PROJECT_VERSION: 78
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Visible turn usage and cost, detailed info tables, and manual compaction using your selected model."
+    RELEASE_MESSAGE: "Reliable queued follow-ups, accurate elapsed time, and quoted side chats from selected response text."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO

@@ -59,6 +59,10 @@ Platform: macOS 14.8 (23J21), arm64, Xcode 16.1 (16B40), Swift 6 mode.
 - A freshly staged optimized helper runs through the existing request-aware
   loopback Responses gateway and two mounted panes. Three request and response
   captures match exactly; active and terminal clock observations are checked.
+- **12 website staging tests pass** (`test_stage_release_site.py`).
+- **21 optimized native tests pass**, including the quoted side flow, elapsed
+  clocks, idle queue controls, side persistence, native continuous code, menu-bar
+  timing, completion notices and the packaged-helper/local-gateway integration.
 
 Initial test-only compile labels and the native pasteboard-type fixture were
 corrected. The large continuous-code height test now explicitly uses streaming
@@ -68,7 +72,8 @@ label regression exposed by the focused suite was fixed in production code.
 
 Logs and result bundles are under session scratch `fresh-transcript`:
 `quote-clock-queue-{1,2,3}`, `quote-clock-menu-5`, and
-`quote-clock-queue-helper-final.log`. The failed stale nonstreaming height case
+`quote-clock-queue-helper-final.log` and `quote-clock-queue-release-1`.
+The failed stale nonstreaming height case
 is superseded by its passing streaming fixture. No deployed LiteLLM call,
 physical frame-rate measurement, installation or updater rehearsal is claimed.
 
@@ -80,6 +85,6 @@ swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swi
 ```
 
 Native checks use the standard test selection policy, Debug actor checks and
-the staged helper. Optimized validation and publication evidence will be added
-when complete. Source commits stay local under the current release workflow;
+the staged helper. Publication evidence will be added when complete.
+Source commits stay local under the current release workflow;
 the website commit is pushed to its configured upstream when published.
