@@ -102,4 +102,39 @@ The final saved-position/cache-isolation suite passes (`native-cache-restoration
 
 ## Publication
 
-Pending signing, notarization and public verification. Installation/update rehearsals are omitted under the owner's standing instruction.
+Built from source `7d3a3e9103eb60dcb1e761b981b0018f07c45504`; implementation commits are pushed to GitHub `main`. Website publication commit: `0c604bc6ec7c475907b9787008569ece5797bf67`.
+
+- Version **0.1.76**, build **80**, arm64 macOS 14+.
+- Developer ID **Zhaofeng Wang (43TXHV3TM3)**; nested Sparkle components, native helper and app signed and validated.
+- App notarization **11d36a76-4eda-47ea-83b4-f916c4af69e1**: accepted, stapled; Gatekeeper reports Notarized Developer ID.
+- DMG notarization **aa036068-23ae-4b68-a730-b19547af35ef**: accepted and stapled.
+- Packaged helper/catalog offline smoke passed; six bundled catalog models, native Swift helper, no bundled Node runtime.
+- Installer: **9,086,822 bytes (8.67 MiB)**; SHA-256 **`10fb5732292691f5c8f198e1499ced8d23f498c0ad8b573ea50c4a40a17ba56c`**.
+- Local Sparkle Ed25519 signature, archive length, minimum OS/version and canonical/compatibility feed validation passed.
+
+Public verification passed at **2026-09-21 18:50:28 UTC**: downloaded installer SHA-256 and Ed25519 signature match the validated artifact; canonical Bello Agent and legacy Pi App feeds are byte-identical; the product page advertises the new version and download. Cloudflare check **106469374646** completed successfully at **2026-09-21 18:48:46 UTC**.
+
+[Download 0.1.76](https://belloware.com/assets/BelloAgent-0.1.76.dmg) · [Product page](https://belloware.com/bello-agent.html) · [Released source](https://github.com/BelloWare/BelloAgent/commit/7d3a3e9103eb60dcb1e761b981b0018f07c45504). Installation/update rehearsals are omitted under the owner's standing instruction.
+
+
+## Reproduction commands
+
+The native test driver used the existing scratch build cache and selected only affected suites. Representative final commands (set `PI_BUILD_ROOT` outside the checkout):
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests"
+xcodebuild test -project PiApp.xcodeproj -scheme PiApp -configuration Release \
+  -destination 'platform=macOS,arch=arm64' -derivedDataPath "$PI_BUILD_ROOT/native-release" \
+  ENABLE_TESTABILITY=YES CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO \
+  'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -enable-actor-data-race-checks' \
+  -only-testing:PiAppTests/StableReadingTests \
+  -only-testing:PiAppTests/NativeTranscriptScrollingPerformanceTests \
+  -only-testing:PiAppTests/StreamingDeliveryCostTests \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StreamingMarkdownStabilityTests \
+  -only-testing:PiAppTests/CrashAuditRegressionTests \
+  -only-testing:PiAppTests/ConversationPaneRetentionTests/testNoPartOfThePaneHoldsTheChatTheReaderLeft
+```
+
+The final Debug run selected `TranscriptGeometryCacheTests`, `StableReadingTests`, `NativeTranscriptDocumentTests`, `NativeTranscriptTests` and `ResponseTimelinePresentationTests` with the same actor-checking flag. Neither the release build nor the final source push includes scratch fixtures, logs, signing credentials or test state.
