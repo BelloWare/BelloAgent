@@ -1,6 +1,6 @@
 # Implementation status and remaining work
 
-Updated 2026-09-21. Repository `BelloWare/BelloAgent`, branch **main**. The original
+Updated 2026-09-22. Repository `BelloWare/BelloAgent`, branch **main**. The original
 `BelloWare/pi-app` implementation continued from `da6028153bea8d0b94a4b9a5bbae11158a64030d`
 before the repository migration; do not reset the current repository to that archived history.
 
@@ -12,7 +12,20 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Bello Agent 0.1.75/build 79 is released and publicly verified:** at the owner's request, compaction and
+**Bello Agent 0.1.77/build 81 is released and publicly verified:** late
+Markdown reference definitions preserve selection and unselected reading anchors,
+including the last paragraph. Replacement of streamed terminal content starts
+fresh source identities without replacing native owners in editable code views.
+The ordered/durable execution timeline and reading coordinator from 0.1.76 remain
+in place. **61 focused optimized native tests pass**; see the
+[0.1.77 validation record](validation/Bello-Agent-0.1.77-2026-09-22.md) for
+before/after regressions, measurements and remaining rich-history/physical UI limits.
+Packaged source `ae7366fdc1721fea61e0fec41d9fb99c3aa82065`; website
+`2448ad9b7c54371bc9e7c460980a66f08806c07c`. Signed/notarized installer, public page,
+identical feeds and downloaded SHA-256/Ed25519 checks pass at
+**2026-09-21 23:04:06 UTC**. Both repositories are pushed to `main`.
+
+**Bello Agent 0.1.75/build 79 is a historical verified release:** at the owner's request, compaction and
 checkpoint restore no longer reject recorded unknown tool outcomes or phrases
 in tool output. Call/result pairing validation and the existing outcome metadata
 remain. **28 focused helper tests pass**, including manual/automatic compaction,

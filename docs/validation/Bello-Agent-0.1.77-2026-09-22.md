@@ -42,7 +42,16 @@ Reproduction: use the commands in the [0.1.76 record](Bello-Agent-0.1.76-2026-09
 
 ## Publication
 
-Version **0.1.77/build 81** is prepared. Signing/notarization and public verification results will be appended after publication. Installation/update rehearsals remain omitted under the owner's standing instruction.
+Version **0.1.77/build 81**, arm64 macOS 14+, is publicly released. Packaged source: `ae7366fdc1721fea61e0fec41d9fb99c3aa82065`; website publication: `2448ad9b7c54371bc9e7c460980a66f08806c07c`. Both repositories are pushed to GitHub `main`.
+
+- Developer ID **Zhaofeng Wang (43TXHV3TM3)**. Nested components, native helper and app signed and validated.
+- App notarization **c1b50a73-2a40-4de6-a8ae-2781579692f4** and DMG notarization **f2d0a4a5-a0fd-4ab7-bc99-17cf443e8e62** accepted and stapled. Gatekeeper reports Notarized Developer ID.
+- Packaged helper/catalog offline smoke passed: six bundled models, native Swift helper, no bundled Node runtime.
+- Installer: **9,090,069 bytes (8.67 MiB)**; SHA-256 **`26e539f0a60ba2ba9fbf1d8cbc8df679f1188e30be653599e7f6aed86f7ccf01`**.
+- Local and public Sparkle Ed25519 signature/hash validation passed. Canonical Bello Agent and legacy Pi App feeds are byte-identical; the public product page advertises 0.1.77 and its installer.
+- Cloudflare check **106550760154** succeeded at **2026-09-21 23:02:33 UTC**. Public verification passed at **2026-09-21 23:04:06 UTC**.
+
+[Download 0.1.77](https://belloware.com/assets/BelloAgent-0.1.77.dmg) · [Product page](https://belloware.com/bello-agent.html) · [Released source](https://github.com/BelloWare/BelloAgent/commit/ae7366fdc1721fea61e0fec41d9fb99c3aa82065). Installation/update rehearsals remain omitted under the owner's standing instruction.
 
 ## Performance baseline
 
