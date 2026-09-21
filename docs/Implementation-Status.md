@@ -12,16 +12,23 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**0.1.73/build 77 is prepared:** the generating dock again shows reported usage
+**Bello Agent 0.1.73/build 77 is released and publicly verified:** the generating dock again shows reported usage
 and cost; completed turns wrap their timing, token breakdown and cost directly.
 Info opens a detailed table with coverage, cache, reasoning cost and request
 inspection. Manual compaction now freezes the originating session's selected
 model, reasoning effort and output/capacity settings through the helper command.
 Focused validation: 55 helper, 39 distinct actor-checked native and 13 optimized
-native cases pass, plus 12 website staging tests. Publication is pending; see
+native cases pass, plus 12 website staging tests. Packaged source
+`2228d87db9b8f15042bd8af2874cd6b1bbab34e6`; website
+`c4d305467d9860460848ffab4b9960036421453f`. The signed/notarized DMG is
+**8,856,924 bytes (8.45 MiB)**, SHA-256
+`d56a676632ee6b8784a0c453c97fbb83bb7361aec627853b7dd4f7ec8e060949`.
+Public page, identical update feeds and downloaded hash/Ed25519 checks passed
+at **2026-09-21 09:23:57 UTC**; Cloudflare check **106279700463** succeeded.
+Source commits remain local; the website commit was pushed. See
 [the 0.1.73 record](validation/Bello-Agent-0.1.73-2026-09-21.md).
 
-**Bello Agent 0.1.72/build 76 is released and publicly verified**, from source
+**Bello Agent 0.1.72/build 76 is a historical verified release**, from source
 `b5d0b86bba594e34f837904d2af7b971da9f7ef6` and website
 `0fddf033603b3d83cd6249d81b09ae56e9b52d86`. The signed/notarized installer is
 **8,823,949 bytes (8.42 MiB)**, SHA-256

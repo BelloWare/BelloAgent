@@ -41,7 +41,7 @@ instruction. SDK-era requirements remain in `docs/archive/PiSDK-Features.md`.
 
 ## 2. Required features and honest implementation status
 
-**Stable tool streaming, 0.1.72:** one persistent compact task work row owns
+**Stable tool streaming (0.1.72), turn info and compaction follow-up (0.1.73):** one persistent compact task work row owns
 request/tool/reasoning details; each assistant source owns its own prose body.
 Empty/tool-only replies create no temporary prose or action placeholder. A Turn
 summary appears only after a recorded task outcome, including failure, stop,

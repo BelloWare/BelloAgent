@@ -1,6 +1,6 @@
 # Bello Agent 0.1.73 / build 77
 
-Release candidate; publication verification is recorded below after deployment.
+Released and publicly verified on **2026-09-21 09:23:57 UTC**.
 
 ## Changes and scope
 
@@ -61,7 +61,34 @@ were corrected, then the affected checks rerun. The slash fixture now marks
 directly typed input, preserving the app's deliberate distinction from pasted
 slash text. No request/capture or layout assertion was removed.
 
-Packaging and publication details follow after their checks complete.
 Logs are in session scratch `bello-agent-0.1.73` and
 `fresh-transcript`; fixtures use synthetic credentials only. No deployed LiteLLM
 call or physical display frame-rate claim is part of this release check.
+
+## Signing and publication
+
+- Packaged source: `2228d87db9b8f15042bd8af2874cd6b1bbab34e6`, following the
+  separate manual-compaction fix `f1fac7b`.
+- Website commit: `c4d305467d9860460848ffab4b9960036421453f`, pushed to its
+  configured `origin/main` upstream.
+- Cloudflare check **106279700463** succeeded at **2026-09-21 09:22:51 UTC**.
+- App notarization: `81e73811-95e1-4d69-8f69-a8a5c682c486`, accepted.
+- DMG notarization: `6128ee7e-7f2f-40c4-a235-147335dd55d5`, accepted.
+- `BelloAgent-0.1.73.dmg`: **8,856,924 bytes (8.45 MiB)**.
+- SHA-256: `d56a676632ee6b8784a0c453c97fbb83bb7361aec627853b7dd4f7ec8e060949`.
+
+The release build reused compiler caches and removed only the cached test-host
+app before packaging. Packaged helper/catalog smoke, Developer ID signing,
+hardened runtime, app/DMG notarization and stapling, Gatekeeper, feed/version
+validation and Sparkle Ed25519 verification passed. No XCTest bundle ships.
+
+The public product page matches the staged publication exactly. The canonical
+and legacy update feeds match each other and the validated local feeds. The
+downloaded DMG matches the SHA-256 above and its Sparkle signature. Initial public
+checks saw the previous feed while Cloudflare was deploying; the checks passed
+after deployment. The final installer was copied to the session outbox.
+
+Release logs are in `bello-agent-0.1.6/build/release.xY1xPM` and
+`bello-agent-0.1.73`. Source commits remain local under the current release
+policy; the website commit was pushed. Installation/update rehearsals remain
+skipped under the owner's standing instruction.
