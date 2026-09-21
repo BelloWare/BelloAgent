@@ -148,7 +148,12 @@ extension WorkspaceModel {
                 let next = newer ? page.newer : page.older
                 if added.isEmpty {
                     guard page.messages.isEmpty && next == nil else { throw HostError.failure("No new history was returned. Retry loading this boundary.") }
-                    if newer { view.newerPage = .init() } else { view.olderPage = .init() }
+                    if newer {
+                        view.newerPage = .init()
+                        view.browsingHistory = false
+                        view.projectedRows = []; view.projectionRevision = nil
+                        self.refresh(id)
+                    } else { view.olderPage = .init() }
                     return true
                 }
                 var joined = newer ? view.messages + added : added + view.messages
@@ -183,11 +188,19 @@ extension WorkspaceModel {
                     if evicted, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge) }
                 }
                 view.before = view.olderPage.cursor?.entry
-                view.browsingHistory = true
+                // Reading earlier rows (including automatic viewport fills)
+                // does not disconnect the live tail. Pause projection merges
+                // only while a newer gap actually remains in this window.
+                let wasBrowsing = view.browsingHistory
+                view.browsingHistory = view.newerPage.available
                 // TranscriptPage owns the actual visible anchor, and captures
                 // it on adoption; a first-array-row surrogate would jump.
                 view.messages = joined
                 self.scheduleAccounting(id, workspaceID: item.workspaceID)
+                if wasBrowsing && !view.browsingHistory {
+                    view.projectedRows = []; view.projectionRevision = nil
+                    self.refresh(id)
+                }
                 return true
             } catch is CancellationError { return false }
             catch {
@@ -204,6 +217,20 @@ extension WorkspaceModel {
         if let id = sessionID ?? selectedID, let view = displays[id] {
             view.scrollAnchor = .init(id: "", offset: 0, followsBottom: true)
             anchorChanged(view); reloadHistory(id)
+        }
+    }
+
+    /// A successful submission follows its new turn even from a retained
+    /// earlier window or while an old source read is still being hydrated.
+    func followSubmittedTurn(_ id: String) {
+        guard let view = displays[id] else { return }
+        if view.browsingHistory || view.historyState.loading || view.newerPage.available ||
+            view.olderPage.loading || view.newerPage.loading {
+            latest(sessionID: id)
+        } else {
+            view.scrollAnchor = .init(id: view.messages.last?.id ?? "", offset: 0, followsBottom: true)
+            view.viewportRequest += 1; anchorChanged(view)
+            refresh(id)
         }
     }
 }

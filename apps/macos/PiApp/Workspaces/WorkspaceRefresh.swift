@@ -114,6 +114,17 @@ extension WorkspaceModel {
                         view.projectedRows = projected
                         // Rows the reader scrolled up to stay in front of the helper's window.
                         var messages = TranscriptPaging.window(TranscriptPaging.merge(previous: view.messages, live: projected), keepingEarlier: false)
+                        var protected = view.pinnedHistoryIDs
+                        if let anchor = view.scrollAnchor, !anchor.followsBottom,
+                           view.messages.contains(where: { $0.id == anchor.id }) { protected.insert(anchor.id) }
+                        if !protected.isEmpty, !protected.isSubset(of: Set(messages.map(\.id))), let last = view.messages.last,
+                           let incarnation, let lineage {
+                            // Receiving output may fill the resident budget,
+                            // but must not evict text the reader is using.
+                            view.newerPage = .init(cursor: .init(incarnation: incarnation, lineage: lineage, entry: last.id))
+                            view.browsingHistory = true
+                            messages = view.messages
+                        }
                         // Touch only the rows whose accounting actually moved:
                         // writing every row copies the whole page's storage and
                         // retains every string in it, once per streamed token.

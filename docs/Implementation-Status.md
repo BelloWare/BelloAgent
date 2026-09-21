@@ -12,6 +12,20 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
+**Unreleased follow-up, 2026-09-21:** reopening a saved chat and filling an
+earlier history page no longer disables live transcript updates. Reaching the
+latest page resumes snapshots, and submitting from an earlier window reloads
+the new turn without requiring a tab switch. Overlapping file/helper windows
+with different leading rows now reconcile correctly; live updates preserve
+the reading anchor and selected text at the resident limit. A real helper/local
+gateway regression covers cold disk reopen, fast JSON replies, fragmented
+Responses SSE and the mounted native transcript. Both original failure cases
+were reproduced by tests before the fix. Compact turn and footer costs also
+preserve reported `$0` and `$0.000001`, with missing data remaining distinct.
+Validation: 38 focused native tests and 19 fresh-history tests pass with actor
+data-race checks; the eight refresh lifecycle tests pass again after the final
+hot-path refinement. These changes are committed locally, with no new release.
+
 **Bello Agent 0.1.71/build 75 is released and publicly verified**, from source
 `3a29daf223fb2101be105ad24a7a6bdba01d2596` and website
 `1f73d9a39a585d1b2f169ced01d2e07bd576bb1f`. The signed/notarized installer is

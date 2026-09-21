@@ -12,10 +12,19 @@ final class TranscriptPagingTests: XCTestCase {
         XCTAssertEqual(TranscriptPaging.merge(previous: shown, live: ["a", "b", "c"].map(row)).map(\.id), ["a", "b", "c"], "A window that starts at the first shown row is the whole display")
     }
 
-    func testAWindowThatNoLongerTouchesTheDisplayReplacesIt() {
+    func testUnverifiedNonoverlappingOrEmptyWindowKeepsRetainedHistory() {
         let shown = ["a", "b", "c"].map(row)
-        XCTAssertEqual(TranscriptPaging.merge(previous: shown, live: ["x", "y"].map(row)).map(\.id), ["x", "y"], "After a branch the old rows would be a gap, not history")
-        XCTAssertEqual(TranscriptPaging.merge(previous: shown, live: []).map(\.id), [])
+        XCTAssertEqual(TranscriptPaging.merge(previous: shown, live: ["x", "y"].map(row)).map(\.id), ["a", "b", "c"], "Only a validated history reload can replace a branch or skip a gap")
+        XCTAssertEqual(TranscriptPaging.merge(previous: shown, live: []).map(\.id), ["a", "b", "c"])
+    }
+
+    func testLiveWindowStartingBeforeSmallerSavedWindowStillUpdatesItsTail() {
+        let shown = ["c", "d"].map(row)
+        var live = ["a", "b", "c", "d", "e"].map(row)
+        live[3].text = "Updated retained row"
+        let merged = TranscriptPaging.merge(previous: shown, live: live)
+        XCTAssertEqual(merged.map(\.id), ["a", "b", "c", "d", "e"])
+        XCTAssertEqual(merged[3].text, "Updated retained row")
     }
 
     func testEarlierPagesPrependOnlyUnknownRows() {

@@ -82,8 +82,7 @@ extension WorkspaceModel {
                     scheduleTitleGeneration(sourceID: item.id, input: text)
                 }
                 // The new turn is what the reader wants to see, wherever they had scrolled.
-                view.scrollAnchor = .init(id: view.messages.last?.id ?? "", offset: 0, followsBottom: true); view.viewportRequest += 1; anchorChanged(view)
-                refresh(item.id)
+                followSubmittedTurn(item.id)
             } catch {
                 view.rejectContextSubmission(turnID)
                 // The failure sits in the conversation, under the messages, not in a fixed strip.

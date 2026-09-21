@@ -275,6 +275,9 @@ import Combine
     /// Once hydrated, the live draft/anchor remain authoritative while their
     /// debounced writes catch up. A warm tab must not restore old saved text.
     var selectionMetadataLoaded = false
+    /// This window is detached from the helper's live tail (a newer gap,
+    /// source load or explicit retained-message inspection). Earlier rows
+    /// alone do not detach it or suppress live transcript updates.
     var browsingHistory = false
     var footerUpdatedAt = 0.0
     var accountingRevision = 0

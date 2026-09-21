@@ -8,9 +8,16 @@ import Foundation
 enum TranscriptPaging {
     static func merge(previous: [TranscriptMessage], live: [TranscriptMessage]) -> [TranscriptMessage] {
         guard !previous.isEmpty else { return live }
-        guard let firstLive = live.first, let cut = previous.firstIndex(where: { $0.id == firstLive.id }) else { return previous }
+        guard let firstLive = live.first else { return previous }
         let liveIDs = Set(live.map(\.id))
-        return previous[..<cut].filter { !liveIDs.contains($0.id) } + live
+        if let cut = previous.firstIndex(where: { $0.id == firstLive.id }) {
+            return previous[..<cut].filter { !liveIDs.contains($0.id) } + live
+        }
+        // Saved and helper projections can fit different leading rows within
+        // the same byte budget. A live window extending before the saved
+        // window still overlaps it and must publish its updated/new replies.
+        if let first = previous.first, liveIDs.contains(first.id) { return live }
+        return previous
     }
     static func size(_ message: TranscriptMessage) -> Int {
         message.text.utf8.count + (message.thinking?.utf8.count ?? 0) + (message.tools ?? []).reduce(0) { $0 + $1.input.utf8.count + $1.output.utf8.count } + 512
