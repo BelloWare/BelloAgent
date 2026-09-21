@@ -1,6 +1,6 @@
 # Bello Agent — Native Swift implementation and continuation design
 
-Updated: 2026-09-20. Work on `main` in `BelloWare/BelloAgent`. Read [Features.md](Features.md), [implementation status](docs/Implementation-Status.md), and [test handoff](docs/Swift-Test-Handoff.md).
+Updated: 2026-09-21. Work on `main` in `BelloWare/BelloAgent`. Read [Features.md](Features.md), [implementation status](docs/Implementation-Status.md), and [test handoff](docs/Swift-Test-Handoff.md).
 
 **Sections 1–9 describe the native implementation and its acceptance boundaries.** The archived SDK-era design at `docs/archive/PiSDK-Design.md` is historical. Current source and [implementation status](docs/Implementation-Status.md) establish what exists; deterministic fixtures do not establish compatibility with an unspecified deployment or signed-release readiness.
 
@@ -166,6 +166,55 @@ Native tools are deliberately narrower than Pi: exact-match edit, bounded read/s
 Codex instructions resolve global then project-root-to-cwd guidance with override/fallback precedence and a total byte budget. Do not preload all descendant instructions globally. New delivered user inputs refresh resources; in-flight requests retain their resolved content. A fully general YAML/TOML parser is not included; unsupported metadata must remain visible and fail closed.
 
 The composer resolves `/skill-name` to canonical identity, policy/content hashes, arguments and explicit user-origin provenance. The host freezes selected bodies and validates permissions/dependencies at delivery. Explicit-only skills are available to the picker, not automatic discovery. Historical/model/pasted mentions do not grant authorization. Preserve source directory-relative references and do not execute scripts during discovery.
+
+### Caret-local completion and historical editing (unreleased)
+
+`ComposerLocation` carries native UTF-16 selection/marked ranges, an editor
+generation and draft revision. `SlashCompletionToken` examines a bounded local
+token first; cancellable off-actor code-span/fence classification is cached by
+that revision and position. Selection/text notifications advance the right
+identity, including undo and input-method completion. `SkillSearch` preindexes
+metadata and ranks the entire discovered catalog, shared with the inspector.
+Per-composer catalog tasks key session, project, configuration revision, tool
+mode and helper connection/epoch. Pages must share a source revision and valid,
+advancing identities/counts. Old entries remain labelled unavailable during
+refresh/failure; partial-source diagnostics remain visible. Acceptance validates
+the actual editor/token/catalog before one undoable text-and-chip operation.
+The existing `picker` intent represents inline selection; legacy deliberate
+`/skill arguments` conversion and whole-message app commands remain separate.
+
+`EditReplayPlan.swift` is metadata-only and compiled into both helper and native
+retained reader. It selects a user occurrence from the child's selected display
+timeline, independently of compacted context and viewport residency. It restores
+raw pre-target messages, optionally substituting only summaries whose transitive
+dependencies are wholly pre-target. Reused tool-call IDs are paired per assistant
+occurrence; missing sources or invalid groups fail without modifying history.
+No planner opens a runtime, recovers tools, generates a summary or writes a file.
+
+New branch records have `nativeBranchVersion: 2`, ordered `keptIds`, a
+`selectedTimelinePrefix`, target ID and source-timeline digest, plus diagnostic
+journal-head/target digests. The replacement queue is in the same synchronized
+record. Memory adopts the branch only after the append succeeds. Reopen, native
+paging, portable replay, scoped recall and subsequent forks validate/select the
+same branch; legacy ordered-subset branches keep their strict reader. Fork
+context-selection records now include their proven visible prefix. An unsupported
+version or missing source preserves the journal and explains the failure.
+
+`session.edit.prepare` reads original display text in bounded UTF-16 pages with
+source digests and version-1 `nativeUserInput` references. Closed sessions use the
+retained-file actor without starting a helper. The native editor retains ordinary
+drafts, skills and attachment references and rejects late target/draft results.
+Current policy/hashes/dependencies and attachments are validated before commit.
+Definite rejection leaves the branch unchanged; uncertain synchronization poisons
+the journal and requires recovery. Crash restoration pauses accepted replacement
+work rather than dispatching it. Branch adoption invalidates replay/count/partial/
+retry/compaction state without rewriting historical usage or external effects.
+
+The helper advertises `session.edit.prepare` and `native-branch-v2`; distribute
+this helper and native reader together. No protocol-major or app-version bump,
+release or publication is part of this implementation. Full contracts, bounds,
+test evidence and acceptance dispositions are in
+[the implementation record](docs/Inline-Skills-and-Historical-Edits-2026-09-21.md).
 
 ## 6. Provider transport and current capture
 

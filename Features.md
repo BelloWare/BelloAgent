@@ -1,6 +1,6 @@
 # Bello Agent — Native Swift feature contract
 
-Updated: 2026-09-20. Repository: `BelloWare/BelloAgent`, target branch: `main`.
+Updated: 2026-09-21. Repository: `BelloWare/BelloAgent`, target branch: `main`.
 
 **Status: native initial version implemented; UI redesigned on 2026-09-15.** Read [implementation status](docs/Implementation-Status.md) first, then [Design.md](Design.md) and [test handoff](docs/Swift-Test-Handoff.md). F13–F18 have implementations and deterministic Mac tests. Current request-aware loopback fixtures exercise Responses; earlier two-API checks remain historical evidence. These fixtures are not a deployed LiteLLM server. The owner selected Clipboard's ordinary macOS Keychain and profile-free Developer ID distribution; the native UI redesign landed on 2026-09-15 and plaintext settings remain deferred.
 
@@ -40,6 +40,23 @@ rehearsal was run. Installation/update rehearsals remain skipped by owner
 instruction. SDK-era requirements remain in `docs/archive/PiSDK-Features.md`.
 
 ## 2. Required features and honest implementation status
+
+**Unreleased inline skills and historical edits:** slash suggestions follow the
+native caret at the beginning, middle or later lines of a draft. Explicit
+selection adds a chip and removes only that token, with coherent undo/redo.
+The popup and Skills inspector share ranked metadata search, and each composer
+owns its discovery/loading/error state. Reserved app commands remain deliberate
+whole-message actions; pasted text and retained history confer no authorization.
+
+Editing a retained user message on the selected timeline works after compaction
+and in saved forks, including with read-only tools. Load the full original input
+independently of the three-turn viewport. Preserve recorded skills and attachment
+references; older unknown selections require review and missing attachments
+require replacement/removal. Only an idle conversation with empty queues can
+accept the edit. The child restores a safe pre-target context and durably records
+the new branch and replacement together. Original journals, captures, spending
+and external tool effects remain historical truth. Context inspection describes
+the unedited branch until Send. See [semantics, format and acceptance](docs/Inline-Skills-and-Historical-Edits-2026-09-21.md).
 
 **Context meter, 0.1.66:** current-request input, historical request usage and
 next-input previews have distinct identities and labels. Opening the inspector

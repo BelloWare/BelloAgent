@@ -36,6 +36,38 @@ records optimized native/helper tests, explicit actor checks and publication.
 Current release records take precedence over the historical matrices below.
 Installation/update rehearsals remain skipped by owner instruction.
 
+## Unreleased inline skills and historical edit acceptance
+
+Read [S01–S25 and E01–E28](Inline-Skills-and-Historical-Edits-2026-09-21.md).
+Native suites: `InlineSkillTests`, `HistoricalEditingTests`, `MessageDetailTests`,
+`ContextAndSkillPolicyTests`, `ComposerSubmissionTests`, `SkillTests`,
+`WorkspaceRefreshLifecycleTests`, `ReportMessageNavigationTests` and `SideTests`.
+Run the input/selection suites with actor checks and in Release; the native
+historical gateway case mounts the composer, selects an inline skill and sends
+the retained edit through the bundled executable to a local request-aware server.
+
+Helper suites: `HistoricalEditTests`, `EditRecoveryTests`, `MutationLedgerTests`,
+`ResourceCatalogTests`, `SideForkTests`, queue/compaction safety and observation
+tests. Shared native/helper journal fixtures assert selected-prefix parity and
+rejection of abandoned targets. The HTTP fixture compares actual captured bytes,
+checks tool/result pairing and forbidden future markers, and preserves the parent
+journal. Preserve write/sync uncertainty, crash-paused recovery and lost-ack tests.
+
+**Rebuild/stage the helper first** with `PI_BUILD_ROOT` outside the repository and
+`python3 scripts/build-bundle.py`. Xcode's embed step copies the staged helper;
+it does not rebuild changed helper sources. `session.edit.prepare` and the native
+`nativeBranchVersion: 2` reader must be tested and eventually distributed together.
+Use existing three-turn projection bounds when testing initial pages, not the
+retired default 60-row assumption. Tests that deliberately fake stale UI state
+must isolate background snapshot publication. A Foundation process-fixture
+teardown hang requires a process sample and an isolated rerun, not weakening
+the response/capture assertions.
+
+Current measured optimized operations: 512-entry search p95 1.421 ms, local
+256 KiB token lookup p95 0.0011 ms. These are not full-frame/IME latency claims.
+No installation, updater or release check belongs to this implementation-only
+handoff unless the owner asks to release it.
+
 ## 0.1.71 fresh presentation and history acceptance
 
 Read [SS01–SS10, PG01–PG20 and UX01–UX15](Fresh-Session-Loading-2026-09-21.md).

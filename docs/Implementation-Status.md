@@ -12,6 +12,20 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
+**Unreleased inline skills and historical edit rollback, 2026-09-21:** suggestions
+follow the native caret and share ranked metadata search with the inspector.
+Per-composer discovery cannot drop another pane's load; explicit token/chip
+acceptance preserves prose and native undo. Historical edits load full retained
+inputs outside the viewport and restore a safe pre-target context after
+compaction/fork, with versioned durable branches shared by all readers.
+Missing attachments/legacy selections require review. No old tool side effects
+are replayed. Validation: **277 distinct helper tests, 55 actor-checked native
+tests and 26 optimized native tests pass**, including a mounted native inline
+selection/edit through the packaged helper to a request-aware local gateway.
+See [contracts, compatibility, limits and S01–S25/E01–E28 dispositions](Inline-Skills-and-Historical-Edits-2026-09-21.md).
+The helper and native branch reader must ship together. These changes remain
+local; app/build versions and the public release are unchanged.
+
 **Unreleased follow-up, 2026-09-21:** reopening a saved chat and filling an
 earlier history page no longer disables live transcript updates. Reaching the
 latest page resumes snapshots, and submitting from an earlier window reloads
