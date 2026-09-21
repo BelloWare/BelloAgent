@@ -83,7 +83,7 @@ final class SnapshotProjectionTests: XCTestCase {
         XCTAssertTrue(queue["messages"].isNull)
         XCTAssertEqual(queue["displayRevision"],first["displayRevision"])
         let builds=await session.displayProjectionBuildCount, rows=await session.displayRowProjectionCount
-        XCTAssertEqual(builds,1); XCTAssertEqual(rows,60)
+        XCTAssertEqual(builds,1); XCTAssertEqual(rows,6, "Only the latest three two-message turns need projection")
     }
 
     func testStreamingProjectsOnlyChangedTailAndStatusDoesNotConsumeIt() async throws {
@@ -118,15 +118,19 @@ final class SnapshotProjectionTests: XCTestCase {
     func testLinearByteLimitMatchesEncodedProjectionWithEscapedUnicode() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         var seed=history()
-        for index in seed.indices { seed[index].content=[textBlock(String(repeating:"\"quoted\"\\line\n🦉/",count:900))] }
+        for index in seed.indices {
+            // A long three-turn conversation still reaches the independent byte cap.
+            seed[index].role = [0, 26, 54].contains(index) ? "user" : "assistant"
+            seed[index].content=[textBlock(String(repeating:"\"quoted\"\\line\n🦉/",count:900))]
+        }
         let session=try session(root:root,id:"bytes",seed:seed)
         addTeardownBlock { await session.close() }
         var expected=seed.suffix(60).map { $0.view() }, start=seed.count-60
-        while try JSON.array(expected).data().count>300_000, expected.count>1 { expected.removeFirst(); start += 1 }
+        while try JSON.array(expected).data().count>253_952, expected.count>1 { expected.removeFirst(); start += 1 }
         let projection=await session.snapshot()
         XCTAssertEqual(projection["messages"],.array(expected))
         XCTAssertEqual(projection["before"].int,start)
-        XCTAssertLessThanOrEqual(try projection["messages"].data().count,300_000)
+        XCTAssertLessThanOrEqual(try projection["messages"].data().count,253_952)
         let rows=await session.displayRowProjectionCount
         XCTAssertEqual(rows,expected.count+1,"Only the byte-bounded suffix and its one boundary candidate need projection")
         let status=await session.snapshot(["includeMessages":false])

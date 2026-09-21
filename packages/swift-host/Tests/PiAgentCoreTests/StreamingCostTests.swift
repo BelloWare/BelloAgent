@@ -107,7 +107,8 @@ final class StreamingCostTests: XCTestCase {
         let wall = (ProcessInfo.processInfo.systemUptime - start) * 1000, cpu = processCPUMilliseconds() - cpuStart
         print("PERF streamed-delta page=\(pageBytes)B rounds=\(rounds) cpuPerDeltaMs=\(cpu / Double(rounds)) wallPerDeltaMs=\(wall / Double(rounds)) bytesPerDelta=\(frameBytes / rounds) maxFrame=\(maximumFrame)")
         XCTAssertLessThan(cpu / Double(rounds), 1.0, "A streamed token must cost the helper under a millisecond of CPU")
-        XCTAssertLessThan(maximumFrame / max(1, pageBytes / 40), 1, "A streamed token's frame must stay far under the page it updates")
+        XCTAssertLessThan(maximumFrame, 4096, "A token delta keeps a fixed small envelope even when the three-turn page is small")
+        XCTAssertLessThan(Double(maximumFrame), Double(pageBytes) * 0.15, "A token must not resend its page")
         await client.finish(answer("Finished")); try await eventually { !(await session.isRunning) }
         let settled = await session.snapshot(["displayRevision": revision, "messageDelta": true])
         XCTAssertTrue(page.apply(settled["messageDelta"]))

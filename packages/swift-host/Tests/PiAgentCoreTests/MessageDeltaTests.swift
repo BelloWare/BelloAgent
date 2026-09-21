@@ -41,8 +41,8 @@ final class MessageDeltaTests: XCTestCase {
         try await eventually { !(await session.isRunning) }
         let second = await session.snapshot(["displayRevision": first["displayRevision"]])
         XCTAssertTrue(second["messageDelta"].isNull, "Row updates are opt-in; nothing must appear unasked")
-        XCTAssertEqual(second["messages"].list.count, 10, "Without the opt-in the whole page is still the answer")
-        XCTAssertEqual(second["messages"].list.first?["id"].text, "message-0")
+        XCTAssertEqual(second["messages"].list.count, 6, "Without the opt-in the full current three-turn page is the answer")
+        XCTAssertEqual(second["messages"].list.first?["id"].text, "message-4")
         XCTAssertEqual(second["messages"].list.last?["text"].text, "Reply")
     }
 
