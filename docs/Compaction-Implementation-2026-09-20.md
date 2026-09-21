@@ -7,12 +7,12 @@ later correction explicitly requires the same reasoning effort, the model's
 allowed output cap, no visible-length target, and summary instructions last.
 No subagents, live-provider credentials, installation or updater rehearsal used.
 
-Owner correction, 2026-09-21 (after 0.1.74): recorded unknown tool outcomes and
+Owner correction, released in 0.1.75 on 2026-09-21: recorded unknown tool outcomes and
 warning phrases in tool text no longer block compaction or checkpoint restore.
 Compaction preserves their source metadata and never invokes historical tools.
 The original uncertainty-blocking requirement below is superseded by this change.
 
-Validation for this unreleased correction: **28 helper tests pass** in
+Validation for this correction: **28 helper tests pass** in
 `CompactionSafetyTests`, `CompactionTaskRegressionTests` and `QueueHandoffTests`.
 New regressions exercise manual/threshold compaction with unknown results,
 checkpoint restore, successful reads containing warning text, retained outcome
@@ -23,7 +23,8 @@ and only the intended session receives the queued message. The first wider run
 exposed those stale expectations; the final 28-case run passes. Reproduction:
 `swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests" --filter 'CompactionSafetyTests|CompactionTaskRegressionTests|QueueHandoffTests'`.
 Logs are in session scratch `compaction-outcome-{check,regression,regression-final}.log`.
-No native UI change, deployment, installation or updater test is part of this correction.
+No native UI change or installation/updater rehearsal was needed. Signing and
+public verification are recorded in [0.1.75 validation](validation/Bello-Agent-0.1.75-2026-09-21.md).
 
 ## Behavior and schema
 

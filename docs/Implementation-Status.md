@@ -12,7 +12,7 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**0.1.75/build 79 is in release preparation:** at the owner's request, compaction and
+**Bello Agent 0.1.75/build 79 is released and publicly verified:** at the owner's request, compaction and
 checkpoint restore no longer reject recorded unknown tool outcomes or phrases
 in tool output. Call/result pairing validation and the existing outcome metadata
 remain. **28 focused helper tests pass**, including manual/automatic compaction,
@@ -20,8 +20,15 @@ successful reads containing warning text, retained unknown results, no historica
 tool invocation, queue handoff and concurrent compaction. See the owner correction
 in [the compaction record](Compaction-Implementation-2026-09-20.md) and the
 [0.1.75 validation record](validation/Bello-Agent-0.1.75-2026-09-21.md).
+Packaged source `dfe006eba46d160838da49a9c3205953e9de1eb3`; website
+`43ab499a1130740befbff0ef02285d539dc79f6d`. The signed/notarized DMG is
+**8,857,813 bytes (8.45 MiB)**, SHA-256
+`fada689ecd38670c0e7bf26e8581bd8848cf5812edc3babef1932d81f7b4f5dd`.
+Public page, identical update feeds and downloaded hash/Ed25519 checks passed
+at **2026-09-21 12:29:51 UTC**; Cloudflare check **106332227662** succeeded.
+Source commits remain local; the website commit was pushed.
 
-**Bello Agent 0.1.74/build 78 is released and publicly verified:** selected
+**Bello Agent 0.1.74/build 78 is a historical verified release:** selected
 assistant text opens an unsent quoted side draft. Elapsed time uses a consistent
 uptime clock, and its display sits before Generating response. Pending follow-ups
 progress after compaction/cleanup; failed or stopped work keeps explicit Resume.
