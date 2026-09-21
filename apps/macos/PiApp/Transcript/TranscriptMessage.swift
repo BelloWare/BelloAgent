@@ -31,12 +31,15 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     var modelMs: Double? = nil
     /// Validated logical calls in the whole reply, before bounding its cards.
     var toolCallCount: Int? = nil
+    var taskRootID: String? = nil
+    var taskExecutionID: String? = nil
     private static func bounded(_ text: String, bytes: Int) -> String {
         var prefix = Data(text.utf8.prefix(bytes))
         while !prefix.isEmpty { if let value = String(data: prefix, encoding: .utf8) { return value }; prefix.removeLast() }
         return ""
     }
     static func project(id: String, message: [String: WireValue]) -> TranscriptMessage {
+        let stopReason = message["nativeStopReason"]?.string ?? message["stopReason"]?.string
         let content = message["content"], blocks = content?.array ?? []
         let text = content?.string ?? blocks.compactMap { $0.object?["type"]?.string == "text" ? $0.object?["text"]?.string : nil }.joined()
         let thinking = blocks.compactMap { $0.object?["type"]?.string == "thinking" ? $0.object?["thinking"]?.string : nil }.joined()
@@ -52,8 +55,9 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
             return ToolView(id: String(toolID.prefix(256)), name: String((block["name"]?.string ?? "tool").prefix(256)), state: "recorded",
                             input: arguments.text, output: "", durationMs: nil, truncated: arguments.truncated,
                             inputTruncated: arguments.truncated ? true : nil, inputBytes: arguments.truncated ? arguments.bytes : nil)
-        }, state: message["stopReason"]?.string, truncated: text.utf8.count > 16_384 || thinking.utf8.count > 8192 || toolBlocks.count > 32, stopReason: message["stopReason"]?.string,
-                     at: message["timestamp"]?.number, turn: message["nativeTurn"]?.string, modelMs: message["nativeModelMs"]?.number, toolCallCount: role == "assistant" ? toolBlocks.count : nil)
+        }, state: stopReason, truncated: text.utf8.count > 16_384 || thinking.utf8.count > 8192 || toolBlocks.count > 32, stopReason: stopReason,
+                     at: message["timestamp"]?.number, turn: message["nativeTurn"]?.string, modelMs: message["nativeModelMs"]?.number, toolCallCount: role == "assistant" ? toolBlocks.count : nil,
+                     taskRootID: message["nativeTaskRoot"]?.string, taskExecutionID: message["nativeTaskExecution"]?.string)
     }
 }
 
@@ -104,6 +108,8 @@ extension TranscriptMessage {
         row.turn = try optionalString(fields["turn"])
         row.modelMs = try optionalDouble(fields["modelMs"])
         row.toolCallCount = try optionalInt(fields["toolCallCount"])
+        row.taskRootID = try optionalString(fields["taskRootID"])
+        row.taskExecutionID = try optionalString(fields["taskExecutionID"])
         return row
     }
     private static func tool(_ value: WireValue) throws -> ToolView {

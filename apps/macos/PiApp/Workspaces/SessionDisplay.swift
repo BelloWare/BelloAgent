@@ -42,6 +42,11 @@ import Combine
     var monitoringEpoch: String?
     var monitoringCursor: Double?
     let transcriptChanges = CurrentValueSubject<[TranscriptMessage], Never>([])
+    let presentationChanges = CurrentValueSubject<TranscriptPresentationInput, Never>(.init(messages:[], lifecycle:nil))
+    var taskPresentation: TaskPresentationProjection? { didSet { if oldValue != taskPresentation { publishTranscript() } } }
+    private var transcriptBatchDepth = 0
+    func beginTranscriptBatch() { transcriptBatchDepth += 1 }
+    func endTranscriptBatch() { transcriptBatchDepth -= 1; if transcriptBatchDepth == 0 { publishTranscript() } }
     var messages: [TranscriptMessage] = [] { didSet { projectionRevision = nil; publishTranscript() } }
     /// What the conversation page shows: the messages, then a retry notice
     /// while the helper retries a failed request, then the run failure or the
@@ -59,7 +64,13 @@ import Combine
         }
         return rows
     }
-    func publishTranscript() { transcriptChanges.send(presentedMessages) }
+    func publishTranscript() {
+        guard transcriptBatchDepth == 0 else { return }
+        let rows = presentedMessages
+        let input = TranscriptPresentationInput(messages:rows, lifecycle:taskPresentation)
+        if presentationChanges.value != input { presentationChanges.send(input) }
+        if transcriptChanges.value != rows { transcriptChanges.send(rows) }
+    }
     /// "Retrying (attempt 2 of 6) after: …" while the helper waits to retry a transient failure.
     @Published var retryNotice: String? { didSet { if retryNotice != oldValue { publishTranscript() } } }
     private(set) var retryAttempt: Int? { didSet { if retryAttempt != oldValue { activityChanges.send() } } }
@@ -122,6 +133,18 @@ import Combine
     /// turn, or the bar above the composer keeps a spinner, a running clock and
     /// a Stop button for a run that is over.
     func settleInterruptedRows() {
+        beginTranscriptBatch(); defer { endTranscriptBatch() }
+        if var lifecycle = taskPresentation {
+            lifecycle.utilityPhase = nil
+            if var active = lifecycle.active {
+                active.outcome = "interrupted"; active.phase = "terminal"; active.endedAt = max(active.startedAt, Date().timeIntervalSince1970 * 1000)
+                active.detail = "Connection ended without a terminal receipt. Inspect tool effects before continuing."
+                active.lastSourceID = messages.last(where: { $0.taskExecutionID == active.executionID })?.id ?? active.lastSourceID ?? active.anchorSourceID
+                lifecycle.active = nil; lifecycle.recent.append(active)
+                lifecycle.recent = Array(lifecycle.recent.suffix(64))
+            }
+            taskPresentation = lifecycle
+        }
         guard messages.contains(where: \.isStreaming) else { return }
         var rows = messages
         for index in rows.indices where rows[index].isStreaming {

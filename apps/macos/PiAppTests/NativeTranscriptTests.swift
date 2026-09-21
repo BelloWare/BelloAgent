@@ -7,14 +7,14 @@ import SwiftUI
 final class NativeTranscriptTests: XCTestCase {
     private func message(_ id: String, _ role: String = "assistant", _ text: String = "text") -> TranscriptMessage { TranscriptMessage(id: id, role: role, text: text) }
 
-    func testDisplayPageKeepsTheNewestRowsWithinTheRowAndByteLimits() {
+    func testDisplayPagePreservesTheSourceSelectedReadingEdgeWithinTheRowAndByteLimits() {
         let many = (0..<620).map { message("m\($0)", "user", "row \($0)") }
         let page = TranscriptPage.displayPage(many)
-        XCTAssertEqual(page.count, 500); XCTAssertEqual(page.first?.id, "m120"); XCTAssertEqual(page.last?.id, "m619")
+        XCTAssertEqual(page.count, 500); XCTAssertEqual(page.first?.id, "m0"); XCTAssertEqual(page.last?.id, "m499")
         let heavy = (0..<40).map { message("h\($0)", "assistant", String(repeating: "x", count: 200_000)) }
         let bounded = TranscriptPage.displayPage(heavy)
-        XCTAssertLessThan(bounded.count, 40, "about 4 MB of text fits, the oldest rows go first")
-        XCTAssertEqual(bounded.last?.id, "h39")
+        XCTAssertLessThan(bounded.count, 40, "The source chooses the edge; the render guard preserves its reading anchor")
+        XCTAssertEqual(bounded.first?.id, "h0")
         XCTAssertGreaterThanOrEqual(bounded.count, 15)
         XCTAssertEqual(TranscriptPage.displayPage([]), [])
     }
@@ -25,17 +25,22 @@ final class NativeTranscriptTests: XCTestCase {
         let page = TranscriptPage()
         page.bind(session)
         XCTAssertEqual(page.snapshot?.sessionID, "chat")
-        XCTAssertEqual(page.snapshot?.items.map(\.id), ["u1", "block:a1"], "a reply becomes a block keyed by its first row")
+        XCTAssertEqual(page.snapshot?.items.map(\.id), ["u1", "work:2:u1unresolved", "block:a1"], "work and prose have separate stable owners")
         XCTAssertTrue(page.snapshot?.fresh.isEmpty == true, "a restored page arrives settled")
         XCTAssertNil(page.liveTurn)
         session.messages.append(TranscriptMessage(id: "stream:a2", role: "assistant", text: "", state: "streaming", turn: "u1"))
         XCTAssertEqual(page.snapshot?.fresh, ["stream:a2"], "rows absent at the previous paint are fresh")
-        XCTAssertNotNil(page.liveTurn, "a streaming reply makes the turn live and docks the bar")
+        XCTAssertNil(page.liveTurn, "A visible placeholder alone cannot identify the active task")
+        let task = TaskPresentationRecord(rootID:"u1", executionID:"execution", startedAt:1000)
+        session.taskPresentation = .init(sessionID:"chat",epoch:"epoch",timeline:"root",sequence:1,sourceRevision:"1",active:task,recent:[])
+        XCTAssertNotNil(page.liveTurn, "Authoritative lifecycle evidence owns the dock")
         session.messages[2] = TranscriptMessage(id: "stream:a2", role: "assistant", text: "partial", state: "streaming", turn: "u1")
         XCTAssertTrue(page.snapshot?.fresh.isEmpty == true, "a delta to a known row is not fresh")
         session.messages[2] = TranscriptMessage(id: "a2", role: "assistant", text: "done", turn: "u1")
+        XCTAssertNotNil(page.liveTurn, "Completing a reply does not complete the task")
+        session.taskPresentation = nil
         XCTAssertNil(page.liveTurn)
-        XCTAssertEqual(page.snapshot?.fresh, ["a2"], "the settled row has a new id and arrives with motion")
+        XCTAssertTrue(page.snapshot?.fresh.isEmpty == true, "A lifecycle-only update does not introduce a fresh source row")
         let second = SessionDisplay(id: "other")
         second.messages = [message("x", "user", "elsewhere")]
         page.bind(second)
@@ -49,7 +54,7 @@ final class NativeTranscriptTests: XCTestCase {
         session.messages = (0..<6).map { message("m\($0)", $0 % 2 == 0 ? "user" : "assistant", "row \($0)") }
         let page = TranscriptPage()
         var earlier: [String] = [], anchors: [TranscriptAnchor?] = []
-        page.onLoadEarlier = { earlier.append($0) }
+        page.onLoadEarlier = { earlier.append($0); session.olderPage.loading = true }
         page.onAnchorChanged = { anchors.append($0) }
         page.bind(session)
         // The last turn (rows 4 and 5) fits above the bottom of this viewport, so an idle chat opens at the bottom.
@@ -67,6 +72,8 @@ final class NativeTranscriptTests: XCTestCase {
         let anchor = try XCTUnwrap(anchors.last ?? nil)
         XCTAssertEqual(anchor.id, "m0"); XCTAssertEqual(anchor.offset, -84, accuracy: 0.5); XCTAssertTrue(anchor.followsBottom)
         // A short page fits the viewport: the earlier page is requested once for its first row.
+        session.historyState = .ready; session.presentation.readyAt = PerformanceProbe.now
+        session.olderPage.cursor = .init(incarnation:"fixture",lineage:"root",entry:"p0")
         session.messages = [message("p0", "user", "earlier")] + session.messages; session.viewportRequest += 1
         page.contentChanged(ContentGeometry(top: 0, height: 400))
         XCTAssertEqual(earlier, ["scroll"])
@@ -74,6 +81,7 @@ final class NativeTranscriptTests: XCTestCase {
         XCTAssertEqual(earlier, ["scroll"], "the same first row never re-requests")
         // A restored anchor that does not follow keeps the reader's place rather than jumping.
         session.scrollAnchor = TranscriptAnchor(id: "m2", offset: -30, followsBottom: false)
+        session.olderPage.loading = false
         session.messages = [message("q0", "user", "even earlier")] + session.messages; session.viewportRequest += 1
         XCTAssertFalse(page.followsBottom)
         page.contentChanged(ContentGeometry(top: 0, height: 440))
@@ -101,7 +109,8 @@ final class NativeTranscriptTests: XCTestCase {
 }
 
 extension NativeTranscriptTests {
-    /// A saved chat whose newest page begins inside a turn pulls earlier pages until the question that started it leads.
+    /// A very long saved turn opens a bounded page, with its input explicitly
+    /// marked partial, and keeps the earlier question reachable on demand.
     @MainActor func testOpeningASavedChatStartsItsPageAtTheLastQuestion() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("page-start-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
@@ -118,9 +127,13 @@ extension NativeTranscriptTests {
         model.chats = [ChatRecord(id: "fixture", workspaceID: "workspace", title: "fixture", path: path.path, profileID: "profile")]
         await model.select("fixture")
         let view = try XCTUnwrap(model.selected)
-        XCTAssertEqual(view.messages.first?.role, "user", "the page begins with the question that started the last turn")
+        XCTAssertNotNil(view.presentation.partialTurnInput)
+        XCTAssertNotNil(view.olderPage.cursor)
+        model.historyViewportReady(view.id,generation:view.presentationGeneration)
+        while view.olderPage.cursor != nil { if !(await model.loadEarlierPage(sessionID:view.id)) { break } }
+        XCTAssertEqual(view.messages.first?.role, "user", "Loading earlier reaches the question without an eager whole-turn read")
         XCTAssertEqual(view.messages.first?.id, "q"); XCTAssertEqual(view.messages.last?.id, "a29")
-        XCTAssertTrue(view.pageStartEnsured); XCTAssertTrue(model.hosts.isEmpty, "no helper starts for a saved chat")
+        XCTAssertTrue(model.hosts.isEmpty, "no helper starts for a saved chat")
         model.shutdown(); await model.store?.close()
     }
 }

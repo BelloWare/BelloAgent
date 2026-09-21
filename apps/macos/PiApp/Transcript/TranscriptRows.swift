@@ -552,6 +552,10 @@ struct MessageRowView: View {
                 .foregroundStyle(TranscriptPalette.warning).padding(.top, 2)
                 .accessibilityIdentifier("reply-output-limit")
             }
+            if message.stopReason == "interrupted" {
+                Text("This attempt was interrupted. Its partial answer is retained separately from the retry.")
+                    .font(.system(size:12)).foregroundStyle(TranscriptPalette.warning)
+            }
             // One quiet band under the row for its time, usage and actions; the
             // actions appear on hover without moving anything.
             HStack(alignment: .center, spacing: 10) {
@@ -996,8 +1000,13 @@ struct BlockRowView: View {
     @Environment(\.piReduceMotion) private var reduceMotion
     private var open: Bool { disclosure.work }
     var body: some View {
+        if block.presentation == .body, let message = block.message {
+            MessageRowView(message:message, actions:actions, inlineAccounting:false, disclosure:disclosure, toggle:toggle).equatable().padding(.bottom,10)
+        } else if block.presentation == .summary, let turn = block.turn {
+            StableTurnSummaryView(turn:turn, actions:actions)
+        } else {
         let reasoned = TranscriptActivity.blockReasoned(block)
-        let hasWork = !block.tools.isEmpty || reasoned
+        let hasWork = block.presentation == .work || !block.tools.isEmpty || reasoned
         let accounting = block.accounting
         let tokens = TranscriptActivity.tokens(of: accounting)
         let hasUsage = tokens != nil || accounting.costUSD != nil || accounting.model != nil
@@ -1023,11 +1032,23 @@ struct BlockRowView: View {
                                         ReasoningView(thinking: reply.thinking ?? "", streaming: reply.isStreaming,
                                                       open: disclosure.openReasoning.contains(reply.id), toggle: { toggle(.reasoning(reply.id)) }).equatable()
                                         if let tools = reply.tools, !tools.isEmpty {
-                                            ActivityGroupView(tools: tools, openTools: disclosure.openTools, fetched: disclosure.toolInputs,
-                                                              toggle: { toggle(.tool($0)) }).equatable()
+                                            let scoped = block.presentation == .work
+                                            ActivityGroupView(tools: tools,
+                                                openTools: Set(tools.filter { disclosure.openTools.contains(scoped ? ToolOccurrence.key(reply.id,$0.id) : $0.id) }.map(\.id)),
+                                                fetched: Dictionary(tools.compactMap { tool in disclosure.toolInputs[scoped ? ToolOccurrence.key(reply.id,tool.id) : tool.id].map { (tool.id,$0) } }, uniquingKeysWith: { _,last in last }),
+                                                toggle: { toggle(.tool(scoped ? ToolOccurrence.key(reply.id,$0) : $0)) }).equatable()
                                         }
                                         if let accounting = reply.accounting, !(reply.tools ?? []).isEmpty || !(reply.thinking ?? "").isEmpty || reply.id != block.message?.id {
                                             MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(reply.id) })
+                                        }
+                                        if block.presentation == .work {
+                                            if reply.truncated == true { Text("Partial preview · Open Request details for retained content").font(.system(size:11)).foregroundStyle(TranscriptPalette.warning) }
+                                            if let ms = reply.modelMs { Text("Model request: " + TranscriptActivity.formatDuration(ms)).font(.system(size:11)).foregroundStyle(TranscriptPalette.faint) }
+                                            if reply.stopReason == "length" { Text("Output limit reached; tool arguments may be incomplete.").font(.system(size:12)).foregroundStyle(TranscriptPalette.warning) }
+                                            HStack {
+                                                Button("Request details") { actions.inspect(reply.id) }
+                                                Button("Copy reply") { actions.copyMessage(reply.id) }
+                                            }.buttonStyle(.plain).font(.system(size:11)).foregroundStyle(TranscriptPalette.faint)
                                         }
                                     }
                                 }
@@ -1048,17 +1069,22 @@ struct BlockRowView: View {
                 MessageRowView(message: message, actions: actions, inlineAccounting: false, disclosure: disclosure, toggle: toggle).equatable()
             }
             // A reply inside a multi-reply turn keeps its own figures; the turn line closes the turn.
-            if !block.live, !merged, hasUsage { replyFigures(tokens: tokens) }
+            if block.presentation != .work, !block.live, !merged, hasUsage { replyFigures(tokens: tokens) }
             if let turn = block.turn, !turn.live { TurnLineView(turn: turn, settled: settled, now: now, actions: actions, model: accounting.model, modelMessageID: accounting.modelMessageID) }
         }
         .padding(.bottom, 10)
+        }
     }
     /// The header of the work rows: what the reply did, and the chevron that folds the rows.
     private func workHeader(reasoned: Bool) -> some View {
         HStack(spacing: 4) {
-            if block.live && block.tools.contains(where: { TranscriptActivity.outcome(of: $0) == .running }) { SpinnerView() }
-            WorkSummaryView(summary: ToolCallSummary(rows: block.replies), reasoned: reasoned).equatable()
+            if block.presentation == .work {
+                Image(systemName:block.live ? "circle.dotted" : block.task?.outcome == "completed" ? "checkmark.circle" : block.task?.outcome == "failed" ? "exclamationmark.circle" : "circle")
+                    .frame(width:14)
+            } else if block.live && block.tools.contains(where: { TranscriptActivity.outcome(of: $0) == .running }) { SpinnerView() }
+            Text(block.presentation == .work ? workLabel : ToolCallSummary(rows:block.replies).label(reasoned:reasoned) ?? "Working")
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(hovering ? TranscriptPalette.text : TranscriptPalette.muted)
+                .lineLimit(1).truncationMode(.tail).frame(height:20).help(workLabel)
             Button { toggle(.work(block.key)) } label: {
                 // The chevron turns on the same curve the document moves the
                 // row on. A rotation decides nothing's height, so this is the
@@ -1076,6 +1102,21 @@ struct BlockRowView: View {
         .contentShape(Rectangle())
         .onTapGesture { toggle(.work(block.key)) }
     }
+    private var workLabel: String {
+        let status: String
+        switch block.task?.outcome {
+        case "completed": status = "Completed"
+        case "failed": status = "Failed"
+        case "cancelled": status = "Stopped"
+        case "interrupted": status = "Interrupted"
+        case "output-limited": status = "Output limit reached"
+        default: status = block.live ? "Working" : "Work · outcome unavailable"
+        }
+        let summary = block.taskSummary
+        let count = summary?.tools ?? ToolCallSummary(rows:block.replies).total
+        return status + (count > 0 ? " · \(summary?.toolCountPartial == true ? "at least " : "")\(count) tool calls" : "") +
+            (summary?.partial == true ? " · partial history" : "")
+    }
     /// Under a reply of a multi-reply turn: how long it took, its tokens, cost and model.
     private func replyFigures(tokens: Double?) -> some View {
         let accounting = block.accounting
@@ -1091,6 +1132,40 @@ struct BlockRowView: View {
         }
         return FigureFlow(items: items, font: .system(size: 12, weight: .medium), color: TranscriptPalette.faint)
             .help(accounting.requests > 0 ? TranscriptActivity.usageBreakdown(accounting) : "")
+    }
+}
+
+/// A stable terminal slot. Late accounting patches the same one-line fields;
+/// all detailed usage, timestamps, warnings and copy actions remain available.
+struct StableTurnSummaryView: View {
+    let turn: TurnSummary
+    let actions: TranscriptActions
+    @State private var open = false
+    var body: some View {
+        HStack(spacing:8) {
+            Button { open.toggle() } label: {
+                HStack(spacing:6) {
+                    Text("Turn · " + (turn.outcome == "completed" ? "Completed" : turn.outcome == "cancelled" ? "Stopped" : turn.outcome == "output-limited" ? "Output limit reached" : turn.outcome?.capitalized ?? "Outcome unavailable"))
+                    if let elapsed = turn.elapsedMs { Text(TranscriptActivity.formatDuration(elapsed)).monospacedDigit() }
+                    if let tokens = TranscriptActivity.tokens(of:turn.accounting) { Text(TranscriptActivity.formatTokenCount(tokens) + " tokens") }
+                    if let cost = turn.accounting.costUSD { Text(TranscriptActivity.formatTurnCost(cost)) }
+                    Image(systemName:"info.circle")
+                }.lineLimit(1)
+            }.buttonStyle(.plain)
+            Spacer(minLength:0)
+            Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(TurnLineView.copyText(turn), forType:.string) } label: { Image(systemName:"doc.on.doc") }
+                .buttonStyle(.plain).help("Copy Turn Info")
+        }.font(.system(size:12, weight:.medium)).foregroundStyle(TranscriptPalette.muted).frame(height:28)
+        .padding(.top,6).padding(.bottom,10)
+        .popover(isPresented:$open) {
+            ScrollView { VStack(alignment:.leading,spacing:10) {
+                if let notice = turn.notice { Text(notice).foregroundStyle(TranscriptPalette.warning).textSelection(.enabled) }
+                TurnLineView(turn:turn, actions:actions)
+                ForEach(turn.requests) { reply in
+                    if let accounting = reply.accounting { MessageAccountingView(accounting:accounting, onInspect:{ actions.inspect(reply.id) }) }
+                }
+            }.padding(16) }.frame(width:560, height:300)
+        }.help(turn.notice ?? "Show full turn timing, usage, model and request details")
     }
 }
 
@@ -1146,6 +1221,9 @@ struct TurnLineView: View {
     }
     static func copyText(_ turn: TurnSummary, model: String? = nil) -> String {
         var lines = [turn.partial ? "Turn (partial loaded history)" : "Turn", counts(turn)]
+        if let outcome = turn.outcome { lines.append("Outcome: " + outcome) }
+        else if !turn.live { lines.append("Task outcome unavailable; retained figures may be incomplete.") }
+        if let notice = turn.notice { lines.append(notice) }
         if let started = turn.startedAt { lines.append("Started: " + TranscriptActivity.formatClock(started)) }
         if let ended = turn.endedAt { lines.append("Finished: " + TranscriptActivity.formatClock(ended)) }
         if let elapsed = turn.elapsedMs { lines.append("Duration: " + TranscriptActivity.formatDuration(elapsed)) }
@@ -1175,35 +1253,32 @@ struct LiveTurnBar: View {
     let onStop: () -> Void
     @Environment(\.piReduceMotion) private var reduceMotion
     private var label: String {
-        switch state {
-        case "queued": return "Waiting to start"
-        case "stopping": return "Stopping"
-        case "compacting": return "Compacting context"
-        default: return "Working"
+        switch state == "stopping" ? "stopping" : turn.phase ?? state {
+        case "queued", "preparing": return "Preparing response…"
+        case "stopping": return "Stopping…"
+        case "compacting": return "Compacting context…"
+        case "retrying": return "Waiting to retry…"
+        case "tools": return "Running " + (turn.current?.name ?? "tools") + "…"
+        case "model": return "Generating response…"
+        default: return "Reconciling task status…"
         }
     }
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            let elapsed: Double? = turn.startedAt.map { max(turn.elapsedMs ?? 0, context.date.timeIntervalSince1970 * 1000 - $0) } ?? turn.elapsedMs
-            let usage = TranscriptActivity.usageBreakdown(turn.accounting)
-            var parts: [Text] = [Text(label).foregroundColor(TranscriptPalette.text)]
-            if let elapsed { parts.append(Text(TranscriptActivity.formatDuration(elapsed)).fontWeight(.semibold).foregroundColor(TranscriptPalette.text)) }
-            if let notice = turn.notice { parts.append(Text(notice).foregroundColor(TranscriptPalette.warning)) }
-            if turn.replies > 0 || turn.tools > 0 { parts.append(Text(TurnLineView.counts(turn))) }
-            if !usage.isEmpty { parts.append(Text(usage)) }
-            if let started = turn.startedAt { parts.append(Text("since " + TranscriptActivity.formatClock(started)).foregroundColor(TranscriptPalette.faint)) }
-            return HStack(alignment: .firstTextBaseline, spacing: 8) {
-                SpinnerView().alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
-                dotted(parts).font(.system(size: 12, weight: .medium)).foregroundStyle(TranscriptPalette.muted).monospacedDigit().lineSpacing(4)
-                Spacer(minLength: 8)
-                Button("Stop", action: onStop).buttonStyle(TranscriptStopStyle()).accessibilityLabel("Stop the current run")
-            }
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(TranscriptPalette.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(TranscriptPalette.hair, lineWidth: 1))
-            .shadow(color: .black.opacity(0.08), radius: 8, y: 4)
-        }
-        .accessibilityElement(children: .contain).accessibilityLabel(label)
+        TimelineView(.periodic(from:.now, by:1)) { context in
+            HStack(spacing:8) {
+                SpinnerView().frame(width:14)
+                Text(label).lineLimit(1).truncationMode(.tail).help(label).accessibilityLabel(label)
+                Spacer(minLength:4)
+                if let started = turn.startedAt {
+                    Text(TranscriptActivity.formatDuration(max(0, context.date.timeIntervalSince1970 * 1000 - started)))
+                        .monospacedDigit().lineLimit(1).frame(width:58, alignment:.trailing)
+                }
+                Button("Stop", action:onStop).buttonStyle(TranscriptStopStyle()).frame(width:48).accessibilityLabel("Stop the current run")
+            }.font(.system(size:12, weight:.medium)).foregroundStyle(TranscriptPalette.muted)
+                .frame(height:28).padding(.horizontal,10).padding(.vertical,6)
+                .background(TranscriptPalette.surface,in:RoundedRectangle(cornerRadius:10))
+                .overlay(RoundedRectangle(cornerRadius:10).stroke(TranscriptPalette.hair,lineWidth:1))
+        }.accessibilityElement(children:.contain)
     }
 }
 

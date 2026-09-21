@@ -180,7 +180,7 @@ final class NativeTranscriptDocumentTests: XCTestCase {
     @MainActor func testHeightOnlyViewportResizeKeepsFollowingWithoutRemeasuringRows() async throws {
         let fixture = Fixture(messages: messages())
         defer { fixture.close() }
-        try await fixture.settle { fixture.bottom > 800 && abs(fixture.offset - fixture.bottom) < 0.5 }
+        try await fixture.settle { fixture.bottom > 800 && abs(fixture.offset - fixture.bottom) < 0.5 && fixture.document.approximateRowCount == 0 }
         let width = fixture.scroll.contentSize.width
         let counts = Dictionary(uniqueKeysWithValues: fixture.rows.map { ($0.itemID, $0.measurementCount) })
         let documentHeight = fixture.document.frame.height
@@ -200,7 +200,7 @@ final class NativeTranscriptDocumentTests: XCTestCase {
     @MainActor func testClipScrollingReportsTheCurrentRowAndPixelOffsetWithoutRelayout() async throws {
         let fixture = Fixture(messages: messages())
         defer { fixture.close() }
-        try await fixture.settle { abs(fixture.offset - fixture.bottom) < 0.5 && fixture.page.rowFrame(of: "m8") != nil }
+        try await fixture.settle { abs(fixture.offset - fixture.bottom) < 0.5 && fixture.page.rowFrame(of: "m8") != nil && fixture.document.approximateRowCount == 0 }
         var reported: TranscriptAnchor?
         fixture.page.onAnchorChanged = { reported = $0 }
         let counts = Dictionary(uniqueKeysWithValues: fixture.rows.map { ($0.itemID, $0.measurementCount) })

@@ -74,7 +74,7 @@ final class NativeTranscriptSafetyTests: XCTestCase {
         guard case .block(let block) = item else { return XCTFail("Expected the retained assistant's block") }
         XCTAssertEqual(block.modelMs, 1e100, "The fixture must reach the formatter through the actual history projection")
         XCTAssertEqual(TranscriptActivity.formatDuration(block.modelMs), "")
-        XCTAssertEqual(TranscriptActivity.formatDuration(try XCTUnwrap(block.turn).modelMs), "")
+        XCTAssertEqual(TranscriptActivity.formatDuration(try XCTUnwrap(block.taskSummary).modelMs), "")
         XCTAssertEqual(TranscriptActivity.formatDuration(Double.greatestFiniteMagnitude), "")
         XCTAssertEqual(TranscriptActivity.formatDuration(72_000), "1m 12s")
     }

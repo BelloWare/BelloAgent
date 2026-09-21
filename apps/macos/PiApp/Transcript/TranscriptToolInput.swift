@@ -145,7 +145,9 @@ struct ToolInputDocument: Equatable, Sendable {
     /// be measured again.
     var onChanged: (() -> Void)?
     private var documents: [String: ToolInputDocument] = [:]
+    private var callNames: [String: String] = [:]
     private var inFlight: Set<String> = []
+    private var owners: [String: UUID] = [:]
     /// Calls whose fetch failed, so a card asks once rather than on every pass.
     private var refused: Set<String> = []
     private(set) var revision = 0
@@ -153,22 +155,31 @@ struct ToolInputDocument: Equatable, Sendable {
     /// How many fetches this conversation has asked for, as test evidence.
     private(set) var requestCount = 0
 
-    func document(_ callID: String) -> ToolInputDocument? { documents[callID] }
-    func isLoading(_ callID: String) -> Bool { inFlight.contains(callID) }
+    func document(_ callID: String) -> ToolInputDocument? {
+        if let exact = documents[callID] { return exact }
+        // Compatibility for old unscoped callers only when unambiguous.
+        let keys = callNames.filter { $0.value == callID }.map(\.key)
+        return keys.count == 1 ? documents[keys[0]] : nil
+    }
+    func isLoading(_ callID: String) -> Bool { inFlight.contains(callID) || inFlight.contains { callNames[$0] == callID } }
 
     /// Ask for a call's full arguments, once. A call whose arguments are still
     /// arriving is asked again the next time the reader opens its card.
     func request(messageID: String, callID: String) {
-        guard let load, documents[callID] == nil, !inFlight.contains(callID), !refused.contains(callID) else { return }
-        inFlight.insert(callID)
+        let key = ToolOccurrence.key(messageID,callID)
+        guard let load, documents[key] == nil, !inFlight.contains(key), !refused.contains(key) else { return }
+        inFlight.insert(key)
+        let owner = UUID(); owners[key] = owner
+        callNames[key] = callID
         requestCount += 1
         Task { [weak self] in
             let result = try? await load(messageID, callID)
             guard let self else { return }
-            self.inFlight.remove(callID)
-            guard let result else { self.refused.insert(callID); return }
+            guard self.owners[key] == owner else { return }
+            self.owners.removeValue(forKey:key); self.inFlight.remove(key)
+            guard let result else { self.refused.insert(key); return }
             // A call still writing its arguments is worth asking about again.
-            if result.streaming { self.refused.remove(callID) } else { self.documents[callID] = result }
+            if result.streaming { self.refused.remove(key) } else { self.documents[key] = result }
             self.revision += 1
             self.onChanged?()
         }
@@ -178,8 +189,11 @@ struct ToolInputDocument: Equatable, Sendable {
         guard !ids.isEmpty else { return }
         let before = documents.count
         documents = documents.filter { !ids.contains($0.key) }
+        inFlight.subtract(ids)
+        owners = owners.filter { !ids.contains($0.key) }
+        callNames = callNames.filter { !ids.contains($0.key) }
         refused.subtract(ids)
         if documents.count != before { revision += 1 }
     }
-    var knownIDs: Set<String> { Set(documents.keys) }
+    var knownIDs: Set<String> { Set(documents.keys).union(inFlight).union(refused) }
 }

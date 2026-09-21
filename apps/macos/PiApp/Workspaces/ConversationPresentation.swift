@@ -24,6 +24,7 @@ struct ConversationHistoryPage: Sendable {
     var assistantCount: Int?
     var latestAssistantID: String?
     var failure: String?
+    var taskRecords: [TaskPresentationRecord] = []
 
     init(_ wire: WireValue) throws {
         guard let value = wire.object, value["version"]?.number == 2,
@@ -46,6 +47,10 @@ struct ConversationHistoryPage: Sendable {
                   messages.contains(where: { $0.id == boundary.entry }) else { throw HostError.failure("Invalid history boundary. Reload history.") }
         }
         partialTurnInput = value["partialTurnInput"]?.string
+        if let raw = value["taskRecords"] {
+            taskRecords = try JSONDecoder().decode([TaskPresentationRecord].self, from:JSONEncoder().encode(raw))
+            guard taskRecords.count <= 64, taskRecords.allSatisfy({ $0.valid && $0.terminal }) else { throw HostError.failure("Invalid task history evidence") }
+        }
     }
     init(_ page: HistoryPage) throws {
         guard page.notice == nil, let incarnation = page.incarnation, let lineage = page.lineage else {
@@ -55,6 +60,7 @@ struct ConversationHistoryPage: Sendable {
         self.incarnation = incarnation; self.lineage = lineage; partialTurnInput = page.partialTurnInput
         notice = page.limitNotice; revision = page.revision; assistantCount = page.assistantMessageCount
         latestAssistantID = page.latestAssistantMessageID; failure = page.failureMessage
+        taskRecords = page.taskRecords
     }
     static func cursor(_ value: WireValue?) throws -> ConversationCursor? {
         guard let value, value != .null else { return nil }

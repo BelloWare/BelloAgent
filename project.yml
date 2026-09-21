@@ -30,6 +30,7 @@ targets:
       - apps/macos/PiApp
       - packages/swift-host/Sources/PiAgentCore/HistoryWindowPolicy.swift
       - packages/swift-host/Sources/PiAgentCore/EditReplayPlan.swift
+      - packages/swift-host/Sources/PiAgentCore/TaskPresentation.swift
       - path: catalogs/bello-agent.models.json
         buildPhase: resources
     postBuildScripts:

@@ -50,6 +50,8 @@ enum TranscriptRowEstimate {
         switch item {
         case .message(let message): return height(of: message, width: width, inline: true)
         case .block(let block):
+            if block.presentation == .work { return 30 }
+            if block.presentation == .summary { return 44 }
             var total: CGFloat = 10
             let reasoned = block.replies.contains { !($0.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             if !block.tools.isEmpty || reasoned {

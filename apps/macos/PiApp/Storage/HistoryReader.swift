@@ -19,6 +19,7 @@ struct HistoryPage: Sendable {
     var older: ConversationCursor? = nil
     var newer: ConversationCursor? = nil
     var partialTurnInput: String? = nil
+    var taskRecords: [TaskPresentationRecord] = []
 }
 
 /// The journal identity used for a retained display, including replacements
@@ -47,6 +48,7 @@ actor HistoryReader {
         var version: Int?; var customType: String?; var pendingWork: PendingWork?
         var nativeCompactionVersion: Int?; var nativeCompaction: Checkpoint?
         var historicalBranch: HistoricalBranch?; var selectedTimeline: [String]?
+        var taskTerminal: TaskPresentationRecord?
         struct Checkpoint: Decodable { var version: Int; var sourceIDs: [String]; var protectedIDs: [String]; var keptIDs: [String]; var dependencyIDs: [String]?; var summarySourceIDs: [String]? }
         struct PendingItem: Decodable {}
         struct PendingWork: Decodable {
@@ -98,6 +100,11 @@ actor HistoryReader {
                 if value.contains(.nativeBranchVersion) { historicalBranch = try HistoricalBranch(from: decoder) }
             }
             else if customType == "pi-app.native.state.v1" { pendingWork = try value.decodeIfPresent(PendingWork.self, forKey: .data) }
+            else if customType == "pi-app.task-terminal.v1" {
+                let task = try value.decode(TaskPresentationRecord.self, forKey:.data)
+                guard task.valid, task.terminal else { throw StoreError.unreadableRecord }
+                taskTerminal = task
+            }
             if customType == "pi-app.native.context.v1" {
                 let selection = try value.decodeIfPresent(ContextSelection.self, forKey: .data)
                 contextIDs = selection?.ids ?? []; selectedTimeline = selection?.visibleIDs
@@ -108,7 +115,7 @@ actor HistoryReader {
     private struct Stamp: Equatable {
         var device: Int32; var inode: UInt64; var size: Int64; var modified: Int; var modifiedNS: Int; var changed: Int; var changedNS: Int
     }
-    private struct Index { var stamp: Stamp; var branch: HistoryOffsetIndex; var assistantCount: Int; var latestAssistantID: String?; var sessionID: String?; var automaticContextSafe: Bool; var failureMessage: String? }
+    private struct Index { var stamp: Stamp; var branch: HistoryOffsetIndex; var assistantCount: Int; var latestAssistantID: String?; var sessionID: String?; var automaticContextSafe: Bool; var failureMessage: String?; var taskRecords: [TaskPresentationRecord] }
     private var indexes: [String: Index] = [:]
     // As many bounded offset indexes as the workspace keeps transcript pages, so
     // cycling between open chats does not re-index a large journal each time.
@@ -309,9 +316,11 @@ actor HistoryReader {
         if let cached = indexes[path], cached.stamp == identity { branch = cached.branch }
         else { branch = try HistoryOffsetIndex() }
         var notice: String?, assistantCount = 0, latestAssistantID: String?, failureMessage: String?
+        var taskRecords: [TaskPresentationRecord] = []
         if let cached = indexes[path], cached.stamp == identity {
             assistantCount = cached.assistantCount; latestAssistantID = cached.latestAssistantID
             failureMessage = cached.failureMessage
+            taskRecords = cached.taskRecords
             if targetTurns != nil && cached.sessionID == nil { notice = "History has no valid session header. Its source was left untouched." }
         }
         else {
@@ -334,6 +343,10 @@ actor HistoryReader {
                     if value.type == "session", offset == 0, value.version == 3 { sessionID = value.id }
                     if value.customType == "pi-app.native.v1" { native = true }
                     if let work = value.pendingWork { pendingWork = work.exists; failureMessage = work.failure }
+                    if let task = value.taskTerminal {
+                        taskRecords.removeAll { $0.key == task.key }; taskRecords.append(task)
+                        if taskRecords.count > 64 { taskRecords.removeFirst() }
+                    }
                     if value.type != "session" {
                         let id = value.id ?? "record-\(offset)"
                         guard try branch.ref(id) == nil else { throw StoreError.unreadableRecord }
@@ -430,12 +443,16 @@ actor HistoryReader {
             } else if ref.type == "message" || ref.type == "compaction" { try branch.append(ref) }
         }
         try branch.finish()
+        taskRecords = try taskRecords.filter { task in
+            guard let last = task.lastSourceID else { return false }
+            return try branch.index(of:last) != nil
+        }
         indexedRecordCount = branch.recordCount; indexedBytes = size
         guard try stamp(file) == identity else { throw StoreError.unreadableRecord }
         let activeCalls = Set(contextIDs.flatMap { contextMessages[$0]?.calls ?? [] })
         let activeResults = Set(contextIDs.compactMap { contextMessages[$0]?.result })
         if notice == nil { indexes[path] = Index(stamp: identity, branch: branch, assistantCount: assistantCount, latestAssistantID: latestAssistantID,
-                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage) }
+                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords) }
         }
         recency.removeAll { $0 == path }; recency.append(path)
         while recency.count > Self.retainedIndexes { indexes.removeValue(forKey: recency.removeFirst()) }
@@ -516,6 +533,6 @@ actor HistoryReader {
                            incarnation: incarnation, lineage: lineage,
                            older: start > 0 && !messages.isEmpty ? pageCursor(try branch.at(start).id) : nil,
                            newer: end < branch.count && !messages.isEmpty ? pageCursor(try branch.at(end - 1).id) : nil,
-                           partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil)
+                           partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil, taskRecords:taskRecords)
     }
 }

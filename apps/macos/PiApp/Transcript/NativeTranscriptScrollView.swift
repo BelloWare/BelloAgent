@@ -319,16 +319,16 @@ final class TranscriptNativeScrollView: NSScrollView {
                 switch item {
                 case .message(let message): return [message.id] + (message.tools ?? []).map(\.id)
                 case .block(let block):
-                    return [block.key, block.id] + block.tools.map(\.id) + block.replies.flatMap { [$0.id] + ($0.tools ?? []).map(\.id) }
+                    return [block.key, block.id] + block.tools.map(\.id) + block.replies.flatMap { reply in [reply.id] + (reply.tools ?? []).flatMap { [$0.id, ToolOccurrence.key(reply.id,$0.id)] } }
                 }
             })
             disclosure.forget(disclosure.changedIDs.subtracting(live))
         }
-        if let toolInputs, toolInputs.count > 0, let items = snapshot?.items {
+        if let toolInputs, !toolInputs.knownIDs.isEmpty, let items = snapshot?.items {
             let live = Set(items.flatMap { item -> [String] in
                 switch item {
-                case .message(let message): return (message.tools ?? []).map(\.id)
-                case .block(let block): return block.tools.map(\.id) + block.replies.flatMap { ($0.tools ?? []).map(\.id) }
+                case .message(let message): return (message.tools ?? []).flatMap { [$0.id,ToolOccurrence.key(message.id,$0.id)] }
+                case .block(let block): return block.tools.map(\.id) + block.replies.flatMap { reply in (reply.tools ?? []).flatMap { [$0.id,ToolOccurrence.key(reply.id,$0.id)] } }
                 }
             })
             toolInputs.forget(toolInputs.knownIDs.subtracting(live))

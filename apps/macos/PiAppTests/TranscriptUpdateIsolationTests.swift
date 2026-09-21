@@ -89,14 +89,14 @@ final class TranscriptUpdateIsolationTests: XCTestCase {
             // A page this long comes up with its viewport exact and measures
             // the rest in slices; the tail reflow under test is the one that
             // happens once it has finished.
-            if document.frame.height > 3_000, document.retainedRows.count == 50,
+            if document.frame.height > 3_000, document.retainedRows.count == 75,
                document.approximateRowCount == 0,
                document.retainedRows.filter({ $0.superview == nil }).count > 35 {
                 break
             }
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertEqual(document.retainedRows.count, 50)
+        XCTAssertEqual(document.retainedRows.count, 75, "25 turns each own a question, persistent work row and prose row")
         XCTAssertGreaterThan(document.retainedRows.filter { $0.superview == nil }.count, 35)
         // Let any initial host attachment validations finish before measuring
         // the synchronous layout caused by a content change to the last row.

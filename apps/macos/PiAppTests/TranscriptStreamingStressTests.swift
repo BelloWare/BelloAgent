@@ -338,10 +338,11 @@ final class TranscriptStreamingStressTests: XCTestCase {
         let stage = Stage(first); defer { stage.close() }
         await stage.settle()
         let row = try XCTUnwrap(stage.workRow)
+        row.toggleDisclosure(try XCTUnwrap(stage.workPart(row))); stage.draw()
         let base = row.frame.height
 
         // The long card opens and is capped, not unbounded.
-        row.toggleDisclosure(.tool("t5"))
+        row.toggleDisclosure(.tool(ToolOccurrence.key("a1","t5")))
         stage.draw()
         let withLong = row.frame.height
         XCTAssertGreaterThan(withLong, base, "opening a card makes its row taller")
@@ -349,7 +350,7 @@ final class TranscriptStreamingStressTests: XCTestCase {
         assertStacked(stage, "one long card open")
 
         // Several more, and the reasoning.
-        for id in ["t1", "t2", "t9"] { row.toggleDisclosure(.tool(id)) }
+        for id in ["t1", "t2", "t9"] { row.toggleDisclosure(.tool(ToolOccurrence.key("a1",id))) }
         row.toggleDisclosure(.reasoning("a1"))
         stage.draw()
         let withAll = row.frame.height
@@ -358,10 +359,10 @@ final class TranscriptStreamingStressTests: XCTestCase {
 
         func assertStillOpen(_ what: String) throws {
             for id in ["t5", "t1", "t2", "t9"] {
-                XCTAssertTrue(first.disclosure.isOpen(.tool(id)), "\(what): card \(id) closed itself")
+                XCTAssertTrue(first.disclosure.isOpen(.tool(ToolOccurrence.key("a1",id))), "\(what): card \(id) closed itself")
             }
             XCTAssertTrue(first.disclosure.isOpen(.reasoning("a1")), "\(what): the reasoning closed itself")
-            for id in ["t0", "t3"] { XCTAssertFalse(first.disclosure.isOpen(.tool(id)), "\(what): card \(id) opened itself") }
+            for id in ["t0", "t3"] { XCTAssertFalse(first.disclosure.isOpen(.tool(ToolOccurrence.key("a1",id))), "\(what): card \(id) opened itself") }
             let current = try XCTUnwrap(stage.workRow)
             XCTAssertEqual(current.frame.height, withAll, accuracy: 1, "\(what): the row is no longer the height its open cards need")
             assertStacked(stage, what)
@@ -1617,8 +1618,9 @@ final class TranscriptStreamingStressTests: XCTestCase {
         let stage = Stage(session); defer { stage.close() }
         await stage.settle()
         let row = try XCTUnwrap(stage.workRow)
+        row.toggleDisclosure(try XCTUnwrap(stage.workPart(row))); stage.draw()
         let closed = row.frame.height
-        row.toggleDisclosure(.tool("cut1"))
+        row.toggleDisclosure(.tool(ToolOccurrence.key("a1","cut1")))
         stage.draw()
         let partial = row.frame.height
         XCTAssertGreaterThan(partial, closed, "the card opens on what the inline document already has")
@@ -1652,9 +1654,9 @@ final class TranscriptStreamingStressTests: XCTestCase {
         assertStacked(stage, "with the cut card open, after the answer")
 
         // Asking again is not how it works: closing and reopening reuses it.
-        row.toggleDisclosure(.tool("cut1"))
+        row.toggleDisclosure(.tool(ToolOccurrence.key("a1","cut1")))
         stage.draw()
-        row.toggleDisclosure(.tool("cut1"))
+        row.toggleDisclosure(.tool(ToolOccurrence.key("a1","cut1")))
         stage.draw()
         await stage.settle()
         XCTAssertEqual(asked, ["a1/cut1"], "the conversation keeps the document it fetched")
@@ -1680,16 +1682,17 @@ final class TranscriptStreamingStressTests: XCTestCase {
         let stage = Stage(session); defer { stage.close() }
         await stage.settle()
         let row = try XCTUnwrap(stage.workRow)
+        row.toggleDisclosure(try XCTUnwrap(stage.workPart(row))); stage.draw()
         for _ in 0..<3 {
-            row.toggleDisclosure(.tool("refused"))
+            row.toggleDisclosure(.tool(ToolOccurrence.key("a1","refused")))
             stage.draw()
             await stage.settle()
-            row.toggleDisclosure(.tool("refused"))
+            row.toggleDisclosure(.tool(ToolOccurrence.key("a1","refused")))
             stage.draw()
             await stage.settle()
         }
         XCTAssertEqual(attempts, 1, "a host that cannot answer is asked once, not on every open")
-        row.toggleDisclosure(.tool("refused"))
+        row.toggleDisclosure(.tool(ToolOccurrence.key("a1","refused")))
         stage.draw()
         assertStacked(stage, "with a card whose fetch failed")
         XCTAssertNil(session.toolInputs.document("refused"))
@@ -1747,8 +1750,9 @@ final class TranscriptStreamingStressTests: XCTestCase {
         let stage = Stage(session); defer { stage.close() }
         await stage.settle()
         let row = try XCTUnwrap(stage.workRow)
+        row.toggleDisclosure(try XCTUnwrap(stage.workPart(row))); stage.draw()
         let closed = row.frame.height
-        row.toggleDisclosure(.tool("call-1"))
+        row.toggleDisclosure(.tool(ToolOccurrence.key("a1","call-1")))
         stage.draw()
         XCTAssertGreaterThan(row.frame.height, closed)
         assertStacked(stage, "with a journal edit open")

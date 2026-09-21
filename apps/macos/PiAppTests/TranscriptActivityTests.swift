@@ -56,90 +56,34 @@ final class TranscriptActivityTests: XCTestCase {
         XCTAssertEqual(TranscriptActivity.summarizeWork([], reasoned: true), "Reasoned"); XCTAssertEqual(TranscriptActivity.summarizeWork([bash], reasoned: true), "Reasoned · 1 tool call"); XCTAssertNil(TranscriptActivity.summarizeWork([], reasoned: false))
     }
 
-    func testToolRoundsFoldIntoTheReplyAndTurnsCarryTheirTotals() {
-        let items = TranscriptActivity.blocks(of: [
-            message("u", "user", "Read it", at: 1_000),
-            message("a-tool", "assistant", "", tools: [tool("call", "read", input: "{\"path\":\"fixture.txt\"}", output: "Contents", durationMs: 10)], at: 3_000),
-            message("t", "tool", "Contents", at: 3_020),
-            message("a-final", "assistant", "Done", at: 5_000),
-        ])
-        XCTAssertEqual(kinds(items), ["message", "block:a-final"], "the tool round folds into the reply and the tool result row disappears")
-        let block = blocks(items)[0]
-        XCTAssertEqual(block.key, "block:a-tool"); XCTAssertEqual(block.id, "a-final"); XCTAssertEqual(block.activity.map(\.id), ["a-tool"])
-        XCTAssertEqual(block.modelMs, 2_000 + 1_980, "model time is the gap before each reply"); XCTAssertEqual(block.toolMs, 10)
-        XCTAssertEqual(block.endedAt! - block.startedAt!, 4_000)
-        XCTAssertEqual(block.turn, TurnSummary(replies: 1, tools: 1, startedAt: 1_000, endedAt: 5_000, elapsedMs: 4_000, modelMs: 3_980, toolMs: 10, live: false, files: 0, partial: false, accounting: TurnAccounting(), requests: [], current: nil, notice: nil), "a single-reply turn carries its totals too")
-        let chained = TranscriptActivity.blocks(of: [
-            message("u", "user", "Go"),
-            message("a1", "assistant", "", tools: [tool("t1", "read", input: "{\"path\":\"a\"}", durationMs: 1)]),
-            message("a2", "assistant", "", tools: [tool("t2", "bash", input: "{\"command\":\"ls\"}", durationMs: 2)]),
-            message("a3", "assistant", "Now edit", tools: [tool("t3", "edit", input: "{\"path\":\"b\"}", durationMs: 3)]),
-            message("a4", "assistant", "", tools: [tool("t4", "bash", input: "{\"command\":\"pwd\"}", durationMs: 4)]),
-        ])
-        XCTAssertEqual(kinds(chained), ["message", "block:a3", "block:-"])
-        let first = blocks(chained)[0], trailing = blocks(chained)[1]
-        XCTAssertEqual(first.tools.map(\.id), ["t1", "t2", "t3"], "a reply owns the work before it and its own calls")
-        XCTAssertEqual(trailing.tools.map(\.id), ["t4"], "work the turn ended on forms a trailing block without prose")
-        XCTAssertEqual(first.toolMs, 6); XCTAssertEqual(trailing.toolMs, 4)
-        XCTAssertNil(first.turn)
-        XCTAssertEqual(trailing.turn, TurnSummary(replies: 2, tools: 4, startedAt: nil, endedAt: nil, elapsedMs: nil, modelMs: 0, toolMs: 10, live: false, files: 1, partial: false, accounting: TurnAccounting(), requests: [], current: nil, notice: nil), "the last block of a multi-reply turn totals the turn, counting the file its edit touched")
-        let multi = TranscriptActivity.blocks(of: [
-            message("u", "user", "Go", at: 1_000),
-            message("a1", "assistant", "First", tools: [tool("t1", "read", input: "{\"path\":\"a\"}", durationMs: 500)], at: 3_000),
-            message("a2", "assistant", "Second", at: 6_000),
-            message("u2", "user", "More", at: 9_000),
-            message("a3", "assistant", "Third", at: 9_500),
-        ])
-        let turnBlocks = blocks(multi)
-        XCTAssertEqual(turnBlocks.map { $0.turn?.replies ?? 0 }, [0, 2, 1], "only the last reply of a turn carries totals; the next turn starts fresh")
-        XCTAssertEqual(turnBlocks[1].turn, TurnSummary(replies: 2, tools: 1, startedAt: 1_000, endedAt: 6_000, elapsedMs: 5_000, modelMs: 5_000, toolMs: 500, live: false, files: 0, partial: false, accounting: TurnAccounting(), requests: [], current: nil, notice: nil))
-        let live = blocks(TranscriptActivity.blocks(of: [
-            message("u", "user", "Go", at: 1_000),
-            message("a1", "assistant", "First", at: 2_000),
-            message("a2", "assistant", "", tools: [tool("t", "bash", state: "running", input: "{\"command\":\"npm test\"}")], state: "streaming"),
-        ]))
-        XCTAssertEqual(live.count, 2); XCTAssertEqual(live[1].live, true); XCTAssertEqual(live[1].turn?.live, true); XCTAssertEqual(live[1].turn?.startedAt, 1_000)
-        XCTAssertEqual(live[1].turn?.current?.id, "t", "a live turn names the tool call under way")
-        let retrying = TranscriptActivity.blocks(of: [
-            message("u", "user", "Go", at: 1_000),
-            message("stream:a", "assistant", "", state: "streaming"),
-            message("notice:retry", "system", "Retrying (attempt 2 of 3) after: stream dropped", kind: "notice"),
-        ])
-        XCTAssertEqual(retrying.count, 2, "a trailing retry notice folds into the live turn instead of taking a row")
-        XCTAssertEqual(blocks(retrying)[0].turn?.notice, "Retrying (attempt 2 of 3) after: stream dropped")
+    func testTaskWorkAndProseHaveSeparateStableSourceOwnership() {
+        let rows = [message("u", "user", "Go", turn:"u"),
+                    message("a1", "assistant", "", tools:[tool("same", "read")], turn:"u"),
+                    message("a2", "assistant", "Visible prose", tools:[tool("same", "read")], turn:"u"),
+                    message("a3", "assistant", "", thinking:"More reasoning", turn:"u")]
+        let items = TranscriptActivity.blocks(of:rows), values = blocks(items)
+        XCTAssertEqual(items.map(\.id), ["u", "work:1:uunresolved", "block:a2"])
+        XCTAssertEqual(values[0].activity.map(\.id), ["a1","a2","a3"])
+        XCTAssertEqual(values[0].taskSummary?.tools,2,"Call IDs are scoped by source assistant")
+        XCTAssertEqual(values[1].message?.id,"a2"); XCTAssertTrue(values[1].tools.isEmpty)
+        XCTAssertTrue(values.allSatisfy { $0.turn == nil },"Completed message state alone cannot prove task completion")
+        XCTAssertEqual(values[0].taskSummary?.partial,true)
+        let later = TranscriptActivity.blocks(of:rows+[message("a4","assistant","Final",turn:"u")])
+        XCTAssertEqual(later.map(\.id), items.map(\.id)+["block:a4"])
     }
 
-    func testBlocksKeepTheirKeyWhileTheReplyArrivesAndStatusRowsNeverSplitATurn() {
-        let activityOnly = message("a1", "assistant", "", tools: [tool("t1", "read", input: "{\"path\":\"a\"}", durationMs: 1)], turn: "u")
-        let before = blocks(TranscriptActivity.blocks(of: [message("u", "user", "Go", turn: "u"), activityOnly]))
-        let after = blocks(TranscriptActivity.blocks(of: [message("u", "user", "Go", turn: "u"), activityOnly, message("a2", "assistant", "Done", turn: "u")]))
-        XCTAssertEqual(before[0].key, "block:a1"); XCTAssertEqual(after[0].key, "block:a1", "the key stays with the first row, so the view keeps the block mounted and open")
-        XCTAssertEqual(after[0].id, "a2", "the id still follows the reply for anchors"); XCTAssertEqual(after[0].turnID, "u")
-        let interrupted = blocks(TranscriptActivity.blocks(of: [
-            message("u", "user", "Go", at: 1_000, turn: "u"),
-            message("a1", "assistant", "First", tools: [tool("t1", "edit", input: "{\"path\":\"a\"}", durationMs: 1, path: "/repo/a")], at: 2_000, turn: "u"),
-            message("c", "system", "Conversation summary", kind: "compaction", at: 2_500),
-            message("n", "system", "Retrying (attempt 2 of 3)", kind: "notice"),
-            message("a2", "assistant", "Second", at: 4_000, turn: "u"),
-            message("f", "system", "Run failed.", kind: "failure"),
-            message("u2", "user", "More", at: 9_000, turn: "u2"),
-            message("a3", "assistant", "Third", at: 9_500, turn: "u2"),
-        ]))
-        XCTAssertEqual(interrupted.map { $0.turn?.replies ?? 0 }, [0, 2, 1], "a compaction summary, a retry notice and a failure sit inside the turn instead of ending it")
-        XCTAssertEqual(interrupted[1].turn?.files, 1); XCTAssertEqual(interrupted[1].turn?.partial, false); XCTAssertEqual(interrupted[2].turn?.partial, false)
-        let plainSystem = blocks(TranscriptActivity.blocks(of: [message("u", "user", "Go"), message("a1", "assistant", "One"), message("s", "system", "Imported context"), message("a2", "assistant", "Two")]))
-        XCTAssertEqual(plainSystem.map { $0.turn?.replies ?? 0 }, [1, 1], "a plain system row still separates turns")
-        let midHistory = blocks(TranscriptActivity.blocks(of: [
-            message("a1", "assistant", "Late in turn one", at: 1_000, turn: "t1"),
-            message("a2", "assistant", "Turn two", at: 2_000, turn: "t2"),
-            message("u3", "user", "Three", at: 3_000, turn: "t3"),
-            message("a3", "assistant", "Turn three", at: 4_000, turn: "t3"),
-        ]))
-        XCTAssertEqual(midHistory.map { [$0.turn?.replies ?? 0, $0.turn?.partial == true ? 1 : 0] }, [[1, 1], [1, 1], [1, 0]], "host turn ids separate replies with no user row between them and mark turns that began before the loaded page")
-        let measured = blocks(TranscriptActivity.blocks(of: [message("u", "user", "Go", at: 1_000), message("a1", "assistant", "Reply", at: 5_000, modelMs: 700)]))
-        XCTAssertEqual(measured[0].modelMs, 700, "the host's request timing wins over the gap between rows"); XCTAssertEqual(measured[0].turn?.modelMs, 700)
-        let failure = TranscriptActivity.blocks(of: [message("u", "user", "Go", at: 1_000), message("a", "assistant", "Half", state: "error", at: 2_000), message("failure:s", "system", "Failed", kind: "failure")])
-        XCTAssertEqual(kinds(failure), ["message", "block:a", "message"], "a failure row follows the reply it interrupted and never folds into a block")
+    func testStatusRowsDoNotSplitTaskWorkOrManufactureTerminalEvidence() {
+        let rows = [message("u","user","Go",turn:"u"), message("a1","assistant","First",turn:"u",modelMs:700),
+                    message("c","system","Summary",kind:"compaction"), message("n","system","Retry",kind:"notice"),
+                    message("a2","assistant","Second",turn:"u"), message("f","system","Failure",kind:"failure")]
+        let items = TranscriptActivity.blocks(of:rows), values = blocks(items)
+        XCTAssertEqual(items.map(\.id),["u","work:1:uunresolved","block:a1","c","n","block:a2","f"])
+        XCTAssertEqual(values.filter { $0.presentation == .work }.count,1)
+        XCTAssertEqual(values[0].taskSummary?.modelMs,700)
+        XCTAssertTrue(values.allSatisfy { $0.turn == nil })
+        let partial = blocks(TranscriptActivity.blocks(of:[message("a","assistant","Earlier task",turn:"old"),message("b","assistant","Another task",turn:"new")]))
+        XCTAssertEqual(partial.filter { $0.presentation == .work }.count,2)
+        XCTAssertTrue(partial.filter { $0.presentation == .work }.allSatisfy { $0.taskSummary?.partial == true })
     }
 
     func testRepliesCarryTheirOwnUsageAndTheTurnLineSumsEveryComponent() {
@@ -160,9 +104,9 @@ final class TranscriptActivityTests: XCTestCase {
         XCTAssertEqual(first.accounting.model, "gpt-5.4"); XCTAssertEqual(first.accounting.modelMessageID, "a2")
         XCTAssertEqual(last.accounting.requests, 0)
         XCTAssertEqual(TranscriptActivity.tokens(of: first.accounting), 623)
-        XCTAssertEqual(TranscriptActivity.usageBreakdown(last.turn!.accounting), "in 100 · 20 cached · 80 uncached · out 523 · 30 reasoning (1/2) · $0.00142", "only one of the two requests reported reasoning")
+        XCTAssertEqual(TranscriptActivity.usageBreakdown(first.taskSummary!.accounting), "in 100 · 20 cached · 80 uncached · out 523 · 30 reasoning (1/2) · $0.00142", "only one of the two requests reported reasoning")
         let single = blocks(TranscriptActivity.blocks(of: [message("u", "user", "Go", at: 1_000), message("a", "assistant", "Done", accounting: reported { $0.cacheReadTokens = 8; $0.models = models }, at: 3_000)]))[0]
-        XCTAssertEqual(TranscriptActivity.usageBreakdown(single.turn!.accounting), "in 38 · 8 cached · 30 uncached · out 423 · $0.00042")
+        XCTAssertEqual(TranscriptActivity.usageBreakdown(single.taskSummary!.accounting), "in 38 · 8 cached · 30 uncached · out 423 · $0.00042")
         let partial = TranscriptActivity.aggregate([message("x", "assistant", "", accounting: reported { a in a.costSamples = 0; a.costUSD = nil; a.cacheReadSamples = 0; a.cacheReadTokens = nil; a.tokens = GatewayTokenTotals(input: 5, output: nil, total: nil, inputSamples: 1, outputSamples: 0, samples: 0) })])
         XCTAssertNil(partial.costUSD); XCTAssertEqual(partial.input, 5); XCTAssertNil(partial.output); XCTAssertNil(partial.total); XCTAssertNil(partial.uncached); XCTAssertNil(partial.reasoning)
         XCTAssertEqual(TranscriptActivity.usageBreakdown(partial), "in 5")

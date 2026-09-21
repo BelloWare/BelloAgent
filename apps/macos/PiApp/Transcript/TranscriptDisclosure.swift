@@ -1,5 +1,9 @@
 import Foundation
 
+enum ToolOccurrence {
+    static func key(_ message: String, _ call: String) -> String { "\(message.utf8.count):" + message + call }
+}
+
 /// What the reader has opened or closed in a conversation: a turn's work, one
 /// tool call's card, exposed reasoning, a compaction note.
 ///
@@ -78,7 +82,10 @@ struct TranscriptRowDisclosure: Equatable {
             // `key` stays with the block for its whole life; `id` follows its
             // latest row, so keying on it would reopen a turn as it grows.
             value.work = store.isOpen(.work(block.key))
-            for tool in block.tools where store.isOpen(.tool(tool.id)) { value.openTools.insert(tool.id) }
+            for reply in block.replies { for tool in reply.tools ?? [] {
+                let id = block.presentation == .work ? ToolOccurrence.key(reply.id,tool.id) : tool.id
+                if store.isOpen(.tool(id)) { value.openTools.insert(id) }
+            } }
             for reply in block.replies where store.isOpen(.reasoning(reply.id)) { value.openReasoning.insert(reply.id) }
             if let message = block.message {
                 value.compaction = store.isOpen(.compaction(message.id))

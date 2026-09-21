@@ -41,6 +41,10 @@ extension WorkspaceModel {
     }
 
     func adoptInitialHistory(_ page: ConversationHistoryPage, into view: SessionDisplay, around: String? = nil) {
+        view.beginTranscriptBatch(); defer { view.endTranscriptBatch() }
+        if view.taskPresentation?.active == nil {
+            view.taskPresentation = .init(sessionID:view.id, epoch:page.incarnation, timeline:page.lineage, sequence:0, sourceRevision:page.revision?.stamp ?? "history", active:nil, recent:page.taskRecords)
+        }
         view.presentation.identity = (page.incarnation, page.lineage)
         view.historyProgress = nil
         view.presentation.partialTurnInput = page.partialTurnInput
@@ -192,6 +196,12 @@ extension WorkspaceModel {
                 // does not disconnect the live tail. Pause projection merges
                 // only while a newer gap actually remains in this window.
                 let wasBrowsing = view.browsingHistory
+                view.beginTranscriptBatch(); defer { view.endTranscriptBatch() }
+                if var lifecycle = view.taskPresentation, lifecycle.timeline == page.lineage {
+                    let combined = Dictionary((lifecycle.recent + page.taskRecords).map { ($0.key,$0) },uniquingKeysWith:{ first,_ in first })
+                    lifecycle.recent = Array(combined.values.sorted { $0.startedAt < $1.startedAt }.suffix(64))
+                    view.taskPresentation = lifecycle
+                }
                 view.browsingHistory = view.newerPage.available
                 // TranscriptPage owns the actual visible anchor, and captures
                 // it on adoption; a first-array-row surrogate would jump.

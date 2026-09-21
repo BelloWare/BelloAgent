@@ -132,7 +132,7 @@ final class NativeWorkListViewportTests: XCTestCase {
         let row = try XCTUnwrap(fixture.blockRow)
         let tall = row.frame.height
         // The click path a card's header takes, not a poke at the store.
-        row.toggleDisclosure(.tool("t1"))
+        row.toggleDisclosure(.tool(ToolOccurrence.key("a1","t1")))
         fixture.draw()
         await fixture.settle()
         XCTAssertGreaterThan(row.frame.height, tall + 20, "the open card made the turn taller")
@@ -147,7 +147,7 @@ final class NativeWorkListViewportTests: XCTestCase {
         XCTAssertTrue(selectable.contains { $0.contains("line 0 of tool 1 output") },
                       "the open card's output must be selectable; found \(selectable.prefix(4))")
 
-        row.toggleDisclosure(.tool("t1"))
+        row.toggleDisclosure(.tool(ToolOccurrence.key("a1","t1")))
         fixture.draw()
         await fixture.settle()
         XCTAssertEqual(row.frame.height, tall, accuracy: 1, "closing the card returns the turn to its height")

@@ -270,7 +270,7 @@ final class TranscriptDisclosureTests: XCTestCase {
         let fixture = Fixture(messages: workingTurn(tools: 12, tail: 6)); defer { fixture.close() }
         await fixture.settle()
         let block = try XCTUnwrap(fixture.blockRow)
-        for (what, part) in [("a tool card", TranscriptDisclosure.Part.tool("t3")),
+        for (what, part) in [("a tool card", TranscriptDisclosure.Part.tool(ToolOccurrence.key("a1","t3"))),
                              ("exposed reasoning", TranscriptDisclosure.Part.reasoning("a1"))] {
             let closed = block.frame.height
             block.toggleDisclosure(part)
@@ -391,7 +391,7 @@ final class TranscriptDisclosureTests: XCTestCase {
         let others = fixture.rows.filter { $0 !== block }.map(\.frame.height)
         let base = block.frame.height
 
-        block.toggleDisclosure(.tool("t3"))
+        block.toggleDisclosure(.tool(ToolOccurrence.key("a1","t3")))
         fixture.draw()
         XCTAssertGreaterThan(block.frame.height, base, "a tool card that opens makes its row taller")
         assertStacked(fixture, "after opening a tool card")
@@ -403,7 +403,7 @@ final class TranscriptDisclosureTests: XCTestCase {
         assertStacked(fixture, "after opening reasoning")
         XCTAssertEqual(fixture.rows.filter { $0 !== block }.map(\.frame.height), others, "no other row changed height")
 
-        block.toggleDisclosure(.tool("t3"))
+        block.toggleDisclosure(.tool(ToolOccurrence.key("a1","t3")))
         block.toggleDisclosure(.reasoning("a1"))
         fixture.draw()
         XCTAssertEqual(block.frame.height, base, accuracy: 1, "closing both returns the row to its original height")

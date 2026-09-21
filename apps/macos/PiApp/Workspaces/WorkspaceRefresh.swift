@@ -36,6 +36,7 @@ extension WorkspaceModel {
                 if let epoch = view.monitoringEpoch { params["monitoringEpoch"] = .string(epoch) }
                 if let cursor = view.monitoringCursor { params["monitoringCursor"] = .number(cursor) }
                 let generation = view.presentationGeneration
+                let requestedViewport = view.viewportRequest
                 let requestedRevision = view.projectionRevision
                 if let requestedRevision { params["displayRevision"] = .string(requestedRevision) }
                 // Ask for changes to the page this display holds rather than
@@ -54,7 +55,35 @@ extension WorkspaceModel {
                 await applySideStatus(id: id, result: result)
                 guard current() else { return }
                 let sequence = result["seq"]?.number ?? -1
+                // Decoding and applying the page happen off the main
+                // actor; only the finished rows cross back to it.
+                var incoming: [TranscriptMessage]?, resyncNeeded = false
+                if !view.browsingHistory, view.presentationGeneration == generation {
+                    if let value = result["messages"] {
+                        incoming = try await Task.detached { try TranscriptMessage.page(value) }.value
+                    } else if let patch = result["messageDelta"] {
+                        let held = view.projectedRows
+                        let applied = await Task.detached { TranscriptRowUpdates.apply(patch, to: held) }.value
+                        if let applied { incoming = applied } else { resyncNeeded = true }
+                    }
+                }
+                guard current() else { return }
+                guard view.presentationGeneration == generation else { view.dirty = true; return }
+                guard view.browsingHistory || (view.projectionRevision == requestedRevision && view.viewportRequest == requestedViewport) else {
+                    view.dirty = true; return
+                }
+                let lifecycle = result["taskPresentation"].flatMap { value in
+                    try? JSONDecoder().decode(TaskPresentationProjection.self, from: JSONEncoder().encode(value))
+                }
                 if sequence >= view.lastSequence {
+                    view.beginTranscriptBatch()
+                    defer { view.endTranscriptBatch() }
+                    if let lifecycle, lifecycle.valid, lifecycle.sessionID == id, !resyncNeeded,
+                       Double(lifecycle.sequence) == sequence, lifecycle.sourceRevision == result["displayRevision"]?.string,
+                       lifecycle.epoch == result["monitoring"]?.object?["epoch"]?.string,
+                       view.presentation.identity.map({ $0.lineage == lifecycle.timeline }) ?? true {
+                        view.taskPresentation = lifecycle
+                    }
                     view.lastSequence = sequence
                     observeAssistantOutputs(sessionID: id, snapshot: result)
                     observeSessionCompletion(sessionID: id, snapshot: result)
@@ -86,19 +115,6 @@ extension WorkspaceModel {
                     if let mode = result["captureMode"]?.string, mode != view.captureMode { view.captureMode = mode }
                     view.displayObservedAt = result["displayObservedAt"]?.number.map { $0 + host.clockOffset }
                     if let start = view.displayObservedAt { PerformanceProbe.shared.observe("deltaToNativeSnapshotMs", milliseconds: PerformanceProbe.now - start) }
-                    // Decoding and applying the page happen off the main
-                    // actor; only the finished rows cross back to it.
-                    var incoming: [TranscriptMessage]?, resyncNeeded = false
-                    if !view.browsingHistory, view.presentationGeneration == generation {
-                        if let value = result["messages"] {
-                            incoming = try await Task.detached { try TranscriptMessage.page(value) }.value
-                        } else if let patch = result["messageDelta"] {
-                            let held = view.projectedRows
-                            let applied = await Task.detached { TranscriptRowUpdates.apply(patch, to: held) }.value
-                            if let applied { incoming = applied } else { resyncNeeded = true }
-                        }
-                    }
-                    guard current() else { return }
                     if let projected = incoming, !view.browsingHistory, view.presentationGeneration == generation {
                         let incarnation = result["historyIncarnation"]?.string, lineage = result["historyLineage"]?.string
                         if let held = view.presentation.identity, let lineage, held.lineage != lineage {

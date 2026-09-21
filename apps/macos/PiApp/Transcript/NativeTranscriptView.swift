@@ -35,22 +35,15 @@ struct ContentGeometry: Equatable {
         var items: [TranscriptItem]
         var fresh: Set<String>
         var sequence: Int
+        var lifecycle: TaskPresentationProjection? = nil
+        var liveTurn: TurnSummary? = nil
     }
 
     @Published private(set) var snapshot: Snapshot?
     @Published var projectionError: String?
-    @Published private(set) var liveTurn: TurnSummary?
+    var liveTurn: TurnSummary? { snapshot?.liveTurn }
     @Published private(set) var detached = false
-    /// The session's run state; while it is busy the bar stays up even between rows.
-    var state = "idle" { didSet {
-        if state != oldValue {
-            if !busy, let pending=pendingPresentation, let session=presentationSession {
-                presentationTask?.cancel(); presentationTask=nil; pendingPresentation=nil
-                receive(pending.messages, viewportRequest:pending.request, from:session)
-            }
-            recomputeLive()
-        }
-    } }
+    var state = "idle"
     var busy: Bool { ["queued", "running", "stopping", "compacting"].contains(state) }
 
     var onAnchorChanged: (TranscriptAnchor?) -> Void = { _ in }
@@ -59,7 +52,7 @@ struct ContentGeometry: Equatable {
     var onViewportReady: (String, UUID) -> Void = { _, _ in }
 
     private var subscription: AnyCancellable?
-    private var pendingPresentation: (messages: [TranscriptMessage], request: Int)?
+    private var pendingPresentation: (input: TranscriptPresentationInput, request: Int)?
     private var presentationTask: Task<Void, Never>?
     private weak var presentationSession: SessionDisplay?
     private var lastPresentationAt: TimeInterval = 0
@@ -83,6 +76,7 @@ struct ContentGeometry: Equatable {
     private var pendingAnchorRow: String?
     /// A chat opened while idle starts at its last question when the last turn does not fit above the bottom.
     private var openingPlacementPending = false
+    private var openingReadingAnchor: TranscriptAnchor?
     private var seen: Set<String> = []
     private var completedAssistant: String?
     private var firstRow = ""
@@ -96,6 +90,8 @@ struct ContentGeometry: Equatable {
     private weak var hostView: NSView?
     private var reportTask: Task<Void, Never>?
     private var freshTask: Task<Void, Never>?
+    private var completionBaselineAt = Date().timeIntervalSince1970 * 1000
+    var announceCompletion: () -> Void = { AccessibilityNotification.Announcement("Task complete").post() }
     /// How long a row that has just arrived wears its settling accent.
     static let freshDuration = Duration.milliseconds(1_500)
     private var readCheckScheduled = false
@@ -137,6 +133,7 @@ struct ContentGeometry: Equatable {
         subscription?.cancel(); subscription = nil
         presentationTask?.cancel(); presentationTask = nil; pendingPresentation = nil
         presentationSession = session; lastPresentationAt = 0
+        completionBaselineAt = Date().timeIntervalSince1970 * 1000
         freshTask?.cancel(); freshTask = nil
         reportTask?.cancel(); reportTask = nil
         // The chat the reader left keeps nothing here. The pane is kept
@@ -151,19 +148,20 @@ struct ContentGeometry: Equatable {
         session.toolInputs.onChanged = { [weak self] in self?.republish() }
         reset()
         frames = [:]
-        snapshot = nil; liveTurn = nil; detached = false
-        subscription = session.transcriptChanges.combineLatest(session.$viewportRequest).sink { [weak self, weak session] messages, request in
+        snapshot = nil; detached = false
+        subscription = session.presentationChanges.combineLatest(session.$viewportRequest).sink { [weak self, weak session] input, request in
             guard let self, let session else { return }
-            self.present(messages, viewportRequest: request, from: session)
+            self.present(input, viewportRequest: request, from: session)
         }
     }
     private func reset() {
-        initialized = false; followsBottom = true; pendingAnchor = nil; openingPlacementPending = false
+        initialized = false; followsBottom = true; pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
         settleScheduled = false; readCheckScheduled = false
         seen = []; completedAssistant = nil; firstRow = ""; jumping = false
     }
 
-    /// The newest rows that fit the display limits, dropping the oldest first.
+    /// Defend the source-selected resident window without evicting its reading
+    /// anchor. The history/live source already chooses which edge to retain.
     nonisolated static func displayPage(_ messages: [TranscriptMessage]) -> [TranscriptMessage] {
         TranscriptPaging.window(messages, keepingEarlier: true)
     }
@@ -171,17 +169,18 @@ struct ContentGeometry: Equatable {
     /// One leading and one trailing presentation per pane, not a debounce:
     /// raw history has already been updated before it reaches this boundary.
     /// Tool transitions, first content and every terminal state flush promptly.
-    private func present(_ messages: [TranscriptMessage], viewportRequest request: Int, from session: SessionDisplay) {
-        let previous = snapshot?.messages.last, last = messages.last
-        let textDelta = viewportRequest == request && snapshot?.messages.count == messages.count &&
-            previous?.id == last?.id && previous?.isStreaming == true && last?.isStreaming == true &&
-            previous?.tools == last?.tools && previous?.toolCallCount == last?.toolCallCount &&
-            (!(previous?.text.isEmpty ?? true) || !(previous?.thinking?.isEmpty ?? true)) &&
-            !((previous?.text.isEmpty ?? true) && !(last?.text.isEmpty ?? true)) &&
-            snapshot?.messages.dropLast() == messages.dropLast() && previous?.state == last?.state
+    private static func sameLifecycle(_ lhs: TaskPresentationProjection?, _ rhs: TaskPresentationProjection?) -> Bool {
+        guard var lhs, let rhs else { return lhs == rhs }
+        lhs.sequence = rhs.sequence; lhs.sourceRevision = rhs.sourceRevision
+        return lhs == rhs
+    }
+
+    private func present(_ input: TranscriptPresentationInput, viewportRequest request: Int, from session: SessionDisplay) {
+        let textDelta = viewportRequest == request && Self.sameLifecycle(snapshot?.lifecycle, input.lifecycle) &&
+            TaskTranscriptPlan.cosmetic(from: snapshot?.messages ?? [], to: input.messages)
         let delay = presentationInterval - (ProcessInfo.processInfo.systemUptime - lastPresentationAt)
         if textDelta, delay > 0 {
-            pendingPresentation = (messages, request)
+            pendingPresentation = (input, request)
             guard presentationTask == nil else { return }
             presentationTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(delay))
@@ -189,16 +188,17 @@ struct ContentGeometry: Equatable {
                 self.presentationTask = nil
                 guard let pending = self.pendingPresentation, let session = self.presentationSession else { return }
                 self.pendingPresentation = nil
-                self.receive(pending.messages, viewportRequest: pending.request, from: session)
+                self.receive(pending.input, viewportRequest: pending.request, from: session)
             }
         } else {
             presentationTask?.cancel(); presentationTask = nil; pendingPresentation = nil
-            receive(messages, viewportRequest: request, from: session)
+            receive(input, viewportRequest: request, from: session)
         }
     }
 
-    private func receive(_ messages: [TranscriptMessage], viewportRequest request: Int, from session: SessionDisplay) {
+    private func receive(_ input: TranscriptPresentationInput, viewportRequest request: Int, from session: SessionDisplay) {
         guard session.id == sessionID, session.presentationGeneration == generation else { return }
+        let messages = input.messages
         if viewportRequest != request {
             // A jump to the latest page or a prepended earlier page: the page starts over from the session's anchor.
             viewportRequest = request
@@ -208,13 +208,13 @@ struct ContentGeometry: Equatable {
             preserveReadingPositionForLayout()
         }
         let page = Self.displayPage(messages)
-        let items = snapshot.flatMap { TranscriptActivity.patched($0.items, from: $0.messages, to: page) } ?? TranscriptActivity.blocks(of: page)
+        let items = TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle)
         guard Set(page.map(\.id)).count == page.count, Set(items.map(\.id)).count == items.count else {
             projectionError = "This conversation contains conflicting row identities. The last valid page is retained; inspect the session file to repair it. No history was deleted."
             return
         }
         if projectionError != nil { projectionError = nil }
-        if let current = snapshot, current.messages == page, initialized { return }
+        if let current = snapshot, current.messages == page, current.lifecycle == input.lifecycle, initialized { return }
         var fresh: Set<String> = []
         for message in page {
             if initialized, !seen.contains(message.id) { fresh.insert(message.id) }
@@ -226,18 +226,22 @@ struct ContentGeometry: Equatable {
             openingPlacementPending = followsBottom && !busy && !page.isEmpty
         }
         let completed = TranscriptActivity.latestCompletedAssistant(page)
-        if initialized, !session.browsingHistory, let completed, completed != completedAssistant, page.last?.id != snapshot?.messages.last?.id {
-            AccessibilityNotification.Announcement("Reply complete").post()
+        if initialized, !session.browsingHistory, snapshot?.lifecycle?.epoch == input.lifecycle?.epoch,
+           snapshot?.lifecycle?.timeline == input.lifecycle?.timeline {
+            var old = Set((snapshot?.lifecycle?.recent ?? []).map(\.key))
+            for task in input.lifecycle?.recent ?? [] where task.outcome == "completed" && (task.endedAt ?? 0) >= completionBaselineAt {
+                if old.insert(task.key).inserted { announceCompletion() }
+            }
         }
         completedAssistant = completed
         firstRow = page.first?.id ?? ""
-        // A delta to the reply that is arriving patches the last block; anything else regroups the page.
+        // A single bounded plan supplies stable identities for both initial
+        // history and incremental updates; the native document reuses hosts.
         let ids = Set(items.map(\.id))
         frames = frames.filter { ids.contains($0.key) }
         sequence += 1
         lastPresentationAt = ProcessInfo.processInfo.systemUptime
-        let next = Snapshot(sessionID: session.id, generation: generation, messages: page, items: items, fresh: fresh, sequence: sequence)
-        let live = Self.liveTurn(in: items, busy: busy)
+        let next = Snapshot(sessionID: session.id, generation: generation, messages: page, items: items, fresh: fresh, sequence: sequence, lifecycle: input.lifecycle, liveTurn: TaskTranscriptPlan.live(input.lifecycle))
         // The scroll document always adopts its final geometry immediately.
         // Animating a complete snapshot also animates every existing row's
         // position and races AppKit's exact anchor/bottom placement. Controls
@@ -245,7 +249,7 @@ struct ContentGeometry: Equatable {
         initialized = true
         // The rows changed, so which row holds the anchor may have changed too.
         pendingAnchorRow = nil
-        snapshot = next; liveTurn = live
+        snapshot = next
         PerformanceProbe.shared.transcriptSnapshotApplied(session.id, deltaAt: session.displayObservedAt)
         scheduleSettle()
         fadeFreshRows()
@@ -285,28 +289,12 @@ struct ContentGeometry: Equatable {
         toolInputs?.request(messageID: messageID, callID: callID)
     }
 
-    private func recomputeLive() {
-        let live = Self.liveTurn(in: snapshot?.items ?? [], busy: busy)
-        if live != liveTurn { liveTurn = live }
-    }
-    /// The turn the bar shows: a live turn from the rows, or, while the session
-    /// is busy without a streaming row (waiting for the first token, running a
-    /// tool between requests, compacting), the current turn's figures so far.
+    /// Compatibility helper for callers without lifecycle evidence. Never
+    /// borrows a historical row to claim it is the currently running task.
     static func liveTurn(in items: [TranscriptItem], busy: Bool) -> TurnSummary? {
-        if case .block(let block) = items.last, let turn = block.turn, turn.live { return turn }
         guard busy else { return nil }
-        var notice: String? = nil
-        var tail = items[...]
-        if case .message(let last) = tail.last, last.kind == "notice" { notice = last.text; tail = tail.dropLast() }
-        switch tail.last {
-        case .block(let block):
-            if var turn = block.turn { turn.live = true; turn.endedAt = nil; turn.current = block.tools.last { ["running", "preparing", "prepared"].contains($0.state) }; turn.notice = notice; return turn }
-            return TurnSummary(replies: 1, tools: block.tools.count, startedAt: block.startedAt, endedAt: nil, elapsedMs: nil, modelMs: block.modelMs, toolMs: block.toolMs, live: true, files: 0, partial: false, accounting: block.accounting, requests: [], current: nil, notice: notice)
-        case .message(let message):
-            return TurnSummary(replies: 0, tools: 0, startedAt: message.at, endedAt: nil, elapsedMs: nil, modelMs: 0, toolMs: 0, live: true, files: 0, partial: false, accounting: TurnAccounting(), requests: [], current: nil, notice: notice)
-        case nil:
-            return TurnSummary(replies: 0, tools: 0, startedAt: nil, endedAt: nil, elapsedMs: nil, modelMs: 0, toolMs: 0, live: true, files: 0, partial: false, accounting: TurnAccounting(), requests: [], current: nil, notice: notice)
-        }
+        var turn = TaskTranscriptPlan.summary([], task: nil)
+        turn.live = true; turn.phase = "preparing"; return turn
     }
 
     // MARK: Geometry
@@ -370,6 +358,13 @@ struct ContentGeometry: Equatable {
     /// detached reader at the same text when rows above grow or the pane narrows.
     func preserveReadingPositionForLayout() {
         guard initialized, !followsBottom, !jumping, pendingAnchor == nil, let snapshot else { return }
+        // Keep the chosen opening question fixed while offscreen estimates
+        // settle. A preceding row visible only in its 12-point margin must
+        // not steal that anchor and move the question when it remeasures.
+        if let openingReadingAnchor, snapshot.messages.contains(where: { $0.id == openingReadingAnchor.id }) {
+            pendingAnchor = openingReadingAnchor
+            return
+        }
         let offset = position.offset
         for item in snapshot.items {
             guard let frame = frames[item.id], frame.maxY > offset else { continue }
@@ -437,6 +432,7 @@ struct ContentGeometry: Equatable {
                 if frame.minY < bottom - 1 {
                     followsBottom = false
                     pendingAnchor = TranscriptAnchor(id: lastUser.id, offset: 12, followsBottom: false)
+                    openingReadingAnchor = pendingAnchor
                     if !detached { detached = true }
                 }
             } else if !frames.isEmpty { openingPlacementPending = false }
@@ -469,6 +465,9 @@ struct ContentGeometry: Equatable {
     /// A message folded into a block scrolls to the block that holds it.
     private func rowIdentifier(for messageID: String) -> String {
         guard let snapshot else { return messageID }
+        if let body = snapshot.items.first(where: { item in
+            if case .block(let block) = item { return block.presentation == .body && block.message?.id == messageID }; return false
+        }) { return body.id }
         for item in snapshot.items {
             switch item {
             case .message(let message): if message.id == messageID { return item.id }
@@ -488,7 +487,7 @@ struct ContentGeometry: Equatable {
     /// top, and a little later remember the anchor and check for a read.
     private func userScrolled() {
         // The reader's own movement wins over an opening/restoration still waiting for layout.
-        pendingAnchor = nil; openingPlacementPending = false
+        pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
         jumping = false
         evaluateFollowing()
         requestEarlierIfNearTop(scrollY: position.offset)
@@ -562,7 +561,7 @@ struct ContentGeometry: Equatable {
     }
     func jumpToLatest() {
         followsBottom = true; jumping = true; detached = false
-        pendingAnchor = nil; openingPlacementPending = false
+        pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
         let animated = !PiMotion.reducesMotion
         let generation = generation
         scrollToBottom(animated: animated) { [weak self] in
@@ -980,7 +979,23 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         // New content can bring parts the reader already opened or closed.
         let disclosure = disclosureStore.map { TranscriptRowDisclosure.of(item, in: $0, inputs: toolInputs) } ?? .default
         guard self.item != item || self.fresh != fresh || self.environment != environment || self.disclosure != disclosure else { return false }
+        let oldItem = self.item
+        let fixedClosedWork: Bool = {
+            guard case .block(let old) = self.item, case .block(let new) = item else { return false }
+            return old.presentation == .work && new.presentation == .work && !self.disclosure.work && !disclosure.work &&
+                self.environment == environment && self.fresh == fresh
+        }()
         self.item = item; self.fresh = fresh; self.environment = environment; self.disclosure = disclosure
+        if fixedClosedWork {
+            workList = nil
+            if case .block(let old) = oldItem, case .block(let new) = item,
+               old.live != new.live || old.task?.outcome != new.task?.outcome ||
+               old.taskSummary?.tools != new.taskSummary?.tools || old.taskSummary?.partial != new.taskSummary?.partial ||
+               old.taskSummary?.toolCountPartial != new.taskSummary?.toolCountPartial {
+                updateRoot()
+            }
+            return false
+        }
         measurements.removeAll(keepingCapacity: true)
         estimate = nil
         if hosted != nil { awaitingViewportLayout = true }
@@ -1062,8 +1077,12 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         // A card the reader just opened whose arguments the host had to cut
         // asks for the rest, once. The card draws the inline document until it
         // lands, and this row is measured again when it does.
-        if part.kind == .tool, disclosureStore.isOpen(part), let owner = replyOwning(callID: part.id) {
-            onToolInputNeeded?(owner, part.id)
+        if part.kind == .tool, disclosureStore.isOpen(part) {
+            if case .block(let block) = item, block.presentation == .work {
+                for reply in block.replies { for tool in reply.tools ?? [] where ToolOccurrence.key(reply.id,tool.id) == part.id {
+                    onToolInputNeeded?(reply.id,tool.id)
+                } }
+            } else if let owner = replyOwning(callID:part.id) { onToolInputNeeded?(owner,part.id) }
         }
         let updated = TranscriptRowDisclosure.of(item, in: disclosureStore, inputs: toolInputs)
         guard updated != disclosure else { return }
@@ -1278,7 +1297,7 @@ struct NativeTranscriptView: View {
             // frame. Row disclosures and the Latest pill set their own motion.
             .transaction { $0.animation = nil }
             if session.newerPage.available { boundaryControl(earlier: false) }
-            LiveTurnBarSlot(turn: session.browsingHistory ? nil : page.liveTurn, state: page.state, onStop: actions.stop, reduceMotion: reduceMotion)
+            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, onStop: actions.stop, reduceMotion: reduceMotion)
                 .id(session.presentationGeneration)
         }
         // The run state is read where it is used, never from the value this
@@ -1328,46 +1347,18 @@ private struct LiveTurnBarSlot: View {
     let state: String
     let onStop: () -> Void
     let reduceMotion: Bool
-    @State private var shown: TurnSummary?
     @State private var arrived = false
-    @State private var leaving: Task<Void, Never>?
-    /// How far the bar travels as it docks and undocks.
-    private static let travel: CGFloat = 14
-
     var body: some View {
+        // No delayed exit owns a second structural mutation. The snapshot that
+        // inserts a terminal summary also releases (or retargets) this slot.
         Group {
-            if let shown {
-                LiveTurnBar(turn: shown, state: state, onStop: onStop)
-                    .padding(.horizontal, 16).padding(.bottom, 8)
-                    .opacity(arrived ? 1 : 0)
-                    .offset(y: arrived ? 0 : Self.travel)
-                    .onAppear {
-                        guard !reduceMotion else { arrived = true; return }
-                        withAnimation(PiMotion.base) { arrived = true }
-                    }
+            if let turn {
+                LiveTurnBar(turn:turn, state:state, onStop:onStop)
+                    .padding(.horizontal,16).padding(.bottom,8)
+                    .opacity(arrived ? 1 : 0).offset(y:arrived ? 0 : 14)
+                    .onAppear { if reduceMotion { arrived = true } else { withAnimation(PiMotion.base) { arrived = true } } }
             }
-        }
-        .onChange(of: turn == nil, initial: true) { _, gone in
-            leaving?.cancel(); leaving = nil
-            guard gone else {
-                shown = turn
-                if reduceMotion { arrived = true }
-                return
-            }
-            guard shown != nil else { return }
-            guard !reduceMotion else { shown = nil; arrived = false; return }
-            withAnimation(PiMotion.base) { arrived = false }
-            leaving = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(PiMotion.baseMilliseconds))
-                guard !Task.isCancelled else { return }
-                shown = nil
-                arrived = false
-            }
-        }
-        // While the run is going the bar's own figures keep up with it; the
-        // slot and the slide are decided by whether there is a run at all.
-        .onChange(of: turn) { _, value in if let value, shown != nil { shown = value } }
-        .onDisappear { leaving?.cancel(); leaving = nil }
+        }.onChange(of:turn == nil) { _, absent in if absent { arrived = false } }
     }
 }
 

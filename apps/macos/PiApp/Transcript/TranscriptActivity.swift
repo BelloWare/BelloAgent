@@ -71,6 +71,9 @@ struct TurnSummary: Equatable, Sendable {
     /// While live: a status the host attached to the turn, such as a retry in progress.
     var notice: String?
     var toolCountPartial = false
+    var taskKey: String? = nil
+    var phase: String? = nil
+    var outcome: String? = nil
 }
 
 /// One prose reply and the work that produced it: the reasoning-only and
@@ -78,6 +81,7 @@ struct TurnSummary: Equatable, Sendable {
 /// trailing block with no prose holds work the turn ended on. Tool-result
 /// rows disappear; their output lives on the call.
 struct TranscriptBlock: Equatable, Sendable, Identifiable {
+    enum Presentation: Equatable, Sendable { case reply, work, body, summary }
     var id: String
     /// Stays the id of the block's first row for its whole life, so the view keeps the block mounted (and open) as its reply arrives.
     var key: String
@@ -95,6 +99,9 @@ struct TranscriptBlock: Equatable, Sendable, Identifiable {
     var live: Bool
     /// Set on the last block of every turn: the whole turn's figures, live ones included.
     var turn: TurnSummary?
+    var presentation: Presentation = .reply
+    var task: TaskPresentationRecord? = nil
+    var taskSummary: TurnSummary? = nil
     var replies: [TranscriptMessage] { activity + (message.map { [$0] } ?? []) }
 }
 
@@ -115,7 +122,7 @@ enum TranscriptRenderIdentity {
     case message(String), block(String)
     var key: String {
         switch self {
-        case .message(let id): return id.hasPrefix("block:") || id.hasPrefix("message:") ? "message:" + id : id
+        case .message(let id): return ["block:", "message:", "work:", "summary:"].contains(where: id.hasPrefix) ? "message:" + id : id
         case .block(let id): return "block:" + id
         }
     }
@@ -601,126 +608,12 @@ enum TranscriptActivity {
 
     // MARK: Blocks and turns
 
-    /// Groups replies into blocks: the reasoning-only and tool-only replies before a prose reply fold into it.
-    /// The items for `page` when it differs from `previous` only in the text or
-    /// reasoning of its last, still-arriving reply: the last block takes the
-    /// new row and nothing is regrouped. Nil when anything else changed.
     static func patched(_ items: [TranscriptItem], from previous: [TranscriptMessage], to page: [TranscriptMessage]) -> [TranscriptItem]? {
-        guard page.count == previous.count, let old = previous.last, let new = page.last, old.id == new.id, new.role == "assistant", new.kind == nil,
-              case .block(var block) = items.last, old.isActivityOnly == new.isActivityOnly else { return nil }
-        var same = old; same.text = new.text; same.thinking = new.thinking
-        guard same == new else { return nil }
-        for index in 0..<(page.count - 1) where previous[index] != page[index] { return nil }
-        if block.message?.id == new.id { block.message = new }
-        else if let last = block.activity.indices.last, block.activity[last].id == new.id { block.activity[last] = new }
-        else { return nil }
-        var patched = items
-        patched[patched.count - 1] = .block(block)
-        return patched
+        guard TaskTranscriptPlan.cosmetic(from: previous, to: page) else { return nil }
+        return TaskTranscriptPlan.items(page, lifecycle: nil)
     }
-    // The helper uses the eventual journal id while streaming. Explicit state
-    // says whether a row is provisional; historical ids are never normalized.
-    static func blocks(of messages: [TranscriptMessage]) -> [TranscriptItem] {
-        var items: [TranscriptItem] = []
-        var lastAt: Double? = nil
-        var pending: TranscriptBlock? = nil
-        func open(_ id: String) -> TranscriptBlock {
-            TranscriptBlock(id: id, key: id, turnID: nil, message: nil, activity: [], tools: [], accounting: TurnAccounting(), startedAt: lastAt, endedAt: lastAt, modelMs: 0, toolMs: 0, live: false, turn: nil)
-        }
-        func flush() {
-            if var block = pending, block.message != nil || !block.activity.isEmpty {
-                block.accounting = aggregate(block.replies)
-                items.append(.block(block))
-            }
-            pending = nil
-        }
-        func observe(_ message: TranscriptMessage, _ block: inout TranscriptBlock) {
-            if let turn = message.turn, block.turnID == nil { block.turnID = turn }
-            if message.isStreaming { block.live = true }
-            // The host's own measurement of the request wins; the gap between rows is the fallback for older journals.
-            else if let modelMs = message.modelMs { block.modelMs += modelMs }
-            else if let at = message.at, let last = lastAt, at >= last { block.modelMs += at - last }
-            for tool in message.tools ?? [] { block.tools.append(tool); if let duration = tool.durationMs { block.toolMs += duration } }
-            if let at = message.at { lastAt = at; block.endedAt = at }
-        }
-        for message in messages {
-            if message.role == "tool" {
-                if let at = message.at { lastAt = at; pending?.endedAt = at }
-                continue
-            }
-            if message.role == "assistant" && message.kind == nil {
-                var block = pending ?? open(TranscriptRenderIdentity.block(message.id).key)
-                if message.isActivityOnly { block.activity.append(message); observe(message, &block); pending = block; continue }
-                observe(message, &block)
-                block.message = message; block.id = message.id
-                pending = block
-                flush()
-                continue
-            }
-            flush()
-            items.append(.message(message))
-            if let at = message.at { lastAt = at }
-        }
-        flush()
-        attachTurns(&items)
-        // A status the host appended during a live turn (a retry in progress) belongs in the turn's live bar, not in a row of its own.
-        if items.count >= 2, case .message(let tail) = items[items.count - 1], tail.kind == "notice",
-           case .block(var before) = items[items.count - 2], before.turn?.live == true {
-            before.turn?.notice = tail.text
-            items[items.count - 2] = .block(before)
-            items.removeLast()
-        }
-        return items
-    }
-
-    /// A turn is the run of blocks since the user's message; its last block carries
-    /// the turn's totals. Blocks whose rows name a different host turn start a new
-    /// one. Status rows the host or app add mid-run (a compaction summary, a retry
-    /// notice, a failure) do not end the turn; only a user row or a plain system row does.
-    private static func attachTurns(_ items: inout [TranscriptItem]) {
-        var group: [Int] = []
-        var lastUser: String? = nil, groupUser: String? = nil
-        func block(_ index: Int) -> TranscriptBlock? { if case .block(let block) = items[index] { return block }; return nil }
-        func close() {
-            defer { group = [] }
-            guard let lastIndex = group.last else { return }
-            // Only block indices are grouped; should that ever not hold, the turn is left without a summary rather than trapping the render path.
-            let blocks = group.compactMap(block)
-            guard blocks.count == group.count, let first = blocks.first, var last = block(lastIndex) else { return }
-            let partial = first.turnID != nil && first.turnID != groupUser
-            let requests = blocks.flatMap(\.replies).filter { $0.accounting != nil }
-            let live = blocks.contains { $0.live }
-            let calls = ToolCallSummary(rows: blocks.flatMap(\.replies))
-            last.turn = TurnSummary(
-                replies: blocks.count,
-                tools: calls.total,
-                startedAt: first.startedAt, endedAt: last.endedAt,
-                elapsedMs: { if let s = first.startedAt, let e = last.endedAt, e >= s { return e - s }; return nil }(),
-                modelMs: blocks.reduce(0) { $0 + $1.modelMs },
-                toolMs: blocks.reduce(0) { $0 + $1.toolMs },
-                live: live,
-                files: changedFiles(blocks.flatMap(\.tools)),
-                partial: partial,
-                accounting: aggregate(requests),
-                requests: requests,
-                current: live ? last.tools.last(where: { ["running", "preparing", "prepared"].contains($0.state) }) : nil,
-                notice: nil, toolCountPartial: calls.partial || partial)
-            items[lastIndex] = .block(last)
-        }
-        for index in items.indices {
-            switch items[index] {
-            case .block(let current):
-                if let firstIndex = group.first, let firstTurn = block(firstIndex)?.turnID, let turn = current.turnID, firstTurn != turn { close() }
-                if group.isEmpty { groupUser = lastUser }
-                group.append(index)
-            case .message(let message):
-                if message.role == "user" || message.kind == nil {
-                    close()
-                    if message.role == "user" { lastUser = message.turn ?? message.id }
-                }
-            }
-        }
-        close()
+    static func blocks(of messages: [TranscriptMessage], lifecycle: TaskPresentationProjection? = nil) -> [TranscriptItem] {
+        TaskTranscriptPlan.items(messages, lifecycle: lifecycle)
     }
 
     // MARK: Read visibility
