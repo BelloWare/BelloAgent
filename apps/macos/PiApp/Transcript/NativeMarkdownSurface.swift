@@ -37,15 +37,25 @@ private struct NativeMarkdownItem: Equatable {
     var caret: Bool
     var headingTarget: MarkdownCopyTarget?
     var environment: TranscriptRowEnvironment
+
+    func hasSameGeometry(as other: Self) -> Bool {
+        guard block == other.block, style == other.style, capsWidth == other.capsWidth,
+              environment == other.environment else { return false }
+        // Code switches from a continuous stream to bounded source sections
+        // at completion. That is a local layout dependency, unlike a caret.
+        if case .code = block { return caret == other.caret }
+        return true
+    }
 }
 
 private struct NativeHostedMarkdownBlock: View {
     let item: NativeMarkdownItem
     let width: CGFloat
+    let decoration: MarkdownBlockDecoration
     var nativeCodeChoice: Bool? = nil
     var body: some View {
         MarkdownBlockView(block: item.block, style: item.style, capsWidth: item.capsWidth,
-                          caret: item.caret, headingTarget: item.headingTarget, nativeCodeChoice: nativeCodeChoice)
+                          caret: item.caret, headingTarget: nil, nativeCodeChoice: nativeCodeChoice, decoration: decoration)
             .frame(width: width, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .textSelection(.enabled)
@@ -62,6 +72,7 @@ private struct NativeHostedMarkdownBlock: View {
     private(set) var view: NSHostingView<NativeHostedMarkdownBlock>?
     private var item: NativeMarkdownItem
     private var nativeCodeChoice: Bool?
+    private let decoration = MarkdownBlockDecoration()
     private weak var selectionEditor: NSTextView?
     private var restoredSelection: (range: NSRange, rendered: String)?
     private var width: CGFloat = TranscriptMetrics.pageWidth
@@ -71,13 +82,14 @@ private struct NativeHostedMarkdownBlock: View {
 
     init(item: NativeMarkdownItem) {
         self.item = item
+        decoration.update(caret: item.caret, target: item.headingTarget)
         if case .code(_, let code) = item.block {
             nativeCodeChoice = NativeCodeText.enabled && (item.caret || code.utf8.count >= NativeCodeText.minimumBytes)
         } else { nativeCodeChoice = nil }
     }
     private func host() -> NSHostingView<NativeHostedMarkdownBlock> {
         if let view { return view }
-        let next = NSHostingView(rootView: NativeHostedMarkdownBlock(item: item, width: width, nativeCodeChoice: nativeCodeChoice))
+        let next = NSHostingView(rootView: NativeHostedMarkdownBlock(item: item, width: width, decoration: decoration, nativeCodeChoice: nativeCodeChoice))
         next.safeAreaRegions = []; next.sizingOptions = [.intrinsicContentSize]
         view = next; applyAppearance()
         return next
@@ -87,6 +99,8 @@ private struct NativeHostedMarkdownBlock: View {
     func releaseDetachedHost() { if view?.superview == nil { view = nil } }
     @discardableResult func update(_ item: NativeMarkdownItem, source: () -> String? = { nil }) -> Bool {
         guard self.item != item else { return false }
+        decoration.update(caret: item.caret, target: item.headingTarget)
+        guard !self.item.hasSameGeometry(as: item) else { self.item = item; return false }
         if case .paragraph(let oldText)=self.item.block, case .paragraph(let newText)=item.block,
            let host=view, let editor=host.window?.firstResponder as? NSTextView,
            let field=editor.delegate as? NSTextField, field.isDescendant(of:host),
@@ -103,7 +117,7 @@ private struct NativeHostedMarkdownBlock: View {
         } else { nativeCodeChoice = nil }
         self.item = item
         sizes.removeAll(keepingCapacity: true)
-        view?.rootView = NativeHostedMarkdownBlock(item: item, width: width, nativeCodeChoice: nativeCodeChoice)
+        view?.rootView = NativeHostedMarkdownBlock(item: item, width: width, decoration: decoration, nativeCodeChoice: nativeCodeChoice)
         applyAppearance()
         return true
     }
@@ -136,10 +150,11 @@ private struct NativeHostedMarkdownBlock: View {
         restoreSelection()
         return size
     }
+    func exactMeasurement(width: CGFloat) -> CGSize? { sizes.last { $0.width == width } }
     func setWidth(_ width: CGFloat) {
         guard self.width != width else { return }
         self.width = width
-        view?.rootView = NativeHostedMarkdownBlock(item: item, width: width, nativeCodeChoice: nativeCodeChoice)
+        view?.rootView = NativeHostedMarkdownBlock(item: item, width: width, decoration: decoration, nativeCodeChoice: nativeCodeChoice)
     }
     func place(in container: NSView) {
         setWidth(frame.width)
@@ -291,8 +306,9 @@ private struct NativeHostedMarkdownBlock: View {
         for index in prefix..<blocks.count {
             // Descriptor estimates never enter a shared exact-size cache.
             // A giant message prepares a few blocks, then only the viewport.
-            let deferred = blocks.count > 32 && index >= 6
-            let height = deferred ? max(20, blocks[index].estimate(width: width)) : blocks[index].measure(width: width).height
+            let known = blocks[index].exactMeasurement(width: width)
+            let deferred = known == nil && blocks.count > 32 && index >= 6 && blocks[index].view?.superview == nil
+            let height = known?.height ?? (deferred ? max(20, blocks[index].estimate(width: width)) : blocks[index].measure(width: width).height)
             if deferred { layout.provisional.insert(index) } else { layout.provisional.remove(index) }
             layout.heights.append(height); layout.total += height; aggregateMeasurementVisits += 1
         }

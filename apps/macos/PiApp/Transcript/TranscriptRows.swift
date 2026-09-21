@@ -215,6 +215,41 @@ struct WaitingDots: View {
     }
 }
 
+/// Actions and transient paint travel independently of the selectable text's
+/// native root and exact geometry. Copy always resolves the newest payload.
+@MainActor final class MarkdownBlockDecoration: ObservableObject {
+    @Published private(set) var caret = false
+    @Published private(set) var target: MarkdownCopyTarget?
+    func update(caret: Bool, target: MarkdownCopyTarget?) {
+        if self.caret != caret { self.caret = caret }
+        if self.target != target { self.target = target }
+    }
+}
+
+private struct MarkdownSectionAction: View {
+    @ObservedObject var decoration: MarkdownBlockDecoration
+    let hovering: Bool
+    var body: some View {
+        if let target = decoration.target { CopyButton(target: target, visible: hovering) }
+    }
+}
+
+private struct MarkdownCaret: View {
+    let size: CGFloat
+    @Environment(\.piReduceMotion) private var reduceMotion
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { context in
+            Rectangle().fill(TranscriptPalette.accent).frame(width: 2, height: size)
+                .opacity(reduceMotion || Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 0 ? 1 : 0)
+        }.offset(x: 5).allowsHitTesting(false).accessibilityHidden(true)
+    }
+}
+private struct MarkdownLiveDecoration: View {
+    @ObservedObject var decoration: MarkdownBlockDecoration
+    let size: CGFloat
+    var body: some View { if decoration.caret { MarkdownCaret(size: size) } }
+}
+
 struct MarkdownBlockView: View {
     let block: MarkdownBlock
     let style: MarkdownStyle
@@ -222,6 +257,7 @@ struct MarkdownBlockView: View {
     var caret = false
     var headingTarget: MarkdownCopyTarget? = nil
     var nativeCodeChoice: Bool? = nil
+    var decoration: MarkdownBlockDecoration? = nil
     @State private var hovering = false
     @Environment(\.piReduceMotion) private var reduceMotion
     var body: some View {
@@ -229,9 +265,12 @@ struct MarkdownBlockView: View {
         case .paragraph(let text):
             proseText(text).frame(maxWidth: capsWidth ? TranscriptMetrics.proseWidth : .infinity, alignment: .leading)
         case .heading(_, let text, _):
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                proseText(text)
-                if let headingTarget { CopyButton(target: headingTarget, visible: hovering) }
+            proseText(text)
+            .overlay(alignment: .trailing) {
+                Group {
+                    if let decoration { MarkdownSectionAction(decoration: decoration, hovering: hovering) }
+                    else if let headingTarget { CopyButton(target: headingTarget, visible: hovering) }
+                }.offset(x: 30)
             }
             .padding(.top, 6)
             .frame(maxWidth: capsWidth ? TranscriptMetrics.proseWidth : .infinity, alignment: .leading)
@@ -270,12 +309,8 @@ struct MarkdownBlockView: View {
                 // Blinking changes only this decoration. The selectable text
                 // field and its attributed string do not change on a blink or
                 // when the reply finishes.
-                if caret {
-                    TimelineView(.periodic(from: .now, by: 0.5)) { context in
-                        Rectangle().fill(TranscriptPalette.accent).frame(width: 2, height: style.baseSize)
-                            .opacity(reduceMotion || Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 0 ? 1 : 0)
-                    }.offset(x: 5).allowsHitTesting(false).accessibilityHidden(true)
-                }
+                if let decoration { MarkdownLiveDecoration(decoration: decoration, size: style.baseSize) }
+                else if caret { MarkdownCaret(size: style.baseSize) }
             }
 
     }
@@ -1324,7 +1359,7 @@ extension MarkdownBodyView: Equatable {
 }
 extension MarkdownBlockView: Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool {
-        a.block == b.block && a.style == b.style && a.capsWidth == b.capsWidth && a.caret == b.caret && a.headingTarget == b.headingTarget && a.nativeCodeChoice == b.nativeCodeChoice
+        a.block == b.block && a.style == b.style && a.capsWidth == b.capsWidth && a.caret == b.caret && a.headingTarget == b.headingTarget && a.nativeCodeChoice == b.nativeCodeChoice && a.decoration === b.decoration
     }
 }
 extension CodeBlockView: Equatable {
