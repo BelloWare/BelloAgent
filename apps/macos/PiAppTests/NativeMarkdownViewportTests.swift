@@ -50,6 +50,7 @@ final class NativeMarkdownViewportTests: XCTestCase {
         }
     }
     @MainActor private func scroll(to y: CGFloat, scroll: NSScrollView, hosted: NSView, window: NSWindow) async {
+        scroll.transcriptReading.readerMoved()
         scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
         scroll.reflectScrolledClipView(scroll.contentView)
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
@@ -189,21 +190,24 @@ final class NativeMarkdownViewportTests: XCTestCase {
         await settle(hosted, scroll: outer, window: window)
         let body = try XCTUnwrap(descendants(NativeMarkdownContainer.self, in: hosted).first)
         XCTAssertGreaterThan(body.provisionalBlockCount, 80)
+        outer.transcriptReading.readerMoved()
         outer.contentView.scroll(to: NSPoint(x: 0, y: hosted.frame.height * 0.45))
         hosted.layoutSubtreeIfNeeded()
-        let anchor = try XCTUnwrap(body.logicalAnchor)
+        let anchor = try XCTUnwrap(outer.transcriptReading.readingAnchor ?? body.preparedLogicalAnchor)
         await settle(hosted, scroll: outer, window: window)
-        XCTAssertEqual(body.logicalAnchor?.block, anchor.block)
-        XCTAssertEqual(body.logicalAnchor?.offset ?? 0, anchor.offset, accuracy: 1)
+        XCTAssertEqual(body.displacement(of: anchor) ?? .infinity, 0, accuracy: 1)
+        outer.transcriptReading.readerMoved()
         outer.contentView.scroll(to: NSPoint(x: 0, y: hosted.frame.height * 0.25))
         hosted.layoutSubtreeIfNeeded()
         // A second gesture occurs before the first correction's queued callback.
+        outer.transcriptReading.readerMoved()
         outer.contentView.scroll(to: NSPoint(x: 0, y: hosted.frame.height * 0.8))
         hosted.layoutSubtreeIfNeeded()
-        let newer = try XCTUnwrap(body.logicalAnchor)
+        let revision = outer.transcriptReading.readerRevision
+        let newer = try XCTUnwrap(outer.transcriptReading.readingAnchor ?? body.preparedLogicalAnchor)
         await settle(hosted, scroll: outer, window: window)
-        XCTAssertEqual(body.logicalAnchor?.block, newer.block)
-        XCTAssertEqual(body.logicalAnchor?.offset ?? 0, newer.offset, accuracy: 1)
+        XCTAssertEqual(outer.transcriptReading.readerRevision, revision)
+        XCTAssertEqual(body.displacement(of: newer) ?? .infinity, 0, accuracy: 1)
     }
 
 }

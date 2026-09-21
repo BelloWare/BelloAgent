@@ -54,17 +54,17 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// text, so when the inset changes the clip view moves by the difference
     /// — unless the page is following the newest row, which places itself.
     override var contentInsets: NSEdgeInsets {
+        willSet { transcriptReading.captureDocument() }
         didSet {
-            let delta = contentInsets.top - oldValue.top
-            guard abs(delta) > 0.5, !((documentView as? TranscriptNativeDocument)?.pageFollowsBottom ?? true) else { return }
-            let clip = contentView
-            let lowest = -contentInsets.top
-            let highest = max(lowest, (documentView?.frame.height ?? 0) - clip.bounds.height + contentInsets.bottom)
-            let target = min(max(lowest, clip.bounds.origin.y + delta), highest)
-            guard abs(target - clip.bounds.origin.y) > 0.5 else { return }
-            clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: target))
-            reflectScrolledClipView(clip)
+            transcriptReading.geometryChanged()
         }
+    }
+    func readerWillNavigate(upward: Bool) {
+        (documentView as? TranscriptNativeDocument)?.readerWillNavigate(upward: upward)
+    }
+    override func scrollWheel(with event: NSEvent) {
+        readerWillNavigate(upward: event.scrollingDeltaY > 0)
+        super.scrollWheel(with: event)
     }
     /// Moves the reader the way the key they pressed says. Returns whether
     /// there was anywhere to go, so a key the conversation cannot use goes
@@ -84,6 +84,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         case .bottom: target = highest
         }
         let clamped = min(max(lowest, target), highest)
+        readerWillNavigate(upward: move == .pageUp || move == .top)
         guard abs(clamped - clip.bounds.origin.y) > 0.5 else { return false }
         clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: clamped))
         reflectScrolledClipView(clip)
@@ -233,6 +234,7 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// from physical display scanout. No source content enters the probe.
     override func viewWillDraw() {
         super.viewWillDraw()
+        enclosingScrollView?.transcriptReading.restore()
         if let generation = snapshot?.generation, generation != drawnGeneration, visibleContentPrepared {
             if page?.destinationDrawOpportunity() == true { drawnGeneration = generation }
         }
@@ -241,6 +243,7 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// Whether the page is following the newest row, for the scroll view
     /// deciding whether a content-inset change should move the reader.
     var pageFollowsBottom: Bool { page?.followsBottom ?? true }
+    func readerWillNavigate(upward: Bool) { page?.readerWillNavigate(upward: upward) }
     /// Which chat's rows the document currently holds, which lags the page's
     /// own binding by one SwiftUI update.
     var shownSessionID: String? { snapshot?.sessionID }
@@ -300,6 +303,9 @@ final class TranscriptNativeScrollView: NSScrollView {
             return
         }
         contentReconciliationCount += 1
+        if self.snapshot?.sessionID == snapshot?.sessionID, self.snapshot?.generation == snapshot?.generation {
+            page?.preserveReadingPositionForLayout()
+        }
         contentChangedAt = ProcessInfo.processInfo.systemUptime
         // A different rendering environment changes every row's height.
         if self.environment != environment { dirtyFrom = 0; motionNeedsRetarget = true }
@@ -825,27 +831,6 @@ final class TranscriptNativeScrollView: NSScrollView {
         rect.height > 0 && rect.maxY > band.minY && rect.minY < band.maxY
     }
 
-    /// The row the reader is looking at and where it sits on the screen.
-    private func heldReadingRow() -> (id: String, screenY: CGFloat)? {
-        guard let scroll = enclosingScrollView, !(page?.isPlacingScroll ?? false) else { return nil }
-        let offset = scroll.contentView.bounds.minY
-        guard offset > 0.5, let row = rows.first(where: { $0.frame.maxY > offset }) else { return nil }
-        return (row.itemID, row.frame.minY - offset)
-    }
-    /// Puts that row back on the same line of the screen. A slice measuring
-    /// rows above the reader moves everything below it; without this the text
-    /// they are reading would walk up the window while the page settles.
-    private func restoreReadingRow(_ held: (id: String, screenY: CGFloat)?, contentHeight: CGFloat) {
-        guard let held, let scroll = enclosingScrollView, !(page?.isPlacingScroll ?? false),
-              let row = rows.first(where: { $0.itemID == held.id }) else { return }
-        let clip = scroll.contentView
-        let maximum = max(0, contentHeight - clip.bounds.height)
-        let target = min(max(0, row.frame.minY - held.screenY), maximum)
-        guard abs(target - clip.bounds.minY) > 0.5 else { return }
-        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: target))
-        scroll.reflectScrolledClipView(clip)
-    }
-
     func layoutRows(width: CGFloat) {
         guard width.isFinite, width > 0, !layingOut, !isHiddenOrHasHiddenAncestor else { return }
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
@@ -877,6 +862,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             preparingMotion = wasPreparingMotion
             layingOut = false
             if !placingCorrection { mountVisibleRows() }
+            enclosingScrollView?.transcriptReading.restore()
         }
         dirty = false
         page?.preserveReadingPositionForLayout()
@@ -936,7 +922,6 @@ final class TranscriptNativeScrollView: NSScrollView {
         lastBandCount = band?.count ?? rows.count
         // Where the reader's row sits now, so a slice that measures the rows
         // above it can put it back on the same line of the screen.
-        let held = slicing ? heldReadingRow() : nil
         let loopClock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         var standing: Set<String> = []
         var guesses: Set<String> = []
@@ -1001,7 +986,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         }
         let size = CGSize(width: width, height: y + 13)
         if frame.size != size { setFrameSize(size) }
-        restoreReadingRow(held, contentHeight: size.height)
+        enclosingScrollView?.transcriptReading.geometryChanged()
         // A long chat that opens at its newest row is parked there before
         // anything is drawn. Otherwise the reader sees the top of the history
         // for a frame and the page has to measure both ends of it.
@@ -1009,8 +994,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             let clip = scroll.contentView
             let bottom = max(0, size.height - clip.bounds.height)
             if clip.bounds.minY < bottom - 0.5 {
-                clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: bottom))
-                scroll.reflectScrolledClipView(clip)
+                scroll.transcriptReading.setOrigin(NSPoint(x: clip.bounds.origin.x, y: bottom))
             }
         }
         if let scroll = enclosingScrollView {

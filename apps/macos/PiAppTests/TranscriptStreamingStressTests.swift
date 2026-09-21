@@ -91,6 +91,7 @@ final class TranscriptStreamingStressTests: XCTestCase {
         func endDrag() { scroll.viewDidEndLiveResize(); document.endLiveResize(); draw() }
         /// A reader's own scroll: the clip moves and AppKit says so.
         func readerScroll(to y: CGFloat) {
+            scroll.readerWillNavigate(upward: y < scrollY)
             scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: y))
             scroll.reflectScrolledClipView(scroll.contentView)
             NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)

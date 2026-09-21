@@ -68,7 +68,9 @@ struct ContentGeometry: Equatable {
     private(set) var toolInputs: TranscriptToolInputs?
     private var viewportRequest: Int?
     private var initialized = false
-    private(set) var followsBottom = true
+    private(set) var followsBottom = true { didSet { scrollView?.transcriptReading.following = followsBottom } }
+    private var readerNavigationStarted = false
+    private var upwardNavigation = false
     private var pendingAnchor: TranscriptAnchor? { didSet { pendingAnchorRow = nil } }
     /// Which row holds the pending anchor, worked out once. Resolving it for
     /// every row of the page as its frame arrives is quadratic in the page,
@@ -147,6 +149,7 @@ struct ContentGeometry: Equatable {
         // row's height: republish so the document reconciles and re-measures.
         session.toolInputs.onChanged = { [weak self] in self?.republish() }
         reset()
+        scrollView?.transcriptReading.bind(scope: session.id + ":" + session.presentationGeneration.uuidString)
         frames = [:]
         snapshot = nil; detached = false
         subscription = session.presentationChanges.combineLatest(session.$viewportRequest).sink { [weak self, weak session] input, request in
@@ -306,6 +309,8 @@ struct ContentGeometry: Equatable {
         scrollObservers = []
         self.scrollView = scrollView
         guard let scrollView else { return }
+        scrollView.transcriptReading.bind(scope: (sessionID ?? "") + ":" + (generation?.uuidString ?? ""))
+        scrollView.transcriptReading.following = followsBottom
         let center = NotificationCenter.default
         scrollView.contentView.postsBoundsChangedNotifications = true
         scrollObservers.append(center.addObserver(forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: .main) { [weak self] _ in
@@ -314,9 +319,12 @@ struct ContentGeometry: Equatable {
         // User scrolling decides whether the page follows; programmatic scrolls never do.
         for name in [NSScrollView.didLiveScrollNotification, NSScrollView.didEndLiveScrollNotification] {
             scrollObservers.append(center.addObserver(forName: name, object: scrollView, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.userScrolled() }
+                MainActor.assumeIsolated { self?.userScrolled(ended: name == NSScrollView.didEndLiveScrollNotification) }
             })
         }
+        scrollObservers.append(center.addObserver(forName: NSScrollView.willStartLiveScrollNotification, object: scrollView, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.readerWillNavigate(upward: false) }
+        })
         if let document = scrollView.documentView {
             document.postsFrameChangedNotifications = true
             scrollObservers.append(center.addObserver(forName: NSView.frameDidChangeNotification, object: document, queue: .main) { [weak self] _ in
@@ -357,6 +365,7 @@ struct ContentGeometry: Equatable {
     /// Capture the actual first visible row before a reflow. This keeps a
     /// detached reader at the same text when rows above grow or the pane narrows.
     func preserveReadingPositionForLayout() {
+        scrollView?.transcriptReading.captureDocument()
         guard initialized, !followsBottom, !jumping, pendingAnchor == nil, let snapshot else { return }
         // Keep the chosen opening question fixed while offscreen estimates
         // settle. A preceding row visible only in its 12-point margin must
@@ -445,6 +454,9 @@ struct ContentGeometry: Equatable {
             requestReadCheck()
             return
         }
+        if scrollView?.transcriptReading.restore() == true {
+            pendingAnchor = nil; requestReadCheck(); return
+        }
         guard let anchor = pendingAnchor, let snapshot else { requestReadCheck(); return }
         let rowID = rowIdentifier(for: anchor.id)
         guard snapshot.items.contains(where: { $0.id == rowID }) else { pendingAnchor = nil; return }
@@ -485,11 +497,23 @@ struct ContentGeometry: Equatable {
     /// The reader scrolled: decide whether the page still follows the newest
     /// message, show or hide the jump pill, ask for the earlier page near the
     /// top, and a little later remember the anchor and check for a read.
-    private func userScrolled() {
+    func readerWillNavigate(upward: Bool) {
+        scrollView?.transcriptReading.readerMoved()
+        upwardNavigation = readerNavigationStarted ? upwardNavigation || upward : upward; readerNavigationStarted = true
+        pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
+        jumping = false; followsBottom = false
+        if !detached { detached = true }
+    }
+    private func userScrolled(ended: Bool) {
         // The reader's own movement wins over an opening/restoration still waiting for layout.
         pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
         jumping = false
-        evaluateFollowing()
+        if !readerNavigationStarted { scrollView?.transcriptReading.readerMoved() }
+        // Only deliberate arrival at the end resumes following. Proximity
+        // after an upward gesture or a resize is not reader intent.
+        followsBottom = !upwardNavigation && distanceToBottom <= 0.5
+        if detached != !followsBottom { detached = !followsBottom }
+        if ended { readerNavigationStarted = false; upwardNavigation = false }
         requestEarlierIfNearTop(scrollY: position.offset)
         scheduleReport()
     }
@@ -541,7 +565,7 @@ struct ContentGeometry: Equatable {
         let target = min(max(0, y), maximum)
         let origin = NSPoint(x: clip.bounds.origin.x, y: document.isFlipped ? target : maximum - target)
         guard animated else {
-            if clip.bounds.origin != origin { clip.setBoundsOrigin(origin); scrollView.reflectScrolledClipView(clip) }
+            scrollView.transcriptReading.setOrigin(origin)
             completion?(); return
         }
         NSAnimationContext.runAnimationGroup({ context in
@@ -560,6 +584,7 @@ struct ContentGeometry: Equatable {
         scroll(to: max(0, p.height - p.viewport), animated: animated, completion: completion)
     }
     func jumpToLatest() {
+        scrollView?.transcriptReading.readerMoved()
         followsBottom = true; jumping = true; detached = false
         pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
         let animated = !PiMotion.reducesMotion
