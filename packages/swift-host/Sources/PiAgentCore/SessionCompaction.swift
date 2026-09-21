@@ -8,9 +8,16 @@ extension AgentSession {
     func compactionPresentation(_ operation: JSON) -> JSON {
         operation.removing(["sourceIDs","protectedIDs","keptIDs","summarySourceIDs","dependencyIDs"])
     }
-    public func compact(commandID: String = UUID().uuidString) throws {
+    public func compact(commandID: String = UUID().uuidString, overrides: JSON = [:]) throws {
         guard isIdle else { throw AgentError("session_busy", "Compact requires an idle session and empty queues") }
-        let intent=Submission(commandID:commandID,turnID:"compaction:"+commandID,text:"[Compact now]",attachments:[],skills:[])
+        let selected = try NativeHostService.turnOverrides(overrides)
+        // Validate before changing the command or persisted state. Missing
+        // choices deliberately use the connection defaults, never an old turn.
+        _ = try profile.overriding(model:selected.model,thinkingLevel:selected.thinkingLevel,contextWindow:selected.contextWindow,
+                                   maxOutputTokens:selected.maxOutputTokens,modelOutputLimit:selected.modelOutputLimit)
+        let intent=Submission(commandID:commandID,turnID:"compaction:"+commandID,text:"[Compact now]",attachments:[],skills:[],
+                              model:selected.model,thinkingLevel:selected.thinkingLevel,contextWindow:selected.contextWindow,
+                              maxOutputTokens:selected.maxOutputTokens,modelOutputLimit:selected.modelOutputLimit)
         activeSubmission=intent; currentTurnID=intent.turnID; commandState(intent,"queued"); try persistState(); launch(compactOnly:true)
     }
     var canCompact: Bool {

@@ -102,6 +102,9 @@ extension WorkspaceModel {
         // Nothing runs in an archived chat; stopping is the one command it still takes.
         guard !item.isArchived || method == "turn.stop" else { displays[id]?.notice = Self.archivedNotice; return }
         if method == "context.compact" { displays[id]?.compactionNotice = nil }
+        // Compact uses the same selected model/effort/limits as Send. Freeze
+        // the originating pane's choice before opening or awaiting its helper.
+        let requestParams = method == "context.compact" ? TurnOverrides.params(for: item, base: params) : params
         let commandID = UUID().uuidString
         Task { do {
             let lease = try connectionLease(for: item)
@@ -111,7 +114,7 @@ extension WorkspaceModel {
                 try await store.put(CommandIntent(id: commandID, sessionID: item.id, turnID: "compaction:\(commandID)", text: "[Compact now]", state: "intent", epoch: host.epoch), kind: "pending:\(item.id)", id: commandID)
             }
             try requireConnection(lease)
-            _ = try await host.request(method, sessionID: item.id, params: params, commandID: commandID)
+            _ = try await host.request(method, sessionID: item.id, params: requestParams, commandID: commandID)
             if method == "queue.remove", let turnID = params["turnId"]?.string {
                 for intent in try await store?.list(CommandIntent.self, kind: "pending:\(item.id)") ?? [] where intent.turnID == turnID { try await store?.remove(kind: "pending:\(item.id)", id: intent.id) }
             }

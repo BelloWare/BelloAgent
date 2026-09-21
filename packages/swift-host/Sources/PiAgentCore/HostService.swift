@@ -284,7 +284,7 @@ public actor NativeHostService {
         if method == "queue.resume" { try await session.resumeQueue(); return ["accepted":true] }
         if method == "turn.retry" { try await session.retryRun(overrides: params); return ["accepted":true] }
         if method == "queue.configure" { try await session.configureQueue(params); return ["accepted":true] }
-        if method == "context.compact" { try await session.compact(commandID:commandID); return ["accepted":true] }
+        if method == "context.compact" { try await session.compact(commandID:commandID,overrides:params); return ["accepted":true] }
         if method == "mcp.invoke" { var args=params; args["action"]="invoke"; return try await mcp.perform(args,readOnly:session.readOnly) }
         if method == "session.configure" {
             // A saved connection reaches its open sessions without a close: an idle
