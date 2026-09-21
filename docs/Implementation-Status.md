@@ -12,15 +12,22 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**0.1.74 implementation is in validation:** selected assistant text opens an
-unsent quoted side draft. Elapsed time uses a consistent uptime clock, and its
-display sits before Generating response. Pending follow-ups progress after
-compaction/cleanup; failed or stopped work keeps its explicit Resume boundary.
+**Bello Agent 0.1.74/build 78 is released and publicly verified:** selected
+assistant text opens an unsent quoted side draft. Elapsed time uses a consistent
+uptime clock, and its display sits before Generating response. Pending follow-ups
+progress after compaction/cleanup; failed or stopped work keeps explicit Resume.
 Focused validation passes: 17 helper, 43 actor-checked native, 21 optimized
-native and 12 website staging tests. See the
-[0.1.74 record](validation/Bello-Agent-0.1.74-2026-09-21.md). Publication is pending.
+native and 12 website staging tests. Packaged source
+`bb74d5ed110cbde7bbebf1c22a5446020b5e32aa`; website
+`73fecfbc1fd2268c0fcd6fd416cfa2aea97a4200`. The signed/notarized DMG is
+**8,858,824 bytes (8.45 MiB)**, SHA-256
+`a0d15372507767074c5847af84926a330a249402921b2c3a4a5f0346bf0ec6a0`.
+Public page, identical update feeds and downloaded hash/Ed25519 checks passed
+at **2026-09-21 12:06:14 UTC**; Cloudflare check **106325664907** succeeded.
+Source commits remain local; the website commit was pushed. See the
+[0.1.74 record](validation/Bello-Agent-0.1.74-2026-09-21.md).
 
-**Bello Agent 0.1.73/build 77 is released and publicly verified:** the generating dock again shows reported usage
+**Bello Agent 0.1.73/build 77 is a historical verified release:** the generating dock again shows reported usage
 and cost; completed turns wrap their timing, token breakdown and cost directly.
 Info opens a detailed table with coverage, cache, reasoning cost and request
 inspection. Manual compaction now freezes the originating session's selected

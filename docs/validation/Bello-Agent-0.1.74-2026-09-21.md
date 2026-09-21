@@ -1,6 +1,6 @@
 # Bello Agent 0.1.74 / build 78
 
-Implementation validated; signed publication is pending.
+Released and publicly verified on **2026-09-21 12:06:14 UTC**.
 
 ## Changes and root causes
 
@@ -85,6 +85,33 @@ swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swi
 ```
 
 Native checks use the standard test selection policy, Debug actor checks and
-the staged helper. Publication evidence will be added when complete.
-Source commits stay local under the current release workflow;
-the website commit is pushed to its configured upstream when published.
+the staged helper. Source commits stay local under the current release workflow;
+the website commit was pushed to its configured upstream.
+
+## Signing and publication
+
+- Packaged source: `bb74d5ed110cbde7bbebf1c22a5446020b5e32aa`, following
+  implementation commit `ea3eff3`.
+- Website commit: `73fecfbc1fd2268c0fcd6fd416cfa2aea97a4200`, pushed to
+  configured upstream `origin/main`.
+- Cloudflare check **106325664907** succeeded at **2026-09-21 12:05:22 UTC**.
+- App notarization: `5607a150-556b-4145-9e84-6ddf4699e616`, accepted.
+- DMG notarization: `666609be-f343-4fad-ab85-e2e433830381`, accepted.
+- `BelloAgent-0.1.74.dmg`: **8,858,824 bytes (8.45 MiB)**.
+- SHA-256: `a0d15372507767074c5847af84926a330a249402921b2c3a4a5f0346bf0ec6a0`.
+
+The production build reused compiler caches and removed only the cached
+test-host app before packaging. Packaged helper/catalog smoke, Developer ID
+signing, hardened runtime, app/DMG notarization, stapling, Gatekeeper, feed/build
+validation and local Sparkle Ed25519 verification pass. No XCTest bundle ships.
+The final signed installer is copied into the session outbox.
+
+The public product page matches the staged publication and links to 0.1.74.
+Canonical and legacy update feeds are byte-identical to the local validated
+feeds. The downloaded DMG matches the SHA-256 above and its Sparkle Ed25519
+signature. The initial feed check saw 0.1.73 while deployment was in progress;
+the complete public checks passed after Cloudflare finished.
+
+Release logs: session scratch `bello-agent-0.1.74` and
+`bello-agent-0.1.6/build/release.pXG094`. Installation/update rehearsals remain
+skipped under the owner's instruction.
