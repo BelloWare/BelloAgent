@@ -36,7 +36,7 @@ records optimized native/helper tests, explicit actor checks and publication.
 Current release records take precedence over the historical matrices below.
 Installation/update rehearsals remain skipped by owner instruction.
 
-## Unreleased stable tool-streaming acceptance
+## 0.1.72 stable tool-streaming acceptance
 
 Read [L01–L14, G01–G15, M01–M12 and P01–P08](Stable-Tool-Streaming-2026-09-21.md).
 Stage the changed helper, then run `TaskPresentationTests`, retry/recovery,
@@ -58,10 +58,11 @@ of dropping its prefix merely because a live suffix arrived.
 The 30-sample draw measurement is mounted AppKit work, not physical display FPS.
 Two optional pointer-environment checks remain skipped; deployed LiteLLM,
 physical input under concurrent streams and the remaining workload-specific
-gates are explicitly listed in the acceptance record. No release/install/update
-rehearsal is part of this implementation-only change.
+gates are explicitly listed in the acceptance record. See the
+[0.1.72 release verification](validation/Bello-Agent-0.1.72-2026-09-21.md) for
+signing/publication checks; install/update rehearsals remain skipped.
 
-## Unreleased inline skills and historical edit acceptance
+## 0.1.72 inline skills and historical edit acceptance
 
 Read [S01–S25 and E01–E28](Inline-Skills-and-Historical-Edits-2026-09-21.md).
 Native suites: `InlineSkillTests`, `HistoricalEditingTests`, `MessageDetailTests`,

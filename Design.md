@@ -60,7 +60,7 @@ The single-item Keychain vault is owned by the native app. The helper receives o
 
 ## 3. Protocol and ownership
 
-**Unreleased task presentation contract:** `TaskPresentationRecord` and version-1
+**Task presentation contract, 0.1.72:** `TaskPresentationRecord` and version-1
 `TaskPresentationProjection` add small, scoped lifecycle evidence to snapshots.
 Root/input, execution, operation and physical attempt are distinct; up to 64 recent
 terminal records accompany the active execution. The helper records terminality
@@ -179,7 +179,7 @@ Codex instructions resolve global then project-root-to-cwd guidance with overrid
 
 The composer resolves `/skill-name` to canonical identity, policy/content hashes, arguments and explicit user-origin provenance. The host freezes selected bodies and validates permissions/dependencies at delivery. Explicit-only skills are available to the picker, not automatic discovery. Historical/model/pasted mentions do not grant authorization. Preserve source directory-relative references and do not execute scripts during discovery.
 
-### Caret-local completion and historical editing (unreleased)
+### Caret-local completion and historical editing (0.1.72)
 
 `ComposerLocation` carries native UTF-16 selection/marked ranges, an editor
 generation and draft revision. `SlashCompletionToken` examines a bounded local

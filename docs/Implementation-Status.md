@@ -12,7 +12,18 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Unreleased stable tool streaming, 2026-09-21:** each task keeps one compact work
+**Bello Agent 0.1.72/build 76 is released and publicly verified**, from source
+`b5d0b86bba594e34f837904d2af7b971da9f7ef6` and website
+`0fddf033603b3d83cd6249d81b09ae56e9b52d86`. The signed/notarized installer is
+**8,823,949 bytes (8.42 MiB)**, SHA-256
+`8958bde71dd74ac746028af67404276f87ad2b0975ffe0440be5acd885b0ab7f`.
+Public page, identical update feeds and downloaded hash/Ed25519 checks passed
+at **2026-09-21 06:31:17 UTC**. Cloudflare check **106235729685** succeeded.
+This includes the three implementation follow-ups below. Source commits remain
+local; the website publication commit was pushed. See the
+[release validation and reused test evidence](validation/Bello-Agent-0.1.72-2026-09-21.md).
+
+**Stable tool streaming, released in 0.1.72:** each task keeps one compact work
 row and separate stable prose rows. Empty/tool-only replies no longer create
 temporary prose placeholders. A Turn summary requires durable terminal evidence;
 model completion, tool rounds and a queued successor cannot create false completion.
@@ -23,10 +34,10 @@ honest outcome/coverage labels. Validation: 82 distinct helper and 107 distinct
 Debug native cases pass; 49 optimized native cases pass, with two optional pointer
 checks skipped. Exact HTTP bodies match the request-aware local gateway. See
 [implementation, measurements and all 49 acceptance dispositions](Stable-Tool-Streaming-2026-09-21.md),
-including physical-input and deployed-gateway verification limits. Changes remain
-local and unreleased; the preceding feature work is preserved.
+including physical-input and deployed-gateway verification limits. The preceding
+feature work is preserved.
 
-**Unreleased inline skills and historical edit rollback, 2026-09-21:** suggestions
+**Inline skills and historical edit rollback, released in 0.1.72:** suggestions
 follow the native caret and share ranked metadata search with the inspector.
 Per-composer discovery cannot drop another pane's load; explicit token/chip
 acceptance preserves prose and native undo. Historical edits load full retained
@@ -37,10 +48,9 @@ are replayed. Validation: **277 distinct helper tests, 55 actor-checked native
 tests and 26 optimized native tests pass**, including a mounted native inline
 selection/edit through the packaged helper to a request-aware local gateway.
 See [contracts, compatibility, limits and S01–S25/E01–E28 dispositions](Inline-Skills-and-Historical-Edits-2026-09-21.md).
-The helper and native branch reader must ship together. These changes remain
-local; app/build versions and the public release are unchanged.
+The helper and native branch reader ship together in 0.1.72.
 
-**Unreleased follow-up, 2026-09-21:** reopening a saved chat and filling an
+**Reopened-chat follow-up, released in 0.1.72:** reopening a saved chat and filling an
 earlier history page no longer disables live transcript updates. Reaching the
 latest page resumes snapshots, and submitting from an earlier window reloads
 the new turn without requiring a tab switch. Overlapping file/helper windows
@@ -52,9 +62,9 @@ were reproduced by tests before the fix. Compact turn and footer costs also
 preserve reported `$0` and `$0.000001`, with missing data remaining distinct.
 Validation: 38 focused native tests and 19 fresh-history tests pass with actor
 data-race checks; the eight refresh lifecycle tests pass again after the final
-hot-path refinement. These changes are committed locally, with no new release.
+hot-path refinement. These changes are included in 0.1.72.
 
-**Bello Agent 0.1.71/build 75 is released and publicly verified**, from source
+**Bello Agent 0.1.71/build 75 is a historical verified release**, from source
 `3a29daf223fb2101be105ad24a7a6bdba01d2596` and website
 `1f73d9a39a585d1b2f169ced01d2e07bd576bb1f`. The signed/notarized installer is
 **8,677,864 bytes (8.28 MiB)**, SHA-256

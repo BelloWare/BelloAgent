@@ -3,7 +3,9 @@
 September 21, 2026. Repository `BelloWare/BelloAgent`, branch `main`.
 Started from `3ac6677`, preserving the intervening fresh-history/live-update and
 micro-cost changes. Implements the uploaded **Implementation-Plan.md** prepared
-against `1b58c8a`; no reset, architecture change, push or release is included.
+against `1b58c8a`, without resetting or changing the architecture. Implementation
+was completed locally before publication; it is now included in
+[Bello Agent 0.1.72/build 76](validation/Bello-Agent-0.1.72-2026-09-21.md).
 
 ## Behavior
 

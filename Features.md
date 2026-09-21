@@ -41,7 +41,7 @@ instruction. SDK-era requirements remain in `docs/archive/PiSDK-Features.md`.
 
 ## 2. Required features and honest implementation status
 
-**Unreleased stable tool streaming:** one persistent compact task work row owns
+**Stable tool streaming, 0.1.72:** one persistent compact task work row owns
 request/tool/reasoning details; each assistant source owns its own prose body.
 Empty/tool-only replies create no temporary prose or action placeholder. A Turn
 summary appears only after a recorded task outcome, including failure, stop,
@@ -52,7 +52,7 @@ details stay closed; argument fragments and late usage cannot move existing pros
 Old histories without terminal evidence show an unavailable outcome, and partial
 history remains labelled. See [the lifecycle contract and acceptance record](docs/Stable-Tool-Streaming-2026-09-21.md).
 
-**Unreleased inline skills and historical edits:** slash suggestions follow the
+**Inline skills and historical edits, 0.1.72:** slash suggestions follow the
 native caret at the beginning, middle or later lines of a draft. Explicit
 selection adds a chip and removes only that token, with coherent undo/redo.
 The popup and Skills inspector share ranked metadata search, and each composer

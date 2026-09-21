@@ -3,8 +3,9 @@
 Implemented on September 21, 2026 in `BelloWare/BelloAgent`, `main`, starting
 from `c846b9f`. This follows the uploaded **Implementation-Plan _1_.md** (reviewed
 baseline `1b58c8a`) while preserving the intervening progressive history loading,
-inline skills, historical edits and reopened-chat refresh fixes. These are local,
-unreleased changes. App/build versions, the website and update feeds are unchanged.
+inline skills, historical edits and reopened-chat refresh fixes. Implementation
+was completed locally before publication; it is now included in
+[Bello Agent 0.1.72/build 76](validation/Bello-Agent-0.1.72-2026-09-21.md).
 Implementation commits: `1861284` (helper lifecycle and recovery) and `0614e38`
 (native presentation, request-aware fixture and regressions).
 
