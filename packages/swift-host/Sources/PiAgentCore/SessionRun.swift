@@ -5,6 +5,12 @@ import Foundation
 
 extension AgentSession {
     func launch(compactOnly: Bool = false) {
+        presentationUtility = compactOnly || titleTask
+        if retrying, let root = taskRootID {
+            beginPresentedTask(root)
+            activeTaskPresentation?.activeInputID = currentTurnID.isEmpty ? root : currentTurnID
+            activeTaskPresentation?.anchorSourceID = visible.last?.id ?? root
+        }
         state="running"; runStatus=state; errorMessage=nil; begin=nowMS(); end=nil; turnModelMs=0; turnToolMs=0
         runTask=Task { await run(compactOnly:compactOnly) }; event("state")
     }
@@ -38,7 +44,7 @@ extension AgentSession {
         guard let range = message.range(of: #"HTTP (\d{3})"#, options: .regularExpression) else { return nil }
         return Int(message[range].dropFirst(5))
     }
-    func completeWithRetries(profile: Profile, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], turnID: String, purpose: String, operation: JSON = .null, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void, reset: () -> Void) async throws -> ModelReply {
+    func completeWithRetries(profile: Profile, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], turnID: String, purpose: String, operation: JSON = .null, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void, reset: () throws -> Void) async throws -> ModelReply {
         var attempt = 0
         while true {
             attempt += 1
@@ -52,7 +58,7 @@ extension AgentSession {
                     retryInfo = .null
                     throw attempt > 1 ? AgentError(error.code, "Failed after \(attempt) attempts. " + error.message,failure:error.failure,attemptID:error.attemptID) : error
                 }
-                reset()
+                try reset()
                 retryInfo = ["attempt": JSON(attempt + 1), "of": JSON(Self.modelAttempts), "reason": JSON(error.message)]
                 runStatus = "retrying"; event("retry", retryInfo)
                 let delay = Self.retryDelays[min(attempt - 1, Self.retryDelays.count - 1)]
@@ -112,10 +118,18 @@ extension AgentSession {
                     while completed == nil {
                         try Task.checkCancellation()
                         let dispatchProfile=try turnProfile.dispatching(count)
-                        partialID=UUID().uuidString; partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus="running"; modelActive=true; event("message_start")
+                        partialID=UUID().uuidString; partialStartedAt=nowMS(); activeTaskPresentation?.operationID=operationID
+                        partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus="running"; modelActive=true; event("message_start")
                         let requestStart=nowMS()
                         do {
                             completed=try await completeWithRetries(profile:dispatchProfile,messages:context,instructions:instructions,tools:definitions,turnID:currentTurnID,purpose:titleTask ? "title" : "turn",operation:["logicalRequestId":JSON(operationID),"recovered":JSON(recovered),"recovery":recovered ? contextRecovery : .null],onDelta:{ [weak self] delta in await self?.delta(delta) },reset:{
+                                if let partialID, !partialText.isEmpty || !partialThinking.isEmpty {
+                                    var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]])
+                                    partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"
+                                    partial.requestAttemptIDs=requestObservation.map { [$0.attemptID] }
+                                    try append(partial)
+                                }
+                                partialID=UUID().uuidString; partialStartedAt=nowMS()
                                 partialText=""; partialThinking=""; resetPartialRow()
                                 if let partialID { recordDisplayChange(partialID, at: displayClock()) }
                             })
@@ -127,7 +141,7 @@ extension AgentSession {
                             // The completed tool batch is never entered a second time.
                             if let partialID, !partialText.isEmpty || !partialThinking.isEmpty {
                                 var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]])
-                                partial.id=partialID; partial.replayEligible=false; partial.requestAttemptIDs=error.attemptID.map { [$0] }
+                                partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"; partial.requestAttemptIDs=error.attemptID.map { [$0] }
                                 try append(partial)
                             }
                             partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); modelActive=false
@@ -182,6 +196,7 @@ extension AgentSession {
                     // A reply that stopped at the output budget ends the turn like any
                     // other: the row says so, and queued follow-ups go on.
                     if reply.truncated { event("output_limit") }
+                    try finishPresentedTask(reply.truncated ? "output-limited" : "completed")
                     if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
                     if try await startFollowUp() { continue }
                     break
@@ -193,7 +208,7 @@ extension AgentSession {
             errorMessage=(error as? AgentError)?.message ?? (runStatus == "cancelled" ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
             if let activeSubmission { commandState(activeSubmission,runStatus) }
             if let partialID, !partialText.isEmpty || !partialThinking.isEmpty {
-                var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]]); partial.id=partialID; partial.replayEligible=false
+                var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]]); partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"
                 let latest = await traces.latest(id)
                 if latest["turnId"].text == currentTurnID, let attempt = latest["attemptId"].text { partial.requestAttemptIDs=[attempt] }
                 // Publishing links can suspend below. Once the durable row
@@ -201,6 +216,8 @@ extension AgentSession {
                 // the same row ID in snapshots taken during that suspension.
                 do { try append(partial); self.partialID=nil } catch { }
             }
+            do { try finishPresentedTask(runStatus == "cancelled" ? "cancelled" : "failed", detail:errorMessage) }
+            catch { activeTaskPresentation=nil; errorMessage="Task outcome could not be saved. Inspect the retained conversation and tool effects before retrying." }
             event("error",["message":JSON(errorMessage ?? "Interrupted")])
         }
         await flushRequestLinks()

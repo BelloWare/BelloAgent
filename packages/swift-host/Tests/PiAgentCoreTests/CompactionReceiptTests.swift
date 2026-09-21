@@ -18,6 +18,9 @@ final class CompactionReceiptTests: XCTestCase {
         let snapshot=await s.snapshot(),path=await s.path
         XCTAssertEqual(snapshot["commands"].list.last?["commandId"].text,"manual-compact")
         XCTAssertEqual(snapshot["commands"].list.last?["state"].text,"completed")
+        XCTAssertEqual(snapshot["taskPresentation"]["recent"].list.count,2,"Manual compaction is utility work, not a fabricated third conversation task")
+        XCTAssertTrue(snapshot["taskPresentation"]["active"].isNull)
+        XCTAssertTrue(snapshot["taskPresentation"]["utilityPhase"].isNull)
         await s.close()
         let next=ScriptClient([answer("continued")])
         let resumed=try AgentSession(id:"compact-session",profile:profile,apiKey:"test",cwd:root,directory:state,readOnly:true,resources:resources,client:next,tools:RecordingTools(),traces:traces,resumePath:path,autoCompaction:false)

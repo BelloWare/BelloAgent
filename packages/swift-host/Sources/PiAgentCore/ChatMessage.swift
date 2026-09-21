@@ -43,6 +43,7 @@ public struct ChatMessage: Codable, Sendable {
     /// Independent of the turn/steering display identity. A delivered steering
     /// message belongs to the original task, not a new compaction objective.
     public var taskRootID: String? = nil
+    public var taskExecutionID: String? = nil
     public var inputLane: String? = nil
     /// Versioned checkpoint metadata also survives saved-side message records.
     public var compaction: JSON? = nil
@@ -56,6 +57,7 @@ public struct ChatMessage: Codable, Sendable {
         if let turn { value["nativeTurn"] = JSON(turn) }
         if let modelMs { value["nativeModelMs"] = JSON(modelMs) }
         if let taskRootID { value["nativeTaskRoot"] = JSON(taskRootID) }
+        if let taskExecutionID { value["nativeTaskExecution"] = JSON(taskExecutionID) }
         if let inputLane { value["nativeInputLane"] = JSON(inputLane) }
         if let compaction { value["nativeCompaction"] = compaction }
         if let retainedOutput { value["nativeRetainedOutput"] = JSON(retainedOutput) }
@@ -90,6 +92,7 @@ public struct ChatMessage: Codable, Sendable {
         timestamp = pi["timestamp"].double; toolStats = pi["nativeToolStats"].isNull ? nil : pi["nativeToolStats"]
         turn = pi["nativeTurn"].text; modelMs = pi["nativeModelMs"].double
         taskRootID=pi["nativeTaskRoot"].text; inputLane=pi["nativeInputLane"].text
+        taskExecutionID=pi["nativeTaskExecution"].text
         compaction=pi["nativeCompaction"].isNull ? nil : pi["nativeCompaction"]
         retainedOutput=pi["nativeRetainedOutput"].text; stopReason=pi["nativeStopReason"].text
     }
@@ -109,6 +112,8 @@ public struct ChatMessage: Codable, Sendable {
         if let detail { value["detail"] = JSON(preview(detail, bytes: 1024)) }
         if let timestamp { value["at"] = JSON(timestamp) }
         if let turn { value["turn"] = JSON(turn) }
+        if let taskRootID { value["taskRootID"] = JSON(taskRootID) }
+        if let taskExecutionID { value["taskExecutionID"] = JSON(taskExecutionID) }
         if let modelMs { value["modelMs"] = JSON(modelMs) }
         return value
     }

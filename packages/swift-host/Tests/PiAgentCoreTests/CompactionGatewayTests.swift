@@ -76,6 +76,10 @@ final class CompactionGatewayTests: XCTestCase {
         XCTAssertEqual(snapshot["state"].text,"idle",snapshot["preflightError"].encoded());XCTAssertEqual(other["state"].text,"idle",other["preflightError"].encoded())
         XCTAssertEqual(snapshot["messages"].list.last?["text"].text,"Golden complete without repeated effects")
         XCTAssertEqual(snapshot["queueCount"].int,0)
+        XCTAssertTrue(snapshot["taskPresentation"]["active"].isNull)
+        XCTAssertEqual(snapshot["taskPresentation"]["recent"].list.count,1,"Automatic compaction/recovery never create another task")
+        XCTAssertEqual(snapshot["taskPresentation"]["recent"].list.first?["issuedCalls"].int,3)
+        XCTAssertEqual(snapshot["taskPresentation"]["recent"].list.first?["outcome"].text,"completed")
         XCTAssertEqual(try String(contentsOf:root.appendingPathComponent("counter.txt"),encoding:.utf8),"once\n")
         let called=await tools.calls;XCTAssertEqual(called,["write","read","read"])
         let journal=try String(contentsOf:URL(fileURLWithPath:path),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) }

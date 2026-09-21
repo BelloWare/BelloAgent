@@ -11,7 +11,7 @@ extension AgentSession {
     }
     /// Versioned browsing contract; older numeric callers retain their adapter.
     public func historyWindow(_ params: JSON) throws -> JSON {
-        let lineage = visible.last(where: { $0.kind == "branch" })?.id ?? "root"
+        let lineage = presentationTimeline
         let cursor: ConversationCursor? = params["cursor"].isNull ? nil : try JSONDecoder().decode(ConversationCursor.self, from: params["cursor"].data())
         if let cursor, cursor.incarnation != displayEpoch || cursor.lineage != lineage {
             throw AgentError("history_changed", "This conversation changed. Reload the visible history.")
@@ -26,7 +26,11 @@ extension AgentSession {
         let forward = params["direction"].text == "newer" || around != nil
         let range = HistoryWindowPolicy.range(count: visible.count, before: forward ? nil : boundary,
                                               after: forward ? boundary : nil, around: around, isUser: { visible[$0].role == "user" })
-        var rows: [JSON] = [], bytes = HistoryWindowPolicy.metadataAllowance
+        let candidates = visible[range]
+        let keys = Set(candidates.compactMap { message in message.taskExecutionID.map { TaskPresentationRecord.identity(message.taskRootID ?? "", $0) } })
+        let sourceIDs = Set(candidates.map(\.id))
+        let tasks = try JSON.parse(JSONEncoder().encode(recentTaskPresentations.filter { keys.contains($0.key) || $0.anchorSourceID.map(sourceIDs.contains) == true }))
+        var rows: [JSON] = [], bytes = HistoryWindowPolicy.metadataAllowance + (try tasks.data().count)
         var start = forward ? range.lowerBound : range.upperBound, end = start
         let positions = forward ? Array(range) : Array(range.reversed())
         for index in positions {
@@ -47,6 +51,7 @@ extension AgentSession {
         if start < visible.count && visible[start].role != "user", let input = visible[..<start].last(where: { $0.role == "user" }) {
             result["partialTurnInput"] = JSON(input.id)
         }
+        result["taskRecords"] = tasks
         guard try result.data().count + 1024 <= HistoryWindowPolicy.envelopeBytes else { throw AgentError("page_limit", "History page metadata exceeds the display budget") }
         return result
     }

@@ -72,6 +72,11 @@ public actor AgentSession {
     var contextMutation: UInt64 = 0
     var contextResetReason = "epoch-reset"
     var taskRootID: String?
+    var activeTaskPresentation: TaskPresentationRecord?
+    var recentTaskPresentations: [TaskPresentationRecord] = []
+    var partialStartedAt: Double?
+    var presentationUtility = false
+    var cachedPresentationTimeline: String?
     var contextRecovery: JSON = .null
     var compactionState: JSON = .null
     var compactionAttemptIDs: [String] = []
@@ -166,6 +171,11 @@ public actor AgentSession {
                 }
                 if !item["nativeState"].isNull { stateRecord=item["nativeState"] }
                 contextRecovery = .null; compactionState = .null
+            } else if item["customType"].text == "pi-app.task-terminal.v1" {
+                let task = try JSONDecoder().decode(TaskPresentationRecord.self, from: item["data"].data())
+                guard task.valid, task.terminal else { throw AgentError("session_damaged", "Invalid task completion evidence") }
+                recentTaskPresentations.removeAll { $0.key == task.key }; recentTaskPresentations.append(task)
+                if recentTaskPresentations.count > 64 { recentTaskPresentations.removeFirst() }
             } else if item["customType"].text == "pi-app.native.state.v1" { stateRecord=item["data"] }
             else if item["customType"].text == "pi-app.context-recovery.v1" { contextRecovery=item["data"] }
             else if item["customType"].text == "pi-app.native.context.v1" {
@@ -181,6 +191,22 @@ public actor AgentSession {
             }
         }
         if let saved=stateRecord {
+            if !saved["taskPresentation"].isNull,
+               var task = try? JSONDecoder().decode(TaskPresentationRecord.self, from: saved["taskPresentation"].data()),
+               task.valid, !task.terminal, !recentTaskPresentations.contains(where: { $0.key == task.key }) {
+                task.outcome = "interrupted"; task.phase = "terminal"; task.endedAt = max(task.startedAt, nowMS())
+                let retained = visible.filter { $0.taskExecutionID == task.executionID && $0.taskRootID == task.rootID }
+                task.lastSourceID = retained.last?.id ?? task.anchorSourceID
+                let replies = retained.filter { $0.role == "assistant" }
+                task.replies = replies.count
+                task.issuedCalls = replies.reduce(0) { $0 + $1.content.filter { $0["type"].text == "toolCall" }.count }
+                task.modelMs = replies.reduce(0) { $0 + ($1.modelMs ?? 0) }
+                task.toolMs = retained.filter { $0.role == "toolResult" }.reduce(0) { $0 + ($1.toolStats?["durationMs"].double ?? 0) }
+                task.preparingCalls = 0; task.currentTool = nil
+                task.detail = "Previous runtime ended without a terminal receipt. Tool effects may be unknown; no work was replayed."
+                recentTaskPresentations.append(task)
+                if recentTaskPresentations.count > 64 { recentTaskPresentations.removeFirst() }
+            }
             queue=try JSONDecoder().decode([Submission].self,from:saved["queue"].data())
             steering=try JSONDecoder().decode([Submission].self,from:saved["steering"].data())
             commands=saved["commands"].list; let hasQueued = !queue.isEmpty; let hasSteering = !steering.isEmpty; queuePaused = hasQueued || hasSteering || saved["active"].flag == true || saved["queuePaused"].flag == true
@@ -208,6 +234,8 @@ public actor AgentSession {
             try opened.append(["type":"message","message":result.pi],id:result.id); history.append(result); context.append(result); visible.append(result); queuePaused=true
             for attempt in result.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(result.id) }
         }
+        let retainedTaskSources = Set(visible.map(\.id))
+        recentTaskPresentations.removeAll { $0.lastSourceID.map { !retainedTaskSources.contains($0) } ?? true }
         let deliveredIDs=Set(history.filter { $0.role == "user" }.map(\.id))
         // Journal append may succeed just before the queue-state append crashes.
         // A durably delivered user identity must never be delivered a second time.

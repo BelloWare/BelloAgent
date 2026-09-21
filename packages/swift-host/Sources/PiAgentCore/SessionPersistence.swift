@@ -35,7 +35,9 @@ extension AgentSession {
     func savedState(active: Bool? = nil) throws -> JSON {
         let value: JSON = ["active":JSON(active ?? (runTask != nil)),"queue":.array(queue.map(\.savedValue)),"steering":.array(steering.map(\.savedValue)),"commands":.array(Array(commands.suffix(128))),"queuePaused":JSON(queuePaused),"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode),"runStatus":JSON(runStatus),"errorMessage":errorMessage.map { JSON($0) } ?? .null,"timing":["modelMs":cumulativeModelMs.map { JSON($0) } ?? .null,"toolMs":cumulativeToolMs.map { JSON($0) } ?? .null]]
         guard (try value.data()).count <= 8*1024*1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
-        return value
+        var saved = value
+        if let activeTaskPresentation { saved["taskPresentation"] = try JSON.parse(JSONEncoder().encode(activeTaskPresentation)) }
+        return saved
     }
     /// A record written while no run is going is forced to disk at once: the
     /// user is waiting on nothing else, and a queued message or an edit must
@@ -55,11 +57,13 @@ extension AgentSession {
     func append(_ message: ChatMessage, observedAt: Double? = nil, record extra: JSON = [:]) throws {
         var message=message; if message.timestamp == nil { message.timestamp=Date().timeIntervalSince1970*1000 }
         if message.taskRootID == nil { message.taskRootID=taskRootID }
+        if message.taskExecutionID == nil { message.taskExecutionID=activeTaskPresentation?.executionID }
         if message.turn == nil, !currentTurnID.isEmpty { message.turn=currentTurnID }
         let observedAt = observedAt ?? displayClock()
         var record: JSON=["type":"message","message":message.pi]; for (key,value) in extra.map { record[key]=value }
         try journal?.append(record,id:message.id,flush:journalFlushesEachRecord)
         toolHistory.append(message, at: history.count); history.append(message); context.append(message); visible.append(message); currentContextCount=nil
+        observePresentedMessage(message)
         if message.replayEligible { replayInputsChanged() }
         invalidateDisplay(message.id)
         if message.role == "toolResult", let callID=message.toolCallId, let owner=toolHistory.owners[callID] { invalidateDisplay(owner) }

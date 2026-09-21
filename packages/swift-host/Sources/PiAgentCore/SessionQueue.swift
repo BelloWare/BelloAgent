@@ -102,6 +102,7 @@ extension AgentSession {
     }
     func deliver(_ submission: Submission, lane: String = "follow-up", newTask: Bool = true) async throws {
         _ = try profile.overriding(model:submission.model,thinkingLevel:submission.thinkingLevel,contextWindow:submission.contextWindow,maxOutputTokens:submission.maxOutputTokens,modelOutputLimit:submission.modelOutputLimit)
+        if newTask { beginPresentedTask(submission.turnID); event("state") }
         try await resources.validate(submission.skills,tools:await tools.capabilityIDs(readOnly:readOnly)); appliedSnapshot=try await resources.resolve(); appliedRevision=appliedSnapshot?.revision; try Task.checkCancellation()
         let images=try loadImages(submission.attachments)
         guard images.isEmpty || profile.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
@@ -111,6 +112,7 @@ extension AgentSession {
             var selected = skill.selection; selected["name"] = JSON(skill.name); selected["path"] = JSON(skill.path); return selected
         })]
         message.taskRootID=newTask ? submission.turnID : taskRootID
+        message.taskExecutionID=activeTaskPresentation?.executionID
         message.inputLane=lane
         var overrides: JSON=[:]; if let model=submission.model { overrides["modelOverride"]=JSON(model) }; if let level=submission.thinkingLevel { overrides["thinkingLevel"]=JSON(level) }
         if let capacity=submission.contextWindow { overrides["contextWindow"]=JSON(capacity) }; if let output=submission.maxOutputTokens { overrides["maxOutputTokens"]=JSON(output) }; if let limit=submission.modelOutputLimit { overrides["modelOutputLimit"]=JSON(limit) }

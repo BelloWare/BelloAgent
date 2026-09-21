@@ -66,13 +66,20 @@ final class RetryTests: XCTestCase {
         let midway = await session.snapshot()
         XCTAssertEqual(midway["retry"]["attempt"].int, 2); XCTAssertEqual(midway["retry"]["of"].int, 6); XCTAssertEqual(midway["retry"]["reason"].text, "stream dropped")
         XCTAssertEqual(midway["state"].text, "running")
-        XCTAssertEqual(midway["messages"].list.last?["text"].text, "", "The failed attempt's partial text is dropped before the retry")
+        XCTAssertEqual(midway["messages"].list.last?["text"].text, "", "The replacement attempt starts with a new, empty source")
+        XCTAssertEqual(midway["messages"].list.filter { $0["stopReason"].text == "interrupted" }.count,1,"The failed attempt's visible prose stays inspectable")
+        XCTAssertEqual(midway["taskPresentation"]["active"]["rootID"].text,"t1")
+        XCTAssertTrue(midway["taskPresentation"]["recent"].list.isEmpty,"A retry is not task completion")
         try await eventually { !(await session.isRunning) }
         let requests = await client.requests
         XCTAssertEqual(requests, 3)
         let final = await session.snapshot()
         XCTAssertEqual(final["state"].text, "idle"); XCTAssertTrue(final["retry"].isNull)
         XCTAssertEqual(final["messages"].list.last?["text"].text, "finally")
+        XCTAssertEqual(final["taskPresentation"]["recent"].list.count,1)
+        XCTAssertEqual(final["taskPresentation"]["recent"].list.first?["executionID"],midway["taskPresentation"]["active"]["executionID"])
+        let assistants = final["messages"].list.filter { $0["role"].text == "assistant" }
+        XCTAssertEqual(Set(assistants.compactMap { $0["id"].text }).count,3,"Two retained failed attempts and the final prose never share a body")
         await session.close()
     }
 

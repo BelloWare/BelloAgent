@@ -35,6 +35,7 @@ extension AgentSession {
         pendingDisplayObservations[messageID] = min(pendingDisplayObservations[messageID] ?? at, at)
     }
     func invalidateDisplay(_ messageID: String? = nil, allRows: Bool = false) {
+        if allRows { cachedPresentationTimeline = nil }
         displayGeneration &+= 1; displayProjection=nil
         if allRows { displayRows.removeAll(keepingCapacity: true) }
         else if let messageID { displayRows.removeValue(forKey: messageID) }
@@ -56,7 +57,7 @@ extension AgentSession {
             let text=partialTextPreview ?? { let value=preview(partialText,bytes:Self.streamedTextBytes); partialTextPreview=value; return value }()
             let thinking=partialThinkingPreview ?? { let value=preview(partialThinking,bytes:Self.streamedThinkingBytes); partialThinkingPreview=value; return value }()
             let truncated=partialText.utf8.count>Self.streamedTextBytes || partialThinking.utf8.count>Self.streamedThinkingBytes || partialToolSeen.count>cards.count
-            let value = boundedDisplayRow(["id":JSON(partialID),"role":"assistant","text":JSON(text),"thinking":JSON(thinking),"tools":.array(cards),"state":"streaming","toolCallCount":0,"truncated":JSON(truncated)])
+            let value = boundedDisplayRow(["id":JSON(partialID),"role":"assistant","turn":JSON(currentTurnID),"taskRootID":taskRootID.map { JSON($0) } ?? .null,"taskExecutionID":activeTaskPresentation.map { JSON($0.executionID) } ?? .null,"at":partialStartedAt.map { JSON($0) } ?? .null,"text":JSON(text),"thinking":JSON(thinking),"tools":.array(cards),"state":"streaming","toolCallCount":0,"truncated":JSON(truncated)])
             displayRowVersion &+= 1
             _=append(DisplayRow(value:value,bytes:(try? value.data().count) ?? 1_048_576,version:displayRowVersion))
             streaming=StreamingRowState(id:partialID,text:value["text"].text ?? "",thinking:value["thinking"].text ?? "",cards:partialCardsVersion,truncated:value["truncated"].flag ?? false)
@@ -186,6 +187,7 @@ extension AgentSession {
             }
         }
         var value: JSON=["sessionId":JSON(id),"seq":JSON(sequence),"state":JSON(state),"runStatus":JSON(runStatus),"retry":retryInfo,"settingsPending":JSON(pendingConfiguration != nil),"preflightError":errorMessage.map { JSON($0) } ?? .null,"side":parentInfo,"ephemeral":JSON(ephemeral),"keeping":false,"keepRequested":JSON(keepRequested),"keepError":.null,"queue":.array(queue.map { var v=$0.previewValue;v["kind"]="follow-up";return v }+steering.map { var v=$0.previewValue;v["kind"]="steering";v["text"]=JSON("[Steering] "+(v["text"].text ?? ""));return v }),"steering":.array(steering.map(\.previewValue)),"queueCount":JSON(queue.count+steering.count),"queuePaused":JSON(queuePaused),"path":path.map { JSON($0) } ?? .null,"commands":.array(commands),"total":JSON(visible.count),"displayRevision":JSON(revision),"profileId":JSON(profile.id),"toolMode":JSON(readOnly ? "read-only" : "editing"),"context":contextInfo(),"turnMetrics":turnMetrics(),"assistantMessageCount":JSON(assistantMessageCount),"latestAssistantMessageId":latestAssistantMessageID.map { JSON($0) } ?? .null,"activity":activitySnapshot()]
+        value["taskPresentation"] = (try? JSON.parse(JSONEncoder().encode(taskPresentationSnapshot()))) ?? .null
         if params["contextObservationRevision"].text != "\(displayEpoch):\(observationRevision)" {
             value["contextObservationRevision"]=JSON("\(displayEpoch):\(observationRevision)")
             value["requestObservation"]=publishedObservation
@@ -201,7 +203,7 @@ extension AgentSession {
         // read must not build a hidden page merely to compute its byte limit.
         if let projection {
             value["before"]=projection.start>0 ? JSON(projection.start):.null
-            let lineage = visible.last(where: { $0.kind == "branch" })?.id ?? "root"
+            let lineage = presentationTimeline
             value["historyIncarnation"] = JSON(displayEpoch); value["historyLineage"] = JSON(lineage)
             value["historyOlder"] = projection.start > 0 && projection.start < visible.count ?
                 ["incarnation":JSON(displayEpoch),"lineage":JSON(lineage),"entry":JSON(visible[projection.start].id)] : .null

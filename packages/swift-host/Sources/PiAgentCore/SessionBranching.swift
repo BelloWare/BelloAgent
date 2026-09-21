@@ -47,6 +47,7 @@ extension AgentSession {
             throw error
         }
         Self.adoptBranch(plan, history: &history, visible: &visible, context: &context, markerID: markerID)
+        prunePresentedTasksAfterBranch()
         invalidateDisplay(allRows: true); replayInputsChanged(); contextRecovery = .null; compactionState = .null
         boundary = context; contextBaseline = nil; currentContextCount = nil; clearRequestObservation()
         retrySubmission = nil; activeSubmission = nil; partialID = nil; partialText = ""; partialThinking = ""; resetPartialRow(); currentTurnID = ""; taskRootID = nil
@@ -57,6 +58,7 @@ extension AgentSession {
     }
     func applyBranch(from messageID: String, keptIDs: Set<String>, markerID: String) {
         Self.branch(history:&history,context:&context,visible:&visible,from:messageID,keptIDs:keptIDs,markerID:markerID)
+        prunePresentedTasksAfterBranch()
         invalidateDisplay(allRows: true)
         replayInputsChanged(); contextRecovery = .null; compactionState = .null
         boundary=context; contextBaseline=nil; currentContextCount=nil; clearRequestObservation()
