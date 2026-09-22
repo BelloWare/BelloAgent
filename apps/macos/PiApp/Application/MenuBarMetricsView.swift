@@ -358,5 +358,5 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
 
 func menuBarRate(_ value: Double?) -> String {
     guard let value, value.isFinite, value >= 0 else { return "—" }
-    return value.formatted(.number.precision(.fractionLength(1)))
+    return value.formatted(.number.precision(.fractionLength(3)))
 }

@@ -4,9 +4,10 @@ import SwiftUI
 
 final class TurnRequestPopupTests: XCTestCase {
     @MainActor func testNativePopupLoadsWithoutConstraintFeedback() async throws {
+        var reads = 0
         let record = TurnRequestRecord(metadata: metadata("layout"))
         let bytes = Data("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"model\":\"auto-router\"}}\n\n".utf8)
-        let source = TurnRequestSource(sessionID: "session", list: { _ in TurnRequestPage(records: [record]) }, body: { _, _ in
+        let source = TurnRequestSource(sessionID: "session", list: { _ in reads += 1; return TurnRequestPage(records: [record]) }, body: { _, _ in
             CapturedBodySource(metadata: { CapturedBodyMetadata(body: ["state": .string("complete"), "retainedBytes": .number(Double(bytes.count))], hash: nil) }, page: { _ in (bytes, bytes.count) })
         })
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 1000, height: 800), styleMask: [.titled], backing: .buffered, defer: false)
@@ -35,8 +36,28 @@ final class TurnRequestPopupTests: XCTestCase {
                                              uptimeMs: ProcessInfo.processInfo.systemUptime * 1000 + 60_000)
         XCTAssertEqual(later.elapsedMs, 3_123.456)
         XCTAssertTrue(popup.isShown, "Updating completed metrics must not destroy a retained popup")
+        let completedReads = reads
+        presenter.toggleSize()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(presenter.expanded)
+        XCTAssertTrue(popup.contentViewController === content, "Expanding preserves the mounted body reader")
+        XCTAssertGreaterThan(popup.contentSize.width, 680)
+        XCTAssertEqual(popup.contentSize.width, content.rootView.size.width, accuracy: 1)
+        XCTAssertLessThanOrEqual(popup.contentSize.height, (window.screen ?? NSScreen.main)!.visibleFrame.height)
+        XCTAssertFalse(content.rootView.turn.isRunning)
+        presenter.toggleSize()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(presenter.expanded)
+        XCTAssertEqual(popup.contentSize.width, 680, accuracy: 1)
+        XCTAssertEqual(popup.contentSize.height, 640, accuracy: 1)
+        XCTAssertEqual(reads, completedReads, "Resizing cannot restart the request lookup")
         popup.animates = false
         presenter.close(); XCTAssertFalse(popup.isShown)
+    }
+    func testExpandedPopupFitsSmallerDisplays() {
+        let size = TurnInfoPopupLayout.size(expanded: true, available: CGSize(width: 900, height: 700))
+        XCTAssertEqual(size, CGSize(width: 852, height: 652))
+        XCTAssertGreaterThan(size.width, TurnInfoPopupLayout.compact.width)
     }
     private func turn() -> TurnSummary {
         var result = TurnSummary(replies: 1, tools: 1, startedAt: 1_000_000, endedAt: 1_010_000, elapsedMs: 10_000,

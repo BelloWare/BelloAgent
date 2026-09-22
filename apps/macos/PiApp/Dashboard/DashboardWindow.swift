@@ -3,6 +3,8 @@ import Foundation
 /// Dashboard time-range presets. Fixed presets are relative to "now"; the
 /// custom preset uses the explicit bounds stored in `DashboardPreferences`.
 enum DashboardWindowPreset: String, CaseIterable, Sendable {
+    case fiveMinutes = "5m"
+    case fifteenMinutes = "15m"
     case oneHour = "1h"
     case sixHours = "6h"
     case day = "24h"
@@ -15,6 +17,8 @@ enum DashboardWindowPreset: String, CaseIterable, Sendable {
 
     var title: String {
         switch self {
+        case .fiveMinutes: "5m"
+        case .fifteenMinutes: "15m"
         case .oneHour: "1h"
         case .sixHours: "6h"
         case .day: "24h"
@@ -23,15 +27,23 @@ enum DashboardWindowPreset: String, CaseIterable, Sendable {
         case .custom: "Custom"
         }
     }
-    /// Relative window length; nil for the custom preset.
+    /// Legacy whole-hour equivalent; minute and custom presets use `seconds`.
     var hours: Int? {
         switch self {
+        case .fiveMinutes, .fifteenMinutes: nil
         case .oneHour: 1
         case .sixHours: 6
         case .day: 24
         case .week: 168
         case .month: 720
         case .custom: nil
+        }
+    }
+    var seconds: TimeInterval? {
+        switch self {
+        case .fiveMinutes: 300
+        case .fifteenMinutes: 900
+        default: hours.map { Double($0) * 3600 }
         }
     }
     /// Exact preset for a relative hour count; nil when no preset matches.
@@ -63,17 +75,17 @@ struct DashboardWindow: Equatable, Sendable {
            DashboardWindowPreset.customBoundsValid(from: from, until: until, required: true) {
             return DashboardWindow(from: from, until: until, preset: .custom)
         }
-        let hours = preset.hours ?? preferences.windowHours
-        return DashboardWindow(from: now.addingTimeInterval(-Double(max(1, hours)) * 3600), until: now, preset: preset == .custom ? .custom : preset)
+        let seconds = preset.seconds ?? Double(max(1, preferences.windowHours)) * 3600
+        return DashboardWindow(from: now.addingTimeInterval(-seconds), until: now, preset: preset)
     }
 
     /// Writes a chosen preset back into the preferences. Fixed presets keep
-    /// `windowHours` in sync so settings and older readers agree; switching to
+    /// `windowHours` in sync (minute presets use a one-hour legacy fallback); switching to
     /// custom seeds explicit bounds from the currently resolved window.
     static func apply(_ preset: DashboardWindowPreset, to preferences: inout DashboardPreferences, now: Date = Date()) {
         let current = resolve(preferences, now: now)
         preferences.windowPreset = preset.rawValue
-        if let hours = preset.hours { preferences.windowHours = hours; preferences.customFrom = nil; preferences.customUntil = nil }
+        if preset.seconds != nil { preferences.windowHours = preset.hours ?? 1; preferences.customFrom = nil; preferences.customUntil = nil }
         else if preferences.customFrom == nil || preferences.customUntil == nil { preferences.customFrom = current.from; preferences.customUntil = current.until }
     }
 

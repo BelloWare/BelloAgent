@@ -93,6 +93,18 @@ enum TurnInfoPresentation {
     }
 }
 
+/// Keep both popup sizes inside the display's usable area.
+enum TurnInfoPopupLayout {
+    static let compact = CGSize(width: 680, height: 640)
+    static let expanded = CGSize(width: 1040, height: 840)
+
+    static func size(expanded: Bool, available: CGSize) -> CGSize {
+        let target = expanded ? Self.expanded : compact
+        return CGSize(width: min(target.width, max(1, available.width - 48)),
+                      height: min(target.height, max(1, available.height - 48)))
+    }
+}
+
 /// Own the payload popover at the AppKit boundary. SwiftUI's popover sizing
 /// can feed back into a virtualized transcript row's NSHostingView when the
 /// asynchronous body arrives, repeatedly updating window constraints. An
@@ -122,7 +134,10 @@ struct TurnInfoButton: NSViewRepresentable {
         private var turn: TurnSummary
         private var actions: TranscriptActions
         private(set) var popover: NSPopover?
+        private(set) var expanded = false
         private var content: NSHostingController<TurnInfoView>?
+        private weak var anchor: NSButton?
+        private var contentSize = TurnInfoPopupLayout.compact
         init(turn: TurnSummary, actions: TranscriptActions) { self.turn = turn; self.actions = actions }
         func update(turn: TurnSummary, actions: TranscriptActions) {
             self.actions = actions
@@ -136,17 +151,32 @@ struct TurnInfoButton: NSViewRepresentable {
             }
         }
         private func rootView() -> TurnInfoView {
-            TurnInfoView(turn: turn, actions: actions, close: { [weak self] in self?.close() })
+            TurnInfoView(turn: turn, actions: actions, close: { [weak self] in self?.close() },
+                         size: contentSize, expanded: expanded, toggleSize: { [weak self] in self?.toggleSize() })
         }
         @objc func toggle(_ button: NSButton) {
             if popover?.isShown == true { close(); return }
+            anchor = button; expanded = false
+            contentSize = sizeForScreen()
             let popup = NSPopover(), content = NSHostingController(rootView: rootView())
             popup.behavior = .transient; popup.animates = true; popup.delegate = self
-            popup.contentViewController = content; popup.contentSize = NSSize(width: 680, height: 640)
+            popup.contentViewController = content; popup.contentSize = contentSize
             self.popover = popup; self.content = content
             popup.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
             content.view.window?.title = "Turn details"
             content.view.window?.makeKey()
+        }
+        private func sizeForScreen() -> CGSize {
+            let screen = anchor?.window?.screen ?? NSScreen.main
+            return TurnInfoPopupLayout.size(expanded: expanded, available: screen?.visibleFrame.size ?? CGSize(width: 1280, height: 900))
+        }
+        func toggleSize() {
+            guard let popover, popover.isShown, let content else { return }
+            expanded.toggle(); contentSize = sizeForScreen()
+            // Resize the existing host. Recreating it would reset the selected
+            // request, search, JSON disclosure state and scroll position.
+            content.rootView = rootView()
+            popover.contentSize = contentSize
         }
         func close() { popover?.close(); popover = nil; content = nil }
         func popoverDidClose(_ notification: Notification) {
@@ -167,6 +197,9 @@ struct TurnInfoView: View {
     let turn: TurnSummary
     let actions: TranscriptActions
     var close: (() -> Void)? = nil
+    var size: CGSize
+    var expanded: Bool
+    var toggleSize: (() -> Void)?
     @StateObject private var controller = TurnRequestController()
     @State private var tab = "response"
     @State private var query = ""
@@ -177,8 +210,10 @@ struct TurnInfoView: View {
     @FocusState private var searchFocused: Bool
     @Environment(\.dismiss) private var dismiss
 
-    init(turn: TurnSummary, actions: TranscriptActions, close: (() -> Void)? = nil, initialTab: String = "response", initialQuery: String = "") {
+    init(turn: TurnSummary, actions: TranscriptActions, close: (() -> Void)? = nil, initialTab: String = "response", initialQuery: String = "",
+         size: CGSize = TurnInfoPopupLayout.compact, expanded: Bool = false, toggleSize: (() -> Void)? = nil) {
         self.turn = turn; self.actions = actions; self.close = close
+        self.size = size; self.expanded = expanded; self.toggleSize = toggleSize
         _tab = State(initialValue: initialTab); _query = State(initialValue: initialQuery)
     }
     private struct Refresh: Equatable { let scope: TurnRequestScope; let live: Bool }
@@ -192,6 +227,15 @@ struct TurnInfoView: View {
                 Spacer()
                 Button { copyTurn() } label: { Image(systemName: "doc.on.doc") }
                     .buttonStyle(.piGhost).help("Copy Turn Info").accessibilityLabel("Copy Turn Info")
+                if let toggleSize {
+                    Button(action: toggleSize) {
+                        Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    }
+                    .buttonStyle(.piGhost)
+                    .help(expanded ? "Shrink turn details" : "Expand turn details")
+                    .accessibilityLabel(expanded ? "Shrink turn details" : "Expand turn details")
+                    .accessibilityIdentifier("turn-details-resize")
+                }
                 Button { if let close { close() } else { dismiss() } } label: { Image(systemName: "xmark") }
                     .buttonStyle(.piGhost).help("Close turn details").accessibilityLabel("Close turn details")
                     .keyboardShortcut(.cancelAction)
@@ -247,7 +291,7 @@ struct TurnInfoView: View {
             if !controller.notice.isEmpty { Text(controller.notice).font(PiFont.caption).foregroundStyle(Color.piWarning).textSelection(.enabled) }
             if !copyNotice.isEmpty { Text(copyNotice).font(PiFont.micro).foregroundStyle(Color.piInkSecondary) }
         }
-        .padding(16).frame(width: 680, height: 640)
+        .padding(16).frame(width: size.width, height: size.height)
         .background(Color.piSurface).foregroundStyle(Color.piInk)
         .accessibilityIdentifier("turn-details-popup")
         .piWindowVisibility { onScreen = $0 }

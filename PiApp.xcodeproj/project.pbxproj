@@ -358,6 +358,7 @@
 		F12B481CDC2348D23E76AF59 /* ToolCallSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D02F4433B4FD22A318BC04 /* ToolCallSummary.swift */; };
 		F1A390DA0AB1B377DAB3BACE /* WorkspaceDrafts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EBF50710F64ADCD26D629B8 /* WorkspaceDrafts.swift */; };
 		F26F93C7464C36221FA92272 /* HostInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9759F89F958E91547FCA9C44 /* HostInbox.swift */; };
+		F282C4DB2CC9395076E24AAD /* RoutingAnalyticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24CD2840739288819BFC0414 /* RoutingAnalyticsView.swift */; };
 		F2A700EBDD411790287CD7D8 /* PayloadSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CCA9BDEFD0628EC36A2FFA8 /* PayloadSearch.swift */; };
 		F3A3AD24EAD1774745590D05 /* RequestContextObservationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B97738F61D9F091D410CF246 /* RequestContextObservationTests.swift */; };
 		F4BC148075DD6ABCCB3019DE /* PiControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADF52E7FBDC473B2ECD8EB8A /* PiControls.swift */; };
@@ -442,6 +443,7 @@
 		21363228056C7F2F856B961D /* PiSurfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiSurfaces.swift; sourceTree = "<group>"; };
 		2186842A13CBCABC200E1FB3 /* DashboardWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardWindow.swift; sourceTree = "<group>"; };
 		2337F05E20B6A537B28C283C /* WorkspaceChatLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceChatLifecycle.swift; sourceTree = "<group>"; };
+		24CD2840739288819BFC0414 /* RoutingAnalyticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutingAnalyticsView.swift; sourceTree = "<group>"; };
 		257DC826AE1FB36FD73009F8 /* NativeMarkdownViewportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownViewportTests.swift; sourceTree = "<group>"; };
 		2606EB25D98679A138E40230 /* TerminalEmulatorReplies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalEmulatorReplies.swift; sourceTree = "<group>"; };
 		268486D39B21273968990E1E /* SessionUsageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionUsageView.swift; sourceTree = "<group>"; };
@@ -1040,6 +1042,7 @@
 				D3C9DAEE6090421316663DC4 /* ReportController.swift */,
 				E4EF85D73D047DCEB46A1F27 /* ReportPage.swift */,
 				B0B6C1DFB73CFDAFC7F3E590 /* ReportRows.swift */,
+				24CD2840739288819BFC0414 /* RoutingAnalyticsView.swift */,
 				2DA331D84219637B9527ABA7 /* SessionRequestLedger.swift */,
 				51EF418C928480CC64C5C716 /* SessionStatsPills.swift */,
 				0C0DEDC55A20BCA391C9CA7D /* SessionTimingHistory.swift */,
@@ -1518,6 +1521,7 @@
 				A131D0779F6833AC6DAAAAF9 /* RequestContextObservation.swift in Sources */,
 				D4E428E217D63259D53F4898 /* ResourceInspector.swift in Sources */,
 				57A2C094CA45E6534F9AB808 /* ResponseTimeline.swift in Sources */,
+				F282C4DB2CC9395076E24AAD /* RoutingAnalyticsView.swift in Sources */,
 				D46211E8967D7A0FA7992976 /* RoutingConfiguration.swift in Sources */,
 				1F4FB65AA9B8E93883BB317C /* SecretStore.swift in Sources */,
 				57DE250C7E3AAA2DA66E3E8A /* SessionDisplay.swift in Sources */,
@@ -1881,7 +1885,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 87;
+				CURRENT_PROJECT_VERSION = 88;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1896,11 +1900,11 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.83;
+				MARKETING_VERSION = 0.1.84;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				RELEASE_MESSAGE = "Compact turn reports with token percentage bars, requested and returned models, AI and tool duration, cost, and smoother streaming.";
+				RELEASE_MESSAGE = "Live model charts, routing and cost analytics, expandable turn details, and stable cached and reasoning token breakdowns while work continues.";
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
@@ -1962,7 +1966,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 87;
+				CURRENT_PROJECT_VERSION = 88;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -1983,12 +1987,12 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.83;
+				MARKETING_VERSION = 0.1.84;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				RELEASE_MESSAGE = "Compact turn reports with token percentage bars, requested and returned models, AI and tool duration, cost, and smoother streaming.";
+				RELEASE_MESSAGE = "Live model charts, routing and cost analytics, expandable turn details, and stable cached and reasoning token breakdowns while work continues.";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";

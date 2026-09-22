@@ -51,6 +51,7 @@ struct DashboardBucket: Sendable, Identifiable {
     var streaming = DashboardPercentiles()
     var http = DashboardPercentiles()
     var gateway = GatewayTotals()
+    var historicalRate = HistoricalOutputRate()
 }
 
 struct DashboardRequest: Sendable, Identifiable {
@@ -350,8 +351,11 @@ struct DashboardQueryEngine {
         for row in try db.rows("SELECT \(bucketSQL) AS bucket,COUNT(*) AS n FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY bucket", bucketArgs + selected.values) {
             if let i = row["bucket"]?.number.map(Int.init), buckets.indices.contains(i) { buckets[i].requests = Int(row["n"]?.number ?? 0) }
         }
-        for row in try db.rows("SELECT \(bucketSQL) AS bucket,\(PayloadArchive.gatewayAggregateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY bucket", bucketArgs + selected.values) {
-            if let i = row["bucket"]?.number.map(Int.init), buckets.indices.contains(i) { buckets[i].gateway = PayloadArchive.gatewayTotals(row) }
+        for row in try db.rows("SELECT \(bucketSQL) AS bucket,\(PayloadArchive.gatewayAggregateSQL),\(PayloadArchive.historicalOutputRateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY bucket", bucketArgs + selected.values) {
+            if let i = row["bucket"]?.number.map(Int.init), buckets.indices.contains(i) {
+                buckets[i].gateway = PayloadArchive.gatewayTotals(row)
+                buckets[i].historicalRate = PayloadArchive.historicalOutputRate(row)
+            }
         }
         for column in ["ttft_ms", "stream_ms", "http_ms"] {
             // Compute each bucket from raw samples. A global percentile above

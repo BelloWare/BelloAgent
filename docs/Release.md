@@ -25,7 +25,20 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.83/build 87 is publicly released** at
+**Bello Agent 0.1.84/build 88 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.84](https://github.com/BelloWare/BelloAgent/tree/v0.1.84) and website commit
+`57df3d8a5b433c7c34301a91d826c2cf51f0ab8b`. The signed/notarized DMG is **9,519,102 bytes (9.08 MiB)**;
+SHA-256 `0f1d492b66ed44c9b6e49d01d43ae1665865aa1a9c2419afeb96cf2ac94fc549`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-09-22 16:19:19 UTC**, after Cloudflare check **106832398788** succeeded.
+Pending turns retain matched cache and reasoning token splits. The status popup
+and analytics use the selected routing design, live model charts and model-cost
+panels, and Turn Info can expand without losing reader state. **129 native tests
+passed**, including the isolated loopback gallery in both themes. See the
+[0.1.84 validation record](validation/Bello-Agent-0.1.84-2026-09-23.md).
+
+**Bello Agent 0.1.83/build 87 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.83](https://github.com/BelloWare/BelloAgent/tree/v0.1.83) and website commit
 `9b7fee6c53254814dbf1d9a69dfa4dc7b6ca33ab`. The signed/notarized DMG is **9,442,648 bytes (9.01 MiB)**;

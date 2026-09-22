@@ -9,6 +9,31 @@ private final class AccountingClock: @unchecked Sendable {
 }
 
 final class GatewayAccountingTests: XCTestCase {
+    func testPairedSplitsExcludeUnmatchedRequestsAndSurviveArchiveReload() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
+        try await archive.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
+        for (index, usage) in [
+            ["inputIncludingCache": 12000.0, "cacheRead": 6000, "output": 3800, "reasoning": 900],
+            ["inputIncludingCache": 90000, "output": 8000],
+            ["cacheRead": 100, "reasoning": 50],
+            [:]
+        ].enumerated() {
+            var metadata = value(output: ["answer-\(index)"], outcome: index == 3 ? "running" : "completed")
+            metadata["usage"] = .object(usage.mapValues(WireValue.number))
+            try await save(archive, metadata)
+        }
+        let snapshot = try await archive.dashboard(filter())
+        XCTAssertEqual(snapshot.gateway.inputSplit, GatewayTokenSplit(total: 12000, part: 6000, samples: 1))
+        XCTAssertEqual(snapshot.gateway.outputSplit, GatewayTokenSplit(total: 3800, part: 900, samples: 1))
+        XCTAssertEqual(snapshot.gateway.tokens?.input, 102000, "The independent total remains complete")
+        XCTAssertEqual(snapshot.gateway.cacheReadTokens, 6100, "An unmatched subset is kept in detailed accounting")
+        let restored = try JSONDecoder().decode(GatewayTotals.self, from: JSONEncoder().encode(snapshot.gateway))
+        XCTAssertEqual(restored.inputSplit, snapshot.gateway.inputSplit)
+        XCTAssertEqual(restored.outputSplit, snapshot.gateway.outputSplit)
+        XCTAssertEqual(snapshot.buckets.compactMap(\.historicalRate.tokensPerSecond).count, 1)
+        try await archive.close()
+    }
     func testCacheHeaderContractCannotReadAuthenticationOrReuseModelHeader() throws {
         try RoutingConfiguration.validate(.object(["reference": .string("Gateway release acceptance contract"), "cacheHeader": .string("x-app-cache-status")]))
         let cases: [[String: WireValue]] = [

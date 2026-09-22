@@ -58,6 +58,8 @@ struct MonitorRateSeries {
     let metric: MonitorRateMetric
     let palette: MonitorModelPalette
     let selectMetric: (MonitorRateMetric) -> Void
+    var showsMetricSelection = true
+    var chartHeight: CGFloat = 124
     @Environment(\.colorScheme) private var colorScheme
     @State private var hover: Date?
     private var domain: ClosedRange<Date> { zoom.domain(following: following) }
@@ -72,7 +74,9 @@ struct MonitorRateSeries {
             HStack(spacing: 8) {
                 Text("Output tok/s").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
                 Spacer(minLength: 0)
-                PiTabs(selection: Binding(get: { metric }, set: { selectMetric($0) }), items: MonitorRateMetric.allCases.map { ($0, $0.rawValue) })
+                if showsMetricSelection {
+                    PiTabs(selection: Binding(get: { metric }, set: { selectMetric($0) }), items: MonitorRateMetric.allCases.map { ($0, $0.rawValue) })
+                }
             }
             Chart {
                 if metric == .live {
@@ -132,7 +136,7 @@ struct MonitorRateSeries {
                     }
                 }
             }
-            .frame(height: 124)
+            .frame(height: chartHeight)
             // Rebuild the renderer on an intentional zoom/theme change. Swift
             // Charts can otherwise retain its former plot scale and resolved
             // dynamic colors while the surrounding labels have already changed.

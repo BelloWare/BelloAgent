@@ -64,6 +64,37 @@ final class CompactTurnReportTests: XCTestCase {
         XCTAssertEqual(result.model, "gpt-5.4-mini", "A return to an earlier model is still the latest response")
     }
 
+    func testPendingRequestsKeepThePreviousMatchedTokenColorsAndCounts() throws {
+        var reported = GatewayTotals(requests: 1)
+        reported.tokens = GatewayTokenTotals(input: 12000, output: 3800, total: 15800, inputSamples: 1, outputSamples: 1, samples: 1, reasoning: 900, reasoningSamples: 1)
+        reported.cacheReadTokens = 6000; reported.cacheReadSamples = 1
+        var answer = TranscriptMessage(id: "answer", role: "assistant", text: "First result")
+        answer.accounting = reported
+        var pending = TranscriptMessage(id: "pending", role: "assistant", text: "")
+        pending.accounting = GatewayTotals(requests: 1)
+        let before = TranscriptActivity.aggregate([answer])
+        let during = TranscriptActivity.aggregate([answer, pending])
+        for input in [true, false] {
+            let settled = TurnTokenPartition(before, input: input), continuing = TurnTokenPartition(during, input: input)
+            XCTAssertEqual(continuing.fill, settled.fill)
+            XCTAssertEqual(continuing.total, settled.total)
+            XCTAssertEqual(continuing.part, settled.part)
+            XCTAssertEqual(continuing.remainder, settled.remainder)
+            XCTAssertTrue(continuing.partial, "Coverage remains truthful in details without replacing the split")
+        }
+        // A later input total without a matching cache report must not change
+        // the denominator of the retained green/brown breakdown.
+        pending.accounting?.tokens = GatewayTokenTotals(input: 90000, output: 8000, total: 98000, inputSamples: 1, outputSamples: 1, samples: 1)
+        let unmatched = TranscriptActivity.aggregate([answer, pending])
+        XCTAssertEqual(TurnTokenPartition(unmatched, input: true).fraction, 0.5)
+        XCTAssertEqual(TurnTokenPartition(unmatched, input: false).total, 3800)
+        pending.accounting = reported
+        let next = TranscriptActivity.aggregate([answer, pending])
+        XCTAssertEqual(TurnTokenPartition(next, input: true).total, 24000)
+        XCTAssertFalse(TurnTokenPartition(next, input: true).partial)
+        XCTAssertEqual(TurnTokenPartition(TurnAccounting(), input: true).fill, .empty, "Another turn cannot inherit this turn’s values")
+    }
+
     func testRequestedAndResponseModelsStayPairedAndUseDispatchTime() throws {
         let older = GatewayModelRoute(requested: "auto-router", responded: "gpt-5.4-mini", latestWall: 10)
         let newer = GatewayModelRoute(requested: "gpt-5.4", responded: "gpt-5.4", latestWall: 20)
@@ -139,6 +170,9 @@ final class CompactTurnReportTests: XCTestCase {
         for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             for width: CGFloat in [280, 760] {
                 var live = turn(); live.live = true; live.outcome = nil; live.phase = "compacting"
+                live.accounting.inputSplit = GatewayTokenSplit(total: 12_000, part: 6_000, samples: 2)
+                live.accounting.outputSplit = GatewayTokenSplit(total: 3_800, part: 900, samples: 2)
+                live.accounting.requests = 3 // The next request has not reported usage yet.
                 let view = VStack(alignment: .leading, spacing: 18) {
                     Text("Completed turn").font(.headline)
                     StableTurnSummaryView(turn: turn(), actions: TranscriptActions())

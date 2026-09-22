@@ -38,6 +38,8 @@ struct DiffRow: Equatable, Sendable {
 /// Gateway-reported usage summed over a turn's (or a reply's) requests; a figure is nil when no request reported it.
 struct TurnAccounting: Equatable, Sendable {
     var requests = 0
+    var inputSplit: GatewayTokenSplit?
+    var outputSplit: GatewayTokenSplit?
     var input: Double? = nil, inputSamples = 0
     var cached: Double? = nil, cachedSamples = 0
     var uncached: Double? = nil, uncachedSamples = 0
@@ -570,6 +572,8 @@ enum TranscriptActivity {
         for message in messages {
             guard let a = message.accounting else { continue }
             sum.requests += a.requests
+            if let split = GatewayTokenSplit.reported(a, input: true) { sum.inputSplit = sum.inputSplit.map { $0.adding(split) } ?? split }
+            if let split = GatewayTokenSplit.reported(a, input: false) { sum.outputSplit = sum.outputSplit.map { $0.adding(split) } ?? split }
             add(\.input, \.inputSamples, a.tokens?.input, a.tokens?.inputSamples ?? 0)
             add(\.output, \.outputSamples, a.tokens?.output, a.tokens?.outputSamples ?? 0)
             add(\.reasoning, \.reasoningSamples, a.tokens?.reasoning, a.tokens?.reasoningSamples ?? 0)

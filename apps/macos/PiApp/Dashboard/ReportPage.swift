@@ -2,8 +2,8 @@ import SwiftUI
 import Charts
 
 /// Usage report as a page inside the main window. The default view is a
-/// time range, four summary tiles, one chart and the request list; advanced
-/// filters, detailed timings and coverage sit behind progressive disclosure.
+/// time range, reported metrics, routing and token splits. Request rows and
+/// advanced filters remain available through progressive disclosure.
 @MainActor
 struct ReportPage: View {
     @ObservedObject var model: WorkspaceModel
@@ -11,6 +11,8 @@ struct ReportPage: View {
     @Environment(\.piReduceMotion) private var reduceMotion
     @State private var inspected: DashboardRequest?
     @State private var messageLookup: Task<Void, Never>?
+    @State private var routingPalette = MonitorModelPalette()
+    @State private var requestListOpen = false
     init(model: WorkspaceModel) { self.model = model; self.report = model.report }
 
     private var motion: Animation? { reduceMotion ? nil : .easeOut(duration: 0.2) }
@@ -31,8 +33,14 @@ struct ReportPage: View {
                         if snapshot.scopeCounts.dispatched == 0 && snapshot.scopeCounts.unobservedDispatch == 0 && report.brush == nil { emptyState }
                         else {
                             summary(active, window: snapshot, compact: geometry.size.width < 880)
-                            chart(snapshot)
-                            requests(active, width: max(1100, min(1280, geometry.size.width) - 2 * PiSpacing.xl))
+                            routingOverview(snapshot, active: active, wide: geometry.size.width >= 1050)
+                            ReportActiveSessions(live: model.liveActivity, workspaceID: snapshot.filter.workspaceID,
+                                activity: { model.menuBarActivity() }, openSession: { id in
+                                    Task { if model.side(id) != nil { await model.selectSide(id) } else { await model.select(id) } }
+                                })
+                            DisclosureGroup("Requests and session details", isExpanded: $requestListOpen) {
+                                requests(active, width: max(1100, min(1280, geometry.size.width) - 2 * PiSpacing.xl)).padding(.top, PiSpacing.md)
+                            }.font(PiFont.heading).accessibilityIdentifier("analytics-request-details")
                         }
                         if report.detailsOpen { details(active, window: snapshot).transition(disclosure) }
                         detailsToggle
@@ -49,6 +57,8 @@ struct ReportPage: View {
         }
         .background(Color.piContent)
         .task { await report.prepare() }
+        .onChange(of: report.modelSummaries, initial: true) { _, rows in routingPalette.include((rows ?? []).map(\.distributionID)) }
+        .onChange(of: report.grouping) { _, _ in requestListOpen = true }
         .onDisappear { messageLookup?.cancel(); messageLookup = nil; report.suspend() }
         .onExitCommand { model.closeReport() }
         .sheet(item: $inspected) { request in InspectorView(model: model, sessionID: request.sessionID, initialAttemptID: request.id) }
@@ -223,6 +233,26 @@ struct ReportPage: View {
 
     // MARK: Summary
 
+    @ViewBuilder private func routingOverview(_ snapshot: DashboardSnapshot, active: DashboardSnapshot, wide: Bool) -> some View {
+        let rows = report.modelSummaries ?? []
+        let models = MonitorDistribution.report(rows, total: active.gateway)
+        if wide {
+            HStack(alignment: .top, spacing: PiSpacing.md) {
+                chart(snapshot).frame(maxWidth: .infinity)
+                ModelRoutingMap(rows: rows, palette: routingPalette).frame(width: 350)
+            }
+            HStack(alignment: .top, spacing: PiSpacing.md) {
+                ModelCostBreakdown(models: models, total: active.gateway, palette: routingPalette).frame(maxWidth: .infinity)
+                AnalyticsTokenBreakdown(gateway: active.gateway).frame(maxWidth: .infinity)
+            }
+        } else {
+            chart(snapshot)
+            ModelRoutingMap(rows: rows, palette: routingPalette)
+            ModelCostBreakdown(models: models, total: active.gateway, palette: routingPalette)
+            AnalyticsTokenBreakdown(gateway: active.gateway)
+        }
+    }
+
     private func summary(_ active: DashboardSnapshot, window: DashboardSnapshot, compact: Bool) -> some View {
         let counts = window.scopeCounts
         let problems = counts.failed + counts.cancelled + counts.truncated + counts.interrupted
@@ -240,30 +270,46 @@ struct ReportPage: View {
         } ?? "The gateway reported no usage tokens"
         return LazyVGrid(columns: compact ? [GridItem(.adaptive(minimum: 172, maximum: 320), spacing: PiSpacing.md, alignment: .top)] : Array(repeating: GridItem(.flexible(), spacing: PiSpacing.md, alignment: .top), count: 6), alignment: .leading, spacing: PiSpacing.md) {
             PiStatTile(title: "Requests", value: "\(active.selectedRequests)", caption: statusCaption, symbol: "paperplane", tone: .accent)
-            PiStatTile(title: "Reported cost", value: headlineUSD(active.gateway.costUSD), caption: (headlineUSDRounded(active.gateway.costUSD) ? "exactly \(gatewayUSD(active.gateway.costUSD).replacingOccurrences(of: " USD", with: "")) · " : "") + (active.gateway.costSamples < active.gateway.requests ? "\(active.gateway.costSamples)/\(active.gateway.requests) requests reported" : "gateway-reported, every request"), symbol: "dollarsign.circle", tone: .success)
+            PiStatTile(title: "Reported cost", value: monitorCost(active.gateway.costUSD), caption: active.gateway.costSamples < active.gateway.requests ? "\(active.gateway.costSamples)/\(active.gateway.requests) requests reported" : "gateway-reported, every request", symbol: "dollarsign.circle", tone: .success)
                 .help(active.gateway.costLabel + "\n" + reportReasoningDetail(active.gateway))
             PiStatTile(title: "Tokens", value: tokenValue, caption: tokenCaption, symbol: "number", tone: .accent)
                 .help(reportReasoningDetail(active.gateway) + "\n" + active.gateway.promptCacheCoverageLabel)
-            PiStatTile(title: "Response cache", value: active.gateway.cacheHitRatio.map { String(format: "%.0f%% hit", $0 * 100) } ?? "Not reported", caption: "\(active.gateway.cacheHits) hit · \(active.gateway.cacheMisses) miss · \(active.gateway.cacheUnreported) unreported" + (active.gateway.cacheConflicts > 0 ? " · \(active.gateway.cacheConflicts) conflicting" : ""), symbol: "memorychip", tone: .info)
+            PiStatTile(title: "Input cache hit", value: monitorCacheShare(active.gateway), caption: active.gateway.promptCacheCoverageLabel, symbol: "memorychip", tone: .success)
             PiStatTile(title: "First token", value: "p50 " + milliseconds(active.ttft.p50), caption: "p99 \(milliseconds(active.ttft.p99)) · HTTP p50 \(milliseconds(active.http.p50))", symbol: "timer", tone: .info)
-            PiStatTile(title: "Output tok/s", value: SessionUsagePresentation.rate(active.gateway.settledThroughput.tokensPerSecond), caption: "\(active.gateway.settledThroughput.samples)/\(active.gateway.requests) measured" + ((report.modelSummaries?.count ?? 0) > 1 ? " · per model below" : ", duration-weighted"), symbol: "speedometer", tone: .info)
-                .help(SettledThroughput.explanation + " A window with several models blends them here; the By model table keeps each route apart.")
+            PiStatTile(title: "Output tok/s", value: menuBarRate(active.historicalRate.tokensPerSecond), caption: "\(active.historicalRate.samples) completed requests · duration-weighted", symbol: "speedometer", tone: .info)
+                .help("Reported output, including reasoning, divided by dispatch-to-completion time. Per-route details remain available below.")
         }
         .animation(motion, value: report.brush)
     }
 
     // MARK: Chart
 
-    private func chart(_ snapshot: DashboardSnapshot) -> some View {
+    @ViewBuilder private func chart(_ snapshot: DashboardSnapshot) -> some View {
+        if report.chartMetric == "Output tok/s" {
+            ReportThroughputPanel(live: model.liveActivity, snapshot: snapshot, window: report.appliedWindow, palette: routingPalette,
+                controls: { AnyView(chartMetricPicker) }, registerModels: { routingPalette.include($0) }, selection: report.brush,
+                select: { range in
+                    if let range, let brush = DashboardBrush(range.lowerBound, range.upperBound, in: snapshot.filter) { report.applyBrush(brush) }
+                    else { report.clearBrush() }
+                })
+        } else { retainedChart(snapshot) }
+    }
+
+    private var chartMetricPicker: some View {
+        PiDropdown(selection: $report.chartMetric, items: [("Output tok/s", "Output tok/s"), ("Requests", "Requests"), ("Cost", "Cost"), ("Latency", "Latency"), ("Ratio", "Cache")], compact: true).frame(width: 140)
+    }
+
+    private func retainedChart(_ snapshot: DashboardSnapshot) -> some View {
         let domain = snapshot.filter.from...snapshot.filter.until
         // A bare hour reads as a day of the month; keep the date on every tick.
-        let axisFormat: Date.FormatStyle = domain.upperBound.timeIntervalSince(domain.lowerBound) <= 36 * 3600
-            ? .dateTime.month(.abbreviated).day().hour() : .dateTime.month(.abbreviated).day()
+        let span = domain.upperBound.timeIntervalSince(domain.lowerBound)
+        let axisFormat: Date.FormatStyle = span <= 3600 ? .dateTime.hour().minute()
+            : span <= 36 * 3600 ? .dateTime.month(.abbreviated).day().hour() : .dateTime.month(.abbreviated).day()
         let metric = report.chartMetric
         return PiCard(padding: PiSpacing.md) {
             VStack(alignment: .leading, spacing: PiSpacing.sm) {
-                PiSectionHeader("Activity", subtitle: chartSubtitle) {
-                    PiTabs(selection: $report.chartMetric, items: [("Requests", "Requests"), ("Cost", "Cost"), ("Latency", "Latency"), ("Ratio", "Cache")])
+                PiSectionHeader("Throughput & activity", subtitle: chartSubtitle) {
+                    chartMetricPicker
                 }
                 Chart(snapshot.buckets) { bucket in
                     if metric == "Latency" {
@@ -304,7 +350,8 @@ struct ReportPage: View {
                 .chartXAxis { AxisMarks(preset: .aligned) { AxisGridLine().foregroundStyle(Color.piHairline); AxisValueLabel(format: axisFormat, centered: false, anchor: .top).foregroundStyle(Color.piInkTertiary) } }
                 .chartPlotStyle { $0.padding(.trailing, PiSpacing.sm) }
                 .dashboardBrush(filter: snapshot.filter, preview: $report.brushPreview, committed: report.brush, commit: { report.applyBrush($0) })
-                .frame(height: 160)
+                .frame(height: 200)
+                if report.brush != nil { Button("Reset selection") { report.clearBrush() }.buttonStyle(.piGhost) }
                 if metric == "Latency" {
                     PiTabs(selection: $report.latencyMetric, items: [("TTFT", "First token"), ("Streaming", "Streaming"), ("HTTP", "Whole request")]).transition(.opacity)
                 }
@@ -315,6 +362,7 @@ struct ReportPage: View {
     /// "Bucket" is how the query groups rows; a reader sees a chart over time.
     private var chartSubtitle: String {
         switch report.chartMetric {
+        case "Output tok/s": return "Reported output / request duration · drag to select a range"
         case "Cost": return "Reported USD over time · drag to select a range"
         case "Latency": return "p50 and p99 over time, in milliseconds · drag to select a range"
         case "Ratio": return "Cache hit ratio over time, % of reported · drag to select a range"

@@ -1,5 +1,23 @@
 # Native Swift — test and continuation handoff
 
+## 0.1.84 routing analytics and retained token splits
+
+Use `CompactTurnReportTests`, `GatewayAccountingTests`, `ReportPageTests`,
+`DashboardTests`, `LivePopupTests`, `LiveMonitorTests`, `MenuBarMetricsTests`
+and `TurnRequestPopupTests`. Parent/subset token pairs are aggregated from
+the same requests; pending or unmatched counters cannot change their denominator.
+Keep the previous complete split visible during a pending request, without a
+generic fill or partial badge. Missing observations remain missing in details.
+
+Analytics and the status popup independently own live publication visibility.
+Closing either cannot freeze the other; no visible consumer means no publications.
+Only whole-project scopes can display project-indexed live history. Narrow
+session/model/status filters use matching retained request-average rates.
+Native chart drag/zoom, both themes, hidden polling, multi-session load and
+expanding an already-open turn popup are covered by the focused suite.
+`PI_APP_UI_GALLERY_REPORT_ONLY=1` limits the opt-in loopback gallery to analytics
+after its initial chat fixtures. Screenshots use synthetic data only.
+
 ## 0.1.83 lifecycle audit
 
 Use `WorkspaceRefreshLifecycleTests`, `WorkspaceFailureTests`,

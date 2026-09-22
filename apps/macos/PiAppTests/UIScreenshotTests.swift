@@ -169,6 +169,22 @@ final class UIScreenshotTests: XCTestCase {
         await model.select(main.id); try await settle(0.8)
         session.draft = "Now add a unit test for the jitter bounds and show me the diff."
 
+        if testEnvironment("PI_APP_UI_GALLERY_REPORT_ONLY") == "1" {
+            model.openReport()
+            try await settle(1.2)
+            await model.report.refresh()
+            for (name, appearance) in appearances {
+                NSApp.appearance = NSAppearance(named: appearance)
+                try await settle(0.4)
+                try capture(window, to: gallery.appendingPathComponent("analytics-routing-\(name).png"))
+            }
+            XCTAssertNil(model.error, model.error ?? "")
+            XCTAssertNil(model.report.failure)
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
+
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.5)
             try capture(window, to: gallery.appendingPathComponent("01-main-\(name).png"))

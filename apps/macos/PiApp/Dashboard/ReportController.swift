@@ -51,7 +51,7 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
     @Published private(set) var failure: String?
     @Published var advancedOpen = false
     @Published var detailsOpen = false
-    @Published var chartMetric = "Requests"
+    @Published var chartMetric = "Output tok/s"
     @Published var latencyMetric = "TTFT"
     /// "requests" lists attempts; "sessions" groups them per chat.
     @Published var grouping = "requests"

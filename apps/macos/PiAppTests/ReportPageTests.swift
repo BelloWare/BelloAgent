@@ -3,6 +3,33 @@ import XCTest
 
 /// Navigation to the report page and the controller state behind it.
 final class ReportPageTests: XCTestCase {
+    func testLiveChartNeverIgnoresNarrowRequestFilters() {
+        let base = DashboardFilter(from: Date(timeIntervalSince1970: 100), until: Date(timeIntervalSince1970: 1000))
+        XCTAssertTrue(base.supportsProjectLiveHistory)
+        var project = base; project.workspaceID = "project"
+        XCTAssertTrue(project.supportsProjectLiveHistory)
+        for key in [\DashboardFilter.sessionID, \.purpose, \.api, \.requestedAlias, \.effectiveModel] {
+            var scoped = base; scoped[keyPath: key] = "filtered"
+            XCTAssertFalse(scoped.supportsProjectLiveHistory)
+        }
+        var unreported = base; unreported.unreportedModelOnly = true
+        XCTAssertFalse(unreported.supportsProjectLiveHistory)
+        var failures = base; failures.status = "failed"
+        XCTAssertFalse(failures.supportsProjectLiveHistory)
+    }
+
+    func testShortAnalyticsPresetsRemainRelativeAndSaveIndependentlyOfHourFallback() {
+        let now = Date(timeIntervalSince1970: 2000)
+        for (preset, seconds) in [(DashboardWindowPreset.fiveMinutes, 300.0), (.fifteenMinutes, 900.0)] {
+            var preferences = DashboardPreferences()
+            DashboardWindow.apply(preset, to: &preferences, now: now)
+            let window = DashboardWindow.resolve(preferences, now: now.addingTimeInterval(30))
+            XCTAssertEqual(window.span, seconds)
+            XCTAssertEqual(window.until, now.addingTimeInterval(30))
+            XCTAssertEqual(window.preset, preset)
+            XCTAssertNil(preferences.customFrom)
+        }
+    }
     private func folder() throws -> URL {
         let result = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("report-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: result, withIntermediateDirectories: true)

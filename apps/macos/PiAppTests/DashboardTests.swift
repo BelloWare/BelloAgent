@@ -259,10 +259,10 @@ final class DashboardTests: XCTestCase {
         XCTAssertEqual(odd.preset, .custom); XCTAssertEqual(odd.span, 5 * 3600, "Unmatched legacy hours keep their relative window")
         for preset in DashboardWindowPreset.allCases where preset != .custom {
             DashboardWindow.apply(preset, to: &preferences, now: now)
-            XCTAssertEqual(preferences.windowPreset, preset.rawValue); XCTAssertEqual(preferences.windowHours, preset.hours)
+            XCTAssertEqual(preferences.windowPreset, preset.rawValue); XCTAssertEqual(preferences.windowHours, preset.hours ?? 1)
             XCTAssertNil(preferences.customFrom); XCTAssertNil(preferences.customUntil)
             let window = DashboardWindow.resolve(preferences, now: now)
-            XCTAssertEqual(window.preset, preset); XCTAssertEqual(window.until, now); XCTAssertEqual(window.span, Double(preset.hours!) * 3600)
+            XCTAssertEqual(window.preset, preset); XCTAssertEqual(window.until, now); XCTAssertEqual(window.span, preset.seconds)
         }
         DashboardWindow.apply(.custom, to: &preferences, now: now)
         XCTAssertEqual(preferences.customFrom, now.addingTimeInterval(-720 * 3600), "Custom seeds from the previously resolved window")

@@ -4,6 +4,27 @@ import Combine
 @testable import PiApp
 
 final class LivePopupTests: XCTestCase {
+    @MainActor func testAnalyticsAndStatusPopupKeepIndependentVisibility() {
+        let live = LiveActivityStore(observeSleep: false)
+        defer { live.shutdown() }
+        live.setVisible(true)
+        live.setVisible(true, owner: "report-chart")
+        live.setVisible(false)
+        XCTAssertTrue(live.visible, "Closing the popup must not freeze visible analytics")
+        let before = live.publications
+        live.phase("model", workspace: "w", session: "s")
+        live.tick()
+        XCTAssertGreaterThan(live.publications, before)
+        live.setVisible(false, owner: "report-chart")
+        XCTAssertFalse(live.visible)
+        let hidden = live.publications
+        live.tick()
+        XCTAssertEqual(live.publications, hidden)
+        live.setVisible(true, owner: "report-chart")
+        live.shutdown()
+        live.setVisible(false, owner: "report-chart")
+        XCTAssertFalse(live.visible)
+    }
     private let session = LiveSessionKey(workspace: "project", session: "session")
     private let date = Date(timeIntervalSince1970: 1_800_000_000)
     private func event(_ seq: Int, attempt: String = "a", generation: Int = 1, phase: String = "interim", output: Double? = nil, at: Double = 1_000, purpose: String = "turn", model: String = "resolved", status: String = "reported") -> WireValue {

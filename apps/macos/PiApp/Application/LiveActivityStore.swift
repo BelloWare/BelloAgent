@@ -306,6 +306,7 @@ struct LiveActivityAccumulator {
     @Published private(set) var snapshot = LivePopupSnapshot()
     private(set) var accumulator = LiveActivityAccumulator()
     private(set) var visible = false
+    private var visibleOwners: Set<String> = []
     private(set) var publications = 0
     private var ticker: Task<Void, Never>?, publication: Task<Void, Never>?
     // Registered only on MainActor; deinit removes tokens after ownership ends.
@@ -322,7 +323,9 @@ struct LiveActivityAccumulator {
         }
     }
     deinit { ticker?.cancel(); publication?.cancel(); for observer in sleepObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) } }
-    func setVisible(_ value: Bool) {
+    func setVisible(_ value: Bool, owner: String = "status-popup") {
+        if value { visibleOwners.insert(owner) } else { visibleOwners.remove(owner) }
+        let value = !visibleOwners.isEmpty
         guard value != visible else { return }; visible = value
         publication?.cancel(); publication = nil
         if value { tick() }; schedule()
@@ -358,5 +361,5 @@ struct LiveActivityAccumulator {
             }
         }
     }
-    func shutdown() { visible = false; ticker?.cancel(); ticker = nil; publication?.cancel(); publication = nil }
+    func shutdown() { visibleOwners.removeAll(); visible = false; ticker?.cancel(); ticker = nil; publication?.cancel(); publication = nil }
 }

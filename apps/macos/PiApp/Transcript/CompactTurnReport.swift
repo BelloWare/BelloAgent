@@ -1,8 +1,8 @@
 import SwiftUI
 import AppKit
 
-/// A subset of a reported token count. Shares require matching, complete
-/// observations; independently summed partial reports are not a denominator.
+/// Shares from matched gateway observations, retained while later requests
+/// are pending. Unmatched counters never alter the last reported split.
 struct TurnTokenPartition: Equatable {
     enum Fill: Equatable { case empty, reported, split(Double) }
     let title: String
@@ -24,17 +24,18 @@ struct TurnTokenPartition: Equatable {
             guard count > 0, let value, value.isFinite, value >= 0 else { return nil }
             return value
         }
-        total = valid(input ? a.input : a.output, samples)
-        part = valid(input ? a.cached : a.reasoning, partSamples)
+        let paired = (input ? a.inputSplit : a.outputSplit).flatMap { $0.valid ? $0 : nil }
+        total = paired?.total ?? valid(input ? a.input : a.output, samples)
+        part = paired?.part ?? valid(input ? a.cached : a.reasoning, partSamples)
         let matched = a.requests > 0 && samples == a.requests && partSamples == a.requests
-        if matched, let total, let part, part <= total {
+        if paired != nil || matched, let total, let part, part <= total {
             remainder = total - part
             fraction = total > 0 ? part / total : nil
         } else {
             remainder = input ? valid(a.uncached, a.uncachedSamples) : nil
             fraction = nil
         }
-        partial = a.requests > 0 && (samples < a.requests || partSamples < a.requests)
+        partial = a.requests > 0 && (paired.map { $0.samples < a.requests } ?? (samples < a.requests || partSamples < a.requests))
     }
 
     var totalLabel: String { total.map(MetricFormat.exactTokens) ?? "—" }
@@ -57,7 +58,7 @@ struct TurnTokenPartition: Equatable {
     var help: String {
         let count: (Double?) -> String = { $0.map(MetricFormat.exactTokens) ?? "unreported" }
         return "\(title): \(count(total)) tokens. \(partName): \(count(part)); \(remainderName): \(count(remainder)). "
-            + (partial ? "Partial reporting. " : "")
+            + (partial ? (fraction != nil ? "Latest matched reports; newer requests may still be pending. " : "Some requests have not reported both counters. ") : "")
             + (fill == .reported ? "The filled bar represents reported tokens; the percentage breakdown is unavailable. " : "")
             + (title == "Input" ? "Cached tokens are included in input." : "Reasoning tokens are included in output.")
     }
@@ -166,14 +167,13 @@ struct TurnReportMetrics: View {
 /// engine and never animates the transcript's geometry while streaming.
 struct TurnTokenBar: View {
     let partition: TurnTokenPartition
-    private var primary: Color { partition.title == "Input" ? .piSuccess : .piInfo }
+    private var primary: Color { partition.title == "Input" ? .piSuccess : .monitorModel(2) }
     private var secondary: Color { .piAccent }
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
                 Text(partition.title).foregroundStyle(TranscriptPalette.faint)
                 Text(partition.totalLabel).foregroundStyle(TranscriptPalette.text)
-                if partition.partial { Text("partial").foregroundStyle(TranscriptPalette.warning).font(.system(size: 9)) }
             }.font(.system(size: 11, weight: .medium))
             Canvas { context, size in
                 let bounds = CGRect(origin: .zero, size: size)
@@ -181,7 +181,7 @@ struct TurnTokenBar: View {
                 switch partition.fill {
                 case .empty: break
                 case .reported:
-                    context.fill(Path(roundedRect: bounds, cornerRadius: 2), with: .color(Color.piInfo.opacity(0.65)))
+                    context.fill(Path(roundedRect: bounds, cornerRadius: 2), with: .color(secondary.opacity(0.75)))
                 case .split(let fraction):
                     context.clip(to: Path(roundedRect: bounds, cornerRadius: 2))
                     context.fill(Path(bounds), with: .color(secondary.opacity(0.75)))

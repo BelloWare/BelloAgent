@@ -57,9 +57,9 @@ extension Color {
                     .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).monospacedDigit()
             }
             Divider()
-            totals
-            Divider()
             distribution
+            Divider()
+            totals
             Divider()
             working
             if !controller.notice.isEmpty {
@@ -125,7 +125,7 @@ extension Color {
     private var totals: some View {
         let gateway = controller.snapshot?.gateway
         return HStack(alignment: .top, spacing: 12) {
-            figure(compactTokens(gateway?.tokens?.output), title: "output tokens")
+            figure(gateway?.tokens?.output.map(MetricFormat.exactTokens) ?? "—", title: "output tokens")
             Rectangle().fill(Color.piHairline).frame(width: 1, height: 40)
             figure(monitorCost(gateway?.costUSD), title: "reported cost")
             Rectangle().fill(Color.piHairline).frame(width: 1, height: 40)
@@ -149,17 +149,14 @@ extension Color {
                 Spacer(minLength: 4)
                 PiTabs(selection: $share, items: MonitorShareMetric.allCases.map { ($0, $0.rawValue) })
             }
-            ForEach(Array(models.prefix(routesExpanded ? 24 : 4))) { row in
-                let fraction = share == .tokens ? row.tokenShare : row.costShare
+            ModelDistributionRing(models: models, palette: palette, metric: share, cost: snapshot?.gateway.costUSD)
+            if let route = models.first {
                 HStack(spacing: 8) {
-                    Circle().fill(Color.monitorModel(palette.index(row.id))).frame(width: 7, height: 7)
-                    Text(row.id).font(PiFont.caption).lineLimit(1).truncationMode(.middle).frame(width: 155, alignment: .leading).help(row.id)
-                    GeometryReader { geometry in
-                        Capsule().fill(Color.piFillStrong)
-                        Capsule().fill(Color.monitorModel(palette.index(row.id))).frame(width: geometry.size.width * (fraction ?? 0))
-                    }.frame(height: 7)
-                    Text(fraction.map { String(format: "%.0f%%", $0 * 100) } ?? "—").font(PiFont.caption).monospacedDigit().frame(width: 38, alignment: .trailing)
-                }.help("\(row.id)\nRequested as: \(row.aliases.sorted().joined(separator: ", "))\n\(menuBarTokens(row.tokens)) output tokens · \(gatewayUSD(row.cost)) · \(row.requests) requests")
+                    Image(systemName: "arrow.triangle.branch").foregroundStyle(Color.piAccent)
+                    Text(route.aliases.sorted().joined(separator: ", ")).lineLimit(1).truncationMode(.middle)
+                    Image(systemName: "arrow.right").foregroundStyle(Color.piAccent)
+                    Text(route.id).lineLimit(1).truncationMode(.middle)
+                }.font(PiFont.caption).help("Most-used route: \(route.aliases.sorted().joined(separator: ", ")) → \(route.id)")
             }
             if models.isEmpty { Text(controller.loading ? "Reading model usage…" : "No reported model usage in this interval.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
             DisclosureGroup("Requested → resolved models", isExpanded: $routesExpanded) {
@@ -223,19 +220,17 @@ extension Color {
 
 func monitorCost(_ cost: Double?) -> String {
     guard let cost, cost.isFinite, cost >= 0 else { return "—" }
-    if cost == 0 { return "$0" }
-    if cost < 0.0001 { return String(format: "$%.2g", cost) }
-    return cost < 0.01 ? String(format: "$%.4f", cost) : String(format: "$%.2f", cost)
+    return "$" + MetricFormat.preciseDecimal(cost)
 }
 func monitorCacheShare(_ gateway: GatewayTotals?) -> String {
     // A percentage requires paired observations; unmatched samples cannot be
     // divided by a different population's total input.
     guard let gateway, let cached = gateway.cacheReadTokens, let uncached = gateway.uncachedInputReportedTokens,
           gateway.uncachedInputSamples == gateway.cacheReadSamples, cached + uncached > 0 else { return "—" }
-    return String(format: "%.0f%%", cached / (cached + uncached) * 100)
+    return String(format: "%.3f%%", cached / (cached + uncached) * 100)
 }
 
-@MainActor private struct MonitorSessionRows: View {
+@MainActor struct MonitorSessionRows: View {
     let rows: [MenuBarActivityRow]
     let snapshot: LivePopupSnapshot
     let openSession: (String) -> Void
@@ -257,7 +252,7 @@ func monitorCacheShare(_ gateway: GatewayTotals?) -> String {
                     }.buttonStyle(.plain).disabled(!row.actionable).focused($focused, equals: row.id).accessibilityIdentifier("menu-bar-running-session-\(row.id)")
                     Text(requests.first?.model ?? (requests.isEmpty ? row.resolvedModel : nil) ?? "Awaiting model")
                         .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.middle).frame(width: 116, alignment: .leading)
-                    Text(rates.isEmpty ? "—" : menuBarRate(rates.reduce(0, +))).font(PiFont.body).monospacedDigit().frame(width: 42, alignment: .trailing)
+                    Text(rates.isEmpty ? "—" : menuBarRate(rates.reduce(0, +))).font(PiFont.body).monospacedDigit().frame(width: 68, alignment: .trailing)
                         .help("\(rates.count)/\(requests.count) active requests reporting live usage")
                 }.padding(.vertical, 8).onHover { value in if value { hovered.insert(row.id) } else { hovered.remove(row.id) } }
                 Divider()

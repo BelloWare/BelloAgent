@@ -52,6 +52,30 @@ struct GatewayObservation: Sendable, Equatable {
     }
 }
 
+/// The parent and subset from the SAME requests. Missing observations on a
+/// later request must not erase a previously reported token split.
+struct GatewayTokenSplit: Codable, Sendable, Equatable {
+    var total: Double
+    var part: Double
+    var samples: Int
+    var valid: Bool { samples > 0 && total.isFinite && part.isFinite && part >= 0 && total >= part }
+    func adding(_ other: Self) -> Self {
+        Self(total: total + other.total, part: part + other.part, samples: samples + other.samples)
+    }
+    static func reported(_ gateway: GatewayTotals, input: Bool) -> Self? {
+        if let pair = input ? gateway.inputSplit : gateway.outputSplit { return pair.valid ? pair : nil }
+        // Compatibility for older snapshots: only full, matching coverage can
+        // establish that these independently stored totals share a population.
+        let samples = input ? gateway.tokens?.inputSamples : gateway.tokens?.outputSamples
+        let partSamples = input ? gateway.cacheReadSamples : gateway.tokens?.reasoningSamples
+        guard gateway.requests > 0, samples == gateway.requests, partSamples == gateway.requests,
+              let total = input ? gateway.tokens?.input : gateway.tokens?.output,
+              let part = input ? gateway.cacheReadTokens : gateway.tokens?.reasoning else { return nil }
+        let result = Self(total: total, part: part, samples: gateway.requests)
+        return result.valid ? result : nil
+    }
+}
+
 struct GatewayTokenTotals: Codable, Sendable, Equatable {
     var input: Double?
     var output: Double?
@@ -158,6 +182,8 @@ struct GatewayModelSummary: Codable, Sendable, Equatable {
 }
 
 struct GatewayTotals: Codable, Sendable, Equatable {
+    var inputSplit: GatewayTokenSplit?
+    var outputSplit: GatewayTokenSplit?
     var requests = 0
     var costSamples = 0
     var costUSD: Double?
@@ -271,6 +297,11 @@ extension PayloadArchive {
     COUNT(cache_read_tokens) AS cache_read_samples,COUNT(cache_write_tokens) AS cache_write_samples,
     SUM(CASE WHEN input_tokens>=cache_read_tokens THEN input_tokens-cache_read_tokens END) AS uncached_input_tokens,
     COUNT(CASE WHEN input_tokens>=cache_read_tokens THEN 1 END) AS uncached_input_samples,
+    SUM(CASE WHEN input_tokens>=cache_read_tokens THEN input_tokens END) AS split_input_total,
+    SUM(CASE WHEN input_tokens>=cache_read_tokens THEN cache_read_tokens END) AS split_input_part,
+    SUM(CASE WHEN output_tokens>=reasoning_tokens THEN output_tokens END) AS split_output_total,
+    SUM(CASE WHEN output_tokens>=reasoning_tokens THEN reasoning_tokens END) AS split_output_part,
+    COUNT(CASE WHEN output_tokens>=reasoning_tokens THEN 1 END) AS split_output_samples,
     SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,
     COUNT(input_tokens) AS input_samples,COUNT(output_tokens) AS output_samples,
     SUM(input_tokens+output_tokens) AS total_tokens,COUNT(input_tokens+output_tokens) AS token_samples,
@@ -295,6 +326,12 @@ extension PayloadArchive {
         var totals = GatewayTotals(requests: count("requests"), costSamples: count("cost_samples"), costUSD: value("cost_usd"), cacheHits: count("cache_hits"), cacheMisses: count("cache_misses"), cacheUnreported: count("cache_unreported"), cacheConflicts: count("cache_conflicts"), cacheReadTokens: value("cache_read_tokens"), cacheWriteTokens: value("cache_write_tokens"), cacheReadSamples: count("cache_read_samples"), cacheWriteSamples: count("cache_write_samples"))
         totals.reasoningCostUSD = value("reasoning_cost_usd"); totals.reasoningCostSamples = count("reasoning_cost_samples")
         totals.uncachedInputReportedTokens = value("uncached_input_tokens"); totals.uncachedInputSamples = count("uncached_input_samples")
+        if let total = value("split_input_total"), let part = value("split_input_part") {
+            totals.inputSplit = GatewayTokenSplit(total: total, part: part, samples: count("uncached_input_samples"))
+        }
+        if let total = value("split_output_total"), let part = value("split_output_part") {
+            totals.outputSplit = GatewayTokenSplit(total: total, part: part, samples: count("split_output_samples"))
+        }
         totals.decodeMilliseconds = value("decode_ms"); totals.decodeOutputTokens = value("decode_output_tokens"); totals.decodeSamples = count("decode_samples")
         totals.ttftMilliseconds = value("ttft_ms"); totals.ttftSamples = count("ttft_samples")
         totals.turnCount = count("turn_count")

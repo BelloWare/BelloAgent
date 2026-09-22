@@ -120,7 +120,7 @@ final class LiveMonitorTests: XCTestCase {
         XCTAssertEqual(rows.first?.aliases, ["router", "direct"]); XCTAssertNil(rows.last?.cost)
         first.cacheReadTokens = 80; first.uncachedInputReportedTokens = 20
         first.cacheReadSamples = 1; first.uncachedInputSamples = 1
-        XCTAssertEqual(monitorCacheShare(first), "80%")
+        XCTAssertEqual(monitorCacheShare(first), "80.000%")
         first.cacheReadSamples = 2
         XCTAssertEqual(monitorCacheShare(first), "—", "Unpaired token populations cannot make a cache percentage")
     }
