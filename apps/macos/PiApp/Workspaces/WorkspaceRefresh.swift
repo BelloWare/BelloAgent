@@ -111,6 +111,12 @@ extension WorkspaceModel {
                         view.footerUpdatedAt = now
                         if let timing = result["turnMetrics"]?.object, timing != view.turnTiming { view.turnTiming = timing }
                         if let metrics = result["latestAttempt"]?.object, metrics != view.metrics { view.metrics = metrics }
+                    } else if wasBusy && !view.busy {
+                        // This reply may be the last event of a fast run. Its
+                        // request opted out of metrics while the turn was
+                        // still live; fetch the final observations once now,
+                        // instead of waiting for another event or tab switch.
+                        view.dirty = true
                     }
                     if let mode = result["captureMode"]?.string, mode != view.captureMode { view.captureMode = mode }
                     view.displayObservedAt = result["displayObservedAt"]?.number.map { $0 + host.clockOffset }

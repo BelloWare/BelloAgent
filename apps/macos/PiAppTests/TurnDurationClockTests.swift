@@ -58,6 +58,18 @@ import XCTest
         XCTAssertNil(TurnInfoPresentation.live(turn, at: epoch.addingTimeInterval(1000), uptimeMs: 1_100_000).elapsedMs)
     }
 
+    func testTerminalEvidenceAlsoEndsPendingLabelsAndCopiedRunningState() {
+        for outcome in ["completed", "failed", "cancelled", "interrupted", "output-limited"] {
+            var turn = liveTurn(); turn.outcome = outcome; turn.elapsedMs = nil
+            XCTAssertEqual(TurnInfoPresentation.costLabel(turn), "Unreported")
+            XCTAssertEqual(TurnInfoPresentation.tokenLabel(turn), "Unreported")
+            XCTAssertEqual(TurnInfoPresentation.rows(turn).first { $0.name == "Duration" }?.value, "Unavailable")
+            XCTAssertFalse(TurnLineView.copyText(turn).contains("Still running"))
+            turn.phase = "compacting"; turn.taskKey = "utility:runtime"
+            XCTAssertFalse(TurnRequestScope(turn).activeCompaction)
+        }
+    }
+
     func testSessionRunLineUsesTheRecordedFinishInsteadOfTheCurrentClock() {
         let timing: [String: WireValue] = ["startedAt": .number(100_000), "endedAt": .number(102_500), "elapsedMs": .number(2_500)]
         XCTAssertEqual(SessionRunLine.elapsed(timing, atUptimeMs: 105_000), MetricFormat.runDuration(2_500))

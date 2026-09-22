@@ -167,6 +167,7 @@ struct LiveActivityAccumulator {
         // A successfully polled unchanged page is still a local observation;
         // the display/sampling timer alone is not.
         lastObservationAt = wall
+        disconnected.remove(session.workspace)
         if let held = cursors[session], held.epoch == epoch, let cursor = Self.integer(page["cursor"]), cursor <= held.sequence { return }
         advance(at: now, wall: wall)
         let held = cursors[session]
@@ -175,7 +176,6 @@ struct LiveActivityAccumulator {
             active = active.filter { $0.key.session != session }
             settledGenerations[session] = nil
         }
-        disconnected.remove(session.workspace)
         var cursor = held?.epoch == epoch ? held!.sequence : 0
         if page["gap"]?.bool == true { gap(at: now, wall: wall); active = active.filter { $0.key.session != session } }
         for raw in (page["events"]?.array ?? []).prefix(96) {
@@ -282,6 +282,11 @@ struct LiveActivityAccumulator {
     mutating func forget(_ key: LiveSessionKey, at now: Double, wall: Date) {
         phase("idle", session: key, at: now, wall: wall); cursors[key] = nil; settledGenerations[key] = nil
         active = active.filter { $0.key.session != key }
+        if !cursors.keys.contains(where: { $0.workspace == key.workspace }),
+           !phases.keys.contains(where: { $0.workspace == key.workspace }),
+           !active.keys.contains(where: { $0.session.workspace == key.workspace }) {
+            disconnected.remove(key.workspace)
+        }
     }
     func snapshot(at now: Double, wall: Date) -> LivePopupSnapshot {
         var requests = Array(active.values)

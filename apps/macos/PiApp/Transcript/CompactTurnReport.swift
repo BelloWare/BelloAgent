@@ -81,7 +81,7 @@ struct CompactTurnReport: View {
         if let route = turn.accounting.latestModelRoute {
             return route.label + (turn.accounting.modelRoutes.count > 1 ? " +\(turn.accounting.modelRoutes.count - 1)" : "")
         }
-        guard let name = turn.accounting.model ?? models.last else { return turn.live ? "Model pending" : "Model unreported" }
+        guard let name = turn.accounting.model ?? models.last else { return turn.isRunning ? "Model pending" : "Model unreported" }
         return name + (models.count > 1 ? " +\(models.count - 1)" : "")
     }
 
@@ -124,7 +124,7 @@ struct CompactTurnReport: View {
                 .help(turn.accounting.modelRoutes.isEmpty ? models.joined(separator: "\n") : turn.accounting.modelRoutes.map(\.detail).joined(separator: "\n"))
             Text(TurnInfoPresentation.costLabel(turn)).font(.system(size: 11, weight: .medium))
                 .foregroundStyle(TranscriptPalette.text).monospacedDigit().fixedSize()
-                .help("Gateway-reported cost" + (turn.live ? " so far" : ""))
+                .help("Gateway-reported cost" + (turn.isRunning ? " so far" : ""))
             if showsInfo {
                 TurnInfoButton(turn: turn, actions: actions)
                 Button(action: copy) { Image(systemName: "doc.on.doc").frame(width: 18, height: 18) }

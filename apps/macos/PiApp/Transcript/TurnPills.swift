@@ -170,7 +170,7 @@ struct TurnLineView: View {
 
     var body: some View {
         let stamps = [turn.startedAt.map { "Started " + TranscriptActivity.formatClock($0) },
-                      turn.live ? nil : turn.endedAt.map { "finished " + TranscriptActivity.formatClock($0) }].compactMap { $0 }.joined(separator: " · ")
+                      turn.isRunning ? nil : turn.endedAt.map { "finished " + TranscriptActivity.formatClock($0) }].compactMap { $0 }.joined(separator: " · ")
         return TurnPillRow(turn: turn, actions: actions, model: model, showsInfo: true)
             .help(stamps)
             .padding(.top, 6)
@@ -183,7 +183,7 @@ struct TurnLineView: View {
     nonisolated static func copyText(_ turn: TurnSummary, model: String? = nil) -> String {
         var lines = [turn.partial ? "Turn (partial loaded history)" : "Turn", counts(turn)]
         if let outcome = turn.outcome { lines.append("Outcome: " + outcome) }
-        else if !turn.live { lines.append("Task outcome unavailable; retained figures may be incomplete.") }
+        else if !turn.isRunning { lines.append("Task outcome unavailable; retained figures may be incomplete.") }
         if let notice = turn.notice { lines.append(notice) }
         if let started = turn.startedAt { lines.append("Started: " + TranscriptActivity.formatClock(started)) }
         if let ended = turn.endedAt { lines.append("Finished: " + TranscriptActivity.formatClock(ended)) }
@@ -199,7 +199,7 @@ struct TurnLineView: View {
         else if let model { lines.append("Model: " + model) }
         if !turn.accounting.requestedModels.isEmpty { lines.append("Requested models: " + turn.accounting.requestedModels.joined(separator: ", ")) }
         for route in turn.accounting.modelRoutes { lines.append(route.detail) }
-        if turn.live { lines.append("Still running; figures are incomplete.") }
+        if turn.isRunning { lines.append("Still running; figures are incomplete.") }
         for (index, request) in turn.requests.enumerated() {
             guard let accounting = request.accounting else { continue }
             let figures = TranscriptActivity.accountingPresentation(accounting)

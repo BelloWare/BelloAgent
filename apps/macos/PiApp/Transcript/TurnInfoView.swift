@@ -37,10 +37,10 @@ enum TurnInfoPresentation {
         }
     }
     static func tokenLabel(_ turn: TurnSummary) -> String {
-        TranscriptActivity.tokens(of:turn.accounting).map(TranscriptActivity.formatTokenCount) ?? (turn.live ? "Pending" : "Unreported")
+        TranscriptActivity.tokens(of:turn.accounting).map(TranscriptActivity.formatTokenCount) ?? (turn.isRunning ? "Pending" : "Unreported")
     }
     static func costLabel(_ turn: TurnSummary) -> String {
-        guard let cost = turn.accounting.costUSD, cost.isFinite, cost >= 0 else { return turn.live ? "Pending" : "Unreported" }
+        guard let cost = turn.accounting.costUSD, cost.isFinite, cost >= 0 else { return turn.isRunning ? "Pending" : "Unreported" }
         return "$" + MetricFormat.preciseDecimal(cost)
     }
     static func inlineFigures(_ turn: TurnSummary) -> [String] {
@@ -63,7 +63,7 @@ enum TurnInfoPresentation {
                     Row(name:"Files changed",value:String(turn.files))]
         if let start = turn.startedAt { rows.append(Row(name:"Started",value:TranscriptActivity.formatClock(start))) }
         if let end = turn.endedAt { rows.append(Row(name:"Finished",value:TranscriptActivity.formatClock(end))) }
-        rows.append(Row(name:"Duration",value:turn.elapsedMs.map(TranscriptActivity.formatDuration) ?? (turn.live ? "In progress" : "Unavailable")))
+        rows.append(Row(name:"Duration",value:turn.elapsedMs.map(TranscriptActivity.formatDuration) ?? (turn.isRunning ? "In progress" : "Unavailable")))
         rows.append(Row(name:"Model request time",value:TranscriptActivity.formatDuration(turn.modelMs)))
         rows.append(Row(name:"Tool time",value:TranscriptActivity.formatDuration(turn.toolMs)))
         rows += usageRows(turn.accounting)

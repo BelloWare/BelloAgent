@@ -64,6 +64,31 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         return value
     }
 
+    @MainActor func testCompletionFetchesFinalMetricsEvenInsideTheLiveThrottle() async throws {
+        let f = try await fixture()
+        defer { f.host.shutdown() }
+        f.view.state = "running"; f.view.runStatus = "running"
+        f.view.turnTiming = ["startedAt": .number(1000), "elapsedMs": .number(100)]
+        f.view.footerUpdatedAt = ProcessInfo.processInfo.systemUptime
+        f.model.refresh(f.chat.id)
+        try await wait { f.commands.frames.count == 1 }
+        XCTAssertEqual(f.commands.frames[0]["params"]?.object?["includeMetrics"]?.bool, false)
+        // The helper honors includeMetrics=false, then settles before another
+        // event arrives. The UI must ask once for final accounting itself.
+        try reply(f.commands.frames[0], on: f.host, result: snapshot(sequence: 2, revision: "runtime:2"))
+        try await wait { f.commands.frames.count == 2 }
+        XCTAssertEqual(f.commands.frames[1]["params"]?.object?["includeMetrics"]?.bool, true)
+        var final = snapshot(sequence: 2, revision: "runtime:2")
+        final["turnMetrics"] = .object(["startedAt": .number(1000), "endedAt": .number(1250), "elapsedMs": .number(250)])
+        final["latestAttempt"] = .object(["outcome": .string("completed")])
+        try reply(f.commands.frames[1], on: f.host, result: final)
+        try await wait { !f.view.snapshotInFlight }
+        XCTAssertEqual(f.view.turnTiming["endedAt"]?.number, 1250)
+        XCTAssertEqual(f.view.turnTiming["elapsedMs"]?.number, 250)
+        XCTAssertEqual(f.view.metrics["outcome"]?.string, "completed")
+        XCTAssertEqual(f.commands.frames.count, 2, "The final read must not create a refresh loop")
+    }
+
     @MainActor func testAcceptedReplyCannotEraseHostLossBeforeItsContinuationRuns() async throws {
         let f=try await fixture()
         f.model.refresh(f.chat.id)

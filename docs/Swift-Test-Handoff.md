@@ -1,5 +1,16 @@
 # Native Swift — test and continuation handoff
 
+## 0.1.83 lifecycle audit
+
+Use `WorkspaceRefreshLifecycleTests`, `WorkspaceFailureTests`,
+`TurnDurationClockTests`, `TurnInfoTests`, `TurnRequestPopupTests`,
+`CompactTurnReportTests`, `LivePopupTests`, `LiveMonitorTests` and
+`MenuBarPresentationTests`. Preserve the no-further-event final-metrics
+regression, request-owner reset on failed lookup, same-execution selection,
+terminal-label agreement, unchanged-page reconnect and final-session retirement.
+The validation record distinguishes five before/after failing cases from the
+surrounding native/mock-gateway coverage and Xcode result-bundle warning.
+
 ## 0.1.82 duration cadence and request navigation
 
 Use `TurnDurationClockTests`, `LiveWorkingIndicatorTests`, `TurnInfoTests`,

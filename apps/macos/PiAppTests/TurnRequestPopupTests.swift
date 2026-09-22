@@ -120,12 +120,17 @@ final class TurnRequestPopupTests: XCTestCase {
         let source = TurnRequestSource(sessionID: "session", list: { _ in TurnRequestPage(records: records) }, body: { _, _ in
             CapturedBodySource(metadata: { throw CaptureFailure.unavailable }, page: { _ in throw CaptureFailure.unavailable })
         })
-        let controller = TurnRequestController(), scope = TurnRequestScope(turn())
+        var running = turn(); running.taskKey = "same-execution"; running.endedAt = nil; running.live = true
+        let controller = TurnRequestController(), scope = TurnRequestScope(running)
         await controller.load(scope, source: source)
         XCTAssertEqual(controller.selectedID, "second")
         controller.move(-1)
         records.append(TurnRequestRecord(metadata: metadata("third", wall: 1003)))
-        await controller.load(scope, source: source)
+        // The selected request belongs to this execution even as more replies
+        // arrive and the turn receives its final timestamp.
+        running.requests.append(TranscriptMessage(id: "another-answer", role: "assistant", text: "Done", turn: "turn"))
+        running.endedAt = 1_010_000; running.live = false; running.outcome = "completed"
+        await controller.load(TurnRequestScope(running), source: source)
         XCTAssertEqual(controller.selectedID, "first")
         controller.move(-1); XCTAssertEqual(controller.selectedID, "first")
         controller.move(1); XCTAssertEqual(controller.selectedID, "second")
@@ -147,6 +152,36 @@ final class TurnRequestPopupTests: XCTestCase {
         finish?.resume(returning: TurnRequestPage(records: [])); await slow.value
         XCTAssertEqual(controller.selectedID, "new")
     }
+    @MainActor func testNewExecutionNeverShowsThePreviousPayloadDuringOrAfterFailedLookup() async {
+        var previous = turn(); previous.taskKey = "execution-a"
+        let controller = TurnRequestController()
+        let record = TurnRequestRecord(metadata: metadata("previous-payload"))
+        let source = TurnRequestSource(sessionID: "session", list: { _ in TurnRequestPage(records: [record]) }, body: { _, _ in
+            CapturedBodySource(metadata: { throw CaptureFailure.unavailable }, page: { _ in throw CaptureFailure.unavailable })
+        })
+        await controller.load(TurnRequestScope(previous), source: source)
+        XCTAssertEqual(controller.selectedID, record.id)
+        var next = previous; next.taskKey = "execution-b"
+        var resume: CheckedContinuation<TurnRequestPage, Error>?
+        let failing = TurnRequestSource(sessionID: source.sessionID, list: { _ in
+            try await withCheckedThrowingContinuation { resume = $0 }
+        }, body: source.body)
+        let lookup = Task { await controller.load(TurnRequestScope(next), source: failing) }
+        while resume == nil { await Task.yield() }
+        XCTAssertTrue(controller.records.isEmpty, "The previous execution's body is not the new turn's body")
+        XCTAssertNil(controller.selected)
+        resume?.resume(throwing: CaptureFailure.unavailable); await lookup.value
+        XCTAssertTrue(controller.records.isEmpty); XCTAssertNil(controller.selected)
+        XCTAssertFalse(controller.notice.isEmpty); XCTAssertFalse(controller.loading)
+        await controller.load(TurnRequestScope(previous), source: source)
+        let failedRefresh = TurnRequestSource(sessionID: source.sessionID, list: { _ in throw CaptureFailure.unavailable }, body: source.body)
+        await controller.load(TurnRequestScope(previous), source: failedRefresh)
+        XCTAssertEqual(controller.selectedID, record.id, "A same-turn refresh failure may retain its own known payload")
+        let otherSession = TurnRequestSource(sessionID: "different-session", list: failedRefresh.list, body: source.body)
+        await controller.load(TurnRequestScope(previous), source: otherSession)
+        XCTAssertTrue(controller.records.isEmpty, "Session identity also scopes the retained payload")
+    }
+
     func testSearchFindsCaseInsensitiveUnicodeAndEndOfLargeBody() throws {
         let text = String(repeating: "ordinary payload ", count: 50_000) + "🌍 CACHED-token 🌍 cached-TOKEN"
         let result = try PayloadSearchResult.find(text: text, query: "cached-token")

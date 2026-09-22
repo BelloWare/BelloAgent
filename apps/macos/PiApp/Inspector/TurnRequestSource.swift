@@ -3,6 +3,7 @@ import Foundation
 /// Output ownership and the task's dispatch interval, never arbitrary context
 /// links: a later turn may replay every message in this turn.
 struct TurnRequestScope: Equatable, Sendable {
+    var taskKey: String?
     var turnIDs: [String]
     var outputIDs: [String]
     var started: Double?
@@ -10,11 +11,12 @@ struct TurnRequestScope: Equatable, Sendable {
     var activeCompaction: Bool
 
     init(_ turn: TurnSummary) {
+        taskKey = turn.taskKey
         turnIDs = Array(Set(turn.requests.compactMap(\.turn) + (turn.taskRootID.map { [$0] } ?? []))).sorted()
         outputIDs = turn.requests.filter { $0.role == "assistant" && !$0.id.hasPrefix("stream:") }.map(\.id)
         started = turn.startedAt.flatMap { $0.isFinite && $0 > 0 ? $0 / 1000 : nil }
         ended = turn.endedAt.flatMap { $0.isFinite && $0 > 0 ? $0 / 1000 : nil }
-        activeCompaction = turn.live && turn.phase == "compacting" && turn.taskKey?.hasPrefix("utility:") == true
+        activeCompaction = turn.isRunning && turn.phase == "compacting" && turn.taskKey?.hasPrefix("utility:") == true
     }
     func contains(_ metadata: [String: WireValue], sessionID: String) -> Bool {
         guard metadata["sessionId"]?.string == sessionID else { return false }
@@ -116,15 +118,34 @@ struct TurnRequestPage: Sendable {
 }
 
 @MainActor final class TurnRequestController: ObservableObject {
+    /// A running turn can gain output owners and a finish timestamp without
+    /// changing identity. A retry execution or another session cannot inherit
+    /// its selected payload, including while its first lookup is pending.
+    private struct Owner: Equatable {
+        let sessionID: String
+        let taskKey: String?
+        let started: Double?
+        let inputs: [String]
+        init(scope: TurnRequestScope, sessionID: String) {
+            self.sessionID = sessionID; taskKey = scope.taskKey
+            started = taskKey == nil ? scope.started : nil
+            inputs = taskKey == nil ? (scope.turnIDs.isEmpty ? scope.outputIDs : scope.turnIDs) : []
+        }
+    }
     @Published private(set) var records: [TurnRequestRecord] = []
     @Published var selectedID = ""
     @Published private(set) var loading = false
     @Published private(set) var notice = ""
     private var generation = 0
+    private var owner: Owner?
     var selected: TurnRequestRecord? { records.first { $0.id == selectedID } }
     var index: Int? { records.firstIndex { $0.id == selectedID } }
     func load(_ scope: TurnRequestScope, source: TurnRequestSource) async {
         generation += 1; let revision = generation
+        let next = Owner(scope: scope, sessionID: source.sessionID)
+        if owner != next {
+            owner = next; records = []; selectedID = ""; notice = ""
+        }
         loading = true
         defer { if generation == revision { loading = false } }
         do {

@@ -103,6 +103,45 @@ final class LivePopupTests: XCTestCase {
         feed(&store, [event(2, output: 90, at: 15_000)], at: 15, epoch: "next")
         XCTAssertNil(store.active.values.first?.intervalRate, "No interval crosses sleep or runtime replacement")
     }
+    func testUnchangedSuccessfulPollClearsDisconnectWithoutReplayingACompletion() {
+        var store = LiveActivityAccumulator()
+        store.phase("model", session: session, at: 1, wall: date)
+        feed(&store, [event(1, phase: "final", output: 20, at: 1100)])
+        store.disconnect("project", at: 2, wall: date.addingTimeInterval(2))
+        XCTAssertTrue(store.snapshot(at: 2, wall: date).disconnected)
+        store.ingest(["epoch": .string("epoch"), "cursor": .number(1), "events": .array([])],
+                     session: session, at: 3, wall: date.addingTimeInterval(3))
+        XCTAssertFalse(store.snapshot(at: 3, wall: date.addingTimeInterval(3)).disconnected)
+        XCTAssertEqual(store.completions.count, 1)
+        XCTAssertEqual(store.buckets.reduce(0) { $0 + $1.completions }, 1)
+    }
+
+    func testForgettingTheLastSessionRetiresItsDisconnectedWorkspace() {
+        var store = LiveActivityAccumulator()
+        feed(&store, [event(1, phase: "awaiting")])
+        store.disconnect("project", at: 2, wall: date.addingTimeInterval(2))
+        store.forget(session, at: 3, wall: date.addingTimeInterval(3))
+        let snapshot = store.snapshot(at: 3, wall: date.addingTimeInterval(3))
+        XCTAssertFalse(snapshot.disconnected)
+        XCTAssertEqual(snapshot.activeRequests, 0); XCTAssertEqual(snapshot.counts.total, 0)
+    }
+
+    func testRetiringOneSessionDoesNotClearAnotherSessionsConnectionState() {
+        var store = LiveActivityAccumulator()
+        let second = LiveSessionKey(workspace: "project", session: "second")
+        let other = LiveSessionKey(workspace: "other-project", session: "third")
+        feed(&store, [event(1, phase: "awaiting")])
+        store.ingest(page([event(1, phase: "awaiting")]), session: second, at: 1, wall: date)
+        store.ingest(page([event(1, phase: "awaiting")]), session: other, at: 1, wall: date)
+        store.disconnect("project", at: 2, wall: date.addingTimeInterval(2))
+        store.forget(session, at: 3, wall: date.addingTimeInterval(3))
+        XCTAssertTrue(store.snapshot(at: 3, wall: date).disconnected)
+        store.forget(second, at: 3, wall: date.addingTimeInterval(3))
+        XCTAssertFalse(store.snapshot(at: 3, wall: date).disconnected)
+        XCTAssertEqual(store.active.count, 1)
+        XCTAssertEqual(store.active.values.first?.id.session, other)
+    }
+
     func testSubSecondWorkPeaksSurviveCoalescingAndIdleIsZero() {
         var store = LiveActivityAccumulator()
         let events: [WireValue] = ["model", "tool", "idle"].enumerated().map { .object(["seq": .number(Double($0.offset + 1)), "kind": .string("phase"), "phase": .string($0.element)]) }
