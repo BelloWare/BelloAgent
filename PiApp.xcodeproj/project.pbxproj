@@ -37,6 +37,7 @@
 		1203257874E0F28C5D0D2A57 /* GatewayAccountingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F28A64172B7D057CEABD2B5 /* GatewayAccountingTests.swift */; };
 		123A186ECB3B408B8403CDFD /* TopicRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = A38C375F5F16764326234315 /* TopicRecord.swift */; };
 		12A6C89EF9825DD842D2C187 /* StorageTruthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D6904FA74EA8F38308767EA /* StorageTruthTests.swift */; };
+		12C19B2939EE2C30FC84E725 /* TurnDurationClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = C44E74C67843B5A42807F207 /* TurnDurationClock.swift */; };
 		137E01C44B7AFF0B5B4DAED5 /* ConfigurationVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = C26668D410107C283A6D4A51 /* ConfigurationVault.swift */; };
 		13CA805182ABB2B4CA188314 /* InlineSkillTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E45E43527E0ED8E83042B50B /* InlineSkillTests.swift */; };
 		146214A07F36725F957F0D63 /* MarkdownSourceReconciliationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11A721BDB2C2A135E7CC636 /* MarkdownSourceReconciliationTests.swift */; };
@@ -68,6 +69,7 @@
 		2C30B78699D39A19992DC89F /* ModelCatalogEndpointTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6897FF60C60BA8224C9134D3 /* ModelCatalogEndpointTests.swift */; };
 		2D54962C112BC5D9DB4CC67B /* ModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F713C7BF568A767BE0B464B /* ModelCatalog.swift */; };
 		2DB4336DFB23E67426B97349 /* SidebarMetricsLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3FE9EC1E51DB6F6850942D9 /* SidebarMetricsLayoutTests.swift */; };
+		2E4D32A55C7D3C4D0AFC9A5C /* TurnDurationClockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CA217E38A3870E097429A26 /* TurnDurationClockTests.swift */; };
 		2EAD6050103DE234170B4E78 /* RoutingConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F325534D88F59553D4D4032C /* RoutingConfigurationTests.swift */; };
 		2ED98441EA5B32BBDCF78B9B /* SessionUsageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 268486D39B21273968990E1E /* SessionUsageView.swift */; };
 		2F025397A9A7F7CA19F4A48A /* WorkspaceConnectionProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97BFC5BB43407B760762F454 /* WorkspaceConnectionProbe.swift */; };
@@ -598,6 +600,7 @@
 		8A30F8655EB0B72AD52BD6C8 /* ConversationPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPresentation.swift; sourceTree = "<group>"; };
 		8A8E137CC02C7E13BFD4CD65 /* PayloadArchiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PayloadArchiveTests.swift; sourceTree = "<group>"; };
 		8BF5F1265A90148AF8BFA94D /* TerminalPanelAuditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPanelAuditTests.swift; sourceTree = "<group>"; };
+		8CA217E38A3870E097429A26 /* TurnDurationClockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnDurationClockTests.swift; sourceTree = "<group>"; };
 		8D671C064BB1788DC44E60C4 /* LiveMonitorData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMonitorData.swift; sourceTree = "<group>"; };
 		8EFC90BF0A6E0C3A4C71C983 /* CaptureMacIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureMacIntegrationTests.swift; sourceTree = "<group>"; };
 		90FD267BA67D40FFF44BFBDC /* WorkspaceDurabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDurabilityTests.swift; sourceTree = "<group>"; };
@@ -672,6 +675,7 @@
 		C1B2AA8816B75673F6434294 /* NativeTranscriptDocumentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptDocumentTests.swift; sourceTree = "<group>"; };
 		C26668D410107C283A6D4A51 /* ConfigurationVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationVault.swift; sourceTree = "<group>"; };
 		C3657613603D6405241C4EF3 /* SidebarChatRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarChatRow.swift; sourceTree = "<group>"; };
+		C44E74C67843B5A42807F207 /* TurnDurationClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnDurationClock.swift; sourceTree = "<group>"; };
 		C540E0AE5E5FFAB46A7E13A3 /* DisplayResultReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayResultReader.swift; sourceTree = "<group>"; };
 		C587D588560B4BE67D413C98 /* TranscriptActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptActivity.swift; sourceTree = "<group>"; };
 		C6CD294FDA98129F30173552 /* TranscriptUpdateIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptUpdateIsolationTests.swift; sourceTree = "<group>"; };
@@ -1017,6 +1021,7 @@
 				324CF5F50909A3D9A2B9E735 /* TranscriptStreamingTail.swift */,
 				D455296546CA3469F754BADC /* TranscriptToolInput.swift */,
 				89ACA95D3B7FE4CF35B30E8A /* TranscriptTurnFold.swift */,
+				C44E74C67843B5A42807F207 /* TurnDurationClock.swift */,
 				01A1445212D124F860BD9271 /* TurnInfoView.swift */,
 				B0EE7DA6458D6A687AE5AFE3 /* TurnPills.swift */,
 			);
@@ -1268,6 +1273,7 @@
 				C6CD294FDA98129F30173552 /* TranscriptUpdateIsolationTests.swift */,
 				9458BE56E7F0D36A1B9659EC /* TranscriptWirePageTests.swift */,
 				342D03385FF55DF881A2E802 /* TranscriptWorkRowTests.swift */,
+				8CA217E38A3870E097429A26 /* TurnDurationClockTests.swift */,
 				1355E6FA85965C7FEBCE5A8A /* TurnInfoTests.swift */,
 				49474FE98672ABF72A2EB0E4 /* TurnRequestPopupTests.swift */,
 				948E9262D16C801481EC5E92 /* UIScreenshotTests.swift */,
@@ -1572,6 +1578,7 @@
 				9718E939E7EE2BCD98127611 /* TranscriptStreamingTail.swift in Sources */,
 				1672CEA1A86F2D3143735FDA /* TranscriptToolInput.swift in Sources */,
 				3CE1F733F621B5152A7CBFF4 /* TranscriptTurnFold.swift in Sources */,
+				12C19B2939EE2C30FC84E725 /* TurnDurationClock.swift in Sources */,
 				0F364511A600A4054CE52B76 /* TurnInfoView.swift in Sources */,
 				607CA7F3BF8F15FF5D8AFCB0 /* TurnPills.swift in Sources */,
 				70E478B7D8FD9EB8774A9AA1 /* TurnRequestSource.swift in Sources */,
@@ -1769,6 +1776,7 @@
 				4CA0021A2821DA1D996EFCD3 /* TranscriptUpdateIsolationTests.swift in Sources */,
 				5B1B464C9221F15F86AE0899 /* TranscriptWirePageTests.swift in Sources */,
 				D32F0DE0208063D5F3F0BC2E /* TranscriptWorkRowTests.swift in Sources */,
+				2E4D32A55C7D3C4D0AFC9A5C /* TurnDurationClockTests.swift in Sources */,
 				2914EEE7DAC796044594126F /* TurnInfoTests.swift in Sources */,
 				E5623F6F8740CB71B0AABE22 /* TurnRequestPopupTests.swift in Sources */,
 				5594D247E3A6130022ACC83C /* UIScreenshotTests.swift in Sources */,
@@ -1873,7 +1881,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 85;
+				CURRENT_PROJECT_VERSION = 86;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1888,7 +1896,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.81;
+				MARKETING_VERSION = 0.1.82;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1954,7 +1962,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 85;
+				CURRENT_PROJECT_VERSION = 86;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -1975,7 +1983,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.81;
+				MARKETING_VERSION = 0.1.82;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;

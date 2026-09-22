@@ -13,7 +13,11 @@ final class TurnRequestPopupTests: XCTestCase {
         let anchor = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 800)); window.contentView = anchor
         window.makeKeyAndOrderFront(nil)
         let button = NSButton(frame: NSRect(x: 600, y: 500, width: 20, height: 20)); anchor.addSubview(button)
-        let presenter = TurnInfoButton.Coordinator(turn: turn(), actions: TranscriptActions(turnRequestSource: { source }))
+        var running = turn(); running.live = true; running.outcome = nil; running.endedAt = nil
+        running.taskKey = "popup-task"; running.startedAt = Date().timeIntervalSince1970 * 1000 - 1000
+        running.liveStartedUptimeMs = ProcessInfo.processInfo.systemUptime * 1000 - 1000
+        let actions = TranscriptActions(turnRequestSource: { source })
+        let presenter = TurnInfoButton.Coordinator(turn: running, actions: actions)
         presenter.toggle(button)
         let popup = try XCTUnwrap(presenter.popover)
         defer { presenter.close(); window.orderOut(nil) }
@@ -21,6 +25,16 @@ final class TurnRequestPopupTests: XCTestCase {
         XCTAssertTrue(popup.isShown)
         XCTAssertEqual(popup.contentSize.width, 680, accuracy: 1)
         XCTAssertEqual(popup.contentSize.height, 640, accuracy: 1)
+        var finished = running; finished.live = false; finished.outcome = "completed"
+        finished.elapsedMs = 3_123.456; finished.endedAt = (running.startedAt ?? 0) + 3_123.456
+        presenter.update(turn: finished, actions: actions)
+        try await Task.sleep(for: .milliseconds(100))
+        let content = try XCTUnwrap(popup.contentViewController as? NSHostingController<TurnInfoView>)
+        XCTAssertFalse(content.rootView.turn.isRunning, "An already-open Info popup must receive the terminal turn")
+        let later = TurnInfoPresentation.live(content.rootView.turn, at: .now.addingTimeInterval(60),
+                                             uptimeMs: ProcessInfo.processInfo.systemUptime * 1000 + 60_000)
+        XCTAssertEqual(later.elapsedMs, 3_123.456)
+        XCTAssertTrue(popup.isShown, "Updating completed metrics must not destroy a retained popup")
         popup.animates = false
         presenter.close(); XCTAssertFalse(popup.isShown)
     }

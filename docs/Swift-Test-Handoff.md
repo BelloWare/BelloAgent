@@ -1,5 +1,14 @@
 # Native Swift — test and continuation handoff
 
+## 0.1.82 duration cadence and request navigation
+
+Use `TurnDurationClockTests`, `LiveWorkingIndicatorTests`, `TurnInfoTests`,
+`TurnRequestPopupTests`, `CapturedBodyTests` and `CompactTurnReportTests` for
+duration pacing, terminal freezes, partial token fills and persistent JSON
+collapse controls. The clock tests drive rapid updates without wall-time sleeps;
+native outline tests exercise collapse after scrolling away from a selection.
+The popup sizing test also sends completion to an already-open popover.
+
 ## 0.1.80 compact turn reports
 
 Use `CompactTurnReportTests`, `LiveWorkingIndicatorTests`, `TurnInfoTests` and

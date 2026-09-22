@@ -414,6 +414,7 @@ struct CapturedBodyView: View {
     @State private var selection = ""
     @State private var expandRevision = 0
     @State private var expandAll = false
+    @State private var outlineCommand: JSONOutlineCommand?
     @State private var hex = ""
     /// The retained bytes decoded as UTF-8, once per document.
     @State private var utf8 = ""
@@ -458,17 +459,29 @@ struct CapturedBodyView: View {
             HStack(spacing: PiSpacing.sm) {
                 PiTabs(selection: selectedFormat, items: controller.document?.availableFormats(kind: kind) ?? [(.json, "JSON"), (.text, "UTF-8"), (.hex, "Hex")])
                 Spacer()
-                if searchQuery.isEmpty, controller.document?.structured(format: activeFormat) != nil {
-                    Button("Expand all") { expandAll = true; expandRevision += 1 }.buttonStyle(.piGhost)
-                    Button("Collapse all") { expandAll = false; expandRevision += 1 }.buttonStyle(.piGhost)
-                }
             }
             if !searchQuery.isEmpty {
                 searchResults
             } else if let document = controller.document {
                 if let json = document.structured(format: activeFormat) {
-                    JSONOutlineView(json: json, selection: $selection, expandRevision: expandRevision, expandAll: expandAll)
+                    JSONOutlineView(json: json, selection: $selection, expandRevision: expandRevision, expandAll: expandAll,
+                                    command: outlineCommand)
                         .piInset(sunken: true)
+                    // Outside the scroll view: these controls remain reachable
+                    // even at the end of a very large expanded request.
+                    HStack(spacing: PiSpacing.sm) {
+                        Button("Expand all") { expandAll = true; expandRevision += 1 }
+                            .accessibilityIdentifier("payload-expand-all")
+                        Button("Collapse section") { outlineCommand = JSONOutlineCommand(action: .collapseSection) }
+                            .help("Collapse the selected section, or the section at your current scroll position")
+                            .accessibilityIdentifier("payload-collapse-section")
+                        Button("Collapse all") { selection = ""; expandAll = false; expandRevision += 1 }
+                            .accessibilityIdentifier("payload-collapse-all")
+                        Spacer(minLength: 0)
+                        Button { outlineCommand = JSONOutlineCommand(action: .top) } label: { Label("Top", systemImage: "arrow.up.to.line") }
+                            .help("Back to the start of this request or response")
+                            .accessibilityIdentifier("payload-scroll-top")
+                    }.buttonStyle(.piGhost).accessibilityIdentifier("payload-outline-controls")
                     if !selection.isEmpty {
                         PagedTextView(text: selection, accessibilityLabel: "Selected JSON value")
                             .frame(height: 100).piInset(sunken: true)
@@ -509,13 +522,13 @@ struct CapturedBodyView: View {
             let preserve = previousSelection.map { $0.session == identity.session && $0.attempt == identity.attempt && $0.kind == identity.kind } ?? false
             previousSelection = identity
             displayedText?.wrappedValue = ""; copySource?.wrappedValue = nil; selection = ""; hex = ""; utf8 = ""
-            if !preserve { expandAll = false; expandRevision = 0 }
+            if !preserve { expandAll = false; expandRevision = 0; outlineCommand = nil }
             await controller.load(kind: kind, source: source, preservingDocument: preserve)
             guard !Task.isCancelled else { return }
             await updateDisplayedText()
         }
         .task(id: FormatSelection(format: activeFormat, document: controller.document?.id)) {
-            selection = ""; expandAll = false; expandRevision = 0
+            selection = ""; expandAll = false; expandRevision = 0; outlineCommand = nil
             if activeFormat == .combined { await controller.prepareCombined() }
             guard !Task.isCancelled else { return }
             await updateHexIfNeeded()
@@ -663,11 +676,18 @@ enum CapturedBodyHex {
     }
 }
 
+struct JSONOutlineCommand: Equatable {
+    enum Action { case collapseSection, top }
+    let id = UUID()
+    let action: Action
+}
+
 struct JSONOutlineView: NSViewRepresentable {
     let json: CapturedJSON
     @Binding var selection: String
     let expandRevision: Int
     let expandAll: Bool
+    var command: JSONOutlineCommand? = nil
     func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
@@ -694,13 +714,21 @@ struct JSONOutlineView: NSViewRepresentable {
             coordinator.documentID = json.id
             coordinator.root = JSONOutlineNode(key: json.rootLabel, value: json.value, formattedDetail: json.eagerFormatted)
             coordinator.revision = expandRevision
+            coordinator.commandID = command?.id
             outline.reloadData(); outline.expandItem(coordinator.root)
         }
         if coordinator.revision != expandRevision {
             coordinator.revision = expandRevision
             coordinator.expandEverything = expandAll
             if expandAll { coordinator.expandAll(in: outline) }
-            else { coordinator.cancelExpansion(); outline.collapseItem(nil, collapseChildren: true); outline.expandItem(coordinator.root) }
+            else { coordinator.collapseAll(in: outline) }
+        }
+        if let command, coordinator.commandID != command.id {
+            coordinator.commandID = command.id
+            switch command.action {
+            case .collapseSection: coordinator.collapseSection(in: outline)
+            case .top: coordinator.scrollToTop(in: outline)
+            }
         }
     }
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
@@ -712,6 +740,7 @@ struct JSONOutlineView: NSViewRepresentable {
         var root: JSONOutlineNode?
         var documentID: UUID?
         var revision = 0
+        var commandID: UUID?
         var selection: Binding<String>
         private var selectionRevision = 0
         var expandEverything = false
@@ -790,12 +819,51 @@ struct JSONOutlineView: NSViewRepresentable {
             }
         }
         func cancelExpansion() { expansionTask?.cancel(); expansionTask = nil }
+        private func stopAutomaticExpansion() {
+            cancelExpansion(); expandEverything = false; requestedExpansion.removeAll()
+            pending.values.forEach { $0.cancel() }; pending.removeAll()
+        }
+        func scrollToTop(in outline: NSOutlineView) {
+            guard let scroll = outline.enclosingScrollView else { return }
+            scroll.contentView.scroll(to: .zero); scroll.reflectScrolledClipView(scroll.contentView)
+        }
+        func collapseAll(in outline: NSOutlineView) {
+            stopAutomaticExpansion()
+            outline.deselectAll(nil)
+            outline.collapseItem(nil, collapseChildren: true); outline.expandItem(root)
+            scrollToTop(in: outline)
+        }
+        func collapseSection(in outline: NSOutlineView) {
+            let visible = outline.rows(in: outline.visibleRect)
+            guard visible.length > 0 else { return }
+            // A selected item above the viewport must not send the reader to
+            // an unrelated section. Prefer their current visible position.
+            let row = NSLocationInRange(outline.selectedRow, visible) ? outline.selectedRow : visible.location
+            var item = outline.item(atRow: row)
+            while let node = item {
+                if outline.isExpandable(node), outline.isItemExpanded(node) {
+                    if (node as? JSONOutlineNode) === root { collapseAll(in: outline); return }
+                    stopAutomaticExpansion()
+                    outline.collapseItem(node, collapseChildren: true)
+                    let parentRow = outline.row(forItem: node)
+                    if parentRow >= 0 {
+                        outline.selectRowIndexes(IndexSet(integer: parentRow), byExtendingSelection: false)
+                        outline.scrollRowToVisible(parentRow)
+                    }
+                    return
+                }
+                item = outline.parent(forItem: node)
+            }
+        }
         func outlineViewItemWillExpand(_ notification: Notification) {
             guard let outline = notification.object as? NSOutlineView, let node = notification.userInfo?["NSObject"] as? JSONOutlineNode else { return }
             requestedExpansion.insert(ObjectIdentifier(node)); prepare(node, outline: outline)
         }
         func outlineViewItemDidCollapse(_ notification: Notification) {
             guard let node = notification.userInfo?["NSObject"] as? JSONOutlineNode else { return }
+            // A late event-frame decode must not reopen a section the reader
+            // just closed, including during an asynchronous Expand all.
+            stopAutomaticExpansion()
             requestedExpansion.remove(ObjectIdentifier(node))
         }
         init(selection: Binding<String>) { self.selection = selection }

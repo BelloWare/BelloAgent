@@ -4,6 +4,7 @@ import AppKit
 /// A subset of a reported token count. Shares require matching, complete
 /// observations; independently summed partial reports are not a denominator.
 struct TurnTokenPartition: Equatable {
+    enum Fill: Equatable { case empty, reported, split(Double) }
     let title: String
     let total: Double?
     let part: Double?
@@ -37,6 +38,12 @@ struct TurnTokenPartition: Equatable {
     }
 
     var totalLabel: String { total.map(MetricFormat.exactTokens) ?? "—" }
+    /// The track represents reported tokens, not reporting completeness.
+    /// Keep it filled when a breakdown is missing, without inventing a split.
+    var fill: Fill {
+        if let fraction { return .split(fraction) }
+        return [total, part, remainder].contains { ($0 ?? 0) > 0 } ? .reported : .empty
+    }
     func label(part first: Bool) -> String {
         let name = first ? partName : remainderName
         let value = first ? part : remainder
@@ -50,7 +57,8 @@ struct TurnTokenPartition: Equatable {
     var help: String {
         let count: (Double?) -> String = { $0.map(MetricFormat.exactTokens) ?? "unreported" }
         return "\(title): \(count(total)) tokens. \(partName): \(count(part)); \(remainderName): \(count(remainder)). "
-            + (partial ? "Partial reporting; no percentage is inferred from mismatched observations. " : "")
+            + (partial ? "Partial reporting. " : "")
+            + (fill == .reported ? "The filled bar represents reported tokens; the percentage breakdown is unavailable. " : "")
             + (title == "Input" ? "Cached tokens are included in input." : "Reasoning tokens are included in output.")
     }
 }
@@ -84,7 +92,7 @@ struct CompactTurnReport: View {
                 VStack(alignment: .leading, spacing: 3) { state; identityAndActions }
             }
             TurnReportMetrics(turn: turn)
-            if turn.live || turn.partial {
+            if turn.isRunning || turn.partial {
                 Text(turn.partial ? "Partial history · retained request usage" : "Reported so far · updates as requests finish")
                     .font(.system(size: 9.5)).foregroundStyle(TranscriptPalette.faint)
             }
@@ -99,7 +107,7 @@ struct CompactTurnReport: View {
 
     private var state: some View {
         HStack(spacing: 6) {
-            if turn.live { PiShimmerText(text: status ?? "Working…").accessibilityIdentifier("workingIndicator") }
+            if turn.isRunning { PiShimmerText(text: status ?? "Working…").accessibilityIdentifier("workingIndicator") }
             else {
                 Image(systemName: turn.outcome == "completed" ? "checkmark.circle" : "exclamationmark.circle")
                     .foregroundStyle(turn.outcome == "completed" ? Color.piSuccess : Color.piWarning)
@@ -126,7 +134,7 @@ struct CompactTurnReport: View {
     }
     private func copy() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(TurnLineView.copyText(turn, model: model), forType: .string)
+        NSPasteboard.general.setString(TurnLineView.copyText(TurnInfoPresentation.live(turn, at: .now), model: model), forType: .string)
     }
 }
 
@@ -150,23 +158,11 @@ struct TurnReportMetrics: View {
     }
     private var input: some View { TurnTokenBar(partition: TurnTokenPartition(turn.accounting, input: true)) }
     private var output: some View { TurnTokenBar(partition: TurnTokenPartition(turn.accounting, input: false)) }
-    private var duration: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 5) {
-                Text("Duration").foregroundStyle(TranscriptPalette.faint)
-                Text(turn.elapsedMs.map(MetricFormat.detailedDuration) ?? "—").foregroundStyle(TranscriptPalette.text)
-                    .accessibilityIdentifier("elapsedClock")
-            }.font(.system(size: 11, weight: .medium))
-            Text("AI \(MetricFormat.detailedDuration(turn.modelMs)) · Tools \(MetricFormat.detailedDuration(turn.toolMs))")
-                .font(.system(size: 10)).foregroundStyle(TranscriptPalette.muted)
-                .help("Recorded time waiting on AI requests versus running tools. Running phases are included when the helper reports them; elapsed time also includes other work.")
-        }.monospacedDigit().fixedSize(horizontal: true, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
+    private var duration: some View { TurnDurationMetrics(turn: turn) }
 }
 
-/// Two non-overlapping shares; a zero total or missing breakdown draws an
-/// empty track, rather than a false 0% or 100%. A tiny Canvas avoids a chart
+/// Two non-overlapping shares, or one filled track when only a reported total
+/// is available. Zero and unreported counts stay empty. A tiny Canvas avoids a chart
 /// engine and never animates the transcript's geometry while streaming.
 struct TurnTokenBar: View {
     let partition: TurnTokenPartition
@@ -182,7 +178,11 @@ struct TurnTokenBar: View {
             Canvas { context, size in
                 let bounds = CGRect(origin: .zero, size: size)
                 context.fill(Path(roundedRect: bounds, cornerRadius: 2), with: .color(Color.piFillStrong))
-                if let fraction = partition.fraction {
+                switch partition.fill {
+                case .empty: break
+                case .reported:
+                    context.fill(Path(roundedRect: bounds, cornerRadius: 2), with: .color(Color.piInfo.opacity(0.65)))
+                case .split(let fraction):
                     context.clip(to: Path(roundedRect: bounds, cornerRadius: 2))
                     context.fill(Path(bounds), with: .color(secondary.opacity(0.75)))
                     context.fill(Path(CGRect(x: 0, y: 0, width: size.width * fraction, height: size.height)), with: .color(primary))

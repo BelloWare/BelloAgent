@@ -333,6 +333,10 @@ struct SessionRunLine: View {
     /// start stamp shows the action alone rather than a clock from zero.
     static func elapsed(_ timing: [String: WireValue], atUptimeMs now: Double) -> String? {
         let reported = DurationObservation.valid(timing["elapsedMs"]?.number)
+        if let end = timing["endedAt"]?.number {
+            let measured = timing["startedAt"]?.number.flatMap { DurationObservation.valid(end - $0) }
+            return (reported ?? measured).map(MetricFormat.runDuration)
+        }
         guard let started = timing["startedAt"]?.number, started.isFinite, started >= 0,
               let measured = DurationObservation.valid(now - started) else {
             return reported.map(MetricFormat.runDuration)

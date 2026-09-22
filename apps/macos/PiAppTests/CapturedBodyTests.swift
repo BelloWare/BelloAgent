@@ -72,6 +72,56 @@ final class CapturedBodyTests: XCTestCase {
         XCTAssertEqual(outline.numberOfRows, 97)
         XCTAssertFalse(outline.isItemExpanded(root.child(95)))
     }
+    @MainActor func testCollapseSectionUsesTheScrolledPositionAndKeepsOtherSectionsOpen() async throws {
+        let json = CapturedJSON(value: ["first": Array(0..<500), "second": Array(0..<500)], formatted: "")
+        var selection = ""
+        let binding = Binding(get: { selection }, set: { selection = $0 })
+        let hosted = NSHostingView(rootView: JSONOutlineView(json: json, selection: binding, expandRevision: 0, expandAll: false))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 350), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        let outline = try await renderedOutline(in: hosted, window: window)
+        let root = try XCTUnwrap(outline.item(atRow: 0) as? JSONOutlineNode)
+        outline.expandItem(nil, expandChildren: true)
+        outline.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+        outline.scrollRowToVisible(outline.numberOfRows - 2)
+        XCTAssertGreaterThan(outline.visibleRect.minY, 0)
+        hosted.rootView = JSONOutlineView(json: json, selection: binding, expandRevision: 0, expandAll: false,
+                                         command: JSONOutlineCommand(action: .collapseSection))
+        hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(outline.isItemExpanded(root.child(0)), "The offscreen selected section must stay open")
+        XCTAssertFalse(outline.isItemExpanded(root.child(1)), "Collapse the section the reader has scrolled into")
+        XCTAssertTrue(outline.item(atRow: outline.selectedRow) as? JSONOutlineNode === root.child(1))
+        XCTAssertTrue(NSLocationInRange(outline.selectedRow, outline.rows(in: outline.visibleRect)))
+        // Repeating the action moves up the containing hierarchy; closing the
+        // root restores the top-level overview and the scroll position.
+        hosted.rootView = JSONOutlineView(json: json, selection: binding, expandRevision: 0, expandAll: false,
+                                         command: JSONOutlineCommand(action: .collapseSection))
+        hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(outline.numberOfRows, 3)
+        XCTAssertEqual(outline.visibleRect.minY, 0, accuracy: 1)
+    }
+
+    @MainActor func testBackToTopPreservesExpandedContent() async throws {
+        let json = CapturedJSON(value: ["input": Array(0..<500)], formatted: "")
+        let hosted = NSHostingView(rootView: JSONOutlineView(json: json, selection: .constant(""), expandRevision: 0, expandAll: false))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 350), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        let outline = try await renderedOutline(in: hosted, window: window)
+        outline.expandItem(nil, expandChildren: true)
+        let count = outline.numberOfRows
+        outline.scrollRowToVisible(count - 1)
+        hosted.rootView = JSONOutlineView(json: json, selection: .constant(""), expandRevision: 0, expandAll: false,
+                                         command: JSONOutlineCommand(action: .top))
+        hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(outline.numberOfRows, count)
+        XCTAssertEqual(outline.visibleRect.minY, 0, accuracy: 1)
+    }
+
     @MainActor private func source(_ bytes: Data, state: String = "complete", observed: Int? = nil) -> CapturedBodySource {
         let description = metadata(bytes, state: state, observed: observed)
         return CapturedBodySource(metadata: { description }, page: { offset in

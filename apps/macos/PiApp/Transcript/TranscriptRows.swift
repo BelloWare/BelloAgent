@@ -1156,10 +1156,8 @@ struct LiveTurnBar: View {
         TurnInfoPresentation.workingLabel(turn, state: state)
     }
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            let current = TurnInfoPresentation.live(turn, at: context.date)
-            CompactTurnReport(turn: current, actions: actions, status: label)
-        }.accessibilityElement(children: .contain)
+        CompactTurnReport(turn: turn, actions: actions, status: label)
+            .accessibilityElement(children: .contain)
     }
 }
 

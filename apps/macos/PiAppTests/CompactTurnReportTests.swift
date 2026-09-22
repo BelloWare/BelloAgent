@@ -39,6 +39,9 @@ final class CompactTurnReportTests: XCTestCase {
         var a = accounting(); a.cachedSamples = 1; a.uncachedSamples = 1
         let partial = TurnTokenPartition(a, input: true)
         XCTAssertNil(partial.fraction); XCTAssertTrue(partial.partial)
+        XCTAssertEqual(partial.fill, .reported, "Partial reporting must not look like an empty token bar")
+        XCTAssertEqual(partial.totalLabel, "12,000")
+        XCTAssertTrue(partial.help.contains("percentage breakdown is unavailable"))
         XCTAssertFalse(partial.label(part: true).contains("%"))
         // Matching counts still cannot justify reasoning exceeding all output.
         a.reasoning = 4_000
@@ -83,9 +86,11 @@ final class CompactTurnReportTests: XCTestCase {
             let zero = TurnTokenPartition(a, input: input)
             XCTAssertEqual(zero.totalLabel, "0"); XCTAssertEqual(zero.remainder, 0)
             XCTAssertNil(zero.fraction); XCTAssertFalse(zero.label(part: true).contains("%"))
+            XCTAssertEqual(zero.fill, .empty)
             let missing = TurnTokenPartition(TurnAccounting(requests: 1), input: input)
             XCTAssertEqual(missing.totalLabel, "—"); XCTAssertNil(missing.part)
             XCTAssertNil(missing.remainder); XCTAssertNil(missing.fraction)
+            XCTAssertEqual(missing.fill, .empty, "No observations must not invent token usage")
         }
         a.input = 10_000; a.cached = 9_996
         XCTAssertEqual(TurnTokenPartition(a, input: true).label(part: true), "Cached 9,996 · 99.96%")

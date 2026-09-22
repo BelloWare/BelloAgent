@@ -98,6 +98,10 @@ struct TurnSummary: Equatable, Sendable {
     /// Only a currently running task may compare this with this boot's uptime.
     /// startedAt/endedAt above remain optional Unix-ms calendar observations.
     var liveStartedUptimeMs: Double? = nil
+    /// Terminal evidence wins while differently paced presentation updates
+    /// settle. An older live flag can never keep a completed clock running.
+    var terminal: Bool { outcome != nil || endedAt != nil || phase == "terminal" }
+    var isRunning: Bool { live && !terminal }
 }
 
 /// One prose reply and the work that produced it: the reasoning-only and

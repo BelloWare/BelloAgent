@@ -16,10 +16,9 @@ enum TurnInfoPresentation {
         }
     }
     static func live(_ turn: TurnSummary, at date: Date, uptimeMs: Double = ProcessInfo.processInfo.systemUptime * 1000) -> TurnSummary {
-        guard turn.live else { return turn }
         var current = turn
-        if let start = turn.liveStartedUptimeMs { current.elapsedMs = DurationObservation.valid(uptimeMs - start) }
-        else if let start = turn.startedAt { current.elapsedMs = DurationObservation.valid(date.timeIntervalSince1970 * 1000 - start) }
+        current.live = turn.isRunning
+        current.elapsedMs = TurnDurationInput(turn).reading(at: date, uptimeMs: uptimeMs).elapsedMs
         return current
     }
     struct Row: Identifiable, Equatable {
@@ -34,7 +33,7 @@ enum TurnInfoPresentation {
         case "cancelled": return "Stopped"
         case "output-limited": return "Output limit reached"
         case .some(let value): return value.capitalized
-        case nil: return turn.live ? "In progress" : "Outcome unavailable"
+        case nil: return turn.isRunning ? "In progress" : "Outcome unavailable"
         }
     }
     static func tokenLabel(_ turn: TurnSummary) -> String {
@@ -183,7 +182,7 @@ struct TurnInfoView: View {
         _tab = State(initialValue: initialTab); _query = State(initialValue: initialQuery)
     }
     private struct Refresh: Equatable { let scope: TurnRequestScope; let live: Bool }
-    private var refresh: Refresh { Refresh(scope: TurnRequestScope(turn), live: turn.live) }
+    private var refresh: Refresh { Refresh(scope: TurnRequestScope(turn), live: turn.isRunning) }
     private var source: TurnRequestSource? { actions.turnRequestSource?() }
 
     var body: some View {
@@ -229,7 +228,7 @@ struct TurnInfoView: View {
                         .frame(width: bounds.size.width, height: bounds.size.height)
                 }
                 HStack {
-                    Text(turn.live ? "Turn in progress · reported usage so far"
+                    Text(turn.isRunning ? "Turn in progress · reported usage so far"
                          : "\(turn.replies) \(turn.replies == 1 ? "reply" : "replies") · \(turn.tools) \(turn.tools == 1 ? "tool call" : "tool calls")")
                         .font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
                     Spacer()
@@ -262,7 +261,7 @@ struct TurnInfoView: View {
         .task(id: refresh) {
             guard let source else { return }
             await controller.load(refresh.scope, source: source)
-            while turn.live && !Task.isCancelled {
+            while turn.isRunning && !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard !Task.isCancelled else { return }
                 if onScreen { await controller.load(refresh.scope, source: source) }
@@ -274,11 +273,8 @@ struct TurnInfoView: View {
     }
 
     @ViewBuilder private var overview: some View {
-        if turn.live {
-            TimelineView(.periodic(from: .now, by: 1)) { clock in
-                CompactTurnReport(turn: TurnInfoPresentation.live(turn, at: clock.date),
-                                  status: TurnInfoPresentation.workingLabel(turn), showsInfo: false)
-            }
+        if turn.isRunning {
+            CompactTurnReport(turn: turn, status: TurnInfoPresentation.workingLabel(turn), showsInfo: false)
         } else { CompactTurnReport(turn: turn, showsInfo: false) }
     }
 
@@ -330,7 +326,7 @@ struct TurnInfoView: View {
         }.font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
     }
     private func copyTurn() {
-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(TurnLineView.copyText(turn), forType: .string)
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(TurnLineView.copyText(TurnInfoPresentation.live(turn, at: .now)), forType: .string)
     }
     private func copyBody() {
         guard let copySource else { return }
