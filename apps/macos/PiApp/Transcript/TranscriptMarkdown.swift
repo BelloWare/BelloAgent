@@ -126,6 +126,12 @@ enum TranscriptMarkdown {
         cache.setObject(CachedBlocks(result), forKey: key, cost: source.utf8.count)
         return result
     }
+    /// The same parse for text that is still growing. Every token makes a new
+    /// key, so remembering the answer would evict the settled fragments the
+    /// cache exists for and hold a copy of every prefix of the reply.
+    static func liveBlocks(_ source: String, style: MarkdownStyle) -> [(offset: Int, block: MarkdownBlock)] {
+        parseLocated(source, style: style)
+    }
     private static func parseLocated(_ source: String, style: MarkdownStyle) -> [(offset: Int, block: MarkdownBlock)] {
         let options = AttributedString.MarkdownParsingOptions(allowsExtendedAttributes: true, interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible, appliesSourcePositionAttributes: true)
         guard let parsed = try? AttributedString(markdown: source, options: options) else {

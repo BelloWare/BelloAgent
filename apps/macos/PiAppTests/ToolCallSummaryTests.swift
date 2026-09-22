@@ -26,15 +26,24 @@ final class ToolCallSummaryTests: XCTestCase {
         row.state = "complete"; row.tools?[0].state = "prepared"; row.toolCallCount = 1
         XCTAssertEqual(ToolCallSummary(rows: [row]).total, 1)
     }
-    func testCompleteCountsSurviveBoundedCardsHistoryAndWirePaths() throws {
+    /// Since 0.1.78 a projected reply keeps every card, so the count the
+    /// transcript shows is the count of cards it can actually draw — through
+    /// the journal projection, both wire paths and the plan. A reply that
+    /// predates the recorded call count still says "at least", because a count
+    /// it was never given is the one case that stays uncertain.
+    func testCompleteCountsSurviveHistoryAndWirePaths() throws {
         let calls: [WireValue] = (0..<64).map { .object(["type": .string("toolCall"), "id": .string("call-\($0)"), "name": .string("read"), "arguments": .object([:])]) }
         let row = TranscriptMessage.project(id: "archive", message: ["role": .string("assistant"), "content": .array(calls)])
-        XCTAssertEqual(row.tools?.count, 32); XCTAssertEqual(row.toolCallCount, 64)
+        XCTAssertEqual(row.tools?.count, 64, "Every call is a card"); XCTAssertEqual(row.toolCallCount, 64)
         XCTAssertEqual(ToolCallSummary(rows: [row]).total, 64); XCTAssertFalse(ToolCallSummary(rows: [row]).partial)
         let encoded = try JSONEncoder().encode([row]), wire = try JSONDecoder().decode(WireValue.self, from: encoded)
         XCTAssertEqual(try TranscriptMessage.projected(wire), [row]); XCTAssertEqual(try TranscriptMessage.page(wire), [row])
         var legacy = row; legacy.toolCallCount = nil
-        XCTAssertTrue(ToolCallSummary(rows: [legacy]).label?.hasPrefix("at least 32 tool calls") == true)
+        XCTAssertTrue(ToolCallSummary(rows: [legacy]).label?.hasPrefix("64 tool calls") == true,
+                      "A reply that kept all its cards counts them exactly")
+        legacy.tools = Array(legacy.tools!.prefix(32)); legacy.truncated = true
+        XCTAssertTrue(ToolCallSummary(rows: [legacy]).label?.hasPrefix("at least 32 tool calls") == true,
+                      "Only a row that says it was shortened may count approximately")
         let items = TranscriptActivity.blocks(of: [row, .init(id: "final", role: "assistant", text: "Done")])
         let summary = TaskTranscriptPlan.summary([row],task:nil)
         XCTAssertEqual(summary.tools,64)

@@ -54,6 +54,9 @@ final class StableToolPresentationTests: XCTestCase {
         XCTAssertTrue(sawTools); XCTAssertTrue(sawPreparing); XCTAssertEqual(falseFooters,0)
         for stage in [main,narrow] {
             XCTAssertTrue(work(stage.page.snapshot?.items ?? []).isEmpty, "Ordered responses never become a task-wide work group")
+            XCTAssertEqual(cards(stage.page.snapshot?.items ?? []).count, 2, "Each call is one card at its own position")
+            XCTAssertTrue(cards(stage.page.snapshot?.items ?? []).allSatisfy { $0.message?.tools?.count == 1 },
+                          "A card carries only the call made there")
             XCTAssertEqual(terminal(stage.page.snapshot?.items ?? []).count,1)
             XCTAssertNil(stage.page.liveTurn)
             XCTAssertEqual(stage.page.snapshot?.items.filter { if case .block(let b) = $0 { return b.presentation == .timeline && b.part?.part.kind == "text" }; return false }.count,2)
@@ -98,7 +101,12 @@ final class StableToolPresentationTests: XCTestCase {
     private func projection(_ active: TaskPresentationRecord?, recent: [TaskPresentationRecord] = [], epoch: String = "epoch") -> TaskPresentationProjection {
         .init(sessionID:"phase-fixture", epoch:epoch, timeline:"root", sequence:1, sourceRevision:"epoch:1", active:active, recent:recent)
     }
-    private func work(_ items: [TranscriptItem]) -> [TranscriptBlock] { items.compactMap { if case .block(let b) = $0, b.presentation == .work { return b }; return nil } }
+    /// The work groups of a page: a task-wide or legacy group, never a single
+    /// call's card. Since 0.1.79 a card is a work row placed at the position
+    /// its call was made, so it carries that part and is not a group.
+    private func work(_ items: [TranscriptItem]) -> [TranscriptBlock] { items.compactMap { if case .block(let b) = $0, b.presentation == .work, b.part == nil { return b }; return nil } }
+    /// The cards of a page, each at its own call's position.
+    private func cards(_ items: [TranscriptItem]) -> [TranscriptBlock] { items.compactMap { if case .block(let b) = $0, b.part?.part.kind == "toolArguments" { return b }; return nil } }
     private func terminal(_ items: [TranscriptItem]) -> [TranscriptBlock] { items.compactMap { if case .block(let b) = $0, b.presentation == .summary { return b }; return nil } }
 
     @MainActor func testMountedPhaseSequence() async throws {
@@ -194,11 +202,11 @@ final class StableToolPresentationTests: XCTestCase {
 
     @MainActor func testDockHeightAndOpenDisclosureDoNotFollowMetadataLength() {
         var turn = TaskTranscriptPlan.summary([],task:task())
-        let host = NSHostingView(rootView:LiveTurnBar(turn:turn,onStop:{}).frame(width:280))
+        let host = NSHostingView(rootView:LiveTurnBar(turn:turn).frame(width:280))
         host.safeAreaRegions = []; let before = host.fittingSize.height
         turn.notice = String(repeating:"Long message ",count:100); turn.tools = 150; turn.accounting.costUSD = 0.000001
         turn.phase = "tools"; turn.current = ToolView(id:"x",name:String(repeating:"long name",count:40),state:"running",input:"",output:"",truncated:false)
-        host.rootView = LiveTurnBar(turn:turn,onStop:{}).frame(width:280)
+        host.rootView = LiveTurnBar(turn:turn).frame(width:280)
         XCTAssertEqual(host.fittingSize.height,before)
         let store = TranscriptDisclosure(); store.setOpen(true,.tool(ToolOccurrence.key("a","call")))
         var first = row("a", "Text"), second = row("b", "")

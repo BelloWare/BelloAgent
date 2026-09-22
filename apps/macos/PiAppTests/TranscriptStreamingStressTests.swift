@@ -54,6 +54,12 @@ final class TranscriptStreamingStressTests: XCTestCase {
         var blockRow: TranscriptRowContainer? {
             rows.first { if case .block = $0.item { return true }; return false }
         }
+        /// The row of one call's card, at the position the call was made. A
+        /// chronological response has no work group: each call is its own row,
+        /// carrying only the card of the call made there.
+        var cardRow: TranscriptRowContainer? {
+            rows.first { if case .block(let block) = $0.item { return block.part != nil && block.message?.tools?.isEmpty == false }; return false }
+        }
         func workPart(_ row: TranscriptRowContainer) -> TranscriptDisclosure.Part? {
             guard case .block(let block) = row.item else { return nil }
             return .work(block.key)
@@ -196,6 +202,12 @@ final class TranscriptStreamingStressTests: XCTestCase {
         let expected = max(1, min(TranscriptMetrics.pageWidth, stage.scroll.contentSize.width - 48))
         for row in stage.rows {
             XCTAssertEqual(row.frame.width, expected, accuracy: 0.5, "\(what): row \(row.itemID) is \(row.frame.width) points wide, not \(expected)", file: file, line: line)
+            // A row the page is standing at an estimate has no measurement at
+            // any width — that is what an estimate is, and the page measures
+            // it before it can be drawn. What no row may do is keep an exact
+            // height measured at some other width, which is a row drawn at the
+            // wrong size; a row that is not approximate must be exact here.
+            guard !stage.document.isApproximate(row.itemID) else { continue }
             XCTAssertTrue(row.hasMeasurement(width: expected), "\(what): row \(row.itemID) has no measurement at \(expected)", file: file, line: line)
         }
     }
@@ -287,9 +299,14 @@ final class TranscriptStreamingStressTests: XCTestCase {
         stage.page.state = "running"
         await stage.settle()
 
+        // A turn's work starts closed and the reader opens it: since the
+        // chronology pass, nothing a reply did is shown until it is asked for.
         let row = try XCTUnwrap(stage.workRow)
         let part = try XCTUnwrap(stage.workPart(row))
+        row.toggleDisclosure(part)
+        stage.draw()
         let open = row.frame.height
+        XCTAssertGreaterThan(open, 100, "the live turn's work is on screen to be folded")
         row.toggleDisclosure(part)
         stage.draw()
         let folded = row.frame.height
@@ -435,7 +452,7 @@ final class TranscriptStreamingStressTests: XCTestCase {
         session.messages = messages
 
         let stage = Stage(session); defer { stage.close() }
-        await stage.settle()
+        await stage.settleUntilExact()
         assertStacked(stage, "at the opening width")
         assertMeasuredAtDrawnWidth(stage, "at the opening width")
 
@@ -449,9 +466,10 @@ final class TranscriptStreamingStressTests: XCTestCase {
             let traversals = stage.document.rowLayoutTraversalCount - traversalsBefore
             XCTAssertLessThanOrEqual(traversals, stage.rows.count * 2,
                                      "width \(width) laid the row trees out \(traversals) times for \(stage.rows.count) rows")
-            await stage.settle()
+            await stage.settleUntilExact()
             assertStacked(stage, "after settling at width \(width)")
             assertMeasuredAtDrawnWidth(stage, "after settling at width \(width)")
+            XCTAssertEqual(stage.document.approximateRowCount, 0, "every row of the page is exact at width \(width)")
             await assertFitsWhileScrollingThrough(stage, "reading the chat at width \(width)")
         }
     }
@@ -711,7 +729,9 @@ final class TranscriptStreamingStressTests: XCTestCase {
         let stage = Stage(session); defer { stage.close() }
         let opened = ProcessInfo.processInfo.systemUptime - started
         let measuredToOpen = stage.rows.reduce(0) { $0 + $1.measurementCount }
-        XCTAssertEqual(stage.rows.count, turns * 2)
+        // Three rows per turn since the chronology pass: the reader's
+        // message, the reply's prose, and the reply's own accounting line.
+        XCTAssertEqual(stage.rows.count, turns * 3)
         XCTAssertLessThan(measuredToOpen, 40, "opening the chat measured \(measuredToOpen) of \(stage.rows.count) rows before the reader saw anything")
         XCTAssertGreaterThan(stage.document.approximateRowCount, stage.rows.count / 2, "the rest of the page must stand at an estimate")
         XCTAssertGreaterThan(stage.document.frame.height, stage.scroll.contentView.bounds.height * 4, "an estimated page still has a height to scroll")
@@ -801,21 +821,27 @@ final class TranscriptStreamingStressTests: XCTestCase {
         let stage = Stage(session); defer { stage.close() }
         await stage.settle()
         let work = try XCTUnwrap(stage.workRow)
-        work.toggleDisclosure(.tool("t0"))
+        // A card is keyed by the reply that made the call, so two responses
+        // reusing a provider call id stay independent.
+        work.toggleDisclosure(.tool(ToolOccurrence.key("a0", "t0")))
         stage.draw()
-        XCTAssertTrue(session.disclosure.isOpen(.tool("t0")))
+        XCTAssertTrue(session.disclosure.isOpen(.tool(ToolOccurrence.key("a0", "t0"))))
         XCTAssertEqual(session.disclosure.changedCount, 1)
 
-        // Enough new rows to push the first turn past the cap.
-        var grown = messages
-        for index in 80..<(80 + TranscriptPage.rowLimit) {
+        // The source moves on: the window the helper sends no longer holds the
+        // first turn, and it is long enough to reach the resident cap. The cap
+        // counts source messages; a reply is more than one row of them, so the
+        // rows it draws are derived rather than counted against the same bound.
+        var grown = Array(messages.dropFirst(2))
+        for index in 80..<(80 + HistoryWindowPolicy.residentRows) {
             grown.append(TranscriptMessage(id: "u\(index)", role: "user", text: "Question \(index).", at: Double(index * 10), turn: "u\(index)"))
             grown.append(TranscriptMessage(id: "a\(index)", role: "assistant", text: "Answer \(index).", at: Double(index * 10 + 1), turn: "u\(index)"))
         }
         session.messages = grown
         stage.refresh()
         await stage.settle()
-        XCTAssertLessThanOrEqual(stage.rows.count, TranscriptPage.rowLimit, "the page keeps at most its row limit")
+        XCTAssertLessThanOrEqual(stage.page.snapshot?.messages.count ?? 0, HistoryWindowPolicy.residentRows,
+                                 "the page keeps at most its resident window of source messages")
         XCTAssertNil(stage.row("block:a0"), "the oldest turn left the page")
         XCTAssertEqual(session.disclosure.changedCount, 0, "a row that left the page must take its disclosure with it")
         assertStacked(stage, "after the cap dropped the oldest rows")
@@ -872,10 +898,14 @@ final class TranscriptStreamingStressTests: XCTestCase {
         stage.page.state = "running"
         await stage.settle()
 
+        // Work starts closed; the reader opens it and then folds it again, and
+        // it is that second state the settling reply must not undo.
         let row = try XCTUnwrap(stage.workRow)
+        let part = try XCTUnwrap(stage.workPart(row))
+        row.toggleDisclosure(part); stage.draw()
         let open = row.frame.height
-        row.toggleDisclosure(try XCTUnwrap(stage.workPart(row)))
-        stage.draw()
+        XCTAssertGreaterThan(open, 100, "the live turn's work is on screen to be folded")
+        row.toggleDisclosure(part); stage.draw()
         let folded = row.frame.height
         XCTAssertLessThan(folded, open / 2, "the live turn folds")
 
@@ -951,18 +981,19 @@ final class TranscriptStreamingStressTests: XCTestCase {
         messages.append(reply)
         session.messages = messages
         let stage = Stage(session); defer { stage.close() }
-        await stage.settle()
+        await stage.settleUntilExact()
         let row = try XCTUnwrap(stage.workRow)
-        row.toggleDisclosure(.tool("t2"))
+        row.toggleDisclosure(try XCTUnwrap(stage.workPart(row)))
+        row.toggleDisclosure(.tool(ToolOccurrence.key("rich", "t2")))
         row.toggleDisclosure(.reasoning("rich"))
         stage.draw()
 
         for width in [420.0, 340.0, 280.0, 820.0] as [CGFloat] {
             stage.resize(width: width)
-            await stage.settle()
+            await stage.settleUntilExact()
             assertStacked(stage, "at \(width) points wide")
             assertMeasuredAtDrawnWidth(stage, "at \(width) points wide")
-            XCTAssertTrue(session.disclosure.isOpen(.tool("t2")), "the open card closed itself at \(width) points")
+            XCTAssertTrue(session.disclosure.isOpen(.tool(ToolOccurrence.key("rich", "t2"))), "the open card closed itself at \(width) points")
             XCTAssertTrue(session.disclosure.isOpen(.reasoning("rich")), "the reasoning closed itself at \(width) points")
             await assertFitsWhileScrollingThrough(stage, "reading the chat at \(width) points wide")
         }
@@ -1334,6 +1365,13 @@ final class TranscriptStreamingStressTests: XCTestCase {
             await stage.settle()
             let block = try XCTUnwrap(stage.workRow)
             let compaction = try XCTUnwrap(stage.row("c1"))
+            // Exposed reasoning is inside the turn's work, and work starts
+            // closed: the reader opens the work, and the heights below are
+            // measured from there.
+            if !session.disclosure.isOpen(try XCTUnwrap(stage.workPart(block))) {
+                block.toggleDisclosure(try XCTUnwrap(stage.workPart(block)))
+                stage.draw()
+            }
             let blockClosed = block.frame.height, compactionClosed = compaction.frame.height
 
             block.toggleDisclosure(.reasoning("a1"))
@@ -1391,10 +1429,16 @@ final class TranscriptStreamingStressTests: XCTestCase {
         let stage = Stage(session); defer { stage.close() }
         await stage.settle()
 
-        let beforeOpening = TranscriptActivity.editComputationCount
         let row = try XCTUnwrap(stage.workRow)
-        row.toggleDisclosure(.tool("e1"))
+        // A card is inside the turn's work, which starts closed. Opening the
+        // work draws no card body, so the diff is still unrun at this point.
+        row.toggleDisclosure(try XCTUnwrap(stage.workPart(row))); stage.draw()
+        let beforeOpening = TranscriptActivity.editComputationCount
+        let closed = row.frame.height
+        row.toggleDisclosure(.tool(ToolOccurrence.key("a1", "e1")))
         stage.draw()
+        await stage.settle()
+        XCTAssertGreaterThan(row.frame.height, closed + 40, "the card opened")
         XCTAssertEqual(TranscriptActivity.editComputationCount, beforeOpening + 1, "opening the card works the diff out once")
         assertStacked(stage, "with the edit card open")
 
@@ -1484,8 +1528,9 @@ final class TranscriptStreamingStressTests: XCTestCase {
         let stage = Stage(session); defer { stage.close() }
         await stage.settle()
         let row = try XCTUnwrap(stage.workRow)
+        row.toggleDisclosure(try XCTUnwrap(stage.workPart(row))); stage.draw()
         let closed = row.frame.height
-        row.toggleDisclosure(.tool("huge"))
+        row.toggleDisclosure(.tool(ToolOccurrence.key("a1", "huge")))
         stage.draw()
         XCTAssertGreaterThan(row.frame.height, closed, "the card still opens")
         XCTAssertLessThan(row.frame.height - closed, 700, "and stays a preview rather than laying out the whole file")
@@ -1508,6 +1553,11 @@ final class TranscriptStreamingStressTests: XCTestCase {
         let stage = Stage(session); defer { stage.close() }
         await stage.settle()
         let part = try XCTUnwrap(stage.workPart(try XCTUnwrap(stage.workRow)))
+        // Work starts closed, so the reader opens it once: every round below
+        // begins from a turn that is on screen and folds it.
+        try XCTUnwrap(stage.workRow).toggleDisclosure(part)
+        stage.draw()
+        XCTAssertTrue(session.disclosure.isOpen(part), "the turn is open to be folded")
 
         /// Folds the turn, changes something while it is folded, opens it
         /// again and checks that what is drawn fits the row it is drawn in.
@@ -1549,7 +1599,7 @@ final class TranscriptStreamingStressTests: XCTestCase {
         }
         // A card inside the folded list is opened while it is folded.
         try await fold("a card inside was opened while folded") {
-            session.disclosure.toggle(.tool("t2"))
+            session.disclosure.toggle(.tool(ToolOccurrence.key("a1", "t2")))
             stage.refresh()
         }
         // The reasoning inside the folded list is opened while it is folded.
@@ -1731,31 +1781,35 @@ final class TranscriptStreamingStressTests: XCTestCase {
         let reply = try XCTUnwrap(page.messages.first { $0.role == "assistant" })
         let tool = try XCTUnwrap(reply.tools?.first)
         XCTAssertEqual(tool.name, "edit")
-        XCTAssertEqual(tool.inputTruncated, true, "a 20 KB edit does not fit the inline bound")
-        XCTAssertGreaterThan(tool.inputBytes ?? 0, 20_000, "the card knows how large the request was")
-        XCTAssertLessThanOrEqual(tool.input.utf8.count, ToolInputDisplay.inlineBytes)
+        // Since 0.1.78 a projection keeps the whole parseable request: nothing
+        // is cut on the way out of a journal, so nothing claims it was.
+        XCTAssertNil(tool.inputTruncated, "a projected reply is complete, so no card says it was shortened")
+        XCTAssertNil(tool.inputBytes)
+        XCTAssertGreaterThan(tool.input.utf8.count, 20_000, "the whole request reached the card")
         XCTAssertNotNil(try? JSONSerialization.jsonObject(with: Data(tool.input.utf8)),
                         "what a journal hands a card must parse, so the card is never a fragment of JSON")
 
-        let request = try XCTUnwrap(TranscriptActivity.editRequest(tool), "a bounded journal edit still draws as a diff")
-        XCTAssertFalse(request.complete, "the card knows it is not showing the whole request")
+        let request = try XCTUnwrap(TranscriptActivity.editRequest(tool), "a journal edit draws as a diff")
+        XCTAssertTrue(request.complete, "the card is showing the whole request")
         XCTAssertTrue(request.rows.contains { $0.text.contains("let value0 ") || $0.text.contains("let value0 =") },
-                      "the content that fits is shown")
-        XCTAssertTrue(request.rows.contains { $0.text.hasPrefix(ToolInputDisplay.truncationMarker) },
-                      "the hunk ends with the marker that says where the content stops")
+                      "the content is shown")
+        XCTAssertFalse(request.rows.contains { $0.text.hasPrefix(ToolInputDisplay.truncationMarker) },
+                       "nothing was cut, so no marker says where the content stops")
         XCTAssertFalse(request.rows.contains { $0.text.contains("\"newText\"") }, "no JSON ever leaks into the rows")
 
-        // And it draws, in a row, with the note.
+        // And it draws, in the row of the call that asked for it. A card at
+        // its call's own position has no work group above it to open first.
         let session = SessionDisplay(id: "journal-card")
         session.messages = page.messages
         let stage = Stage(session); defer { stage.close() }
         await stage.settle()
-        let row = try XCTUnwrap(stage.workRow)
-        row.toggleDisclosure(try XCTUnwrap(stage.workPart(row))); stage.draw()
+        let row = try XCTUnwrap(stage.cardRow)
         let closed = row.frame.height
         row.toggleDisclosure(.tool(ToolOccurrence.key("a1","call-1")))
         stage.draw()
         XCTAssertGreaterThan(row.frame.height, closed)
+        XCTAssertLessThan(row.frame.height - closed, 900,
+                          "a five-hundred-line diff stays a preview: the card caps its middle")
         assertStacked(stage, "with a journal edit open")
     }
 

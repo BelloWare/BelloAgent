@@ -4,11 +4,20 @@ import AppKit
 @testable import PiApp
 
 final class StreamingMarkdownStabilityTests: XCTestCase {
-    func testAmbiguousTailStaysLiteralAndDoesNotSwallowPartialFenceInfo() {
-        for source in ["A **bold** and an unfinished [link](", "```sw", "# partial heading", "日本🙂 e\u{301} `unfinished"] {
+    /// An unterminated fence is the one thing that stays literal: "```sw" is
+    /// not a fence yet, and committing one would draw an empty code card that
+    /// then jumps. Everything else in the arriving tail reads as the finished
+    /// reply will, so the page never shows raw markup that then rewraps.
+    func testOnlyAnUnfinishedFenceStaysLiteralAndTheRestReadsAsItWill() {
+        for source in ["```sw", "~~~~la", "   ```swift"] {
             let blocks=TranscriptMarkdown.streamingBlocks(source)
-            guard case .paragraph(let text) = blocks.first else { XCTFail("An unfinished tail should remain literal: \(source)"); continue }
+            guard blocks.count == 1, case .paragraph(let text) = blocks.first else { XCTFail("An unfinished fence should remain literal: \(source)"); continue }
             XCTAssertEqual(String(text.characters),source)
+        }
+        for source in ["A **bold** and an unfinished [link](", "# partial heading", "日本🙂 e\u{301} `unfinished",
+                       "- one\n- two", "| a | b |\n|---|---|\n| 1 |"] {
+            XCTAssertEqual(TranscriptMarkdown.streamingBlocks(source), TranscriptMarkdown.parse(source),
+                           "the open tail must read as the parse of the same text: \(source)")
         }
     }
     @MainActor func testStreamingContainerSurvivesEightBlocksAndTerminalCompletion() {
@@ -172,7 +181,11 @@ extension StreamingMarkdownStabilityTests {
 
 
 extension StreamingMarkdownStabilityTests {
-    @MainActor func testSelectedLiteralBoldKeepsItsSelectionAfterCanonicalCompletion() async throws {
+    /// A reader who selects a word in a reply that is still arriving keeps
+    /// that selection when the reply finishes. The arriving text is already
+    /// the finished rendering — emphasis is applied as its closing marker
+    /// lands — so completion must not replace the selectable field.
+    @MainActor func testASelectionInAnArrivingReplySurvivesItsCompletion() async throws {
         for (raw, rendered) in [("Select **bold** here", "Select bold here"),
                                 ("**one** **two** **three** **bold**", "one two three bold")] {
         let window=NSWindow(contentRect:NSRect(x:0,y:0,width:620,height:240),styleMask:[.titled],backing:.buffered,defer:false)
@@ -185,9 +198,9 @@ extension StreamingMarkdownStabilityTests {
             return view.subviews.flatMap { fields($0) }
         }
         _=host.fittingSize; host.layoutSubtreeIfNeeded()
-        let field=try XCTUnwrap(fields(host).first { $0.stringValue == raw })
+        let field=try XCTUnwrap(fields(host).first { $0.stringValue == rendered })
         field.selectText(nil)
-        let editor=try XCTUnwrap(field.currentEditor()); editor.selectedRange=(raw as NSString).range(of:"bold")
+        let editor=try XCTUnwrap(field.currentEditor()); editor.selectedRange=(rendered as NSString).range(of:"bold")
         host.rootView=MarkdownBodyView(source:raw,streaming:false)
         for _ in 0..<3 { _=host.fittingSize; host.layoutSubtreeIfNeeded(); window.displayIfNeeded(); await Task.yield() }
         XCTAssertTrue(field.currentEditor() === editor)

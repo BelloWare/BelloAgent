@@ -330,7 +330,9 @@ import Combine
     var uncertain = false { didSet { if uncertain != oldValue { activityChanges.send() } } }
     @Published var contextSelectionReady = false
     var used = Date()
-    init(id: String) { self.id = id }
+    init(id: String) {
+        self.id = id
+    }
     var busy: Bool { ["queued", "running", "stopping", "compacting"].contains(state) }
     var hasWork: Bool { busy || queueCount > 0 }
 }

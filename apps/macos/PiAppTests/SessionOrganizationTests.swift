@@ -152,8 +152,8 @@ final class SessionOrganizationTests: XCTestCase {
     }
 
     func testSidebarRateKeepsCompletedUsageAcrossActivityChangesAndNeverUsesStreamedBytes() {
-        let completed = SessionTimingSample(id: "hidden-reasoning", wall: Date(), ttftMilliseconds: nil,
-                                            streamingMilliseconds: nil, outputTokens: 302, requestMilliseconds: 2_403)
+        let completed = SessionTimingSample(id: "streamed", wall: Date(), ttftMilliseconds: 200,
+                                            streamingMilliseconds: 2_403, outputTokens: 302, requestMilliseconds: 2_603)
         let history = SessionTimingHistory(samples: [completed], historicalRate: HistoricalOutputRate(outputTokens: 1_000, generationMilliseconds: 10_000, samples: 2))
         var row = ChatRowStats(totals: nil, timing: history)
         XCTAssertEqual(row.rateLabel, "Latest 126 tok/s")
@@ -174,5 +174,12 @@ final class SessionOrganizationTests: XCTestCase {
         XCTAssertEqual(row.rateLabel, "Usage unavailable", "A new completed request without usage must not borrow an older rate or the average")
         row.timing = SessionTimingHistory()
         XCTAssertEqual(row.rateLabel, "Awaiting usage")
+        // A buffered route that never emits a first-content event has no
+        // decode span, so it has no settled rate — the sidebar says so rather
+        // than dividing by the whole round trip and calling that decode speed.
+        let buffered = SessionTimingSample(id: "hidden-reasoning", wall: Date(), ttftMilliseconds: nil,
+                                           streamingMilliseconds: nil, outputTokens: 302, requestMilliseconds: 2_403)
+        row.timing = SessionTimingHistory(samples: [buffered])
+        XCTAssertEqual(row.rateLabel, "Usage unavailable")
     }
 }

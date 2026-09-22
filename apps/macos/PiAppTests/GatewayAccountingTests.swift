@@ -94,6 +94,8 @@ final class GatewayAccountingTests: XCTestCase {
         let pending = try await archive.gatewayAccounting(sessionID: "session", workspaceID: "workspace", messages: [user])
         XCTAssertEqual(pending.messages[user.id]?.requests, 1)
         XCTAssertEqual(pending.messages[user.id]?.models?.unreportedRequests, 1)
+        XCTAssertEqual(pending.messages[user.id]?.models?.routes?.first?.requested, "router")
+        XCTAssertNil(pending.messages[user.id]?.models?.routes?.first?.responded)
         let during = try await archive.gatewayAccounting(sessionID: "session", workspaceID: "workspace", messages: [user, streaming])
         XCTAssertNil(during.messages[user.id]); XCTAssertEqual(during.messages[streaming.id]?.requests, 1)
         metadata["outputMessageIds"] = .array([.string("answer"), .string("tool"), .string("duplicate-link")])
@@ -105,6 +107,7 @@ final class GatewayAccountingTests: XCTestCase {
         let complete = try await archive.gatewayAccounting(sessionID: "session", workspaceID: "workspace", messages: [user, streaming, .init(id: "tool", role: "tool", text: "result"), .init(id: "duplicate-link", role: "assistant", text: "Repeated origin")])
         XCTAssertEqual(complete.messages.keys.sorted(), ["answer"])
         XCTAssertEqual(complete.messages["answer"]?.models?.names, ["gpt-5.4-mini"])
+        XCTAssertEqual(complete.messages["answer"]?.models?.routes?.first?.label, "router → gpt-5.4-mini")
         XCTAssertEqual(complete.messages["answer"]?.models?.reportedRequests, 1)
         XCTAssertNil(complete.session.models, "Message identity must not change session accounting totals")
         XCTAssertEqual(complete.session.tokens?.input, 38); XCTAssertEqual(complete.session.tokens?.output, 423)
@@ -347,6 +350,34 @@ final class GatewayAccountingTests: XCTestCase {
         try await archive.close()
     }
 
+    func testRequestedAndReturnedRoutesRemainPairedAcrossModelChangesAndReopen() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
+        try await archive.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
+        let routes = [GatewayModelRoute(requested: "auto-router", responded: "gpt-5.4-mini", latestWall: 1990.1),
+                      GatewayModelRoute(requested: "gpt-5.4", responded: "gpt-5.4", latestWall: 1990.2),
+                      GatewayModelRoute(requested: "team-router", responded: "gpt-5.4-mini", latestWall: 1990.3)]
+        for route in routes {
+            var metadata = value(wall: route.latestWall)
+            metadata["requestedModel"] = .string(route.requested!)
+            metadata["identity"] = .object(["status": .string("reported"), "effectiveModel": .string(route.responded!),
+                "evidence": .array([.object(["kind": .string("model"), "source": .string("body.router_model_name"), "value": .string(route.responded!)])])])
+            try await save(archive, metadata)
+        }
+        try await archive.close()
+        let reopened = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
+        try await reopened.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
+        var answer = TranscriptMessage(id: "assistant-1", role: "assistant", text: "Answer")
+        let result = try await reopened.gatewayAccounting(sessionID: "session", workspaceID: "workspace", messages: [answer])
+        let models = try XCTUnwrap(result.messages[answer.id]?.models)
+        XCTAssertEqual(models.routes, Array(routes.reversed()))
+        XCTAssertTrue(TranscriptActivity.validModelSummary(models, requests: 3))
+        answer.accounting = result.messages[answer.id]
+        XCTAssertEqual(TranscriptActivity.aggregate([answer]).latestModelRoute, routes.last)
+        XCTAssertTrue(TranscriptActivity.accountingPresentation(answer.accounting!).summary.hasPrefix("team-router → gpt-5.4-mini"))
+        try await reopened.close()
+    }
+
     func testInlineModelNamesComeFromResolvedGatewayIdentityAndPreserveCoverage() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
@@ -376,7 +407,7 @@ final class GatewayAccountingTests: XCTestCase {
         XCTAssertEqual(summary.conflictingRequests, 1); XCTAssertEqual(summary.incompleteRequests, 1)
         let encoded = String(decoding: try JSONEncoder().encode(result.messages[answer.id]), as: UTF8.self)
         XCTAssertFalse(encoded.contains("private-evidence")); XCTAssertFalse(encoded.contains("header:"))
-        XCTAssertFalse(encoded.contains("other-project-model")); XCTAssertFalse(encoded.contains("\"router\""))
+        XCTAssertFalse(encoded.contains("other-project-model")); XCTAssertTrue(encoded.contains("\"requested\":\"router\""))
         try await archive.close()
     }
 

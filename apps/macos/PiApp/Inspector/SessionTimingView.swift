@@ -71,55 +71,6 @@ struct SidebarReportedRate: View {
     }
 }
 
-struct SessionTimingControls: View {
-    @ObservedObject var footer: SessionMetrics
-    let sessionTitle: String
-    @StateObject private var hover = SessionTimingHover()
-    var body: some View {
-        HStack(spacing: PiSpacing.md) {
-            metric(.ttft)
-            Circle().fill(Color.piHairlineStrong).frame(width: 3, height: 3)
-            metric(.rate)
-            average
-        }
-        .piStableLayout()
-        .onHover(perform: hover.triggerHover)
-        .popover(isPresented: Binding(get: { hover.presented }, set: { if !$0 { hover.dismiss() } }), arrowEdge: .top) {
-            SessionTimingHistoryView(history: footer.timing, sessionTitle: sessionTitle, close: hover.dismiss)
-                .onHover(perform: hover.panelHover)
-        }
-        .onChange(of: ObjectIdentifier(footer)) { _, _ in hover.stop() }
-        .onDisappear { hover.stop() }
-    }
-    private func metric(_ metric: SessionTimingMetric) -> some View {
-        let value = footer.timing.latest.flatMap { metric.value(in: $0) }
-        let text = metric == .rate ? SessionRatePresentation(history: footer.timing).label : "TTFT " + (value.map { metric.label($0) } ?? "n/a")
-        return timingButton(symbol: metric.symbol, text: text, label: "Latest completed request: " + metric.title,
-                            value: metric.label(value), identifier: "session-latest-" + metric.rawValue, minimumWidth: metric == .rate ? 122 : 82)
-            .help(SessionRatePresentation.explanation)
-    }
-    private var average: some View {
-        let value = footer.timing.historicalRate.tokensPerSecond
-        return timingButton(symbol: nil, text: "Avg " + (value.map { SessionTimingMetric.rate.label($0) } ?? "n/a"),
-                            label: "Session average output tokens per second", value: SessionTimingMetric.rate.label(value), identifier: "session-average-rate", minimumWidth: 78)
-            .help("Weighted average across retained completed requests: \(footer.timing.historicalRate.samples)/\(footer.timing.completedRequests) with reported output and completion timing.")
-    }
-    private func timingButton(symbol: String?, text: String, label: String, value: String, identifier: String, minimumWidth: CGFloat) -> some View {
-        return Button(action: hover.togglePinned) {
-            HStack(spacing: 4) {
-                if let symbol { Image(systemName: symbol).font(.system(size: 10)) }
-                Text(text).lineLimit(1).monospacedDigit().fixedSize()
-                    .contentTransition(.opacity).piAnimation(PiMotion.quick, value: text)
-            }.frame(minWidth: minimumWidth, alignment: .leading)
-        }
-        .buttonStyle(.plain).piPointer()
-        .accessibilityLabel(label)
-        .accessibilityValue(value)
-        .accessibilityHint("Show timing history for this session")
-        .accessibilityIdentifier(identifier)
-    }
-}
-
 struct SessionTimingHistoryView: View {
     let history: SessionTimingHistory
     let sessionTitle: String
@@ -147,11 +98,11 @@ struct SessionTimingHistoryView: View {
                     latest(.rate)
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Session average").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-                        Text(SessionTimingMetric.rate.label(history.historicalRate.tokensPerSecond))
+                        Text(SessionTimingMetric.rate.label(history.settledThroughput.tokensPerSecond))
                             .font(PiFont.body.weight(.semibold)).monospacedDigit()
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Text("Average: \(history.historicalRate.samples)/\(history.completedRequests) retained completed requests with output and timing.")
+                Text("Average: \(history.settledThroughput.samples)/\(history.samples.count) listed requests reported both a decode span and their output tokens.")
                     .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
                 ForEach(SessionTimingMetric.footerMetrics, id: \.rawValue) { SessionTimingChart(history: history, metric: $0, selectedRequest: $selectedRequest) }
                 if let sample = selectedSample {
@@ -166,7 +117,7 @@ struct SessionTimingHistoryView: View {
             }
             Text(history.hasOlderRequests ? "Most recent \(history.samples.count) completed requests in this session." : "\(history.samples.count) completed requests in this session.")
                 .font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-            Text("Rates include dispatch-to-completion time. The session average divides total reported output by total time across retained completed requests. Gaps indicate missing measurements.")
+            Text(SettledThroughput.explanation + " The session figure divides summed output by summed decode time; gaps indicate missing measurements.")
                 .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(PiSpacing.lg).frame(width: 430).foregroundStyle(Color.piInk)

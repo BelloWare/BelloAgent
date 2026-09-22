@@ -406,6 +406,8 @@ extension ReportPageTests {
         let hidden = await model.revealMessage(sessionID: chat.id, messageID: "m-edited-away")
         XCTAssertTrue(hidden); XCTAssertEqual(model.page, .chats)
         XCTAssertTrue(model.showMessageDetail); XCTAssertEqual(model.messageDetailID, "m-edited-away"); XCTAssertEqual(model.messageDetailSessionID, chat.id)
+        XCTAssertEqual(model.displays[chat.id]?.messages.map(\.id), ["m-visible"],
+                       "A missing retained message must not clear the visible conversation")
 
         // Opening a chat without a message just navigates.
         model.showMessageDetail = false; model.openReport()

@@ -532,6 +532,11 @@ actor HistoryReader {
         else { let end = beforeIndex ?? branch.count; range = max(0, end - 60)..<end }
         var messages: [TranscriptMessage] = [], bytes = HistoryWindowPolicy.metadataAllowance
         var start = forward ? range.lowerBound : range.upperBound, end = start
+        // What each call's result recorded, so the reply that made the call
+        // can show it in that call's own card, exactly as a live snapshot
+        // does. Collected while the window is decoded; the page is filled in
+        // once below, so the direction it was read in does not matter.
+        var toolResults: [String: ToolResultRecord] = [:]
         for index in (forward ? Array(range) : Array(range.reversed())) {
             try Task.checkCancellation()
             let ref = try branch.at(index); try file.seek(toOffset: ref.offset)
@@ -547,7 +552,11 @@ actor HistoryReader {
                 message.operationID = value["nativeCompaction"]?.object?["operationId"]?.string
                 message.kind = "compaction"; message.detail = "Compacted \(tokens) tokens · \(kept) message\(kept == 1 ? "" : "s") kept"
             }
-            else { message = TranscriptMessage.project(id: ref.id, message: value["message"]?.object ?? [:]) }
+            else {
+                let row = value["message"]?.object ?? [:]
+                if let result = ToolResultRecord.of(row) { toolResults[result.call] = result.record }
+                message = TranscriptMessage.project(id: ref.id, message: row)
+            }
             if ref.adopted { message.responseTimeline?.finish("completed"); message.detail="Compaction · Checkpoint durably adopted" }
             if ref.presentation, message.responseTimeline?.terminal == nil { message.detail=(message.detail ?? "Operation") + " · no terminal receipt" }
             let count = try JSONEncoder().encode(message).count
@@ -560,6 +569,7 @@ actor HistoryReader {
         }
         guard try stamp(file) == identity else { indexes.removeValue(forKey: path); throw StoreError.unreadableRecord }
         guard range.isEmpty || !messages.isEmpty else { throw HostError.failure("This history record exceeds the display envelope. Its retained source is unchanged.") }
+        messages = TranscriptMessage.resolvingToolResults(messages, results: toolResults)
         return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: branch.count, notice: notice,
                            assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil,
                            failureMessage: notice == nil ? failureMessage : nil,

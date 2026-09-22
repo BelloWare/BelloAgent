@@ -12,9 +12,14 @@ import QuartzCore
 /// AppKit owns the scrolling document. SwiftUI receives row content changes,
 /// not a new document coordinate transform for every wheel/trackpad event.
 struct TranscriptScrollSurface: NSViewRepresentable {
-    let snapshot: TranscriptPage.Snapshot?
+    /// Which page of the conversation this is, as a number the page
+    /// increments. The rows themselves are read from the page: handing
+    /// SwiftUI the whole snapshot would have it hold and compare three
+    /// hundred messages for every token of an arriving reply.
+    let revision: Int
     let page: TranscriptPage
     let actions: TranscriptActions
+    private var snapshot: TranscriptPage.Snapshot? { page.snapshot }
 
     func makeNSView(context: Context) -> TranscriptNativeScrollView {
         let scroll = TranscriptNativeScrollView()
@@ -45,6 +50,11 @@ enum TranscriptKeyScroll {
 }
 
 final class TranscriptNativeScrollView: NSScrollView {
+    override var frame: NSRect {
+        willSet {
+            if frame != newValue { (documentView as? TranscriptNativeDocument)?.viewportWillResize() }
+        }
+    }
     /// A Tab order can reach the conversation, so the keys below have
     /// somewhere to land even without the composer handing them on.
     override var acceptsFirstResponder: Bool { true }
@@ -54,7 +64,10 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// text, so when the inset changes the clip view moves by the difference
     /// — unless the page is following the newest row, which places itself.
     override var contentInsets: NSEdgeInsets {
-        willSet { transcriptReading.captureDocument() }
+        willSet {
+            (documentView as? TranscriptNativeDocument)?.viewportWillResize()
+            transcriptReading.captureDocument()
+        }
         didSet {
             transcriptReading.geometryChanged()
         }
@@ -62,9 +75,42 @@ final class TranscriptNativeScrollView: NSScrollView {
     func readerWillNavigate(upward: Bool) {
         (documentView as? TranscriptNativeDocument)?.readerWillNavigate(upward: upward)
     }
+    /// True from the moment the reader's wheel or trackpad gesture begins
+    /// until AppKit says it has ended. While it is, the frames belong to the
+    /// scroll: an arriving reply waits rather than laying the page out inside
+    /// the gesture, and catches up the moment the hand stops.
+    private(set) var readerIsScrolling = false
+    /// Set while a gesture is in flight, so a reply that has been waiting is
+    /// released as soon as it ends.
+    var onScrollGestureEnded: (() -> Void)?
+    nonisolated(unsafe) private var gestureObservers: [NSObjectProtocol] = []
+    private func observeGesture() {
+        guard gestureObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        gestureObservers.append(center.addObserver(forName: NSScrollView.willStartLiveScrollNotification, object: self, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.noteGesture(began: true) }
+        })
+        gestureObservers.append(center.addObserver(forName: NSScrollView.didEndLiveScrollNotification, object: self, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.noteGesture(began: false) }
+        })
+    }
+    private func noteGesture(began: Bool) {
+        guard readerIsScrolling != began else { return }
+        readerIsScrolling = began
+        if !began { onScrollGestureEnded?() }
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observeGesture()
+    }
+    deinit { for observer in gestureObservers { NotificationCenter.default.removeObserver(observer) } }
     override func scrollWheel(with event: NSEvent) {
         readerWillNavigate(upward: event.scrollingDeltaY > 0)
+        // A trackpad says where its gesture begins and ends; a wheel without
+        // phases is covered by AppKit's own live-scroll notifications.
+        if event.phase.contains(.began) || event.momentumPhase.contains(.began) { noteGesture(began: true) }
         super.scrollWheel(with: event)
+        if event.phase.contains(.ended) || event.phase.contains(.cancelled) || event.momentumPhase.contains(.ended) { noteGesture(began: false) }
     }
     /// Moves the reader the way the key they pressed says. Returns whether
     /// there was anywhere to go, so a key the conversation cannot use goes
@@ -97,6 +143,12 @@ final class TranscriptNativeScrollView: NSScrollView {
     override func layout() {
         super.layout()
         (documentView as? TranscriptNativeDocument)?.layoutRows(width: contentSize.width)
+    }
+    override func setFrameSize(_ newSize: NSSize) {
+        // NSScrollView adjusts its origin before publishing the new clip size.
+        // Claim that movement before AppKit can report it as a reader scroll.
+        if frame.size != newSize { (documentView as? TranscriptNativeDocument)?.viewportWillResize() }
+        super.setFrameSize(newSize)
     }
     // AppKit sends these to the whole hierarchy of a window or split view the
     // reader is dragging. The document measures less while the drag is running
@@ -360,7 +412,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             if let row = retained.removeValue(forKey: item.id) {
                 if row.update(item: item, fresh: fresh, actions: actionRelay.forwarded, environment: environment) {
                     changedFrom = min(changedFrom, index)
-                    if motion?.rowID == row.itemID { motionNeedsRetarget = true }
+                    if motion?.changes.contains(where: { $0.rowID == row.itemID }) == true { motionNeedsRetarget = true }
                 }
                 if previous.indices.contains(index), previous[index] !== row { changedFrom = min(changedFrom, index) }
                 row.layoutIndex = index
@@ -390,8 +442,8 @@ final class TranscriptNativeScrollView: NSScrollView {
             return row
         }
         for row in retained.values { row.onHeightInvalidated = nil; row.onHeightValidated = nil; row.removeFromSuperview(); page?.rowGone(row.itemID) }
-        if let moving = motion, !rows.contains(where: { $0.itemID == moving.rowID }) {
-            retained[moving.rowID]?.endDisclosureMotion()
+        if let moving = motion, !moving.changes.allSatisfy({ change in rows.contains { $0.itemID == change.rowID } }) {
+            for change in moving.changes { retained[change.rowID]?.endDisclosureMotion() }
             motion = nil; stopMotionLink()
         }
         markDirty(from: changedFrom)
@@ -414,13 +466,20 @@ final class TranscriptNativeScrollView: NSScrollView {
         layoutNow()
         scheduleSlice()
     }
-    /// Admit one optional unit after the content/input quiet deadline.
+    /// Admit one optional unit. Getting the rows the reader is about to reach
+    /// ready runs whatever else is happening — a reply arriving is not a
+    /// reason to stop, it is the moment the reader is most likely to scroll —
+    /// while measuring history nobody is looking at still waits for quiet.
     private func scheduleSlice() {
         guard !liveResizing, motion == nil, window != nil else { return }
+        TranscriptIdleScheduler.shared.request(self, work: .preparation, after: 0) { [weak self] in
+            guard let self, !self.liveResizing, self.motion == nil else { return false }
+            return self.prepareHostsAheadOfTheReader(limit: 1)
+        }
+        guard !approximate.isEmpty else { return }
         let deadline = contentChangedAt + Self.sliceQuietPeriod
         TranscriptIdleScheduler.shared.request(self, after: deadline) { [weak self] in
             guard let self, !self.liveResizing, self.motion == nil else { return false }
-            if self.prepareHostsAheadOfTheReader(limit: 1) { return true }
             guard let clip = self.enclosingScrollView?.contentView else { return false }
             let edge = self.travelingForward ? clip.bounds.maxY : clip.bounds.minY
             // Host construction, measurement, cache and placement are one
@@ -463,13 +522,21 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// SwiftUI — the row that is changing keeps its tree at the height it was
     /// measured at and clips to the frame the motion is interpolating.
     private struct DisclosureMotion {
+        /// One row the click resized. A response folded to its contents or to
+        /// one line changes the height of every row it spans, so a motion
+        /// carries a set of these and moves them together.
+        struct Change {
+            var rowID: String
+            var index: Int
+            var from: CGFloat
+            var to: CGFloat
+        }
+        var changes: [Change]
+        /// The first of them, and where every row from it down sat when the
+        /// motion began, so a tick is an addition rather than a walk back
+        /// through the page.
         var index: Int
-        var rowID: String
-        /// Where every row from the changed one down sat when it began, so a
-        /// tick is an addition rather than a walk back through the page.
         var startOrigins: [CGFloat]
-        var fromHeight: CGFloat
-        var toHeight: CGFloat
         var fromDocument: CGFloat
         var toDocument: CGFloat
         var opening: Bool
@@ -489,7 +556,7 @@ final class TranscriptNativeScrollView: NSScrollView {
     private(set) var motionTickSeconds = 0.0
     /// Whether a disclosure is moving right now.
     var isMovingDisclosure: Bool { motion != nil }
-    static var disclosureMotionDuration: TimeInterval { Double(PiMotion.baseMilliseconds) / 1_000 }
+    static var disclosureMotionDuration: TimeInterval { TranscriptRowChrome.foldSeconds }
     /// Use the same app policy as SwiftUI, independent of macOS Reduce Motion.
     /// Fixtures may explicitly force either path to check geometry restoration.
     static var reducesMotionOverride: Bool?
@@ -498,30 +565,41 @@ final class TranscriptNativeScrollView: NSScrollView {
     private func disclosureChanged(_ row: TranscriptRowContainer) {
         markDirty(from: row.layoutIndex)
         guard !Self.reducesMotion, enclosingScrollView != nil, !rows.isEmpty,
-              let index = rows.firstIndex(where: { $0 === row }) else {
+              rows.contains(where: { $0 === row }) else {
             finishDisclosureMotion(settling: false)
             layoutNow()
             return
         }
         // Where the page is right now — which, for a second click part way
         // through, is where the last motion had got to. Nothing snaps.
-        let startOrigins = rows[index...].map(\.frame.minY)
-        let fromHeight = row.frame.height
+        let startOrigins = rows.map(\.frame.minY), startHeights = rows.map(\.frame.height)
         let fromDocument = frame.height
         motion = nil
         stopMotionLink()
-        row.endDisclosureMotion()
+        for row in rows { row.endDisclosureMotion() }
         preparingMotion = true
         layoutNow()
         preparingMotion = false
-        let toHeight = row.frame.height
-        guard abs(toHeight - fromHeight) > 1 else { return }
-        motion = DisclosureMotion(index: index, rowID: row.itemID, startOrigins: startOrigins, fromHeight: fromHeight, toHeight: toHeight,
-                                  fromDocument: fromDocument, toDocument: frame.height, opening: toHeight > fromHeight,
+        // Every row the click resized, not only the one clicked: folding a
+        // whole response to its contents or to one line changes each of the
+        // rows it spans, and they must move together or the page tears.
+        var changes: [DisclosureMotion.Change] = []
+        for (offset, row) in rows.enumerated() where offset < startHeights.count
+            && abs(row.frame.height - startHeights[offset]) > 1 {
+            changes.append(.init(rowID: row.itemID, index: offset, from: startHeights[offset], to: row.frame.height))
+        }
+        guard let first = changes.first, first.index < startOrigins.count else { return }
+        motion = DisclosureMotion(changes: changes, index: first.index,
+                                  startOrigins: Array(startOrigins[first.index...]),
+                                  fromDocument: fromDocument, toDocument: frame.height,
+                                  opening: changes.reduce(0) { $0 + ($1.to - $1.from) } > 0,
                                   started: CACurrentMediaTime(), duration: Self.disclosureMotionDuration)
         motionNeedsRetarget = false
         motionTickCount = 0; motionTickSeconds = 0
-        row.beginDisclosureMotion(contentHeight: max(fromHeight, toHeight), keepingContentPlaced: toHeight < fromHeight)
+        for change in changes where rows.indices.contains(change.index) {
+            rows[change.index].beginDisclosureMotion(contentHeight: max(change.from, change.to),
+                                                     keepingContentPlaced: change.to < change.from)
+        }
         advanceDisclosureMotion(to: 0)
         startMotionLink()
     }
@@ -536,25 +614,27 @@ final class TranscriptNativeScrollView: NSScrollView {
         self.motion?.fraction = clamped
         // The state-change ease: out, so it leaves at once and arrives gently.
         let t = 1 - pow(1 - clamped, 3)
-        let height = motion.fromHeight + (motion.toHeight - motion.fromHeight) * t
-        let shift = height - motion.fromHeight
-        for offset in motion.index..<min(rows.count, motion.index + motion.startOrigins.count) {
-            let row = rows[offset]
-            let start = motion.startOrigins[offset - motion.index]
-            let rect = offset == motion.index
-                ? CGRect(x: row.frame.minX, y: start, width: row.frame.width, height: max(1, height))
-                : CGRect(x: row.frame.minX, y: start + shift, width: row.frame.width, height: row.frame.height)
-            if row.frame != rect { row.frame = rect }
-            page?.rowFrame(row.itemID, rect)
-        }
-        let documentHeight = motion.fromDocument + (motion.toDocument - motion.fromDocument) * t
-        if abs(frame.height - documentHeight) > 0.5 { setFrameSize(CGSize(width: frame.width, height: documentHeight)) }
         // What the two states do not share goes over the first third of the
         // motion and arrives over the last two thirds, so neither end of any
         // disclosure is a jump.
-        rows[motion.index].setDisclosureReveal(keeping: min(motion.fromHeight, motion.toHeight),
-                                               fade: motion.opening ? min(1, max(0, (clamped - 1.0 / 3) * 1.5))
-                                                                    : min(1, max(0, 1 - clamped * 3)))
+        let fade = motion.opening ? min(1, max(0, (clamped - 1.0 / 3) * 1.5)) : min(1, max(0, 1 - clamped * 3))
+        var shift: CGFloat = 0, next = 0
+        for offset in motion.index..<min(rows.count, motion.index + motion.startOrigins.count) {
+            let row = rows[offset]
+            let start = motion.startOrigins[offset - motion.index]
+            var height = row.frame.height
+            if next < motion.changes.count, motion.changes[next].index == offset {
+                let change = motion.changes[next]; next += 1
+                height = max(1, change.from + (change.to - change.from) * t)
+                row.setDisclosureReveal(keeping: min(change.from, change.to), fade: fade)
+            }
+            let rect = CGRect(x: row.frame.minX, y: start + shift, width: row.frame.width, height: height)
+            if row.frame != rect { row.frame = rect }
+            page?.rowFrame(row.itemID, rect)
+            if next > 0, motion.changes[next - 1].index == offset { shift += height - motion.changes[next - 1].from }
+        }
+        let documentHeight = motion.fromDocument + (motion.toDocument - motion.fromDocument) * t
+        if abs(frame.height - documentHeight) > 0.5 { setFrameSize(CGSize(width: frame.width, height: documentHeight)) }
         // The scroll bar follows the document as it moves rather than
         // jumping to its new size at the end.
         if let scroll = enclosingScrollView {
@@ -570,7 +650,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         guard let motion else { return }
         self.motion = nil
         stopMotionLink()
-        rows.first(where: { $0.itemID == motion.rowID })?.endDisclosureMotion()
+        for change in motion.changes { rows.first(where: { $0.itemID == change.rowID })?.endDisclosureMotion() }
         motionNeedsRetarget = false
         guard settling else { return }
         markDirty(from: motion.index)
@@ -595,20 +675,44 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// motion back at the same fraction; changed geometry starts at the height
     /// already on screen, never at either old endpoint. No snapshots are held.
     private func resumeMotion(_ previous: DisclosureMotion?, presentedHeight: CGFloat?, retarget: Bool) {
-        guard var moving = previous, let shown = presentedHeight,
-              let index = rows.firstIndex(where: { $0.itemID == moving.rowID }) else { return }
-        let row = rows[index], target = row.frame.height, documentTarget = frame.height
-        moving.index = index
-        if retarget || abs(target - moving.toHeight) > 0.5 {
-            moving.fromHeight = shown; moving.toHeight = target
-            moving.opening = target > shown
+        guard var moving = previous, let shown = presentedHeight else { return }
+        // Every row the motion is moving, where the new layout has put it.
+        var changes: [DisclosureMotion.Change] = []
+        for change in moving.changes {
+            guard let index = rows.firstIndex(where: { $0.itemID == change.rowID }) else { continue }
+            var value = change; value.index = index; value.to = rows[index].frame.height
+            changes.append(value)
+        }
+        guard let first = changes.sorted(by: { $0.index < $1.index }).first else { return }
+        changes.sort { $0.index < $1.index }
+        let documentTarget = frame.height
+        let retargeting = retarget || zip(changes, moving.changes).contains { abs($0.to - $1.to) > 0.5 }
+        if retargeting {
+            // Changed geometry starts from the height on screen, never from
+            // either old endpoint. Only the row that was moving knows that
+            // height; the others start from where this layout has them.
+            for index in changes.indices {
+                let presented = changes[index].rowID == moving.changes.first?.rowID ? shown : rows[changes[index].index].frame.height
+                changes[index].from = presented
+            }
+            moving.opening = changes.reduce(0) { $0 + ($1.to - $1.from) } > 0
             moving.started = CACurrentMediaTime()
             moving.duration = max(1.0 / 60, moving.duration * (1 - moving.fraction))
             moving.fraction = 0
-            row.beginDisclosureMotion(contentHeight: max(shown, target), keepingContentPlaced: target < shown)
+            for change in changes where rows.indices.contains(change.index) {
+                rows[change.index].beginDisclosureMotion(contentHeight: max(change.from, change.to),
+                                                         keepingContentPlaced: change.to < change.from)
+            }
         }
-        let delta = moving.toHeight - moving.fromHeight
-        moving.startOrigins = rows[index...].enumerated().map { offset, row in row.frame.minY - (offset == 0 ? 0 : delta) }
+        moving.changes = changes
+        moving.index = first.index
+        let delta = changes.reduce(0) { $0 + ($1.to - $1.from) }
+        var passed: CGFloat = 0
+        moving.startOrigins = rows[first.index...].enumerated().map { offset, row in
+            let origin = row.frame.minY - passed
+            if let change = changes.first(where: { $0.index == first.index + offset }) { passed += change.to - change.from }
+            return origin
+        }
         moving.toDocument = documentTarget
         moving.fromDocument = documentTarget - delta
         motion = moving; motionNeedsRetarget = false
@@ -653,6 +757,8 @@ final class TranscriptNativeScrollView: NSScrollView {
         scheduleSlice()
         TranscriptIdleScheduler.shared.visibilityChanged()
     }
+
+    func viewportWillResize() { page?.viewportWillResize() }
 
     private func observeViewport() {
         let clip = enclosingScrollView?.contentView
@@ -851,14 +957,14 @@ final class TranscriptNativeScrollView: NSScrollView {
         guard dirty || rowWidth != nextWidth || frame.width != width else { mountVisibleRows(); return }
         if Self.reducesMotion { finishDisclosureMotion(settling: false) }
         let moving = motion
-        let movingRow = moving.flatMap { value in rows.first { $0.itemID == value.rowID } }
+        let movingRow = moving?.changes.first.flatMap { value in rows.first { $0.itemID == value.rowID } }
         let presentedHeight = movingRow?.frame.height
         let retarget = motionNeedsRetarget || rowWidth != nextWidth
         let wasPreparingMotion = preparingMotion
         if let moving {
             motion = nil
             preparingMotion = true
-            if retarget { movingRow?.endDisclosureMotion() }
+            if retarget { for change in moving.changes { rows.first(where: { $0.itemID == change.rowID })?.endDisclosureMotion() } }
             markDirty(from: moving.index)
         }
         if rowWidth != nextWidth {
@@ -899,7 +1005,14 @@ final class TranscriptNativeScrollView: NSScrollView {
         // belongs, so a reply arriving at the end of a long chat places one
         // row and the rows under it. A pass that reflows, slices or leaves
         // rows standing has to work the whole page out again.
-        let reusable = !deferring && approximate.isEmpty && estimated.isEmpty
+        // A reply growing where the reader cannot see it stands at an estimate
+        // of its own growth, but it is not a page full of unmeasured history:
+        // it must not make every other row stand, nor make a token place all
+        // three hundred rows again. It is the last row, so the pass that
+        // places it starts at it.
+        let unseenStream = Set(rows.filter(\.grewWithoutATree).map(\.itemID))
+        let unresolved = approximate.subtracting(unseenStream)
+        let reusable = !deferring && unresolved.isEmpty && estimated.isEmpty
             && placedWidth == nextWidth && frame.width == width && !rows.isEmpty
         let firstPlaced = reusable ? min(max(0, dirtyFrom), rows.count) : 0
         let scale = window?.backingScaleFactor
@@ -922,7 +1035,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             plainBytes += messages.reduce(0) { $0 + $1.text.utf8.count }
             return plainBytes > 32_768 || messages.contains { !$0.text.isEmpty && ($0.text.utf8.count > 8192 || $0.text.contains("```") || $0.text.contains("~~~") || $0.text.contains("\n#") || $0.text.contains("|")) || !($0.tools ?? []).isEmpty || !($0.thinking ?? "").isEmpty }
         }
-        let slicing = (unmeasured > Self.sliceThreshold || (rich && unmeasured > 0) || !approximate.isEmpty || deferring) && firstPlaced == 0
+        let slicing = (unmeasured > Self.sliceThreshold || (rich && unmeasured > 0) || !unresolved.isEmpty || deferring) && firstPlaced == 0
         // A long chat that opens at its newest row is parked there by this very
         // pass, so it need not also measure the top of the history the reader
         // would otherwise see for one frame.
@@ -943,11 +1056,19 @@ final class TranscriptNativeScrollView: NSScrollView {
             // both where it is now and where this pass would put it, and holds
             // no selection. Nothing standing stays in the view tree, so AppKit
             // can never draw one at a height that is not its own.
-            if let band, !row.hasMeasurement(width: nextWidth), !band.contains(index), row !== selected {
-                // Outside the band the reader can reach, this slice measures
-                // what it has time for. A row it leaves stands at the height
-                // it already had, or at an estimate if it has never had one.
-                let standingHeight = row.neverMeasured ? row.estimatedHeight(width: nextWidth) : max(1, row.frame.height)
+            // Outside the band the reader can reach, this slice measures what
+            // it has time for; and a reply growing where the reader cannot see
+            // it stands at an estimate of its own growth rather than putting
+            // its whole tree through SwiftUI for every token.
+            let standsUnseen = !row.hasMeasurement(width: nextWidth)
+                && ((band.map { !$0.contains(index) } ?? false) || row.grewWithoutATree)
+            if standsUnseen, row !== selected {
+                // A row it leaves stands at the height it already had, or at
+                // an estimate if it has never had one — or, while it is
+                // growing unseen, at what its text is now worth.
+                let standingHeight = row.neverMeasured || row.grewWithoutATree
+                    ? max(row.grewWithoutATree ? row.frame.height : 1, row.estimatedHeight(width: nextWidth))
+                    : max(1, row.frame.height)
                 let rect = CGRect(x: left, y: y, width: nextWidth, height: standingHeight)
                 // Neither where it stands now nor where this pass would put it
                 // may be anywhere AppKit could draw it from.
@@ -968,13 +1089,17 @@ final class TranscriptNativeScrollView: NSScrollView {
             if !row.hasMeasurement(width: nextWidth), row.superview == nil { addSubview(row) }
             let size = row.measure(width: nextWidth)
             let rect = CGRect(x: left, y: y, width: nextWidth, height: size.height)
+            // A row that only moves keeps its tree: laying it out again is
+            // what made a token in a long chat cost every mounted row's
+            // SwiftUI layout rather than just the arriving one's.
+            let resized = abs(row.frame.height - rect.height) > 0.01 || abs(row.frame.width - rect.width) > 0.01
             if row.frame != rect { row.frame = rect }
             // Exact geometry is cached even for detached history. Traversing
             // all of those native text trees on each streaming-tail update
             // defeats viewport culling. Changed content/width was mounted for
             // measurement above; a row outside the buffered viewport lays its
             // tree out when the reader scrolls it back, not on every reflow.
-            if row.superview != nil, buffered.map(rect.intersects) ?? true {
+            if row.superview != nil, row.awaitingViewportLayout || resized, buffered.map(rect.intersects) ?? true {
                 rowLayoutTraversalCount += 1
                 row.layoutForViewport()
             }

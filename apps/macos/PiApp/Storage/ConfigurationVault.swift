@@ -104,6 +104,13 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
         get { completionSoundEnabled ?? true }
         set { completionSoundEnabled = newValue }
     }
+    /// How a finished turn reads; absent in older vaults, which get the
+    /// compact transcript the redesign introduced.
+    var transcriptView: String?
+    var transcriptDisplay: TranscriptDisplayMode {
+        get { transcriptView.flatMap(TranscriptDisplayMode.init(rawValue:)) ?? .fallback }
+        set { transcriptView = newValue.rawValue }
+    }
     // Existing keys remain for reading legacy encrypted captures only. New
     // vaults and new plaintext captures need no payload key. Helpers never
     // receive this object or a legacy key.
@@ -133,6 +140,7 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
               [dashboard.workspaceID, dashboard.sessionID].allSatisfy({ ($0?.utf8.count ?? 0) <= 128 }),
               [dashboard.purpose, dashboard.api, dashboard.requestedAlias, dashboard.effectiveModel].allSatisfy({ ($0?.utf8.count ?? 0) <= 256 }),
               dashboard.windowPreset.map({ DashboardWindowPreset(rawValue: $0) != nil }) ?? true,
+              transcriptView.map({ TranscriptDisplayMode(rawValue: $0) != nil }) ?? true,
               DashboardWindowPreset.customBoundsValid(from: dashboard.customFrom, until: dashboard.customUntil, required: dashboard.windowPreset == DashboardWindowPreset.custom.rawValue) else {
             throw VaultError.invalid("Configuration limits or identifiers are invalid.")
         }

@@ -82,8 +82,8 @@ typealias SessionUsageLoader = @MainActor (SessionUsageScope, Date, Int) async t
 }
 
 enum SessionUsageBreakdown: String, CaseIterable, Hashable {
-    case models, costs, timing
-    var title: String { rawValue.capitalized }
+    case models, costs, timing, requests
+    var title: String { self == .requests ? "Requests" : rawValue.capitalized }
 }
 
 /// One bar for the session's tokens: cached input, uncached input and output
@@ -163,8 +163,8 @@ struct SessionInfoTiming: Equatable {
         latestTTFT = history.latest?.ttftMilliseconds
         medianTTFT = Self.median(ttfts); ttftSamples = ttfts.count
         latestDurationMs = history.latest?.requestMilliseconds
-        latestRate = history.latest?.outputTokensPerSecond
-        averageRate = history.historicalRate.tokensPerSecond
+        latestRate = history.latest?.settledTokensPerSecond
+        averageRate = (history.historicalSettledThroughput ?? history.settledThroughput).tokensPerSecond
         if let split = WorkSplit(timing: work) {
             sessionModelMs = split.sessionModelMs; sessionToolMs = split.sessionToolMs
             if let model = split.turnModelMs, let tools = split.turnToolMs, model + tools > 0 { turnModelMs = model; turnToolMs = tools }
@@ -257,6 +257,7 @@ struct SessionUsageView: View {
                         // per-model split those figures blend, then the request
                         // charts, then tokens, cost and cache.
                         summary(snapshot)
+                        requestLedger
                         modelsTable(snapshot).help(snapshot.observationHelp)
                         timingCharts
                         tokenBar(snapshot)
@@ -282,8 +283,8 @@ struct SessionUsageView: View {
         return VStack(alignment: .leading, spacing: PiSpacing.sm) {
             timingTiles(mixedRoutes: snapshot.modelGroups > 1)
             HStack(alignment: .top, spacing: PiSpacing.sm) {
-                PiStatTile(title: "Output tok/s", value: SessionUsagePresentation.rate(snapshot.historicalRate.tokensPerSecond), caption: "\(snapshot.historicalRate.samples)/\(snapshot.counts.completed) completed requests", symbol: "speedometer", tone: .info)
-                    .help("Historical output tokens divided by their combined dispatch-to-completion time, including first-token latency. Requests without reported output usage or completion timing are excluded.")
+                PiStatTile(title: "Output tok/s", value: SessionUsagePresentation.rate(totals.settledThroughput.tokensPerSecond), caption: "\(totals.settledThroughput.samples)/\(totals.requests) requests measured", symbol: "speedometer", tone: .info)
+                    .help(SettledThroughput.explanation)
                     .accessibilityIdentifier("session-usage-historical-tps")
                 PiStatTile(title: "Requests", value: "\(totals.requests)", caption: "\(snapshot.modelGroups) model \(snapshot.modelGroups == 1 ? "group" : "groups")", symbol: "arrow.up.arrow.down", tone: .accent)
                 PiStatTile(title: "Tokens consumed", value: menuBarTokens(tokens.total), caption: coverageCaption(tokens.samples, totals.requests, complete: "input plus output, reported by every request"), symbol: "number", tone: .accent)
@@ -305,7 +306,7 @@ struct SessionUsageView: View {
                 .help("Time from dispatch to the first model content of the latest request; the median covers every retained request with a measurement.")
                 .accessibilityIdentifier("session-info-ttft")
             PiStatTile(title: "Latest tok/s", value: SessionUsagePresentation.rate(timing.latestRate), caption: "session average \(SessionUsagePresentation.rate(timing.averageRate))" + (mixedRoutes ? " · per model below" : ""), symbol: "gauge.with.dots.needle.67percent", tone: .info)
-                .help("Output tokens per second of the latest completed request, including its first-token latency.")
+                .help("The latest completed request's provider output tokens over its own decode span.")
                 .accessibilityIdentifier("session-info-rate")
             PiStatTile(title: "Model time", value: timing.sessionModelMs.map(workDuration) ?? "n/a", caption: timing.modelCaption, symbol: "brain", tone: .accent)
                 .help("Wall-clock time this session spent waiting on model responses, as recorded by the helper.")
@@ -462,9 +463,9 @@ struct SessionUsageView: View {
                 if let reasoning = item.gateway.tokens?.reasoning, (item.gateway.tokens?.reasoningSamples ?? 0) > 0 { Text("\(reportTokens(reasoning)) reasoning").font(PiFont.micro).foregroundStyle(Color.piInkTertiary) }
             }.frame(width: 124, alignment: .leading).help(item.gateway.tokenCacheLabel)
             VStack(alignment: .leading, spacing: 2) {
-                Text(SessionUsagePresentation.rate(item.historicalRate.tokensPerSecond)).font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInk)
-                Text("\(item.historicalRate.samples)/\(item.gateway.requests) measured").font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
-            }.frame(width: 100, alignment: .leading).help("Output tokens divided by dispatch-to-completion time over this route's completed requests with reported usage.")
+                Text(SessionUsagePresentation.rate(item.gateway.settledThroughput.tokensPerSecond)).font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInk)
+                Text("\(item.gateway.settledThroughput.samples)/\(item.gateway.requests) measured").font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
+            }.frame(width: 100, alignment: .leading).help(SettledThroughput.explanation)
             VStack(alignment: .leading, spacing: 2) {
                 Text(SessionUsagePresentation.milliseconds(item.ttftP50)).font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInk)
                 Text(item.ttftSamples > 0 ? "median of \(item.ttftSamples)" : "not measured").font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
@@ -477,6 +478,12 @@ struct SessionUsageView: View {
             UsageShareBar(fraction: share ?? 0, tone: tone).frame(height: 4)
             Text(detail).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(1)
         }
+    }
+
+    /// The Trajectory equivalent: what each request was, what it consumed and
+    /// how fast it decoded, in the order it ran.
+    private var requestLedger: some View {
+        SessionRequestLedgerView(ledger: SessionRequestLedger(history: controller.timing))
     }
 
     @State private var selectedRequest: Int?
@@ -499,7 +506,7 @@ struct SessionUsageView: View {
                     Text("Request \(index) · \(sample.wall.formatted(date: .abbreviated, time: .standard)) · \(SessionTimingMetric.ttft.label(sample.ttftMilliseconds)) TTFT · \(SessionTimingMetric.rate.label(sample.outputTokensPerSecond)) · \(SessionTimingMetric.output.label(sample.outputTokens)) out · \(SessionTimingMetric.cost.label(sample.costUSD))")
                         .font(PiFont.caption).monospacedDigit().foregroundStyle(Color.piInk).lineLimit(2)
                 }
-                Text("Rates include dispatch-to-completion time. Session average: \(SessionTimingMetric.rate.label(history.historicalRate.tokensPerSecond)) over \(history.historicalRate.samples)/\(history.completedRequests) retained completed requests. Gaps indicate missing measurements; costs are gateway-reported.")
+                Text(SettledThroughput.explanation + " Session figure: \(SessionTimingMetric.rate.label(history.settledThroughput.tokensPerSecond)) over \(history.settledThroughput.samples)/\(history.samples.count) listed requests. Gaps indicate missing measurements; costs are gateway-reported.")
                     .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
             }
         }.accessibilityIdentifier("session-timing-charts")

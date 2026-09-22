@@ -18,7 +18,15 @@ final class ResponseTimelinePresentationTests: XCTestCase {
         XCTAssertEqual(segments.map(\.part.kind),["text","reasoningSummary","text","toolArguments"])
         reply.accounting=GatewayTotals();reply.modelMs=30;reply.accounting?.costUSD=0
         let after=TaskTranscriptPlan.items([rows[0],reply],lifecycle:nil)
-        XCTAssertEqual(before.compactMap { if case .block(let b)=$0{return b};return nil },after.compactMap { if case .block(let b)=$0{return b};return nil })
+        // Late figures reach the response's own header line — that is the line
+        // a folded response reads as — and nothing else. No part row is
+        // rebuilt, reordered or given a different prose host.
+        func partRows(_ items:[TranscriptItem]) -> [TranscriptBlock] { items.compactMap { if case .block(let b)=$0, b.presentation != .response { return b };return nil } }
+        XCTAssertEqual(partRows(before),partRows(after))
+        func header(_ items:[TranscriptItem]) -> TranscriptBlock? { items.compactMap { if case .block(let b)=$0, b.presentation == .response { return b };return nil }.first }
+        XCTAssertNil(header(before)?.responseSummary?.duration)
+        XCTAssertEqual(header(after)?.responseSummary?.duration,"0.0s","The folded line shows the request's duration once it is known")
+        XCTAssertEqual(header(before)?.responseSummary?.parts,header(after)?.responseSummary?.parts)
     }
     func testCosmeticPlannerPatchMatchesFullChronologyWithoutRebuildingOtherResponses() throws {
         var response = TranscriptMessage(id:"r",role:"assistant",text:"First",state:"streaming")

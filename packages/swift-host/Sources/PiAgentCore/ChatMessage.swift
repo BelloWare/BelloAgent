@@ -116,7 +116,14 @@ public struct ChatMessage: Codable, Sendable {
         var value: JSON = ["id": JSON(id), "role": JSON(role == "toolResult" ? "tool" : role), "text": JSON(full), "thinking": JSON(thinking), "tools": .array(tools), "state": JSON(state), "truncated": false]
         if let presentationSourceID { value["presentationSourceID"] = JSON(presentationSourceID) }
         if let operationID { value["operationID"] = JSON(operationID) }
-        if role == "toolResult" { value["kind"] = "toolResult"; value["detail"] = JSON("Tool result · " + (toolName ?? "tool") + " · " + (toolStats?["outcome"].text ?? (isError ? "failed":"recorded"))) }
+        if role == "toolResult" {
+            value["kind"] = "toolResult"; value["detail"] = JSON("Tool result · " + (toolName ?? "tool") + " · " + (toolStats?["outcome"].text ?? (isError ? "failed":"recorded")))
+            // Which call this result belongs to. The reply that made the call
+            // already carries the card with this result's output, so a display
+            // that shows the call in its chronological place can say that this
+            // row is the same result rather than repeating it underneath.
+            if let toolCallId { value["toolCallID"] = JSON(toolCallId) }
+        }
         let parts: [(kind:String,text:String,callID:String?,name:String?)] = content.compactMap { part in
             switch part["type"].text {
             case "text": return ("text",part["text"].text ?? "",nil,nil)

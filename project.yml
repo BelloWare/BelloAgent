@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.78
-    CURRENT_PROJECT_VERSION: 82
+    MARKETING_VERSION: 0.1.80
+    CURRENT_PROJECT_VERSION: 84
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Show complete responses, reasoning, and expanded tool details without display preview truncation, including restored sessions."
+    RELEASE_MESSAGE: "Compact turn reports with token percentage bars, requested and returned models, AI and tool duration, cost, and smoother streaming."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO

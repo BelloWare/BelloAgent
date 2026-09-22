@@ -144,6 +144,14 @@ struct ProfileSettings: View {
                         PiRow(label: "Metric retention") { PiStepper(label: "\(controller.preferences.dashboard.metricRetentionDays) days", value: $controller.preferences.dashboard.metricRetentionDays, range: 1...3650) }
                         PiRow(label: "Dashboard window", last: true) { PiStepper(label: "\(controller.preferences.dashboard.windowHours) hours", value: $controller.preferences.dashboard.windowHours, range: 1...8760) }
                     }
+                    PiSettingsGroup(title: "Transcript", footer: "Compact is how a finished turn reads by default: its tool calls and thoughts fold behind one line above the answer, and one click on that line shows the whole turn again. Nothing is discarded either way, and a turn still running always reads in full.") {
+                        PiRow(label: "Finished turns", detail: TranscriptDisplayMode.compact.detail, last: true) {
+                            PiDropdown(selection: $controller.preferences.transcriptDisplay,
+                                       items: TranscriptDisplayMode.allCases.map { ($0, $0.label) }, compact: true)
+                                .accessibilityLabel("Transcript display for finished turns")
+                                .accessibilityIdentifier("settings-transcript-display")
+                        }
+                    }
                     PiSettingsGroup(title: "Notifications") {
                         PiRow(label: "Task completion sound", detail: "Play a short chime when a chat finishes its task, even while the app is in the background.", last: true) {
                             HStack(spacing: PiSpacing.sm) {

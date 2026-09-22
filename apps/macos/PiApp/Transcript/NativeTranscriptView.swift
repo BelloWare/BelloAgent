@@ -23,8 +23,12 @@ struct ContentGeometry: Equatable {
     /// The newest rows that fit: up to 500 messages and about 4 MB of text.
     nonisolated static let rowLimit = 500
     nonisolated static let byteLimit = 4_000_000
-    /// Within this many points of the bottom the page still follows new rows.
-    static let followThreshold: CGFloat = 70
+    /// The bottom band. The page follows the newest row only while the reader
+    /// is standing inside it; leaving it unpins the page and coming back
+    /// re-pins it. It is deliberately narrow — a reader a line and a half off
+    /// the end has stopped following, and a page that kept dragging them back
+    /// from there is the thing this band exists to stop.
+    static let followThreshold: CGFloat = 24
     /// Within this many points of the top the page asks for the earlier page.
     static let earlierThreshold: CGFloat = 240
 
@@ -49,6 +53,12 @@ struct ContentGeometry: Equatable {
         return Self.liveTurn(in: [], busy: busy)
     }
     @Published private(set) var detached = false
+    /// Whether the reader is standing in the bottom band right now. The Back
+    /// to bottom pill is shown whenever they are not — which is the same
+    /// question as whether the page is following, asked of the geometry
+    /// rather than of the page's intentions, so the pill can never disagree
+    /// with what the reader can see.
+    @Published private(set) var atBottom = true
     @Published var state = "idle"
     var busy: Bool { ["queued", "running", "stopping", "compacting"].contains(state) }
 
@@ -74,15 +84,23 @@ struct ContentGeometry: Equatable {
     private(set) var toolInputs: TranscriptToolInputs?
     private var viewportRequest: Int?
     private var initialized = false
-    private(set) var followsBottom = true { didSet { scrollView?.transcriptReading.following = followsBottom || explicitDestination } }
+    private(set) var followsBottom = true { didSet { syncReadingOwnership() } }
     private var readerNavigationStarted = false
+    private var viewportResizePending = false
     private var upwardNavigation = false
     private var explicitDestination = false
     private var pendingAnchor: TranscriptAnchor? { didSet {
         pendingAnchorRow = nil
         if pendingAnchor == nil { explicitDestination = false }
-        scrollView?.transcriptReading.following = followsBottom || explicitDestination
+        syncReadingOwnership()
     } }
+    /// Whether the page is placing the reader itself: following the newest
+    /// row, landing a destination they asked for, or holding the question
+    /// this chat opened at. While it is, the pane's own reading correction
+    /// stands aside — two things correcting the same clip view fight each
+    /// other, and it is the page's placement the reader asked for.
+    private var pagePlacesItself: Bool { followsBottom || explicitDestination || openingReadingAnchor != nil }
+    private func syncReadingOwnership() { scrollView?.transcriptReading.following = pagePlacesItself }
 
     /// Which row holds the pending anchor, worked out once. Resolving it for
     /// every row of the page as its frame arrives is quadratic in the page,
@@ -90,7 +108,7 @@ struct ContentGeometry: Equatable {
     private var pendingAnchorRow: String?
     /// A chat opened while idle starts at its last question when the last turn does not fit above the bottom.
     private var openingPlacementPending = false
-    private var openingReadingAnchor: TranscriptAnchor?
+    private var openingReadingAnchor: TranscriptAnchor? { didSet { syncReadingOwnership() } }
     private var seen: Set<String> = []
     private var completedAssistant: String?
     private var firstRow = ""
@@ -110,6 +128,7 @@ struct ContentGeometry: Equatable {
     static let freshDuration = Duration.milliseconds(1_500)
     private var readCheckScheduled = false
     private var settleScheduled = false
+    nonisolated(unsafe) private var flushLink: CADisplayLink?
     nonisolated(unsafe) private var windowObservers: [NSObjectProtocol] = []
     nonisolated(unsafe) private var scrollObservers: [NSObjectProtocol] = []
 
@@ -123,6 +142,7 @@ struct ContentGeometry: Equatable {
     deinit {
         for observer in windowObservers + scrollObservers { NotificationCenter.default.removeObserver(observer) }
         freshTask?.cancel(); reportTask?.cancel(); presentationTask?.cancel()
+        flushLink?.invalidate()
     }
 
     // MARK: Where the reader is
@@ -146,6 +166,7 @@ struct ContentGeometry: Equatable {
         guard sessionID != session.id || generation != session.presentationGeneration else { return }
         subscription?.cancel(); subscription = nil
         presentationTask?.cancel(); presentationTask = nil; pendingPresentation = nil
+        stopFlushLink(); heldSince = nil
         presentationSession = session; lastPresentationAt = 0
         completionBaselineAt = Date().timeIntervalSince1970 * 1000
         freshTask?.cancel(); freshTask = nil
@@ -160,6 +181,11 @@ struct ContentGeometry: Equatable {
         // A document landing changes what an open card can show, and so its
         // row's height: republish so the document reconciles and re-measures.
         session.toolInputs.onChanged = { [weak self] in self?.republish() }
+        // Folding a whole response changes what several rows draw without any
+        // message changing. The page republishes for it directly, so the
+        // clicked row and its siblings are re-measured and moved in the same
+        // pass as the click rather than a SwiftUI update later.
+        session.disclosure.spanningChange = { [weak self] in self?.republish() }
         reset()
         scrollView?.transcriptReading.bind(scope: session.id + ":" + session.presentationGeneration.uuidString)
         frames = [:]
@@ -170,7 +196,8 @@ struct ContentGeometry: Equatable {
         }
     }
     private func reset() {
-        initialized = false; followsBottom = true; pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
+        initialized = false; followsBottom = true; atBottom = true; pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
+        viewportResizePending = false
         settleScheduled = false; readCheckScheduled = false
         seen = []; completedAssistant = nil; firstRow = ""; jumping = false
     }
@@ -190,25 +217,84 @@ struct ContentGeometry: Equatable {
         return lhs == rhs
     }
 
+    /// How long an arriving reply may wait for the reader's gesture to end
+    /// before it is published anyway, so a long momentum scroll never leaves
+    /// the reply looking stuck.
+    static let gestureHold: TimeInterval = 0.25
+    private var heldSince: TimeInterval?
+    private var scrollGestureInFlight: Bool {
+        (scrollView as? TranscriptNativeScrollView)?.readerIsScrolling ?? false
+    }
+
     private func present(_ input: TranscriptPresentationInput, viewportRequest request: Int, from session: SessionDisplay) {
         let textDelta = projectionError == nil && viewportRequest == request && Self.sameLifecycle(snapshot?.lifecycle, input.lifecycle) &&
             TaskTranscriptPlan.cosmetic(from: snapshot?.messages ?? [], to: input.messages)
-        let delay = presentationInterval - (ProcessInfo.processInfo.systemUptime - lastPresentationAt)
-        if textDelta, delay > 0 {
+        let now = ProcessInfo.processInfo.systemUptime
+        let delay = presentationInterval - (now - lastPresentationAt)
+        // The frames of a wheel gesture belong to the scroll. A reply that
+        // arrives inside one waits for it — the text catches up when the hand
+        // stops — unless it has been waiting long enough to look stuck.
+        let held = scrollGestureInFlight && (heldSince.map { now - $0 < Self.gestureHold } ?? true)
+        if textDelta, delay > 0 || held {
+            if held, heldSince == nil { heldSince = now }
             pendingPresentation = (input, request)
+            // On the display's own beat: the page publishes just after a frame
+            // has been presented, so laying the arriving row out has the whole
+            // frame interval, and never more than once per frame.
+            if startFlushLink() { return }
             guard presentationTask == nil else { return }
             presentationTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(delay))
+                try? await Task.sleep(for: .seconds(max(1.0 / 240, delay)))
                 guard !Task.isCancelled, let self else { return }
                 self.presentationTask = nil
-                guard let pending = self.pendingPresentation, let session = self.presentationSession else { return }
-                self.pendingPresentation = nil
-                self.receive(pending.input, viewportRequest: pending.request, from: session)
+                self.flushPendingPresentation()
             }
         } else {
-            presentationTask?.cancel(); presentationTask = nil; pendingPresentation = nil
+            presentationTask?.cancel(); presentationTask = nil; pendingPresentation = nil; heldSince = nil
             receive(input, viewportRequest: request, from: session)
         }
+    }
+    /// The display's beat, while a reply is waiting to be published. It runs
+    /// only while something is pending: a quiet page keeps no timer.
+    private func startFlushLink() -> Bool {
+        if flushLink != nil { return true }
+        guard let host = hostView, host.window != nil else { return false }
+        let link = host.displayLink(target: PresentationFlushTarget(self), selector: #selector(PresentationFlushTarget.tick(_:)))
+        link.add(to: .main, forMode: .common)
+        flushLink = link
+        return true
+    }
+    private func stopFlushLink() { flushLink?.invalidate(); flushLink = nil }
+    fileprivate func displayFlush() {
+        guard pendingPresentation != nil else { stopFlushLink(); return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastPresentationAt >= presentationInterval - 1.0 / 240 else { return }
+        flushPendingPresentation()
+        if pendingPresentation == nil { stopFlushLink() }
+    }
+    /// The reader's gesture has ended: publish what it was holding.
+    func flushHeldPresentation() {
+        guard pendingPresentation != nil else { return }
+        heldSince = nil
+        flushPendingPresentation()
+    }
+    /// Publishes the newest text the page is holding, once the gesture that
+    /// was holding it has ended or has held it long enough.
+    private func flushPendingPresentation() {
+        guard let pending = pendingPresentation, let session = presentationSession else { heldSince = nil; return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if scrollGestureInFlight, let heldSince, now - heldSince < Self.gestureHold {
+            guard presentationTask == nil else { return }
+            presentationTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(Self.gestureHold - (now - heldSince)))
+                guard !Task.isCancelled, let self else { return }
+                self.presentationTask = nil
+                self.flushPendingPresentation()
+            }
+            return
+        }
+        pendingPresentation = nil; heldSince = nil
+        receive(pending.input, viewportRequest: pending.request, from: session)
     }
 
     private func receive(_ input: TranscriptPresentationInput, viewportRequest request: Int, from session: SessionDisplay) {
@@ -330,12 +416,16 @@ struct ContentGeometry: Equatable {
         scrollObservers = []
         self.scrollView = scrollView
         guard let scrollView else { return }
+        // A reply held back by the reader's gesture goes out the moment it ends.
+        (scrollView as? TranscriptNativeScrollView)?.onScrollGestureEnded = { [weak self] in
+            self?.flushHeldPresentation()
+        }
         scrollView.transcriptReading.bind(scope: (sessionID ?? "") + ":" + (generation?.uuidString ?? ""))
-        scrollView.transcriptReading.following = followsBottom || explicitDestination
+        scrollView.transcriptReading.following = pagePlacesItself
         let center = NotificationCenter.default
         scrollView.contentView.postsBoundsChangedNotifications = true
         scrollObservers.append(center.addObserver(forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.scheduleReport() }
+            MainActor.assumeIsolated { self?.positionDelivered() }
         })
         // User scrolling decides whether the page follows; programmatic scrolls never do.
         for name in [NSScrollView.didLiveScrollNotification, NSScrollView.didEndLiveScrollNotification] {
@@ -357,12 +447,19 @@ struct ContentGeometry: Equatable {
     func viewportChanged(_ size: CGSize) {
         guard size != viewport else { return }
         viewport = size
+        // AppKit may adjust the origin more than once during this resize.
+        // Those changes belong to layout until its deferred placement lands.
+        viewportResizePending = true
         // A narrower pane makes the same rows taller; a reader at the newest message
         // stays there. The geometry callback runs inside a native update, so the
         // scroll itself waits for the run loop: AppKit and SwiftUI never fight over
         // the scroll position mid-layout, and a resize animation settles once per frame.
-        if followsBottom { scheduleSettle() }
+        scheduleSettle()
         requestReadCheck()
+    }
+    func viewportWillResize() {
+        viewportResizePending = true
+        scheduleSettle()
     }
     func contentChanged(_ geometry: ContentGeometry) {
         guard geometry != content else { return }
@@ -450,6 +547,7 @@ struct ContentGeometry: Equatable {
     /// Puts the page where it belongs after rows change: at the bottom while
     /// following, or with the anchored row back where the reader left it.
     private func settle() {
+        defer { viewportResizePending = false }
         // An explicit jump owns scrolling until it lands. A reply arriving
         // during that animation must not snap the clip view on every delta.
         guard !jumping else { requestReadCheck(); return }
@@ -521,28 +619,107 @@ struct ContentGeometry: Equatable {
     func readerWillNavigate(upward: Bool) {
         scrollView?.transcriptReading.readerMoved()
         upwardNavigation = readerNavigationStarted ? upwardNavigation || upward : upward; readerNavigationStarted = true
-        pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
-        jumping = false; followsBottom = false
+        readerOwnsPosition()
+        // Going up leaves the bottom band, and saying so now rather than once
+        // AppKit has delivered the new offset is what keeps a reply arriving
+        // in the same frame from scrolling the page to the end under the
+        // reader's hand. Every other direction is left to the band itself.
+        guard upward, followsBottom else { return }
+        followsBottom = false; atBottom = false
         if !detached { detached = true }
+    }
+    /// How far the reader is from the end of the page as AppKit has it this
+    /// instant. The reported content height lags the document's own frame by
+    /// a layout, and a clamp to a document that has just become shorter lands
+    /// exactly on this figure: reading the lagging one instead would make
+    /// every such clamp look like the reader scrolling away.
+    private var liveDistanceToBottom: CGFloat {
+        guard let scrollView, let document = scrollView.documentView, scrollView.contentView.bounds.height > 0 else { return distanceToBottom }
+        return max(0, document.frame.height - scrollView.contentView.bounds.height) - position.offset
+    }
+    /// Whether the reader is standing in the bottom band. The extra point
+    /// absorbs the rounding AppKit does to the backing scale, so a reader who
+    /// is visibly at the end is never a fraction of a point short of it.
+    private var isWithinBottomBand: Bool { liveDistanceToBottom <= Self.followThreshold + 1 }
+
+    /// AppKit has given the clip view a new origin, and the ledger says whose
+    /// movement it was.
+    ///
+    /// A movement the page wrote leaves ownership exactly as it was: the page
+    /// keeps following if it was following, and a document that has just
+    /// grown is settled back onto its new end rather than being unpinned for
+    /// the one frame between the growth and the landing.
+    ///
+    /// Anything else is the reader's. That hands them the destination — an
+    /// opening placement, a restored anchor, a jump still in flight all give
+    /// way — and the bottom band alone then decides whether the page follows.
+    private func positionDelivered() {
+        guard let scrollView, position.viewport > 0 else { scheduleReport(); return }
+        viewportChanged(scrollView.contentView.bounds.size)
+        let short = liveDistanceToBottom
+        let inBand = short <= Self.followThreshold + 1
+        let delivery = scrollView.transcriptReading.ledger.delivered(position.offset, floor: position.offset + short)
+        // While the page is still putting itself where this chat opens, or
+        // landing a jump, it has not finished writing where the reader should
+        // be: AppKit's own clamping as the rows above them settle is not the
+        // reader taking over, and must not abandon the placement half way. A
+        // real gesture still does, through `readerWillNavigate`.
+        let placing = openingPlacementPending || openingReadingAnchor != nil || jumping || viewportResizePending
+        if delivery == .reader, initialized, !placing {
+            readerOwnsPosition()
+            setPinned(inBand)
+        } else if followsBottom {
+            // Nothing the reader did. A page that was following stays
+            // following: letting the geometry decide here would unpin it for
+            // the one frame between the document growing and the page landing
+            // on its new end. Landing there is `contentChanged`'s business,
+            // and settling from here as well would race the placement a chat
+            // makes when it opens.
+            setPinned(true)
+        } else if atBottom != inBand {
+            // The page's own movement, and the page is not following: an
+            // opening placement at the last question, or a reading position
+            // restored from a previous session. The way back is offered
+            // because of where the reader now is, not because of who put
+            // them there.
+            atBottom = inBand
+        }
+        scheduleReport()
+    }
+    /// The reader has taken the position. Everything the page was still
+    /// intending to do with it is dropped.
+    ///
+    /// The reading anchor is a different thing and is not dropped here: it is
+    /// what holds the line of text they are on while blocks above them
+    /// re-measure, and it is released where a gesture begins — in
+    /// `readerWillNavigate` and `userScrolled` — rather than from a bounds
+    /// change that may arrive after the page has already captured a new one.
+    private func readerOwnsPosition() {
+        viewportResizePending = false
+        pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
+        jumping = false
+    }
+    /// Standing in the bottom band pins the page to the newest row; leaving
+    /// it unpins; coming back re-pins. Nothing else decides this — not which
+    /// way the last gesture went, not how the reader got here.
+    private func setPinned(_ pinned: Bool) {
+        if atBottom != pinned { atBottom = pinned }
+        guard !jumping else { return }
+        if followsBottom != pinned { followsBottom = pinned }
+        if detached != !pinned { detached = !pinned }
     }
     private func userScrolled(ended: Bool) {
         // The reader's own movement wins over an opening/restoration still waiting for layout.
-        pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
-        jumping = false
+        readerOwnsPosition()
         if !readerNavigationStarted { scrollView?.transcriptReading.readerMoved() }
-        // Only deliberate arrival at the end resumes following. Proximity
-        // after an upward gesture or a resize is not reader intent.
-        followsBottom = !upwardNavigation && distanceToBottom <= 0.5
-        if detached != !followsBottom { detached = !followsBottom }
         if ended { readerNavigationStarted = false; upwardNavigation = false }
+        evaluateFollowing()
         requestEarlierIfNearTop(scrollY: position.offset)
         scheduleReport()
     }
     private func evaluateFollowing() {
         guard position.viewport > 0 else { return }
-        followsBottom = distanceToBottom < Self.followThreshold
-        if followsBottom { jumping = false }
-        if !jumping, detached != !followsBottom { detached = !followsBottom }
+        setPinned(isWithinBottomBand)
     }
     private func requestEarlierIfNearTop(scrollY: CGFloat) {
         guard scrollY < Self.earlierThreshold, !firstRow.isEmpty, let sessionID, let session = presentationSession,
@@ -589,6 +766,10 @@ struct ContentGeometry: Equatable {
             scrollView.transcriptReading.setOrigin(origin)
             completion?(); return
         }
+        // Every frame of the animation is delivered as a bounds change, so the
+        // whole corridor between here and there is written down as the page's
+        // own movement before the first of them arrives.
+        scrollView.transcriptReading.willAnimate(from: clip.bounds.origin.y, to: origin.y)
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.35
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
@@ -687,6 +868,13 @@ struct ContentGeometry: Equatable {
     }
 }
 
+/// The display link retains its target; the target must not retain the page.
+@MainActor private final class PresentationFlushTarget: NSObject {
+    weak var page: TranscriptPage?
+    init(_ page: TranscriptPage) { self.page = page }
+    @objc func tick(_ link: CADisplayLink) { page?.displayFlush() }
+}
+
 /// Sits inside the page's scroll view; its enclosing scroll view is the transcript surface.
 final class TranscriptSurfaceMarker: NSView {
     var attach: ((NSScrollView?, NSView) -> Void)?
@@ -740,12 +928,23 @@ private struct TranscriptHostedRow: View {
     /// True while the document is moving this row between two measured
     /// heights, so a folding work list stays on screen and slides away.
     var foldInMotion = false
+    /// Whether this message draws nothing at all: its turn has folded behind
+    /// one line, or its response has folded and this is the header line's own
+    /// figures, which that line already carries.
+    private func drawsNothing(_ message: TranscriptMessage) -> Bool {
+        disclosure.foldedAway || (message.kind == "requestInfo" && disclosure.responseFolded)
+    }
     var body: some View {
         Group {
             switch item {
             case .message(let message):
+                // A row a fold has emptied must take up nothing: the paragraph
+                // spacing reserved around every message would otherwise leave
+                // fourteen points of blank where the fold swallowed the row.
+                let blank = drawsNothing(message)
                 MessageRowView(message: message, actions: actions, disclosure: disclosure, toggle: toggle).equatable()
-                    .padding(.top, message.role == "user" ? 14 : 4).padding(.bottom, message.role == "user" ? 4 : 10)
+                    .padding(.top, blank ? 0 : (message.role == "user" ? 14 : 4))
+                    .padding(.bottom, blank ? 0 : (message.role == "user" ? 4 : 10))
             case .block(let block):
                 BlockRowView(block: block, actions: actions, fresh: fresh, disclosure: disclosure, toggle: toggle,
                              workListHeight: workListHeight, workListMeasured: workListMeasured,
@@ -864,7 +1063,14 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     /// lands on the step that prepares the row instead of the step that
     /// shows it, and an unmounted row's drawing is thrown away. Building the
     /// tree is the part that pays.
-    func prepareForTheReader() { host() }
+    func prepareForTheReader() {
+        host()
+        // Laying it out here is what leaves the frame that shows it with
+        // nothing to do. The shared scheduler admits one of these per frame,
+        // so it is bounded; a row still standing at an estimate is left until
+        // it has a height of its own.
+        if hasMeasurement(width: width) { layoutForViewport() }
+    }
     /// While the document is moving this row between two measured heights,
     /// the tree inside it stays at the height it was measured at and the row
     /// clips to the frame the motion is interpolating. Resizing the tree on
@@ -1020,6 +1226,40 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     /// Where this row sits in the page, so the document can say from which
     /// row down a pass has to place anything.
     var layoutIndex = 0
+    /// How many tokens this row has taken by extending the reply's own native
+    /// surface, without SwiftUI rebuilding or re-sizing its tree.
+    private(set) var streamingAppendCount = 0
+    /// Tokens taken since this row was last measured for real. Every so often
+    /// one is measured properly, so a long reply cannot drift away from what
+    /// its tree actually needs.
+    private var tokensSinceMeasured = 0
+    static let tokensPerMeasurement = 64
+    /// True while this row's reply has grown with no tree to grow: the reader
+    /// is reading elsewhere. The page may stand it at an estimate until they
+    /// come back, exactly as it stands unseen history.
+    private(set) var grewWithoutATree = false
+    /// True while the height this row holds came from the message's own
+    /// surface measuring the block a token extended. The hosting view
+    /// invalidates its intrinsic size for that same change; validating it
+    /// would put the whole row through SwiftUI again for a height the row
+    /// already has, and that second pass is most of what a token used to cost.
+    private var streamingHeightKnown = false
+    /// The surface carrying a reply, found once and kept while it streams.
+    private weak var streamingSurface: NativeMarkdownContainer?
+    private var streamingSurfaceID = ""
+    private func surface(for messageID: String) -> NativeMarkdownContainer? {
+        if let streamingSurface, streamingSurfaceID == messageID, streamingSurface.superview != nil,
+           streamingSurface.readingIdentity == messageID { return streamingSurface }
+        guard let hosted else { return nil }
+        func visit(_ view: NSView) -> NativeMarkdownContainer? {
+            if let surface = view as? NativeMarkdownContainer { return surface.readingIdentity == messageID ? surface : nil }
+            for child in view.subviews { if let found = visit(child) { return found } }
+            return nil
+        }
+        let found = visit(hosted)
+        streamingSurface = found; streamingSurfaceID = messageID
+        return found
+    }
     /// Returns whether anything that decides this row's height changed.
     @discardableResult
     func update(item: TranscriptItem, fresh: Bool, actions: TranscriptActions, environment: TranscriptRowEnvironment = TranscriptRowEnvironment()) -> Bool {
@@ -1027,22 +1267,79 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         // New content can bring parts the reader already opened or closed.
         let disclosure = disclosureStore.map { TranscriptRowDisclosure.of(item, in: $0, inputs: toolInputs) } ?? .default
         guard self.item != item || self.fresh != fresh || self.environment != environment || self.disclosure != disclosure else { return false }
+        // A token: the reply's own surface takes the text and says how much
+        // taller the message became. The row's SwiftUI tree is not rebuilt and
+        // not sized again — the one measurement it already has is adjusted by
+        // that much, and the page places itself around the new height in this
+        // same pass.
+        // Every so often the row is measured properly again, so a long reply
+        // cannot drift away from what its tree actually needs.
+        // A reply arriving below (or above) the reader's screen has no tree at
+        // all: the reader scrolled well past it. Building and laying one out
+        // for every token of a reply nobody can see is what made scrolling
+        // during a reply expensive. Such a row stands at an estimate of its
+        // own growth, is never drawn at it, and is measured properly when the
+        // reader comes back to it.
+        let tail = TranscriptStreamingTail.append(from: self.item, to: item)
+        let unchangedOtherwise = self.fresh == fresh && self.environment == environment && self.disclosure == disclosure
+            && pinnedContentHeight == nil
+        if hosted == nil, unchangedOtherwise, tail != nil {
+            self.item = item
+            measurements.removeAll(keepingCapacity: true)
+            estimate = nil
+            grewWithoutATree = true
+            restoredMeasurementNeedsValidation = false
+            if TranscriptLayoutClock.recording { TranscriptLayoutClock.streamingEstimates += 1 }
+            return true
+        }
+        if unchangedOtherwise, tokensSinceMeasured < Self.tokensPerMeasurement, let append = tail,
+           let surface = surface(for: append.messageID), let cached = measurements.last(where: { $0.width == width }) {
+            measuring = true
+            let grew = surface.appendStreaming(append.text, identity: append.messageID)
+            measuring = false
+            if let grew {
+                grewWithoutATree = false
+                self.item = item
+                streamingAppendCount += 1; tokensSinceMeasured += 1
+                estimate = nil
+                measurements = [CGSize(width: cached.width, height: max(1, cached.height + grew))]
+                if let hosted, hosted.frame.height != measurements[0].height {
+                    hosted.frame = CGRect(x: 0, y: 0, width: cached.width, height: measurements[0].height)
+                }
+                streamingHeightKnown = true
+                if TranscriptLayoutClock.recording { TranscriptLayoutClock.streamingAppends += 1 }
+                return grew != 0
+            }
+        }
         let oldItem = self.item
         let fixedClosedPart: Bool = {
             guard case .block(let old) = self.item, case .block(let new) = item,
                   old.presentation == .timeline, new.presentation == .timeline,
                   let a = old.part, let b = new.part,
+                  !self.disclosure.work, !disclosure.work,
+                  self.disclosure.openTools.isEmpty, disclosure.openTools.isEmpty,
                   !["text", "refusal", "status"].contains(a.part.kind) else { return false }
-            return !self.disclosure.work && !disclosure.work && self.environment == environment && self.fresh == fresh &&
+            // Everything the reader has opened or closed must agree, not only
+            // this row's own work fold: a card whose whole response has just
+            // been folded changes height although its own text has not.
+            return self.disclosure == disclosure && self.environment == environment && self.fresh == fresh &&
                 a.part.kind == b.part.kind && a.part.name == b.part.name && a.state == b.state
         }()
         let fixedClosedWork: Bool = {
             guard case .block(let old) = self.item, case .block(let new) = item else { return false }
-            return old.presentation == .work && new.presentation == .work && !self.disclosure.work && !disclosure.work &&
+            // Timeline tool cards have their own disclosure and live summary.
+            // Only an unchanged, closed aggregate work list has fixed geometry.
+            return old.presentation == .work && new.presentation == .work && old.part == nil && new.part == nil &&
+                !self.disclosure.work && self.disclosure == disclosure &&
                 self.environment == environment && self.fresh == fresh
         }()
         self.item = item; self.fresh = fresh; self.environment = environment; self.disclosure = disclosure
-        if fixedClosedPart { return false }
+        if fixedClosedPart {
+            // The collapsed line keeps its height, but its latest reasoning
+            // text still needs to reach the view while the reply streams.
+            updateRoot()
+            return false
+        }
         if fixedClosedWork {
             workList = nil
             if case .block(let old) = oldItem, case .block(let new) = item,
@@ -1053,6 +1350,10 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
             }
             return false
         }
+        if TranscriptLayoutClock.recording, TranscriptStreamingTail.textGrew(from: oldItem, to: item) {
+            TranscriptLayoutClock.streamingRebuilds += 1
+        }
+        streamingHeightKnown = false
         measurements.removeAll(keepingCapacity: true)
         estimate = nil
         if hosted != nil { awaitingViewportLayout = true }
@@ -1209,6 +1510,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         let result = CGSize(width: target, height: height)
         if measurements.count == 4 { measurements.removeFirst() }
         measurements.append(result); measurementCount += 1
+        grewWithoutATree = false; streamingHeightKnown = false; tokensSinceMeasured = 0
         measurementScale = window?.backingScaleFactor
         needsLayout = true
         return result
@@ -1218,7 +1520,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         guard let scale = window?.backingScaleFactor, let previous = measurementScale, scale != previous else { return }
         measurements.removeAll(keepingCapacity: true)
         workList = nil
-        restoredMeasurementNeedsValidation = false
+        restoredMeasurementNeedsValidation = false; streamingHeightKnown = false
         measurementScale = scale
         invalidateIntrinsicContentSize()
         onHeightInvalidated?()
@@ -1267,6 +1569,9 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         // heights, it owns the geometry: the tree is deliberately taller
         // than the frame and has nothing to report.
         guard pinnedContentHeight == nil else { return }
+        // A token the message's own surface has already measured: the row has
+        // the new height, and the page has already been placed around it.
+        guard !streamingHeightKnown else { return }
         guard !invalidationPending else { return }
         invalidationPending = true
         DispatchQueue.main.async { [weak self] in
@@ -1341,20 +1646,25 @@ struct NativeTranscriptView: View {
         VStack(spacing: 0) {
             if session.olderPage.available { boundaryControl(earlier: true) }
             if let error = page.projectionError { PiNote(error).padding(8) }
-            TranscriptScrollSurface(snapshot: page.snapshot, page: page, actions: actions)
+            TranscriptScrollSurface(revision: page.snapshot?.sequence ?? 0, page: page, actions: actions)
+                // Whenever the reader is not standing at the bottom — however
+                // they came to be away from it — the way back is one circle
+                // floating over the end of the conversation.
                 .overlay(alignment: .bottom) {
                     ZStack {
-                        if page.detached || session.newerPage.available, page.snapshot?.items.isEmpty == false {
-                            LatestPill { if session.browsingHistory || session.newerPage.available { onLatest(session.id) } else { page.jumpToLatest() } }.padding(.bottom, 12).transition(.opacity.combined(with: .offset(y: 6)).combined(with: .scale(scale: 0.92)))
+                        if !page.atBottom || session.newerPage.available, page.snapshot?.items.isEmpty == false {
+                            PiBackToBottomPill { if session.browsingHistory || session.newerPage.available { onLatest(session.id) } else { page.jumpToLatest() } }
+                                .padding(.bottom, 12)
+                                .transition(.opacity.combined(with: .offset(y: 6)).combined(with: .scale(scale: 0.92)))
                         }
                     }
-                    .animation(reduceMotion ? nil : PiMotion.spring, value: page.detached)
+                    .animation(reduceMotion ? nil : PiMotion.spring, value: page.atBottom)
                 }
             // Parent panel or status changes must not animate the document's
-            // frame. Row disclosures and the Latest pill set their own motion.
+            // frame. Row disclosures and the Back to bottom pill set their own motion.
             .transaction { $0.animation = nil }
             if session.newerPage.available { boundaryControl(earlier: false) }
-            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, onStop: actions.stop, reduceMotion: reduceMotion)
+            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion)
                 .id(session.presentationGeneration)
         }
         // The run state is read where it is used, never from the value this
@@ -1403,7 +1713,6 @@ private struct LiveTurnBarSlot: View {
     let turn: TurnSummary?
     let state: String
     let actions: TranscriptActions
-    let onStop: () -> Void
     let reduceMotion: Bool
     @State private var arrived = false
     var body: some View {
@@ -1411,33 +1720,11 @@ private struct LiveTurnBarSlot: View {
         // inserts a terminal summary also releases (or retargets) this slot.
         Group {
             if let turn {
-                LiveTurnBar(turn:turn, state:state, actions:actions, onStop:onStop)
+                LiveTurnBar(turn:turn, state:state, actions:actions)
                     .padding(.horizontal,16).padding(.bottom,8)
                     .opacity(arrived ? 1 : 0).offset(y:arrived ? 0 : 14)
                     .onAppear { if reduceMotion { arrived = true } else { withAnimation(PiMotion.base) { arrived = true } } }
             }
         }.onChange(of:turn == nil) { _, absent in if absent { arrived = false } }
-    }
-}
-
-/// The pill that brings the reader back to the newest message.
-struct LatestPill: View {
-    let action: () -> Void
-    @State private var hovering = false
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Text("Latest").font(.system(size: 12, weight: .semibold))
-                Image(systemName: "arrow.down").font(.system(size: 10, weight: .bold))
-            }
-            .foregroundStyle(hovering ? TranscriptPalette.text : TranscriptPalette.muted)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(TranscriptPalette.surface, in: Capsule())
-            .overlay(Capsule().stroke(hovering ? TranscriptPalette.hairStrong : TranscriptPalette.hair, lineWidth: 1))
-            .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
-        }
-        .buttonStyle(.plain).piPointer()
-        .onHover { hovering = $0 }
-        .accessibilityLabel("Jump to the latest message")
     }
 }

@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Compact session status bar. Narrow panes keep timing on a second line so
-/// the latest and average output rates remain visible together.
+/// What the composer sits on: the session's three readings as pills, and —
+/// only while a run is going — the elapsed clock and the action under way.
+/// Every figure is settled; nothing here ticks with a stream.
 struct MetricsFooter: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var session: SessionDisplay
@@ -23,21 +24,19 @@ struct MetricsFooter: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Wide: one row. Narrower: the timing on a second row. Narrower still: the
-            // timing without the work split, then the bar alone; Session info keeps every figure.
+            // Wide: the pills, the run line and the capture badge on one row.
+            // Narrower: the run line drops to its own row under the pills.
             Group {
                 if compact { compactBar } else {
                     ViewThatFits(in: .horizontal) {
                         bar(full: true)
+                        // The last form still carries the run line, on its own
+                        // row: a narrow pane may drop the notice, never the
+                        // clock and the action.
                         VStack(alignment: .leading, spacing: PiSpacing.xs) {
                             bar(full: false)
-                            timingLine
+                            runLine
                         }
-                        VStack(alignment: .leading, spacing: PiSpacing.xs) {
-                            bar(full: false)
-                            timing
-                        }
-                        bar(full: false)
                     }
                 }
             }
@@ -53,36 +52,28 @@ struct MetricsFooter: View {
         }
         .task(id: model.automaticContextActivation(session)) { [weak model, id = session.id] in model?.scheduleAutomaticContext(id) }
         .onDisappear { [weak model, id = session.id] in model?.cancelAutomaticContext(id) }
-        .help(SessionRatePresentation.explanation + " The context ring uses the helper's matching request count; inspect it for its method, model and uncertainty.")
+        .help(SettledThroughput.explanation + " The context ring uses the helper's matching request count; inspect it for its method, model and uncertainty.")
     }
 
-    /// The two figures a side conversation owns, and — when there is one —
-    /// the one line that tells the reader what to do next.
+    /// The figures a side conversation owns, and — when there is one — the one
+    /// line that tells the reader what to do next.
     private var compactBar: some View {
         HStack(spacing: PiSpacing.md) {
-            contextControl
-            dot
-            costControl
-            Spacer(minLength: PiSpacing.sm)
+            pills(compact: true).frame(maxWidth: .infinity, alignment: .leading)
             if !session.notice.isEmpty { noticeLine }
         }.accessibilityIdentifier("compactMetricsFooter")
     }
-    private var contextControl: some View {
-        let presented = $showContext
-        return Button { presented.wrappedValue = true } label: {
-            HStack(spacing: 7) {
-                ContextRing(fraction: contextFraction)
-                Text(compactContext).lineLimit(1).monospacedDigit().fixedSize().contentTransition(.numericText()).piAnimation(PiMotion.base, value: compactContext)
-            }
-        }.buttonStyle(.plain).piPointer().help(contextLabel + ". Explore instructions, messages, tool results, provider state and the prepared request.")
-            .accessibilityLabel("Explore context").accessibilityValue(contextLabel)
+    /// What the composer sits on: how much work this conversation did and how
+    /// fast, what it consumed, and how full the window is. The figures the
+    /// footer used to spell out live here, each behind its own small dialog.
+    private func pills(compact: Bool) -> some View {
+        SessionStatsPills(model: model, session: session, footer: footer,
+                          selectedContextWindow: selectedContextWindow, compact: compact,
+                          exploreContext: { showContext = true }, openLedger: openLedger)
     }
-    @ViewBuilder private var costControl: some View {
-        if let chat = model.record(session.id) {
-            SessionUsageButton(model: model, chat: chat, footer: footer, costLabel: compactCost)
-        } else {
-            stat("dollarsign.circle", compactCost, help: footer.gateway.costLabel)
-        }
+    private func openLedger() {
+        guard let chat = model.record(session.id) else { return }
+        SessionUsageWindows.shared.show(model: model, chat: chat, footer: footer, initialBreakdown: .requests)
     }
     // A notice is the one line here that tells the reader what to do next
     // ("Run cancelled. Pending messages are paused; resume below"). Capped at
@@ -99,15 +90,11 @@ struct MetricsFooter: View {
     private func bar(full: Bool) -> some View {
         let disclosure = $expanded
         return HStack(spacing: PiSpacing.md) {
-            contextControl
-            if full {
-                dot
-                timingLine
-            }
-            dot
-            costControl
-            Spacer(minLength: PiSpacing.sm)
-            if full && !session.notice.isEmpty { noticeLine }
+            pills(compact: false).frame(maxWidth: .infinity, alignment: .leading)
+            // The clock and the action get their room first; the pills wrap
+            // into whatever is left rather than pushing them off the bar.
+            if full { runLine.fixedSize().layoutPriority(2) }
+            if full && !session.notice.isEmpty { noticeLine.layoutPriority(2) }
             Button(action: inspect) {
                 PiBadge(text: full ? (session.captureAvailable ? "" : "Next: ") + captureTitle : "", tone: captureTone, icon: session.captureAvailable ? "record.circle.fill" : "record.circle")
             }.buttonStyle(.plain).piPointer().help("Capture: " + captureTitle + ". Bounded HTTP-body capture; the inspector shows coverage and retained traces")
@@ -116,30 +103,16 @@ struct MetricsFooter: View {
             }.rotationEffect(.degrees(expanded ? 180 : 0))
         }
     }
-    private var timing: some View { SessionTimingControls(footer: footer, sessionTitle: model.record(session.id)?.title ?? "This session") }
-    /// Request timing plus where the session's wall-clock went: model inference versus tool calls.
-    private var timingLine: some View {
-        HStack(spacing: PiSpacing.md) {
-            timing
-            if let split = workSplit {
-                dot
-                stat("timer", split.label, help: split.help).accessibilityLabel("Session time split").accessibilityValue(split.label).accessibilityIdentifier("session-work-split")
-            }
-        }
+    /// While a run is going: the elapsed clock and the action under way, and
+    /// nothing else. The rate that used to tick here was a live figure — it
+    /// moved on every delta and said nothing the settled rate does not say
+    /// better once the request is done.
+    @ViewBuilder private var runLine: some View {
+        if session.busy { SessionRunLine(session: session, footer: footer) }
     }
     private var workSplit: WorkSplit? { WorkSplit(timing: footer.turnTiming) }
     private var captureTitle: String { session.captureMode == "off" ? "Capture off" : session.captureMode == "persist" ? "Persist locally" : "Session memory" }
     private var captureTone: PiTone { session.captureMode == "memory" ? .info : .neutral }
-    private var dot: some View { Circle().fill(Color.piHairlineStrong).frame(width: 3, height: 3) }
-    private func stat(_ symbol: String, _ text: String, help: String) -> some View {
-        Button(action: inspect) {
-            HStack(spacing: 4) {
-                Image(systemName: symbol).font(.system(size: 10)).foregroundStyle(Color.piInkTertiary)
-                // Figures roll to their new value rather than swapping.
-                Text(text).lineLimit(1).monospacedDigit().fixedSize().contentTransition(.numericText()).piAnimation(PiMotion.base, value: text)
-            }
-        }.buttonStyle(.plain).piPointer().help(help)
-    }
 
     private var details: some View {
         VStack(alignment: .leading, spacing: PiSpacing.sm) {
@@ -157,7 +130,7 @@ struct MetricsFooter: View {
             Text(reasoningUsageSummary(footer.gateway)).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             if !footer.gatewayNotice.isEmpty { PiNote(footer.gatewayNotice) }
-            Text(SessionRatePresentation.explanation + " Draft and skill estimates are chars/4, exclude wrappers and images, and are not the context count.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
+            Text(SettledThroughput.explanation + " Draft and skill estimates are chars/4, exclude wrappers and images, and are not the context count.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
         }
         .padding(PiSpacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -190,15 +163,10 @@ struct MetricsFooter: View {
         let split: String = workSplit?.turn.map { " (" + $0 + ")" } ?? ""
         return budget + elapsed + split
     }
-    private var compactCost: String {
-        compactGatewayUSD(footer.gateway.costUSD)
-    }
     private var displayedContext: [String: WireValue] { model.displayedContext(session) }
     private var contextMeter: ContextMeterPresentation {
         ContextMeterPresentation(context:displayedContext,capacity:session.hasWork ? nil : selectedContextWindow.map(Double.init))
     }
-    private var contextFraction: Double? { contextMeter.fraction }
-    private var compactContext: String { contextMeter.fraction == nil && footer.preparingContext ? "Calculating context…" : contextMeter.compactLabel }
     private var contextLabel: String { contextMeter.detailLabel }
     private func grouped(_ value: Double) -> String { TranscriptActivity.grouped(value) }
     private func milliseconds(_ value: WireValue?) -> String { value?.number.map { String(format: "%.0f ms", $0) } ?? "n/a" }
@@ -275,6 +243,21 @@ struct ContextMeterPresentation {
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
+    /// The breakdown the context dialog lists, one named budget per row. These
+    /// are the parts the helper actually reports; nothing is inferred.
+    var budgetParts: [(name: String, value: String)] {
+        let fields: [(String, String)] = [("inputBudget", "Input budget"), ("outputBudget", "Output reserve"), ("safetyMargin", "Safety margin"), ("modelOutputLimit", "Model output ceiling"), ("outputCap", "Limit sent")]
+        return fields.compactMap { key, label in
+            guard let value = context[key]?.number, value.isFinite, value >= 0 else { return nil }
+            return (label, MetricFormat.exactTokens(value))
+        }
+    }
+    /// `~32K / 128K` — the reading the dialog puts beside its title. The tilde
+    /// marks an estimate, exactly as the compact label's `≈` does.
+    var compactFigures: String {
+        guard let counts else { return compactLabel }
+        return (estimated ? "~" : "") + MetricFormat.tokens(counts.tokens) + " / " + MetricFormat.tokens(counts.capacity)
+    }
     var fraction: Double? { counts.map { $0.tokens / $0.capacity } }
     private var pending: Bool { ["post-compaction", "pending"].contains(context["state"]?.string ?? "") }
     var compactLabel: String {
@@ -304,14 +287,73 @@ struct ContextMeterPresentation {
 
 struct ContextRing: View {
     let fraction: Double?
+    /// 23 pt in the inspector's header; 14 pt as a pill's glyph.
+    var size: CGFloat = 23
     private var bounded: Double { min(1, max(0, fraction.map { $0.isFinite ? $0 : 0 } ?? 0)) }
     private var tint: Color { bounded >= 0.95 ? .piDanger : bounded >= 0.8 ? .piWarning : .piAccent }
+    private var stroke: CGFloat { size < 18 ? 2 : 2.5 }
     var body: some View {
         ZStack {
-            Circle().stroke(Color.piHairlineStrong, lineWidth: 2.5)
-            Circle().trim(from: 0, to: bounded).stroke(tint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round)).rotationEffect(.degrees(-90))
-            Image(systemName: "square.stack.3d.up").font(.system(size: 9, weight: .medium)).foregroundStyle(tint)
-        }.frame(width: 23, height: 23).accessibilityHidden(true)
+            Circle().stroke(Color.piHairlineStrong, lineWidth: stroke)
+            Circle().trim(from: 0, to: bounded).stroke(tint, style: StrokeStyle(lineWidth: stroke, lineCap: .round)).rotationEffect(.degrees(-90))
+                .piAnimation(PiMotion.base, value: bounded)
+            // The glyph only fits at the inspector's size; the pill's ring is
+            // the reading, and its percentage is right beside it.
+            if size >= 18 { Image(systemName: "square.stack.3d.up").font(.system(size: 9, weight: .medium)).foregroundStyle(tint) }
+        }.frame(width: size, height: size).accessibilityHidden(true)
+    }
+}
+
+/// The only figures the footer shows while a request is in flight: how long
+/// the turn has been going, and what it is doing. Both come from the helper's
+/// own snapshot, so neither is measured from a stream in the view.
+struct SessionRunLine: View {
+    @ObservedObject var session: SessionDisplay
+    @ObservedObject var footer: SessionMetrics
+
+    /// "Running bash…", "Compacting context…", "Stopping…".
+    var action: String {
+        if session.state == "stopping" { return "Stopping…" }
+        if let progress = session.compactionProgress, !progress.isEmpty { return progress + "…" }
+        if session.state == "compacting" { return "Compacting context…" }
+        let tools = session.activity["toolNames"]?.array?.compactMap(\.string).filter { !$0.isEmpty } ?? []
+        switch session.activity["phase"]?.string ?? session.state {
+        case "queued", "preparing": return "Preparing response…"
+        case "retrying": return "Waiting to retry…"
+        case "tools": return "Running " + (tools.first ?? "tools") + "…"
+        case "model": return "Generating response…"
+        default: return tools.isEmpty ? "Working…" : "Running " + tools.joined(separator: ", ") + "…"
+        }
+    }
+    /// Elapsed since the helper says the turn began. `startedAt` is a
+    /// machine-uptime stamp from the helper process, not a calendar instant, so
+    /// it is only ever compared with this process's own uptime — both read the
+    /// same clock. A snapshot's own `elapsedMs` is the floor, so a late
+    /// snapshot can never make the clock run backwards, and a turn with no
+    /// start stamp shows the action alone rather than a clock from zero.
+    static func elapsed(_ timing: [String: WireValue], atUptimeMs now: Double) -> String? {
+        let reported = DurationObservation.valid(timing["elapsedMs"]?.number)
+        guard let started = timing["startedAt"]?.number, started.isFinite, started >= 0,
+              let measured = DurationObservation.valid(now - started) else {
+            return reported.map(MetricFormat.runDuration)
+        }
+        return MetricFormat.runDuration(max(reported ?? 0, measured))
+    }
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            HStack(spacing: 6) {
+                if let elapsed = Self.elapsed(footer.turnTiming, atUptimeMs: ProcessInfo.processInfo.systemUptime * 1_000) {
+                    Text(elapsed).monospacedDigit().lineLimit(1).fixedSize()
+                        .frame(minWidth: 34, alignment: .leading)
+                }
+                Text(action).lineLimit(1).truncationMode(.tail)
+            }
+            .font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+        }
+        .help("The turn under way: elapsed time and the current action")
+        .accessibilityIdentifier("session-run-line")
+        .accessibilityLabel(action)
     }
 }
 

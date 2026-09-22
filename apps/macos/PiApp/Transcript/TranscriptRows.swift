@@ -144,6 +144,11 @@ struct TranscriptPillStyle: ButtonStyle {
 
 /// A rendered markdown body: paragraphs, headings with copy controls, code
 /// blocks with their toolbar, lists, quotes and tables.
+/// Whether this body has reached its native surface. Once it has, it keeps
+/// it: a reply that streamed and then settled must not have its selectable
+/// text replaced by another kind of leaf.
+@MainActor final class MarkdownSurfaceChoice { var native = false }
+
 struct MarkdownBodyView: View {
     let source: String
     var style: MarkdownStyle = .prose
@@ -151,18 +156,22 @@ struct MarkdownBodyView: View {
     var streaming = false
     var copyTargets: [MarkdownCopyTarget] = []
     var sourceIdentity = ""
-    @State private var rendering = StreamingMarkdownState()
+    @State private var choice = MarkdownSurfaceChoice()
     @State private var hovering = false
     var body: some View {
-        let records = rendering.update(source, style: style, streaming: streaming, identity: sourceIdentity)
-        let blocks = records.map(\.block)
+        // A reply that is still arriving is read by its own native surface,
+        // which owns that reading: nothing here reads it, so a token does not
+        // run this body at all.
+        let blocks = streaming ? [] : TranscriptMarkdown.blocks(source, style: style)
+        let native = usesNativeSurface(blockCount: blocks.count)
         let headings = copyTargets.filter { if case .section = $0.kind { return true }; return false }
         let introduction = copyTargets.first { $0.kind == .introduction || $0.kind == .whole }
         Group {
-            if rendering.usesNative {
-                NativeMarkdownSurface(blocks: blocks, style: style, capsWidth: capsWidth, streaming: streaming, headings: headings, identities: records.map(\.id), sourceText: source, sourceRanges: records.map(\.range))
-                    .frame(minHeight: blocks.isEmpty && streaming ? 22 : nil)
-                    .overlay(alignment: .leading) { if blocks.isEmpty && streaming { WaitingDots() } }
+            if native {
+                NativeMarkdownSurface(source: source, style: style, capsWidth: capsWidth, streaming: streaming,
+                                      headings: headings, identity: sourceIdentity)
+                    .frame(minHeight: source.isEmpty && streaming ? 22 : nil)
+                    .overlay(alignment: .leading) { if source.isEmpty && streaming { WaitingDots() } }
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     if blocks.isEmpty && streaming { WaitingDots() }
@@ -183,6 +192,14 @@ struct MarkdownBodyView: View {
         .onHover { hovering = $0 }
         .textSelection(.enabled)
         .piStableLayout()
+    }
+    /// A long message, and every message that streams, is drawn by the native
+    /// surface; a short settled one keeps the cheaper SwiftUI stack. The
+    /// decision sticks, so a reply that streamed keeps the same selectable
+    /// text when it settles.
+    private func usesNativeSurface(blockCount: Int) -> Bool {
+        if streaming || blockCount >= NativeMarkdownSurface.minimumBlockCount { choice.native = true }
+        return choice.native
     }
     /// The nth heading block copies the nth heading section the scanner found.
     private func headingTarget(_ block: MarkdownBlock, headings: [MarkdownCopyTarget], blocks: [MarkdownBlock], index: Int) -> MarkdownCopyTarget? {
@@ -505,30 +522,6 @@ private struct MarkdownTableView: View {
     }
 }
 
-// MARK: - Per-request accounting line
-
-struct MessageAccountingView: View {
-    let accounting: GatewayTotals
-    let onInspect: () -> Void
-    var trailing = false
-    var body: some View {
-        let presentation = TranscriptActivity.accountingPresentation(accounting)
-        if !presentation.summary.isEmpty {
-            HStack(spacing: 0) {
-                if let model = presentation.modelLabel {
-                    Button(action: onInspect) { Text(model).font(.system(size: 10.5)).foregroundStyle(TranscriptPalette.muted).underline(true, color: .clear) }
-                        .buttonStyle(.plain).piPointer().help("View response-body and header models").accessibilityLabel("View model reports: \(model)")
-                    if !presentation.usage.isEmpty { Text(" · ").font(.system(size: 10.5)).foregroundStyle(TranscriptPalette.muted) }
-                }
-                Text(presentation.usage).font(.system(size: 10.5)).foregroundStyle(TranscriptPalette.muted).monospacedDigit()
-            }
-            .frame(maxWidth: .infinity, alignment: trailing ? .trailing : .leading)
-            .help(presentation.detail)
-            .accessibilityLabel("\(presentation.summary). \(presentation.detail)")
-        }
-    }
-}
-
 // MARK: - Message rows
 
 /// A message row: user bubble, reply prose, status pill, or one of the marker rows.
@@ -539,11 +532,19 @@ struct MessageRowView: View {
     var disclosure = TranscriptRowDisclosure.default
     var toggle: (TranscriptDisclosure.Part) -> Void = { _ in }
     @State private var hovering = false
-    var body: some View {
+    @ViewBuilder var body: some View {
+        if disclosure.foldedAway {
+            // This row's turn has ended and its work is behind one line. The
+            // row keeps its place and its identity and draws nothing.
+            EmptyView()
+        } else { row }
+    }
+    @ViewBuilder private var row: some View {
         switch message.kind {
         case "execution": ExecutionTimelineRow(message:message, actions:actions, open:disclosure.compaction, toggle:{ toggle(.compaction(message.id)) })
         case "toolResult": ToolResultTimelineRow(message:message, open:disclosure.compaction, toggle:{ toggle(.compaction(message.id)) })
-        case "requestInfo": RequestTimelineInfo(message:message, actions:actions)
+        // A folded response says what it cost on its own header line.
+        case "requestInfo": if !disclosure.responseFolded { RequestTimelineInfo(message:message, actions:actions) }
         case "compaction": CompactionRowView(message: message, actions: actions, open: disclosure.compaction, toggle: { toggle(.compaction(message.id)) })
         case "branch": BranchRowView(message: message)
         case "failure": FailureRowView(message: message, actions: actions)
@@ -593,10 +594,11 @@ struct MessageRowView: View {
                 .foregroundStyle(TranscriptPalette.warning).padding(.top, 2)
                 .accessibilityIdentifier("reply-output-limit")
             }
-            if message.stopReason == "interrupted" {
-                Text("This attempt was interrupted. Its partial answer is retained separately from the retry.")
-                    .font(.system(size:12)).foregroundStyle(TranscriptPalette.warning)
-            }
+            // Stopping keeps what had arrived. The row says so with one amber
+            // chip beside the partial answer rather than a sentence under it:
+            // the words above it are still the reply, and they are what the
+            // reader came back to read.
+            if message.stopReason == "interrupted" { TranscriptStoppedChip() }
             // One quiet band under the row for its time, usage and actions; the
             // actions appear on hover without moving anything.
             HStack(alignment: .center, spacing: 10) {
@@ -748,68 +750,15 @@ private func actionSymbol(_ kind: ActionKind) -> String {
     }
 }
 
-/// What the model asked a file tool to change, as tinted rows. It is the
-/// request, not proof of what is on disk, and the label says so.
-struct EditDiffView: View, Equatable {
-    /// Already worked out, off any `body`: the rows of the change, what the
-    /// card leaves out, and whether the host cut the request short.
-    let request: TranscriptActivity.EditRequest
-    let path: String?
-    let outcome: ActionOutcome
-    nonisolated static func == (a: Self, b: Self) -> Bool {
-        a.request == b.request && a.path == b.path && a.outcome == b.outcome
-    }
-    var body: some View {
-        let mode = request.mode
-        let shown = request.rows
-        let label = (mode == "edit" ? "Requested edit" : "Requested content")
-            + (outcome == .done ? "" : outcome == .running ? " · in progress" : mode == "edit" ? " · not applied" : " · not written")
-            + (request.complete ? "" : " · arguments truncated")
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Text(label).font(.system(size: 11.5, weight: .medium)).foregroundStyle(outcome == .done ? TranscriptPalette.muted : outcome == .running ? TranscriptPalette.warning : TranscriptPalette.danger)
-                Spacer(minLength: 0)
-                if let path { Text(path).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.faint).lineLimit(1).truncationMode(.middle) }
-            }
-            .padding(.horizontal, 10).padding(.vertical, 4).background(TranscriptPalette.panel)
-            Rectangle().fill(TranscriptPalette.hair).frame(height: 1)
-            ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 0) {
-                    if request.tooLarge {
-                        Text("Diff too large to show — \(request.lines) lines.")
-                            .font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted)
-                            .padding(.horizontal, 10).padding(.vertical, 8)
-                            .accessibilityIdentifier("diff-too-large")
-                    }
-                    ForEach(Array(shown.enumerated()), id: \.offset) { _, row in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(row.kind == .added ? "+" : row.kind == .removed ? "−" : " ").foregroundStyle(row.kind == .added ? TranscriptPalette.diffAddedMark : row.kind == .removed ? TranscriptPalette.danger : TranscriptPalette.faint).frame(width: 10, alignment: .leading)
-                            Text(row.text.isEmpty ? " " : row.text).foregroundStyle(TranscriptPalette.text).frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .font(.system(size: 12, design: .monospaced))
-                        .padding(.horizontal, 10)
-                        .background(row.kind == .added ? TranscriptPalette.diffAdded : row.kind == .removed ? TranscriptPalette.danger.opacity(0.1) : Color.clear)
-                    }
-                    if request.hiddenRows > 0 { Text("… \(request.hiddenRows) more lines").font(.system(size: 12, design: .monospaced)).foregroundStyle(TranscriptPalette.faint).padding(.horizontal, 28) }
-                    if !request.complete {
-                        Text("The host bounded this call's arguments. This is the part that arrived, not the whole request.")
-                            .font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.horizontal, 10).padding(.vertical, 6)
-                    }
-                }
-                .textSelection(.enabled)
-            }
-            .frame(maxHeight: 420)
-            .opacity(outcome == .failed || outcome == .cancelled ? 0.72 : 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(TranscriptPalette.hair, lineWidth: 1))
-        .padding(.vertical, 6)
-    }
-}
-
-/// One tool call: a row that opens its card with the command or requested change, the output and the outcome.
+/// One tool call, on the line every piece of work shares: the verb, the dot,
+/// the one-line argument summary, and — for a change — the `+N −M` the card
+/// will repeat at its foot. What it opens is a card rather than a column of
+/// labelled paragraphs: a diff for a change, a numbered window for a read, a
+/// terminal for a command, the IN/OUT card for everything else.
+///
+/// Its outcome is colour and one hidden word. A failure replaces the summary
+/// with the failure's first line; a call the reader stopped turns its dot
+/// amber and says "Stopped"; a running call shimmers slowly.
 struct ActionRowView: View {
     let tool: ToolView
     var open = false
@@ -817,92 +766,82 @@ struct ActionRowView: View {
     /// then the card draws the inline document, which always parses.
     var fetched: ToolInputDocument? = nil
     var toggle: () -> Void = {}
-    @State private var hovering = false
+    /// Where the call stands, as a row state: a call the reader stopped is
+    /// amber, not red — it did not fail, it was interrupted.
+    nonisolated static func state(of tool: ToolView) -> TranscriptRowState {
+        switch TranscriptActivity.outcome(of: tool) {
+        case .running: return .running
+        case .cancelled: return .stopped
+        case .failed: return .failed
+        case .done: return .ok
+        }
+    }
+    /// What the row is called. The verb is not conjugated for the outcome —
+    /// "Ran", never "Failed running" — because the dot in the leading box and
+    /// the colour of the summary already say how the call went, and a line
+    /// that says it twice reads as an apology.
+    nonisolated static func title(of tool: ToolView) -> String {
+        var settled = tool
+        settled.state = "completed"
+        return TranscriptActivity.describe(settled).verb
+    }
+    /// The collapsed line's summary: a failure's first line replaces the
+    /// argument summary outright, because a row cannot say both.
+    nonisolated static func summary(of tool: ToolView) -> String {
+        let description = TranscriptActivity.describe(tool)
+        guard state(of: tool) == .failed, !tool.output.isEmpty else { return description.object }
+        return TranscriptActivity.firstLine(tool.output)
+    }
+    /// The quiet trailing clock. A call that took less than a twentieth of a
+    /// second says nothing rather than "0.0s": the figure exists to tell the
+    /// reader what was slow.
+    nonisolated static func elapsed(of tool: ToolView) -> String? {
+        guard TranscriptActivity.outcome(of: tool) != .running, let ms = tool.durationMs, ms >= 50 else { return nil }
+        return TranscriptActivity.formatDuration(ms)
+    }
+    /// The change size, already on the collapsed row.
+    nonisolated static func suffix(of tool: ToolView) -> String? {
+        guard tool.added != nil || tool.removed != nil else { return nil }
+        return "+\(tool.added ?? 0) −\(tool.removed ?? 0)"
+    }
     var body: some View {
         let description = TranscriptActivity.describe(tool)
+        let rowState = Self.state(of: tool)
         let outcome = TranscriptActivity.outcome(of: tool)
-        let running = outcome == .running, failed = outcome == .failed || outcome == .cancelled
-        let status = running ? "Running" : failed ? (outcome == .cancelled ? "Cancelled" : "Failed") : "Success"
-        VStack(alignment: .leading, spacing: 0) {
-            Button { toggle() } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: actionSymbol(description.kind)).font(.system(size: 11, weight: .medium)).foregroundStyle(TranscriptPalette.faint).frame(width: 16)
-                    Text(description.verb).font(.system(size: 13)).foregroundStyle(hovering ? TranscriptPalette.text : TranscriptPalette.muted).fixedSize()
-                    Text(description.object).font(description.kind == .command ? .system(size: 12, design: .monospaced) : .system(size: 13)).foregroundStyle(description.kind == .write ? TranscriptPalette.accent : description.kind == .command ? TranscriptPalette.muted : TranscriptPalette.text).lineLimit(1).truncationMode(.middle)
-                        .help(description.path ?? description.object)
-                    if tool.added != nil || tool.removed != nil {
-                        (Text("+\(tool.added ?? 0)").foregroundColor(TranscriptPalette.success) + Text(" -\(tool.removed ?? 0)").foregroundColor(TranscriptPalette.danger)).font(.system(size: 12)).monospacedDigit().fixedSize()
-                    }
-                    if failed { Text(status).font(.system(size: 11)).foregroundStyle(TranscriptPalette.danger).padding(.horizontal, 7).padding(.vertical, 1).background(TranscriptPalette.danger.opacity(0.12), in: Capsule()).fixedSize() }
-                    if running { Text("Running…").font(.system(size: 11)).foregroundStyle(TranscriptPalette.warning).padding(.horizontal, 7).padding(.vertical, 1).background(TranscriptPalette.warning.opacity(0.14), in: Capsule()).fixedSize() }
-                    Spacer(minLength: 0)
-                    if let duration = tool.durationMs, !running {
-                        Text(TranscriptActivity.formatDuration(duration)).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.faint).monospacedDigit().fixedSize()
-                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                    }
-                }
-                .piAnimation(PiMotion.base, value: running)
-                .piAnimation(PiMotion.base, value: failed)
-                .padding(.horizontal, 4).padding(.vertical, 5)
-                .background(hovering ? TranscriptPalette.panel : Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).piPointer()
-            .onHover { hovering = $0 }
-            .accessibilityLabel("\(description.verb) \(description.object), \(status)")
-            if open {
-                // The fetched document when the host has answered, the inline
-                // one until then: both parse, so a card is never a fragment.
-                let shown = requested
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(description.kind == .command ? "Shell" : tool.name).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.muted)
-                    if let note = truncationNote {
-                        Text(note).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.muted)
-                            .accessibilityIdentifier("tool-input-truncated")
-                    }
-                    if description.kind == .command {
-                        Text("$ " + (TranscriptActivity.parseCommand(shown.input) ?? description.object)).font(.system(size: 12, design: .monospaced)).foregroundStyle(TranscriptPalette.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                    } else if let edit = TranscriptActivity.editRequest(shown) {
-                        EditDiffView(request: edit, path: description.path, outcome: outcome).equatable()
-                    } else {
-                        // Never the raw fragment: a call whose arguments the
-                        // host cut shows what could be read of them, and says
-                        // that is not all of it.
-                        let arguments = TranscriptActivity.argumentsText(shown)
-                        ScrollView(.vertical) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                if arguments.text.isEmpty {
-                                    Text("The host bounded this call's arguments and none of them could be read.")
-                                        .font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted).fixedSize(horizontal: false, vertical: true)
-                                } else {
-                                    Text(arguments.text).font(.system(size: 12, design: .monospaced)).foregroundStyle(TranscriptPalette.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                if !arguments.complete {
-                                    Text("The host bounded this call's arguments. This is the part that arrived, not the whole request.")
-                                        .font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted).fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-                        }.frame(maxHeight: 320)
-                            .accessibilityLabel("Tool input")
-                    }
-                    if tool.output.isEmpty {
-                        Text("No output").font(.system(size: 12, design: .monospaced)).foregroundStyle(TranscriptPalette.faint)
-                    } else {
-                        ScrollView(.vertical) { Text(tool.output).font(.system(size: 12, design: .monospaced)).foregroundStyle(TranscriptPalette.muted).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 320)
-                            .accessibilityLabel("Tool output")
-                    }
-                    if tool.truncated { Text("Preview truncated. The full result is retained in context.").font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted) }
-                    Text((running ? "⟳ " : failed ? "✕ " : "✓ ") + status).font(.system(size: 12)).foregroundStyle(running ? TranscriptPalette.warning : failed ? TranscriptPalette.danger : TranscriptPalette.success).frame(maxWidth: .infinity, alignment: .trailing)
-                }
-                .padding(EdgeInsets(top: 10, leading: 12, bottom: 8, trailing: 12))
-                .background(TranscriptPalette.toolBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(TranscriptPalette.hair, lineWidth: 1))
-                .padding(.leading, 28).padding(.top, 4).padding(.bottom, 8)
-            }
+        TranscriptWorkRow(icon: actionSymbol(description.kind), title: Self.title(of: tool),
+                          summary: Self.summary(of: tool), suffix: Self.suffix(of: tool),
+                          state: rowState, open: open, toggle: toggle,
+                          trailing: Self.elapsed(of: tool),
+                          help: description.path ?? description.object) {
+            card(description: description, outcome: outcome)
         }
-        // No animation on the card: the row's AppKit frame snaps to the new
-        // height at once, and an animated inner size would fight that frame
-        // (and keep the whole row invalidating for every frame of it).
+    }
+    /// What the row opens. The fetched document when the host has answered for
+    /// the call, the inline one until then: both parse, so a card is never a
+    /// fragment of JSON.
+    @ViewBuilder private func card(description: ActionDescription, outcome: ActionOutcome) -> some View {
+        let shown = requested
+        let notes = [truncationNote, tool.truncated ? "Preview truncated. The full result is retained in context." : nil]
+            .compactMap { $0 }.joined(separator: " · ")
+        if let edit = TranscriptActivity.editRequest(shown) {
+            TranscriptDiffCard(request: edit, path: description.path, outcome: outcome,
+                               added: tool.added, removed: tool.removed)
+        } else if description.kind == .command {
+            TranscriptTerminalCard(command: TranscriptActivity.parseCommand(shown.input) ?? description.object,
+                                   output: tool.output, failed: outcome == .failed)
+        } else if description.kind == .read, !tool.output.isEmpty {
+            TranscriptReadCard(text: tool.output, path: description.path, failed: outcome == .failed)
+        } else {
+            let arguments = TranscriptActivity.argumentsText(shown)
+            TranscriptIOCard(input: arguments.text.isEmpty
+                                ? "The host bounded this call's arguments and none of them could be read."
+                                : arguments.text,
+                             output: tool.output.isEmpty ? nil : tool.output,
+                             failed: outcome == .failed,
+                             note: [notes.isEmpty ? nil : notes,
+                                    arguments.complete ? nil : "The host bounded this call's arguments. This is the part that arrived, not the whole request."]
+                                .compactMap { $0 }.joined(separator: " · ").nilIfEmpty)
+        }
     }
     /// The call as the card should read it: the fetched document when one has
     /// arrived, otherwise the inline one.
@@ -950,6 +889,9 @@ struct ActivityGroupView: View {
     }
 }
 
+/// A legacy reply's exposed reasoning, on the same Think row a chronological
+/// response uses: closed by default even while it streams, its summary the
+/// newest line while it is being written and its first line afterwards.
 private struct ReasoningView: View {
     let thinking: String
     let streaming: Bool
@@ -957,29 +899,18 @@ private struct ReasoningView: View {
     var toggle: () -> Void = {}
     var body: some View {
         if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            VStack(alignment: .leading, spacing: 0) {
-                TranscriptFoldHeader(title: "Exposed reasoning", open: open, toggle: toggle,
-                                     help: ("Hide the reply's exposed reasoning", "Show the reply's exposed reasoning"))
-                if open {
-                    MarkdownBodyView(source: thinking, style: .reasoning, capsWidth: false, streaming: streaming).equatable()
-                        .padding(.top, 6).padding(.leading, 22)
-                }
+            TranscriptWorkRow(icon: "brain", title: "Think",
+                              summary: TimelinePartRow.thinkSummary(thinking, running: streaming),
+                              state: streaming ? .running : .ok, open: open, toggle: toggle,
+                              follow: streaming) {
+                MarkdownBodyView(source: thinking, style: .reasoning, capsWidth: false, streaming: streaming).equatable()
+                    .padding(.top, 4).padding(.leading, TranscriptRowChrome.indent).padding(.bottom, 4)
             }
-            .padding(.vertical, 4)
         }
     }
 }
 
 // MARK: - Blocks and turns
-
-/// A text delta cannot change an earlier tool's summary. Keeping this small
-/// projection separate avoids decoding every retained tool input again while
-/// only the answer text or elapsed time changes.
-private struct WorkSummaryView: View, Equatable {
-    let summary: ToolCallSummary
-    let reasoned: Bool
-    var body: some View { Text(summary.label(reasoned: reasoned) ?? "Working") }
-}
 
 /// Holds a turn's work list at its own height while the turn is open and at
 /// nothing while it is folded. A folded list is never measured and never
@@ -1039,13 +970,59 @@ struct BlockRowView: View {
     @Environment(\.piReduceMotion) private var reduceMotion
     private var open: Bool { disclosure.work }
     var body: some View {
-        if block.presentation == .timeline, let part = block.part, let message = block.message {
-            TimelinePartRow(part:part, message:message, actions:actions, open:disclosure.work, toggle:{ toggle(.work(block.key)) })
+        if block.presentation == .turnFold, let spec = block.foldSummary, let group = block.foldControl {
+            TurnFoldControlRow(spec: spec, open: disclosure.turnFoldOpen, toggle: { toggle(.turnFold(group)) })
+        } else if disclosure.foldedAway {
+            // The turn ended and its work is behind its one line. Every row
+            // keeps its place, its identity and whatever the reader opened
+            // inside it; they simply draw nothing until the fold is opened.
+            EmptyView()
+        } else if block.presentation == .response, let line = block.responseSummary, let message = block.message, let response = block.responseID {
+            ResponseHeaderRow(line:line, message:message, actions:actions, live:block.live,
+                              folded:disclosure.responseFolded, collapsed:disclosure.responseLine,
+                              toggleCollapsed:{ toggle(.responseLine(response)) })
+        } else if disclosure.responseLine {
+            // The response reads as its header line alone. Its parts keep
+            // their rows, their identities and everything the reader opened
+            // inside them; they simply draw nothing until it is opened again.
+            EmptyView()
+        } else if let part = block.part, let message = block.message, let response = block.responseID,
+                  ["text", "refusal"].contains(part.part.kind) {
+            // A response's own words carry its fold commands too: the strip
+            // above a plain answer is short, so the reader need not aim at it.
+            partRow(part: part, message: message)
+                .contextMenu {
+                    Button("Fold This Response to One Line") { toggle(.responseLine(response)) }
+                    Divider()
+                    Button("Copy Reply") { actions.copyMessage(message.id) }
+                    Button("Request Details") { actions.inspect(message.id) }
+                }
+        } else if let part = block.part, let message = block.message {
+            partRow(part: part, message: message)
         } else if block.presentation == .body, let message = block.message {
             MessageRowView(message:message, actions:actions, inlineAccounting:false, disclosure:disclosure, toggle:toggle).equatable().padding(.bottom,10)
         } else if block.presentation == .summary, let turn = block.turn {
             StableTurnSummaryView(turn:turn, actions:actions)
         } else {
+            reply
+        }
+    }
+    /// One part of a response at its own position.
+    @ViewBuilder private func partRow(part: ResponseTimeline.Segment, message: TranscriptMessage) -> some View {
+        // A card's fold is keyed by the reply that made the call, so two
+        // responses reusing one provider call id stay independent.
+        let card = (message.tools ?? []).first
+        let key = card.map { ToolOccurrence.key(message.id, $0.id) }
+        TimelinePartRow(part:part, message:message, actions:actions,
+                        open:disclosure.work && !disclosure.responseFolded, toggle:{ toggle(.work(block.key)) },
+                        card:card,
+                        cardOpen:key.map { disclosure.openTools.contains($0) && !disclosure.responseFolded } ?? false,
+                        fetched:key.flatMap { disclosure.toolInputs[$0] },
+                        toggleCard:{ if let key { toggle(.tool(key)) } })
+    }
+    /// A reply whose recorded order is unavailable: one local work group, its
+    /// prose, its figures and the turn line, as it has always read.
+    @ViewBuilder private var reply: some View {
         let reasoned = TranscriptActivity.blockReasoned(block)
         let hasWork = block.presentation == .work || !block.tools.isEmpty || reasoned
         let accounting = block.accounting
@@ -1114,34 +1091,24 @@ struct BlockRowView: View {
             if let turn = block.turn, !turn.live { TurnLineView(turn: turn, settled: settled, now: now, actions: actions, model: accounting.model, modelMessageID: accounting.modelMessageID) }
         }
         .padding(.bottom, 10)
-        }
     }
-    /// The header of the work rows: what the reply did, and the chevron that folds the rows.
+    /// The header of the work rows: what the reply did, on the same 24 pt line
+    /// a tool call and a thought read on. It used to be its own arrangement of
+    /// a symbol, a label and a chevron; one shape for every piece of work is
+    /// the point of that line, so this is now that line with nothing under it
+    /// — the list it opens is placed by `FoldedWork`, not by the row.
     private func workHeader(reasoned: Bool) -> some View {
-        HStack(spacing: 4) {
-            if block.presentation == .work {
-                Image(systemName:block.live ? "circle.dotted" : block.task?.outcome == "completed" ? "checkmark.circle" : block.task?.outcome == "failed" ? "exclamationmark.circle" : "circle")
-                    .frame(width:14)
-            } else if block.live && block.tools.contains(where: { TranscriptActivity.outcome(of: $0) == .running }) { SpinnerView() }
-            Text(block.key.hasPrefix("legacy:") ? "Legacy response · part order unavailable" : block.presentation == .work ? workLabel : ToolCallSummary(rows:block.replies).label(reasoned:reasoned) ?? "Working")
-                .font(.system(size: 12.5, weight: .medium)).foregroundStyle(hovering ? TranscriptPalette.text : TranscriptPalette.muted)
-                .lineLimit(1).truncationMode(.tail).frame(height:20).help(workLabel)
-            Button { toggle(.work(block.key)) } label: {
-                // The chevron turns on the same curve the document moves the
-                // row on. A rotation decides nothing's height, so this is the
-                // one part of a disclosure SwiftUI may still animate.
-                Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(hovering ? TranscriptPalette.text : TranscriptPalette.faint)
-                    .rotationEffect(.degrees(open ? 0 : -90))
-                    .piAnimation(PiMotion.base, value: open)
-                    .frame(width: 20, height: 18)
-                    .background(hovering ? TranscriptPalette.panel : Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            }
-            .buttonStyle(.plain).piPointer()
-            .help(open ? "Hide the tool calls and request details" : "Show the tool calls and request details")
-            .accessibilityLabel(open ? "Hide work" : "Show work")
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { toggle(.work(block.key)) }
+        let outcome = block.task?.outcome
+        let state: TranscriptRowState = block.live ? .running
+            : outcome == "failed" ? .failed
+            : ["cancelled", "interrupted"].contains(outcome ?? "") ? .stopped : .ok
+        return TranscriptWorkRow(icon: "list.bullet",
+                                 title: block.key.hasPrefix("legacy:") ? "Work" : block.presentation == .work ? "Task" : "Work",
+                                 summary: block.key.hasPrefix("legacy:") ? "Legacy response · part order unavailable"
+                                    : block.presentation == .work ? workLabel
+                                    : ToolCallSummary(rows: block.replies).label(reasoned: reasoned) ?? "Working",
+                                 state: state, open: open, toggle: { toggle(.work(block.key)) },
+                                 help: workLabel) { EmptyView() }
     }
     private var workLabel: String {
         let status: String
@@ -1176,115 +1143,13 @@ struct BlockRowView: View {
     }
 }
 
-/// A terminal slot independent of the prose above it. Figures wrap between
-/// fields so narrower panes keep usage visible; Info opens the detailed table.
-struct StableTurnSummaryView: View {
-    let turn: TurnSummary
-    let actions: TranscriptActions
-    var body: some View {
-        VStack(alignment:.leading,spacing:4) {
-            FigureFlow(items: header, font:.system(size:12,weight:.medium),color:TranscriptPalette.muted)
-            FigureFlow(items:TurnInfoPresentation.inlineFigures(turn).map { .text(Text($0)) },font:.system(size:12,weight:.medium))
-            if let notice = turn.notice { Text(notice).font(.system(size:12)).foregroundStyle(TranscriptPalette.warning).textSelection(.enabled) }
-        }.padding(.top,6).padding(.bottom,10).fixedSize(horizontal:false,vertical:true)
-    }
-    private var header: [FigureItem] {
-        var items: [FigureItem] = [.text(Text("Turn · " + TurnInfoPresentation.outcome(turn)))]
-        if let elapsed = turn.elapsedMs { items.append(.text(Text(TranscriptActivity.formatDuration(elapsed)))) }
-        items.append(.text(Text(TurnLineView.counts(turn))))
-        items.append(.view(TurnInfoButton(turn:turn,actions:actions),dotted:false))
-        items.append(.view(Button {
-            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(TurnLineView.copyText(turn),forType:.string)
-        } label: { Image(systemName:"doc.on.doc").frame(width:20,height:20) }
-            .buttonStyle(.plain).help("Copy Turn Info").accessibilityLabel("Copy Turn Info"),dotted:false))
-        return items
-    }
-}
+/// Docked above the composer: current work and reported usage, with a
+/// shimmering label and a stable slot for duration and token shares.
 
-/// Under the last reply of a turn: how long the whole turn took, its replies,
-/// tool calls and files changed, model versus tool time, its usage, and the
-/// model as a link to the request. A turn that has just settled glows for a moment.
-struct TurnLineView: View {
-    let turn: TurnSummary
-    var settled = false
-    var now: () -> Double = { Date().timeIntervalSince1970 * 1000 }
-    var actions = TranscriptActions()
-    var model: String? = nil
-    var modelMessageID: String? = nil
-    @State private var hovering = false
-    var body: some View {
-        let stamps = [turn.startedAt.map { "Started " + TranscriptActivity.formatClock($0) }, turn.live ? nil : turn.endedAt.map { "finished " + TranscriptActivity.formatClock($0) }].compactMap { $0 }.joined(separator: " · ")
-        let usage = TranscriptActivity.usageBreakdown(turn.accounting)
-        var items: [FigureItem] = [.text(Text(turn.partial ? "Turn (partial)" : "Turn").fontWeight(.semibold).foregroundColor(TranscriptPalette.muted))]
-        if let elapsed = turn.elapsedMs { items.append(.text(Text(TranscriptActivity.formatDuration(elapsed)))) }
-        items.append(.text(Text(TurnLineView.counts(turn, includeTools: turn.replies > 1))))
-        if turn.modelMs > 0 || turn.toolMs > 0 { items.append(.text(Text("model \(TranscriptActivity.formatDuration(turn.modelMs)) · tools \(TranscriptActivity.formatDuration(turn.toolMs))"))) }
-        if !usage.isEmpty { items.append(.text(Text(usage).foregroundColor(TranscriptPalette.muted))) }
-        if let model = model ?? turn.accounting.model {
-            let target = modelMessageID ?? turn.accounting.modelMessageID
-            items.append(.view(Button { if let target { actions.inspect(target) } } label: {
-                HStack(spacing: 3) { Text(model).font(.system(size: 12, weight: .medium)); if target != nil { Image(systemName: "info.circle").font(.system(size: 11)) } }.foregroundStyle(TranscriptPalette.faint)
-            }.buttonStyle(.plain).piPointer().help("View response-body and header models").accessibilityLabel("View model reports: \(model)")))
-        }
-        items.append(.view(Button { copyInfo() } label: {
-            Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundStyle(TranscriptPalette.faint)
-        }.buttonStyle(.plain).piPointer().help("Copy Turn Info").accessibilityLabel("Copy Turn Info")))
-        return FigureFlow(items: items, font: .system(size: 12, weight: .medium), color: TranscriptPalette.faint)
-            .overlay(alignment: .topTrailing) {
-                if hovering, !stamps.isEmpty {
-                    Text(stamps).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.faint).monospacedDigit().fixedSize()
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(TranscriptPalette.canvas, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                        .transition(.opacity)
-                }
-            }
-            .padding(.top, 6)
-        .overlay(alignment: .top) { Rectangle().fill(settled ? TranscriptPalette.accent.opacity(0.55) : TranscriptPalette.hair).frame(height: 1) }
-        .background(settled ? TranscriptPalette.accent.opacity(0.07) : Color.clear)
-        .padding(.top, 8)
-        .onHover { hovering = $0 }
-        .help(turn.partial ? "Earlier replies of this turn are above the loaded history" : "The whole turn: every reply since your message")
-        .accessibilityLabel("Turn: \(TurnLineView.counts(turn))")
-        .contextMenu { Button("Copy Turn Info") { copyInfo() } }
-    }
-    private func copyInfo() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(Self.copyText(turn, model: model), forType: .string)
-    }
-    static func copyText(_ turn: TurnSummary, model: String? = nil) -> String {
-        var lines = [turn.partial ? "Turn (partial loaded history)" : "Turn", counts(turn)]
-        if let outcome = turn.outcome { lines.append("Outcome: " + outcome) }
-        else if !turn.live { lines.append("Task outcome unavailable; retained figures may be incomplete.") }
-        if let notice = turn.notice { lines.append(notice) }
-        if let started = turn.startedAt { lines.append("Started: " + TranscriptActivity.formatClock(started)) }
-        if let ended = turn.endedAt { lines.append("Finished: " + TranscriptActivity.formatClock(ended)) }
-        if let elapsed = turn.elapsedMs { lines.append("Duration: " + TranscriptActivity.formatDuration(elapsed)) }
-        lines.append("Model time: " + TranscriptActivity.formatDuration(turn.modelMs) + " · Tool time: " + TranscriptActivity.formatDuration(turn.toolMs))
-        let usage = TranscriptActivity.usageBreakdown(turn.accounting)
-        if !usage.isEmpty { lines.append("Gateway-reported usage: " + usage) }
-        if let model = model ?? turn.accounting.model { lines.append("Model: " + model) }
-        if turn.live { lines.append("Still running; figures are incomplete.") }
-        for (index, request) in turn.requests.enumerated() {
-            guard let accounting = request.accounting else { continue }
-            let figures = TranscriptActivity.accountingPresentation(accounting)
-            lines.append("\nRequest \(index + 1) · message \(request.id)\n" + figures.summary + "\n" + figures.detail)
-        }
-        return lines.joined(separator: "\n")
-    }
-    static func counts(_ turn: TurnSummary, includeTools: Bool = true) -> String {
-        plural(turn.replies, "reply", "replies") + (includeTools && turn.tools > 0 ? ", " + (turn.toolCountPartial ? "at least " : "") + plural(turn.tools, "tool call", "tool calls") : "") + (turn.files > 0 ? ", " + plural(turn.files, "file changed", "files changed") : "")
-    }
-}
-
-/// Docked above the composer while a turn runs: one place that shows the
-/// spinner, elapsed time, the action under way, a retry notice, the counts
-/// and usage so far, when the turn started, and Stop.
 struct LiveTurnBar: View {
     let turn: TurnSummary
     var state = "running"
     var actions = TranscriptActions()
-    let onStop: () -> Void
-    @Environment(\.piReduceMotion) private var reduceMotion
     private var label: String {
         switch state == "stopping" ? "stopping" : turn.phase ?? state {
         case "queued", "preparing": return "Preparing response…"
@@ -1297,40 +1162,10 @@ struct LiveTurnBar: View {
         }
     }
     var body: some View {
-        TimelineView(.periodic(from:.now, by:1)) { context in
+        TimelineView(.periodic(from: .now, by: 1)) { context in
             let current = TurnInfoPresentation.live(turn, at: context.date)
-            return VStack(spacing:4) {
-                HStack(spacing:6) {
-                    SpinnerView().frame(width:14)
-                    Text(current.elapsedMs.map(TranscriptActivity.formatDuration) ?? "—")
-                        .monospacedDigit().lineLimit(1).frame(width:58,alignment:.leading)
-                    Text(label).lineLimit(1).truncationMode(.tail).help(label).accessibilityLabel(label)
-                    Spacer(minLength:4)
-                    TurnInfoButton(turn:current,actions:actions)
-                    Button("Stop", action:onStop).buttonStyle(TranscriptStopStyle()).frame(width:48).accessibilityLabel("Stop the current run")
-                }.frame(height:28)
-                HStack(spacing:12) {
-                    metric("Tokens",TurnInfoPresentation.tokenLabel(turn))
-                    metric("Cost",TurnInfoPresentation.costLabel(turn))
-                }.frame(height:20)
-                HStack(spacing:12) {
-                    metric("In",turn.accounting.input.map(TranscriptActivity.formatTokenCount) ?? "—")
-                    metric("Out",turn.accounting.output.map(TranscriptActivity.formatTokenCount) ?? "—")
-                }.frame(height:20)
-            }.font(.system(size:12,weight:.medium)).foregroundStyle(TranscriptPalette.muted)
-                .padding(.horizontal,10).padding(.vertical,6)
-                .background(TranscriptPalette.surface,in:RoundedRectangle(cornerRadius:10))
-                .overlay(RoundedRectangle(cornerRadius:10).stroke(TranscriptPalette.hair,lineWidth:1))
-                .help(turn.partial ? "Gateway reports for loaded requests only; more in turn info." : "Gateway-reported usage so far. Final reports may arrive when the request finishes.")
-        }.accessibilityElement(children:.contain)
-    }
-    private func metric(_ name: String, _ value: String) -> some View {
-        HStack(spacing:4) {
-            Text(name).foregroundStyle(TranscriptPalette.faint)
-            Text(value).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
-                .help(name + ": " + value).accessibilityLabel(name + ": " + value)
-            Spacer(minLength:0)
-        }.frame(maxWidth:.infinity,alignment:.leading)
+            CompactTurnReport(turn: current, actions: actions, status: label)
+        }.accessibilityElement(children: .contain)
     }
 }
 

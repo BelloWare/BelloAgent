@@ -141,6 +141,10 @@ final class UIScreenshotTests: XCTestCase {
         other.draft = "owner billing sample: Explain the reported token and reasoning-cost breakdown."
         model.send(sessionID: second.id)
         try await waitIdle(other, model: model, minimumMessages: 2)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.4)
+            try capture(window, to: gallery.appendingPathComponent("01c-token-shares-\(name).png"))
+        }
         await model.select(main.id); try await settle(0.8)
         session.draft = "Now add a unit test for the jitter bounds and show me the diff."
 
@@ -162,6 +166,26 @@ final class UIScreenshotTests: XCTestCase {
         try await waitIdle(session, model: model, minimumMessages: 8)
         await model.setModel(nil, for: main.id); try await settle(0.5)
         session.draft = "Now add a unit test for the jitter bounds and show me the diff."
+
+        // A quick gallery for transcript/metrics changes; the full shell
+        // gallery remains available for changes to the other pages.
+        if testEnvironment("PI_APP_UI_GALLERY_CORE_ONLY") == "1" {
+            for (name, appearance) in appearances {
+                NSApp.appearance = NSAppearance(named: appearance)
+                try await captureSessionInfo(model: model, session: session, name: name, gallery: gallery)
+            }
+            session.draft = "slow: walk through the retry budget one step at a time."
+            model.send(sessionID: main.id)
+            try await settle(2.0)
+            for (name, appearance) in appearances {
+                NSApp.appearance = NSAppearance(named: appearance); try await settle(0.4)
+                try capture(window, to: gallery.appendingPathComponent("01d-ongoing-\(name).png"))
+            }
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
 
         model.openSide(parentID: main.id, question: "Is the retry budget shared with queued follow-ups, or per turn?")
         try await settle(1.0)
@@ -205,12 +229,7 @@ final class UIScreenshotTests: XCTestCase {
             // The Changes sheet against a small repository inside the project folder.
             try await sheet(window, name: "10-changes-\(name)", into: gallery, open: { model.showChanges(in: workspace.id) }, close: { model.showGit = false })
             // Session info for the main chat, in its own window, with both routes it used.
-            let chat = try XCTUnwrap(model.record(main.id))
-            let usage = SessionUsageWindows.shared.show(model: model, chat: chat, footer: session.footer, initialBreakdown: .models)
-            try await settle(2.5)
-            let panel = try XCTUnwrap(usage.window); panel.setContentSize(NSSize(width: 1000, height: 940)); panel.center(); try await settle(0.8)
-            try capture(panel, to: gallery.appendingPathComponent("11-session-info-\(name).png"))
-            usage.close(); try await settle(0.6)
+            try await captureSessionInfo(model: model, session: session, name: name, gallery: gallery)
         }
         try await renderReviewScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                      mainID: main.id, secondID: second.id, workspaceID: workspace.id)
@@ -264,10 +283,49 @@ final class UIScreenshotTests: XCTestCase {
         for key in blocks { session.disclosure.setOpen(true, .work(key)) }
         session.publishTranscript(); try await settle(0.5)
 
+        // 12c · Away from the bottom: the Back to bottom pill floating over
+        // the end of the conversation, above the composer.
+        // The gesture is announced the way AppKit announces one, so the pane
+        // lets go of the line it was holding: a clip moved behind its back is
+        // put straight back, which is exactly what it is there for.
+        if let scroll = descendants(TranscriptNativeScrollView.self, in: window.contentView ?? NSView()).first {
+            let clip = scroll.contentView
+            func readerScrolls(to y: CGFloat) {
+                scroll.readerWillNavigate(upward: y < clip.bounds.minY)
+                NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+                clip.setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: y))
+                scroll.reflectScrolledClipView(clip)
+                NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+                NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+            }
+            readerScrolls(to: max(0, clip.bounds.minY - 400))
+            try await settle(1.0)
+            try await pair("12c-back-to-bottom")
+            readerScrolls(to: max(0, (scroll.documentView?.frame.height ?? 0) - clip.bounds.height))
+            try await settle(0.6)
+        }
+
         // 13 · A running turn: the live bar, and a follow-up waiting behind it.
         session.draft = "slow: walk through the retry budget one step at a time."
         model.send(sessionID: mainID)
         try await settle(2.0)
+        // 13a · The compact working report at the beginning of a run.
+        try await pair("13a-working-indicator", hold: 0.3)
+        // 13b · The same report later in the run. The live clock updates
+        // independently of the helper's most recent snapshot.
+        func liveElapsed() -> Double {
+            guard let turn = page(of: window)?.liveTurn else { return 0 }
+            return TurnInfoPresentation.live(turn, at: Date()).elapsedMs ?? 0
+        }
+        let clockDeadline = Date().addingTimeInterval(60)
+        while session.busy, liveElapsed() < 15_400, Date() < clockDeadline {
+            try await settle(0.25)
+        }
+        if session.busy, liveElapsed() >= 15_000 {
+            try await pair("13b-working-indicator-clock", hold: 0.3)
+        } else {
+            XCTFail("The slow fixture turn ended after \(Int(liveElapsed())) ms, before the later-running capture; 13b has nothing to show.")
+        }
         session.draft = "Then summarise the change in one line for the commit message."
         model.send(sessionID: mainID)
         try await settle(1.5)
@@ -305,6 +363,15 @@ final class UIScreenshotTests: XCTestCase {
         XCTAssertNil(model.error, model.error ?? "")
     }
 
+    @MainActor private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
+        (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants(type, in: $0) }
+    }
+    /// The conversation page behind the window, for a scene that has to wait
+    /// for the turn it is photographing to reach a certain age.
+    @MainActor private func page(of window: NSWindow) -> TranscriptPage? {
+        window.contentView.flatMap { descendants(TranscriptSurfaceMarker.self, in: $0).first?.page }
+    }
+
     @MainActor private func sheet(_ window: NSWindow, name: String, into gallery: URL, open: () -> Void, close: () -> Void) async throws {
         open(); try await settle(2.2)
         try capture(window, to: gallery.appendingPathComponent(name + ".png"))
@@ -313,6 +380,16 @@ final class UIScreenshotTests: XCTestCase {
 
     @MainActor private func settle(_ seconds: Double) async throws {
         try await Task.sleep(for: .milliseconds(Int(seconds * 1000)))
+    }
+
+    @MainActor private func captureSessionInfo(model: WorkspaceModel, session: SessionDisplay, name: String, gallery: URL) async throws {
+        let chat = try XCTUnwrap(model.record(session.id))
+        let usage = SessionUsageWindows.shared.show(model: model, chat: chat, footer: session.footer, initialBreakdown: .models)
+        defer { usage.close() }
+        try await settle(2.5)
+        let panel = try XCTUnwrap(usage.window)
+        panel.setContentSize(NSSize(width: 1000, height: 940)); panel.center(); try await settle(0.8)
+        try capture(panel, to: gallery.appendingPathComponent("11-session-info-\(name).png"))
     }
 
     @MainActor private func waitIdle(_ session: SessionDisplay, model: WorkspaceModel, minimumMessages: Int, timeout: Double = 120) async throws {
@@ -338,7 +415,12 @@ final class UIScreenshotTests: XCTestCase {
         if let sheet = window.attachedSheet { frame = frame.union(sheet.frame) }
         let bounds = CGRect(x: frame.minX, y: screen.height - frame.maxY, width: frame.width, height: frame.height)
         let options = CGWindowImageOption.bestResolution.rawValue | CGWindowImageOption.boundsIgnoreFraming.rawValue
-        guard let image = create(bounds, CGWindowListOption.optionOnScreenOnly.rawValue, 0, options)?.takeRetainedValue() else { throw XCTSkip("Window capture returned no image") }
+        // Capture the app window itself so an incidental tooltip or another
+        // application's window cannot obscure the scene being reviewed.
+        let isolated = window.attachedSheet == nil
+        let list = isolated ? CGWindowListOption.optionIncludingWindow : .optionOnScreenOnly
+        let number = isolated ? UInt32(window.windowNumber) : 0
+        guard let image = create(bounds, list.rawValue, number, options)?.takeRetainedValue() else { throw XCTSkip("Window capture returned no image") }
         let representation = NSBitmapImageRep(cgImage: image)
         let png = try XCTUnwrap(representation.representation(using: .png, properties: [:]))
         try png.write(to: url, options: .atomic)

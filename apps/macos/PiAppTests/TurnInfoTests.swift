@@ -93,11 +93,11 @@ final class TurnInfoTests: XCTestCase {
         var task = record(); task.replies = 1
         var turn = TaskTranscriptPlan.summary([message("u",role:"user",cost:0)],task:task)
         for width: CGFloat in [280,640] {
-            let host = NSHostingView(rootView:LiveTurnBar(turn:turn,onStop:{}).frame(width:width))
+            let host = NSHostingView(rootView:LiveTurnBar(turn:turn).frame(width:width))
             host.safeAreaRegions = []
             let before = host.fittingSize.height
             turn.accounting.total = 123456789; turn.accounting.costUSD = 0.000001
-            host.rootView = LiveTurnBar(turn:turn,onStop:{}).frame(width:width)
+            host.rootView = LiveTurnBar(turn:turn).frame(width:width)
             XCTAssertEqual(host.fittingSize.height,before,accuracy:0.5)
         }
         task.phase = "terminal"; task.outcome = "completed"; task.endedAt = 4000
@@ -123,7 +123,7 @@ final class TurnInfoTests: XCTestCase {
         running.startedAt = Date().timeIntervalSince1970 * 1000 - 12500; running.endedAt = nil
         running.liveStartedUptimeMs = ProcessInfo.processInfo.systemUptime * 1000 - 12500
         let overview = NSHostingView(rootView:VStack(alignment:.leading,spacing:20) {
-            LiveTurnBar(turn:running,onStop:{})
+            LiveTurnBar(turn:running)
             StableTurnSummaryView(turn:turn,actions:TranscriptActions())
         }.padding(16).frame(width:640).background(TranscriptPalette.surface))
         overview.safeAreaRegions = []; overview.frame.size = overview.fittingSize

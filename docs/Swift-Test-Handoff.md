@@ -1,5 +1,25 @@
 # Native Swift — test and continuation handoff
 
+## 0.1.80 compact turn reports
+
+Use `CompactTurnReportTests`, `LiveWorkingIndicatorTests`, `TurnInfoTests` and
+`StableToolPresentationTests` for the compact completed/live report. Input shares
+partition cached and uncached input; output shares partition reasoning and other
+output. Only matching, fully reported observations produce percentages. Zero,
+unreported, partial coverage and model changes have separate regressions. The
+duration slot is visible from the beginning of a run; Stop remains in the composer.
+
+The opt-in component gallery renders both themes at 280 and 760 points. The
+`UIScreenshotTests` core gallery also captures completed token shares and a live
+report through the loopback Responses gateway. Pass `PI_APP_UI_GALLERY_CORE_ONLY=1`
+to avoid visiting unrelated settings/report pages. Pair transcript layout changes
+with `ResponseChronologyTests` and `StableReadingTests`.
+
+Requested/returned model pairs come from the same retained attempt, not the
+current picker. Run `GatewayAccountingTests`, `AccountingScaleTests` and
+`SessionAccountingCacheTests` for their SQL ownership and cache compatibility.
+The latest pair is chosen by dispatch wall time across response owners.
+
 ## Current test selection policy
 
 **Owner change, 2026-09-16, after 0.1.6:** shorten test/release cycles. Skip

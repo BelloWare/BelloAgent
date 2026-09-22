@@ -120,7 +120,8 @@ final class StreamingDeliveryCostTests: XCTestCase {
         print(String(format: "PERF delta stages with row updates (%d rows): frame %d bytes, encode %.3f ms, decode %.3f ms, apply %.3f ms, merge+compare %.3f ms, regroup %.3f ms, patched %d/%d",
                      Self.rowCount, frameBytes / rounds, encodeFrame * each, decodeFrame * each, applyUpdate * each, merge * each, group * each, patchedCount, rounds))
         XCTAssertEqual(held.last?.text, text)
-        XCTAssertLessThan((applyUpdate + merge + group) * each, 1.0, "Decoding, applying and regrouping a token must stay under a millisecond")
+        XCTAssertLessThan((applyUpdate + merge + group) * each, releaseBudget(0.001) * 1_000,
+                          "Decoding, applying and regrouping a token must stay under a millisecond in Release")
     }
 
     /// The real path: a reply lands on the transport and the conversation

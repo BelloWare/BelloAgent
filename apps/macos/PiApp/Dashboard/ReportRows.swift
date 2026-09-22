@@ -164,10 +164,10 @@ struct ReportModelRow: View {
                     else { Text("—") }
                 }.font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInk).frame(width: 96, alignment: .leading).help(summary.gateway.cacheLabel)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(SessionUsagePresentation.rate(summary.rate.tokensPerSecond)).foregroundStyle(Color.piInk)
-                    Text("\(summary.rate.samples)/\(summary.requests) measured").foregroundStyle(Color.piInkTertiary)
+                    Text(SessionUsagePresentation.rate(summary.gateway.settledThroughput.tokensPerSecond)).foregroundStyle(Color.piInk)
+                    Text("\(summary.gateway.settledThroughput.samples)/\(summary.requests) measured").foregroundStyle(Color.piInkTertiary)
                 }.font(PiFont.caption.monospacedDigit()).lineLimit(1).frame(width: ReportColumns.modelRate, alignment: .leading)
-                    .help("Output tokens divided by dispatch-to-completion time over this route's completed requests with reported usage.")
+                    .help(SettledThroughput.explanation)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("p50 " + ms(summary.ttftP50)).foregroundStyle(Color.piInk)
                     Text(summary.ttftSamples > 0 ? "HTTP \(ms(summary.httpP50)) · \(summary.ttftSamples) measured" : "not measured").foregroundStyle(Color.piInkTertiary)

@@ -50,6 +50,23 @@ struct TurnAccounting: Equatable, Sendable {
     var cacheHits = 0, cacheMisses = 0, cacheUnreported = 0, cacheConflicts = 0
     /// The last reported model name, and the request it came from, for the reply line's model link.
     var model: String? = nil, modelMessageID: String? = nil
+    /// Distinct models across retained requests, so a routed turn is not
+    /// mislabeled as if every request used only its last model.
+    var modelNames: [String] = []
+    var reportedModels: [String] { modelNames.isEmpty ? model.map { [$0] } ?? [] : modelNames }
+    var modelRoutes: [GatewayModelRoute] = []
+    var latestModelRoute: GatewayModelRoute? {
+        modelRoutes.reduce(nil) { latest, route in
+            guard let latest else { return route }
+            return route.latestWall > latest.latestWall || (route.latestWall == latest.latestWall && latest.responded == nil && route.responded != nil) ? route : latest
+        }
+    }
+    var requestedModels: [String] { Array(Set(modelRoutes.compactMap(\.requested))).sorted() }
+    /// Provider output tokens over decode time, folded over this turn's
+    /// requests; only the requests that reported both are in it.
+    var throughput = SettledThroughput()
+    /// First-token latency over the same requests, for the turn-time dialog.
+    var latency = SettledLatency()
 }
 
 /// Everything the assistant did since the user's message, across every reply of the turn.
@@ -87,7 +104,7 @@ struct TurnSummary: Equatable, Sendable {
 /// trailing block with no prose can hold a terminal task receipt. New ordered
 /// responses use local part rows; legacy responses retain a local work group.
 struct TranscriptBlock: Equatable, Sendable, Identifiable {
-    enum Presentation: Equatable, Sendable { case reply, work, body, summary, timeline }
+    enum Presentation: Equatable, Sendable { case reply, work, body, summary, timeline, response, turnFold }
     var id: String
     /// Stays the id of the block's first row for its whole life, so the view keeps the block mounted (and open) as its reply arrives.
     var key: String
@@ -109,7 +126,40 @@ struct TranscriptBlock: Equatable, Sendable, Identifiable {
     var task: TaskPresentationRecord? = nil
     var taskSummary: TurnSummary? = nil
     var part: ResponseTimeline.Segment? = nil
+    /// The assistant response this row belongs to, for the rows that make up
+    /// one chronological response: its header line, its prose, its reasoning
+    /// and its tool cards. One response is one fold, whatever it is made of.
+    var responseID: String? = nil
+    /// What a response collapsed to one line reads as, computed once by the
+    /// planner so a header row does not change while arguments stream.
+    var responseSummary: ResponseLine? = nil
+    /// The finished turn whose fold hides this row. The row keeps its place,
+    /// its identity and everything the reader opened inside it; it simply
+    /// draws nothing while its turn is folded.
+    var foldGroup: String? = nil
+    /// Set on the one row that is a turn's fold control, never on a row the
+    /// fold hides: the control has to stay on screen to be opened again.
+    var foldControl: String? = nil
+    /// What that control's line says, and what it counted.
+    var foldSummary: TurnFoldSpec? = nil
     var replies: [TranscriptMessage] { activity + (message.map { [$0] } ?? []) }
+}
+
+/// The one line a collapsed response reads as: what it did, how long it took
+/// and what it cost. Figures only; the response's own rows hold its content.
+struct ResponseLine: Equatable, Sendable {
+    /// "Reasoned, ran 2 commands" or "Answered".
+    var work: String
+    /// The model request's duration, already formatted, when the host measured it.
+    var duration: String?
+    /// Tokens, cost and model, already formatted, when the gateway reported them.
+    var figures: String?
+    /// How many rows of content the fold hides, so a closed response says so.
+    var parts: Int
+    /// Whether the response has anything inside it to fold: a reasoning
+    /// segment, a card, a status. A plain answer has only its words, so its
+    /// header line stays quiet and offers the one-line fold alone.
+    var foldable: Bool = false
 }
 
 enum TranscriptItem: Equatable, Sendable, Identifiable {
@@ -402,10 +452,8 @@ enum TranscriptActivity {
         var tooLarge: Bool
         var lines: Int
     }
-    /// The card draws at most this many rows, and refuses to diff a request
-    /// past these bounds at all — the helper bounds a call's arguments today,
-    /// and a preview must stay a preview if it ever stops.
-    static let diffDrawLimit = 400
+    /// Bound diff computation, while keeping the full input available in the
+    /// card. Ordinary diffs retain every row for the expand action.
     static let diffLineLimit = 4_000
     static let diffByteLimit = 256 << 10
 
@@ -418,7 +466,12 @@ enum TranscriptActivity {
     }()
     /// How many times the line diff has actually run, as evidence that drawing
     /// an open card again does not repeat it.
-    nonisolated(unsafe) private(set) static var editComputationCount = 0
+    private static let editCountLock = NSLock()
+    nonisolated(unsafe) private static var editComputations = 0
+    static var editComputationCount: Int {
+        editCountLock.lock(); defer { editCountLock.unlock() }
+        return editComputations
+    }
 
     static func editRequest(_ tool: ToolView) -> EditRequest? {
         guard tool.name == "edit" || tool.name == "write" else { return nil }
@@ -457,7 +510,7 @@ enum TranscriptActivity {
             return EditRequest(before: before, after: after, mode: mode, rows: [], hiddenRows: 0,
                                complete: complete, tooLarge: true, lines: lines)
         }
-        editComputationCount += 1
+        editCountLock.lock(); editComputations += 1; editCountLock.unlock()
         var all: [DiffRow]
         if diffable, mode == "edit" || (created && outcome == .done) {
             all = lineDiff(before, after)
@@ -466,8 +519,8 @@ enum TranscriptActivity {
         }
         // Where the content stops, as its own line at the end of the hunk.
         if let marker { all.append(DiffRow(kind: .context, text: marker)) }
-        return EditRequest(before: before, after: after, mode: mode, rows: Array(all.prefix(diffDrawLimit)),
-                           hiddenRows: max(0, all.count - diffDrawLimit), complete: complete,
+        return EditRequest(before: before, after: after, mode: mode, rows: all,
+                           hiddenRows: 0, complete: complete,
                            tooLarge: false, lines: all.count)
     }
 
@@ -523,7 +576,16 @@ enum TranscriptActivity {
             add(\.cacheWrite, \.cacheWriteSamples, a.cacheWriteTokens, a.cacheWriteSamples)
             sum.cacheHits += a.cacheHits; sum.cacheMisses += a.cacheMisses
             sum.cacheUnreported += a.cacheUnreported; sum.cacheConflicts += a.cacheConflicts
+            // Already summed per reply by the archive; adding the sums keeps
+            // the turn's rate one division of totals, not an average of rates.
+            sum.throughput.add(a.settledThroughput); sum.latency.add(a.settledLatency)
             if let name = a.models?.names.first { sum.model = name; sum.modelMessageID = message.id }
+            for name in a.models?.names ?? [] where !sum.modelNames.contains(name) { sum.modelNames.append(name) }
+            for route in a.models?.routes ?? [] where route.valid {
+                if let index = sum.modelRoutes.firstIndex(where: { $0.requested == route.requested && $0.responded == route.responded }) {
+                    if route.latestWall > sum.modelRoutes[index].latestWall { sum.modelRoutes[index] = route }
+                } else { sum.modelRoutes.append(route) }
+            }
         }
         return sum
     }
@@ -585,10 +647,11 @@ enum TranscriptActivity {
                              a.cacheUnreported > 0 ? "\(a.cacheUnreported) unreported" : "", a.cacheConflicts > 0 ? "\(a.cacheConflicts) invalid/conflicting" : ""]
             .filter { !$0.isEmpty }.joined(separator: ", ")
         let models = a.models
-        let modelLabel = models?.names.first
+        let modelLabel = models?.routes?.first(where: \.valid)?.label ?? models?.names.first
         let modelDetail: String? = models.map { models in
             [
                 "Reported model\(models.nameCount == 1 ? "" : "s"): \(models.names.isEmpty ? "unavailable" : models.names.joined(separator: ", "))\(models.nameCount > models.names.count ? "; \(models.nameCount - models.names.count) more (see Details)" : "").",
+                (models.routes ?? []).filter(\.valid).map(\.detail).joined(separator: ". "),
                 "The response body supplies the displayed name when available; older captures may retain a verified gateway name. Click the model to see response-body and header reports.",
                 "Resolved identity \(models.reportedRequests)/\(a.requests); unreported \(models.unreportedRequests), conflicting \(models.conflictingRequests), incomplete \(models.incompleteRequests). Displaying a body name does not change routing identity or accounting.",
             ].joined(separator: " ")
@@ -613,7 +676,8 @@ enum TranscriptActivity {
               m.reportedRequests + m.unreportedRequests + m.conflictingRequests + m.incompleteRequests == requests,
               m.names.count == min(8, m.nameCount), Set(m.names).count == m.names.count,
               m.names.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf8.count <= 256 && !$0.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F } }),
-              displayRequests >= 0, displayRequests <= requests else { return false }
+              displayRequests >= 0, displayRequests <= requests,
+              (m.routes?.count ?? 0) <= min(8, requests), m.routes?.allSatisfy(\.valid) ?? true else { return false }
         return m.nameCount <= displayRequests && (displayRequests == 0) == (m.nameCount == 0)
     }
 
@@ -628,7 +692,9 @@ enum TranscriptActivity {
         let sources = Set(changed.map(\.id))
         var replacements: [String: TranscriptItem] = [:]
         for message in changed {
-            for item in TaskTranscriptPlan.items([message], lifecycle: nil) {
+            // The unfolded planner: a patch replaces rows in place and must
+            // not re-decide a turn's fold from one message out of context.
+            for item in TaskTranscriptPlan.rows([message], lifecycle: nil) {
                 guard replacements.updateValue(item, forKey: item.id) == nil else { return nil }
             }
         }
@@ -637,7 +703,8 @@ enum TranscriptActivity {
             switch item {
             case .message(let message): if sources.contains(message.id) { affected.insert(item.id) }
             case .block(let block):
-                let ownsSource = block.replies.contains { sources.contains($0.id) }
+                let ownsSource = block.message.map { sources.contains($0.id) } == true ||
+                    block.activity.contains { sources.contains($0.id) }
                 if block.taskSummary?.requests.contains(where: { sources.contains($0.id) }) == true,
                    block.presentation != .work || block.task != nil { return nil }
                 if block.turn?.requests.contains(where: { sources.contains($0.id) }) == true { return nil }

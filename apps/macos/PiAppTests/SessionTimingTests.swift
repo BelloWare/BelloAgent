@@ -40,6 +40,22 @@ final class SessionTimingTests: XCTestCase {
                             streamingMilliseconds: duration.flatMap { value in ttft.map { value - $0 } }, outputTokens: output, requestMilliseconds: duration)
     }
 
+    func testLedgerKeepsFailuresWithoutChangingTheCompletedRate() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = try await configured(root)
+        let good = try await Self.save(archive, metadata(wall: 999_991, output: 100))
+        let failed = try await Self.save(archive, metadata(wall: 999_992, outcome: "failed", output: 999))
+        let history = try await archive.sessionTimingHistory(sessionID: "session", workspaceID: "project", until: until)
+        XCTAssertEqual(history.samples.map(\.id), [good])
+        let ledger = SessionRequestLedger(history: history)
+        XCTAssertEqual(ledger.rows.map(\.id), [good, failed])
+        XCTAssertEqual(ledger.rows.last?.status, "failed")
+        XCTAssertEqual(ledger.rows.last?.throughput, "—")
+        XCTAssertEqual(ledger.throughput.samples, 1)
+        XCTAssertEqual(ledger.throughput.tokensPerSecond, 125)
+        try await archive.close()
+    }
+
     func testLatestAndWeightedSessionAverageRemainScopedAndDistinct() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await configured(root)
@@ -58,7 +74,12 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(history.latest?.id, latest)
         XCTAssertEqual(history.latest?.ttftMilliseconds, 2_000)
         XCTAssertEqual(history.latest?.outputTokensPerSecond, 20)
-        XCTAssertEqual(history.points(for: .rate).map(\.value), [100, 20])
+        // The charts and the pills read the settled rate: provider output over
+        // the decode span, not over the whole dispatch-to-completion request.
+        XCTAssertEqual(history.latest?.settledTokensPerSecond, 60)
+        XCTAssertEqual(history.points(for: .rate).map(\.value), [1_000, 60])
+        XCTAssertEqual(history.settledThroughput, SettledThroughput(decodeMilliseconds: 1_100, outputTokens: 160, samples: 2, requests: 2))
+        XCTAssertEqual(try XCTUnwrap(history.settledThroughput.tokensPerSecond), 160 / 1.1, accuracy: 1e-9)
         XCTAssertEqual(history.historicalRate, HistoricalOutputRate(outputTokens: 160, generationMilliseconds: 4_000, samples: 2))
         XCTAssertEqual(history.historicalRate.tokensPerSecond, 40, "Use total output / total duration, without counting reasoning or repeated updates again")
         XCTAssertEqual(history.completedRequests, 2)
@@ -67,7 +88,12 @@ final class SessionTimingTests: XCTestCase {
         try await archive.close()
         let restored = try await configured(root)
         let persisted = try await restored.sessionTimingHistory(sessionID: "session", workspaceID: "project", until: until)
-        XCTAssertEqual(persisted, history, "Helper eviction/restart cannot erase the latest completed request")
+        XCTAssertEqual(persisted.samples, history.samples, "Helper eviction/restart cannot erase completed requests")
+        XCTAssertEqual(persisted.historicalRate, history.historicalRate)
+        XCTAssertEqual(persisted.historicalSettledThroughput, history.historicalSettledThroughput)
+        XCTAssertEqual(persisted.ledgerSamples?.map(\.id), history.ledgerSamples?.map(\.id))
+        XCTAssertEqual(persisted.ledgerSamples?.map(\.outcome), ["completed", "completed", "interrupted", "failed"],
+                       "The ledger must show unfinished requests as interrupted after restart")
         try await restored.close()
     }
 
@@ -81,11 +107,16 @@ final class SessionTimingTests: XCTestCase {
         let history = try await archive.sessionTimingHistory(sessionID: "session", workspaceID: "project", until: until)
         XCTAssertEqual(history.latest?.id, missing); XCTAssertEqual(history.latest?.ttftMilliseconds, 200)
         XCTAssertNil(history.latest?.outputTokensPerSecond)
+        XCTAssertNil(history.latest?.settledTokensPerSecond, "A request that reported no output tokens contributes nothing to the settled rate")
         XCTAssertEqual(history.historicalRate.tokensPerSecond, 20)
         XCTAssertEqual(history.historicalRate.samples, 2)
         XCTAssertEqual(history.completedRequests, 4, "Missing usage/timing stays visible in average coverage")
         XCTAssertEqual(history.points(for: .ttft).map(\.value), [0, 100, 200])
-        XCTAssertEqual(history.points(for: .rate).map(\.value), [0, 40])
+        XCTAssertEqual(history.points(for: .rate).map(\.value).count, 2)
+        XCTAssertEqual(history.points(for: .rate).map(\.value)[0], 0)
+        XCTAssertEqual(history.points(for: .rate).map(\.value)[1], 40 / 0.9, accuracy: 1e-9, "Decode time is the 900 ms after first content, not the whole 1,000 ms request")
+        XCTAssertEqual(history.settledThroughput.samples, 2, "Two of the four requests reported both halves of the rate")
+        XCTAssertEqual(history.settledThroughput.requests, 4)
         XCTAssertEqual(history.points(for: .rate).map(\.index), [1, 3])
         XCTAssertEqual(history.points(for: .rate).map(\.segment), [0, 1], "Missing observations are chart gaps, not synthetic connecting lines")
         XCTAssertEqual(SessionTimingMetric.rate.label(0), "0 tok/s")
@@ -135,7 +166,11 @@ final class SessionTimingTests: XCTestCase {
         let session = try await migrated.sessionMetrics(sessionID: "session", workspaceID: "project", until: until)
         XCTAssertEqual(menu.historicalRate, expected); XCTAssertEqual(session.historicalRate, expected)
         let info = SessionInfoTiming(history: SessionTimingHistory(samples: [silent]), work: [:])
-        XCTAssertEqual(info.latestDurationMs, 2_403); XCTAssertEqual(info.latestRate, silent.outputTokensPerSecond)
+        // A silent completion has no first-content stamp and therefore no
+        // decode span: Session info keeps its duration and reports no settled
+        // rate rather than dividing by the whole round trip.
+        XCTAssertEqual(info.latestDurationMs, 2_403)
+        XCTAssertNil(info.latestRate); XCTAssertNil(silent.settledTokensPerSecond)
         try await migrated.update(expired)
         try await migrated.close()
         let db = try CaptureDatabase(url: root.appendingPathComponent("requests.sqlite"))
@@ -155,6 +190,8 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(history.historicalRate.tokensPerSecond, 65.5, "The average includes retained requests older than the chart's 128-sample limit")
         XCTAssertEqual(history.historicalRate.samples, 132)
         XCTAssertEqual(history.completedRequests, 132)
+        XCTAssertEqual(history.historicalSettledThroughput?.samples, 132)
+        XCTAssertEqual(SessionRatePresentation(history: history).average, 65.5 / 0.8)
         for identity in ["", String(repeating: "x", count: 129), "invalid\nidentity"] {
             do { _ = try await archive.sessionTimingHistory(sessionID: identity, workspaceID: "project", until: until); XCTFail("Invalid session scope accepted") } catch { }
             do { _ = try await archive.sessionTimingHistory(sessionID: "session", workspaceID: identity, until: until); XCTFail("Invalid project scope accepted") } catch { }
@@ -165,7 +202,7 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(injected.completedRequests, 0)
         try await archive.close()
         let db = try CaptureDatabase(url: root.appendingPathComponent("requests.sqlite"))
-        let plan = try db.rows("EXPLAIN QUERY PLAN SELECT id,wall,ttft_ms,stream_ms,output_tokens FROM attempts WHERE session=? AND workspace=? AND metrics_retained=1 AND wall<? AND dispatch IS NOT NULL AND outcome='completed' ORDER BY wall DESC,id DESC LIMIT 129",
+        let plan = try db.rows("EXPLAIN QUERY PLAN SELECT id,wall,ttft_ms,stream_ms,request_ms,output_tokens,cost_usd,outcome,api,alias,model,response_model,input_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens FROM attempts WHERE session=? AND workspace=? AND metrics_retained=1 AND wall<? AND dispatch IS NOT NULL AND outcome='completed' ORDER BY wall DESC,id DESC LIMIT 129",
                                [.text("session"), .text("project"), .real(until.timeIntervalSince1970)])
         let detail = plan.compactMap { $0["detail"]?.string }.joined(separator: "\n")
         XCTAssertTrue(detail.contains("SEARCH attempts USING INDEX usage_session"), detail)
@@ -286,14 +323,21 @@ final class SessionTimingTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50)); XCTAssertFalse(hover.presented)
     }
 
-    @MainActor func testLatestAndAverageRatesStayVisibleInWideAndNarrowFooters() async throws {
+    /// The footer no longer carries a rate that moves while a request streams.
+    /// While a run is going it shows two things: how long the turn has been
+    /// running, and what it is doing.
+    @MainActor func testRunningFooterKeepsOnlyTheClockAndTheCurrentAction() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         let session = SessionDisplay(id: "timing-preview")
         session.state = "running"
-        session.footer.timing = SessionTimingHistory(samples: [sample("earlier"), sample("latest", ttft: 2_000, duration: 3_000, output: 60)],
-                                                    historicalRate: HistoricalOutputRate(outputTokens: 160, generationMilliseconds: 4_000, samples: 2), completedRequests: 2)
+        session.activity = ["phase": .string("tools"), "toolNames": .array([.string("bash")])]
+        session.footer.turnTiming = ["startedAt": .number(ProcessInfo.processInfo.systemUptime * 1_000 - 19_000)]
+        session.footer.gateway = GatewayTotals(requests: 2, costSamples: 2, costUSD: 0.0025, cacheReadTokens: 6_000, cacheReadSamples: 2)
+        session.footer.gateway.turnCount = 1
+        session.footer.gateway.tokens = GatewayTokenTotals(input: 12_000, output: 3_800, total: 15_800, inputSamples: 2, outputSamples: 2, samples: 2)
+        session.footer.gateway.decodeMilliseconds = 1_000; session.footer.gateway.decodeOutputTokens = 34; session.footer.gateway.decodeSamples = 2
         let hosted = NSHostingView(rootView: MetricsFooter(model: model, session: session, inspect: {}).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).background(Color.piSurface))
         let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 1_000, height: 100), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
@@ -301,16 +345,39 @@ final class SessionTimingTests: XCTestCase {
         defer { window.orderOut(nil); window.contentView = nil; window.close() }
         for width in [1_000, 420] {
             window.setContentSize(NSSize(width: CGFloat(width), height: 100))
-            let rendered = try await renderedText(window, filename: "session-timing-footer-\(width).jpg")
+            let rendered = try await renderedText(window, filename: "session-footer-running-\(width).jpg")
             XCTAssertEqual(hosted.bounds.width, CGFloat(width), accuracy: 0.5)
-            XCTAssertTrue(rendered.contains("latest 20"), "Latest completed rate must remain visible while a request is running. OCR: \(rendered)")
-            XCTAssertTrue(rendered.contains("avg 40"), "The same footer must also show the weighted session average at width \(width). OCR: \(rendered)")
+            XCTAssertTrue(rendered.contains("19s"), "The elapsed clock must stay visible at \(width)pt. OCR: \(rendered)")
+            XCTAssertTrue(rendered.contains("bash"), "The current action must stay visible at \(width)pt. OCR: \(rendered)")
+            XCTAssertTrue(rendered.contains("15.8k tok") && rendered.contains("cache hit 50%") && rendered.contains("$0.0025"),
+                          "The usage pill keeps tokens, cache hit and cost at \(width)pt. OCR: \(rendered)")
+            XCTAssertTrue(rendered.contains("34 tok/s"), "The settled session rate stays on the gauge pill at \(width)pt. OCR: \(rendered)")
+            XCTAssertFalse(rendered.contains("latest"), "The live latest/average rates left the footer. OCR: \(rendered)")
+            XCTAssertFalse(rendered.contains("avg "), "The live latest/average rates left the footer. OCR: \(rendered)")
         }
-        session.footer.timing.samples.append(sample("missing", output: nil))
-        session.footer.timing.completedRequests = 3
-        let missing = try await renderedText(window, filename: "session-timing-footer-missing.jpg")
-        XCTAssertTrue(missing.contains("usage unavailable"), "Missing latest usage must not reuse either the preceding rate or the session average. OCR: \(missing)")
-        XCTAssertTrue(missing.contains("avg 40"), missing)
+    }
+
+    @MainActor func testRunLineNamesTheActionUnderWayAndTheTurnClock() {
+        let session = SessionDisplay(id: "run-line")
+        let footer = SessionMetrics()
+        func line() -> SessionRunLine { SessionRunLine(session: session, footer: footer) }
+        session.state = "running"
+        XCTAssertEqual(line().action, "Working…")
+        session.activity = ["phase": .string("model")]
+        XCTAssertEqual(line().action, "Generating response…")
+        session.activity = ["phase": .string("tools"), "toolNames": .array([.string("bash"), .string("read")])]
+        XCTAssertEqual(line().action, "Running bash…")
+        session.state = "stopping"
+        XCTAssertEqual(line().action, "Stopping…", "Stopping wins over whatever the last snapshot said was running")
+        // `startedAt` is a machine-uptime stamp, never a calendar instant.
+        let now = 2_000_000.0
+        XCTAssertNil(SessionRunLine.elapsed([:], atUptimeMs: now))
+        XCTAssertEqual(SessionRunLine.elapsed(["startedAt": .number(1_981_000)], atUptimeMs: now), "19s")
+        XCTAssertEqual(SessionRunLine.elapsed(["startedAt": .number(1_935_000)], atUptimeMs: now), "1m 05s")
+        XCTAssertEqual(SessionRunLine.elapsed(["elapsedMs": .number(3_903_000)], atUptimeMs: now), "1h 05m 03s",
+                       "A turn with no start stamp still reports the helper's own elapsed figure")
+        XCTAssertEqual(SessionRunLine.elapsed(["startedAt": .number(1_981_000), "elapsedMs": .number(25_000)], atUptimeMs: now), "25s",
+                       "A stale snapshot is a floor, never a clock running backwards")
     }
 
     @MainActor func testSidebarRateSlotKeepsItsGeometryForAwaitingReportedAndUnavailableUsage() {
@@ -360,7 +427,8 @@ final class SessionTimingTests: XCTestCase {
                 let rendered = try await renderedText(window, filename: "sidebar-metrics-\(Int(width))-\(id).jpg")
                 XCTAssertEqual(hosted.bounds.width, width + 24, accuracy: 0.5)
                 XCTAssertTrue(rendered.contains("12.34"), "Cost must remain visible at \(width)pt: \(rendered)")
-                XCTAssertTrue(rendered.contains(item.output == nil ? "usage unavailable" : "latest 100"), "The complete rate label must remain visible at \(width)pt: \(rendered)")
+                // 100 output tokens over the 800 ms decode span: 125 tok/s.
+                XCTAssertTrue(rendered.contains(item.output == nil ? "usage unavailable" : "latest 125"), "The complete rate label must remain visible at \(width)pt: \(rendered)")
                 if item.state != "idle" { XCTAssertTrue(rendered.contains(item.state), rendered) }
                 let height = hosted.fittingSize.height
                 if width == 226 { wideHeights[id] = height }

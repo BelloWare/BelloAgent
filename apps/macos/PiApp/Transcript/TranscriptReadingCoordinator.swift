@@ -29,6 +29,11 @@ extension NSScrollView {
     private(set) var lastInvalidation = "initial"
     private var scheduled = false
     private var writing = false
+    /// Every scroll this pane writes, so the page can tell its own movement
+    /// from the reader's. Each write goes through `setOrigin`, so recording it
+    /// here covers the anchor correction, the bottom follow, the opening
+    /// placement and a restored reading position alike.
+    let ledger = TranscriptScrollLedger()
     var following = false { didSet { if following { clear(reason: "following") } } }
     var readingAnchor: NativeMarkdownContainer.LogicalAnchor? { source }
     var hasAnchor: Bool { source != nil || row != nil }
@@ -55,9 +60,13 @@ extension NSScrollView {
     func bind(scope: String) {
         guard self.scope != scope else { return }
         self.scope = scope; readerRevision &+= 1; clear(reason: "presentation changed")
+        ledger.reset()
     }
     func readerMoved() {
         readerRevision &+= 1; clear(reason: "reader gesture")
+        // Nothing the page wrote before the reader touched the page still
+        // explains where they end up.
+        ledger.forgetWrites()
     }
     private func clear(reason: String) {
         source = nil; surface = nil; row = nil; lastInvalidation = reason
@@ -84,8 +93,14 @@ extension NSScrollView {
         }
     }
     func geometryChanged() {
+        // A page with a position to hold must draw the corrected geometry, not
+        // the geometry that changed: the correction below lands in this same
+        // pass or in the next run-loop turn, and the draw waits for it. A page
+        // that is following the newest row has nothing to correct and nothing
+        // to wait for, so it is not marked.
+        guard hasAnchor, !following else { return }
         scroll?.documentView?.needsDisplay = true
-        guard hasAnchor, !following, !scheduled else { return }
+        guard !scheduled else { return }
         scheduled = true
         let revision = readerRevision, scope = scope
         DispatchQueue.main.async { [weak self] in
@@ -98,16 +113,29 @@ extension NSScrollView {
     @discardableResult func restore() -> Bool {
         guard !following, !writing, let scroll else { return false }
         let clip = scroll.contentView
-        let delta: CGFloat
-        if let source, let surface, surface.enclosingScrollView === scroll,
-           let desiredTop = surface.top(for: source) {
-            let currentTop = surface.convert(clip.bounds, from: clip).minY
-            delta = surface.convert(NSPoint(x: 0, y: desiredTop), to: clip).y - surface.convert(NSPoint(x: 0, y: currentTop), to: clip).y
-        } else if let row, row.enclosingScrollView === scroll {
-            delta = row.convert(.zero, to: clip).y - clip.bounds.minY - rowDisplacement
-        } else { clear(reason: "source no longer retained"); return false }
         let scale = scroll.window?.backingScaleFactor ?? 1
-        if abs(delta) > 1 / scale { setOrigin(NSPoint(x: clip.bounds.minX, y: clip.bounds.minY + delta)); correctionCount += 1 }
+        // Moving the clip can synchronously prepare newly visible blocks.
+        // That preparation can move the anchor again while setOrigin's
+        // reentrancy guard is active. Reconcile the resulting geometry before
+        // returning to drawing, instead of showing it for one frame and
+        // correcting it on the next run-loop turn. Bound the work in case a
+        // view keeps changing or AppKit constrains the requested position.
+        for _ in 0..<4 {
+            let delta: CGFloat
+            if let source, let surface, surface.enclosingScrollView === scroll,
+               let desiredTop = surface.top(for: source) {
+                let currentTop = surface.convert(clip.bounds, from: clip).minY
+                delta = surface.convert(NSPoint(x: 0, y: desiredTop), to: clip).y - surface.convert(NSPoint(x: 0, y: currentTop), to: clip).y
+            } else if let row, row.enclosingScrollView === scroll {
+                delta = row.convert(.zero, to: clip).y - clip.bounds.minY - rowDisplacement
+            } else { clear(reason: "source no longer retained"); return false }
+            guard abs(delta) > 1 / scale else { return true }
+            let previous = clip.bounds.origin
+            setOrigin(NSPoint(x: previous.x, y: previous.y + delta))
+            guard clip.bounds.origin != previous else { return true }
+            correctionCount += 1
+        }
+        geometryChanged()
         return true
     }
     func setOrigin(_ origin: NSPoint) {
@@ -115,7 +143,17 @@ extension NSScrollView {
         writing = true
         let clip = scroll.contentView
         let bounds = clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size))
-        if clip.bounds.origin != bounds.origin { clip.setBoundsOrigin(bounds.origin); scroll.reflectScrolledClipView(clip) }
+        if clip.bounds.origin != bounds.origin {
+            // Written down before it is written: the bounds notification can
+            // arrive inside `setBoundsOrigin`, and the page reads the ledger
+            // from inside it.
+            ledger.wrote(from: clip.bounds.origin.y, to: bounds.origin.y)
+            clip.setBoundsOrigin(bounds.origin); scroll.reflectScrolledClipView(clip)
+        }
         writing = false
     }
+    /// A scroll this pane is about to run as an animation. AppKit delivers
+    /// every frame of it, so the whole corridor between the two ends belongs
+    /// to the page until it lands.
+    func willAnimate(from: CGFloat, to: CGFloat) { ledger.wrote(from: from, to: to, animated: true) }
 }

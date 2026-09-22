@@ -224,9 +224,11 @@ final class SidebarDropZoneTests: XCTestCase {
             view.subviews.flatMap { zones($0) } + (view.registeredDraggedTypes.isEmpty ? [] : [view])
         }
         let dropZones = zones(hosted).map { (view: $0, frame: $0.convert($0.bounds, to: hosted)) }
-        XCTAssertEqual(dropZones.count, 2, "The project group and the topic group each take a drop")
-        let topic = try XCTUnwrap(dropZones.min { $0.frame.height < $1.frame.height })
-        let wholeProject = try XCTUnwrap(dropZones.max { $0.frame.height < $1.frame.height })
+        XCTAssertEqual(dropZones.count, model.chats.count + 2, "Session reorder targets coexist with project and topic targets")
+        let groupZones = dropZones.filter { $0.frame.height > 100 }
+        XCTAssertEqual(groupZones.count, 2, "Both group drop targets must extend beyond a single session row")
+        let topic = try XCTUnwrap(groupZones.min { $0.frame.height < $1.frame.height })
+        let wholeProject = try XCTUnwrap(groupZones.max { $0.frame.height < $1.frame.height })
         XCTAssertGreaterThan(topic.frame.height, 150,
                              "A topic's header strip is about thirty points tall: its drop zone must reach its chat rows")
         XCTAssertEqual(wholeProject.frame.height, hosted.bounds.height, accuracy: 1,

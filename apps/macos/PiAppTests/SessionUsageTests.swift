@@ -209,8 +209,12 @@ final class SessionUsageTests: XCTestCase {
         let work: [String: WireValue] = ["sessionModelMs": .number(72_000), "sessionToolMs": .number(14_300), "modelMs": .number(4_200), "toolMs": .number(300)]
         let timing = SessionInfoTiming(history: history, work: work)
         XCTAssertEqual(timing.latestTTFT, 250); XCTAssertEqual(timing.medianTTFT, 325, "The median skips the request without a measurement"); XCTAssertEqual(timing.ttftSamples, 2)
-        XCTAssertEqual(timing.latestDurationMs, 1_000); XCTAssertEqual(timing.latestRate, 500)
-        XCTAssertEqual(timing.averageRate.map { ($0 * 10).rounded() / 10 }, 202.6)
+        // The rates are settled: 500 output tokens over a 750 ms decode span,
+        // and 700 tokens over the 2.35 s the two measurable requests decoded
+        // for. The request that reported no decode span is left out of both.
+        XCTAssertEqual(timing.latestDurationMs, 1_000)
+        XCTAssertEqual(timing.latestRate.map { ($0 * 100).rounded() / 100 }, 666.67)
+        XCTAssertEqual(timing.averageRate.map { ($0 * 10).rounded() / 10 }, 297.9)
         XCTAssertEqual(timing.sessionModelMs, 72_000); XCTAssertEqual(timing.sessionToolMs, 14_300); XCTAssertEqual(timing.turnModelMs, 4_200); XCTAssertEqual(timing.turnToolMs, 300)
         XCTAssertEqual(timing.firstTokenCaption, "median 325 ms · 2 measured · last request 1.0s")
         XCTAssertEqual(timing.modelCaption, "last turn 4.2s"); XCTAssertEqual(timing.toolCaption, "last turn 0.3s")

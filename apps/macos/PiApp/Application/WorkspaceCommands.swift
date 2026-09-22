@@ -79,21 +79,70 @@ extension WorkspaceModel {
     static func turnKeys(in messages: [TranscriptMessage]) -> [String] {
         TranscriptActivity.blocks(of: messages).compactMap { if case .block(let block) = $0 { return block.key }; return nil }
     }
+    /// Every chronological response on the page, in order.
+    static func responseIDs(in messages: [TranscriptMessage]) -> [String] {
+        var ids: [String] = [], seen = Set<String>()
+        for case .block(let block) in TranscriptActivity.blocks(of: messages) {
+            guard let response = block.responseID, seen.insert(response).inserted else { continue }
+            ids.append(response)
+        }
+        return ids
+    }
+    /// The response the reader is on: the one holding the row they last
+    /// reported as their reading anchor, else the newest. Folding is keyed by
+    /// the reply's own id, which outlives its streaming row.
+    static func focusedResponse(holding anchorID: String?, in messages: [TranscriptMessage]) -> String? {
+        let items = TranscriptActivity.blocks(of: messages)
+        func lastResponse(_ slice: ArraySlice<TranscriptItem>) -> String? {
+            for case .block(let block) in slice.reversed() { if let response = block.responseID { return response } }
+            return nil
+        }
+        guard let anchorID, let index = items.firstIndex(where: { item in
+            if case .block(let block) = item { return block.key == anchorID || block.responseID == anchorID || block.replies.contains { $0.id == anchorID } }
+            return item.id == anchorID
+        }) else { return lastResponse(items[...]) }
+        for case .block(let block) in items[index...] { if let response = block.responseID { return response } }
+        return lastResponse(items[..<index])
+    }
 
     @discardableResult func setFocusedTurnFolded(_ folded: Bool) -> String? {
-        guard let session = commandSession,
-              let key = Self.turnKey(holding: session.scrollAnchor?.id, in: session.presentedMessages) else { return nil }
-        session.disclosure.setOpen(!folded, .work(key))
+        guard let session = commandSession else { return nil }
+        let key = Self.turnKey(holding: session.scrollAnchor?.id, in: session.presentedMessages)
+        if let key { session.disclosure.setOpen(!folded, .work(key)) }
+        // The same shortcut folds a chronological response as a whole: every
+        // reasoning segment and every card inside it. Unfolding also clears
+        // the one-line fold, so ⌥⌘] always leaves the response open.
+        if let response = Self.focusedResponse(holding: session.scrollAnchor?.id, in: session.presentedMessages) {
+            session.disclosure.setOpen(folded, .response(response))
+            if !folded { session.disclosure.setOpen(false, .responseLine(response)) }
+        }
+        guard key != nil || Self.canFold(session) else { return nil }
         session.publishTranscript()
-        return key
+        return key ?? Self.focusedResponse(holding: session.scrollAnchor?.id, in: session.presentedMessages)
     }
+    private static func canFold(_ session: SessionDisplay) -> Bool { !responseIDs(in: session.presentedMessages).isEmpty }
     @discardableResult func setEveryTurnFolded(_ folded: Bool) -> Int {
         guard let session = commandSession else { return 0 }
         let keys = Self.turnKeys(in: session.presentedMessages)
         for key in keys { session.disclosure.setOpen(!folded, .work(key)) }
+        for response in Self.responseIDs(in: session.presentedMessages) {
+            session.disclosure.setOpen(folded, .response(response))
+            if !folded { session.disclosure.setOpen(false, .responseLine(response)) }
+        }
         if !keys.isEmpty { session.publishTranscript() }
         return keys.count
     }
+    /// The focused response folded down to its one line, or opened again.
+    @discardableResult func setFocusedResponseCollapsed(_ collapsed: Bool) -> String? {
+        guard let session = commandSession,
+              let response = Self.focusedResponse(holding: session.scrollAnchor?.id, in: session.presentedMessages) else { return nil }
+        session.disclosure.setOpen(collapsed, .responseLine(response))
+        if !collapsed { session.disclosure.setOpen(false, .response(response)) }
+        session.publishTranscript()
+        return response
+    }
+    /// Whether the focused chat has a chronological response to fold at all.
+    var canFoldResponses: Bool { commandSession.map { !Self.responseIDs(in: $0.presentedMessages).isEmpty } ?? false }
     /// Whether there is a turn with work to fold at all, so the menu items can
     /// say so instead of doing nothing.
     var canFoldTurns: Bool { commandSession.map { !Self.turnKeys(in: $0.presentedMessages).isEmpty } ?? false }

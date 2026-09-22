@@ -53,6 +53,39 @@ final class StableReadingTests: XCTestCase {
             print("READING_MIDDLE selected=\(selected) drawOpportunities=\(drawCount) sourceBytes=\(source.utf8.count)")
         }
     }
+    @MainActor func testRestoreSettlesGeometryChangedByItsOwnClipNotification() async throws {
+        let session = SessionDisplay(id: "reading-reentrant")
+        session.messages = [.init(id: "a", role: "assistant", text:
+            (0..<75).map { "Paragraph \($0). " + String(repeating: "Keep this source in place. ", count: 3) }.joined(separator: "\n\n"))]
+        let stage = TranscriptStreamingStressTests.Stage(session, height: 480)
+        defer { stage.close() }
+        await stage.settle()
+        stage.readerScroll(to: stage.document.frame.height * 0.4)
+        await stage.settle()
+        let body = try XCTUnwrap(descendants(NativeMarkdownContainer.self, stage.document).first)
+        let reading = stage.scroll.transcriptReading
+        reading.capture(body)
+        let anchor = try XCTUnwrap(reading.readingAnchor)
+        let parent = try XCTUnwrap(body.superview)
+        let clip = stage.scroll.contentView
+        clip.setBoundsOrigin(NSPoint(x: 0, y: clip.bounds.minY + 40))
+        var adopted = false
+        let observer = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                guard !adopted else { return }
+                adopted = true
+                // A native parent may adopt the measured height from inside
+                // the clip notification that the first correction delivered.
+                parent.setFrameOrigin(NSPoint(x: parent.frame.minX, y: parent.frame.minY + 25))
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        XCTAssertTrue(reading.restore())
+        XCTAssertTrue(adopted)
+        XCTAssertEqual(body.displacement(of: anchor) ?? .infinity, 0, accuracy: 1 / stage.window.backingScaleFactor,
+                       "The first draw after restore must already hold the source, without a deferred second correction")
+    }
+
     @MainActor func testLongUnicodeParagraphAndCodeRetainCharacterAnchorOnReflow() async throws {
         for code in [false, true] {
             var text = (0..<110).map { "Line \($0) 中文🙂 café שלום visible source stays at this character. " }.joined()
@@ -128,7 +161,17 @@ final class StableReadingTests: XCTestCase {
         XCTAssertEqual(body.subviews.filter { !($0 is NSProgressIndicator) }.map(ObjectIdentifier.init), mounted)
     }
 
-    @MainActor func testUpwardGestureWithinOldFollowThresholdDetaches() async {
+    /// The bottom band, and only the bottom band, decides whether the page
+    /// follows. A reader who stops a couple of lines off the end has stopped
+    /// following, and a row arriving afterwards must not bring them back.
+    ///
+    /// Until 0.1.79 this asked the opposite question — an upward gesture
+    /// detached the page however close to the end it stopped, because the
+    /// band was seventy points wide and letting go inside it would have
+    /// snapped the reader forward. With a band of twenty-four points, a
+    /// reader inside it is at the end by any reading of the screen, and the
+    /// rule is the geometry rather than the direction of the last gesture.
+    @MainActor func testTheBottomBandAloneDecidesWhetherThePageFollows() async {
         let session = SessionDisplay(id: "reading-threshold")
         session.messages = TranscriptStreamingStressTests.history(turns: 6)
         let stage = TranscriptStreamingStressTests.Stage(session)
@@ -136,8 +179,15 @@ final class StableReadingTests: XCTestCase {
         await stage.settle()
         stage.page.jumpToLatest()
         try? await Task.sleep(for: .milliseconds(450))
-        stage.readerScroll(to: max(0, stage.document.frame.height - stage.scroll.contentView.bounds.height - 25))
-        XCTAssertFalse(stage.page.followsBottom, "An upward gesture is reading intent even 25 points from the end")
+        let end = max(0, stage.document.frame.height - stage.scroll.contentView.bounds.height)
+        // Inside the band: still the end of the conversation.
+        stage.readerScroll(to: max(0, end - 20))
+        await stage.settle(turns: 2)
+        XCTAssertTrue(stage.page.followsBottom, "twenty points from the end is inside the bottom band")
+        // Outside it: the reader has stopped following, and stays where they are.
+        stage.readerScroll(to: max(0, end - 200))
+        await stage.settle(turns: 2)
+        XCTAssertFalse(stage.page.followsBottom, "two hundred points from the end is not the end")
         let y = stage.scrollY
         session.messages.append(TranscriptMessage(id: "tail", role: "assistant", text: "New content", state: "streaming"))
         stage.refresh(); await stage.settle(turns: 1)

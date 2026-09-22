@@ -49,6 +49,29 @@ final class TranscriptIdleSchedulerTests: XCTestCase {
         scheduler.cancel(owner)
         now = 11; scheduler.runReady(); XCTAssertEqual(calls, 1)
     }
+    /// Getting the rows the reader is about to reach ready runs while they
+    /// are scrolling and while a reply is arriving — that is exactly when
+    /// they are about to reach one, and waiting for quiet is what used to
+    /// leave a scroll during a reply meeting rows with no tree. Only
+    /// measuring history nobody is looking at still waits for their hands to
+    /// stop.
+    @MainActor func testPreparationRunsThroughInputWhileReconciliationWaitsForQuiet() {
+        var now = 10.0, prepared = 0, reconciled = 0
+        let scheduler = TranscriptIdleScheduler(automatic: false, clock: { now }, visible: { _ in true })
+        let owner = NSView()
+        scheduler.request(owner, work: .preparation, after: 0) { prepared += 1; now += 0.002; return true }
+        scheduler.request(owner, work: .reconciliation, after: 0) { reconciled += 1; now += 0.002; return true }
+        scheduler.pauseForInput()
+        scheduler.runReady()
+        XCTAssertGreaterThan(prepared, 0, "preparation stopped while the reader was moving")
+        XCTAssertEqual(reconciled, 0, "unseen history was measured while the reader was moving")
+        XCTAssertEqual(scheduler.preparationCount, prepared)
+        now += TranscriptNativeDocument.sliceQuietPeriod + TranscriptIdleScheduler.interval
+        scheduler.runReady()
+        XCTAssertGreaterThan(reconciled, 0, "unseen history was never measured once the reader stopped")
+        scheduler.cancel(owner)
+    }
+
     @MainActor func testQueuedWorkDoesNotOwnAClosedPane() {
         var now = 0.0, calls = 0
         let scheduler = TranscriptIdleScheduler(automatic: false, clock: { now }, visible: { _ in true })

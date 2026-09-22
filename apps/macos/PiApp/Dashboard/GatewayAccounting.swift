@@ -127,6 +127,21 @@ struct GatewayModelIdentity: Equatable {
 
 /// A bounded display projection, never raw routing evidence. Names prefer the
 /// literal response body; identity coverage retains its independent meaning.
+struct GatewayModelRoute: Codable, Sendable, Equatable {
+    var requested: String?
+    var responded: String?
+    var latestWall: Double = 0
+    var label: String {
+        if let requested, let responded { return requested == responded ? responded : requested + " → " + responded }
+        return requested.map { $0 + " → —" } ?? responded ?? "Model unreported"
+    }
+    var detail: String { "Requested: \(requested ?? "unreported"); response: \(responded ?? "unreported")" }
+    var valid: Bool {
+        latestWall.isFinite && latestWall >= 0 && (requested != nil || responded != nil)
+            && [requested, responded].allSatisfy { $0 == nil || GatewayModelIdentity.modelName($0) != nil }
+    }
+}
+
 struct GatewayModelSummary: Codable, Sendable, Equatable {
     var names: [String] = []
     var nameCount = 0
@@ -137,6 +152,9 @@ struct GatewayModelSummary: Codable, Sendable, Equatable {
     /// Attempts with a displayable body/legacy name, including disagreements.
     /// Optional so older transcript snapshots keep their original semantics.
     var displayRequests: Int?
+    /// Actual dispatch aliases paired with their response reports. Optional
+    /// for old cached snapshots; never inferred from today's session picker.
+    var routes: [GatewayModelRoute]?
 }
 
 struct GatewayTotals: Codable, Sendable, Equatable {
@@ -162,9 +180,49 @@ struct GatewayTotals: Codable, Sendable, Equatable {
     /// Paired input/cache observations only. Optional for older snapshots.
     var uncachedInputReportedTokens: Double?
     var uncachedInputSamples: Int?
+    /// Decode time and output tokens of the completed requests that reported
+    /// both, for the settled throughput. Optional for older snapshots.
+    var decodeMilliseconds: Double?
+    var decodeOutputTokens: Double?
+    var decodeSamples: Int?
+    /// First-token latency of the requests that recorded it.
+    var ttftMilliseconds: Double?
+    var ttftSamples: Int?
+    /// Distinct turns these requests belong to. Optional for older snapshots;
+    /// requests with no turn (a title, a suggestion) are not counted.
+    var turnCount: Int?
     /// Wall time of the latest retained request, seconds since 1970, for the sidebar's recency stamp.
     var lastActivity: Double?
 
+    /// Provider output tokens over decode time for this scope, whether that is
+    /// one reply, a turn or the whole session's log. A snapshot saved before
+    /// the app recorded decode time reports no samples rather than a zero rate.
+    var settledThroughput: SettledThroughput {
+        SettledThroughput(decodeMilliseconds: decodeMilliseconds ?? 0, outputTokens: decodeOutputTokens ?? 0,
+                          samples: decodeSamples ?? 0, requests: requests)
+    }
+    var settledLatency: SettledLatency {
+        SettledLatency(milliseconds: ttftMilliseconds ?? 0, samples: ttftSamples ?? 0, requests: requests)
+    }
+    /// Reported input plus output, without adding their cache/reasoning
+    /// breakdowns again. The session and turn pills use the same definition.
+    var billedTotalTokens: Double? {
+        var total: Double?, any = false
+        func add(_ value: Double?, _ samples: Int) {
+            guard samples > 0, let value, value.isFinite, value >= 0 else { return }
+            total = (total ?? 0) + value; any = true
+        }
+        // Responses input already includes cache reads and cache writes.
+        add(tokens?.input, tokens?.inputSamples ?? 0)
+        add(tokens?.output, tokens?.outputSamples ?? 0)
+        return any ? total : nil
+    }
+    /// The cache-hit share of prompt-side input, honestly rounded.
+    var cacheHitPercent: String? {
+        guard cacheReadSamples > 0, let read = cacheReadTokens,
+              let tokens, tokens.inputSamples > 0, let input = tokens.input else { return nil }
+        return MetricFormat.cacheHitPercent(read: read, prompt: input)
+    }
     var costLabel: String { gatewayUSD(costUSD) + " · \(costSamples)/\(requests) requests reported" }
     var cacheLabel: String {
         "Cache \(cacheHits) hit · \(cacheMisses) miss · \(cacheUnreported) unreported" + (cacheConflicts > 0 ? " · \(cacheConflicts) invalid/conflicting" : "")
@@ -206,7 +264,7 @@ func compactGatewayUSD(_ value: Double?) -> String {
 
 extension PayloadArchive {
     static let gatewayAggregateSQL = """
-    COUNT(*) AS requests,COUNT(cost_usd) AS cost_samples,SUM(cost_usd) AS cost_usd,
+    COUNT(*) AS requests,COUNT(DISTINCT turn) AS turn_count,COUNT(cost_usd) AS cost_samples,SUM(cost_usd) AS cost_usd,
     SUM(cache_status='hit') AS cache_hits,SUM(cache_status='miss') AS cache_misses,
     SUM(cache_status='unreported') AS cache_unreported,SUM(cache_status IN ('invalid','conflict')) AS cache_conflicts,
     SUM(cache_read_tokens) AS cache_read_tokens,SUM(cache_write_tokens) AS cache_write_tokens,
@@ -218,8 +276,18 @@ extension PayloadArchive {
     SUM(input_tokens+output_tokens) AS total_tokens,COUNT(input_tokens+output_tokens) AS token_samples,
     SUM(reasoning_tokens) AS reasoning_tokens,COUNT(reasoning_tokens) AS reasoning_samples,
     SUM(reasoning_cost_usd) AS reasoning_cost_usd,COUNT(reasoning_cost_usd) AS reasoning_cost_samples,
+    \(settledThroughputSQL),
+    SUM(ttft_ms) AS ttft_ms,COUNT(ttft_ms) AS ttft_samples,
     MAX(wall) AS last_wall
     """
+
+    /// The settled rate's population: a completed request that reported both
+    /// its decode span (first content to model completion) and its provider
+    /// output tokens. Anything else contributes nothing — never a zero.
+    static let settledThroughputSQL: String = {
+        let sample = "outcome='completed' AND stream_ms>0 AND stream_ms<=1.7976931348623157e308 AND output_tokens>=0 AND output_tokens<=1.7976931348623157e308"
+        return "SUM(CASE WHEN \(sample) THEN stream_ms END) AS decode_ms,SUM(CASE WHEN \(sample) THEN output_tokens END) AS decode_output_tokens,COUNT(CASE WHEN \(sample) THEN 1 END) AS decode_samples"
+    }()
 
     static func gatewayTotals(_ row: [String: CaptureSQLValue]) -> GatewayTotals {
         func count(_ key: String) -> Int { Int(row[key]?.number ?? 0) }
@@ -227,6 +295,9 @@ extension PayloadArchive {
         var totals = GatewayTotals(requests: count("requests"), costSamples: count("cost_samples"), costUSD: value("cost_usd"), cacheHits: count("cache_hits"), cacheMisses: count("cache_misses"), cacheUnreported: count("cache_unreported"), cacheConflicts: count("cache_conflicts"), cacheReadTokens: value("cache_read_tokens"), cacheWriteTokens: value("cache_write_tokens"), cacheReadSamples: count("cache_read_samples"), cacheWriteSamples: count("cache_write_samples"))
         totals.reasoningCostUSD = value("reasoning_cost_usd"); totals.reasoningCostSamples = count("reasoning_cost_samples")
         totals.uncachedInputReportedTokens = value("uncached_input_tokens"); totals.uncachedInputSamples = count("uncached_input_samples")
+        totals.decodeMilliseconds = value("decode_ms"); totals.decodeOutputTokens = value("decode_output_tokens"); totals.decodeSamples = count("decode_samples")
+        totals.ttftMilliseconds = value("ttft_ms"); totals.ttftSamples = count("ttft_samples")
+        totals.turnCount = count("turn_count")
         totals.lastActivity = value("last_wall")
         if count("input_samples") > 0 || count("output_samples") > 0 || count("reasoning_samples") > 0 {
             totals.tokens = GatewayTokenTotals(input: value("input_tokens"), output: value("output_tokens"), total: value("total_tokens"), inputSamples: count("input_samples"), outputSamples: count("output_samples"), samples: count("token_samples"))
@@ -353,13 +424,16 @@ extension PayloadArchive {
           WHEN a.identity_status='reported' AND a.model IS NOT NULL AND LENGTH(TRIM(a.model))>0 AND a.model<>a.alias THEN 'reported'
           ELSE 'unreported' END
         """
-        let modelSQL = attribution + """
+        let modelAttribution = attribution + """
         , model_requests AS (
-          SELECT attributed.message,\(resolution) AS resolution,a.wall,
+          SELECT attributed.message,\(resolution) AS resolution,a.wall,a.alias AS requested_model,
             COALESCE(a.response_model,CASE WHEN (\(resolution))='reported' THEN a.model ELSE NULL END) AS display_model
           FROM attributed JOIN attempts a ON a.id=attributed.id
           WHERE attributed.owner=1
-        ), model_groups AS (
+        )
+        """
+        let modelSQL = modelAttribution + """
+        , model_groups AS (
           SELECT message,display_model,COUNT(*) AS requests,MAX(wall) AS latest_wall,
             SUM(resolution='reported') AS reported_requests,
             SUM(resolution='unreported') AS unreported_requests,
@@ -391,6 +465,26 @@ extension PayloadArchive {
                 guard !name.isEmpty, name.utf8.count <= 256, !name.utf8.contains(where: { $0 < 32 || $0 == 127 }) else { throw CaptureFailure.corrupt }
                 result.messages[id]?.models?.names.append(name)
             }
+        }
+        // Keep the two names from the same attempt. Independent lists would
+        // falsely pair routes when the user changes models mid-turn.
+        let routeSQL = modelAttribution + """
+        , route_groups AS (
+          SELECT message,requested_model,display_model,MAX(wall) AS latest_wall
+          FROM model_requests GROUP BY message,requested_model,display_model
+        ), ranked_routes AS (
+          SELECT *,ROW_NUMBER() OVER (PARTITION BY message ORDER BY latest_wall DESC,display_model IS NOT NULL DESC,requested_model,display_model) AS position
+          FROM route_groups
+        )
+        SELECT * FROM ranked_routes WHERE position<=8 ORDER BY message,position
+        """
+        for row in try db.rows(routeSQL, args) {
+            guard let id = row["message"]?.string, result.messages[id]?.models != nil else { throw CaptureFailure.corrupt }
+            let route = GatewayModelRoute(requested: GatewayModelIdentity.modelName(row["requested_model"]?.string),
+                responded: GatewayModelIdentity.modelName(row["display_model"]?.string), latestWall: row["latest_wall"]?.double ?? 0)
+            guard route.valid else { continue }
+            if result.messages[id]?.models?.routes == nil { result.messages[id]?.models?.routes = [] }
+            result.messages[id]?.models?.routes?.append(route)
         }
         return result
     }

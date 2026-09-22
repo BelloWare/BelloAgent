@@ -18,14 +18,27 @@ final class HardeningTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/node").path))
         try await host.shutdownAndWait()
     }
-    func testArchiveProjectionBoundsToolCardsAndUnicodeByBytes() throws {
+    /// Since 0.1.78 a projected reply is complete: the 16 KiB text preview,
+    /// the 32-card limit and the 4 KiB per-card argument preview are gone, and
+    /// nothing silently shortens an answer. What still has to hold is that the
+    /// projection keeps every card and every scalar it was given, cuts no
+    /// multi-byte character in half and claims no truncation it did not do.
+    func testArchiveProjectionKeepsEveryCardAndEveryCharacterOfAReply() throws {
         let text = String(repeating: "🌍", count: 20_000)
         let tools = (0..<100).map { WireValue.object(["type": .string("toolCall"), "id": .string("t\($0)"), "name": .string("read"), "arguments": .object(["value": .string(text)])]) }
         let projected = TranscriptMessage.project(id: "m", message: ["role": .string("assistant"), "content": .array([.object(["type": .string("text"), "text": .string(text)])] + tools)])
-        XCTAssertEqual(projected.tools?.count, 32); XCTAssertEqual(projected.text.utf8.count, 16_384)
-        XCTAssertFalse(projected.text.contains("�")); XCTAssertTrue(projected.truncated == true)
-        XCTAssertTrue(projected.tools?.allSatisfy { $0.input.utf8.count <= 4096 && !$0.input.contains("�") } == true)
-        XCTAssertLessThan(try JSONEncoder().encode(projected).count, 300_000)
+        XCTAssertEqual(projected.tools?.count, 100, "Every call the reply made is a card")
+        XCTAssertEqual(projected.text, text, "The reply's own words are complete")
+        XCTAssertEqual(projected.text.utf8.count, 80_000)
+        XCTAssertFalse(projected.text.contains("\u{FFFD}"), "No character is cut in half")
+        XCTAssertEqual(projected.truncated, false, "Nothing was shortened, so nothing says it was")
+        XCTAssertTrue(projected.tools?.allSatisfy { card in
+            card.inputTruncated == nil && !card.input.contains("\u{FFFD}") && card.input.contains(text)
+        } == true, "Each card holds the whole parseable request it was given")
+        XCTAssertEqual(projected.toolCallCount, 100)
+        // The rows travel in bounded IPC frames, not in one bounded row: the
+        // page admits one complete oversized row, which is what this is.
+        XCTAssertGreaterThan(try JSONEncoder().encode(projected).count, HistoryWindowPolicy.envelopeBytes)
     }
     @MainActor func testStreamAndFooterChangesDoNotInvalidateTheWholeConversation() {
         let session = SessionDisplay(id: "stream")

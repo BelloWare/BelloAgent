@@ -127,6 +127,10 @@ extension WorkspaceModel {
                 let generation = view.presentationGeneration
                 let window = try await readConversationWindow(item, cursor: nil, around: messageID)
                 guard current(), view.presentationGeneration == generation else { return false }
+                guard window.messages.contains(where: { $0.id == messageID }) else {
+                    showMessageDetail(sessionID, messageID: messageID)
+                    return true
+                }
                 adoptInitialHistory(window, into: view, around: messageID)
                 view.browsingHistory = true; anchorChanged(view)
                 return true

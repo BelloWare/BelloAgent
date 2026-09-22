@@ -63,6 +63,12 @@ final class AccountingScaleTests: XCTestCase {
         // This fixture never reports input usage, so none of its cache counts
         // can form a paired input-minus-cache observation.
         total.uncachedInputSamples = 0
+        // Each record carries a decode span, but none reports output tokens,
+        // so no request can contribute to the settled rate. First-token
+        // latency is recorded by every one of them.
+        total.decodeSamples = 0
+        total.ttftSamples = (total.ttftSamples ?? 0) + 1
+        total.ttftMilliseconds = (total.ttftMilliseconds ?? 0) + 10
         if n % 4 != 0 {
             total.costSamples += 1
             let amount = n % 4 == 1 ? 0.0 : n % 4 == 2 ? 0.125 : 0.25
@@ -101,11 +107,16 @@ final class AccountingScaleTests: XCTestCase {
         // Every dispatched origin in the fixture reports the same resolved
         // model. Derive its coverage from the independently counted origins,
         // including inherited side output, without reusing production SQL.
+        // Turns are `turn-(n%100)`: the session's dispatched records cover 90
+        // of them, and each answer owns exactly one.
+        expectedSession.turnCount = 90
         for message in Array(expectedMessages.keys) {
+            expectedMessages[message]?.turnCount = 1
             let count = expectedMessages[message]!.requests
             expectedMessages[message]?.models = GatewayModelSummary(
                 names: ["fixture-model"], nameCount: 1, reportedRequests: count,
-                unreportedRequests: 0, conflictingRequests: 0, incompleteRequests: 0, displayRequests: count)
+                unreportedRequests: 0, conflictingRequests: 0, incompleteRequests: 0, displayRequests: count,
+                routes: [GatewayModelRoute(requested: "fixture-router", responded: "fixture-model", latestWall: 1995)])
         }
 
         let pageStart = ProcessInfo.processInfo.systemUptime
@@ -123,7 +134,8 @@ final class AccountingScaleTests: XCTestCase {
         XCTAssertNil(page.messages["turn-1"], "Linked assistants own completed requests")
         XCTAssertEqual(page.messages["answer-1"]?.requests, 990, "An inherited origin may appear without charging the side session to the main total")
         XCTAssertEqual(page.messages["answer-1"]?.models?.reportedRequests, 990, "Resolved-model coverage counts each attributed request once")
-        XCTAssertEqual(page.messages["answer-1"]?.models?.names, ["fixture-model"], "Only the returned model is shown, not fixture-router")
+        XCTAssertEqual(page.messages["answer-1"]?.models?.names, ["fixture-model"], "Returned names remain separate from requested aliases")
+        XCTAssertEqual(page.messages["answer-1"]?.models?.routes?.first?.label, "fixture-router → fixture-model")
         XCTAssertNil(page.session.models, "Per-message model attribution must not be copied into session totals")
         XCTAssertEqual(page.messages["answer-1"]?.costUSD, 0, "An explicit zero remains a reported sample")
         XCTAssertNil(page.messages["answer-4"]?.costUSD, "Unknown cost remains nil at scale")

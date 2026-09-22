@@ -8,6 +8,9 @@ struct ProviderDisplayEvents {
     init(api: String, attempt: String) { self.api = api; self.attempt = attempt }
     private var ordinal = 0
     private var items: [Int: JSON] = [:]
+    /// The output item the stream is currently writing, for fragments that do
+    /// not say. The first item is item zero until a stream says otherwise.
+    private var openItem: Int? = 0
     var timeline = ResponseTimeline()
     private mutating func make(index: Int?, item: String?, part: Int?, kind: String, update: String, text: String = "", call: String? = nil, name: String? = nil, sequence: Int? = nil, at: Double?, evidence: String = "observed") -> ResponsePartEvent {
         ordinal += 1
@@ -21,7 +24,16 @@ struct ProviderDisplayEvents {
             if api == "openai-responses" { events = canonical(root["output"].list, at: at) }
             else if json { events = canonical(root["content"].list, at: at) }
         } else if api == "openai-responses" {
-            let index = value["output_index"].int
+            // A fragment that names no output item belongs to the item being
+            // written: a gateway that omits `output_index`/`item_id` on its
+            // deltas would otherwise key them to nothing, and the terminal
+            // response object — which does carry the item's position — would
+            // read as different content and show the whole reply a second
+            // time. Adopting the open item keys both to the same part, so a
+            // terminal object that repeats what already arrived changes
+            // nothing, exactly as it does for a stream that keys its deltas.
+            let index = value["output_index"].int ?? openItem
+            if let seen = value["output_index"].int { openItem = seen }
             let itemID = value["item_id"].text ?? index.flatMap { items[$0]?["id"].text }
             let part = value["content_index"].int ?? value["summary_index"].int ?? 0
             if type == "response.output_item.added" || type == "response.output_item.done", let index {

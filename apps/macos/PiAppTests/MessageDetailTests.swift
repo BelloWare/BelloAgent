@@ -133,7 +133,11 @@ final class MessageDetailTests: XCTestCase {
         defer { model.shutdown() }
         model.chats = [ChatRecord(id: "chat", workspaceID: "w", title: "t", path: path.path, profileID: "p")]
         let view = SessionDisplay(id: "chat"); view.draft = "unsent"; model.displays[view.id] = view
-        view.messages = [TranscriptMessage.project(id: "u1", message: entry["message"]!.object!)]
+        // Simulate a preview persisted by older versions; new projections keep
+        // the complete text and no longer manufacture truncated messages.
+        var preview = TranscriptMessage.project(id: "u1", message: entry["message"]!.object!)
+        preview.text = String(text.prefix(100)); preview.truncated = true
+        view.messages = [preview]
         XCTAssertEqual(view.messages[0].truncated, true)
         model.editMessage("u1", sessionID: "chat")
         XCTAssertTrue(view.editPreparing); XCTAssertNil(view.editingMessageID); XCTAssertEqual(view.draft, "unsent")

@@ -12,14 +12,29 @@ struct SessionTimingSample: Sendable, Equatable, Identifiable {
     let outputTokens: Double?
     /// Gateway-reported cost of this request, when reported.
     let costUSD: Double?
+    /// What the ledger names the request: its outcome, the API it went out on
+    /// and the model the response reported (else the requested alias).
+    let outcome: String
+    let api: String
+    let model: String?
+    /// Prompt-side usage as reported: input already includes cached input.
+    let inputTokens: Double?
+    let cacheReadTokens: Double?
+    let cacheWriteTokens: Double?
+    let reasoningTokens: Double?
 
-    init(id: String, wall: Date, ttftMilliseconds: Double?, streamingMilliseconds: Double?, outputTokens: Double?, costUSD: Double? = nil, requestMilliseconds: Double? = nil) {
+    init(id: String, wall: Date, ttftMilliseconds: Double?, streamingMilliseconds: Double?, outputTokens: Double?, costUSD: Double? = nil, requestMilliseconds: Double? = nil,
+         outcome: String = "completed", api: String = "", model: String? = nil,
+         inputTokens: Double? = nil, cacheReadTokens: Double? = nil, cacheWriteTokens: Double? = nil, reasoningTokens: Double? = nil) {
         self.id = id; self.wall = wall
         self.ttftMilliseconds = Self.observed(ttftMilliseconds)
         self.streamingMilliseconds = Self.observed(streamingMilliseconds)
         self.requestMilliseconds = Self.observed(requestMilliseconds)
         self.outputTokens = Self.observed(outputTokens)
         self.costUSD = Self.observed(costUSD)
+        self.outcome = outcome; self.api = api; self.model = model
+        self.inputTokens = Self.observed(inputTokens); self.cacheReadTokens = Self.observed(cacheReadTokens)
+        self.cacheWriteTokens = Self.observed(cacheWriteTokens); self.reasoningTokens = Self.observed(reasoningTokens)
     }
 
     var outputTokensPerSecond: Double? {
@@ -27,6 +42,20 @@ struct SessionTimingSample: Sendable, Equatable, Identifiable {
         guard duration.isFinite, duration > 0 else { return nil }
         let rate = outputTokens / (duration / 1_000)
         return rate.isFinite ? rate : nil
+    }
+
+    /// The settled rate of this one request: its provider output tokens over
+    /// its decode span. Nil unless the request reported both.
+    var settledTokensPerSecond: Double? {
+        guard outcome == "completed" else { return nil }
+        var fold = SettledThroughput()
+        fold.add(decodeMilliseconds: streamingMilliseconds, outputTokens: outputTokens)
+        return fold.tokensPerSecond
+    }
+    /// Input that was not served from cache, only when both halves were reported.
+    var uncachedInputTokens: Double? {
+        guard let inputTokens, let cacheReadTokens, cacheReadTokens <= inputTokens else { return nil }
+        return inputTokens - cacheReadTokens
     }
 
     private static func observed(_ value: Double?) -> Double? {
@@ -37,13 +66,13 @@ struct SessionTimingSample: Sendable, Equatable, Identifiable {
 /// Only the latest completed request supplies the current figure. A running
 /// request does not replace it, and a completion lacking usage stays missing.
 struct SessionRatePresentation: Equatable {
-    static let explanation = "Gateway-reported output tokens, including reasoning once, divided by dispatch-to-completion time. The latest completed request stays visible while the next request runs. This is an end-to-end request average, not provider decode speed."
+    static let explanation = SettledThroughput.explanation + " The latest completed request stays visible while the next one runs."
     let latest: Double?
     let average: Double?
     let hasCompletion: Bool
     init(history: SessionTimingHistory) {
-        latest = history.latest?.outputTokensPerSecond
-        average = history.historicalRate.tokensPerSecond
+        latest = history.latest?.settledTokensPerSecond
+        average = (history.historicalSettledThroughput ?? history.settledThroughput).tokensPerSecond
         hasCompletion = history.latest != nil
     }
     var label: String {
@@ -72,7 +101,20 @@ struct SessionTimingHistory: Sendable, Equatable {
     /// request in this session, not only the bounded chart samples.
     var historicalRate = HistoricalOutputRate()
     var completedRequests = 0
+    var historicalSettledThroughput: SettledThroughput? = nil
+    /// Ledger includes failed/interrupted requests; timing charts remain completed-only.
+    var ledgerSamples: [SessionTimingSample]? = nil
+    var hasOlderLedgerRequests: Bool? = nil
     var latest: SessionTimingSample? { samples.last }
+
+    /// The settled rate over the retained samples. The whole-log figure comes
+    /// from the session's `GatewayTotals`; this one covers what the ledger
+    /// actually lists, so the table and its footnote cannot disagree.
+    var settledThroughput: SettledThroughput {
+        var fold = SettledThroughput()
+        for sample in samples { fold.add(decodeMilliseconds: sample.streamingMilliseconds, outputTokens: sample.outputTokens) }
+        return fold
+    }
 
     func points(for metric: SessionTimingMetric) -> [SessionTimingPlotPoint] {
         var segment = 0
@@ -91,7 +133,7 @@ enum SessionTimingMetric: String, CaseIterable {
     var title: String {
         switch self {
         case .ttft: "Time to first token"
-        case .rate: "Output tokens per second"
+        case .rate: "Output tokens per second (decode)"
         case .output: "Output tokens per request"
         case .cost: "Reported cost per request"
         }
@@ -101,7 +143,7 @@ enum SessionTimingMetric: String, CaseIterable {
     func value(in sample: SessionTimingSample) -> Double? {
         switch self {
         case .ttft: sample.ttftMilliseconds
-        case .rate: sample.outputTokensPerSecond
+        case .rate: sample.settledTokensPerSecond
         case .output: sample.outputTokens
         case .cost: sample.costUSD
         }
@@ -133,23 +175,42 @@ extension PayloadArchive {
         guard [sessionID, workspaceID].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 128 && !$0.utf8.contains(where: { $0 < 32 || $0 == 127 }) }),
               until.timeIntervalSince1970.isFinite, until.timeIntervalSince1970 >= 0 else { throw CaptureFailure.unavailable }
         try Task.checkCancellation()
-        let scope = "session=? AND workspace=? AND metrics_retained=1 AND wall<? AND dispatch IS NOT NULL AND outcome='completed'"
+        let retainedScope = "session=? AND workspace=? AND metrics_retained=1 AND wall<? AND dispatch IS NOT NULL"
+        let scope = retainedScope + " AND outcome='completed'"
         let values: [CaptureSQLValue] = [.text(sessionID), .text(workspaceID), .real(until.timeIntervalSince1970)]
-        let summary = try db.rows("SELECT \(Self.historicalOutputRateSQL),COUNT(*) AS completed_requests FROM attempts WHERE \(scope)", values).first ?? [:]
+        let summary = try db.rows("SELECT \(Self.historicalOutputRateSQL),\(Self.settledThroughputSQL),COUNT(*) AS completed_requests FROM attempts WHERE \(scope)", values).first ?? [:]
         try Task.checkCancellation()
-        let rows = try db.rows("""
-        SELECT id,wall,ttft_ms,stream_ms,request_ms,output_tokens,cost_usd FROM attempts
-        WHERE \(scope)
-        ORDER BY wall DESC,id DESC LIMIT ?
-        """, values + [.integer(Int64(SessionTimingHistory.limit + 1))])
-        let samples = try rows.prefix(SessionTimingHistory.limit).reversed().map { row -> SessionTimingSample in
+        func requestRows(_ scope: String) throws -> [[String: CaptureSQLValue]] {
+            try db.rows("""
+            SELECT id,wall,ttft_ms,stream_ms,request_ms,output_tokens,cost_usd,outcome,api,alias,model,response_model,input_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens FROM attempts
+            WHERE \(scope)
+            ORDER BY wall DESC,id DESC LIMIT ?
+            """, values + [.integer(Int64(SessionTimingHistory.limit + 1))])
+        }
+        let rows = try requestRows(scope)
+        let ledgerRows = try requestRows(retainedScope)
+        func decode(_ row: [String: CaptureSQLValue]) throws -> SessionTimingSample {
             guard let id = row["id"]?.string, let wall = row["wall"]?.double, wall.isFinite, wall >= 0 else { throw CaptureFailure.corrupt }
+            // The response body's name when there is one, else the alias the
+            // request asked for. A malformed archive never reaches the table.
+            let model = GatewayModelIdentity.modelName(row["response_model"]?.string) ?? GatewayModelIdentity.modelName(row["model"]?.string) ?? GatewayModelIdentity.modelName(row["alias"]?.string)
             return SessionTimingSample(id: id, wall: Date(timeIntervalSince1970: wall), ttftMilliseconds: row["ttft_ms"]?.double,
                                        streamingMilliseconds: row["stream_ms"]?.double, outputTokens: row["output_tokens"]?.double, costUSD: row["cost_usd"]?.double,
-                                       requestMilliseconds: row["request_ms"]?.double)
+                                       requestMilliseconds: row["request_ms"]?.double,
+                                       outcome: row["outcome"]?.string ?? "", api: row["api"]?.string ?? "", model: model,
+                                       inputTokens: row["input_tokens"]?.double, cacheReadTokens: row["cache_read_tokens"]?.double,
+                                       cacheWriteTokens: row["cache_write_tokens"]?.double, reasoningTokens: row["reasoning_tokens"]?.double)
         }
         try Task.checkCancellation()
+        let samples = try rows.prefix(SessionTimingHistory.limit).reversed().map(decode)
+        let ledger = try ledgerRows.prefix(SessionTimingHistory.limit).reversed().map(decode)
+        let settled = SettledThroughput(decodeMilliseconds: summary["decode_ms"]?.double ?? 0,
+                                        outputTokens: summary["decode_output_tokens"]?.double ?? 0,
+                                        samples: Int(summary["decode_samples"]?.number ?? 0),
+                                        requests: Int(summary["completed_requests"]?.number ?? 0))
         return SessionTimingHistory(samples: samples, hasOlderRequests: rows.count > SessionTimingHistory.limit,
-                                    historicalRate: Self.historicalOutputRate(summary), completedRequests: Int(summary["completed_requests"]?.number ?? 0))
+                                    historicalRate: Self.historicalOutputRate(summary), completedRequests: Int(summary["completed_requests"]?.number ?? 0),
+                                    historicalSettledThroughput: settled, ledgerSamples: ledger,
+                                    hasOlderLedgerRequests: ledgerRows.count > SessionTimingHistory.limit)
     }
 }

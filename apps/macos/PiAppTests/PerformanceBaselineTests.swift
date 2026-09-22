@@ -162,8 +162,13 @@ final class PerformanceBaselineTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(300))
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         let first = session.messages[0].id
+        let original = session.messages[0].text
+        model.editTargetRead = { _, id in
+            ["messageId": .string(id), "text": .string(original), "legacyInputs": .bool(false)]
+        }
         var start = ProcessInfo.processInfo.systemUptime
         model.editMessage(first, sessionID: chat.id)
+        for _ in 0..<200 where session.editPreparing { try await Task.sleep(for: .milliseconds(10)) }
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         print(String(format: "PERF begin editing the first message of a 300-row chat (layout + display): %.1f ms", (ProcessInfo.processInfo.systemUptime - start) * 1000))
         XCTAssertEqual(session.editingMessageID, first)

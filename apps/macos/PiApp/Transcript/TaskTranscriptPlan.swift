@@ -3,7 +3,13 @@ import Foundation
 /// One grouping rule for cold history and incremental presentation. Work never
 /// owns a prose host; immutable source IDs own bodies throughout a stream.
 enum TaskTranscriptPlan {
-    static func items(_ messages: [TranscriptMessage], lifecycle: TaskPresentationProjection?) -> [TranscriptItem] {
+    static func items(_ messages: [TranscriptMessage], lifecycle: TaskPresentationProjection?,
+                      display: TranscriptDisplayMode = TranscriptDisplay.mode) -> [TranscriptItem] {
+        TranscriptTurnFold.apply(rows(messages, lifecycle: lifecycle), display: display,
+                                 running: lifecycle?.active?.rootID)
+    }
+    /// The conversation as rows, before any end-of-turn fold.
+    static func rows(_ messages: [TranscriptMessage], lifecycle: TaskPresentationProjection?) -> [TranscriptItem] {
         let sourceIDs = Set(messages.map(\.id))
         let operations = Set(messages.filter { $0.kind == "execution" }.compactMap(\.operationID))
         let messages = messages.filter {
@@ -28,6 +34,24 @@ enum TaskTranscriptPlan {
             guard message.kind == nil, message.role != "system", let taskRoot = message.taskRootID ?? message.turn ?? root else { continue }
             let key = TaskPresentationRecord.identity(taskRoot, message.taskExecutionID ?? "unresolved")
             groups[key, default: []].append(message); keys[message.id] = key
+        }
+        // A call and its result are one card, in the place the call was made.
+        // `cardCalls` are the calls that have such a card at all, so the local
+        // record that the call started is not also a row — the card's own
+        // status says that. `shownCalls` are the cards that carry the result
+        // itself: its output, its outcome and its clock. A result the card
+        // cannot show — a page read from a journal, whose cards hold only the
+        // request — keeps its own row, and so does a result whose call is not
+        // on this page at all.
+        var cardCalls = Set<String>(), shownCalls = Set<String>()
+        for message in messages where message.role == "assistant" {
+            guard let timeline = message.responseTimeline, timeline.supported else { continue }
+            let cards = Dictionary((message.tools ?? []).map { ($0.id,$0) }, uniquingKeysWith: { first,_ in first })
+            for segment in timeline.segments where segment.part.kind == "toolArguments" {
+                guard let call = segment.part.callID, let card = cards[call] else { continue }
+                cardCalls.insert(call)
+                if !["preparing","prepared","running","recorded"].contains(card.state) { shownCalls.insert(call) }
+            }
         }
         var result: [TranscriptItem] = [], opened = Set<String>(), summaries = Set<String>()
         func block(_ key: String, _ rows: [TranscriptMessage], kind: TranscriptBlock.Presentation) -> TranscriptBlock {
@@ -67,22 +91,63 @@ enum TaskTranscriptPlan {
                 }
             }
             guard let key = keys[message.id] else {
+                // A call and its result are one card, at the position the call
+                // was made: a result whose call is shown there is that same
+                // result, and the record that the call started is what the
+                // card's own status says. Neither becomes a row of its own.
+                if message.kind == "toolResult" || message.role == "tool",
+                   let call = message.toolCallID, shownCalls.contains(call) { continue }
+                if message.kind == "execution", let call = startedCall(message), cardCalls.contains(call) { continue }
                 result.append(.message(message))
                 continue
             }
             if message.role == "user" { result.append(.message(message)) }
             openWork(key)
-            if message.role == "tool" { var resultMessage = message; resultMessage.kind = "toolResult"; result.append(.message(resultMessage)) }
+            if message.role == "tool" {
+                if let call = message.toolCallID, shownCalls.contains(call) { continue }
+                var resultMessage = message; resultMessage.kind = "toolResult"; result.append(.message(resultMessage))
+            }
             if message.role == "assistant" {
                 if let timeline = message.responseTimeline, timeline.supported, !timeline.segments.isEmpty {
-                    for part in timeline.segments where !part.text.isEmpty || ["toolArguments","opaque","status"].contains(part.part.kind) {
-                        var row = block("part:" + part.id, [], kind: .timeline)
+                    let shown = timeline.segments.filter { !$0.text.isEmpty || ["toolArguments","opaque","status"].contains($0.part.kind) }
+                    // One header line per response, above its parts: what the
+                    // response did, and the one control that folds all of it.
+                    var header = block("response:" + message.id, [], kind: .response)
+                    var line = message; line.text = ""; line.thinking = nil; line.tools = nil; line.responseTimeline = nil
+                    header.message = line; header.id = message.id; header.responseID = message.id
+                    header.turnID = message.taskRootID ?? message.turn
+                    header.live = message.isStreaming
+                    header.responseSummary = responseLine(message, parts: shown.count,
+                                                         foldable: shown.contains { !["text","refusal"].contains($0.part.kind) })
+                    result.append(.block(header))
+                    for part in shown {
+                        // A call's card belongs to the position the call was
+                        // made at. Only that one card travels with the row, so
+                        // an unrelated card's output never re-measures it.
+                        let card = part.part.callID.flatMap { call in (message.tools ?? []).first { $0.id == call } }
+                        // A row holding a card is a work row placed in the
+                        // response's own order: what the reader opens in it is
+                        // keyed by the reply that made the call, so two
+                        // responses that reuse a provider call id do not open
+                        // each other's card, and asking for that call's full
+                        // arguments still names the reply and the call.
+                        var row = block("part:" + part.id, [], kind: card == nil ? .timeline : .work)
                         var source = message
-                        source.responseTimeline = nil; source.text = part.text; source.thinking = nil; source.tools = nil
+                        source.responseTimeline = nil; source.text = part.text; source.thinking = nil
+                        source.tools = card.map { [$0] }
                         source.accounting = nil; source.at = nil; source.modelMs = nil; source.stopReason = nil; source.toolCallCount = nil
+                        // Stop keeps the words that had arrived. The last of
+                        // them carries the chip that says why they end there,
+                        // so the reason sits under the partial answer rather
+                        // than in a line about the request.
+                        if ["text", "refusal"].contains(part.part.kind), part.id == shown.last(where: { ["text", "refusal"].contains($0.part.kind) })?.id,
+                           message.stopReason == "interrupted" || timeline.terminal == "interrupted" {
+                            source.stopReason = "interrupted"
+                        }
                         source.state = message.isStreaming && part.state == "streaming" ? "streaming" : "complete"
                         source.truncated = part.truncated
                         row.message = source; row.id = message.id; row.part = part; row.live = source.isStreaming
+                        row.responseID = message.id; row.turnID = message.taskRootID ?? message.turn
                         result.append(.block(row))
                     }
                     // Request accounting is separate from immutable part bodies.
@@ -113,6 +178,26 @@ enum TaskTranscriptPlan {
             }
         }
         return result
+    }
+
+    /// The call a local tool-start record belongs to, when it names one. Other
+    /// operations' execution records — a compaction stage — name none and keep
+    /// their own row.
+    static func startedCall(_ message: TranscriptMessage) -> String? {
+        message.responseTimeline?.segments.compactMap { $0.part.callID }.first
+    }
+
+    /// The one line a response reads as when the reader has folded it: what it
+    /// did, how long the request took and what the gateway reported. Computed
+    /// from the settled fields of the reply, never from a part's growing text,
+    /// so a header row keeps its height while the response streams.
+    static func responseLine(_ message: TranscriptMessage, parts: Int, foldable: Bool = false) -> ResponseLine {
+        let reasoned = !(message.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let calls = ToolCallSummary(tools: message.tools ?? [])
+        let work = calls.label(reasoned: reasoned) ?? (message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Response" : "Answered")
+        let duration = DurationObservation.valid(message.modelMs).map(TranscriptActivity.formatDuration)
+        let figures: String? = message.accounting.map { TranscriptActivity.accountingPresentation($0).summary }.flatMap { $0.isEmpty ? nil : $0 }
+        return ResponseLine(work: work, duration: duration, figures: figures, parts: parts, foldable: foldable)
     }
 
     static func summary(_ rows: [TranscriptMessage], task: TaskPresentationRecord?) -> TurnSummary {
@@ -151,6 +236,9 @@ enum TaskTranscriptPlan {
     static func cosmetic(from old: [TranscriptMessage], to new: [TranscriptMessage]) -> Bool {
         guard old.count == new.count else { return false }
         for (lhs, rhs) in zip(old, new) {
+            // Streaming usually changes one row. Unchanged history needs no
+            // copies, tool/timeline arrays or fragment normalization.
+            if lhs == rhs { continue }
             var a = lhs, b = rhs
             guard a.id == b.id, a.state == b.state, a.text.isEmpty == b.text.isEmpty,
                   a.tools?.map(\.id) == b.tools?.map(\.id), a.tools?.map(\.state) == b.tools?.map(\.state) else { return false }

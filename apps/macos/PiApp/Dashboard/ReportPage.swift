@@ -246,8 +246,8 @@ struct ReportPage: View {
                 .help(reportReasoningDetail(active.gateway) + "\n" + active.gateway.promptCacheCoverageLabel)
             PiStatTile(title: "Response cache", value: active.gateway.cacheHitRatio.map { String(format: "%.0f%% hit", $0 * 100) } ?? "Not reported", caption: "\(active.gateway.cacheHits) hit · \(active.gateway.cacheMisses) miss · \(active.gateway.cacheUnreported) unreported" + (active.gateway.cacheConflicts > 0 ? " · \(active.gateway.cacheConflicts) conflicting" : ""), symbol: "memorychip", tone: .info)
             PiStatTile(title: "First token", value: "p50 " + milliseconds(active.ttft.p50), caption: "p99 \(milliseconds(active.ttft.p99)) · HTTP p50 \(milliseconds(active.http.p50))", symbol: "timer", tone: .info)
-            PiStatTile(title: "Output tok/s", value: SessionUsagePresentation.rate(active.historicalRate.tokensPerSecond), caption: "\(active.historicalRate.samples)/\(active.gateway.requests) measured" + ((report.modelSummaries?.count ?? 0) > 1 ? " · per model below" : ", duration-weighted"), symbol: "speedometer", tone: .info)
-                .help("Output tokens divided by their combined dispatch-to-completion time, including first-token latency. A window with several models blends them here; the By model table keeps each route apart.")
+            PiStatTile(title: "Output tok/s", value: SessionUsagePresentation.rate(active.gateway.settledThroughput.tokensPerSecond), caption: "\(active.gateway.settledThroughput.samples)/\(active.gateway.requests) measured" + ((report.modelSummaries?.count ?? 0) > 1 ? " · per model below" : ", duration-weighted"), symbol: "speedometer", tone: .info)
+                .help(SettledThroughput.explanation + " A window with several models blends them here; the By model table keeps each route apart.")
         }
         .animation(motion, value: report.brush)
     }

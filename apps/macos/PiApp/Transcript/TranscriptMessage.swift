@@ -35,7 +35,15 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     var taskExecutionID: String? = nil
     var presentationSourceID: String? = nil
     var operationID: String? = nil
+    /// Tool result rows: the call this result belongs to. The reply that made
+    /// the call carries the same result in its card, so a chronological
+    /// transcript shows it once, at the call, instead of twice.
+    var toolCallID: String? = nil
     var responseTimeline: ResponseTimeline? = nil
+    /// Display only, set by the planner: the finished turn whose fold hides
+    /// this row. Never read from or written to a journal — the projector
+    /// leaves it nil and an absent optional encodes to nothing.
+    var foldGroup: String? = nil
     static func project(id: String, message: [String: WireValue]) -> TranscriptMessage {
         let stopReason = message["nativeStopReason"]?.string ?? message["stopReason"]?.string
         let content = message["content"], blocks = content?.array ?? []
@@ -58,7 +66,10 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         result.presentationSourceID = message["nativePresentationSourceID"]?.string
         result.operationID = message["nativeOperationID"]?.string ?? message["nativeCompaction"]?.object?["operationId"]?.string
         result.kind = message["nativeKind"]?.string
-        if role == "toolResult" { result.kind="toolResult"; result.detail="Tool result · " + (message["toolName"]?.string ?? "tool") }
+        if role == "toolResult" {
+            result.kind="toolResult"; result.detail="Tool result · " + (message["toolName"]?.string ?? "tool")
+            result.toolCallID = message["toolCallId"]?.string
+        }
         result.detail = message["nativeDetail"]?.string ?? result.detail
         let parts: [(kind:String,text:String,callID:String?,name:String?)] = blocks.compactMap { part in
             let block=part.object ?? [:]
@@ -74,6 +85,55 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
             result.responseTimeline = ResponseTimeline.canonical(parts,sourceID:id)
         }
         return result
+    }
+}
+
+/// What a journal recorded about one finished call: the helper writes this
+/// beside the result row, and a live snapshot folds the same fields into the
+/// card of the reply that made the call.
+struct ToolResultRecord: Sendable, Equatable {
+    var output: String
+    var isError: Bool
+    var durationMs: Double? = nil
+    var path: String? = nil
+    var added: Int? = nil
+    var removed: Int? = nil
+    /// The record as it sits in a journal's message row, or nil when the row
+    /// is not a tool result or names no call.
+    static func of(_ message: [String: WireValue]) -> (call: String, record: ToolResultRecord)? {
+        guard message["role"]?.string == "toolResult", let call = message["toolCallId"]?.string else { return nil }
+        let blocks = message["content"]?.array ?? []
+        let output = message["content"]?.string ?? blocks.compactMap { $0.object?["type"]?.string == "text" ? $0.object?["text"]?.string : nil }.joined()
+        let stats = message["nativeToolStats"]?.object ?? [:]
+        func whole(_ value: WireValue?) -> Int? { value?.number.flatMap { Int(exactly: $0) } }
+        return (call, ToolResultRecord(output: output, isError: message["isError"]?.bool ?? false,
+                                       durationMs: stats["durationMs"]?.number, path: stats["path"]?.string,
+                                       added: whole(stats["added"]), removed: whole(stats["removed"])))
+    }
+}
+
+extension TranscriptMessage {
+    /// Fills each reply's cards from the results recorded for its calls, so a
+    /// chat read from a journal shows the same card as a live one: the call,
+    /// its outcome, its clock and its output in one place. A call with no
+    /// recorded result keeps the "recorded" card it was projected with, and
+    /// its result row — if the page holds one — stays where it is.
+    static func resolvingToolResults(_ rows: [TranscriptMessage], results: [String: ToolResultRecord]) -> [TranscriptMessage] {
+        guard !results.isEmpty else { return rows }
+        return rows.map { row in
+            guard row.role == "assistant", let tools = row.tools, !tools.isEmpty else { return row }
+            var updated = row
+            updated.tools = tools.map { tool in
+                guard tool.state == "recorded", let result = results[tool.id] else { return tool }
+                var card = tool
+                card.state = result.isError ? "failed" : "completed"
+                card.output = result.output
+                card.durationMs = result.durationMs
+                card.path = result.path; card.added = result.added; card.removed = result.removed
+                return card
+            }
+            return updated
+        }
     }
 }
 
@@ -128,6 +188,7 @@ extension TranscriptMessage {
         row.taskExecutionID = try optionalString(fields["taskExecutionID"])
         row.presentationSourceID = try optionalString(fields["presentationSourceID"])
         row.operationID = try optionalString(fields["operationID"])
+        row.toolCallID = try optionalString(fields["toolCallID"])
         if let timeline = fields["responseTimeline"], timeline != .null { row.responseTimeline = try JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode(timeline)) }
         return row
     }

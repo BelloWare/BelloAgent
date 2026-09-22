@@ -41,8 +41,8 @@ enum TranscriptRowEstimate {
         return CGFloat(lines) * size * lineFactor + CGFloat(blanks) * 4
     }
 
-    /// One tool call's collapsed card.
-    static let toolRow: CGFloat = 26
+    /// One tool call's collapsed card: the line every piece of work shares.
+    static let toolRow: CGFloat = TranscriptRowChrome.height
     /// A work header, a reasoning header, a turn line, a figures line.
     static let line: CGFloat = 22
 
@@ -51,8 +51,25 @@ enum TranscriptRowEstimate {
         case .message(let message): return height(of: message, width: width, inline: true)
         case .block(let block):
             if block.presentation == .work { return 30 }
+            // A turn's fold control is one line and a rule, whatever it hides.
+            if block.presentation == .turnFold { return 33 }
+            // A card at the position its call was made: one closed row.
+            if block.part != nil, block.message?.tools?.isEmpty == false { return toolRow + 4 }
+            // A response's header line is one line, whatever the response
+            // holds. What the reader folded is not an estimate's business:
+            // a row standing at one is measured before it can be drawn.
+            if block.presentation == .response { return line + 6 }
+            // A turn's terminal slot: its outcome on one line, then the two
+            // pills, which wrap between themselves in a narrow pane, then any
+            // notice. A pill is its text plus a 16 pt glyph and its padding;
+            // the info and copy buttons take another 44 pt of the row.
             if block.presentation == .summary, let turn = block.turn {
-                return 44 + prose(TurnInfoPresentation.inlineFigures(turn).joined(separator:" · "),width:width,size:12)
+                let stats = TurnPillsPresentation(turn)
+                let pills = [stats.usageLabel, stats.timeLabel].compactMap { $0 }
+                    .reduce(CGFloat(44)) { $0 + CGFloat($1.count) * 11.5 * characterFactor + 34 }
+                let rows = max(1, (pills / max(40, width)).rounded(.up))
+                return 6 + line + 4 + rows * 22 + (rows - 1) * 3 + 10
+                    + (turn.notice.map { prose($0, width: width, size: 12) } ?? 0)
             }
             var total: CGFloat = 10
             let reasoned = block.replies.contains { !($0.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

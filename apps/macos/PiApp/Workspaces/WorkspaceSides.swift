@@ -261,8 +261,23 @@ extension WorkspaceModel {
             }
         }
     }
+    /// Two spellings of one file are the same file. The app writes the path it
+    /// intends into the recovery intent; the helper answers with the path it
+    /// actually wrote, resolved. Under a symlinked root — `/tmp`, a home on a
+    /// mounted volume — those two strings differ although nothing about them
+    /// disagrees, and comparing them as text refused to register a side that
+    /// had in fact been written exactly where it was asked for.
+    private static func sameFile(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        if lhs == rhs { return true }
+        func settled(_ value: String) -> String {
+            URL(fileURLWithPath: value).standardizedFileURL.resolvingSymlinksInPath().path
+        }
+        return settled(lhs) == settled(rhs)
+    }
     func registerKeptSide(id: String, path: String?) async throws {
-        guard let store, let intent = try await store.get(SideKeepIntent.self, kind: "side-keep", id: id), let expected = intent.chat.path, path == expected else {
+        guard let store, let intent = try await store.get(SideKeepIntent.self, kind: "side-keep", id: id), let expected = intent.chat.path,
+              Self.sameFile(path, expected) else {
             if chats.contains(where: { $0.id == id }) { return }
             throw HostError.failure("Keep needs its saved recovery intent and expected conversation file.")
         }

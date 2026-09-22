@@ -36,6 +36,11 @@ extension FocusedValues {
                 .onChange(of: model.configuration.automaticUpdateChecks) { _, enabled in
                     updates.configure(automaticChecks: enabled, configurationAvailable: model.configurationLoaded)
                 }
+                // How a finished turn reads is decided where a page is
+                // planned, so the planner is told directly rather than through
+                // the view tree; until the vault answers, nothing folds.
+                .onChange(of: model.configuration.transcriptView) { _, _ in model.applyTranscriptDisplay() }
+                .onChange(of: model.configurationLoaded) { _, _ in model.applyTranscriptDisplay() }
         }
         .defaultSize(width: 1240, height: 800)
         .windowStyle(.hiddenTitleBar)
@@ -96,6 +101,11 @@ extension FocusedValues {
                     .keyboardShortcut("[", modifiers: [.command, .option, .shift]).disabled(!commandModel.canFoldTurns)
                 Button("Unfold Every Turn") { commandModel.setEveryTurnFolded(false) }
                     .keyboardShortcut("]", modifiers: [.command, .option, .shift]).disabled(!commandModel.canFoldTurns)
+                // One more level: the response itself reads as one line.
+                Button("Fold This Response to One Line") { commandModel.setFocusedResponseCollapsed(true) }
+                    .disabled(!commandModel.canFoldResponses)
+                Button("Show This Response") { commandModel.setFocusedResponseCollapsed(false) }
+                    .disabled(!commandModel.canFoldResponses)
                 Divider()
                 Button("View Retained Message…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.viewMessages(id) } }.disabled(!commandModel.conversationCommandsEnabled)
                 Button("Search and Copy Conversation…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspectConversation(id) } }.keyboardShortcut("f").disabled(!commandModel.conversationCommandsEnabled)

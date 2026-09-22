@@ -443,6 +443,7 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         }
         XCTAssertEqual(row.frame.height, open, accuracy: 1, "folding and unfolding must return the turn to its own height")
         let cachedBeforeProse = row.workListReuses
+        let measuredBeforeProse = row.measurementCount
         let cardsBeforeProse = TranscriptLayoutClock.workListCardsMeasured
         let original = session.messages[1]
         for index in 0..<12 {
@@ -451,7 +452,12 @@ final class TranscriptFrameBudgetTests: XCTestCase {
             }
             await pane.settle(turns: 2)
         }
-        XCTAssertGreaterThan(row.workListReuses, cachedBeforeProse, "Prose must not discard exact work-list geometry")
+        // A reply's prose and the work that produced it are separate rows
+        // since the chronology pass, so a prose-only delta must not reach the
+        // work row at all: it neither rebuilds it nor measures it, which is
+        // stronger than the work list reusing a height it kept.
+        XCTAssertEqual(row.measurementCount, measuredBeforeProse, "Prose must not re-measure the work row")
+        XCTAssertEqual(row.workListReuses, cachedBeforeProse, "Prose must not rebuild the work list at all")
         XCTAssertEqual(TranscriptLayoutClock.workListCardsMeasured, cardsBeforeProse, "Unchanged tools must not be remeasured for a prose-only delta")
 
         print("PERF folding a 60-tool turn — \(fold.scaled(by: 1 / Double(rounds)).line)")

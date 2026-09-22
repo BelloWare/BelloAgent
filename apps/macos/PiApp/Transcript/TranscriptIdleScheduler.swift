@@ -8,8 +8,20 @@ import AppKit
     static let shared = TranscriptIdleScheduler()
     static let budget: TimeInterval = 0.0015
     static let interval: TimeInterval = 1.0 / 60
+    /// Two kinds of optional work, which stand aside for different things.
+    ///
+    /// `preparation` gets the rows the reader is about to reach ready. It runs
+    /// while they scroll and while a reply arrives, because that is exactly
+    /// when they are about to reach a row: waiting for quiet would mean the
+    /// scroll meets a row with no tree and pays for it in the frame that has
+    /// to show it. Its per-frame allowance is what bounds it.
+    ///
+    /// `reconciliation` measures history nobody is looking at. It waits for
+    /// the reader's hands to stop, as it always did.
+    enum Work { case preparation, reconciliation }
     private struct Job {
         weak var owner: NSView?
+        var work: Work
         var readyAt: TimeInterval
         var step: () -> Bool
     }
@@ -28,6 +40,9 @@ import AppKit
     private(set) var workCount = 0
     private(set) var noWorkCount = 0
     private(set) var longestUnit: TimeInterval = 0
+    /// How many units of getting-ready work have run, as distinct from
+    /// measuring history nobody is looking at.
+    private(set) var preparationCount = 0
 
     init(automatic: Bool = true,
          clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
@@ -55,15 +70,19 @@ import AppKit
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
     }
 
-    func request(_ owner: NSView, after deadline: TimeInterval, step: @escaping () -> Bool) {
-        if let index = jobs.firstIndex(where: { $0.owner === owner }) {
-            jobs[index].readyAt = max(jobs[index].readyAt, deadline)
+    func request(_ owner: NSView, work: Work = .reconciliation, after deadline: TimeInterval, step: @escaping () -> Bool) {
+        if let index = jobs.firstIndex(where: { $0.owner === owner && $0.work == work }) {
+            jobs[index].readyAt = work == .preparation ? min(jobs[index].readyAt, deadline) : max(jobs[index].readyAt, deadline)
             jobs[index].step = step
-        } else { jobs.append(Job(owner: owner, readyAt: deadline, step: step)) }
+        } else { jobs.append(Job(owner: owner, work: work, readyAt: deadline, step: step)) }
         reschedule()
     }
     func cancel(_ owner: NSView) {
         jobs.removeAll { $0.owner == nil || $0.owner === owner }
+        reschedule()
+    }
+    func cancel(_ owner: NSView, work: Work) {
+        jobs.removeAll { $0.owner == nil || ($0.owner === owner && $0.work == work) }
         reschedule()
     }
     var remainingInputQuietTime: TimeInterval { max(0, inputQuietUntil - clock()) }
@@ -77,7 +96,7 @@ import AppKit
         jobs.removeAll { $0.owner == nil }
         let deadline = jobs.compactMap { job -> TimeInterval? in
             guard let owner = job.owner, visible(owner) else { return nil }
-            return max(job.readyAt, inputQuietUntil, nextAllowedAt)
+            return max(job.readyAt, job.work == .preparation ? 0 : inputQuietUntil, nextAllowedAt)
         }.min()
         guard let deadline else {
             wakeup?.cancel(); wakeup = nil; nextWake = nil
@@ -104,7 +123,10 @@ import AppKit
         defer { running = false }
         callbackCount += 1
         let start = clock(), deadline = start + Self.budget
-        guard start >= max(inputQuietUntil, nextAllowedAt) else { noWorkCount += 1; return }
+        // Input pauses the work that waits for quiet, not the work that is
+        // getting ready for where the input is taking the reader.
+        guard start >= nextAllowedAt,
+              start >= inputQuietUntil || jobs.contains(where: { $0.work == .preparation && $0.readyAt <= start }) else { noWorkCount += 1; return }
         var worked = false
         // Remove before calling: a step may enqueue its successor or another
         // pane. Rotation also prevents a long history from starving its side.
@@ -115,7 +137,8 @@ import AppKit
         while !jobs.isEmpty, clock() < deadline, units < 32 {
             var job = jobs.removeFirst()
             guard let owner = job.owner else { continue }
-            guard visible(owner), job.readyAt <= clock() else {
+            guard visible(owner), job.readyAt <= clock(),
+                  job.work == .preparation || clock() >= inputQuietUntil else {
                 jobs.append(job); skipped += 1
                 if skipped >= jobs.count { break }
                 continue
@@ -124,7 +147,8 @@ import AppKit
             let more = job.step()
             longestUnit = max(longestUnit, clock() - began)
             workCount += 1; worked = true; units += 1; skipped = 0
-            if !jobs.contains(where: { $0.owner === owner }), more {
+            if job.work == .preparation { preparationCount += 1 }
+            if !jobs.contains(where: { $0.owner === owner && $0.work == job.work }), more {
                 job.readyAt = clock(); jobs.append(job)
             }
         }

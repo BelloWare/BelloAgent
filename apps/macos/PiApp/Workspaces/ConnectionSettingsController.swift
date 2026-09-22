@@ -100,6 +100,7 @@ import SwiftUI
         if edits.dashboard != baseline.dashboard { merged.dashboard = edits.dashboard }
         if edits.automaticUpdateChecks != baseline.automaticUpdateChecks { merged.automaticUpdateChecks = edits.automaticUpdateChecks }
         if edits.completionSoundEnabled != baseline.completionSoundEnabled { merged.completionSoundEnabled = edits.completionSoundEnabled }
+        if edits.transcriptView != baseline.transcriptView { merged.transcriptView = edits.transcriptView }
         return merged
     }
     /// Reads the vault. Stashed edits survive a load caused by a save; the reload button discards them.

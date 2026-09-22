@@ -7,14 +7,18 @@ import SwiftUI
 /// targets. Small replies keep the simpler SwiftUI stack.
 struct NativeMarkdownSurface: NSViewRepresentable {
     nonisolated static let minimumBlockCount = 8
-    let blocks: [MarkdownBlock]
+    /// The message's markdown source. The surface reads it itself, so a token
+    /// can extend the reply without SwiftUI rebuilding anything: the row's
+    /// tree is untouched and only the block still open is read and measured
+    /// again. Nothing here parses inside a view body.
+    let source: String
     let style: MarkdownStyle
     let capsWidth: Bool
     let streaming: Bool
     let headings: [MarkdownCopyTarget]
-    var identities: [MarkdownBlockIdentity]? = nil
-    var sourceText: String? = nil
-    var sourceRanges: [Range<Int>]? = nil
+    /// Which reply this is, so a token can be handed to the surface that is
+    /// carrying it.
+    var identity: String = ""
 
     func makeNSView(context: Context) -> NativeMarkdownContainer {
         let view = NativeMarkdownContainer()
@@ -22,8 +26,8 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         return view
     }
     func updateNSView(_ view: NativeMarkdownContainer, context: Context) {
-        view.update(blocks: blocks, style: style, capsWidth: capsWidth, streaming: streaming,
-                    headings: headings, environment: TranscriptRowEnvironment(context.environment), identities: identities, sourceText: sourceText, sourceRanges: sourceRanges)
+        view.read(source: source, style: style, capsWidth: capsWidth, streaming: streaming, headings: headings,
+                  environment: TranscriptRowEnvironment(context.environment), identity: identity)
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeMarkdownContainer, context: Context) -> CGSize? {
         nsView.measure(width: proposal.width)
@@ -337,6 +341,67 @@ private struct NativeHostedMarkdownBlock: View {
         for observer in frameObservers { NotificationCenter.default.removeObserver(observer) }
     }
 
+    /// The reading of this message, owned here rather than by a view body, so
+    /// that a token can extend it without SwiftUI running at all.
+    private let reading = StreamingMarkdownState()
+    private var readingContext: (style: MarkdownStyle, capsWidth: Bool, streaming: Bool, headings: [MarkdownCopyTarget],
+                                 environment: TranscriptRowEnvironment, identity: String)?
+    /// Which reply this surface carries, for the row handing it a token.
+    var readingIdentity: String? { readingContext?.identity }
+    /// How many tokens this surface has taken without SwiftUI rebuilding the
+    /// row, and how many blocks each of them had to read again.
+    private(set) var appendCount = 0
+    private var appending = false
+
+    /// The message as it stands. Called by SwiftUI when anything other than
+    /// the arriving text changes: the appearance, the width, the reply
+    /// settling, the reader opening something.
+    func read(source: String, style: MarkdownStyle, capsWidth: Bool, streaming: Bool,
+              headings: [MarkdownCopyTarget], environment: TranscriptRowEnvironment, identity: String) {
+        // A token can reach this surface directly, ahead of the view that
+        // carries the same text. A view update that is a token behind must not
+        // rewind the reading — that would throw away every block of it and
+        // rebuild the lot. While a reply arrives its text only grows, so the
+        // longer of the two is the one to read, and everything else in the
+        // update (the appearance, the width, the copy targets) still applies.
+        var source = source
+        if streaming, identity == readingContext?.identity, source != reading.source, reading.source.hasPrefix(source) {
+            source = reading.source
+        }
+        readingContext = (style, capsWidth, streaming, headings, environment, identity)
+        let records = reading.update(source, style: style, streaming: streaming, identity: identity)
+        update(blocks: records.map(\.block), style: style, capsWidth: capsWidth, streaming: streaming, headings: headings,
+               environment: environment, identities: records.map(\.id), sourceText: source, sourceRanges: records.map(\.range))
+    }
+    /// A token arrived: this reply's text grew by a suffix. The block still
+    /// open is read again and measured again; every block above it keeps the
+    /// exact height it already had, and no SwiftUI tree is rebuilt. Returns
+    /// how much taller the message became, or nil when this surface is not
+    /// the one carrying that reply.
+    func appendStreaming(_ next: String, identity: String) -> CGFloat? {
+        // A pass already running owns this geometry: a block being prepared
+        // for the viewport is part way through re-placing every block. Such a
+        // token takes the ordinary path rather than changing the ground under
+        // that pass.
+        guard let context = readingContext, context.streaming, context.identity == identity, !identity.isEmpty,
+              bounds.width > 0, !applyingLayout, !resolvingViewport,
+              next != reading.source, next.hasPrefix(reading.source), !reading.source.isEmpty else { return nil }
+        let before = exactLayout(width: bounds.width).total
+        appending = true
+        read(source: next, style: context.style, capsWidth: context.capsWidth, streaming: true,
+             headings: context.headings, environment: context.environment, identity: identity)
+        appending = false
+        let after = exactLayout(width: bounds.width).total
+        if abs(bounds.height - after) > 0.01 { setFrameSize(NSSize(width: bounds.width, height: after)) }
+        // The blocks are placed by this surface's own layout, in the pass the
+        // page is already about to run: the page has the new height now, from
+        // the measurement above, and the reader's position is corrected in
+        // that same pass rather than a frame later.
+        needsLayout = true
+        appendCount += 1
+        return after - before
+    }
+
     func update(blocks source: [MarkdownBlock], style: MarkdownStyle, capsWidth: Bool, streaming: Bool,
                 headings: [MarkdownCopyTarget], environment: TranscriptRowEnvironment, identities: [MarkdownBlockIdentity]? = nil, sourceText: String? = nil, sourceRanges: [Range<Int>]? = nil) {
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
@@ -384,6 +449,11 @@ private struct NativeHostedMarkdownBlock: View {
         for layout in layouts { layout.validPrefix = min(layout.validPrefix, changedFrom); layout.provisional = layout.provisional.filter { $0 < changedFrom } }
         layoutDirtyFrom = min(layoutDirtyFrom ?? changedFrom, changedFrom)
         needsLayout = true
+        // A token's own pass has already told the row how much taller the
+        // message became, and the row has already had the page placed around
+        // it. Advertising a new intrinsic size here would put the whole row
+        // through SwiftUI a second time for the same text.
+        guard !appending else { return }
         // Input changes can arrive during a parent's fittingSize pass. Let
         // SwiftUI finish that update before advertising a new intrinsic size.
         guard !invalidationScheduled else { return }

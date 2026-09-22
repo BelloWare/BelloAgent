@@ -76,6 +76,15 @@ enum TranscriptPaging {
     static var intrinsicInvalidations = 0
     static var mountSeconds = 0.0
     static var rowLoopSeconds = 0.0
+    /// Tokens the page took by extending the reply's own native surface,
+    /// without rebuilding or re-sizing the row's SwiftUI tree.
+    static var streamingAppends = 0
+    /// Tokens the page took for a reply nobody can see, by standing its row at
+    /// an estimate of its own growth instead of measuring it.
+    static var streamingEstimates = 0
+    /// Tokens the page had to answer by rebuilding the row, because something
+    /// other than the arriving text changed with them.
+    static var streamingRebuilds = 0
     static var now: Double { ProcessInfo.processInfo.systemUptime }
     static func reset() {
         updateSeconds = 0; layoutSeconds = 0; measureSeconds = 0; measuredRows = 0; mountedRows = 0
@@ -85,5 +94,6 @@ enum TranscriptPaging {
         hostReleaseSeconds = 0; viewportLayoutSeconds = 0
         rowAttachmentSeconds = 0; rowDetachmentSeconds = 0
         placementSeconds = 0; validationSeconds = 0; intrinsicInvalidations = 0
+        streamingAppends = 0; streamingEstimates = 0; streamingRebuilds = 0
     }
 }

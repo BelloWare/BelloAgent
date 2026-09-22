@@ -63,6 +63,18 @@ extension WorkspaceModel {
         configuration = saved; configurationLoaded = true
         profiles = saved.profiles.map(\.profile); workspaces = saved.workspaces
     }
+    /// Hands the planner the reader's transcript choice and republishes every
+    /// open chat, because a turn's fold is part of the plan rather than of a
+    /// row's own state.
+    ///
+    /// The window calls this, not `applyConfiguration`: a model built without
+    /// one — a fixture, a command test — must not change how every other
+    /// fixture in the process plans its rows.
+    func applyTranscriptDisplay() {
+        guard TranscriptDisplay.mode != configuration.transcriptDisplay else { return }
+        TranscriptDisplay.use(configuration.transcriptDisplay)
+        for display in displays.values { display.publishTranscript() }
+    }
     /// The rest, which nothing on screen waits for: a one-time migration of
     /// saved chat output limits, and opening the request archive with its
     /// retention sweep and retained billing.
@@ -154,7 +166,7 @@ extension WorkspaceModel {
             if let preferences {
                 saved.runtime = preferences.runtime; saved.capture = preferences.capture
                 saved.dashboard = preferences.dashboard; saved.automaticUpdateChecks = preferences.automaticUpdateChecks
-                saved.completionSoundEnabled = preferences.completionSoundEnabled
+                saved.completionSoundEnabled = preferences.completionSoundEnabled; saved.transcriptView = preferences.transcriptView
             }
         }
         // Configuration is durable before the helper hears about it. An idle
@@ -255,7 +267,7 @@ extension WorkspaceModel {
         try await updateConfiguration(expectedRevision: expectedRevision) {
             $0.runtime = preferences.runtime; $0.capture = preferences.capture
             $0.dashboard = preferences.dashboard; $0.automaticUpdateChecks = preferences.automaticUpdateChecks
-            $0.completionSoundEnabled = preferences.completionSoundEnabled
+            $0.completionSoundEnabled = preferences.completionSoundEnabled; $0.transcriptView = preferences.transcriptView
         }
     }
     func saveMCPConfiguration(_ config: WireValue, expectedRevision: Int64) async throws {
