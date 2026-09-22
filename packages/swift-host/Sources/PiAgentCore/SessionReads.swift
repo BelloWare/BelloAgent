@@ -36,7 +36,7 @@ extension AgentSession {
         for index in positions {
             let row = boundedDisplayRow(displayMessage(visible[index]))
             let size = try row.data().count
-            guard bytes + size + 1 <= HistoryWindowPolicy.envelopeBytes else { break }
+            guard rows.isEmpty || bytes + size + 1 <= HistoryWindowPolicy.envelopeBytes else { break }
             bytes += size + 1
             if forward { rows.append(row); end = index + 1 }
             else { rows.insert(row, at: 0); start = index }
@@ -52,29 +52,24 @@ extension AgentSession {
             result["partialTurnInput"] = JSON(input.id)
         }
         result["taskRecords"] = tasks
-        guard try result.data().count + 1024 <= HistoryWindowPolicy.envelopeBytes else { throw AgentError("page_limit", "History page metadata exceeds the display budget") }
         return result
     }
-    /// The complete display input for one tool call: the arguments as a
-    /// JSON-safe document at the tool's own bound (64 KiB for tools that carry
-    /// file content, 8 KiB otherwise). Display snapshots carry only a 4 KiB
-    /// inline preview of the same document, so the app reads this once, on
-    /// demand, for a card whose `inputTruncated` is true.
+    /// Complete tool arguments. Large documents use automatic IPC transfer
+    /// paging; expanding a card must not cut an edit or a file's contents.
     public func toolInput(messageID: String, callID: String) throws -> JSON {
         if messageID == partialID, let card = partialTools[callID] {
             // A streaming call has no document yet: its arguments are still
             // arriving as text. Say so rather than hand over unparseable JSON.
             return ["id": JSON(callID), "messageId": JSON(messageID), "name": card["name"], "input": card["input"],
-                    "inputTruncated": card["inputTruncated"], "inputBytes": card["inputBytes"], "limit": JSON(ToolInputDisplay.inlineBytes), "streaming": true]
+                    "inputTruncated": card["inputTruncated"], "inputBytes": card["inputBytes"], "streaming": true]
         }
         guard let message = history.first(where: { $0.id == messageID }) else { throw AgentError("message_missing", "Message is not retained") }
         guard let block = message.content.first(where: { $0["type"].text == "toolCall" && $0["id"].text == callID }) else {
             throw AgentError("tool_call_missing", "That message does not retain this tool call")
         }
-        let name = block["name"].text ?? "", limit = ToolInputDisplay.bound(for: name)
-        let bounded = ToolInputDisplay.bounded(block["arguments"], limit: limit)
-        return ["id": JSON(callID), "messageId": JSON(messageID), "name": JSON(name), "input": JSON(bounded.text),
-                "inputTruncated": JSON(bounded.truncated), "inputBytes": JSON(bounded.bytes), "limit": JSON(limit), "streaming": false]
+        let input = block["arguments"].encoded()
+        return ["id": JSON(callID), "messageId": JSON(messageID), "name": block["name"], "input": JSON(input),
+                "inputTruncated": false, "inputBytes": JSON(input.utf8.count), "streaming": false]
     }
     public func messageRead(id: String, field: String, offset: Int) throws -> JSON {
         guard let message=history.first(where:{$0.id == id}) else { throw AgentError("message_missing", "Message is not retained") }; return try textPage(field == "thinking" ? message.thinking : message.retainedDisplayText,offset:offset)

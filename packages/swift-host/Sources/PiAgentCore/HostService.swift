@@ -22,6 +22,8 @@ public actor NativeHostService {
     public let epoch=UUID().uuidString
     private let emit: @Sendable (JSON)->Void
     private var hello=false, closing=false, quiesced=false, opening=false
+    private var displayTransfers = DisplayResultTransfers()
+    private var allowsDisplayTransfers = false
     private var cwd: URL?, roots: [URL]=[], directory: URL?, resources: Resources?, mcp: MCPManager?, nativeTools: NativeTools?
     private let traces: TraceStore, capture: CaptureDelivery
     private let editingGate=AsyncGate(), runtimeGate=AsyncGate()
@@ -46,13 +48,13 @@ public actor NativeHostService {
         }
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
-            hello=true
+            hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true
             emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":"1.0.0","piBehaviorReference":"0.85.1","limits":["frameBytes":1048576,"captureBytes":134217728],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read"]]); return
         }
         let id=frame["commandId"].text ?? ""
         guard hello, frame["v"].int == 1, frame["kind"].text == "command", frame["hostEpoch"].text == epoch, !id.isEmpty, id.utf8.count <= 128, let method=frame["method"].text, frame["params"].isNull || frame["params"].isObject else { reply(id,.failure(AgentError("invalid_command", "Invalid command or stale host epoch"))); return }
         let fingerprint=sha256(Data(frame.removing(["commandId"]).encoded().utf8))
-        let readOnly = method == "clock.sync" || method == "runtime.info" || method == "resources.inspect" || method == "resources.skill.read" || method.hasPrefix("session.content.") || ["session.status","session.snapshot","session.history","session.message.read","session.edit.prepare","session.tool.input","queue.read","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"].contains(method)
+        let readOnly = method == "display.result.read" || method == "clock.sync" || method == "runtime.info" || method == "resources.inspect" || method == "resources.skill.read" || method.hasPrefix("session.content.") || ["session.status","session.snapshot","session.history","session.message.read","session.edit.prepare","session.tool.input","queue.read","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"].contains(method)
         if fingerprints[id] == nil {
             if let previous = mutationLedger.fingerprint(for: id) {
                 reply(id,.failure(AgentError(previous == fingerprint ? "command_result_expired" : "command_conflict", "Previously observed mutation will not be replayed; reconcile session state"))); return
@@ -91,7 +93,12 @@ public actor NativeHostService {
     /// identical retry of the same command identity, and emitted.
     private func finish(_ id:String,_ result:Result<JSON,AgentError>) {
         var message=replyFrame(id,result)
-        if ((try? message.data().count) ?? 1048577)>1048576 { message["ok"]=false; message["error"]=AgentError("reply_limit", "Result exceeds the IPC frame limit; request a smaller range").json;message["result"]=message["error"] }
+        if ((try? message.data().count) ?? 1048577)>1048576 {
+            if allowsDisplayTransfers, case .success(let value) = result {
+                do { message = replyFrame(id, .success(try displayTransfers.insert(value.data()))) }
+                catch { message = replyFrame(id, .failure(error as? AgentError ?? AgentError("display_failed", "Could not prepare the complete display result"))) }
+            } else { message = replyFrame(id, .failure(AgentError("reply_limit", "Result exceeds the IPC frame limit; request a smaller range"))) }
+        }
         tasks.removeValue(forKey:id); replies[id]=message; replyOrder.append(id)
         while replyOrder.count > 512 { let old=replyOrder.removeFirst(); replies.removeValue(forKey:old); fingerprints.removeValue(forKey:old) }
         emit(message)
@@ -112,6 +119,7 @@ public actor NativeHostService {
     private func notification() -> @Sendable (String,Int)->Void { { [weak self] id, seq in Task { await self?.mark(id,seq) } } }
     private func touch(_ id:String) { recency.removeAll{$0==id}; recency.append(id) }
     public func command(_ method:String, sessionID:String?, params:JSON, commandID:String=UUID().uuidString) async throws -> JSON {
+        if method == "display.result.read" { return try displayTransfers.read(required(params["id"],"transfer id"),offset:boundedInt(params["offset"],maximum:DisplayResultTransfers.maximumBytes)) }
         guard !closing else { throw AgentError("closing","Host is shutting down") }
         if method == "runtime.info" { return ["engine":"swift","engineVersion":"1.0.0","piBehaviorReference":"0.85.1","bundledNode":false,"protocolMajor":1,"protocolMinor":1] }
         if method == "clock.sync" { return ["monotonic":JSON(nowMS()),"monotonicMs":JSON(nowMS()),"hostMonotonicMs":JSON(nowMS()),"wallTime":JSON(isoNow())] }

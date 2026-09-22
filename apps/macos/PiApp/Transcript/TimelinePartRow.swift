@@ -42,7 +42,7 @@ struct TimelinePartRow: View {
                         CodeBlockView(language:"json",code:part.text,streaming:source.isStreaming)
                     } else if part.part.kind != "status" { MarkdownBodyView(source:part.text,streaming:source.isStreaming).equatable() }
                     Text(part.part.evidence == "observed" ? "Observed delivery order" : "\(part.part.evidence) · arrival timing unavailable").font(.system(size:10.5)).foregroundStyle(TranscriptPalette.faint)
-                    if part.truncated { Text("Partial preview · inspect retained request details when available").font(.system(size:11)).foregroundStyle(TranscriptPalette.warning) }
+                    if part.truncated { Text("This older timeline fragment was saved without its remaining text.").font(.system(size:11)).foregroundStyle(TranscriptPalette.warning) }
                     Button("Request details") { actions.inspect(message.id) }.buttonStyle(.plain).font(.system(size:11))
                 }
             }.padding(.vertical,5)

@@ -12,6 +12,12 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
+**Bello Agent 0.1.78/build 82 is prepared:** complete streamed and retained responses,
+reasoning and expanded tool details replace shortened display previews. Large
+results use automatic IPC chunks; old shortened assistant timelines recover from
+full saved content where available. See the
+[0.1.78 validation record](validation/Bello-Agent-0.1.78-2026-09-22.md).
+
 **Bello Agent 0.1.77/build 81 is released and publicly verified:** late
 Markdown reference definitions preserve selection and unselected reading anchors,
 including the last paragraph. Replacement of streamed terminal content starts

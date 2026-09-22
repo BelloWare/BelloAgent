@@ -31,6 +31,7 @@
 		0E649C6756E821884E22A511 /* PiApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5639D83C26A60B212F8C617 /* PiApp.swift */; };
 		0F364511A600A4054CE52B76 /* TurnInfoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01A1445212D124F860BD9271 /* TurnInfoView.swift */; };
 		0FA8BEB8808A7D736836449F /* WorkspaceFollowupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65FFA487F367EBF7971C1463 /* WorkspaceFollowupTests.swift */; };
+		101367E13C74EC9B8DB70571 /* FullDisplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE9E83B9C79BC9AE68298D4F /* FullDisplayTests.swift */; };
 		10A3EEF3216F809E7E558F07 /* ConversationQuestionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14A3BA6843E8C1AB70186841 /* ConversationQuestionTests.swift */; };
 		1203257874E0F28C5D0D2A57 /* GatewayAccountingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F28A64172B7D057CEABD2B5 /* GatewayAccountingTests.swift */; };
 		123A186ECB3B408B8403CDFD /* TopicRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = A38C375F5F16764326234315 /* TopicRecord.swift */; };
@@ -200,6 +201,7 @@
 		928AF0BE7087D63BEFE45CC2 /* ContextScopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E15578762FDF618AE9F2438A /* ContextScopeTests.swift */; };
 		930B57DD167B6D198849590C /* WorkspaceReadState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37098813FA461507D6453DBC /* WorkspaceReadState.swift */; };
 		93141C263FD7A62124BA50CA /* PiBadges.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB3A17A1BD1BCEB739C4F3F3 /* PiBadges.swift */; };
+		931E3CA844BA415433A42AA7 /* DisplayResultReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = C540E0AE5E5FFAB46A7E13A3 /* DisplayResultReader.swift */; };
 		93B117DEBCC11CB3F288C4B2 /* TranscriptGeometryCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1DEC36BABB52DF4EA6F8952 /* TranscriptGeometryCache.swift */; };
 		93F8BA4E0CC076EAC03F5E8F /* TerminalEmulatorReplies.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2606EB25D98679A138E40230 /* TerminalEmulatorReplies.swift */; };
 		947AD675396ADB9FA4AD25CF /* NativeTranscriptSafetyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF1E2878659E996871B3531E /* NativeTranscriptSafetyTests.swift */; };
@@ -627,6 +629,7 @@
 		C1B2AA8816B75673F6434294 /* NativeTranscriptDocumentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTranscriptDocumentTests.swift; sourceTree = "<group>"; };
 		C26668D410107C283A6D4A51 /* ConfigurationVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationVault.swift; sourceTree = "<group>"; };
 		C3657613603D6405241C4EF3 /* SidebarChatRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarChatRow.swift; sourceTree = "<group>"; };
+		C540E0AE5E5FFAB46A7E13A3 /* DisplayResultReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayResultReader.swift; sourceTree = "<group>"; };
 		C587D588560B4BE67D413C98 /* TranscriptActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptActivity.swift; sourceTree = "<group>"; };
 		C6CD294FDA98129F30173552 /* TranscriptUpdateIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptUpdateIsolationTests.swift; sourceTree = "<group>"; };
 		C6DE6B257384174C30C80BC1 /* SessionOrderDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionOrderDrop.swift; sourceTree = "<group>"; };
@@ -695,6 +698,7 @@
 		EB44608D7768EE00D2B9C2AF /* TranscriptMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptMarkdown.swift; sourceTree = "<group>"; };
 		EBBE242E5027D3D06BB6C33F /* ReviewConcurrentInteractionLoad.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewConcurrentInteractionLoad.swift; sourceTree = "<group>"; };
 		ED58A0DF4FB2506580C785FF /* BlockingAlertTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockingAlertTests.swift; sourceTree = "<group>"; };
+		EE9E83B9C79BC9AE68298D4F /* FullDisplayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullDisplayTests.swift; sourceTree = "<group>"; };
 		F1A9AB6D40F02920EE8A73C6 /* CapturedBodyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapturedBodyTests.swift; sourceTree = "<group>"; };
 		F1AAA80A99BDE13D24724386 /* TerminalEmulatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalEmulatorTests.swift; sourceTree = "<group>"; };
 		F1BAB231CFA255B9D58BD618 /* InspectorAttemptListTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorAttemptListTests.swift; sourceTree = "<group>"; };
@@ -910,6 +914,7 @@
 		83184906483A108241EE229D /* Host */ = {
 			isa = PBXGroup;
 			children = (
+				C540E0AE5E5FFAB46A7E13A3 /* DisplayResultReader.swift */,
 				9759F89F958E91547FCA9C44 /* HostInbox.swift */,
 				38EFFB5714C2CCABE948775D /* HostSupervisor.swift */,
 				DF183F853B2BDC8059D5039E /* HostTransport.swift */,
@@ -1077,6 +1082,7 @@
 				A8647B3FE9F0358A7828C18B /* DesignContrastTests.swift */,
 				1BF427C296FBCF51243F2DDD /* FiveSessionWorkspacePerformanceTests.swift */,
 				2D43B519AC6F5C6AED73D19F /* FreshPresentationTests.swift */,
+				EE9E83B9C79BC9AE68298D4F /* FullDisplayTests.swift */,
 				5F28A64172B7D057CEABD2B5 /* GatewayAccountingTests.swift */,
 				DF00504B0932C9B06B1C6462 /* GatewayModelDiscoveryTests.swift */,
 				1320E316307CA08F0108C392 /* GitChangelistReadTests.swift */,
@@ -1353,6 +1359,7 @@
 				2526527827645CE7BFEC2BBC /* DashboardReader.swift in Sources */,
 				14D84550E066ACED8D7C0C58 /* DashboardWindow.swift in Sources */,
 				D1AAE5B613C88860EE7F50A6 /* DesignSystem.swift in Sources */,
+				931E3CA844BA415433A42AA7 /* DisplayResultReader.swift in Sources */,
 				B2D274554583BDA81C92D1F2 /* EditReplayPlan.swift in Sources */,
 				411CAA0DAD99C6BDCB21A996 /* GatewayAccounting.swift in Sources */,
 				002B1A96B1145216A334D74C /* GatewayModelDiscovery.swift in Sources */,
@@ -1550,6 +1557,7 @@
 				A709EFBAEBB7410036F8A504 /* DesignContrastTests.swift in Sources */,
 				0E410EB4C96E23787F27B04B /* FiveSessionWorkspacePerformanceTests.swift in Sources */,
 				064EFA7825F1F9710CE38F8B /* FreshPresentationTests.swift in Sources */,
+				101367E13C74EC9B8DB70571 /* FullDisplayTests.swift in Sources */,
 				1203257874E0F28C5D0D2A57 /* GatewayAccountingTests.swift in Sources */,
 				3222F92A546DA93A4901BB52 /* GatewayModelDiscoveryTests.swift in Sources */,
 				C7E1AE1B5271B5B4AD5AB0A6 /* GitChangelistReadTests.swift in Sources */,
@@ -1761,7 +1769,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 81;
+				CURRENT_PROJECT_VERSION = 82;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1776,11 +1784,11 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.77;
+				MARKETING_VERSION = 0.1.78;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				RELEASE_MESSAGE = "Preserve reading position and selection when late Markdown links resolve, and keep replaced response content tied to the correct source.";
+				RELEASE_MESSAGE = "Show complete responses, reasoning, and expanded tool details without display preview truncation, including restored sessions.";
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
@@ -1842,7 +1850,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 81;
+				CURRENT_PROJECT_VERSION = 82;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -1863,12 +1871,12 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.77;
+				MARKETING_VERSION = 0.1.78;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				RELEASE_MESSAGE = "Preserve reading position and selection when late Markdown links resolve, and keep replaced response content tied to the correct source.";
+				RELEASE_MESSAGE = "Show complete responses, reasoning, and expanded tool details without display preview truncation, including restored sessions.";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";

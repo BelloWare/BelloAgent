@@ -36,6 +36,19 @@ records optimized native/helper tests, explicit actor checks and publication.
 Current release records take precedence over the historical matrices below.
 Installation/update rehearsals remain skipped by owner instruction.
 
+## 0.1.78 complete display acceptance
+
+Run helper `FullDisplayTests`, `DisplayObservationTests`, `ResponseTimelineTests`,
+`HistoryWindowTests` and tool projection checks when changing full display or IPC.
+Native `FullDisplayTests` covers actual-helper reopen, saved-source recovery,
+large transfer integrity/cancellation and revision-bound timeline suffixes.
+Keep `HostSupervisorTests`, `HostFrameTests`, history paging, native Markdown
+viewport/selection and stable-reading coverage. A preferred page-size budget may
+reduce row count but must never cut the content of a retained row. A large reply
+must continue rendering after the old 16 KiB/8 KiB boundaries, including its last
+paragraph, without requiring an inspector click. Test helper and desktop from
+the same staged build for the negotiated automatic result transfers.
+
 ## 0.1.74 quoted side drafts, queue handoff and clocks
 
 Run `TranscriptQuoteSelectionTests`, `TurnInfoTests`, `WorkspaceFailureTests`

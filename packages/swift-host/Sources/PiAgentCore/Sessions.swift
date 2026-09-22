@@ -52,7 +52,6 @@ public actor AgentSession {
     var sequence=0, partialID: String?, partialText="", partialThinking="", partialTools: [String:JSON]=[:], toolStates: [String:JSON]=[:]
     /// The bounded previews the projection puts in the streaming row, kept
     /// across deltas: recomputing them per token copied the whole reply so far.
-    var partialTextPreview: String?, partialThinkingPreview: String?
     /// Bumped whenever the streamed tool cards change, so a text-only delta can
     /// be recognised as one without comparing the cards themselves.
     var partialCardsVersion: UInt64 = 0

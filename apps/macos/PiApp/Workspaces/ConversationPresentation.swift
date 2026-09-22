@@ -33,8 +33,7 @@ struct ConversationHistoryPage: Sendable {
             throw HostError.failure("Invalid history page. Retry loading this conversation.")
         }
         messages = try TranscriptMessage.page(rows)
-        guard messages.count <= HistoryWindowPolicy.rows, Set(messages.map(\.id)).count == messages.count,
-              try JSONEncoder().encode(wire).count + 1024 <= HistoryWindowPolicy.envelopeBytes else {
+        guard messages.count <= HistoryWindowPolicy.rows, Set(messages.map(\.id)).count == messages.count else {
             throw HostError.failure("History page exceeds its display budget or has conflicting identities.")
         }
         self.incarnation = incarnation; self.lineage = lineage

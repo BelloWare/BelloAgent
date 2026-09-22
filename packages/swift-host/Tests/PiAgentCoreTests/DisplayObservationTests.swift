@@ -85,7 +85,7 @@ final class DisplayObservationTests: XCTestCase {
         XCTAssertTrue(idle["displayObservedAt"].isNull)
     }
 
-    func testDeltasBeyondDisplayedPreviewDoNotCreateUnrelatedTimingSamples() async throws {
+    func testDeltasBeyondOldPreviewLimitContinueToUpdateDisplayedText() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let clock = DisplayClock(), client = HeldDisplayClient()
         let session = try AgentSession(id: "bounded", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false, displayClock: { clock.now() })
@@ -96,14 +96,42 @@ final class DisplayObservationTests: XCTestCase {
         _ = await session.snapshot()
         clock.set(2100); try await client.emit(.text("x"))
         let truncated = await session.snapshot()
-        XCTAssertEqual(truncated["displayObservedAt"].double, 2100, "The truncation indicator is a visible change")
+        XCTAssertEqual(truncated["displayObservedAt"].double, 2100, "The appended text remains visible past the old limit")
         clock.set(2200); try await client.emit(.text(String(repeating: "x", count: 5000)))
         let hidden = await session.snapshot(["displayRevision": truncated["displayRevision"]])
-        XCTAssertTrue(hidden["messages"].isNull); XCTAssertTrue(hidden["displayObservedAt"].isNull)
+        XCTAssertEqual(hidden["messages"].list.last?["text"].text, String(repeating:"x",count:21385))
+        XCTAssertEqual(hidden["messages"].list.last?["truncated"].flag,false)
+        XCTAssertEqual(hidden["displayObservedAt"].double,2200)
         clock.set(2300); try await client.emit(.thinking("visible reasoning"))
         let thinking = await session.snapshot(["displayRevision": truncated["displayRevision"]])
-        XCTAssertEqual(thinking["displayObservedAt"].double, 2300, "An undisplayed text suffix must not be charged to a later reasoning update")
+        XCTAssertEqual(thinking["displayObservedAt"].double, 2300, "Previously delivered text is not charged to a later reasoning update")
         await client.finish(answer("Completed")); try await eventually { !(await session.isRunning) }
+    }
+
+    func testLongTimelineSendsOnlyAppendedSuffixAndRetainsItAfterCompletion() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=HeldDisplayClient()
+        let session=try AgentSession(id:"long-stream",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false)
+        addTeardownBlock { await session.close() }
+        _=try await session.submit(Submission(commandID:"c",turnID:"u",text:"Ask"),steer:false)
+        try await eventually { await client.ready }
+        let text=String(repeating:"Long answer 🙂\n",count:20_000)
+        try await client.emit(.text(text))
+        try await client.emit(.part(ResponsePartEvent(attemptID:"a",ordinal:0,itemID:"m",kind:"text",update:"append",text:text)))
+        let first=await session.snapshot(["includeMetrics":false])
+        let suffix="Exact tail 🙂"
+        try await client.emit(.text(suffix))
+        try await client.emit(.part(ResponsePartEvent(attemptID:"a",ordinal:1,itemID:"m",kind:"text",update:"append",text:suffix)))
+        let next=await session.snapshot(["includeMetrics":false,"displayRevision":first["displayRevision"],"messageDelta":true])
+        let patch=next["messageDelta"]
+        XCTAssertEqual(patch["appends"].list.first?["text"].text,suffix)
+        XCTAssertEqual(patch["parts"].list.first?["appends"].list.first?["text"].text,suffix)
+        XCTAssertTrue(patch["parts"].list.first?["segments"].list.isEmpty == true)
+        XCTAssertLessThan(try patch.data().count,2048,"A suffix must not resend the entire large reply")
+        await client.finish(answer(text+suffix)); try await eventually { !(await session.isRunning) }
+        let completed=await session.snapshot(["includeMetrics":false])
+        XCTAssertEqual(completed["messages"].list.last?["text"].text,text+suffix)
+        XCTAssertEqual(completed["messages"].list.last?["responseTimeline"]["segments"].list.last?["text"].text,text+suffix)
     }
 
     func testDeltaDuringTraceSnapshotAwaitBelongsToNextProjection() async throws {

@@ -550,12 +550,10 @@ actor HistoryReader {
             else { message = TranscriptMessage.project(id: ref.id, message: value["message"]?.object ?? [:]) }
             if ref.adopted { message.responseTimeline?.finish("completed"); message.detail="Compaction · Checkpoint durably adopted" }
             if ref.presentation, message.responseTimeline?.terminal == nil { message.detail=(message.detail ?? "Operation") + " · no terminal receipt" }
-            var count = try JSONEncoder().encode(message).count
-            if messages.isEmpty && bytes + count + 1 > HistoryWindowPolicy.envelopeBytes {
-                message.text = String(message.text.prefix(1024)); message.thinking = nil; message.tools = nil; message.truncated = true
-                count = try JSONEncoder().encode(message).count
-            }
-            guard bytes + count + 1 <= HistoryWindowPolicy.envelopeBytes else { break }
+            let count = try JSONEncoder().encode(message).count
+            // A page may hold one large complete row. Never shorten a source
+            // just to fit the preferred window size; native layout is virtual.
+            guard messages.isEmpty || bytes + count + 1 <= HistoryWindowPolicy.envelopeBytes else { break }
             bytes += count + 1
             if forward { messages.append(message); end = index + 1 }
             else { messages.insert(message, at: 0); start = index }

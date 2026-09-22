@@ -39,8 +39,18 @@ enum TranscriptRowUpdates {
             guard timeline.supported, Set(changed.map(\.id)).count == changed.count else { return nil }
             var segments = Dictionary(timeline.segments.map { ($0.id,$0) }, uniquingKeysWith: { _,last in last })
             for segment in changed { segments[segment.id] = segment }
+            var appendedIDs = Set<String>()
+            for value in fields["appends"]?.array ?? [] {
+                guard let id = value.object?["id"]?.string, appendedIDs.insert(id).inserted,
+                      !changed.contains(where: { $0.id == id }), var segment = segments[id],
+                      value.object?["baseRevision"]?.number == Double(segment.revision),
+                      let revision = value.object?["revision"]?.number.flatMap(Int.init(exactly:)), revision > segment.revision,
+                      let text = value.object?["text"]?.string, let state = value.object?["state"]?.string else { return nil }
+                segment.text += text; segment.state = state; segment.revision = revision; segments[id] = segment
+            }
+
             let ids = fields["order"]?.array?.compactMap(\.string) ?? timeline.segments.map(\.id)
-            guard ids.count <= ResponseTimeline.maximumSegments, Set(ids).count == ids.count, ids.allSatisfy({ segments[$0] != nil }) else { return nil }
+            guard Set(ids).count == ids.count, ids.allSatisfy({ segments[$0] != nil }) else { return nil }
             timeline.segments = ids.compactMap { segments[$0] }
             timeline.coverage = fields["coverage"]?.string ?? timeline.coverage
             timeline.omittedEvents = fields["omittedEvents"]?.number.flatMap(Int.init(exactly:)) ?? timeline.omittedEvents

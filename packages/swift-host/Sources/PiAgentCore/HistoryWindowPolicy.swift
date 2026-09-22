@@ -1,7 +1,8 @@
 import Foundation
 
 /// Shared by the read-only desktop and the live helper. These are presentation
-/// budgets, never model-context or journal retention limits.
+/// budgets, never model-context or journal retention limits. A single full
+/// row may exceed the preferred byte window; IPC chunks do not shorten it.
 public enum HistoryWindowPolicy {
     public static let turns = 3
     public static let rows = 60

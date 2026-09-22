@@ -580,7 +580,7 @@ struct MessageRowView: View {
                     .background { if message.role == "assistant" { TranscriptQuoteRegion(messageID: message.id) } }
             }
             if message.truncated == true {
-                Text("Display preview truncated. Full retained content is available in the native message viewer.").font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted)
+                Text("This older saved fragment is incomplete; the original text was not retained.").font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted)
             }
             if message.role == "assistant", message.stopReason == "length" {
                 // The reply reached the output limit the request carried (the model's own

@@ -35,11 +35,9 @@ public struct ResponseTimeline: Codable, Equatable, Sendable {
     public var coverage: String = "observed"
     public var omittedEvents = 0
     public var terminal: String?
-    private var lastOmittedPart: String?
     public init() {}
-    public static let maximumSegments = 64, segmentBytes = 16384
     public var supported: Bool {
-        version == 1 && segments.count <= Self.maximumSegments && omittedEvents >= 0 &&
+        version == 1 && omittedEvents >= 0 &&
             Set(segments.map(\.id)).count == segments.count &&
             segments.allSatisfy { !$0.id.isEmpty && $0.part.ordinal >= 0 && $0.revision >= 0 }
     }
@@ -60,10 +58,10 @@ public struct ResponseTimeline: Codable, Equatable, Sendable {
         if event.update == "replace" {
             if let corrected=segments.last(where: { $0.part.kind == "correction" && $0.part.attemptID == event.attemptID && $0.part.reconcilesPartKey == event.partKey }), corrected.text == event.text { return false }
             let existing = segments.filter { $0.part.partKey == event.partKey }
-            if !existing.isEmpty, existing.contains(where: \.truncated) || existing.map(\.text).joined() == event.text { return false }
+            if !existing.isEmpty, existing.map(\.text).joined() == event.text { return false }
             if let index = segments.firstIndex(where: { $0.part.partKey == event.partKey }), existing.allSatisfy({ $0.text.isEmpty }) {
-                segments[index].text=Self.prefix(event.text,bytes:Self.segmentBytes)
-                segments[index].truncated=event.text.utf8.count > Self.segmentBytes
+                segments[index].text=event.text
+                segments[index].truncated=false
                 segments[index].state="completed"; segments[index].revision += 1
                 return true
             }
@@ -77,25 +75,17 @@ public struct ResponseTimeline: Codable, Equatable, Sendable {
         if event.update == "append", event.text.isEmpty { return false }
         if let index = segments.indices.last, segments[index].part.partKey == event.partKey,
            segments[index].state == "streaming", event.update == "append" {
-            let room = max(0, Self.segmentBytes - segments[index].text.utf8.count)
-            if room == 0 && segments[index].truncated { return false }
-            segments[index].text += Self.prefix(event.text, bytes: room)
-            segments[index].truncated = segments[index].truncated || event.text.utf8.count > room
+            segments[index].text += event.text
             segments[index].revision += 1
             return true
-        }
-        guard segments.count < Self.maximumSegments else {
-            guard lastOmittedPart != event.partKey else { return false }
-            lastOmittedPart = event.partKey; omittedEvents += 1; coverage = "partial"; return true
         }
         // A continuation is a new segment. The earlier native text owner no
         // longer has a streaming caret, even while its provider part is open.
         if let last = segments.indices.last, segments[last].state == "streaming" { segments[last].state = "continued"; segments[last].revision += 1 }
         var metadata = event; metadata.text = ""
         segments.append(Segment(id: "\(event.attemptID):\(event.ordinal)", part: metadata,
-                                text: Self.prefix(event.text, bytes: Self.segmentBytes),
-                                state: event.update == "replace" ? "completed" : "streaming",
-                                truncated: event.text.utf8.count > Self.segmentBytes))
+                                text: event.text,
+                                state: event.update == "replace" ? "completed" : "streaming"))
         if event.evidence != "observed", coverage == "observed" { coverage = event.evidence }
         return true
     }
@@ -103,26 +93,17 @@ public struct ResponseTimeline: Codable, Equatable, Sendable {
         terminal = outcome
         for index in segments.indices where segments[index].state == "streaming" { segments[index].state = outcome; segments[index].revision += 1 }
     }
-    /// Fixed per-ordinal allowances: a new part cannot shrink an already
-    /// displayed prefix. Reserve room for later parts and bound JSON escaping.
-    public func projected(bytes: Int = 32768) -> Self {
-        var result = self
-        if result.segments.count > Self.maximumSegments {
-            result.omittedEvents += result.segments.count - Self.maximumSegments
-            result.segments = Array(result.segments.prefix(Self.maximumSegments)); result.coverage = "partial"
-        }
-        for index in result.segments.indices {
-            let text = result.segments[index].text
-            let cap = index == 0 ? min(16384,bytes / 2) : index < 8 ? 2048 : 128
-            var size = 2, kept = String.UnicodeScalarView()
-            for scalar in text.unicodeScalars {
-                let cost = scalar.value < 32 ? 6 : [34,47,92].contains(scalar.value) ? 2 : String(scalar).utf8.count
-                if size + cost > cap { break }; size += cost; kept.append(scalar)
-            }
-            result.segments[index].text = String(kept)
-            result.segments[index].truncated = result.segments[index].truncated || result.segments[index].text.utf8.count < text.utf8.count
-        }
-        return result
+    /// Display pagination limits how many rows travel together, never the
+    /// content of an individual response. Large results use chunked IPC.
+    public func projected() -> Self { self }
+
+    /// Older builds saved shortened timeline parts but kept the full message.
+    /// Recover canonical order without inventing the lost arrival chronology.
+    public func restoringContent(_ parts: [(kind:String,text:String,callID:String?,name:String?)], sourceID:String) -> Self {
+        guard omittedEvents > 0 || segments.contains(where: \.truncated), !parts.isEmpty else { return self }
+        var restored = Self.canonical(parts, sourceID: sourceID)
+        restored.terminal = terminal
+        return restored
     }
     /// Retained evidence for copy/export. Truncation remains explicit even
     /// when request capture is disabled or expired; this never invents a tail.

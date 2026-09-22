@@ -85,8 +85,7 @@ final class HistoryWindowTests: XCTestCase {
         XCTAssertTrue(detail["input"].text?.contains("file-0") == true)
         let huge: JSON = ["id":"large", "role":"assistant", "text":JSON(String(repeating:"\u{0001}",count:100_000)), "tools":[]]
         let bounded = await session.boundedDisplayRow(huge)
-        XCTAssertTrue(bounded["truncated"].flag == true)
-        XCTAssertLessThan(try bounded.data().count, 8192)
+        XCTAssertEqual(bounded, huge, "A page budget must not truncate individual content")
         let snapshot = await session.snapshot(["includeMetrics":false])
         XCTAssertLessThan(try snapshot.data().count, HistoryWindowPolicy.envelopeBytes)
     }

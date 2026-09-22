@@ -36,11 +36,6 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     var presentationSourceID: String? = nil
     var operationID: String? = nil
     var responseTimeline: ResponseTimeline? = nil
-    private static func bounded(_ text: String, bytes: Int) -> String {
-        var prefix = Data(text.utf8.prefix(bytes))
-        while !prefix.isEmpty { if let value = String(data: prefix, encoding: .utf8) { return value }; prefix.removeLast() }
-        return ""
-    }
     static func project(id: String, message: [String: WireValue]) -> TranscriptMessage {
         let stopReason = message["nativeStopReason"]?.string ?? message["stopReason"]?.string
         let content = message["content"], blocks = content?.array ?? []
@@ -48,17 +43,16 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         let thinking = blocks.compactMap { $0.object?["type"]?.string == "thinking" ? $0.object?["thinking"]?.string : nil }.joined()
         let role = message["role"]?.string ?? "system"
         let toolBlocks = blocks.filter { $0.object?["type"]?.string == "toolCall" }
-        var result = TranscriptMessage(id: id, role: role == "toolResult" ? "tool" : ["user", "assistant", "system"].contains(role) ? role : "system", text: bounded(text, bytes: 16_384), thinking: bounded(thinking, bytes: 8192),
-                     tools: toolBlocks.prefix(32).compactMap { value in
+        var result = TranscriptMessage(id: id, role: role == "toolResult" ? "tool" : ["user", "assistant", "system"].contains(role) ? role : "system", text: message["nativeDisplayText"]?.string ?? text, thinking: thinking,
+                     tools: toolBlocks.compactMap { value in
             guard let block = value.object, block["type"]?.string == "toolCall", let toolID = block["id"]?.string else { return nil }
-            // Cut each long value on its own rather than the encoded document,
-            // so a card read from a journal parses and shows the same partial
-            // edit a live one does instead of a fragment of JSON.
-            let arguments = ToolInputDisplay.bounded(block["arguments"] ?? .null)
+            // Preserve the complete parseable document for expanded details.
+            let full = (block["arguments"] ?? .null).pretty
+            let arguments = (text:full, truncated:false, bytes:full.utf8.count)
             return ToolView(id: String(toolID.prefix(256)), name: String((block["name"]?.string ?? "tool").prefix(256)), state: "recorded",
                             input: arguments.text, output: "", durationMs: nil, truncated: arguments.truncated,
                             inputTruncated: arguments.truncated ? true : nil, inputBytes: arguments.truncated ? arguments.bytes : nil)
-        }, state: stopReason, truncated: text.utf8.count > 16_384 || thinking.utf8.count > 8192 || toolBlocks.count > 32, stopReason: stopReason,
+        }, state: stopReason, truncated: false, stopReason: stopReason,
                      at: message["timestamp"]?.number, turn: message["nativeTurn"]?.string, modelMs: message["nativeModelMs"]?.number, toolCallCount: role == "assistant" ? toolBlocks.count : nil,
                      taskRootID: message["nativeTaskRoot"]?.string, taskExecutionID: message["nativeTaskExecution"]?.string)
         result.presentationSourceID = message["nativePresentationSourceID"]?.string
@@ -66,17 +60,18 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         result.kind = message["nativeKind"]?.string
         if role == "toolResult" { result.kind="toolResult"; result.detail="Tool result · " + (message["toolName"]?.string ?? "tool") }
         result.detail = message["nativeDetail"]?.string ?? result.detail
-        result.responseTimeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }?.projected()
+        let parts: [(kind:String,text:String,callID:String?,name:String?)] = blocks.compactMap { part in
+            let block=part.object ?? [:]
+            switch block["type"]?.string {
+            case "text": return ("text",block["text"]?.string ?? "",nil,nil)
+            case "thinking": return ("reasoningText",block["thinking"]?.string ?? "",nil,nil)
+            case "toolCall": return ("toolArguments",block["arguments"]?.pretty ?? "{}",block["id"]?.string,block["name"]?.string)
+            default: return nil
+            }
+        }
+        result.responseTimeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }?.restoringContent(parts, sourceID:id)
         if result.responseTimeline == nil, role == "assistant", content?.array != nil {
-            result.responseTimeline = ResponseTimeline.canonical(blocks.compactMap { part in
-                let block=part.object ?? [:]
-                switch block["type"]?.string {
-                case "text": return ("text",block["text"]?.string ?? "",nil,nil)
-                case "thinking": return ("reasoningText",block["thinking"]?.string ?? "",nil,nil)
-                case "toolCall": return ("toolArguments",block["arguments"]?.pretty ?? "{}",block["id"]?.string,block["name"]?.string)
-                default: return nil
-                }
-            },sourceID:id).projected()
+            result.responseTimeline = ResponseTimeline.canonical(parts,sourceID:id)
         }
         return result
     }

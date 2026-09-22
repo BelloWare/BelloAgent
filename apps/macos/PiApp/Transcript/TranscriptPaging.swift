@@ -20,7 +20,9 @@ enum TranscriptPaging {
         return previous
     }
     static func size(_ message: TranscriptMessage) -> Int {
-        message.text.utf8.count + (message.thinking?.utf8.count ?? 0) + (message.tools ?? []).reduce(0) { $0 + $1.input.utf8.count + $1.output.utf8.count } + 512
+        let tools = (message.tools ?? []).reduce(0) { $0 + $1.input.utf8.count + $1.output.utf8.count }
+        let timeline = message.responseTimeline?.segments.reduce(0) { $0 + $1.text.utf8.count + 512 } ?? 0
+        return message.text.utf8.count + (message.thinking?.utf8.count ?? 0) + tools + timeline + 512
     }
     static func window(_ messages: [TranscriptMessage], keepingEarlier: Bool) -> [TranscriptMessage] {
         var result: [TranscriptMessage] = [], bytes = 0

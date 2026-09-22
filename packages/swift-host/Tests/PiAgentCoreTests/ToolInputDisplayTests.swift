@@ -45,11 +45,11 @@ final class ToolInputDisplayTests: XCTestCase {
         let parsed = try JSON.parse(Data(text.utf8))
         XCTAssertEqual(parsed["path"].text, "/tmp/big.swift", "Every key survives the display bound")
         XCTAssertNotNil(parsed["oldText"].text); XCTAssertNotNil(parsed["newText"].text)
-        XCTAssertLessThanOrEqual(text.utf8.count, ToolInputDisplay.inlineBytes)
-        XCTAssertEqual(view["inputTruncated"].flag, true)
+        XCTAssertEqual(parsed["oldText"].text,body)
+        XCTAssertEqual(parsed["newText"].text,body + "// tail\n")
+        XCTAssertEqual(view["inputTruncated"].flag, false)
         XCTAssertEqual(view["inputBytes"].int, call.arguments.encoded().utf8.count)
-        XCTAssertTrue(parsed["oldText"].text?.contains(ToolInputDisplay.truncationMarker) ?? false, "A cut value says how much it omitted")
-        XCTAssertEqual(view["truncated"].flag, true, "Older app builds still see the single truncated flag")
+        XCTAssertEqual(view["truncated"].flag, false)
     }
 
     /// A 20 KiB edit fits the per-tool bound whole: the app can render a full
@@ -62,7 +62,6 @@ final class ToolInputDisplayTests: XCTestCase {
         let session = try session(root, id: "roundtrip", seed: [assistant([call])])
         addTeardownBlock { await session.close() }
         let full = try await session.toolInput(messageID: "assistant-1", callID: "call-edit")
-        XCTAssertEqual(full["limit"].int, ToolInputDisplay.contentBytes)
         XCTAssertEqual(full["inputTruncated"].flag, false)
         let parsed = try JSON.parse(Data((full["input"].text ?? "").utf8))
         XCTAssertEqual(parsed["oldText"].text, old, "The whole old text reaches the diff")
@@ -74,34 +73,25 @@ final class ToolInputDisplayTests: XCTestCase {
         catch { XCTAssertEqual((error as? AgentError)?.code, "message_missing") }
     }
 
-    /// A 200 KiB write cannot fit any bound: each field is cut on its own and
-    /// says how many bytes it dropped, and the document still parses.
-    func testTwoHundredKiBWriteIsCutPerFieldWithItsOmittedByteCount() async throws {
+    /// The complete write is displayed even beyond the previous per-tool cap.
+    func testTwoHundredKiBWriteIsReturnedWithoutCuttingFields() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let content = String(repeating: "0123456789", count: 20_480) // 200 KiB
         let call = ToolCall(id: "call-write", name: "write", arguments: ["path": "/tmp/huge.txt", "content": JSON(content)])
         let session = try session(root, id: "huge", seed: [assistant([call])])
         addTeardownBlock { await session.close() }
         let full = try await session.toolInput(messageID: "assistant-1", callID: "call-write")
-        XCTAssertEqual(full["inputTruncated"].flag, true)
+        XCTAssertEqual(full["inputTruncated"].flag, false)
         XCTAssertEqual(full["inputBytes"].int, call.arguments.encoded().utf8.count)
         let text = full["input"].text ?? ""
-        XCTAssertLessThanOrEqual(text.utf8.count, ToolInputDisplay.contentBytes)
         let parsed = try JSON.parse(Data(text.utf8))
         XCTAssertEqual(parsed["path"].text, "/tmp/huge.txt", "A short field is never collateral damage")
         let shown = try XCTUnwrap(parsed["content"].text)
-        XCTAssertTrue(shown.hasPrefix("0123456789"))
-        let marker = try XCTUnwrap(shown.range(of: ToolInputDisplay.truncationMarker))
-        let kept = String(shown[shown.startIndex..<marker.lowerBound])
-        let omitted = try XCTUnwrap(shown[marker.lowerBound...].split(separator: " ").dropFirst().first.flatMap { Int($0) })
-        XCTAssertEqual(kept.utf8.count + omitted, content.utf8.count, "The marker accounts for exactly the bytes that were dropped")
-        XCTAssertGreaterThan(kept.utf8.count, 60_000, "A 64 KiB bound shows about 64 KiB of the file")
+        XCTAssertEqual(shown, content)
     }
 
-    /// The display page is re-sent whole on every streamed delta and the
-    /// transport terminates the helper above 1 MiB, so a bigger per-call bound
-    /// must not ride along on each delta.
-    func testSnapshotBytesPerStreamedDeltaStayBounded() async throws {
+    /// Complete snapshots may exceed a frame, but each transfer chunk cannot.
+    func testCompleteToolSnapshotUsesBoundedTransferChunks() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = SteppedClient(), session = try session(root, id: "delta", client: client)
         addTeardownBlock { await client.enqueue(answer("done")); await session.close() }
@@ -117,13 +107,19 @@ final class ToolInputDisplayTests: XCTestCase {
             maximumFrame = max(maximumFrame, try snapshot.data().count)
         }
         print("PERF tool-input-delta 50x32KiB maxPageBytes=\(maximumPage) maxFrameBytes=\(maximumFrame)")
-        XCTAssertLessThanOrEqual(maximumPage, 150_000, "Fifty 32 KiB tool calls must not multiply the per-delta page")
-        XCTAssertLessThan(maximumFrame, 1_048_576, "A snapshot must never exceed the protocol frame limit")
+        XCTAssertGreaterThan(maximumPage,1_048_576, "Complete large snapshots are transferred in pages, not truncated")
+        let snapshot = await session.snapshot()
+        XCTAssertEqual(snapshot["messages"].list.last?["tools"].list.count,50)
+        var transfers = DisplayResultTransfers()
+        let marker = try transfers.insert(snapshot.data())
+        let first = try transfers.read(marker["id"].text!,offset:0)
+        XCTAssertLessThan(try first.data().count,1_048_576)
+
     }
 
     /// A reply that announces hundreds of calls used to project every one of
     /// them into the streaming row: a 9.8 MB frame, which exits the helper.
-    func testStreamedRowKeepsABoundedNumberOfToolCards() async throws {
+    func testStreamedRowKeepsEveryToolCardWithoutEndingTheTransport() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = SteppedClient(), session = try session(root, id: "many", client: client)
         addTeardownBlock { await client.enqueue(answer("done")); await session.close() }
@@ -133,18 +129,21 @@ final class ToolInputDisplayTests: XCTestCase {
         let hostile = String(repeating: "\u{0001}", count: 8192)
         for index in 0..<400 { try await client.emit(.tool("call-\(index)", "write", hostile)) }
         var snapshot = await session.snapshot()
-        XCTAssertEqual(snapshot["messages"].list.last?["truncated"].flag, true, "The overflow is visible without waiting for another delta")
+        XCTAssertEqual(snapshot["messages"].list.last?["truncated"].flag, false)
         try await client.emit(.text("more"))
         snapshot = await session.snapshot()
         let row = try XCTUnwrap(snapshot["messages"].list.last)
         XCTAssertEqual(row["state"].text, "streaming")
-        XCTAssertEqual(row["tools"].list.count, ToolInputDisplay.projectedCards)
-        XCTAssertEqual(row["truncated"].flag, true, "The row says that more calls exist than it shows")
-        XCTAssertEqual(row["tools"].list.map { $0["id"].text }, (0..<ToolInputDisplay.projectedCards).map { "call-\($0)" }, "Cards keep arrival order, not lexicographic order")
+        XCTAssertEqual(row["tools"].list.count, 400)
+        XCTAssertEqual(row["truncated"].flag, false)
+        XCTAssertEqual(row["tools"].list.map { $0["id"].text }, (0..<400).map { "call-\($0)" }, "Cards keep arrival order, not lexicographic order")
         let frame = try snapshot.data().count
         print("PERF tool-input-streaming 400 calls frameBytes=\(frame)")
-        XCTAssertLessThan(frame, 1_048_576, "A streamed row must never build a frame the transport cannot send")
-        for card in row["tools"].list { XCTAssertLessThanOrEqual(JSON(card["input"].text ?? "").encoded().utf8.count, ToolInputDisplay.inlineBytes) }
+        XCTAssertGreaterThan(frame,1_048_576)
+        var transfers = DisplayResultTransfers()
+        let marker = try transfers.insert(snapshot.data())
+        XCTAssertLessThan(try transfers.read(marker["id"].text!,offset:0).data().count,1_048_576)
+        for card in row["tools"].list { XCTAssertEqual(card["input"].text,hostile) }
     }
 
     /// Live cards are bounded by count and by the bytes they hold, and the
@@ -168,8 +167,7 @@ final class ToolInputDisplayTests: XCTestCase {
         XCTAssertEqual(arrival, arrival.sorted(), "Retirement follows arrival order")
     }
 
-    /// The same bound applies to a reloaded journal: a durable row's card is
-    /// built from the recorded arguments, and must parse there too.
+    /// A durable card is rebuilt from the complete recorded arguments.
     func testReloadedJournalRowProjectsAParseableToolInput() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let directory = root.appendingPathComponent("state")
@@ -202,7 +200,7 @@ final class ToolInputDisplayTests: XCTestCase {
         XCTAssertEqual(view["state"].text, "failed")
         let parsed = try JSON.parse(Data((view["input"].text ?? "").utf8))
         XCTAssertEqual(parsed["path"].text, "/tmp/reload.txt")
-        XCTAssertEqual(view["inputTruncated"].flag, true)
+        XCTAssertEqual(view["inputTruncated"].flag, false)
         let full = try await reopened.toolInput(messageID: "assistant-1", callID: "call-write")
         XCTAssertEqual(try JSON.parse(Data((full["input"].text ?? "").utf8))["path"].text, "/tmp/reload.txt")
     }

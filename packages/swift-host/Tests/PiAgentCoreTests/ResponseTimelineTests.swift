@@ -59,15 +59,17 @@ final class ResponseTimelineTests: XCTestCase {
         XCTAssertEqual(a.timeline.segments[0].part.kind,"toolArguments")
         XCTAssertNotEqual(a.timeline.segments[0].id,b.timeline.segments[0].id)
     }
-    func testProjectionNeverShrinksExistingPartsAndCoverageIsExplicit() {
+    func testProjectionKeepsEveryPartAndItsCompleteText() {
         var timeline=ResponseTimeline()
         timeline.consume(ResponsePartEvent(attemptID:"a",ordinal:0,itemID:"first",kind:"text",update:"append",text:String(repeating:"prefix 🙂 ",count:3000)))
         let first=timeline.projected().segments[0]
         for i in 1..<100 { timeline.consume(ResponsePartEvent(attemptID:"a",ordinal:i,itemID:"\(i)",kind:i%2==0 ? "toolArguments":"reasoningText",update:"append",text:"Part \(i)")) }
         XCTAssertEqual(timeline.projected().segments[0].text,first.text)
         XCTAssertEqual(timeline.projected().segments[0].id,first.id)
-        XCTAssertEqual(timeline.segments.count,ResponseTimeline.maximumSegments)
-        XCTAssertGreaterThan(timeline.omittedEvents,0);XCTAssertEqual(timeline.coverage,"partial")
+        XCTAssertEqual(timeline.segments.count,100)
+        XCTAssertEqual(first.text,String(repeating:"prefix 🙂 ",count:3000))
+        XCTAssertFalse(timeline.segments.contains(where: \.truncated))
+        XCTAssertEqual(timeline.omittedEvents,0);XCTAssertEqual(timeline.coverage,"observed")
         XCTAssertTrue(timeline.segments.contains { $0.part.kind=="toolArguments" && $0.text=="Part 2" })
     }
     func testTimelineMetadataDoesNotChangeReplayOrUsage() throws {

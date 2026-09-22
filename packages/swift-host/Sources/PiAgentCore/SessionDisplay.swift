@@ -45,24 +45,21 @@ extension AgentSession {
         if let displayProjection { return displayProjection }
         displayProjectionBuildCount += 1
         var rows: [DisplayRow]=[], bytes=2, retainedCount=0, retainedIDs=Set<String>()
-        func append(_ row: DisplayRow) -> Bool {
+        func append(_ row: DisplayRow, required: Bool = false) -> Bool {
             let next=bytes+row.bytes+(rows.isEmpty ? 0:1)
-            guard next<=HistoryWindowPolicy.envelopeBytes - HistoryWindowPolicy.metadataAllowance else { return false }
+            guard required || next<=HistoryWindowPolicy.envelopeBytes - HistoryWindowPolicy.metadataAllowance else { return false }
             bytes=next; rows.append(row); return true
         }
         var streaming: StreamingRowState?
         if let partialID {
             let cards=partialToolOrder.compactMap{partialTools[$0]}
-            // The two bounded documents are cached across deltas: rebuilding
-            // them per token copied the whole reply so far, every token.
-            let text=partialTextPreview ?? { let value=preview(partialText,bytes:Self.streamedTextBytes); partialTextPreview=value; return value }()
-            let thinking=partialThinkingPreview ?? { let value=preview(partialThinking,bytes:Self.streamedThinkingBytes); partialThinkingPreview=value; return value }()
-            let truncated=partialText.utf8.count>Self.streamedTextBytes || partialThinking.utf8.count>Self.streamedThinkingBytes || partialToolSeen.count>cards.count
+            let text = partialText, thinking = partialThinking
+            let truncated = false
             var value = boundedDisplayRow(["id":JSON(partialID),"role":"assistant","turn":JSON(currentTurnID),"taskRootID":taskRootID.map { JSON($0) } ?? .null,"taskExecutionID":activeTaskPresentation.map { JSON($0.executionID) } ?? .null,"at":partialStartedAt.map { JSON($0) } ?? .null,"text":JSON(text),"thinking":JSON(thinking),"tools":.array(cards),"state":"streaming","toolCallCount":0,"truncated":JSON(truncated)])
             let timeline = partialTimeline.segments.isEmpty ? nil : partialTimeline.projected()
             if let timeline { value["responseTimeline"] = (try? JSON.parse(JSONEncoder().encode(timeline))) ?? .null }
             displayRowVersion &+= 1
-            _=append(DisplayRow(value:value,bytes:(try? value.data().count) ?? 1_048_576,version:displayRowVersion))
+            _=append(DisplayRow(value:value,bytes:(try? value.data().count) ?? 1_048_576,version:displayRowVersion), required: true)
             streaming=StreamingRowState(id:partialID,text:value["text"].text ?? "",thinking:value["thinking"].text ?? "",cards:partialCardsVersion,truncated:value["truncated"].flag ?? false,timeline:timeline)
         }
         // JSON array size is the encoded row sizes plus brackets and commas.
@@ -82,7 +79,7 @@ extension AgentSession {
                 displayRows[message.id]=row
             }
             retainedIDs.insert(message.id)
-            guard append(row) else { break }
+            guard append(row, required: retainedCount == 0) else { break }
             retainedCount += 1
             settled.append((message.id,row.version))
         }
@@ -91,15 +88,9 @@ extension AgentSession {
         displayProjection=result
         return result
     }
-    /// Budget encoded JSON, including escaping and tool cards. A large first
-    /// row cannot bypass the envelope. Full source reads remain available.
-    func boundedDisplayRow(_ source: JSON) -> JSON {
-        guard (try? source.data().count) ?? Int.max > HistoryWindowPolicy.envelopeBytes - HistoryWindowPolicy.metadataAllowance else { return source }
-        var row = source
-        row["text"] = JSON(encodedPreview(row["text"].text ?? "", bytes: 4096))
-        row["thinking"] = ""; row["tools"] = []; row["truncated"] = true
-        return row
-    }
+    /// Compatibility seam for display callers. Rows are complete; the page
+    /// budget is soft for a single large row and IPC transfers it in chunks.
+    func boundedDisplayRow(_ source: JSON) -> JSON { source }
     /// What changed since the page the reader already holds: the rows whose
     /// content is new, the tokens appended to the row still arriving, and the
     /// row order when it moved. Nil when no such page was recorded, in which
@@ -119,10 +110,16 @@ extension AgentSession {
                 if let timeline = streaming.timeline {
                     let prior = sent.timeline
                     let old = Dictionary((prior?.segments ?? []).map { ($0.id,$0) }, uniquingKeysWith: { _,last in last })
-                    let changed = timeline.segments.filter { old[$0.id] != $0 }
-                    if !changed.isEmpty || prior?.terminal != timeline.terminal || prior?.coverage != timeline.coverage || prior?.omittedEvents != timeline.omittedEvents {
+                    var changed: [ResponseTimeline.Segment] = [], appended: [JSON] = []
+                    for segment in timeline.segments where old[segment.id] != segment {
+                        if let prior = old[segment.id], prior.part == segment.part, prior.truncated == segment.truncated,
+                           let text = appendedText(prior.text, segment.text) {
+                            appended.append(["id":JSON(segment.id),"baseRevision":JSON(prior.revision),"revision":JSON(segment.revision),"state":JSON(segment.state),"text":JSON(text)])
+                        } else { changed.append(segment) }
+                    }
+                    if !changed.isEmpty || !appended.isEmpty || prior?.terminal != timeline.terminal || prior?.coverage != timeline.coverage || prior?.omittedEvents != timeline.omittedEvents {
                         var part: JSON = ["id":JSON(streaming.id),"version":1,"coverage":JSON(timeline.coverage),"omittedEvents":JSON(timeline.omittedEvents),"terminal":timeline.terminal.map { JSON($0) } ?? .null,
-                                          "segments": (try? JSON.parse(JSONEncoder().encode(changed))) ?? []]
+                                          "segments": (try? JSON.parse(JSONEncoder().encode(changed))) ?? [], "appends":.array(appended)]
                         if prior?.segments.map(\.id) != timeline.segments.map(\.id) { part["order"] = .array(timeline.segments.map { JSON($0.id) }) }
                         parts.append(part)
                     }
@@ -154,7 +151,7 @@ extension AgentSession {
             // Old journals retain isError and exact result text, but not an
             // execution clock or a reliable failure-vs-cancellation enum. Keep
             // those limits honest; an unknown/error outcome is never completed.
-            let stats = result.toolStats ?? .null, fields = toolInputFields(call["arguments"]), keptOutput = encodedPreview(output, bytes: 4096)
+            let stats = result.toolStats ?? .null, fields = toolInputFields(call["arguments"]), keptOutput = output
             let inputTruncated = fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false
             states[id] = merging(["id": JSON(id), "name": call["name"], "state": JSON(result.isError ? "failed" : "completed"),
                           "output": JSON(keptOutput),

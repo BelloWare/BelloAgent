@@ -113,18 +113,19 @@ public struct ChatMessage: Codable, Sendable {
                             "truncated": JSON(fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false)], fields)
         }
         let full = displayText ?? text
-        var value: JSON = ["id": JSON(id), "role": JSON(role == "toolResult" ? "tool" : role), "text": JSON(preview(full)), "thinking": JSON(preview(thinking, bytes: 8192)), "tools": .array(Array(tools.prefix(ToolInputDisplay.projectedCards))), "state": JSON(state), "truncated": JSON(full.utf8.count > 16384 || thinking.utf8.count > 8192 || tools.count > ToolInputDisplay.projectedCards)]
+        var value: JSON = ["id": JSON(id), "role": JSON(role == "toolResult" ? "tool" : role), "text": JSON(full), "thinking": JSON(thinking), "tools": .array(tools), "state": JSON(state), "truncated": false]
         if let presentationSourceID { value["presentationSourceID"] = JSON(presentationSourceID) }
         if let operationID { value["operationID"] = JSON(operationID) }
         if role == "toolResult" { value["kind"] = "toolResult"; value["detail"] = JSON("Tool result · " + (toolName ?? "tool") + " · " + (toolStats?["outcome"].text ?? (isError ? "failed":"recorded"))) }
-        let responseTimeline = responseTimeline ?? (role == "assistant" ? ResponseTimeline.canonical(content.compactMap { part in
+        let parts: [(kind:String,text:String,callID:String?,name:String?)] = content.compactMap { part in
             switch part["type"].text {
             case "text": return ("text",part["text"].text ?? "",nil,nil)
             case "thinking": return ("reasoningText",part["thinking"].text ?? "",nil,nil)
             case "toolCall": return ("toolArguments",part["arguments"].encoded(),part["id"].text,part["name"].text)
             default: return nil
             }
-        },sourceID:id) : nil)
+        }
+        let responseTimeline = responseTimeline?.restoringContent(parts, sourceID:id) ?? (role == "assistant" ? ResponseTimeline.canonical(parts,sourceID:id) : nil)
         if let responseTimeline { value["responseTimeline"] = (try? JSON.parse(JSONEncoder().encode(responseTimeline.projected()))) ?? .null }
         if role == "assistant" { value["toolCallCount"] = JSON(tools.count) }
         if let kind { value["kind"] = JSON(kind) }

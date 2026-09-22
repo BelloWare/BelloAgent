@@ -86,7 +86,7 @@ final class HostSupervisor: ObservableObject {
             ]
             // The vault supplies only tool search paths here; credentials use private IPC.
             connection.start(executable: helper, arguments: [], cwd: cwd, environment: environment)
-            connection.send(["v": .number(1), "kind": .string("hello"), "major": .number(1), "minor": .number(1), "build": .string(ReleaseConfiguration.current.build)])
+            connection.send(["v": .number(1), "kind": .string("hello"), "major": .number(1), "minor": .number(1), "displayTransfers": .bool(true), "build": .string(ReleaseConfiguration.current.build)])
         }
         let attempt = transport
         try await withCheckedThrowingContinuation { continuation in
@@ -102,6 +102,18 @@ final class HostSupervisor: ObservableObject {
         }
     }
     func request(_ method: String, sessionID: String? = nil, params: [String: WireValue] = [:], commandID: String = UUID().uuidString) async throws -> WireValue {
+        let connection = connectionID
+        let result = try await requestFrame(method, sessionID:sessionID, params:params, commandID:commandID)
+        guard result.object?["_displayTransfer"]?.number == 1 else { return result }
+        return try await DisplayResultReader.read(result) { [self] id, offset in
+            try await readDisplayTransfer(id, offset:offset, connection:connection)
+        }
+    }
+    private func readDisplayTransfer(_ id: String, offset: Int, connection: UUID?) async throws -> WireValue {
+        guard connectionID == connection else { throw HostError.failure("The helper changed while loading the conversation. Reload it to continue.") }
+        return try await requestFrame("display.result.read", params:["id":.string(id),"offset":.number(Double(offset))])
+    }
+    private func requestFrame(_ method: String, sessionID: String? = nil, params: [String: WireValue] = [:], commandID: String = UUID().uuidString) async throws -> WireValue {
         try Task.checkCancellation()
         guard isReady, !closing, let epoch, !outstandingCommands.contains(commandID),
               !queuedRequests.contains(where: { $0.id == commandID }),

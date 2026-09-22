@@ -42,7 +42,7 @@ extension AgentSession {
         guard var view=toolStates[id], view["state"].text=="running" else { return }
         let observedAt = displayClock(), previous = view
         let text=update["content"].list.compactMap{$0["text"].text}.joined(separator:"\n")
-        let kept=encodedPreview(text,bytes:4096)
+        let kept=text
         view["output"]=JSON(kept);view["truncated"]=JSON((view["inputTruncated"].flag ?? false) || kept.utf8.count<text.utf8.count);setToolState(id,view)
         if view != previous { recordDisplayChange(toolStateOwners[id], at: observedAt) }
         event("tool_execution_update")
@@ -74,7 +74,7 @@ extension AgentSession {
         message.toolStats?["outcome"]=JSON(uncertain || (state == "cancelled" && started != nil) ? "unknown" : started == nil ? "not_executed" : state)
         try append(message, observedAt: observedAt)
         setToolStateOwner(call.id)
-        let fields=toolInputFields(call.arguments), keptOutput=encodedPreview(text,bytes:4096)
+        let fields=toolInputFields(call.arguments), keptOutput=text
         let inputTruncated=fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false
         setToolState(call.id,merging(["id":JSON(call.id),"name":JSON(call.name),"state":JSON(state),"output":JSON(keptOutput),"durationMs":durationMs.map { JSON($0) } ?? .null,"truncated":JSON(inputTruncated || keptOutput.utf8.count < text.utf8.count),"path":stats["path"],"added":stats["added"],"removed":stats["removed"]],fields))
         recordDisplayChange(toolStateOwners[call.id], at: observedAt)
