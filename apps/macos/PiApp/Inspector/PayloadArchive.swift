@@ -406,6 +406,45 @@ actor PayloadArchive {
         }
         return try zip(rows, ids).map { try metadata(row: $0, bodies: descriptors[$1] ?? []) }
     }
+    /// The turn popup consumes only requests owned by this turn. General
+    /// message inspection intentionally also follows later context reuse.
+    func turnRequests(sessionID: String, workspaceID: String, scope: TurnRequestScope, offset: Int = 0) throws -> [[String: WireValue]] {
+        guard !sessionID.isEmpty, !workspaceID.isEmpty, offset >= 0, offset <= 100_000,
+              scope.turnIDs.count <= 500, scope.outputIDs.count <= 500,
+              (scope.turnIDs + scope.outputIDs).allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 }) else { throw CaptureFailure.unavailable }
+        guard !scope.turnIDs.isEmpty || !scope.outputIDs.isEmpty || scope.activeCompaction else { return [] }
+        try Task.checkCancellation(); try reconcile()
+        let db = try ready()
+        var candidates: [String] = [], args: [CaptureSQLValue] = []
+        if scope.activeCompaction {
+            candidates.append("SELECT id FROM attempts WHERE workspace=? AND session=? AND purpose='compaction' AND outcome='running'")
+            args += [.text(workspaceID), .text(sessionID)]
+        }
+        if !scope.turnIDs.isEmpty {
+            let marks = scope.turnIDs.map { _ in "?" }.joined(separator: ",")
+            candidates.append("SELECT id FROM attempts WHERE workspace=? AND session=? AND turn IN (\(marks))")
+            args += [.text(workspaceID), .text(sessionID)] + scope.turnIDs.map(CaptureSQLValue.text)
+        }
+        if !scope.outputIDs.isEmpty {
+            let marks = scope.outputIDs.map { _ in "?" }.joined(separator: ",")
+            candidates.append("SELECT attempt FROM message_links WHERE role='output' AND message IN (\(marks))")
+            args += scope.outputIDs.map(CaptureSQLValue.text)
+        }
+        var sql = "SELECT * FROM attempts WHERE id IN (\(candidates.joined(separator: " UNION "))) AND workspace=?"
+        args.append(.text(workspaceID))
+        if let start = scope.started { sql += " AND wall>=?"; args.append(.real(start)) }
+        if let end = scope.ended { sql += " AND wall<=?"; args.append(.real(end)) }
+        sql += " ORDER BY wall,id LIMIT 128 OFFSET ?"; args.append(.integer(Int64(offset)))
+        let rows = try db.rows(sql, args)
+        guard !rows.isEmpty else { return [] }
+        let ids = try rows.map { try archiveText($0, "id") }
+        var descriptors: [String: [[String: CaptureSQLValue]]] = [:]
+        for body in try db.rows("SELECT * FROM bodies WHERE attempt IN (\(ids.map { _ in "?" }.joined(separator: ",")))", ids.map(CaptureSQLValue.text)) {
+            descriptors[try archiveText(body, "attempt"), default: []].append(body)
+        }
+        return try zip(rows, ids).map { try metadata(row: $0, bodies: descriptors[$1] ?? []) }
+    }
+
     func eventIndices(attemptID: String, offset: Int) throws -> [String: WireValue] {
         let db = try ready(); _ = try record(attemptID)
         guard offset >= 0, offset <= 4096 else { throw CaptureFailure.sequence }

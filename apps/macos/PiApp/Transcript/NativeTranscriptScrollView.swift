@@ -173,7 +173,8 @@ final class TranscriptNativeScrollView: NSScrollView {
         edit: { [weak self] in self?.current.edit($0) },
         copyMessage: { [weak self] in self?.current.copyMessage($0) },
         stop: { [weak self] in self?.current.stop() },
-        retry: { [weak self] in self?.current.retry() }
+        retry: { [weak self] in self?.current.retry() },
+        turnRequestSource: { [weak self] in self?.current.turnRequestSource?() }
     )
 }
 

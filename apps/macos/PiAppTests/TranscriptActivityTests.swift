@@ -107,17 +107,17 @@ final class TranscriptActivityTests: XCTestCase {
         XCTAssertEqual(accounting.model, "gpt-5.4"); XCTAssertEqual(accounting.modelMessageID, "a2")
         XCTAssertEqual(last.accounting.requests, 0)
         XCTAssertEqual(TranscriptActivity.tokens(of: accounting), 623)
-        XCTAssertEqual(TranscriptActivity.usageBreakdown(total.accounting), "in 100 · 20 cached · 80 uncached · out 523 · 30 reasoning (1/2) · $0.00142", "only one of the two requests reported reasoning")
+        XCTAssertEqual(TranscriptActivity.usageBreakdown(total.accounting), "in 100 · 20 cached · 80 uncached · out 523 · 30 reasoning (1/2) · $0.001421875", "only one of the two requests reported reasoning")
         let single = TaskTranscriptPlan.summary([message("u", "user", "Go", at: 1_000), message("a", "assistant", "Done", accounting: reported { $0.cacheReadTokens = 8; $0.models = models }, at: 3_000)],task:nil)
-        XCTAssertEqual(TranscriptActivity.usageBreakdown(single.accounting), "in 38 · 8 cached · 30 uncached · out 423 · $0.00042")
+        XCTAssertEqual(TranscriptActivity.usageBreakdown(single.accounting), "in 38 · 8 cached · 30 uncached · out 423 · $0.000421875")
         let partial = TranscriptActivity.aggregate([message("x", "assistant", "", accounting: reported { a in a.costSamples = 0; a.costUSD = nil; a.cacheReadSamples = 0; a.cacheReadTokens = nil; a.tokens = GatewayTokenTotals(input: 5, output: nil, total: nil, inputSamples: 1, outputSamples: 0, samples: 0) })])
         XCTAssertNil(partial.costUSD); XCTAssertEqual(partial.input, 5); XCTAssertNil(partial.output); XCTAssertNil(partial.total); XCTAssertNil(partial.uncached); XCTAssertNil(partial.reasoning)
         XCTAssertEqual(TranscriptActivity.usageBreakdown(partial), "in 5")
         let uncovered = TranscriptActivity.aggregate([message("y", "assistant", "", accounting: reported { $0.requests = 2; $0.costSamples = 1 })])
-        XCTAssertEqual(TranscriptActivity.usageBreakdown(uncovered), "in 38 (1/2) · 0 cached (1/2) · out 423 (1/2) · $0.00042 (1/2)", "partial coverage stays visible, and an uncached share is not derived from partial input and cache reports")
+        XCTAssertEqual(TranscriptActivity.usageBreakdown(uncovered), "in 38 (1/2) · 0 cached (1/2) · out 423 (1/2) · $0.000421875 (1/2)", "partial coverage stays visible, and an uncached share is not derived from partial input and cache reports")
         XCTAssertEqual(TranscriptActivity.formatCompactTokens(950), "950"); XCTAssertEqual(TranscriptActivity.formatCompactTokens(1_500), "1.5k"); XCTAssertEqual(TranscriptActivity.formatCompactTokens(2_000), "2k"); XCTAssertEqual(TranscriptActivity.formatCompactTokens(48_200), "48k"); XCTAssertEqual(TranscriptActivity.formatCompactTokens(2_500_000), "2.5M")
         XCTAssertEqual(TranscriptActivity.formatTokenCount(9_999), "9,999"); XCTAssertEqual(TranscriptActivity.formatTokenCount(12_000), "12k")
-        XCTAssertEqual(TranscriptActivity.formatTurnCost(0), "$0"); XCTAssertEqual(TranscriptActivity.formatTurnCost(0.0004), "$0.0004"); XCTAssertEqual(TranscriptActivity.formatTurnCost(0.0123), "$0.012"); XCTAssertEqual(TranscriptActivity.formatTurnCost(2), "$2.00")
+        XCTAssertEqual(TranscriptActivity.formatTurnCost(0), "$0"); XCTAssertEqual(TranscriptActivity.formatTurnCost(0.0004), "$0.0004"); XCTAssertEqual(TranscriptActivity.formatTurnCost(0.0123), "$0.0123"); XCTAssertEqual(TranscriptActivity.formatTurnCost(2), "$2.00")
     }
 
     func testTurnInfoAndSessionFooterPreserveZeroAndMicroCosts() {
@@ -129,7 +129,9 @@ final class TranscriptActivityTests: XCTestCase {
             XCTAssertEqual(compactGatewayUSD(accounting.costUSD), expected)
             XCTAssertTrue(TranscriptActivity.accountingPresentation(accounting).usage.hasSuffix(expected + " USD"))
         }
-        XCTAssertEqual(compactGatewayUSD(1e-10), "$1e-10")
+        XCTAssertEqual(compactGatewayUSD(1e-10), "$0.0000000001")
+        XCTAssertEqual(compactGatewayUSD(0.0013875), "$0.0013875")
+        XCTAssertEqual(compactGatewayUSD(2.12345678), "$2.12345678")
         XCTAssertEqual(compactGatewayUSD(nil), "cost n/a")
         XCTAssertEqual(compactGatewayUSD(-1), "cost n/a")
         XCTAssertEqual(compactGatewayUSD(.nan), "cost n/a")

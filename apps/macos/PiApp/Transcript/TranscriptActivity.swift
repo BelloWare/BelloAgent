@@ -92,6 +92,7 @@ struct TurnSummary: Equatable, Sendable {
     var notice: String?
     var toolCountPartial = false
     var taskKey: String? = nil
+    var taskRootID: String? = nil
     var phase: String? = nil
     var outcome: String? = nil
     /// Only a currently running task may compare this with this boot's uptime.

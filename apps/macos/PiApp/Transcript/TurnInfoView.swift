@@ -4,6 +4,17 @@ import AppKit
 /// Render the same reported observations inline, in the live dock, and in its
 /// details table. Missing reports stay distinct from a reported zero.
 enum TurnInfoPresentation {
+    static func workingLabel(_ turn: TurnSummary, state: String = "running") -> String {
+        switch state == "stopping" ? "stopping" : turn.phase ?? state {
+        case "queued", "preparing": return "Preparing response…"
+        case "stopping": return "Stopping…"
+        case "compacting": return "Compacting context…"
+        case "retrying": return "Waiting to retry…"
+        case "tools": return "Running " + (turn.current?.name ?? "tools") + "…"
+        case "model": return "Generating response…"
+        default: return "Reconciling task status…"
+        }
+    }
     static func live(_ turn: TurnSummary, at date: Date, uptimeMs: Double = ProcessInfo.processInfo.systemUptime * 1000) -> TurnSummary {
         guard turn.live else { return turn }
         var current = turn
@@ -30,7 +41,8 @@ enum TurnInfoPresentation {
         TranscriptActivity.tokens(of:turn.accounting).map(TranscriptActivity.formatTokenCount) ?? (turn.live ? "Pending" : "Unreported")
     }
     static func costLabel(_ turn: TurnSummary) -> String {
-        turn.accounting.costUSD.map(TranscriptActivity.formatTurnCost) ?? (turn.live ? "Pending" : "Unreported")
+        guard let cost = turn.accounting.costUSD, cost.isFinite, cost >= 0 else { return turn.live ? "Pending" : "Unreported" }
+        return "$" + MetricFormat.preciseDecimal(cost)
     }
     static func inlineFigures(_ turn: TurnSummary) -> [String] {
         var parts = ["\(tokenLabel(turn)) tokens", "Cost \(costLabel(turn))"]
@@ -82,72 +94,254 @@ enum TurnInfoPresentation {
     }
 }
 
-struct TurnInfoButton: View {
+/// Own the payload popover at the AppKit boundary. SwiftUI's popover sizing
+/// can feed back into a virtualized transcript row's NSHostingView when the
+/// asynchronous body arrives, repeatedly updating window constraints. An
+/// explicitly sized popover keeps payload layout independent of that row.
+struct TurnInfoButton: NSViewRepresentable {
     let turn: TurnSummary
     let actions: TranscriptActions
-    @State private var open = false
-    var body: some View {
-        Button { open.toggle() } label: { Image(systemName:"info.circle").frame(width:20,height:20) }
-            .buttonStyle(.plain).help("Show turn info").accessibilityLabel("Show turn info")
-            .popover(isPresented:$open) { TurnInfoView(turn:turn,actions:actions) }
+    func makeCoordinator() -> Coordinator { Coordinator(turn: turn, actions: actions) }
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton()
+        button.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "Show turn info")?
+            .withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+        button.target = context.coordinator; button.action = #selector(Coordinator.toggle(_:))
+        button.isBordered = false; button.imagePosition = .imageOnly; button.contentTintColor = .tertiaryLabelColor
+        button.toolTip = "Show turn info"; button.setAccessibilityLabel("Show turn info")
+        return button
+    }
+    func updateNSView(_ button: NSButton, context: Context) { context.coordinator.update(turn: turn, actions: actions) }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSButton, context: Context) -> CGSize? { CGSize(width: 20, height: 20) }
+    static func dismantleNSView(_ view: NSButton, coordinator: Coordinator) {
+        // Teardown publishes the body reader's final state. Do not trigger it
+        // from inside SwiftUI's dismantling transaction.
+        DispatchQueue.main.async { coordinator.close() }
+    }
+
+    @MainActor final class Coordinator: NSObject, NSPopoverDelegate {
+        private var turn: TurnSummary
+        private var actions: TranscriptActions
+        private(set) var popover: NSPopover?
+        private var content: NSHostingController<TurnInfoView>?
+        init(turn: TurnSummary, actions: TranscriptActions) { self.turn = turn; self.actions = actions }
+        func update(turn: TurnSummary, actions: TranscriptActions) {
+            self.actions = actions
+            guard self.turn != turn else { return }
+            self.turn = turn
+            if content != nil {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, let content = self.content else { return }
+                    content.rootView = self.rootView()
+                }
+            }
+        }
+        private func rootView() -> TurnInfoView {
+            TurnInfoView(turn: turn, actions: actions, close: { [weak self] in self?.close() })
+        }
+        @objc func toggle(_ button: NSButton) {
+            if popover?.isShown == true { close(); return }
+            let popup = NSPopover(), content = NSHostingController(rootView: rootView())
+            popup.behavior = .transient; popup.animates = true; popup.delegate = self
+            popup.contentViewController = content; popup.contentSize = NSSize(width: 680, height: 640)
+            self.popover = popup; self.content = content
+            popup.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
+            content.view.window?.title = "Turn details"
+            content.view.window?.makeKey()
+        }
+        func close() { popover?.close(); popover = nil; content = nil }
+        func popoverDidClose(_ notification: Notification) {
+            // AppKit can close the popup while SwiftUI removes its anchor at
+            // turn completion. Release its observed content after that update.
+            let closed = notification.object as? NSPopover
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.popover === closed else { return }
+                self.popover = nil; self.content = nil
+            }
+        }
     }
 }
 
-/// The detailed view remains lazy and separate from the transcript's prose
-/// hosts. Expanding it cannot change their geometry or selection.
+/// Opened lazily over the report. One request at a time, using the same body
+/// viewer as the inspector; the transcript never loads payloads while closed.
 struct TurnInfoView: View {
     let turn: TurnSummary
     let actions: TranscriptActions
-    var body: some View {
-        VStack(alignment:.leading,spacing:12) {
-            HStack {
-                Text("Turn info").font(.headline)
-                Spacer()
-                Button("Copy Turn Info") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(TurnLineView.copyText(turn),forType:.string)
-                }.buttonStyle(.plain)
-            }
-            ScrollView {
-                LazyVStack(alignment:.leading,spacing:16) {
-                    if let notice = turn.notice { Text(notice).foregroundStyle(TranscriptPalette.warning).textSelection(.enabled) }
-                    if turn.partial { Text("Partial history: usage below covers loaded request records. Load earlier work to include it.").foregroundStyle(TranscriptPalette.warning) }
-                    if turn.live { Text("Gateway-reported usage so far. The current request may report its final usage and cost when it finishes.").foregroundStyle(TranscriptPalette.muted) }
-                    table(TurnInfoPresentation.rows(turn))
-                    Text("Cached tokens are included in input; reasoning tokens and reasoning cost are included in output and total cost. They are not added again.")
-                        .foregroundStyle(TranscriptPalette.muted)
-                    ForEach(Array(turn.requests.enumerated()),id:\.element.id) { index, reply in
-                        VStack(alignment:.leading,spacing:8) {
-                            HStack {
-                                Text("Request group \(index + 1)").fontWeight(.semibold)
-                                Spacer()
-                                Button("Request details") { actions.inspect(reply.id) }.buttonStyle(.plain)
-                            }
-                            Text("Message: " + reply.id).foregroundStyle(TranscriptPalette.faint).textSelection(.enabled)
-                            if let ms = reply.modelMs { Text("Model request: " + TranscriptActivity.formatDuration(ms)) }
-                            table(TurnInfoPresentation.usageRows(TranscriptActivity.aggregate([reply])))
-                        }
-                    }
-                }.padding(.trailing,4)
-            }
-        }.font(.system(size:12)).foregroundStyle(TranscriptPalette.text)
-            .padding(16).frame(width:620,height:480).background(TranscriptPalette.surface)
+    var close: (() -> Void)? = nil
+    @StateObject private var controller = TurnRequestController()
+    @State private var tab = "response"
+    @State private var query = ""
+    @State private var headersOpen = false
+    @State private var copySource: CapturedBodyCopySource?
+    @State private var onScreen = true
+    @State private var copyNotice = ""
+    @FocusState private var searchFocused: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    init(turn: TurnSummary, actions: TranscriptActions, close: (() -> Void)? = nil, initialTab: String = "response", initialQuery: String = "") {
+        self.turn = turn; self.actions = actions; self.close = close
+        _tab = State(initialValue: initialTab); _query = State(initialValue: initialQuery)
     }
-    private func table(_ rows: [TurnInfoPresentation.Row]) -> some View {
-        Grid(alignment:.leading,horizontalSpacing:12,verticalSpacing:7) {
-            GridRow {
-                Text("Metric").fontWeight(.semibold)
-                Text("Value").fontWeight(.semibold)
-                Text("Coverage").fontWeight(.semibold)
+    private struct Refresh: Equatable { let scope: TurnRequestScope; let live: Bool }
+    private var refresh: Refresh { Refresh(scope: TurnRequestScope(turn), live: turn.live) }
+    private var source: TurnRequestSource? { actions.turnRequestSource?() }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Turn details").font(.system(size: 16, weight: .semibold))
+                Spacer()
+                Button { copyTurn() } label: { Image(systemName: "doc.on.doc") }
+                    .buttonStyle(.piGhost).help("Copy Turn Info").accessibilityLabel("Copy Turn Info")
+                Button { if let close { close() } else { dismiss() } } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.piGhost).help("Close turn details").accessibilityLabel("Close turn details")
+                    .keyboardShortcut(.cancelAction)
             }
-            Divider().gridCellColumns(3)
-            ForEach(rows) { row in
-                GridRow(alignment:.top) {
-                    Text(row.name).foregroundStyle(TranscriptPalette.muted).frame(width:150,alignment:.leading)
-                    Text(row.value).monospacedDigit().textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading)
-                    Text(row.coverage).foregroundStyle(TranscriptPalette.faint).monospacedDigit().frame(width:115,alignment:.leading)
+            overview
+            if let notice = turn.notice, !notice.isEmpty {
+                Text(notice).font(PiFont.caption).foregroundStyle(Color.piWarning).textSelection(.enabled)
+            }
+            if let record = controller.selected, let source {
+                requestPicker(record)
+                HStack(spacing: 12) {
+                    PiTabs(selection: $tab, items: [("request", "Request"), ("response", "Response")])
+                        .accessibilityIdentifier("turn-payload-tabs")
+                        .help("Request: ⌘1 · Response: ⌘2")
+                    Spacer(minLength: 12)
+                    searchField
                 }
+                requestStatus(record)
+                if query.isEmpty {
+                    DisclosureGroup(isExpanded: $headersOpen) {
+                        CapturedHeadersView(headers: record.metadata[tab + "Headers"]?.object ?? [:])
+                            .padding(.top, 5)
+                    } label: {
+                        Text("Headers · \(record.metadata[tab + "Headers"]?.object?.count ?? 0)")
+                            .font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                    }.accessibilityIdentifier("turn-payload-headers")
+                }
+                GeometryReader { bounds in
+                    CapturedBodyView(source: source.body(record, tab), sessionID: record.sessionID, attemptID: record.id,
+                                     kind: tab, retained: record.retained(tab), revision: record.revision(tab),
+                                     copySource: $copySource, initialFormat: tab == "response" ? .combined : .json,
+                                     searchQuery: query, searchHeaders: record.metadata[tab + "Headers"]?.object ?? [:])
+                        .id(record.id + ":" + tab)
+                        .frame(width: bounds.size.width, height: bounds.size.height)
+                }
+                HStack {
+                    Text(turn.live ? "Turn in progress · reported usage so far"
+                         : "\(turn.replies) \(turn.replies == 1 ? "reply" : "replies") · \(turn.tools) \(turn.tools == 1 ? "tool call" : "tool calls")")
+                        .font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
+                    Spacer()
+                    Button { copyBody() } label: { Label(query.isEmpty ? "Copy view" : "Copy body", systemImage: "doc.on.doc") }
+                        .buttonStyle(.piGhost).disabled(copySource == nil)
+                }
+            } else {
+                VStack(spacing: 10) {
+                    if controller.loading { ProgressView().controlSize(.small) }
+                    Text(controller.loading ? "Loading this turn’s requests…" : "No captured requests for this turn")
+                        .font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                    if !controller.loading { Text("Usage remains available above. Request bodies may have expired or capture may have been off.")
+                        .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).multilineTextAlignment(.center) }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        }.fixedSize(horizontal:false,vertical:true)
+            if !controller.notice.isEmpty { Text(controller.notice).font(PiFont.caption).foregroundStyle(Color.piWarning).textSelection(.enabled) }
+            if !copyNotice.isEmpty { Text(copyNotice).font(PiFont.micro).foregroundStyle(Color.piInkSecondary) }
+        }
+        .padding(16).frame(width: 680, height: 640)
+        .background(Color.piSurface).foregroundStyle(Color.piInk)
+        .accessibilityIdentifier("turn-details-popup")
+        .piWindowVisibility { onScreen = $0 }
+        .background {
+            VStack {
+                Button("Find in turn details") { searchFocused = true }.keyboardShortcut("f")
+                Button("Show request") { tab = "request" }.keyboardShortcut("1")
+                Button("Show response") { tab = "response" }.keyboardShortcut("2")
+            }.hidden()
+        }
+        .task(id: refresh) {
+            guard let source else { return }
+            await controller.load(refresh.scope, source: source)
+            while turn.live && !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled else { return }
+                if onScreen { await controller.load(refresh.scope, source: source) }
+            }
+        }
+        .onDisappear { controller.cancel() }
+        .onChange(of: controller.selectedID) { _, _ in copySource = nil; copyNotice = "" }
+        .onChange(of: tab) { _, _ in copySource = nil; copyNotice = "" }
+    }
+
+    @ViewBuilder private var overview: some View {
+        if turn.live {
+            TimelineView(.periodic(from: .now, by: 1)) { clock in
+                CompactTurnReport(turn: TurnInfoPresentation.live(turn, at: clock.date),
+                                  status: TurnInfoPresentation.workingLabel(turn), showsInfo: false)
+            }
+        } else { CompactTurnReport(turn: turn, showsInfo: false) }
+    }
+
+    private func requestPicker(_ record: TurnRequestRecord) -> some View {
+        HStack(spacing: 6) {
+            Text(record.endpoint).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).textSelection(.enabled)
+            Spacer(minLength: 8)
+            Button { controller.move(-1) } label: { Image(systemName: "chevron.left") }
+                .buttonStyle(.piGhost).disabled((controller.index ?? 0) == 0).help("Previous request")
+                .accessibilityLabel("Previous request")
+            PiDropdown(selection: $controller.selectedID,
+                       items: controller.records.enumerated().map { ($0.element.id, "Request \($0.offset + 1) of \(controller.records.count) · \($0.element.purpose)") },
+                       placeholder: "Select request", compact: true)
+                .frame(width: 205).accessibilityIdentifier("turn-request-picker")
+            Button { controller.move(1) } label: { Image(systemName: "chevron.right") }
+                .buttonStyle(.piGhost).disabled((controller.index ?? 0) >= controller.records.count - 1).help("Next request")
+                .accessibilityLabel("Next request")
+            Button { if let source { Task { await controller.load(refresh.scope, source: source) } } } label: { Image(systemName: "arrow.clockwise") }
+                .buttonStyle(.piGhost).disabled(controller.loading).help("Refresh captured request")
+                .accessibilityLabel("Refresh captured request")
+        }
+    }
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(Color.piInkTertiary)
+            TextField("Search body and headers", text: $query).textFieldStyle(.plain)
+                .focused($searchFocused).accessibilityIdentifier("turn-payload-search")
+            if !query.isEmpty {
+                Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).accessibilityLabel("Clear payload search")
+            }
+        }.font(PiFont.caption).padding(.horizontal, 9).padding(.vertical, 7)
+            .background(Color.piFill, in: RoundedRectangle(cornerRadius: 7)).frame(width: 285)
+    }
+    private func requestStatus(_ record: TurnRequestRecord) -> some View {
+        let metrics = record.metadata["metrics"]?.object ?? [:]
+        let status = record.metadata["status"]?.nonnegativeInteger
+        return HStack(spacing: 8) {
+            if let status { PiBadge(text: "HTTP \(status)", tone: status >= 400 ? .danger : .success) }
+            if record.running {
+                PiShimmerText(text: (record.metadata["response"]?.object?["observedBytes"]?.number ?? 0) == 0 ? "Awaiting response…"
+                              : (record.metadata["responseHeaders"]?.object?["content-type"]?.string ?? "").contains("event-stream") ? "Streaming…" : "Receiving response…", size: 11)
+            }
+            else { Text((record.metadata["outcome"]?.string ?? "unreported").capitalized) }
+            if let time = DurationObservation.valid(metrics["httpDurationMs"]?.number) { Text(MetricFormat.detailedDuration(time)).monospacedDigit() }
+            if let ttft = DurationObservation.valid(metrics["observedTTFTms"]?.number) { Text("TTFT " + MetricFormat.detailedDuration(ttft)).monospacedDigit() }
+            Spacer(minLength: 0)
+            Text(record.route).lineLimit(1).truncationMode(.middle).help(record.route)
+        }.font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
+    }
+    private func copyTurn() {
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(TurnLineView.copyText(turn), forType: .string)
+    }
+    private func copyBody() {
+        guard let copySource else { return }
+        let id = controller.selectedID, kind = tab
+        Task {
+            do {
+                let text = try await copySource.render()
+                guard controller.selectedID == id, tab == kind else { return }
+                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+                copyNotice = "Copied \(kind) view."
+            } catch { copyNotice = error.localizedDescription }
+        }
     }
 }

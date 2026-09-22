@@ -44,7 +44,10 @@ struct ConversationPane: View {
                                                             stop: { model.stop(sessionID: session.id) },
                                                             // The retry carries this chat's current model, effort and budgets, as a send would.
                                                             retry: { model.action("turn.retry", params: model.record(session.id).map { TurnOverrides.params(for: $0) } ?? [:], sessionID: session.id) },
-                                                            quoteReply: quoteReplyAction),
+                                                            quoteReply: quoteReplyAction,
+                                                            turnRequestSource: { [weak model] in
+                                                                model.map { TurnRequestSource.session($0, sessionID: session.id) }
+                                                            }),
                                  onAnchorChanged: { anchor in session.scrollAnchor = anchor; model.anchorChanged(session) },
                                  onReadReply: { sessionID, messageID in model.acknowledgeVisibleReply(sessionID: sessionID, messageID: messageID) },
                                  onLoadEarlier: { sessionID in model.loadEarlier(sessionID: sessionID) },

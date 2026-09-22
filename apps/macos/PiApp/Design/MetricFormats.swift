@@ -40,13 +40,13 @@ enum MetricFormat {
     /// - Parameters:
     ///   - read: prompt tokens served from cache.
     ///   - prompt: aggregate prompt-side tokens billed.
-    ///   - decimals: the ordinary precision, 0 or 1.
+    ///   - decimals: ordinary precision; compact labels default to zero.
     static func cacheHitPercent(read: Double, prompt: Double, decimals: Int = 0) -> String? {
         guard let read = observed(read), let prompt = observed(prompt), prompt > 0, read <= prompt else { return nil }
         let hit = read
         if prompt - hit <= 0 { return "100" }
         let ratio = hit / prompt * 100
-        var places = max(0, min(1, decimals))
+        var places = max(0, min(6, decimals))
         // Climb one decimal place at a time until the rendered figure is
         // strictly under a hundred; nine places is far past any real coverage.
         while places <= 9 {
@@ -68,6 +68,29 @@ enum MetricFormat {
     }
 
     // MARK: Durations
+
+    /// Detailed reports retain milliseconds and sub-millisecond latencies,
+    /// rather than rounding a quick request to zero or discarding seconds.
+    static func detailedDuration(_ milliseconds: Double) -> String {
+        guard let value = DurationObservation.valid(milliseconds) else { return "—" }
+        if value == 0 { return "0s" }
+        if value < 1 { return preciseDecimal(value) + " ms" }
+        if value < 1_000 { return trimmed(value, places: 3) + " ms" }
+        guard let rounded = Int(exactly: value.rounded()) else { return "—" }
+        let seconds = Double(rounded % 60_000) / 1_000
+        let tail = trimmed(seconds, places: 3) + "s"
+        let minutes = rounded / 60_000, hours = minutes / 60
+        if hours > 0 { return "\(hours)h \(minutes % 60)m " + tail }
+        return minutes > 0 ? "\(minutes)m " + tail : tail
+    }
+
+    /// Keep small gateway observations useful without floating-point noise.
+    /// Extremely small nonzero amounts use six significant digits.
+    static func preciseDecimal(_ value: Double) -> String {
+        guard value.isFinite, value >= 0 else { return "—" }
+        if value > 0 && value < 0.000000000001 { return String(format: "%.6g", value) }
+        return trimmed(value, places: 12)
+    }
 
     /// `19s`, `1m 05s`, `1h 05m 03s` — the elapsed wall time of a turn or a
     /// session, in whole seconds with the smaller units zero-padded.

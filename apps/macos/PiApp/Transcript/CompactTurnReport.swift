@@ -36,14 +36,14 @@ struct TurnTokenPartition: Equatable {
         partial = a.requests > 0 && (samples < a.requests || partSamples < a.requests)
     }
 
-    var totalLabel: String { total.map(MetricFormat.tokens) ?? "—" }
+    var totalLabel: String { total.map(MetricFormat.exactTokens) ?? "—" }
     func label(part first: Bool) -> String {
         let name = first ? partName : remainderName
         let value = first ? part : remainder
-        var text = name + " " + (value.map(MetricFormat.tokens) ?? "—")
+        var text = name + " " + (value.map(MetricFormat.exactTokens) ?? "—")
         if let total, fraction != nil, let value,
-           let percent = MetricFormat.cacheHitPercent(read: value, prompt: total) {
-            text += " · " + (percent == "0" && value > 0 ? "<1" : percent) + "%"
+           let percent = MetricFormat.cacheHitPercent(read: value, prompt: total, decimals: 2) {
+            text += " · " + (percent == "0" && value > 0 ? "<0.01" : percent) + "%"
         }
         return text
     }
@@ -154,10 +154,10 @@ struct TurnReportMetrics: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
                 Text("Duration").foregroundStyle(TranscriptPalette.faint)
-                Text(turn.elapsedMs.map(workDuration) ?? "—").foregroundStyle(TranscriptPalette.text)
+                Text(turn.elapsedMs.map(MetricFormat.detailedDuration) ?? "—").foregroundStyle(TranscriptPalette.text)
                     .accessibilityIdentifier("elapsedClock")
             }.font(.system(size: 11, weight: .medium))
-            Text("AI \(workDuration(turn.modelMs)) · Tools \(workDuration(turn.toolMs))")
+            Text("AI \(MetricFormat.detailedDuration(turn.modelMs)) · Tools \(MetricFormat.detailedDuration(turn.toolMs))")
                 .font(.system(size: 10)).foregroundStyle(TranscriptPalette.muted)
                 .help("Recorded time waiting on AI requests versus running tools. Running phases are included when the helper reports them; elapsed time also includes other work.")
         }.monospacedDigit().fixedSize(horizontal: true, vertical: true)
@@ -188,9 +188,8 @@ struct TurnTokenBar: View {
                     context.fill(Path(CGRect(x: 0, y: 0, width: size.width * fraction, height: size.height)), with: .color(primary))
                 }
             }.frame(height: 4).accessibilityHidden(true)
-            HStack(spacing: 5) {
+            VStack(alignment: .leading, spacing: 2) {
                 legend(partition.label(part: true), primary)
-                Spacer(minLength: 0)
                 legend(partition.label(part: false), secondary)
             }.font(.system(size: 9.5)).foregroundStyle(TranscriptPalette.muted).fixedSize(horizontal: true, vertical: false)
         }.monospacedDigit().help(partition.help)

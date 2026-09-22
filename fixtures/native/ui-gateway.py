@@ -237,15 +237,20 @@ class Gateway(http.server.BaseHTTPRequestHandler):
 
         try:
             if responses:
+                emit({"type": "response.created", "response": {"id": "resp_" + request_id, "object": "response", "model": resolved_model, "status": "in_progress", "output": []}})
                 if call_tool:
                     output = [{"type": "function_call", "id": "fc_" + request_id, "call_id": "call_" + request_id, "name": tool_name, "arguments": encode(tool_arguments).decode()}]
                     emit({"type": "response.output_item.added", "output_index": 0, "item": {**output[0], "arguments": ""}})
-                    emit({"type": "response.function_call_arguments.delta", "output_index": 0, "delta": output[0]["arguments"]})
+                    emit({"type": "response.function_call_arguments.delta", "output_index": 0, "item_id": output[0]["id"], "delta": output[0]["arguments"]})
                 else:
+                    item_id = "msg_" + request_id
+                    emit({"type": "response.output_item.added", "output_index": 0, "item": {"id": item_id, "type": "message", "role": "assistant", "status": "in_progress", "content": []}})
+                    emit({"type": "response.content_part.added", "output_index": 0, "item_id": item_id, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": []}})
                     for chunk in chunks:
-                        emit({"type": "response.output_text.delta", "delta": chunk})
+                        emit({"type": "response.output_text.delta", "output_index": 0, "item_id": item_id, "content_index": 0, "delta": chunk})
                         time.sleep(0.025 if stress_markdown else 0.8 if "slow" in prompt.lower() else 0.035 if "large" in prompt.lower() else 0.03)
                     output = [{"type": "message", "id": "msg_" + request_id, "role": "assistant", "content": [{"type": "output_text", "text": text, "annotations": []}], "status": "completed"}]
+                emit({"type": "response.output_item.done", "output_index": 0, "item": output[0]})
                 emit({"type": "response.completed", "response": {"id": "resp_" + request_id, "model": resolved_model, "status": "completed", "output": output, "usage": {"input_tokens": 30, "input_tokens_details": {"cached_tokens": 10}, "output_tokens": len(text) // 4 + 1, "cost": 0 if "cache hit" in prompt.lower() else 0.00125}}})
             else:
                 emit({"type": "message_start", "message": {"id": "msg_" + request_id, "model": resolved_model, "type": "message", "role": "assistant", "content": [], "usage": {"input_tokens": 20, "cache_read_input_tokens": 10, "output_tokens": 0}}})

@@ -111,6 +111,27 @@ final class UIScreenshotTests: XCTestCase {
         session.draft = "Please read fixture README.md first, then explain what the retry loop in PaymentClient does today."
         model.send(sessionID: main.id)
         try await waitIdle(session, model: model, minimumMessages: 4)
+        // Keep the real fixture-backed workspace open for pointer/keyboard
+        // acceptance checks. Captures are window-server images of this app,
+        // including its real popovers, never re-created screenshot layouts.
+        if testEnvironment("PI_APP_UI_INTERACTIVE") == "1" {
+            NSApp.appearance = NSAppearance(named: .aqua)
+            try Data("ready".utf8).write(to: folder.appendingPathComponent("ready"))
+            let deadline = Date().addingTimeInterval(900)
+            while Date() < deadline, !FileManager.default.fileExists(atPath: folder.appendingPathComponent("done").path) {
+                let request = folder.appendingPathComponent("capture.txt")
+                if let name = try? String(contentsOf: request, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+                   !name.isEmpty, name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) {
+                    try capture(window, to: gallery.appendingPathComponent(name + ".png"), includingOwnedPanels: true)
+                    try FileManager.default.removeItem(at: request)
+                }
+                try await settle(0.25)
+            }
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         // The first turn ran the read tool: capture its grouped activity before more turns scroll it away.
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
@@ -406,13 +427,16 @@ final class UIScreenshotTests: XCTestCase {
     // server. The symbol is resolved dynamically so the SDK deprecation note
     // does not fail the warnings-as-errors build; ScreenCaptureKit would need
     // TCC consent.
-    @MainActor private func capture(_ window: NSWindow, to url: URL) throws {
+    @MainActor private func capture(_ window: NSWindow, to url: URL, includingOwnedPanels: Bool = false) throws {
         typealias ListImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage") else { throw XCTSkip("Window capture unavailable") }
         let create = unsafeBitCast(symbol, to: ListImage.self)
         let screen = NSScreen.screens.first?.frame ?? .zero
         var frame = window.frame
         if let sheet = window.attachedSheet { frame = frame.union(sheet.frame) }
+        if includingOwnedPanels {
+            for panel in NSApp.windows where panel.isVisible && panel != window { frame = frame.union(panel.frame) }
+        }
         let bounds = CGRect(x: frame.minX, y: screen.height - frame.maxY, width: frame.width, height: frame.height)
         let options = CGWindowImageOption.bestResolution.rawValue | CGWindowImageOption.boundsIgnoreFraming.rawValue
         // Capture the app window itself so an incidental tooltip or another
@@ -420,7 +444,12 @@ final class UIScreenshotTests: XCTestCase {
         let isolated = window.attachedSheet == nil
         let list = isolated ? CGWindowListOption.optionIncludingWindow : .optionOnScreenOnly
         let number = isolated ? UInt32(window.windowNumber) : 0
-        guard let image = create(bounds, list.rawValue, number, options)?.takeRetainedValue() else { throw XCTSkip("Window capture returned no image") }
+        let captured: CGImage?
+        if includingOwnedPanels {
+            captured = create(bounds, CGWindowListOption.optionIncludingWindow.union(.optionOnScreenAboveWindow).rawValue,
+                              UInt32(window.windowNumber), options)?.takeRetainedValue()
+        } else { captured = create(bounds, list.rawValue, number, options)?.takeRetainedValue() }
+        guard let image = captured else { throw XCTSkip("Window capture returned no image") }
         let representation = NSBitmapImageRep(cgImage: image)
         let png = try XCTUnwrap(representation.representation(using: .png, properties: [:]))
         try png.write(to: url, options: .atomic)

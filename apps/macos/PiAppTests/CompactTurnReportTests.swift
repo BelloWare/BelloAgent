@@ -27,9 +27,9 @@ final class CompactTurnReportTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(input.fraction), 0.5)
         XCTAssertEqual(try XCTUnwrap(output.fraction), 900 / 3_800, accuracy: 0.000001)
         XCTAssertEqual(input.remainder, 6_000); XCTAssertEqual(output.remainder, 2_900)
-        XCTAssertEqual(input.label(part: true), "Cached 6K · 50%")
-        XCTAssertEqual(input.label(part: false), "Uncached 6K · 50%")
-        XCTAssertEqual(output.label(part: true), "Reasoning 900 · 24%")
+        XCTAssertEqual(input.label(part: true), "Cached 6,000 · 50%")
+        XCTAssertEqual(input.label(part: false), "Uncached 6,000 · 50%")
+        XCTAssertEqual(output.label(part: true), "Reasoning 900 · 23.68%")
         XCTAssertEqual(TurnPillsPresentation(turn()).totalTokens, 15_800)
         XCTAssertTrue(TurnLineView.copyText(turn()).contains("Models: gpt-5.4-mini, gpt-5.4"))
         XCTAssertTrue(TurnLineView.copyText(turn()).contains("$0.000001"))
@@ -88,8 +88,24 @@ final class CompactTurnReportTests: XCTestCase {
             XCTAssertNil(missing.remainder); XCTAssertNil(missing.fraction)
         }
         a.input = 10_000; a.cached = 9_996
-        XCTAssertEqual(TurnTokenPartition(a, input: true).label(part: true), "Cached 10K · 99.96%")
-        XCTAssertEqual(TurnTokenPartition(a, input: true).label(part: false), "Uncached 4 · <1%")
+        XCTAssertEqual(TurnTokenPartition(a, input: true).label(part: true), "Cached 9,996 · 99.96%")
+        XCTAssertEqual(TurnTokenPartition(a, input: true).label(part: false), "Uncached 4 · 0.04%")
+    }
+
+    func testDetailedNumbersKeepSmallCostsAndFastRequestsVisible() {
+        var value = turn()
+        for cost in [0, 0.0013875, 0.000001, 0.000000123456, 1.23456789] {
+            value.accounting.costUSD = cost
+            let text = TurnInfoPresentation.costLabel(value)
+            XCTAssertEqual(Double(text.dropFirst()), cost, "Displayed cost must preserve this gateway observation")
+        }
+        XCTAssertEqual(MetricFormat.detailedDuration(2.403), "2.403 ms")
+        XCTAssertEqual(MetricFormat.detailedDuration(0.03125), "0.03125 ms")
+        XCTAssertEqual(MetricFormat.detailedDuration(12_345), "12.345s")
+        XCTAssertEqual(MetricFormat.detailedDuration(3_662_345), "1h 1m 2.345s")
+        XCTAssertEqual(MetricFormat.detailedDuration(59_999.9), "1m 0s", "Rounding carries across the minute boundary")
+        XCTAssertEqual(MetricFormat.detailedDuration(.nan), "—")
+        XCTAssertEqual(TurnTokenPartition(accounting(), input: true).totalLabel, "12,000")
     }
 
     @MainActor func testReportIsCompactAndWrapsWithoutChangingHeightAsCountersArrive() throws {

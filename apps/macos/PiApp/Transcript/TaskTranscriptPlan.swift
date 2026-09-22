@@ -212,7 +212,8 @@ enum TaskTranscriptPlan {
             files:TranscriptActivity.changedFiles(tools), partial:partial, accounting:TranscriptActivity.aggregate(rows),
             requests:rows.filter { $0.role == "assistant" || $0.accounting != nil }, current:nil, notice:task?.detail)
         summary.toolCountPartial = task == nil && (calls.partial || partial)
-        summary.taskKey = task?.key; summary.phase = task?.phase; summary.outcome = task?.outcome
+        summary.taskKey = task?.key; summary.taskRootID = task?.rootID
+        summary.phase = task?.phase; summary.outcome = task?.outcome
         summary.liveStartedUptimeMs = task.flatMap { $0.terminal ? nil : $0.startedAt }
         if let name = task?.currentTool { summary.current = ToolView(id:"current", name:name, state:"running", input:"", output:"", truncated:false) }
         return summary

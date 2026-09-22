@@ -89,6 +89,22 @@ class UIGatewayTests(unittest.TestCase):
                 self.assertEqual(self.model_in_stream(received, responses), "ui-fixture")
                 self.assertEqual(response_headers["x-fixture-model"], "ui-fixture")
 
+    def test_responses_stream_has_indexed_items_before_deltas(self):
+        path, headers, body = self.request(prompt="stream preview")
+        status, _, received = self.send(path, headers, body)
+        self.assertEqual(status, 200)
+        events = [json.loads(line[6:]) for line in received.splitlines() if line.startswith(b"data: ")]
+        self.assertEqual(events[0]["type"], "response.created")
+        self.assertEqual(events[0]["response"]["status"], "in_progress")
+        item = next(e["item"] for e in events if e["type"] == "response.output_item.added")
+        deltas = [e for e in events if e["type"] == "response.output_text.delta"]
+        self.assertTrue(deltas)
+        for delta in deltas:
+            self.assertEqual(delta["item_id"], item["id"])
+            self.assertEqual(delta["output_index"], 0)
+            self.assertEqual(delta["content_index"], 0)
+        completed = events[-1]["response"]
+        self.assertEqual("".join(e["delta"] for e in deltas), completed["output"][0]["content"][0]["text"])
     def connection_probe(self, model="ui-fixture", limit=256):
         path, headers, _ = self.request()
         headers["x-session-id"] = "connection-test-synthetic"

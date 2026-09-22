@@ -16,6 +16,8 @@ struct TranscriptActions {
     var retry: () -> Void = {}
     /// Nil for panes that cannot create a child conversation.
     var quoteReply: ((TranscriptQuote) -> Void)? = nil
+    /// Created only when Info opens, without observing the entire workspace in a row.
+    var turnRequestSource: (() -> TurnRequestSource?)? = nil
 }
 
 enum TranscriptMetrics {
@@ -1151,15 +1153,7 @@ struct LiveTurnBar: View {
     var state = "running"
     var actions = TranscriptActions()
     private var label: String {
-        switch state == "stopping" ? "stopping" : turn.phase ?? state {
-        case "queued", "preparing": return "Preparing response…"
-        case "stopping": return "Stopping…"
-        case "compacting": return "Compacting context…"
-        case "retrying": return "Waiting to retry…"
-        case "tools": return "Running " + (turn.current?.name ?? "tools") + "…"
-        case "model": return "Generating response…"
-        default: return "Reconciling task status…"
-        }
+        TurnInfoPresentation.workingLabel(turn, state: state)
     }
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
