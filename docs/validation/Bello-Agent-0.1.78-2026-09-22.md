@@ -17,7 +17,8 @@ Older shortened assistant timelines are reconstructed from the complete canonica
 - Actual-helper regression opens a synthetic saved response larger than the IPC frame limit, checks cold-file and reopened live content/timeline tails, loads the versioned history page, and verifies that the helper remains available.
 - Optimized native: **45 tests passed, zero failures**, covering the actual-helper full-content path, transfer cancellation and frame validation, revision-bound appends, timeline projection, native Markdown/code viewport owners, reading/selection stability and bidirectional history traversal.
 - Optimized synthetic scrolling: 300 rich rows over 120 steps measured p50 **3.806 ms**, p95 **26.761 ms**, p99 **82.856 ms** and maximum synchronous work **68.920 ms**. One 88 KiB Markdown answer measured p50 **5.576 ms**, p95 **8.671 ms**, p99 **15.455 ms** and maximum synchronous work **12.143 ms**. Mounted native view counts stayed stable. Rich-history mounting stalls remain; this change does not claim to eliminate all scrolling jank.
-- Signed/public artifact checks: pending publication; final results will replace this line.
+- Signed artifact: Developer ID app/helper signatures, packaged offline helper/catalog smoke, app and DMG notarization/stapling, Gatekeeper assessment and Sparkle Ed25519 validation passed. No Node runtime is bundled.
+- Public artifact: canonical and legacy feeds are byte-identical; the downloaded DMG matches the local SHA-256 and verifies with the Sparkle Ed25519 key. The public product page advertises 0.1.78 and its installer. Verified **2026-09-22 02:10:13 UTC** after Cloudflare check **106589778913** succeeded for the website publication commit.
 
 Environment: Apple Silicon remote Mac, macOS 14.8, Xcode 16.1, Swift 6 language mode. Native tests use explicit actor data-race checks. Native window tests run serially. Scratch logs are under `full-transcript-078` in the session temporary directory; reusable build caches stay under the existing external `bello-agent-0.1.6/build` root.
 
@@ -33,3 +34,11 @@ PI_BUILD_ROOT="$PI_BUILD_ROOT" bash scripts/release.sh
 PI_BUILD_ROOT="$PI_BUILD_ROOT" bash scripts/publish-release.sh 0.1.78
 python3 scripts/verify-published.py "$PI_BUILD_ROOT/releases/0.1.78" "$SCRATCH/public"
 ```
+
+## Release provenance
+
+Packaged source: `939cbd9912df15b17f752ce6c0cee5b91a8f583e`, pushed to `BelloWare/BelloAgent` `main`. Website publication: `dae6f9ce4d5157679804bd551c23a5f8fc8fa602`, pushed to `BelloWare/belloware.com` `main`.
+
+`BelloAgent-0.1.78.dmg`: **9,083,198 bytes (8.66 MiB)**. SHA-256: `06916c3feac79a490ffba7ee2e82bfff38853b7942e5f7489265b5b304aea59f`.
+
+Apple accepted app submission `178302ee-dd49-4f18-b066-f22e332d4f26` and DMG submission `f8ab6c38-8d52-489f-9811-31fd7446aa03`. Release artifacts remain in the external versioned build directory, with application/helper dSYMs for crash symbolication.

@@ -12,10 +12,14 @@ unless explicitly requested again. Signing, notarization and public artifact
 verification remain. See the [test selection policy](Swift-Test-Handoff.md#current-test-selection-policy).
 The successful installation checks recorded below are historical evidence.
 
-**Bello Agent 0.1.78/build 82 is prepared:** complete streamed and retained responses,
+**Bello Agent 0.1.78/build 82 is released and publicly verified:** complete streamed and retained responses,
 reasoning and expanded tool details replace shortened display previews. Large
 results use automatic IPC chunks; old shortened assistant timelines recover from
-full saved content where available. See the
+full saved content where available. **301 helper and 45 focused optimized native tests pass.**
+Packaged source `939cbd9912df15b17f752ce6c0cee5b91a8f583e`; website
+`dae6f9ce4d5157679804bd551c23a5f8fc8fa602`. Signed/notarized installer, public page,
+identical feeds and downloaded SHA-256/Ed25519 checks pass at
+**2026-09-22 02:10:13 UTC**. Both repositories are pushed to `main`. See the
 [0.1.78 validation record](validation/Bello-Agent-0.1.78-2026-09-22.md).
 
 **Bello Agent 0.1.77/build 81 is released and publicly verified:** late
