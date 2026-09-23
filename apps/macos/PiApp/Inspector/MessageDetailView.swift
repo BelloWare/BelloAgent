@@ -169,6 +169,7 @@ private struct AttemptCard: View {
                     MetricPill(symbol: "arrow.up.doc", label: "Prompt-cache write", value: tokens(gateway.cacheWriteTokens))
                     MetricPill(symbol: "timer", label: "TTFT", value: milliseconds(metrics["observedTTFTms"]))
                     MetricPill(symbol: "waveform.path", label: "Stream", value: milliseconds(metrics["streamDurationMs"]))
+                        .help("First output token to the last (hidden reasoning included): the span the output rate divides by. The wait for the terminal event is not in it.")
                     MetricPill(symbol: "network", label: "HTTP", value: milliseconds(metrics["httpDurationMs"]))
                 }
                 Rectangle().fill(Color.piHairline).frame(height: 1)

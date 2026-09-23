@@ -64,6 +64,11 @@ struct WorkspaceView: View {
                         // Width changes reflow native text and restore scroll anchors.
                         // Apply the final geometry once instead of once per spring frame.
                         .piStableLayout()
+                    } else if model.launching {
+                        // Launch is still reading the chat it reopens. Nothing,
+                        // rather than a welcome — with setup buttons, before
+                        // the vault answers — that the chat is about to cover.
+                        Color.clear
                     } else if OnboardingState.shouldPresent(configurationLoaded: model.configurationLoaded, hasProfiles: !model.requestProfiles.isEmpty, hasChats: !model.chats.isEmpty) {
                         OnboardingView(model: model)
                     } else {

@@ -37,6 +37,63 @@ final class GatewayAccountingTests: XCTestCase {
         XCTAssertEqual(snapshot.gateway.settledThroughput.samples, 2, "the two completed requests that reported output; not the one without, not the running one")
         try await archive.close()
     }
+    /// Every aggregate — a turn, the session pill, the report, the menu bar
+    /// chart and its per-model rows — is Σ(N − 1) ÷ Σ(first → last output)
+    /// over the counted requests: completed, two tokens or more, a span of
+    /// at least the floor. Each request's gateway held its terminal event two
+    /// seconds after its last token; none of that wait is decode time.
+    func testEveryAggregateRateIsTheTokensAfterTheFirstOverFirstToLastOutput() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
+        try await archive.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
+        func request(output: Double, span: Double, outcome: String = "completed", answer: String) -> [String: WireValue] {
+            var metadata = value(output: [answer], outcome: outcome)
+            metadata["usage"] = .object(["output": .number(output)])
+            metadata["timings"] = .object(["dispatch": .number(100), "firstContent": .number(110), "lastContent": .number(110 + span),
+                                           "modelComplete": .number(2_110 + span), "httpEnd": .number(2_120 + span)])
+            return metadata
+        }
+        // Counted: 100 + 50 + 1 tokens after the first, over 1,000 + 500 + 250 ms.
+        try await save(archive, request(output: 101, span: 1_000, answer: "assistant-1"))
+        try await save(archive, request(output: 51, span: 500, answer: "assistant-2"))
+        try await save(archive, request(output: 2, span: 250, answer: "assistant-3"))
+        // Not counted: one token, a tenth of a second, a failure.
+        try await save(archive, request(output: 1, span: 1_000, answer: "assistant-4"))
+        try await save(archive, request(output: 100, span: 100, answer: "assistant-5"))
+        try await save(archive, request(output: 100, span: 1_000, outcome: "failed", answer: "assistant-6"))
+        let expected = SettledThroughput(decodeMilliseconds: 1_750, outputTokens: 151, samples: 3, requests: 6)
+        let rate = 151 / 1.75
+        func check(_ settled: SettledThroughput, requests: Int = 6, _ scope: String) {
+            XCTAssertEqual(settled.samples, 3, scope); XCTAssertEqual(settled.requests, requests, scope)
+            XCTAssertEqual(settled.outputTokens, 151, "\(scope): the tokens after each counted request's first")
+            XCTAssertEqual(settled.decodeMilliseconds, 1_750, "\(scope): first → last output, never to the terminal")
+            XCTAssertEqual(settled.tokensPerSecond ?? 0, rate, accuracy: 1e-9, "\(scope): 151 tokens over 1.75 s")
+        }
+        let window = try await archive.dashboard(filter())
+        check(window.gateway.settledThroughput, "report")
+        XCTAssertEqual(window.gateway.settledThroughput, expected)
+        let models = try await archive.modelSummaries(filter())
+        XCTAssertEqual(models.count, 1, "one route")
+        check(try XCTUnwrap(models.first).gateway.settledThroughput, "report by model")
+        let menu = try await archive.menuBarMetrics(period: .day, until: Date(timeIntervalSince1970: 2001))
+        check(menu.gateway.settledThroughput, "menu bar")
+        XCTAssertEqual(menu.buckets.compactMap { $0.gateway.settledThroughput.tokensPerSecond }.map { ($0 * 1e6).rounded() }, [(rate * 1e6).rounded()], "menu bar chart")
+        check(try XCTUnwrap(menu.models.first { $0.gateway.settledThroughput.samples > 0 }).gateway.settledThroughput, "menu bar by model")
+        let session = try await archive.sessionMetrics(sessionID: "session", workspaceID: "workspace", until: Date(timeIntervalSince1970: 2001))
+        check(session.gateway.settledThroughput, "Session info")
+        let messages = (1...6).map { TranscriptMessage(id: "assistant-\($0)", role: "assistant", text: "") }
+        let accounting = try await archive.gatewayAccounting(sessionID: "session", workspaceID: "workspace", messages: messages, includeTiming: true)
+        check(accounting.session.settledThroughput, "session pill")
+        var turn = SettledThroughput()
+        for message in messages { turn.add(try XCTUnwrap(accounting.messages[message.id]).settledThroughput) }
+        check(turn, "turn")
+        XCTAssertEqual(try XCTUnwrap(accounting.messages["assistant-1"]).settledThroughput.tokensPerSecond, 100, "one reply: (101 − 1) tokens over one second")
+        let history = try XCTUnwrap(accounting.timing)
+        check(try XCTUnwrap(history.historicalSettledThroughput), requests: 5, "sidebar and Session info history")
+        XCTAssertEqual(history.settledThroughput.tokensPerSecond ?? 0, rate, accuracy: 1e-9, "the listed requests fold to the same figure")
+        try await archive.close()
+    }
+
     func testCacheHeaderContractCannotReadAuthenticationOrReuseModelHeader() throws {
         try RoutingConfiguration.validate(.object(["reference": .string("Gateway release acceptance contract"), "cacheHeader": .string("x-app-cache-status")]))
         let cases: [[String: WireValue]] = [
@@ -337,7 +394,11 @@ final class GatewayAccountingTests: XCTestCase {
         // cache read, a read larger than its input) are not in the share.
         let pill = SessionStatsPresentation(gateway: session.session, work: nil)
         XCTAssertEqual(pill.cacheHit, "60")
-        XCTAssertEqual(pill.usageRows.first { $0.name == "Cache hit" }?.coverage, "2/5 requests reported")
+        // The token usage popover the pill opens says the same: 60%, from the
+        // two requests of five that reported both counters.
+        let popover = SessionTokenCharts(inputs: SessionStatsInputs(gateway: session.session), history: nil)
+        XCTAssertEqual(popover.hero.first { $0.id == "cache" }?.value, "60%")
+        XCTAssertEqual(popover.coverage, "Tokens reported by 4 of 5 requests, cache use by 2 of 5; the figures count only those.")
         try await archive.close()
         try await archive.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
         let restored = try await archive.dashboard(filter())

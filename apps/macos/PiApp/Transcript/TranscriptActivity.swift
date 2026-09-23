@@ -66,8 +66,8 @@ struct TurnAccounting: Equatable, Sendable {
         }
     }
     var requestedModels: [String] { Array(Set(modelRoutes.compactMap(\.requested))).sorted() }
-    /// Provider output tokens over decode time, folded over this turn's
-    /// requests; only the requests that reported both are in it.
+    /// Output tokens after the first over first → last generated token,
+    /// folded over this turn's requests; only the measured ones are in it.
     var throughput = SettledThroughput()
     /// First-token latency over the same requests, for the turn-time dialog.
     var latency = SettledLatency()

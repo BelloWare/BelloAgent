@@ -273,8 +273,18 @@ extension PayloadArchive {
         // Reusing existing bounded metadata also restores labels after body
         // expiry, without rereading or reconstructing HTTP payloads per refresh.
         let responseModel = GatewayModelIdentity(metadata: metadata).response?.name
+        // The decode span: first output → last output. The terminal event
+        // carries no token, and a gateway can hold it while it computes usage
+        // and cost. Records written before the helper stamped `lastContent`
+        // (Bello Agent 0.1.85 and earlier) have no last output; the terminal
+        // event is the only end they have, so they keep it. Like the helper's
+        // `metrics.streamDurationMs`, the span exists once the terminal event
+        // was observed, so the Inspector's Stream, the report's Streaming and
+        // the ledger's Generation agree. A migration re-projects every row
+        // through here, by the same rule.
+        let decodeEnd = observed("modelComplete").map { observed("lastContent") ?? $0 }
         try db.execute("UPDATE attempts SET dispatch=?,ttft_ms=?,stream_ms=?,request_ms=?,http_ms=?,wall=COALESCE(?,wall),identity_status=?,reported_models=?,response_model=? WHERE id=? AND metrics_retained=1", [
-            dispatch.map(CaptureSQLValue.real) ?? .null, span(dispatch, observed("firstContent")), span(observed("firstContent"), observed("modelComplete")),
+            dispatch.map(CaptureSQLValue.real) ?? .null, span(dispatch, observed("firstContent")), span(observed("firstContent"), decodeEnd),
             span(dispatch, observed("modelComplete")),
             span(dispatch, observed("httpEnd")), dispatch != nil ? wall.map(CaptureSQLValue.real) ?? .null : .null, .text(identityStatus), reportedColumn,
             responseModel.map(CaptureSQLValue.text) ?? .null, .text(id)

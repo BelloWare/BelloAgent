@@ -65,6 +65,21 @@ struct PiStatPill<Dialog: View>: View {
     }
 
     private var face: some View {
+        PiStatPillFace(symbol: symbol, ring: ring, label: label, highlighted: (hovering || open) && dialog != nil)
+    }
+}
+
+/// What a stat pill looks like: the glyph or ring, the reading, and a soft
+/// fill while the pointer is on it or its dialog is open. Shared by
+/// `PiStatPill` and `PiStatPopoverPill`, so the pills under the composer read
+/// as one row whichever kind of dialog each one opens.
+struct PiStatPillFace: View {
+    let symbol: String
+    var ring: Double?? = nil
+    let label: String
+    var highlighted = false
+
+    var body: some View {
         HStack(spacing: 5) {
             Group {
                 if let ring { ContextRing(fraction: ring, size: 14) }
@@ -75,8 +90,8 @@ struct PiStatPill<Dialog: View>: View {
         }
         .foregroundStyle(Color.piInkSecondary)
         .padding(.horizontal, 7).padding(.vertical, 3)
-        .background((hovering || open) && dialog != nil ? Color.piFill : Color.clear, in: Capsule())
-        .piAnimation(PiMotion.quick, value: hovering)
+        .background(highlighted ? Color.piFill : Color.clear, in: Capsule())
+        .piAnimation(PiMotion.quick, value: highlighted)
     }
 }
 

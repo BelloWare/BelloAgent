@@ -206,8 +206,9 @@ struct GatewayTotals: Codable, Sendable, Equatable {
     /// Paired input/cache observations only. Optional for older snapshots.
     var uncachedInputReportedTokens: Double?
     var uncachedInputSamples: Int?
-    /// Decode time and output tokens of the completed requests that reported
-    /// both, for the settled throughput. Optional for older snapshots.
+    /// The settled throughput's sums over the requests it counts: their
+    /// decode spans (first to last output) and their output tokens after the
+    /// first (N − 1, not a token total to show). Optional for older snapshots.
     var decodeMilliseconds: Double?
     var decodeOutputTokens: Double?
     var decodeSamples: Int?
@@ -220,9 +221,10 @@ struct GatewayTotals: Codable, Sendable, Equatable {
     /// Wall time of the latest retained request, seconds since 1970, for the sidebar's recency stamp.
     var lastActivity: Double?
 
-    /// Provider output tokens over decode time for this scope, whether that is
-    /// one reply, a turn or the whole session's log. A snapshot saved before
-    /// the app recorded decode time reports no samples rather than a zero rate.
+    /// Output tokens after the first over first → last output for this
+    /// scope, whether that is one reply, a turn or the whole session's log. A
+    /// snapshot saved before the app recorded decode time reports no samples
+    /// rather than a zero rate.
     var settledThroughput: SettledThroughput {
         SettledThroughput(decodeMilliseconds: decodeMilliseconds ?? 0, outputTokens: decodeOutputTokens ?? 0,
                           samples: decodeSamples ?? 0, requests: requests)
@@ -318,15 +320,16 @@ extension PayloadArchive {
     MAX(wall) AS last_wall
     """
 
-    /// The settled rate's population: a completed request that reported both
-    /// its decode span (first content to model completion) and its provider
-    /// output tokens, over a span long enough to be a measurement
-    /// (`SettledThroughput.minimumDecodeMilliseconds`). Anything else
-    /// contributes nothing — never a zero.
+    /// The settled rate's population and sums, as `SettledThroughput.add`
+    /// folds them: a completed request that reported its decode span
+    /// (`stream_ms`, first to last output) over the measurement floor
+    /// (`SettledThroughput.minimumDecodeMilliseconds`) and at least two output
+    /// tokens, contributing its tokens after the first, `output_tokens-1`.
+    /// Anything else contributes nothing — never a zero.
     static let settledThroughputSQL: String = {
         let floor = Int(SettledThroughput.minimumDecodeMilliseconds)
-        let sample = "outcome='completed' AND stream_ms>=\(floor) AND stream_ms<=1.7976931348623157e308 AND output_tokens>=0 AND output_tokens<=1.7976931348623157e308"
-        return "SUM(CASE WHEN \(sample) THEN stream_ms END) AS decode_ms,SUM(CASE WHEN \(sample) THEN output_tokens END) AS decode_output_tokens,COUNT(CASE WHEN \(sample) THEN 1 END) AS decode_samples"
+        let sample = "outcome='completed' AND stream_ms>=\(floor) AND stream_ms<=1.7976931348623157e308 AND output_tokens>=2 AND output_tokens<=1.7976931348623157e308"
+        return "SUM(CASE WHEN \(sample) THEN stream_ms END) AS decode_ms,SUM(CASE WHEN \(sample) THEN output_tokens-1 END) AS decode_output_tokens,COUNT(CASE WHEN \(sample) THEN 1 END) AS decode_samples"
     }()
 
     static func gatewayTotals(_ row: [String: CaptureSQLValue]) -> GatewayTotals {

@@ -20,6 +20,9 @@ extension WorkspaceModel {
             guard await flushProjectSidebarState() else { throw HostError.failure("Project preferences could not be saved in time. Retry the update after storage becomes available.") }
             guard await flushTopicChanges() else { throw HostError.failure("Topic changes could not be saved in time. Retry the update after storage becomes available.") }
             guard await flushReadStates() else { throw HostError.failure("Unread state could not be saved in time. Retry the update after storage becomes available.") }
+            // After the drafts: flushing one can give a New chat its record.
+            // Which chat to reopen is not worth refusing the update over.
+            await flushSelection()
         } catch {
             for host in hosts.values where host.isReady { _ = try? await host.request("workspace.resume") }
             throw error
@@ -27,6 +30,9 @@ extension WorkspaceModel {
     }
     func releaseUpdateBarrier() { installPreparing = false }
     func shutdown() {
+        // Quit and update have flushed it; whatever changes from here on is
+        // the app coming down, not the reader choosing a chat.
+        stopRememberingSelection()
         navigationTask?.cancel(); navigationTask = nil
         for view in displays.values { view.presentation.cancel() }
         liveActivity.shutdown()

@@ -22,10 +22,15 @@ struct SessionTimingSample: Sendable, Equatable, Identifiable {
     let cacheReadTokens: Double?
     let cacheWriteTokens: Double?
     let reasoningTokens: Double?
+    /// The turn (the user message id) the request served, and why it was
+    /// sent: "turn", "compaction" and so on. Nil where the read had neither.
+    let turn: String?
+    let purpose: String?
 
     init(id: String, wall: Date, ttftMilliseconds: Double?, streamingMilliseconds: Double?, outputTokens: Double?, costUSD: Double? = nil, requestMilliseconds: Double? = nil,
          outcome: String = "completed", api: String = "", model: String? = nil,
-         inputTokens: Double? = nil, cacheReadTokens: Double? = nil, cacheWriteTokens: Double? = nil, reasoningTokens: Double? = nil) {
+         inputTokens: Double? = nil, cacheReadTokens: Double? = nil, cacheWriteTokens: Double? = nil, reasoningTokens: Double? = nil,
+         turn: String? = nil, purpose: String? = nil) {
         self.id = id; self.wall = wall
         self.ttftMilliseconds = Self.observed(ttftMilliseconds)
         self.streamingMilliseconds = Self.observed(streamingMilliseconds)
@@ -35,11 +40,12 @@ struct SessionTimingSample: Sendable, Equatable, Identifiable {
         self.outcome = outcome; self.api = api; self.model = model
         self.inputTokens = Self.observed(inputTokens); self.cacheReadTokens = Self.observed(cacheReadTokens)
         self.cacheWriteTokens = Self.observed(cacheWriteTokens); self.reasoningTokens = Self.observed(reasoningTokens)
+        self.turn = turn.flatMap { $0.isEmpty ? nil : $0 }; self.purpose = purpose.flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    /// The settled rate of this one request: its provider output tokens over
-    /// its decode span. Nil unless the request reported both. This is the
-    /// only per-request rate: `requestMilliseconds` is latency, never speed.
+    /// The settled rate of this one request: its output tokens after the first
+    /// over its decode span (first to last output). Nil unless it completed
+    /// with two or more tokens over a span past the floor.
     var settledTokensPerSecond: Double? {
         guard outcome == "completed" else { return nil }
         var fold = SettledThroughput()
@@ -159,6 +165,25 @@ struct SessionTimingPlotPoint: Identifiable {
 }
 
 extension PayloadArchive {
+    /// What every per-request read selects, so Session info, its ledger and
+    /// the statistics popovers decode one request the same way.
+    static let sessionRequestColumns = "id,wall,turn,purpose,ttft_ms,stream_ms,request_ms,output_tokens,cost_usd,outcome,api,alias,model,response_model,input_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens"
+
+    /// One retained request, as the charts and the ledger read it. The
+    /// response body's name when there is one, else the alias the request
+    /// asked for. A malformed archive never reaches a chart.
+    static func sessionRequestSample(_ row: [String: CaptureSQLValue]) throws -> SessionTimingSample {
+        guard let id = row["id"]?.string, let wall = row["wall"]?.double, wall.isFinite, wall >= 0 else { throw CaptureFailure.corrupt }
+        let model = GatewayModelIdentity.modelName(row["response_model"]?.string) ?? GatewayModelIdentity.modelName(row["model"]?.string) ?? GatewayModelIdentity.modelName(row["alias"]?.string)
+        return SessionTimingSample(id: id, wall: Date(timeIntervalSince1970: wall), ttftMilliseconds: row["ttft_ms"]?.double,
+                                   streamingMilliseconds: row["stream_ms"]?.double, outputTokens: row["output_tokens"]?.double, costUSD: row["cost_usd"]?.double,
+                                   requestMilliseconds: row["request_ms"]?.double,
+                                   outcome: row["outcome"]?.string ?? "", api: row["api"]?.string ?? "", model: model,
+                                   inputTokens: row["input_tokens"]?.double, cacheReadTokens: row["cache_read_tokens"]?.double,
+                                   cacheWriteTokens: row["cache_write_tokens"]?.double, reasoningTokens: row["reasoning_tokens"]?.double,
+                                   turn: row["turn"]?.string, purpose: row["purpose"]?.string)
+    }
+
     /// Reads typed retained metrics only. A fork or side chat does not inherit
     /// its parent's request history through transcript message links.
     func sessionTimingHistory(sessionID: String, workspaceID: String, until: Date = Date()) throws -> SessionTimingHistory {
@@ -177,28 +202,16 @@ extension PayloadArchive {
         try Task.checkCancellation()
         func requestRows(_ scope: String) throws -> [[String: CaptureSQLValue]] {
             try db.rows("""
-            SELECT id,wall,ttft_ms,stream_ms,request_ms,output_tokens,cost_usd,outcome,api,alias,model,response_model,input_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens FROM attempts
+            SELECT \(Self.sessionRequestColumns) FROM attempts
             WHERE \(scope)
             ORDER BY wall DESC,id DESC LIMIT ?
             """, values + [.integer(Int64(SessionTimingHistory.limit + 1))])
         }
         let rows = try requestRows(scope)
         let ledgerRows = try requestRows(retainedScope)
-        func decode(_ row: [String: CaptureSQLValue]) throws -> SessionTimingSample {
-            guard let id = row["id"]?.string, let wall = row["wall"]?.double, wall.isFinite, wall >= 0 else { throw CaptureFailure.corrupt }
-            // The response body's name when there is one, else the alias the
-            // request asked for. A malformed archive never reaches the table.
-            let model = GatewayModelIdentity.modelName(row["response_model"]?.string) ?? GatewayModelIdentity.modelName(row["model"]?.string) ?? GatewayModelIdentity.modelName(row["alias"]?.string)
-            return SessionTimingSample(id: id, wall: Date(timeIntervalSince1970: wall), ttftMilliseconds: row["ttft_ms"]?.double,
-                                       streamingMilliseconds: row["stream_ms"]?.double, outputTokens: row["output_tokens"]?.double, costUSD: row["cost_usd"]?.double,
-                                       requestMilliseconds: row["request_ms"]?.double,
-                                       outcome: row["outcome"]?.string ?? "", api: row["api"]?.string ?? "", model: model,
-                                       inputTokens: row["input_tokens"]?.double, cacheReadTokens: row["cache_read_tokens"]?.double,
-                                       cacheWriteTokens: row["cache_write_tokens"]?.double, reasoningTokens: row["reasoning_tokens"]?.double)
-        }
         try Task.checkCancellation()
-        let samples = try rows.prefix(SessionTimingHistory.limit).reversed().map(decode)
-        let ledger = try ledgerRows.prefix(SessionTimingHistory.limit).reversed().map(decode)
+        let samples = try rows.prefix(SessionTimingHistory.limit).reversed().map(Self.sessionRequestSample)
+        let ledger = try ledgerRows.prefix(SessionTimingHistory.limit).reversed().map(Self.sessionRequestSample)
         let settled = SettledThroughput(decodeMilliseconds: summary["decode_ms"]?.double ?? 0,
                                         outputTokens: summary["decode_output_tokens"]?.double ?? 0,
                                         samples: Int(summary["decode_samples"]?.number ?? 0),

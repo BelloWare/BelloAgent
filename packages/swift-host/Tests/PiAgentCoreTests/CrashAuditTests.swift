@@ -53,7 +53,7 @@ final class CrashAuditTests: XCTestCase {
         try Data(Self.gateway.utf8).write(to: script)
         let server = Process(); server.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         server.arguments = [script.path, root.path]; server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice
-        try server.run(); defer { if server.isRunning { server.terminate(); server.waitUntilExit() } }
+        try server.run(); defer { stopFixtureProcess(server) }
         let ready = root.appendingPathComponent("ready.json")
         try await eventually { FileManager.default.fileExists(atPath: ready.path) }
         let port = try XCTUnwrap(JSON.parse(Data(contentsOf: ready))["port"].int)

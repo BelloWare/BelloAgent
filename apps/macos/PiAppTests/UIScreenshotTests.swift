@@ -210,6 +210,7 @@ final class UIScreenshotTests: XCTestCase {
             for (name, appearance) in appearances {
                 NSApp.appearance = NSAppearance(named: appearance)
                 try await captureSessionInfo(model: model, session: session, name: name, gallery: gallery)
+                try await captureStatsPopovers(model: model, session: session, window: window, name: name, gallery: gallery)
             }
             session.draft = "slow: walk through the retry budget one step at a time."
             model.send(sessionID: main.id)
@@ -267,6 +268,8 @@ final class UIScreenshotTests: XCTestCase {
             try await sheet(window, name: "10-changes-\(name)", into: gallery, open: { model.showChanges(in: workspace.id) }, close: { model.showGit = false })
             // Session info for the main chat, in its own window, with both routes it used.
             try await captureSessionInfo(model: model, session: session, name: name, gallery: gallery)
+            // The two chart popovers behind the pills under the composer.
+            try await captureStatsPopovers(model: model, session: session, window: window, name: name, gallery: gallery)
         }
         try await renderReviewScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                      mainID: main.id, secondID: second.id, workspaceID: workspace.id)
@@ -427,6 +430,48 @@ final class UIScreenshotTests: XCTestCase {
         let panel = try XCTUnwrap(usage.window)
         panel.setContentSize(NSSize(width: 1000, height: 940)); panel.center(); try await settle(0.8)
         try capture(panel, to: gallery.appendingPathComponent("11-session-info-\(name).png"))
+    }
+
+    /// The session statistics and token usage popovers of the main chat, each
+    /// opened by pressing its pill and captured over the window it belongs to.
+    @MainActor private func captureStatsPopovers(model: WorkspaceModel, session: SessionDisplay, window: NSWindow, name: String, gallery: URL) async throws {
+        let store = SessionStatsStore.shared(archive: model.traces, sessionID: session.id)
+        let content = try XCTUnwrap(window.contentView)
+        for (file, identifier, presenter) in [("11b-session-statistics", "session-stats-time", store.timePresenter),
+                                              ("11c-token-usage", "session-stats-usage", store.tokenPresenter)] {
+            try await settle(0.4)
+            // The main chat's pane is the leftmost; an open side has pills of its own.
+            let pill = try XCTUnwrap(descendants(PiPopoverTriggerButton.self, in: content).filter { $0.accessibilityIdentifier() == identifier }
+                                        .min { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX },
+                                     "The \(identifier) pill is under the composer")
+            pill.performClick(nil)
+            let deadline = Date().addingTimeInterval(20)
+            while Date() < deadline, !(presenter.isShown && store.time.historyLoaded && store.tokens.historyLoaded) { try await settle(0.1) }
+            XCTAssertTrue(presenter.isShown && store.time.historyLoaded, "The \(identifier) popover opened with its charts")
+            try await settle(1.2)
+            try captureWithPopovers(window, to: gallery.appendingPathComponent("\(file)-\(name).png"))
+            presenter.close()
+            try await settle(0.5)
+        }
+    }
+
+    /// The window and this app's popovers over it, by window id: no other
+    /// application's window can enter the image.
+    @MainActor private func captureWithPopovers(_ window: NSWindow, to url: URL) throws {
+        typealias ArrayImage = @convention(c) (CGRect, CFArray, UInt32) -> Unmanaged<CGImage>?
+        guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImageFromArray") else { throw XCTSkip("Window capture unavailable") }
+        let create = unsafeBitCast(symbol, to: ArrayImage.self)
+        let screen = NSScreen.screens.first?.frame ?? .zero
+        let popovers = NSApp.windows.filter { $0.isVisible && $0 != window && String(describing: type(of: $0)).contains("Popover") }
+        var frame = window.frame
+        for popover in popovers { frame = frame.union(popover.frame) }
+        var ids = (popovers + [window]).map { UnsafeRawPointer(bitPattern: UInt($0.windowNumber)) }
+        let array = try XCTUnwrap(ids.withUnsafeMutableBufferPointer { CFArrayCreate(nil, $0.baseAddress, $0.count, nil) })
+        let bounds = CGRect(x: frame.minX, y: screen.height - frame.maxY, width: frame.width, height: frame.height)
+        let options = CGWindowImageOption.bestResolution.rawValue | CGWindowImageOption.boundsIgnoreFraming.rawValue
+        guard let image = create(bounds, array, options)?.takeRetainedValue() else { throw XCTSkip("Window capture returned no image") }
+        let png = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+        try png.write(to: url, options: .atomic)
     }
 
     @MainActor private func waitIdle(_ session: SessionDisplay, model: WorkspaceModel, minimumMessages: Int, timeout: Double = 120) async throws {

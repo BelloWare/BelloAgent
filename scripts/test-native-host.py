@@ -922,7 +922,17 @@ class NativeIntegration(unittest.TestCase):
                 self.assertLessEqual(t['firstHTTPByte'],t['firstBodyByte'])
                 self.assertLessEqual(t['firstBodyByte'],t['firstContent'])
                 self.assertLessEqual(t['firstContent'],t['modelComplete'])
-                self.assertAlmostEqual(m['streamDurationMs'],t['modelComplete']-t['firstContent'])
+                # The last output token: never after the terminal event. One
+                # delta (or a JSON body) is first and last at once, so it
+                # spans nothing and has no decode rate.
+                self.assertLessEqual(t['firstContent'],t['lastContent'])
+                self.assertLessEqual(t['lastContent'],t['modelComplete'])
+                self.assertEqual(t['lastContent'],t['firstContent'])
+                self.assertIsNone(m['decodeTokensPerSecond'])
+                # The stream duration is the span the rate divides by: first
+                # output to last, never to the terminal event.
+                self.assertAlmostEqual(m['streamDurationMs'],t['lastContent']-t['firstContent'])
+                self.assertNotIn('outputTokensPerSecond',m)
                 self.assertAlmostEqual(m['httpDurationMs'],t['httpEnd']-t['dispatch'])
                 if model == 'timing':
                     self.assertGreater(t['httpEnd']-t['modelComplete'],100)

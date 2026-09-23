@@ -273,9 +273,10 @@ final class SessionUsageTests: XCTestCase {
                                                outputTokens: 40 * step, costUSD: 0.001 * step, requestMilliseconds: 1_500))
         }
         let history = SessionTimingHistory(samples: samples)
-        // The 16th request: 1,600 ms to its first token, then 640 tokens in 1 s.
+        // The 16th request: 1,600 ms to its first token, then 640 tokens in 1 s,
+        // the 639 after the first decoded at 639 tok/s.
         let latest = SessionUsagePresentation.requestCaption(selected: nil, in: history)
-        XCTAssertTrue(latest.hasPrefix("Latest · ") && latest.contains("1600 ms TTFT") && latest.contains("640 tok/s decode"), latest)
+        XCTAssertTrue(latest.hasPrefix("Latest · ") && latest.contains("1600 ms TTFT") && latest.contains("639 tok/s decode") && latest.contains("640 tokens out"), latest)
         XCTAssertTrue(SessionUsagePresentation.requestCaption(selected: 3, in: history).hasPrefix("Request 3 · "))
         XCTAssertEqual(SessionUsagePresentation.requestCaption(selected: 99, in: history), latest, "A request no longer listed reads as the latest")
 
@@ -300,7 +301,7 @@ final class SessionUsageTests: XCTestCase {
         let idle = below.convert(below.bounds, to: nil)
         XCTAssertGreaterThan(idle.height, 0, "The row below is laid out")
         let rendered = try await SessionTimingTests.recognizedText(in: window, filename: "session-timing-caption-idle.jpg")
-        XCTAssertNotNil(rendered.range(of: #"1600 ms ttft\W+640 tok/s decode"#, options: .regularExpression),
+        XCTAssertNotNil(rendered.range(of: #"1600 ms ttft\W+639 tok/s decode"#, options: .regularExpression),
                         "Before any hover the caption reads the latest request. OCR: \(rendered)")
         for request in [3, 16, 1, nil] {
             selection.select(request)
@@ -474,12 +475,13 @@ final class SessionUsageTests: XCTestCase {
         let work: [String: WireValue] = ["sessionModelMs": .number(72_000), "sessionToolMs": .number(14_300), "modelMs": .number(4_200), "toolMs": .number(300)]
         let timing = SessionInfoTiming(history: history, work: work)
         XCTAssertEqual(timing.latestTTFT, 250); XCTAssertEqual(timing.medianTTFT, 325, "The median skips the request without a measurement"); XCTAssertEqual(timing.ttftSamples, 2)
-        // The rates are settled: 500 output tokens over a 750 ms decode span,
-        // and 700 tokens over the 2.35 s the two measurable requests decoded
-        // for. The request that reported no decode span is left out of both.
+        // The rates are settled: the 499 tokens after the first over a 750 ms
+        // decode span, and 199 + 499 tokens over the 2.35 s the two measurable
+        // requests decoded for. The request that reported no decode span is
+        // left out of both.
         XCTAssertEqual(timing.latestDurationMs, 1_000)
-        XCTAssertEqual(timing.latestRate.map { ($0 * 100).rounded() / 100 }, 666.67)
-        XCTAssertEqual(timing.averageRate.map { ($0 * 10).rounded() / 10 }, 297.9)
+        XCTAssertEqual(timing.latestRate.map { ($0 * 100).rounded() / 100 }, 665.33)
+        XCTAssertEqual(timing.averageRate.map { ($0 * 10).rounded() / 10 }, 297.0)
         XCTAssertEqual(timing.sessionModelMs, 72_000); XCTAssertEqual(timing.sessionToolMs, 14_300); XCTAssertEqual(timing.turnModelMs, 4_200); XCTAssertEqual(timing.turnToolMs, 300)
         XCTAssertEqual(timing.firstTokenCaption, "median 325 ms · 2 measured · last request 1.0s")
         XCTAssertEqual(timing.modelCaption, "last turn 4.2s"); XCTAssertEqual(timing.toolCaption, "last turn 0.3s")

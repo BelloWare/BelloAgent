@@ -176,7 +176,10 @@ extension WorkspaceModel {
     }
 
     func setTopicExpanded(_ id: String, expanded: Bool) {
-        guard !installPreparing, let index = topics.firstIndex(where: { $0.id == id }), topics[index].expanded != expanded else { return }
+        guard !installPreparing else { return }
+        // The reader's own choice replaces what a relaunch opened.
+        forgetLaunchReveal(topic: id)
+        guard let index = topics.firstIndex(where: { $0.id == id }), topics[index].expanded != expanded else { return }
         topics[index].expanded = expanded
         topicExpansionRequests[id] = expanded
         scheduleTopicExpansionWrite(id)

@@ -28,7 +28,7 @@ final class CompactionGatewayTests: XCTestCase {
         var repo=URL(fileURLWithPath:#filePath);for _ in 0..<5 { repo.deleteLastPathComponent() }
         let server=Process();server.executableURL=URL(fileURLWithPath:"/usr/bin/python3");server.arguments=[repo.appendingPathComponent("fixtures/native/compaction_gateway.py").path,root.path]
         server.standardOutput=FileHandle.nullDevice;server.standardError=FileHandle.nullDevice;try server.run()
-        defer { if server.isRunning { server.terminate();server.waitUntilExit() } }
+        defer { stopFixtureProcess(server) }
         let ready=root.appendingPathComponent("ready.json");try await eventually { FileManager.default.fileExists(atPath:ready.path) }
         let port=try XCTUnwrap(JSON.parse(Data(contentsOf:ready))["port"].int)
         var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["contextWindow"]=16000;raw["modelOutputLimit"]=32768;raw["thinkingLevel"]="high"
@@ -71,7 +71,7 @@ final class CompactionGatewayTests: XCTestCase {
         var repo=URL(fileURLWithPath:#filePath);for _ in 0..<5 { repo.deleteLastPathComponent() }
         let server=Process();server.executableURL=URL(fileURLWithPath:"/usr/bin/python3");server.arguments=[repo.appendingPathComponent("fixtures/native/compaction_gateway.py").path,root.path]
         server.standardOutput=FileHandle.nullDevice;server.standardError=FileHandle.nullDevice;try server.run()
-        defer { if server.isRunning { server.terminate();server.waitUntilExit() } }
+        defer { stopFixtureProcess(server) }
         let ready=root.appendingPathComponent("ready.json")
         try await eventually { FileManager.default.fileExists(atPath:ready.path) }
         let port=try XCTUnwrap(JSON.parse(Data(contentsOf:ready))["port"].int)

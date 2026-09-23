@@ -74,8 +74,8 @@ class StageReleaseSiteTests(ReleaseSiteFixture):
         self.assertIn('href="https://belloware.com/assets/BelloAgent-0.1.2.dmg"', page)
         self.assertIn("Download Bello Agent 0.1.2", page)
         self.assertIn("SHA-256 fingerprints", page)
-        self.assertIn("Activity in your menu bar", page)
-        self.assertIn("Auto-router aliases", page)
+        self.assertIn("Activity in the menu bar", page)
+        self.assertIn("Requires your own LiteLLM gateway", page)
         self.assertEqual((self.site / "assets/bello_agent_icon.png").read_bytes(),
                          (ROOT / "assets/branding/bello-agent-icon.png").read_bytes())
         self.assertEqual((self.site / "assets/pi_app.appcast.xml").read_bytes(), self.feed.read_bytes())

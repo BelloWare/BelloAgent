@@ -214,6 +214,10 @@ public actor TraceStore {
     private final class Trace {
         var id: String, session: String, turn: String, api: String, url: String, purpose: String, mode: String
         var wallTime=isoNow(), dispatch:Double?, firstContent:Double?, firstText:Double?, completed:Double?, eof:Double?
+        /// When the last output token arrived: the latest non-empty delta or
+        /// output item completion. Never the terminal event, which carries no
+        /// token and which a gateway can hold back while it computes usage.
+        var lastContent:Double?
         var firstHTTPByte:Double?, firstBodyByte:Double?, transportOutcome="pending"
         var status:Int?, headers:JSON=[:], requestHeaders:JSON=[:], usage:JSON=[:], outcome="running", modelOutcome="pending"
         var request=Data(), response=Data(), requestObserved=0, responseObserved=0, rawEvents:[JSON]=[], rawEventsDropped=0
@@ -370,7 +374,33 @@ public actor TraceStore {
         t.contextLinksPending = false
         await deliverLinks(id, field: "messageIds", ids: t.messageIDs)
     }
-    public func content(_ id:String, text:Bool, at time:Double) { guard let t=traces[id] else { return }; if t.firstContent==nil { t.firstContent=time }; if text && t.firstText==nil { t.firstText=time } }
+    /// An output item opened, of any kind: the model started generating, so
+    /// the first opening can be the first output. It carries no token itself.
+    public func opened(_ id:String, at time:Double) { guard let t=traces[id] else { return }; if t.firstContent==nil { t.firstContent=time } }
+    /// A non-empty delta (text, reasoning, a tool's name or arguments): output
+    /// arrived. The earliest is the first output, the latest the last.
+    public func content(_ id:String, text:Bool, at time:Double) {
+        guard let t=traces[id] else { return }
+        if t.firstContent==nil { t.firstContent=time }; if text && t.firstText==nil { t.firstText=time }
+        produced(t, at: time)
+    }
+    /// An output item completed; a reasoning item's completion is the end of
+    /// its hidden reasoning. Its last token has arrived by now.
+    public func closed(_ id:String, at time:Double) { guard let t=traces[id] else { return }; produced(t, at: time) }
+    /// Output that only a final body carried (a gateway that sends no deltas,
+    /// or a JSON response): it all arrived with that body, unless deltas or
+    /// item completions already said when it did.
+    public func finalContent(_ id:String, text:Bool, at time:Double) {
+        guard let t=traces[id] else { return }
+        if t.firstContent==nil { t.firstContent=time }; if text && t.firstText==nil { t.firstText=time }
+        if t.lastContent==nil { produced(t, at: time) }
+    }
+    /// Output evidence after the model's terminal event is not a token of
+    /// this response: the decode span never ends after the terminal.
+    private func produced(_ t:Trace, at time:Double) {
+        guard t.completed == nil, time.isFinite else { return }
+        t.lastContent = max(t.lastContent ?? time, time)
+    }
     public func terminal(_ id:String, at time:Double) { if traces[id]?.completed == nil { traces[id]?.completed=time } }
     public func transport(_ id:String, observation:JSON) {
         guard let t=traces[id] else { return }
@@ -451,27 +481,28 @@ public actor TraceStore {
         func span(_ start: Double?, _ end: Double?) -> JSON {
             guard let start, let end, start.isFinite, end.isFinite, end >= start, (end-start).isFinite else { return .null }; return JSON(end-start)
         }
-        let requestMS = span(t.dispatch, t.completed).double, output=t.usage["output"].double
-        var outputRate: JSON = .null
-        // Only the gateway's completed usage is a token count. Reported output
-        // already includes its reasoning subset, even with no visible prose.
-        if t.outcome == "completed", t.modelOutcome == "completed",
-           let requestMS, requestMS > 0, let output, output.isFinite, output >= 0 {
-            let seconds = requestMS / 1000
-            if seconds > 0, (output / seconds).isFinite { outputRate = JSON(output / seconds) }
-        }
-        // The settled decode rate: reported output (reasoning included) over
-        // first output item → model terminal, and only across a span long
-        // enough to be a measurement.
-        let decodeMS = span(t.firstContent, t.completed).double
+        let output=t.usage["output"].double
+        // The decode span, which the stream duration reports and the rate
+        // divides by: first output → last output (the latest non-empty delta
+        // or output item completion). It exists once the model's terminal event
+        // was observed. An attempt that stamped no last output ends at that
+        // terminal, the only end it has; the archive projects `stream_ms` by
+        // the same rule, so the Inspector, the report and the ledger agree.
+        let decode = span(t.firstContent, t.completed.map { t.lastContent ?? $0 })
+        // The settled decode rate, the standard decode speed (LLMPerf, vLLM's
+        // TPOT): the reported output tokens after the first (N − 1, reasoning
+        // included) over that span. Over it the first token is already out, so
+        // only N − 1 arrive in it, and the terminal event carries none. Only
+        // the gateway's completed usage is a token count; one token has no
+        // decode speed, and a span shorter than the floor is no measurement.
         var decodeRate: JSON = .null
-        if t.outcome == "completed", t.modelOutcome == "completed", let decodeMS, decodeMS >= Self.minimumDecodeSpanMs,
-           let output, output.isFinite, output >= 0, (output / (decodeMS / 1000)).isFinite { decodeRate = JSON(output / (decodeMS / 1000)) }
+        if t.outcome == "completed", t.modelOutcome == "completed", let decodeMS = decode.double, decodeMS >= Self.minimumDecodeSpanMs,
+           let output, output.isFinite, output >= 2, ((output - 1) / (decodeMS / 1000)).isFinite { decodeRate = JSON((output - 1) / (decodeMS / 1000)) }
         return ["observedTTFTms":span(t.dispatch,t.firstContent), "firstTextMs":span(t.dispatch,t.firstText),
-                "streamDurationMs":span(t.firstContent,t.completed), "httpDurationMs":span(t.dispatch,t.eof),
-                "outputTokensPerSecond":outputRate, "decodeTokensPerSecond":decodeRate, "minimumDecodeSpanMs":JSON(Self.minimumDecodeSpanMs),
+                "streamDurationMs":decode, "httpDurationMs":span(t.dispatch,t.eof),
+                "decodeTokensPerSecond":decodeRate, "minimumDecodeSpanMs":JSON(Self.minimumDecodeSpanMs),
                 "inputIncludingCache":t.usage["inputIncludingCache"],"completeness":t.modelOutcome=="completed" ? "complete":"partial",
-                "rateSource":"Gateway-reported output tokens / request dispatch-to-model-terminal; not decode speed","liveTokenRate":.null]
+                "rateSource":"Gateway-reported output tokens after the first (N − 1, reasoning included) / first output → last output token (the model terminal when no last output was stamped); completed attempts with N ≥ 2 over at least minimumDecodeSpanMs","liveTokenRate":.null]
     }
     private func metadata(_ t:Trace)->JSON {
         ["attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
@@ -481,7 +512,7 @@ public actor TraceStore {
          "request":bodyInfo(t,request:true),"response":bodyInfo(t,request:false),"metrics":metrics(t),"rawEventIndexCount":JSON(t.rawEvents.count),
          "timingVersion":2,"dispatchWallTimestamp":t.dispatchWallTimestamp.map { JSON($0) } ?? .null,
          "timingBoundary":"Monotonic URLSession dispatch, header callback (first HTTP observation), decoded body callbacks, body bytes containing parsed content/terminal, and task completion. Not socket/TLS or paint timing.",
-         "timings":["dispatch":t.dispatch.map { JSON($0) } ?? .null,"firstHTTPByte":t.firstHTTPByte.map { JSON($0) } ?? .null,"firstBodyByte":t.firstBodyByte.map { JSON($0) } ?? .null,"firstContent":t.firstContent.map { JSON($0) } ?? .null,"firstText":t.firstText.map { JSON($0) } ?? .null,"modelComplete":t.completed.map { JSON($0) } ?? .null,"httpEnd":t.eof.map { JSON($0) } ?? .null]]
+         "timings":["dispatch":t.dispatch.map { JSON($0) } ?? .null,"firstHTTPByte":t.firstHTTPByte.map { JSON($0) } ?? .null,"firstBodyByte":t.firstBodyByte.map { JSON($0) } ?? .null,"firstContent":t.firstContent.map { JSON($0) } ?? .null,"firstText":t.firstText.map { JSON($0) } ?? .null,"lastContent":t.lastContent.map { JSON($0) } ?? .null,"modelComplete":t.completed.map { JSON($0) } ?? .null,"httpEnd":t.eof.map { JSON($0) } ?? .null]]
     }
     public func latest(_ session:String)->JSON { guard let id=order.last(where:{traces[$0]?.session==session}),let t=traces[id] else { return .null }; return metadata(t) }
     public func command(_ method:String, session:String, params p:JSON) throws -> JSON {

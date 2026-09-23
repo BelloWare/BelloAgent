@@ -194,20 +194,27 @@ extension WorkspaceModel {
         if let shown = sides[parentID], shown.id == id { await selectSide(id); return }
         if let shown = sides[parentID], shown.pending { discardPendingSide(shown) }
         if let shown = sides[parentID], !shown.kept || shown.keeping { error = "Wait for the current side to finish opening before switching."; return }
-        if selectedID != parentID { await select(parentID) }
+        // This side is the one asked for, not the one the parent last showed.
+        if selectedID != parentID { await select(parentID, reopensSide: false) }
         guard selectedID == parentID else { return }
-        if let previous = sides[parentID] { displays[previous.id]?.presentation.cancel() }
-        let view = displays[id] ?? SessionDisplay(id: id); view.used = Date(); displays[id] = view
-        view.presentation.begin(); view.presentationGeneration = view.presentation.generation
-        view.historyState = .loading; view.draftReady = view.selectionMetadataLoaded
-        view.browsingHistory = true; view.publishTranscript()
-        var info = SideRecord(id: id, parentID: parentID, workspaceID: child.workspaceID, profileID: child.profileID, title: child.title, kept: true, model: child.model, thinkingLevel: child.thinkingLevel, contextWindow: child.contextWindow, maxOutputTokens: child.maxOutputTokens, modelOutputLimit: child.modelOutputLimit, outputBudgetVersion: child.outputBudgetVersion)
-        info.topicID = effectiveTopicID(for: child)
-        info.boundary = ["parentSessionId": .string(parentID)]
-        sides[parentID] = info
+        let view = mountSide(child, beside: parentID)
         page = .chats; focusedSessionID = id
         revealProjectChat(child)
         await loadSideDisplay(child, view: view)
+    }
+    /// Puts a saved child chat in its parent's side pane, waiting to be read.
+    /// The side shown there before keeps its display and any running work.
+    func mountSide(_ child: ChatRecord, beside parentID: String) -> SessionDisplay {
+        if let previous = sides[parentID] { displays[previous.id]?.presentation.cancel() }
+        let view = displays[child.id] ?? SessionDisplay(id: child.id); view.used = Date(); displays[child.id] = view
+        view.presentation.begin(); view.presentationGeneration = view.presentation.generation
+        view.historyState = .loading; view.draftReady = view.selectionMetadataLoaded
+        view.browsingHistory = true; view.publishTranscript()
+        var info = SideRecord(id: child.id, parentID: parentID, workspaceID: child.workspaceID, profileID: child.profileID, title: child.title, kept: true, model: child.model, thinkingLevel: child.thinkingLevel, contextWindow: child.contextWindow, maxOutputTokens: child.maxOutputTokens, modelOutputLimit: child.modelOutputLimit, outputBudgetVersion: child.outputBudgetVersion)
+        info.topicID = effectiveTopicID(for: child)
+        info.boundary = ["parentSessionId": .string(parentID)]
+        sides[parentID] = info
+        return view
     }
     /// Restores a saved child's draft, anchor, pending intents and history into
     /// its display, mirroring what selecting a chat does for the main pane.

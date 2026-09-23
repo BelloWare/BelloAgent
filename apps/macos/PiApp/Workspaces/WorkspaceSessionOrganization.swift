@@ -108,7 +108,7 @@ extension WorkspaceModel {
             let query = sidebarFilter.trimmingCharacters(in: .whitespacesAndNewlines)
             return sidebarProjects.filter { !query.isEmpty || projectIsExpanded($0.id) }.flatMap { project -> [String] in
                 let archive = projectShowsArchive(project.id)
-                let grouped = topics(in: project.id).filter { !query.isEmpty || $0.expanded }.flatMap { topic -> [String] in
+                let grouped = topics(in: project.id).filter { !query.isEmpty || topicIsExpanded($0) }.flatMap { topic -> [String] in
                     // A topic whose own title matches lists all of its chats.
                     let inner = topic.title.localizedCaseInsensitiveContains(query) ? "" : query
                     return SidebarSessionPresentation

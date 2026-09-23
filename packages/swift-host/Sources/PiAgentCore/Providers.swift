@@ -186,7 +186,7 @@ public struct ProviderClient: ModelClient {
                         // part of the output it reports, so the decode span
                         // (and time to first token) starts there, not at the
                         // first visible token.
-                        if Self.opensOutputItem(value, api: profile.api) { await traces.content(attempt,text:false,at:receivedAt) }
+                        if Self.opensOutputItem(value, api: profile.api) { await traces.opened(attempt,at:receivedAt) }
                         for part in displayEvents.consume(value, at: receivedAt) { try await onDelta(.part(part)) }
                         for delta in deltas {
                             switch delta {
@@ -197,12 +197,16 @@ public struct ProviderClient: ModelClient {
                             }
                             try await onDelta(delta)
                         }
+                        // The span ends when the last token arrived: the last
+                        // delta or item completion (a reasoning item's ends
+                        // its hidden reasoning), not the terminal event below.
+                        if Self.closesOutputItem(value, api: profile.api) { await traces.closed(attempt,at:receivedAt) }
                         if accumulator.terminal {
                             // Some gateways emit only final output. Its bytes
                             // are content evidence even without delta events.
                             if let reply=try? accumulator.result() {
-                                if !reply.message.thinking.isEmpty || !reply.calls.isEmpty { await traces.content(attempt,text:false,at:receivedAt) }
-                                if !reply.message.text.isEmpty { await traces.content(attempt,text:true,at:receivedAt) }
+                                if !reply.message.thinking.isEmpty || !reply.calls.isEmpty { await traces.finalContent(attempt,text:false,at:receivedAt) }
+                                if !reply.message.text.isEmpty { await traces.finalContent(attempt,text:true,at:receivedAt) }
                             }
                             await traces.terminal(attempt,at:receivedAt)
                         }
@@ -223,8 +227,8 @@ public struct ProviderClient: ModelClient {
                 for part in displayEvents.consume(value, at: lastBodyAt, json: true) { try await onDelta(.part(part)) }
                 let reply=try accumulator.result()
                 if let time=lastBodyAt {
-                    if !reply.message.thinking.isEmpty || !reply.calls.isEmpty || !(reply.message.providerItems ?? []).isEmpty { await traces.content(attempt,text:false,at:time) }
-                    if !reply.message.text.isEmpty { await traces.content(attempt,text:true,at:time);try await onDelta(.text(reply.message.text)) }
+                    if !reply.message.thinking.isEmpty || !reply.calls.isEmpty || !(reply.message.providerItems ?? []).isEmpty { await traces.finalContent(attempt,text:false,at:time) }
+                    if !reply.message.text.isEmpty { await traces.finalContent(attempt,text:true,at:time);try await onDelta(.text(reply.message.text)) }
                     await traces.terminal(attempt,at:time)
                 }
             }
@@ -252,6 +256,10 @@ public struct ProviderClient: ModelClient {
     /// item, a message, a function call.
     static func opensOutputItem(_ value: JSON, api: String) -> Bool {
         value["type"].text == (api == "openai-responses" ? "response.output_item.added" : "content_block_start")
+    }
+    /// A stream event that completes an output item of any kind.
+    static func closesOutputItem(_ value: JSON, api: String) -> Bool {
+        value["type"].text == (api == "openai-responses" ? "response.output_item.done" : "content_block_stop")
     }
     /// What to do about a gateway status, after the status itself: the
     /// provider's own detail when it sent one, then the likely cause in the

@@ -150,7 +150,8 @@ final class MetricPillsTests: XCTestCase {
 
     func testTheSettledRateFoldsOnlyTheRequestsThatReportedBothHalves() {
         var fold = SettledThroughput()
-        fold.add(decodeMilliseconds: 1_000, outputTokens: 34)
+        // 35 tokens: 34 after the first, over one second.
+        fold.add(decodeMilliseconds: 1_000, outputTokens: 35)
         fold.add(decodeMilliseconds: nil, outputTokens: 50)
         fold.add(decodeMilliseconds: 500, outputTokens: nil)
         fold.add(decodeMilliseconds: 0, outputTokens: 10)
@@ -163,9 +164,9 @@ final class MetricPillsTests: XCTestCase {
         XCTAssertEqual(fold.coverage, "1/6 requests measured")
 
         var second = SettledThroughput()
-        second.add(decodeMilliseconds: 1_000, outputTokens: 66)
+        second.add(decodeMilliseconds: 1_000, outputTokens: 67)
         fold.add(second)
-        XCTAssertEqual(fold.tokensPerSecond, 50, "A group's rate is one division of the totals, never an average of rates")
+        XCTAssertEqual(fold.tokensPerSecond, 50, "A group's rate is one division of the totals, never an average of rates: (34 + 66) / 2 s")
         XCTAssertEqual(fold.samples, 2); XCTAssertEqual(fold.requests, 7)
 
         var none = SettledThroughput()
@@ -173,6 +174,29 @@ final class MetricPillsTests: XCTestCase {
         XCTAssertNil(none.tokensPerSecond); XCTAssertNil(none.label)
         XCTAssertEqual(none.coverage, "0/1 requests measured")
         XCTAssertNil(SettledThroughput().coverage, "Nothing considered is not partial coverage")
+    }
+
+    /// The standard decode speed (LLMPerf, vLLM's TPOT): over first token →
+    /// last token the first token is already out, so a request contributes
+    /// the N − 1 tokens that arrived in its span. One token has no speed.
+    func testTheSettledRateCountsTheTokensAfterTheFirst() {
+        var fold = SettledThroughput()
+        fold.add(decodeMilliseconds: 1_000, outputTokens: 101)
+        XCTAssertEqual(fold.tokensPerSecond, 100, "(101 − 1) tokens over one second, never 101")
+        XCTAssertEqual(fold.outputTokens, 100, "The fold holds what it divides: the tokens after each request's first")
+        fold.add(decodeMilliseconds: 2_000, outputTokens: 1)
+        fold.add(decodeMilliseconds: 2_000, outputTokens: 0)
+        XCTAssertEqual(fold.samples, 1, "One output token, or none, has no decode speed")
+        XCTAssertEqual(fold.requests, 3, "Both are still requests considered")
+        XCTAssertEqual(fold.coverage, "1/3 requests measured")
+        fold.add(decodeMilliseconds: 500, outputTokens: 51)
+        XCTAssertEqual(fold.tokensPerSecond, 100, "(100 + 50) tokens over 1.5 s: one division of the sums")
+        fold.add(decodeMilliseconds: 249, outputTokens: 1_000)
+        XCTAssertEqual(fold.samples, 2, "Below the floor a span is no measurement")
+        fold.add(decodeMilliseconds: SettledThroughput.minimumDecodeMilliseconds, outputTokens: 2)
+        XCTAssertEqual(fold.samples, 3, "Two tokens over the floor itself: one after the first, measured")
+        XCTAssertEqual(fold.outputTokens, 151)
+        XCTAssertEqual(try XCTUnwrap(fold.tokensPerSecond), 151 / 1.75, accuracy: 1e-9)
     }
 
     func testAverageLatencyCountsOnlyTheRequestsThatRecordedIt() {
@@ -207,28 +231,58 @@ final class MetricPillsTests: XCTestCase {
                            "modelMs": .number(9_000), "toolMs": .number(4_000)])
     }
 
+    /// The two requests of `fixtureSession()`, as the popovers read them
+    /// from the archive: together they report exactly the fixture's totals.
+    private func fixtureHistory() -> SessionStatsHistory {
+        SessionStatsHistory(requests: (1...2).map { index in
+            SessionTimingSample(id: "r\(index)", wall: Date(timeIntervalSince1970: 1_000_000 + Double(index)), ttftMilliseconds: 400,
+                                streamingMilliseconds: 500, outputTokens: 1_900, costUSD: 0.00125, requestMilliseconds: 900,
+                                model: "deepseek-v4-flash", inputTokens: 6_000, cacheReadTokens: 3_000, reasoningTokens: 450, turn: "u1")
+        })
+    }
+    private func figure(_ id: String, in figures: [SessionStatsFigure]) -> SessionStatsFigure? { figures.first { $0.id == id } }
+
     func testSessionPillsReadAsTheOwnerAskedFor() throws {
         let stats = SessionStatsPresentation(gateway: fixtureSession(), work: fixtureWork())
         XCTAssertEqual(stats.gaugeLabel, "1 turn 2 steps · 34 tok/s")
         XCTAssertEqual(stats.usageLabel, "15.8K tok · Cache hit 50% · $0.0025")
-        XCTAssertEqual(stats.usageHeadline, "15,800 tok")
         XCTAssertTrue(stats.hasUsage); XCTAssertTrue(stats.hasTimeDialog)
+        // What the usage pill opens leads with the exact total.
+        let tokens = SessionTokenCharts(inputs: SessionStatsInputs(gateway: fixtureSession()), history: nil)
+        XCTAssertEqual(figure("tokens", in: tokens.hero)?.value, "15,800")
     }
 
-    func testSessionStatisticsDialogListsTheFourTimings() throws {
-        let stats = SessionStatsPresentation(gateway: fixtureSession(), work: fixtureWork())
-        XCTAssertEqual(stats.timeRows.map(\.name), ["LLM time", "Tool time", "Average TTFT", "Output speed"])
-        XCTAssertEqual(stats.timeRows.map(\.value), ["12.4s", "6.6s", "400 ms", "34 tok/s"])
-        XCTAssertTrue(stats.timeRows.allSatisfy { $0.coverage == nil }, "Complete coverage says nothing")
-        XCTAssertEqual(stats.timeNotes.first, SettledThroughput.explanation)
+    /// The session statistics popover leads with the four timings, larger:
+    /// AI and tool time from the helper's clocks, the average first token and
+    /// the settled decode speed, each saying what it covers.
+    func testSessionStatisticsPopoverLeadsWithTheFourTimings() throws {
+        let time = SessionTimeCharts(inputs: SessionStatsInputs(gateway: fixtureSession(), work: fixtureWork()), history: nil)
+        let figures = time.hero + time.details
+        XCTAssertEqual(figure("ai", in: figures)?.value, "12.4s")
+        XCTAssertEqual(figure("tools", in: figures)?.value, "6.6s")
+        XCTAssertEqual(figure("ttft", in: figures)?.value, "400 ms")
+        XCTAssertEqual(figure("speed", in: figures)?.value, "34 tok/s")
+        XCTAssertEqual(figure("speed", in: figures)?.caption, "2 requests measured")
+        XCTAssertEqual(figure("ttft", in: figures)?.caption, "average of 2")
+        XCTAssertTrue(figures.allSatisfy { !$0.partial }, "Complete coverage is never written in warning ink")
+        XCTAssertEqual(time.notes.first, SettledThroughput.explanation)
+        // Where the time went is the same clocks: the waits, the rest of the AI time, the tools.
+        XCTAssertEqual(time.split?.parts.map(\.value), ["800 ms", "11.6s", "6.6s"])
     }
 
-    func testTokenUsageDialogListsEveryBucketWithItsCost() throws {
-        let stats = SessionStatsPresentation(gateway: fixtureSession(), work: fixtureWork())
-        XCTAssertEqual(stats.usageRows.map(\.name), ["Cache hit", "Uncached input", "Cached input", "Output", "Cost"])
-        XCTAssertEqual(stats.usageRows.map(\.value), ["50%", "6,000 tok", "6,000 tok", "3,800 tok", "$0.0025 USD"])
-        XCTAssertEqual(stats.usageRows.last(where: { $0.name == "Output" })?.detail, "incl. 900 reasoning")
-        XCTAssertTrue(stats.usageNotes.contains { $0.contains("Cached input is part of input") })
+    /// The token usage popover carries every bucket: the exact total, the cost
+    /// and the cache hit on top, and cached input, uncached input, reasoning and
+    /// the rest of the output as the parts of that total.
+    func testTokenUsagePopoverCarriesEveryBucketWithItsCost() throws {
+        let tokens = SessionTokenCharts(inputs: SessionStatsInputs(gateway: fixtureSession(), work: fixtureWork()), history: fixtureHistory())
+        XCTAssertEqual(tokens.hero.map(\.value), ["15,800", "$0.0025", "50%"])
+        XCTAssertEqual(figure("tokens", in: tokens.hero)?.caption, "12,000 in · 3,800 out")
+        XCTAssertNil(tokens.coverage, "Every request reported every figure")
+        let parts = Dictionary(uniqueKeysWithValues: (tokens.composition?.parts ?? []).map { ($0.id, $0.value) })
+        XCTAssertEqual(parts, [.cached: "6,000", .uncached: "6,000", .reasoning: "900", .output: "2,900"],
+                       "3,800 output, 900 of it reasoning; 12,000 input, 6,000 of it cached")
+        XCTAssertEqual(tokens.composition?.totalLabel, "15,800", "The parts are the pill's total, nothing counted twice")
+        XCTAssertTrue(tokens.notes.contains { $0.contains("Cached input is part of input") })
     }
 
     func testAPartlyReportingSessionNamesItsCoverageInsteadOfHidingIt() throws {
@@ -238,10 +292,14 @@ final class MetricPillsTests: XCTestCase {
         totals.costSamples = 3
         let stats = SessionStatsPresentation(gateway: totals, work: fixtureWork())
         XCTAssertEqual(stats.throughput.coverage, "2/5 requests measured")
-        XCTAssertEqual(stats.timeRows.first { $0.name == "Output speed" }?.coverage, "2/5 requests measured")
-        XCTAssertEqual(stats.usageRows.first { $0.name == "Cost" }?.coverage, "3/5 requests reported")
-        XCTAssertTrue(stats.usageNotes.contains { $0.contains("2 of 5 requests reported no cost") })
-        XCTAssertTrue(stats.timeNotes.contains { $0.contains("covers the 2 that recorded it") })
+        let time = SessionTimeCharts(inputs: SessionStatsInputs(gateway: totals, work: fixtureWork()), history: nil)
+        let speed = figure("speed", in: time.hero), ttft = figure("ttft", in: time.details)
+        XCTAssertEqual(speed?.caption, "2/5 requests measured"); XCTAssertEqual(speed?.partial, true, "Partial coverage reads in warning ink")
+        XCTAssertEqual(ttft?.caption, "average of 2/5"); XCTAssertEqual(ttft?.partial, true)
+        XCTAssertTrue(time.notes.contains { $0.contains("covers the 2 that recorded it") })
+        let tokens = SessionTokenCharts(inputs: SessionStatsInputs(gateway: totals), history: nil)
+        XCTAssertEqual(tokens.coverage, "Tokens reported by 2 of 5 requests, cost by 3 of 5; the figures count only those.",
+                       "The popover names the requests that reported no cost instead of hiding them")
     }
 
     func testASessionWithoutAnyTimedFigureOffersNoDialogAndNoRate() throws {
@@ -299,8 +357,9 @@ final class MetricPillsTests: XCTestCase {
         let session = SessionStatsPresentation(gateway: gateway, work: nil)
         XCTAssertEqual(session.cacheHit, "90")
         XCTAssertEqual(session.usageLabel, "3.3K tok · Cache hit 90% · $0.003")
-        XCTAssertEqual(session.usageRows.first { $0.name == "Cache hit" }?.value, "90%")
-        XCTAssertEqual(session.usageRows.first { $0.name == "Cache hit" }?.coverage, "1/3 requests reported")
+        let popover = SessionTokenCharts(inputs: SessionStatsInputs(gateway: gateway), history: nil)
+        XCTAssertEqual(figure("cache", in: popover.hero)?.value, "90%")
+        XCTAssertEqual(popover.coverage, "1 of 3 requests reported their cache use; the figures count only those.")
 
         var summary = fixtureTurn()
         summary.accounting.requests = 3
@@ -343,7 +402,7 @@ final class MetricPillsTests: XCTestCase {
         let turn = TurnPillsPresentation(summary)
         XCTAssertFalse(turn.timeRows.contains { $0.name == "Output speed" })
         XCTAssertFalse(turn.timeRows.contains { $0.name == "TTFT" })
-        XCTAssertTrue(turn.timeNotes.contains { $0.contains("a decode span and its output tokens") })
+        XCTAssertTrue(turn.timeNotes.contains { $0.contains("two or more output tokens over at least 250 ms") }, "\(turn.timeNotes)")
         XCTAssertTrue(turn.hasTimeDialog, "The clock and the model/tool split are still worth a dialog")
     }
 
@@ -384,16 +443,18 @@ final class MetricPillsTests: XCTestCase {
         XCTAssertEqual(first.outputDetail, "900 reasoning")
         XCTAssertEqual(first.ttft, "400 ms")
         XCTAssertEqual(first.generation, "1s")
-        XCTAssertEqual(first.throughput, "34 tok/s")
+        // The row shows the request's reported output, 34; its rate divides
+        // the 33 tokens after the first by its one second of generation.
+        XCTAssertEqual(first.throughput, "33 tok/s")
         XCTAssertEqual(first.cost, "$0.0025")
         XCTAssertFalse(first.unmeasured)
         let second = ledger.rows[1]
         XCTAssertEqual(second.model, "openai-responses", "With no reported model the ledger names the API it went out on")
         XCTAssertEqual([second.output, second.ttft, second.generation, second.throughput, second.cost], ["—", "—", "—", "—", "—"])
         XCTAssertTrue(second.unmeasured)
-        XCTAssertEqual(ledger.throughput.tokensPerSecond, 34)
-        XCTAssertTrue(ledger.coverageNote.contains("34 tok/s over 1 of 2 listed requests"))
-        XCTAssertTrue(ledger.coverageNote.contains("1 request has no completed decode span or output tokens"))
+        XCTAssertEqual(ledger.throughput.tokensPerSecond, 33)
+        XCTAssertTrue(ledger.coverageNote.contains("33 tok/s over 1 of 2 listed requests"), ledger.coverageNote)
+        XCTAssertTrue(ledger.coverageNote.contains("1 request has no decode speed"), ledger.coverageNote)
         XCTAssertTrue(ledger.copyText.contains("deepseek-v4-flash"))
         XCTAssertEqual(ledger.subtitle, "2 requests")
     }
@@ -403,6 +464,7 @@ final class MetricPillsTests: XCTestCase {
                                          streamingMilliseconds: 1_000, outputTokens: 34, requestMilliseconds: 1_400)
         let ledger = SessionRequestLedger(history: SessionTimingHistory(samples: [sample], hasOlderRequests: true, completedRequests: 40))
         XCTAssertEqual(ledger.subtitle, "Most recent 1 request")
-        XCTAssertTrue(ledger.coverageNote.contains("every listed request reported both"))
+        XCTAssertTrue(ledger.coverageNote.contains("every listed request was measured"), ledger.coverageNote)
+        XCTAssertTrue(ledger.coverageNote.hasPrefix("Session throughput 33 tok/s"), "34 tokens: 33 after the first, over one second. \(ledger.coverageNote)")
     }
 }

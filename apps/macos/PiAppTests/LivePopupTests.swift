@@ -58,7 +58,12 @@ final class LivePopupTests: XCTestCase {
         feed(&store, [event(3, phase: "final", output: 400, at: 2_100)], at: 2)
         feed(&store, [event(3, phase: "final", output: 400, at: 2_100)], at: 2)
         XCTAssertTrue(store.active.isEmpty); XCTAssertEqual(store.completions.count, 1)
-        XCTAssertEqual(try XCTUnwrap(store.completions.first?.request.rate), 200, accuracy: 0.001)
+        // The completion keeps its final usage and clocks; the monitor invents
+        // no rate from them (settled speed is the archive's decode rate).
+        let settled = try XCTUnwrap(store.completions.first?.request)
+        XCTAssertEqual(settled.output, 400); XCTAssertTrue(settled.finalOutput)
+        XCTAssertEqual(settled.dispatch, 100); XCTAssertEqual(settled.complete, 2_100)
+        XCTAssertNil(settled.intervalRate, "Terminal-only usage is no live interval")
         XCTAssertEqual(store.buckets.reduce(0) { $0 + $1.completions }, 1)
         XCTAssertEqual(store.buckets.reduce(0) { $0 + $1.interimSamples }, 0)
         feed(&store, [event(4, output: 900, at: 2_500)], at: 3)
@@ -100,12 +105,13 @@ final class LivePopupTests: XCTestCase {
         var final = event(2, phase: "final", output: 100).object!
         final["fieldPhase"] = .object(["output": .string("interim")])
         feed(&store, [.object(final)])
-        XCTAssertNil(store.completions.first?.request.rate)
+        XCTAssertEqual(store.completions.first?.request.finalOutput, false, "Interim output is never promoted to final")
         var bad = event(3, attempt: "b", generation: 2, phase: "final", output: 1e100).object!
         bad["receivedAt"] = .number(.nan)
         bad["telemetry"] = .object(["dispatch": .number(100), "modelComplete": .number(.infinity)])
         feed(&store, [.object(bad)])
-        XCTAssertNil(store.completions.last?.request.rate)
+        XCTAssertNil(store.completions.last?.request.output, "An impossible token count is not kept")
+        XCTAssertNil(store.completions.last?.request.complete, "An infinite clock is not kept")
         feed(&store, [.object(["seq": .number(Double.greatestFiniteMagnitude)])])
         XCTAssertEqual(store.completions.count, 2)
     }
@@ -186,8 +192,7 @@ final class LivePopupTests: XCTestCase {
         let before = footprint()
         for i in 1...2_000 { feed(&store, [event(i, attempt: "a\(i)", generation: i, phase: "final", output: 20, at: 1_100)]) }
         XCTAssertEqual(store.completions.count, 1_000)
-        XCTAssertEqual(store.buckets.reduce(0) { $0 + $1.completions }, 2_000)
-        XCTAssertEqual(store.buckets.reduce(0) { $0 + $1.rateSamples }, 2_000)
+        XCTAssertEqual(store.buckets.reduce(0) { $0 + $1.completions }, 2_000, "Every completion stays counted in the bins")
         feed(&store, [event(2_001, attempt: "a1", generation: 1, phase: "final", output: 20, at: 1_100)])
         XCTAssertEqual(store.buckets.reduce(0) { $0 + $1.completions }, 2_000, "Late enrichment of evicted details cannot double-count")
         store.advance(at: 2_000, wall: date.addingTimeInterval(2_000))

@@ -265,7 +265,7 @@ extension WorkspaceModel {
     func topicGroupContents(in project: WorkspaceRecord, topic: TopicRecord, archived: Bool, filter: String,
                             sidebarWidth: CGFloat, namesConnection: Bool) -> TopicGroupContents {
         let entries = sidebarEntries(in: project.id, topicID: topic.id, archived: archived, collapsed: [])
-        let expanded = topic.expanded || !filter.isEmpty
+        let expanded = topicIsExpanded(topic) || !filter.isEmpty
         // A topic whose own title matches lists all of its chats.
         let inner = topic.title.localizedCaseInsensitiveContains(filter) ? "" : filter
         let header = TopicHeaderState(projectID: project.id, topicID: topic.id, title: topic.title, trusted: project.trusted,

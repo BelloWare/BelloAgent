@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.85
-    CURRENT_PROJECT_VERSION: 89
+    MARKETING_VERSION: 0.1.86
+    CURRENT_PROJECT_VERSION: 90
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Scrolling that stays where you put it, smoother streaming, honest tool outcomes and one tokens-per-second figure everywhere."
+    RELEASE_MESSAGE: "The most accurate tokens-per-second, charts behind the session pills, and relaunch reopens the chat you had open."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO

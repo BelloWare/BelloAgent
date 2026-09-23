@@ -1,0 +1,7 @@
+<h2>Bello Agent 0.1.86</h2>
+<ul>
+  <li>Tokens per second is measured the standard way: output tokens after the first, divided by the time from the first generated token to the last. The clock no longer runs while a gateway holds the final event to work out usage and cost, and hidden reasoning stays inside the span. A reply that arrives in one burst, or a one-token reply, shows no speed.</li>
+  <li>Click the turns pill under the composer for charts of where the time went: waiting for the first token, generating and running tools. It also shows a timeline of every request, the speed of each request against the session average, and a by-model breakdown.</li>
+  <li>Click the tokens pill for the token composition (cached, uncached, cache write, reasoning, output), each request's tokens as the context grows, the cumulative cost and each model's share.</li>
+  <li>Quitting and reopening the app brings back the chat you had open, with its project and its kept side conversation, even after a crash or force-quit. A chat you click while the app is still starting is no longer switched away.</li>
+</ul>

@@ -84,9 +84,22 @@ extension WorkspaceModel {
     /// catalog, and Reload vault repeated the same failure: Settings became
     /// unusable with no way back inside the app.
     func finishConfiguration(_ saved: VaultConfiguration) async {
+        if await openConfiguredArchive(saved) { await refreshRetainedAccounting() }
+    }
+    /// The part of finishing configuration that a chat on screen depends on:
+    /// saved output limits migrated, and the request archive open, because
+    /// a chat's accounting reads it and its helper's traffic is written into
+    /// it. Launch opens the chat it restores after this, and before the
+    /// retained billing of every listed chat, the slowest read left.
+    @discardableResult func openConfiguredArchive(_ saved: VaultConfiguration) async -> Bool {
         do { try await migrateLegacyOutputBudgets() }
         catch { self.error = "Saved chat output limits could not be migrated. \(error.localizedDescription)" }
-        await configureArchive(saved)
+        do {
+            try await traces.configure(key: saved.captureKey, quota: saved.capture.quotaBytes,
+                                       bodyRetention: Double(saved.capture.retentionDays) * 86400,
+                                       metricRetention: Double(saved.dashboard.metricRetentionDays) * 86400)
+            return true
+        } catch { self.error = "Request archive: " + error.localizedDescription; return false }
     }
     func ensureConfiguration() async throws { if !configurationLoaded { try await reloadConfiguration() } }
     /// Trusted, tool-free home for chats that belong to no project. It lives in
@@ -118,15 +131,6 @@ extension WorkspaceModel {
             chats[index].modelOutputLimit = migrated.modelOutputLimit
             chats[index].outputBudgetVersion = migrated.outputBudgetVersion
         }
-    }
-    private func configureArchive(_ config: VaultConfiguration) async {
-        do {
-            try await traces.configure(key: config.captureKey, quota: config.capture.quotaBytes,
-                                       bodyRetention: Double(config.capture.retentionDays) * 86400,
-                                       metricRetention: Double(config.dashboard.metricRetentionDays) * 86400)
-            await refreshRetainedAccounting()
-        }
-        catch { self.error = "Request archive: " + error.localizedDescription }
     }
     func credentials(for profile: ProfileRecord) async throws -> [String: WireValue] {
         // Recheck Keychain access when opening a connection. No per-profile,

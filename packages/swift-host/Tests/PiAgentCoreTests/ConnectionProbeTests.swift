@@ -72,7 +72,7 @@ final class ConnectionProbeTests: XCTestCase {
         server.arguments = [script.path, scratch.path]
         server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice
         try server.run()
-        defer { if server.isRunning { server.terminate(); server.waitUntilExit() } }
+        defer { stopFixtureProcess(server) }
         let ready = scratch.appendingPathComponent("ready.json")
         try await eventually { FileManager.default.fileExists(atPath: ready.path) }
         let port = try JSON.parse(Data(contentsOf: ready))["port"].int!

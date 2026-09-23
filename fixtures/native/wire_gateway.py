@@ -10,6 +10,12 @@ message picks the reply:
                       exact argument text is written to
                       wire-write-arguments.txt first
   "wire stream N"     N text deltas, 30 ms apart
+  "wire decode N"     a reasoning item opens, then 13 text deltas: the first
+                      0.4 s later and one every 50 ms after it, so the model
+                      generates for one second; the message completes with
+                      its last delta, and response.completed (101 output
+                      tokens) is held N ms more (default 2000), as a gateway
+                      does while it computes usage and cost
   "wire filter"       some text, then an incomplete reply (content_filter)
   "wire early REASON" some text, then an incomplete reply with REASON
   anything else       a short reply in one burst
@@ -115,6 +121,26 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     # Long enough for every reader to see the whole call before it runs.
                     time.sleep(1.2)
                 emit({"type": "response.completed", "response": {**response, "status": "completed", "output": [call], "usage": usage}})
+                return
+            if not tool_result and scenario == "decode":
+                reasoning = {"type": "reasoning", "id": "rs_" + request_id, "summary": [], "encrypted_content": "opaque"}
+                item_id = "msg_" + request_id
+                emit({"type": "response.output_item.added", "output_index": 0, "item": {"type": "reasoning", "id": reasoning["id"], "summary": []}})
+                time.sleep(0.4)
+                emit({"type": "response.output_item.done", "output_index": 0, "item": reasoning})
+                emit({"type": "response.output_item.added", "output_index": 1,
+                      "item": {"id": item_id, "type": "message", "role": "assistant", "status": "in_progress", "content": []}})
+                pieces = [f"decoded-{index:02d} " for index in range(13)]
+                for index, piece in enumerate(pieces):
+                    if index:
+                        time.sleep(0.05)
+                    emit({"type": "response.output_text.delta", "output_index": 1, "item_id": item_id, "content_index": 0, "delta": piece})
+                message = {"id": item_id, "type": "message", "role": "assistant", "status": "completed",
+                           "content": [{"type": "output_text", "text": "".join(pieces), "annotations": []}]}
+                emit({"type": "response.output_item.done", "output_index": 1, "item": message})
+                time.sleep(number(2000) / 1000)
+                held = {**usage, "output_tokens": 101, "output_tokens_details": {"reasoning_tokens": 40}}
+                emit({"type": "response.completed", "response": {**response, "status": "completed", "output": [reasoning, message], "usage": held}})
                 return
             item_id = "msg_" + request_id
             if tool_result:

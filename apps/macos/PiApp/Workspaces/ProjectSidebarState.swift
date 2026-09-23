@@ -70,8 +70,11 @@ extension WorkspaceModel {
         }
         return groups
     }
-    func projectIsExpanded(_ id: String) -> Bool { projectSidebarStates[id]?.expanded ?? true }
-    func projectShowsArchive(_ id: String) -> Bool { projectSidebarStates[id]?.archived ?? false }
+    /// As the sidebar shows it: what the reader saved, unless a relaunch
+    /// opened it for this launch to show the chat it reopened
+    /// (`WorkspaceLaunchSelection.swift`).
+    func projectIsExpanded(_ id: String) -> Bool { (projectSidebarStates[id]?.expanded ?? true) || launchReveal.projects.contains(id) }
+    func projectShowsArchive(_ id: String) -> Bool { launchReveal.archive[id] ?? projectSidebarStates[id]?.archived ?? false }
 
     func restoreProjectSidebarStates() async throws {
         let known = Set(sidebarProjects.map(\.id))
@@ -124,6 +127,8 @@ extension WorkspaceModel {
 
     func setProjectExpanded(_ id: String, expanded: Bool) {
         guard sidebarProjects.contains(where: { $0.id == id }) else { return }
+        // The reader's own choice replaces what a relaunch opened.
+        forgetLaunchReveal(project: id)
         var value = projectSidebarStates[id] ?? ProjectSidebarState(id: id)
         guard value.expanded != expanded else { return }
         value.expanded = expanded; saveProjectSidebarState(value)
@@ -138,8 +143,10 @@ extension WorkspaceModel {
 
     func setProjectArchiveFilter(_ id: String, archived: Bool) {
         guard sidebarProjects.contains(where: { $0.id == id }) else { return }
+        // Whether the list on screen changes, which is what starts it over.
+        let changing = projectShowsArchive(id) != archived
+        forgetLaunchReveal(project: id)
         var value = projectSidebarStates[id] ?? ProjectSidebarState(id: id)
-        let changing = value.archived != archived
         value.expanded = true; value.archived = archived
         if selectedWorkspaceID == id { showArchivedSessions = archived }
         if changing { resetSidebarPages(in: id); value.shownRoots = nil }
@@ -152,6 +159,7 @@ extension WorkspaceModel {
         if item.isBackgroundTask { showBackgroundSessions = true }
         showArchivedSessions = item.isArchived
         guard sidebarProjects.contains(where: { $0.id == item.workspaceID }) else { return }
+        forgetLaunchReveal(project: item.workspaceID)
         var value = projectSidebarStates[item.workspaceID] ?? ProjectSidebarState(id: item.workspaceID)
         value.expanded = true; value.archived = item.isArchived
         saveProjectSidebarState(value)

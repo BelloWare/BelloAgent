@@ -361,13 +361,13 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
 
 /// Every output rate the usage panel quotes — its chart, the caption under
 /// it, the slice under the pointer, each model row and the scope note — is
-/// the settled decode rate the rest of the app shows: provider output tokens
-/// over first token → completion of the completed requests that reported
-/// both, the figure the live monitor's average chart plots. Never output over
-/// the whole dispatch-to-completion round trip, which counts the wait for the
-/// first token as if it were decoding.
+/// the settled decode rate the rest of the app shows: the completed requests'
+/// output tokens after the first over their time from the first generated
+/// token to the last, the figure the live monitor's average chart plots.
+/// Never output over the whole dispatch-to-completion round trip, which counts
+/// the wait for the first token as if it were decoding.
 enum MenuBarRateText {
-    static let basis = "output tokens ÷ decode time (first token to completion)"
+    static let basis = "output tokens after the first ÷ time from the first generated token to the last"
     static func rate(_ bucket: MenuBarBucket) -> Double? { bucket.gateway.settledThroughput.tokensPerSecond }
     static func point(_ bucket: MenuBarBucket) -> String {
         let settled = bucket.gateway.settledThroughput
@@ -382,7 +382,7 @@ enum MenuBarRateText {
         let settled = item.gateway.settledThroughput
         return "\(menuBarRate(settled.tokensPerSecond)) decode tok/s · \(settled.samples) completed requests timed"
     }
-    static let scope = "Output tok/s is the decode rate: completed requests' output tokens divided by their combined decode time, first token to completion. The wait for the first token is not counted; missing usage or timing is excluded."
+    static let scope = "Output tok/s is the decode rate: completed requests' output tokens after the first (hidden reasoning included) divided by their combined time from the first generated token to the last. The wait for the first token is not counted; replies under \(SettledThroughput.floorLabel) of generation and missing usage or timing are excluded."
 }
 
 func menuBarRate(_ value: Double?) -> String {

@@ -26,7 +26,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
     var readStateWrites: [String: Task<Void, Never>] = [:]
     @Published var profiles: [ProfileRecord] = [] { didSet { noteActivityChanged() } }
     @Published var selectedID: String? {
-        didSet { if selectedID != oldValue { messageNavigationRevision += 1; organizationNavigationRevision &+= 1; cancelAutomaticContext() } }
+        didSet { if selectedID != oldValue { messageNavigationRevision += 1; organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } }
     }
     /// Invalidates delayed report-to-message navigation when another target wins.
     var messageNavigationRevision = 0
@@ -46,15 +46,31 @@ enum WorkspacePage: String, Sendable { case chats, report }
     var archiveStopWorkers = 0
     /// Optional delayed writer used by race/failure fixtures, never by production.
     var organizationWrite: (([String], ChatOrganizationChange) async throws -> ChatOrganizationBatch)?
-    @Published var focusedSessionID: String? { didSet { if focusedSessionID != oldValue { organizationNavigationRevision &+= 1; cancelAutomaticContext() } } }
+    @Published var focusedSessionID: String? { didSet { if focusedSessionID != oldValue { organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } } }
     @Published var selected: SessionDisplay?
     @Published var error: String?
     /// New chats that exist only on screen until their first message is sent.
     /// Nothing is written for them: no chat record, draft, journal or helper session.
-    var pendingChatIDs: Set<String> = []
+    /// One that gains a record is a chat a relaunch can reopen.
+    var pendingChatIDs: Set<String> = [] { didSet { noteSelectionChanged() } }
     @Published var showProfiles = false
     @Published var profileChoice = ""
-    @Published var selectedWorkspaceID: String?
+    @Published var selectedWorkspaceID: String? { didSet { if selectedWorkspaceID != oldValue { noteSelectionChanged() } } }
+    /// Owned by `WorkspaceLaunchSelection.swift`: what the next launch should
+    /// reopen, the newest revision of it known to be on disk, the one write
+    /// that carries a change there, and whether changes are written at all —
+    /// from the end of `restore()`, which applies the saved one, to `shutdown()`.
+    var rememberedSelection: RememberedSelection?
+    var savedSelectionRevision: Int64 = 0
+    var selectionWrite: Task<Void, Never>?
+    var remembersSelection = false
+    /// Owned by `WorkspaceLaunchSelection.swift`: the saved side each chat
+    /// last showed beside it, by chat id, which `select` reopens after a
+    /// relaunch. `sides` is the same thing for this launch, in memory.
+    var rememberedSides: [String: String] = [:]
+    /// Owned by `WorkspaceLaunchSelection.swift`: sidebar groups a relaunch
+    /// opened, for that launch only, to show the row of the chat it reopened.
+    @Published var launchReveal = SidebarLaunchReveal() { didSet { sidebarIndex.invalidate() } }
     @Published var showArchivedSessions = false
     @Published var showBackgroundSessions = false { didSet { sidebarIndex.invalidate() } }
     /// Answers the sidebar's own queries once per change: chat lookups, per
@@ -134,7 +150,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
     @Published var resourceTargetSessionID: String?
     @Published var inspectorSessionID: String?
     @Published var messageViewerSessionID: String?
-    @Published var sides: [String: SideRecord] = [:] { didSet { sidebarIndex.invalidate(); readBadgeCache = nil; noteActivityChanged() } }
+    @Published var sides: [String: SideRecord] = [:] { didSet { sidebarIndex.invalidate(); readBadgeCache = nil; noteActivityChanged(); sidesChanged(from: oldValue) } }
     @Published var resourceLoading = false
     @Published var resourceNotice = ""
     var editTargetRead: (@MainActor (String, String) async throws -> [String: WireValue])?
@@ -249,6 +265,11 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// no-op rather than a second pass over the same rows. Owned by
     /// `WorkspaceRestore.swift`; a chat's own `loading` is a different thing.
     var restoring = false
+    /// Owned by `WorkspaceRestore.swift`: launch has not yet opened the chat
+    /// it reopens, or found there is none. Until then the window shows
+    /// neither the welcome nor onboarding in place of a chat about to appear.
+    /// The app's model starts out launching, before its window's first frame.
+    @Published var launching: Bool
     /// Owned by `WorkspaceDrafts.swift`: a draft write has already failed, so
     /// the next failure does not repeat the same banner.
     var draftSaveFailed = false
@@ -261,7 +282,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
 
     let completionSound: CompletionSound
 
-    init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil) {
+    init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil, launching: Bool = false) {
+        self.launching = launching
         self.vault = vault
         self.completionSound = completionSound ?? CompletionSound()
         let benchmarkRoot = PerformanceProbe.shared.enabled ? ProcessInfo.processInfo.environment["PI_APP_BENCHMARK_STATE_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) } : nil

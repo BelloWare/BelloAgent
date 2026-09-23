@@ -158,16 +158,23 @@ Missing/invalid/conflicting costs do not become zero. A reported zero stays
 visible, but a zero or unknown total has no defined cost percentage.
 
 Status Usage shows historical output tokens per second for the selected time
-scope and each model group. Eligible samples are completed, retained dispatched
-attempts with reported output and valid client-observed completion timing.
-Compute sum(output_tokens) / (sum(ttft_ms + stream_ms) / 1000), not an
-unweighted mean or sum of per-request rates. Both timing parts must be finite
-and nonnegative, and their sum positive. A zero stream span with positive TTFT
-is valid for buffered JSON. Missing timing/output and unfinished, failed or
-cancelled attempts are excluded with sample coverage. Zero output with valid
-timing remains a measured zero. Reasoning is already included in output.
+scope and each model group: the decode speed as LLMPerf and vLLM's TPOT define
+it. A request's decode span (`stream_ms`) runs from its first generated token —
+the first output item opening or non-empty delta, hidden reasoning included —
+to its last: the latest non-empty delta or output item completion
+(`timings.lastContent`). The terminal event is not the end: it carries no
+token, and a gateway can hold it while it computes usage and cost. Records
+written before the helper stamped `lastContent` (0.1.85 and earlier) keep the
+terminal event, the only end they have. Eligible samples are completed,
+retained dispatched attempts with at least two reported output tokens and a
+decode span of at least 250 ms; each contributes its tokens after the first,
+because over the span the first is already out. Compute
+sum(output_tokens − 1) / (sum(stream_ms) / 1000), not an unweighted mean or sum
+of per-request rates. Missing timing/output, one-token replies, spans under the
+floor and unfinished, failed or cancelled attempts are excluded with sample
+coverage. Reasoning is already included in output.
 
-This matches the session footer's dispatch-to-completion request rate, including
-first-token latency. It does not claim server decode speed and is never added to
-live byte-based estimates. Distribution reads need no raw bodies, credentials,
-new model calls or full-text search.
+The session pill, the sidebar, Session info, the report and the menu bar quote
+this same figure. It excludes first-token latency and is never added to live
+byte-based estimates. Distribution reads need no raw bodies, credentials, new
+model calls or full-text search.

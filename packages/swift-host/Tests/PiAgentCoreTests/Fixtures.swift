@@ -18,6 +18,18 @@ func eventually(_ predicate: @escaping () async -> Bool, file: StaticString = #f
     XCTFail("Condition did not become true",file:file,line:line)
     throw AgentError("test_timeout","Condition did not become true")
 }
+/// Ends a fixture process a test started, without hanging the run. A test
+/// resumes after an `await` on whichever thread the pool picks, and
+/// `Process.waitUntilExit()` there can wait forever for a termination the
+/// launching thread's run loop was told about instead. This polls, bounded,
+/// and kills the process if it will not stop.
+func stopFixtureProcess(_ process: Process, timeout: TimeInterval = 5) {
+    guard process.isRunning else { return }
+    process.terminate()
+    let deadline = Date().addingTimeInterval(timeout)
+    while process.isRunning, Date() < deadline { usleep(10_000) }
+    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+}
 func answer(_ text:String) -> ModelReply { ModelReply(message:ChatMessage(role:"assistant",content:[textBlock(text)]),usage:["input":100,"output":5,"inputIncludingCache":100]) }
 func toolReply(_ names: [String]) -> ModelReply {
     let calls=names.enumerated().map { ToolCall(id:"call-\($0.offset)",name:$0.element,arguments:["value":JSON($0.offset)]) }

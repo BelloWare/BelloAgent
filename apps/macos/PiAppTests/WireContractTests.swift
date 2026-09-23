@@ -288,10 +288,10 @@ final class WireContractTests: XCTestCase {
     // MARK: H7 — a decode span too short to be a rate
 
     /// A reply delivered in one burst spans a few milliseconds from its first
-    /// output to its completion; dividing its tokens by that read as 100,000
-    /// tok/s. A request contributes a settled rate only across 250 ms or more —
-    /// the helper's `metrics.minimumDecodeSpanMs` — and still counts as a
-    /// request considered.
+    /// output to its last; dividing its tokens by that read as 100,000 tok/s.
+    /// A request contributes a settled rate only across 250 ms or more — the
+    /// helper's `metrics.minimumDecodeSpanMs` — and still counts as a request
+    /// considered. A measured request contributes its tokens after the first.
     func testAOneBurstReplyContributesNoSettledRateAndASecondStillDoes() async throws {
         var burst = SettledThroughput()
         burst.add(decodeMilliseconds: 100, outputTokens: 300)
@@ -300,10 +300,10 @@ final class WireContractTests: XCTestCase {
         XCTAssertNil(burst.tokensPerSecond)
         XCTAssertEqual(burst.coverage, "0/1 requests measured")
         var second = SettledThroughput()
-        second.add(decodeMilliseconds: 1_000, outputTokens: 300)
-        XCTAssertEqual(second.tokensPerSecond, 300)
+        second.add(decodeMilliseconds: 1_000, outputTokens: 301)
+        XCTAssertEqual(second.tokensPerSecond, 300, "the 300 tokens after the first over one second")
         var floor = SettledThroughput()
-        floor.add(decodeMilliseconds: 250, outputTokens: 50)
+        floor.add(decodeMilliseconds: 250, outputTokens: 51)
         XCTAssertEqual(floor.tokensPerSecond, 200, "The floor itself is a measurement")
 
         // The archive's settled rate, which the report, the dashboard and the
@@ -322,7 +322,7 @@ final class WireContractTests: XCTestCase {
              "messageIds": .array([.string("t")]), "outputMessageIds": .array([.string("a-\(wall)")]),
              "usage": .object(["inputIncludingCache": .number(100), "output": .number(output)])]
         }
-        for value in [attempt(ttft: 400, decode: 100, output: 300, wall: 1990), attempt(ttft: 400, decode: 1_000, output: 300, wall: 1995)] {
+        for value in [attempt(ttft: 400, decode: 100, output: 301, wall: 1990), attempt(ttft: 400, decode: 1_000, output: 301, wall: 1995)] {
             try await archive.begin(value, workspace: "w"); try await archive.finish(value)
         }
         let window = try await archive.dashboard(DashboardFilter(from: Date(timeIntervalSince1970: 1900), until: Date(timeIntervalSince1970: 2001), bucketCount: 2))
@@ -331,6 +331,71 @@ final class WireContractTests: XCTestCase {
         XCTAssertEqual(settled.decodeMilliseconds, 1_000)
         XCTAssertEqual(settled.tokensPerSecond, 300, "Never (300 + 300) / 1.1 s, and never 3,000 tok/s")
         try await archive.close()
+    }
+
+    // MARK: A held terminal event is not decode time
+
+    /// A gateway can hold `response.completed` while it computes usage and
+    /// cost. This reply generated its 101 tokens over one second, and the
+    /// wire gateway held the terminal event two seconds more. It decoded at
+    /// (101 − 1) / 1 s: the session pill, the sidebar's latest rate and
+    /// Session info all quote that, never 101 over the three seconds from the
+    /// first token to the terminal event.
+    @MainActor func testAHeldTerminalEventDilutesNeitherTheSessionPillNorTheSidebarNorSessionInfo() async throws {
+        let chat = try await WireChat()
+        addTeardownBlock { @MainActor in await chat.close() }
+        try await chat.sendAndWait("wire decode 2000") { rows in rows.contains { $0.text.contains("decoded-12") } }
+        try await chat.waitUntil("the request's settled accounting") {
+            chat.session.footer.timing.latest?.outputTokens == 101 && chat.session.footer.gateway.settledThroughput.samples == 1
+                && chat.session.metrics["timings"]?.object?["lastContent"]?.number != nil
+        }
+        // What the helper observed, and what the archive made of it.
+        let timings = try XCTUnwrap(chat.session.metrics["timings"]?.object)
+        let first = try XCTUnwrap(timings["firstContent"]?.number), last = try XCTUnwrap(timings["lastContent"]?.number)
+        let terminal = try XCTUnwrap(timings["modelComplete"]?.number)
+        let span = try XCTUnwrap(chat.session.footer.timing.latest?.streamingMilliseconds)
+        XCTAssertEqual(span, last - first, accuracy: 1e-6, "The archived decode span is first → last output")
+        XCTAssertGreaterThanOrEqual(span, 950); XCTAssertLessThan(span, 1_500, "The model generated for one second")
+        XCTAssertGreaterThanOrEqual(terminal - last, 1_900, "The gateway held the terminal event two seconds after the last token")
+        let decode = 100 / (span / 1_000), diluted = 101 / ((terminal - first) / 1_000)
+        print("PERF held-terminal decodeTokPerSec=\(String(format: "%.1f", decode)) dividedToTerminal=\(String(format: "%.1f", diluted)) spanMs=\(Int(span)) heldMs=\(Int(terminal - last))")
+        XCTAssertEqual(try XCTUnwrap(chat.session.metrics["metrics"]?.object?["decodeTokensPerSecond"]?.number), decode, accuracy: 1e-6,
+                       "The helper's own figure for the attempt is the app's")
+        XCTAssertGreaterThan(decode, diluted * 2)
+
+        // The session pill under the composer.
+        let pill = SessionStatsPresentation(gateway: chat.session.footer.gateway, work: WorkSplit(timing: chat.session.footer.turnTiming))
+        XCTAssertEqual(try XCTUnwrap(pill.throughput.tokensPerSecond), decode, accuracy: 1e-6)
+        XCTAssertTrue(pill.gaugeLabel.hasSuffix(" · " + MetricFormat.throughput(decode)), pill.gaugeLabel)
+        // The sidebar's latest rate.
+        let row = ChatRowStats(totals: chat.session.footer.gateway, timing: chat.session.footer.timing)
+        XCTAssertEqual(row.rateLabel, "Latest " + SessionRatePresentation.compactRate(decode))
+        XCTAssertEqual(try XCTUnwrap(SessionRatePresentation(history: chat.session.footer.timing).latest), decode, accuracy: 1e-6)
+        // Session info: the latest request, the session figure and the session tile.
+        let info = SessionInfoTiming(history: chat.session.footer.timing, work: [:])
+        XCTAssertEqual(try XCTUnwrap(info.latestRate), decode, accuracy: 1e-6)
+        XCTAssertEqual(try XCTUnwrap(info.averageRate), decode, accuracy: 1e-6)
+        let usage = try await chat.model.traces.sessionMetrics(sessionID: chat.id, workspaceID: chat.chat.workspaceID)
+        XCTAssertEqual(try XCTUnwrap(usage.gateway.settledThroughput.tokensPerSecond), decode, accuracy: 1e-6)
+
+        // One span for the request everywhere a duration is quoted: the
+        // Inspector's Stream (the attempt's retained metadata, as the Inspector
+        // lists it), the ledger's Generation and the report's Streaming.
+        let recorded = try await chat.model.traces.list(sessionID: chat.id)
+        let attempt = try XCTUnwrap(recorded.first { $0["usage"]?.object?["output"]?.number == 101 })
+        XCTAssertEqual(try XCTUnwrap(attempt["metrics"]?.object?["streamDurationMs"]?.number), span, accuracy: 1e-6, "Inspector Stream = the decode span")
+        XCTAssertNil(attempt["metrics"]?.object?["outputTokensPerSecond"], "No round-trip rate is recorded beside it")
+        let ledger = SessionRequestLedger(history: chat.session.footer.timing)
+        XCTAssertEqual(ledger.rows.last?.generation, MetricFormat.latency(span), "Ledger Generation = the decode span")
+        let report = try await chat.model.traces.dashboard(DashboardFilter(from: Date().addingTimeInterval(-600), until: Date().addingTimeInterval(1),
+                                                                         sessionID: chat.id, status: "all", bucketCount: 2))
+        let reported = try XCTUnwrap(report.requests.first { $0.id == attempt["attemptId"]?.string })
+        XCTAssertEqual(try XCTUnwrap(reported.streaming), span, accuracy: 1e-6, "Report Streaming = the decode span")
+
+        // On screen: the gauge pill in the chat's own pane, read off its pixels.
+        let rendered = try await SessionTimingTests.recognizedText(in: chat.window)
+        XCTAssertTrue(rendered.contains(MetricFormat.throughput(decode)), "The pill quotes the decode rate. OCR: \(rendered)")
+        XCTAssertFalse(rendered.contains(MetricFormat.throughput(diluted)), "No figure divides by the held terminal. OCR: \(rendered)")
     }
 
     // MARK: H10 — receipts and finished tasks only when they change

@@ -400,12 +400,23 @@ class TwentySessionIntegration(unittest.TestCase):
                 # reasoning tokens. Visible text/arguments vary by hundreds of
                 # bytes, but neither those bytes nor reasoning are added again.
                 self.assertEqual(metadata['usage']['reasoning'], 2)
-                duration = metadata['timings']['modelComplete'] - metadata['timings']['dispatch']
-                self.assertGreater(duration, 0)
-                self.assertAlmostEqual(metadata['metrics']['outputTokensPerSecond'], 10 / (duration / 1000))
+                # Decode speed: the 9 tokens after the first over first -> last
+                # output (the terminal only when no last output was stamped),
+                # and no rate below the measurement floor.
+                timings, metrics = metadata['timings'], metadata['metrics']
+                end = timings['lastContent'] if timings['lastContent'] is not None else timings['modelComplete']
+                self.assertLessEqual(timings['firstContent'], end)
+                self.assertLessEqual(end, timings['modelComplete'])
+                span = end - timings['firstContent']
+                self.assertAlmostEqual(metrics['streamDurationMs'], span)
+                if span >= metrics['minimumDecodeSpanMs']:
+                    self.assertAlmostEqual(metrics['decodeTokensPerSecond'], 9 / (span / 1000))
+                else:
+                    self.assertIsNone(metrics['decodeTokensPerSecond'], 'A span below the floor is one burst, not a rate')
             else:
-                self.assertIsNone(metadata['metrics']['outputTokensPerSecond'],
+                self.assertIsNone(metadata['metrics']['decodeTokensPerSecond'],
                                   'Failed and cancelled attempts cannot publish a completed rate')
+            self.assertNotIn('outputTokensPerSecond', metadata['metrics'])
         self.assertFalse(self.scenario.errors, self.scenario.errors)
         return finishes
 

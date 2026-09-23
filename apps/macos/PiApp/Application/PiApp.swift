@@ -10,7 +10,11 @@ extension FocusedValues {
 
 @main struct BelloAgentApplication: App {
     @StateObject private var updates = UpdateController()
-    @StateObject private var model = WorkspaceModel()
+    /// The test host never reads the reader's chats back.
+    private static let restoresAtLaunch = ProcessInfo.processInfo.environment["PI_APP_TESTING"] != "1"
+    /// Launching from its first frame: `restore()` opens the chat the reader
+    /// had open, and the window shows nothing in its place until it does.
+    @StateObject private var model = WorkspaceModel(launching: Self.restoresAtLaunch)
     @StateObject private var menuBar = MenuBarController()
     @FocusedValue(\.workspaceCommandModel) private var focusedModel
     @Environment(\.openWindow) private var openWindow
@@ -29,7 +33,7 @@ extension FocusedValues {
                     updates.releaseBarrier = { model.releaseUpdateBarrier() }
                     updates.reportFailure = { model.error = $0 }
                 }
-                .task { if ProcessInfo.processInfo.environment["PI_APP_TESTING"] != "1" { await model.restore() } }
+                .task { if Self.restoresAtLaunch { await model.restore() } }
                 .onChange(of: model.configurationLoaded) { _, available in
                     updates.configure(automaticChecks: model.configuration.automaticUpdateChecks, configurationAvailable: available)
                 }

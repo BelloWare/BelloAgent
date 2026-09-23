@@ -202,7 +202,7 @@ struct MonitorRateSeries {
 enum MonitorRateAverage {
     static func rate(_ bucket: MenuBarBucket) -> Double? { bucket.gateway.settledThroughput.tokensPerSecond }
     static func middle(_ bucket: MenuBarBucket) -> Date { bucket.start.addingTimeInterval(bucket.end.timeIntervalSince(bucket.start) / 2) }
-    static let explanation = "Provider output ÷ decode time (first token to completion) of the completed requests in each interval."
+    static let explanation = "Output tokens after the first ÷ time from the first generated token to the last (hidden reasoning included), over the completed requests in each interval; replies under \(SettledThroughput.floorLabel) of generation are left out."
 }
 
 private struct MonitorHoverRule: View {

@@ -2,13 +2,14 @@ import SwiftUI
 import Charts
 
 /// The report's headline output rate and how it was measured.
-/// It is the app's settled decode rate — provider output over first token to
-/// completion — the figure each route's row, Session info and the pills show.
+/// It is the app's settled decode rate — output tokens after the first over
+/// first to last generated token — the figure each route's row, Session info
+/// and the pills show.
 enum ReportThroughputTile {
     static func rate(_ snapshot: DashboardSnapshot) -> SettledThroughput { snapshot.gateway.settledThroughput }
     static func caption(_ snapshot: DashboardSnapshot) -> String {
         let rate = rate(snapshot)
-        return "decode, first token to completion · \(rate.samples)/\(snapshot.gateway.requests) measured"
+        return "decode, first to last token · \(rate.samples)/\(snapshot.gateway.requests) measured"
     }
 }
 
@@ -373,7 +374,7 @@ struct ReportPage: View {
     /// "Bucket" is how the query groups rows; a reader sees a chart over time.
     private var chartSubtitle: String {
         switch report.chartMetric {
-        case "Output tok/s": return "Output tokens / decode time · drag to select a range"
+        case "Output tok/s": return "Output tokens after the first / first-to-last-token time · drag to select a range"
         case "Cost": return "Reported USD over time · drag to select a range"
         case "Latency": return "p50 and p99 over time, in milliseconds · drag to select a range"
         case "Ratio": return "Cache hit ratio over time, % of reported · drag to select a range"
@@ -576,7 +577,7 @@ struct ReportPage: View {
                     Text(active.gateway.tokenCacheLabel).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                     Text(reportReasoningDetail(active.gateway)).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
                     PiStatusLine(text: report.notice)
-                    Text("Nearest-rank percentiles: sort n observed values; select rank ceil(p × n). Missing values are excluded, never zero. TTFT = first nonempty model content − dispatch. Streaming span = model terminal − first content. Whole request = EOF/error/cancellation − dispatch. Gateway retries and tool calls are not local HTTP attempts.")
+                    Text("Nearest-rank percentiles: sort n observed values; select rank ceil(p × n). Missing values are excluded, never zero. TTFT = first nonempty model content − dispatch. Streaming span = last output token − first output (the model terminal for records from 0.1.85 and earlier, which have no last-output stamp). Whole request = EOF/error/cancellation − dispatch. Gateway retries and tool calls are not local HTTP attempts.")
                         .font(PiFont.caption).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
                 }
             }

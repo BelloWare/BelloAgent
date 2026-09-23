@@ -48,6 +48,10 @@ final class ApplicationLifecycle: NSObject, NSApplicationDelegate {
             do {
                 try await model.flushDrafts()
                 guard await model.flushReadStates(), await model.flushProjectSidebarState(), await model.flushTopicChanges() else { throw StoreError.unavailable }
+                // Which chat to reopen goes last: flushing the drafts can turn
+                // an unsent New chat into a saved one, and then it is the chat
+                // to reopen. Failing to write it is no reason to stay open.
+                await model.flushSelection()
                 model.shutdown()
                 answer(sender, true)
             } catch {

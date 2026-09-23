@@ -115,7 +115,7 @@ final class MenuBarPresentationTests: XCTestCase {
         let view = SessionDisplay(id: "live"); view.state = "running"; view.runStatus = "running"
         view.activity = ["phase": .string("model"), "model": .string("auto-router"), "modelActive": .bool(true), "estimatedOutputTokensPerSecond": .number(9999)]
         view.turnTiming = ["startedAt": .number(10_000), "elapsedMs": .number(1_000)]
-        view.footer.timing = SessionTimingHistory(samples: [SessionTimingSample(id: "done", wall: Date(), ttftMilliseconds: 100, streamingMilliseconds: 300, outputTokens: 450, requestMilliseconds: 2_000)])
+        view.footer.timing = SessionTimingHistory(samples: [SessionTimingSample(id: "done", wall: Date(), ttftMilliseconds: 100, streamingMilliseconds: 300, outputTokens: 451, requestMilliseconds: 2_000)])
         model.displays[view.id] = view
         model.publishChatStats(GatewayTotals(requests: 1, costSamples: 1, costUSD: 0.0123), sessionID: view.id)
         let live = model.menuBarActivity()
@@ -123,8 +123,8 @@ final class MenuBarPresentationTests: XCTestCase {
         let row = try XCTUnwrap(live.runningRows.first)
         XCTAssertEqual(row.startedUptimeMs,10_000)
         XCTAssertEqual(row.elapsed(atUptimeMs:15_000), 5_000)
-        // Reported output over the request's decode span (450 tokens in
-        // 300 ms — a span under 250 ms is one burst, not a rate), the settled
+        // Reported output after the first over the request's decode span (450
+        // tokens in 300 ms — a span under 250 ms is one burst, not a rate), the settled
         // rate every other caption quotes: never visible bytes, and never
         // output over the whole two-second round trip.
         XCTAssertEqual(row.latestRate, 1_500, "Use reported output including hidden reasoning, not visible bytes")

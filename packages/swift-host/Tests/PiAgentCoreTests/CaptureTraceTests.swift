@@ -8,7 +8,7 @@ final class CaptureTraceTests: XCTestCase {
         let traces=TraceStore()
         let id=await traces.begin(session:"timing",turn:"t",profile:try fixtureProfile(),purpose:"turn",body:Data(),headers:[:])
         let initial=await traces.latest("timing")
-        XCTAssertTrue(initial["timings"]["dispatch"].isNull)
+        XCTAssertTrue(initial["timings"]["dispatch"].isNull); XCTAssertTrue(initial["timings"]["lastContent"].isNull)
         await traces.dispatched(id,at:100)
         await traces.content(id,text:false,at:150); await traces.content(id,text:true,at:175)
         await traces.terminal(id,at:200)
@@ -17,10 +17,11 @@ final class CaptureTraceTests: XCTestCase {
         let m=await traces.latest("timing")
         XCTAssertEqual(m["metrics"]["observedTTFTms"].double,50)
         XCTAssertEqual(m["metrics"]["firstTextMs"].double,75)
-        XCTAssertEqual(m["metrics"]["streamDurationMs"].double,50)
+        XCTAssertEqual(m["metrics"]["streamDurationMs"].double,25, "the stream is first output → last output, not → the terminal")
+        XCTAssertEqual(m["timings"]["lastContent"].double,175)
         XCTAssertEqual(m["metrics"]["httpDurationMs"].double,200)
         XCTAssertEqual(m["timings"]["modelComplete"].double,200)
-        XCTAssertTrue(m["metrics"]["outputTokensPerSecond"].isNull)
+        XCTAssertTrue(m["metrics"]["decodeTokensPerSecond"].isNull, "no reported usage, no rate")
     }
     func testCaptureBytesHashesHeadersAndClear() async throws {
         let traces=TraceStore(),request=Data("{\"x\":1}".utf8),response=Data("data: {}\r\n\r\n".utf8)

@@ -112,7 +112,7 @@ final class HistoricalEditTests: XCTestCase {
         var repo = URL(fileURLWithPath: #filePath); for _ in 0..<5 { repo.deleteLastPathComponent() }
         let server = Process(); server.executableURL = URL(fileURLWithPath: "/usr/bin/python3"); server.arguments = [repo.appendingPathComponent("fixtures/native/edit_gateway.py").path, root.path]
         server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice; try server.run()
-        defer { if server.isRunning { server.terminate(); server.waitUntilExit() } }
+        defer { stopFixtureProcess(server) }
         try await eventually { FileManager.default.fileExists(atPath: root.appendingPathComponent("ready.json").path) }
         let port = try XCTUnwrap(JSON.parse(Data(contentsOf: root.appendingPathComponent("ready.json")))["port"].int)
         var raw = try fixtureProfile().raw; raw["baseUrl"] = JSON("http://127.0.0.1:\(port)/v1")

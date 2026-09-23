@@ -16,12 +16,13 @@ struct SessionRequestLedgerRow: Identifiable, Equatable {
     let output: String
     let outputDetail: String?
     let ttft: String
-    /// Decode span: first token to completion.
+    /// Decode span: first generated token to last.
     let generation: String
     let throughput: String
     let cost: String
-    /// True when this request reported no decode span or no output tokens, so
-    /// it contributes nothing to the settled rate.
+    /// True when this request has no decode speed — no completed span of at
+    /// least 250 ms, or fewer than two output tokens — so it contributes
+    /// nothing to the settled rate.
     let unmeasured: Bool
 
     init(number: Int, sample: SessionTimingSample) {
@@ -71,17 +72,17 @@ struct SessionRequestLedger: Equatable {
         let count = "\(rows.count) request\(rows.count == 1 ? "" : "s")"
         return hasOlderRequests ? "Most recent \(count)" : count
     }
-    /// Named, not counted away: the requests that reported no decode span or no
-    /// output tokens are listed but excluded from the rate.
+    /// Named, not counted away: the requests with no decode speed are listed
+    /// but excluded from the rate.
     var coverageNote: String {
         let missing = rows.filter(\.unmeasured).count
         let rate = throughput.label ?? "unavailable"
         if missing == 0 {
-            return "Session throughput \(rate) — every listed request reported both its decode span and its output tokens."
+            return "Session throughput \(rate) — every listed request was measured: output tokens after the first over first to last token."
         }
         let subject = missing == 1 ? "1 request has" : "\(missing) requests have"
         let verb = missing == 1 ? "is" : "are"
-        return "Session throughput \(rate) over \(throughput.samples) of \(rows.count) listed requests. \(subject) no completed decode span or output tokens, and \(verb) excluded from the rate rather than counted as zero."
+        return "Session throughput \(rate) over \(throughput.samples) of \(rows.count) listed requests. \(subject) no decode speed — no completed span of \(SettledThroughput.floorLabel) or more, or fewer than two output tokens — and \(verb) excluded from the rate rather than counted as zero."
     }
     var copyText: String {
         (["#\tStatus\tModel\tInput\tOutput\tTTFT\tGeneration\tThroughput\tCost"]

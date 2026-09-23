@@ -106,7 +106,7 @@ struct TurnPillsPresentation: Equatable {
     var timeNotes: [String] {
         var notes: [String] = []
         if accounting.throughput.samples == 0, accounting.requests > 0 {
-            notes.append("No request of this turn reported both a decode span and its output tokens, so it has no output speed.")
+            notes.append("No request of this turn generated two or more output tokens over at least \(SettledThroughput.floorLabel), so it has no output speed.")
         } else {
             notes.append(SettledThroughput.explanation)
         }

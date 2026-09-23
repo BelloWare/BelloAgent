@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// The three readings under the composer, and what each one's dialog says.
+/// The readings of the two session pills under the composer.
 ///
-/// Pure over the session's gateway totals, the helper's session clocks and the
-/// counts of the loaded page, so every string here is asserted without a view.
-/// Nothing is a live figure: the throughput is the settled rate over the whole
-/// retained log, and the counts only change when a turn ends.
+/// Pure over the session's gateway totals and the helper's session clocks, so
+/// every string here is asserted without a view. Nothing is a live figure: the
+/// throughput is the settled rate over the whole retained log, and the counts
+/// only change when a turn ends. What the pills open is built from the same
+/// totals by `SessionTimeCharts` and `SessionTokenCharts`.
 struct SessionStatsPresentation: Equatable {
     /// The session's own attempts over the whole retained log: every figure
     /// here rides it, so paging the transcript cannot change a reading.
@@ -41,26 +42,6 @@ struct SessionStatsPresentation: Equatable {
     var hasTimeDialog: Bool {
         (work?.sessionModelMs ?? 0) > 0 || (work?.sessionToolMs ?? 0) > 0 || latency.samples > 0 || throughput.samples > 0
     }
-    var timeRows: [PiStatRow] {
-        var rows: [PiStatRow] = []
-        if let work, work.sessionModelMs > 0 { rows.append(PiStatRow(name: "LLM time", value: workDuration(work.sessionModelMs))) }
-        if let work, work.sessionToolMs > 0 { rows.append(PiStatRow(name: "Tool time", value: workDuration(work.sessionToolMs))) }
-        if let average = latency.average {
-            rows.append(PiStatRow(name: "Average TTFT", value: MetricFormat.latency(average), coverage: latency.coverage))
-        }
-        if let rate = throughput.tokensPerSecond {
-            rows.append(PiStatRow(name: "Output speed", value: MetricFormat.throughput(rate), coverage: throughput.coverage))
-        }
-        return rows
-    }
-    var timeNotes: [String] {
-        var notes = [SettledThroughput.explanation]
-        if latency.samples < latency.requests, latency.requests > 0 {
-            notes.append("First-token latency was not recorded for every request; the average covers the \(latency.samples) that recorded it.")
-        }
-        if gateway.expiredRecords > 0 { notes.append("\(gateway.expiredRecords) expired records are excluded from every figure here.") }
-        return notes
-    }
 
     // MARK: The usage pill
 
@@ -77,45 +58,16 @@ struct SessionStatsPresentation: Equatable {
     /// A session whose requests all settled without billing keeps its counts
     /// and drops this pill rather than showing an empty one.
     var hasUsage: Bool { !usageLabel.isEmpty }
-    var usageRows: [PiStatRow] {
-        let tokens = gateway.tokens ?? GatewayTokenTotals()
-        var rows: [PiStatRow] = []
-        func coverage(_ samples: Int) -> String? { samples < gateway.requests ? "\(samples)/\(gateway.requests) requests reported" : nil }
-        if let cacheHit { rows.append(PiStatRow(name: "Cache hit", value: cacheHit + "%", coverage: coverage(gateway.cacheHitSamples))) }
-        if let uncached = gateway.uncachedInputTokens {
-            rows.append(PiStatRow(name: "Uncached input", value: MetricFormat.exactTokenCount(uncached), coverage: coverage(gateway.uncachedInputSampleCount)))
-        }
-        if gateway.cacheReadSamples > 0, let read = gateway.cacheReadTokens {
-            rows.append(PiStatRow(name: "Cached input", value: MetricFormat.exactTokenCount(read), coverage: coverage(gateway.cacheReadSamples)))
-        }
-        if gateway.cacheWriteSamples > 0, let write = gateway.cacheWriteTokens {
-            rows.append(PiStatRow(name: "Cache write", value: MetricFormat.exactTokenCount(write), coverage: coverage(gateway.cacheWriteSamples)))
-        }
-        if tokens.outputSamples > 0, let output = tokens.output {
-            let reasoning = (tokens.reasoningSamples ?? 0) > 0 ? tokens.reasoning : nil
-            rows.append(PiStatRow(name: "Output", value: MetricFormat.exactTokenCount(output),
-                                  detail: reasoning.map { "incl. \(MetricFormat.exactTokens($0)) reasoning" },
-                                  coverage: coverage(tokens.outputSamples)))
-        }
-        if gateway.costSamples > 0, let cost = gateway.costUSD {
-            rows.append(PiStatRow(name: "Cost", value: gatewayUSD(cost), coverage: coverage(gateway.costSamples)))
-        }
-        return rows
-    }
-    var usageNotes: [String] {
-        var notes = ["Cached input is part of input; reasoning is part of output. Neither is added again."]
-        if gateway.costSamples < gateway.requests {
-            notes.append("\(gateway.requests - gateway.costSamples) of \(gateway.requests) requests reported no cost; the total counts only the ones that did.")
-        }
-        if gateway.expiredRecords > 0 { notes.append("\(gateway.expiredRecords) expired records are excluded.") }
-        return notes
-    }
-    var usageHeadline: String? { totalTokens.map(MetricFormat.exactTokenCount) }
 }
 
 /// Session statistics under the composer: how much work the conversation did
 /// and how fast, what it consumed, and how full the window is. Three pills,
 /// one open dialog at a time, and no figure that ticks while a request runs.
+///
+/// The first two open chart popovers (`SessionTimePopover`,
+/// `SessionTokenPopover`) owned by the session's `SessionStatsStore`, which
+/// reads the per-request history only when one opens. The context pill keeps
+/// its compact dialog.
 struct SessionStatsPills: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var session: SessionDisplay
@@ -126,10 +78,22 @@ struct SessionStatsPills: View {
     var compact = false
     /// Opens the full context sheet from the context dialog.
     let exploreContext: () -> Void
-    /// Opens Session info — the per-request ledger — from a dialog's footer.
+    /// Opens Session info — the per-request ledger — from a popover's header.
     let openLedger: () -> Void
-    /// One exclusive slot: opening a pill closes whichever was open.
+    /// The context dialog's slot. The two chart popovers are the store's, and
+    /// opening any of the three closes whichever was open.
     @State private var openPill: String?
+    /// The session's charts and popovers, shared by every row of pills that
+    /// shows this session. Held, not observed: the pills draw from the footer.
+    private let store: SessionStatsStore
+
+    init(model: WorkspaceModel, session: SessionDisplay, footer: SessionMetrics, selectedContextWindow: Int?, compact: Bool = false,
+         exploreContext: @escaping () -> Void, openLedger: @escaping () -> Void) {
+        self.model = model; self.session = session; self.footer = footer
+        self.selectedContextWindow = selectedContextWindow; self.compact = compact
+        self.exploreContext = exploreContext; self.openLedger = openLedger
+        store = SessionStatsStore.shared(archive: model.traces, sessionID: session.id)
+    }
 
     private var presentation: SessionStatsPresentation {
         SessionStatsPresentation(gateway: footer.gateway, work: WorkSplit(timing: footer.turnTiming))
@@ -140,7 +104,10 @@ struct SessionStatsPills: View {
     }
 
     private func binding(_ key: String) -> Binding<Bool> {
-        Binding(get: { openPill == key }, set: { openPill = $0 ? key : nil })
+        Binding(get: { openPill == key }, set: { open in
+            openPill = open ? key : nil
+            if open { store.timePresenter.close(); store.tokenPresenter.close() }
+        })
     }
 
     var body: some View {
@@ -154,16 +121,38 @@ struct SessionStatsPills: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sessionStatsPills")
+        // An open popover follows the session: a request settling or a turn
+        // ending moves these figures, and the store reads the history again.
+        .onChange(of: footer.gateway) { _, _ in followFooter() }
+        .onChange(of: WorkSplit(timing: footer.turnTiming)) { _, _ in followFooter() }
+    }
+
+    private var scope: SessionUsageScope {
+        SessionUsageScope(sessionID: session.id, workspaceID: model.record(session.id)?.workspaceID ?? "")
+    }
+    /// A chart popover is opening: the context dialog closes, and the store
+    /// brings the charts up to the footer's figures.
+    private func openCharts() {
+        openPill = nil
+        store.open(scope: scope, inputs: SessionStatsInputs(footer: footer, session: session))
+    }
+    private func followFooter() {
+        guard store.isShowing else { return }
+        store.footerChanged(SessionStatsInputs(footer: footer, session: session))
+    }
+    private func ledger() {
+        store.timePresenter.close(); store.tokenPresenter.close()
+        openLedger()
     }
 
     @ViewBuilder private func gaugePill(_ stats: SessionStatsPresentation) -> some View {
         if stats.hasTimeDialog {
-            PiStatPill(symbol: "gauge.with.dots.needle.67percent", label: stats.gaugeLabel,
-                       accessibility: "Session statistics: " + stats.gaugeLabel,
-                       identifier: "session-stats-time", help: SettledThroughput.explanation,
-                       open: binding("time")) {
-                PiStatDialog(symbol: "gauge.with.dots.needle.67percent", title: "Session statistics",
-                             rows: stats.timeRows, notes: stats.timeNotes, identifier: "session-stats-time-dialog")
+            PiStatPopoverPill(symbol: "gauge.with.dots.needle.67percent", label: stats.gaugeLabel,
+                              accessibility: "Session statistics: " + stats.gaugeLabel,
+                              identifier: "session-stats-time", help: SettledThroughput.explanation,
+                              presenter: store.timePresenter, willOpen: openCharts,
+                              isReady: { [store] in store.time.historyLoaded || store.failure != nil }) { [store] in
+                SessionTimePopover(store: store, openLedger: ledger)
             }
         } else {
             PiStatPill(symbol: "gauge.with.dots.needle.67percent", label: stats.gaugeLabel,
@@ -172,16 +161,12 @@ struct SessionStatsPills: View {
     }
 
     private func usagePill(_ stats: SessionStatsPresentation) -> some View {
-        PiStatPill(symbol: "cylinder.split.1x2", label: stats.usageLabel,
-                   accessibility: "Token usage: " + stats.usageLabel,
-                   identifier: "session-stats-usage", help: "Gateway-reported usage and cost for this session's retained requests",
-                   open: binding("usage")) {
-            VStack(alignment: .leading, spacing: PiSpacing.sm) {
-                PiStatDialog(symbol: "cylinder.split.1x2", title: "Token usage", headline: stats.usageHeadline,
-                             rows: stats.usageRows, notes: stats.usageNotes, identifier: "session-stats-usage-dialog")
-                Button("Per-request ledger…") { openPill = nil; openLedger() }
-                    .buttonStyle(.piSecondaryCompact).padding(.horizontal, PiSpacing.md).padding(.bottom, PiSpacing.md)
-            }
+        PiStatPopoverPill(symbol: "cylinder.split.1x2", label: stats.usageLabel,
+                          accessibility: "Token usage: " + stats.usageLabel,
+                          identifier: "session-stats-usage", help: "Gateway-reported usage and cost for this session's retained requests",
+                          presenter: store.tokenPresenter, willOpen: openCharts,
+                          isReady: { [store] in store.tokens.historyLoaded || store.failure != nil }) { [store] in
+            SessionTokenPopover(store: store, openLedger: ledger)
         }
     }
 

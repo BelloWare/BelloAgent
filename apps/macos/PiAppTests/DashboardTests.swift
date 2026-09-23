@@ -365,14 +365,15 @@ extension DashboardTests {
         let a = summaries[0]
         XCTAssertEqual(a.requests, 2); XCTAssertEqual(a.completed, 2); XCTAssertEqual(a.problems, 0)
         XCTAssertEqual(a.ttftP50, 10, "nearest-rank median of 10 and 30"); XCTAssertEqual(a.ttftSamples, 2)
-        XCTAssertEqual(try XCTUnwrap(a.gateway.settledThroughput.tokensPerSecond), 160 / 0.8, accuracy: 1e-9, "160 output tokens over 400 ms plus 400 ms of decoding")
-        XCTAssertEqual(a.gateway.tokens?.output, 160)
+        XCTAssertEqual(try XCTUnwrap(a.gateway.settledThroughput.tokensPerSecond), 158 / 0.8, accuracy: 1e-9,
+                       "the 59 + 99 tokens after each first over 400 ms plus 400 ms of decoding")
+        XCTAssertEqual(a.gateway.tokens?.output, 160, "the route's token count is the reported output")
         let b = summaries[1]
-        XCTAssertEqual(b.ttftP50, 50); XCTAssertEqual(try XCTUnwrap(b.gateway.settledThroughput.tokensPerSecond), 400 / 0.5, accuracy: 1e-9); XCTAssertEqual(b.httpP50, 600)
+        XCTAssertEqual(b.ttftP50, 50); XCTAssertEqual(try XCTUnwrap(b.gateway.settledThroughput.tokensPerSecond), 399 / 0.5, accuracy: 1e-9); XCTAssertEqual(b.httpP50, 600)
         XCTAssertEqual(summaries[2].status, "unreported"); XCTAssertNil(summaries[2].gateway.settledThroughput.tokensPerSecond, "no reported output usage, no rate")
         let window = try await archive.dashboard(filter())
         XCTAssertEqual(window.gateway.settledThroughput.samples, 3)
-        XCTAssertEqual(try XCTUnwrap(window.gateway.settledThroughput.tokensPerSecond), 560 / 1.3, accuracy: 1e-9, "the window blends every measured route")
+        XCTAssertEqual(try XCTUnwrap(window.gateway.settledThroughput.tokensPerSecond), 557 / 1.3, accuracy: 1e-9, "the window blends every measured route")
     }
 
     /// The report's "Output tok/s" headline divided by dispatch-to-completion
@@ -382,17 +383,17 @@ extension DashboardTests {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
         try await archive.configure(key: key, quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
-        // Dispatch at 0 ms, first content at 2 s, model completion at 5 s, 300 output tokens.
+        // Dispatch at 0 ms, first content at 2 s, model completion at 5 s, 301 output tokens.
         var request = metadata(id: UUID().uuidString, ttft: 2_000, stream: 3_000, http: 5_100, dispatch: 0)
-        request["usage"] = .object(["inputIncludingCache": .number(100), "output": .number(300)])
+        request["usage"] = .object(["inputIncludingCache": .number(100), "output": .number(301)])
         try await save(archive, request)
         let window = try await archive.dashboard(filter())
         let routes = try await archive.modelSummaries(filter())
         let route = try XCTUnwrap(routes.first)
         let headline = try XCTUnwrap(ReportThroughputTile.rate(window).tokensPerSecond)
-        XCTAssertEqual(headline, 100, accuracy: 1e-9, "300 tokens over the 3 s decode span")
+        XCTAssertEqual(headline, 100, accuracy: 1e-9, "the 300 tokens after the first over the 3 s decode span")
         XCTAssertEqual(try XCTUnwrap(route.gateway.settledThroughput.tokensPerSecond), headline, accuracy: 1e-9, "The headline and the route's column agree")
-        XCTAssertTrue(ReportThroughputTile.caption(window).contains("first token to completion"), ReportThroughputTile.caption(window))
+        XCTAssertTrue(ReportThroughputTile.caption(window).contains("first to last token"), ReportThroughputTile.caption(window))
     }
 
     /// Each snapshot read counted the selected requests with its own scan

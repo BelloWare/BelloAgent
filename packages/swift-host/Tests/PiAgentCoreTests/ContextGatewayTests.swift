@@ -16,7 +16,7 @@ final class ContextGatewayTests: XCTestCase {
         server.arguments = [script.path, root.path]
         server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice
         try server.run()
-        defer { if server.isRunning { server.terminate(); server.waitUntilExit() } }
+        defer { stopFixtureProcess(server) }
         let ready = root.appendingPathComponent("ready.json")
         try await eventually { FileManager.default.fileExists(atPath: ready.path) }
         let port = try XCTUnwrap(JSON.parse(Data(contentsOf: ready))["port"].int)

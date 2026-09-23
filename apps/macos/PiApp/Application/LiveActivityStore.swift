@@ -29,10 +29,8 @@ struct LiveActivityBucket: Identifiable, Equatable, Sendable {
     let wall: Date
     var peak = LiveWorkCounts(), last = LiveWorkCounts()
     var gap = false
-    var completions = 0, rateSamples = 0, interimSamples = 0
-    var output = 0.0, duration = 0.0
-    var minimumRate: Double?, maximumRate: Double?, intervalPeak: Double?
-    var averageRate: Double? { rateSamples > 0 && duration > 0 ? output / duration : nil }
+    var completions = 0, interimSamples = 0
+    var intervalPeak: Double?
 }
 struct LiveRequestState: Equatable, Sendable, Identifiable {
     let id: LiveAttemptKey
@@ -49,14 +47,6 @@ struct LiveRequestState: Equatable, Sendable, Identifiable {
     var terminal: Bool { phase == "final" || phase == "interrupted" }
     var dispatched: Bool { dispatch != nil && phase != "preparing" }
     var utility: Bool { purpose != "turn" }
-    var duration: Double? {
-        guard let dispatch, let complete, complete > dispatch else { return nil }
-        return (complete - dispatch) / 1_000
-    }
-    var rate: Double? {
-        guard phase == "final", finalOutput, let output, let duration, duration > 0 else { return nil }
-        let value = output / duration; return value.isFinite ? value : nil
-    }
     var ttft: Double? { guard let dispatch, let firstContent, firstContent >= dispatch else { return nil }; return firstContent - dispatch }
     func currentRate(at now: Double) -> Double? {
         guard !terminal, let intervalObserved, let intervalDuration,
@@ -241,13 +231,11 @@ struct LiveActivityAccumulator {
             if let index = settled {
                 // A final HTTP observation may enrich identity/cost/timing. It
                 // replaces the same completion; it never adds another request.
-                amendBucket(completions[index].bucket, request: completions[index].request, by: -1)
                 completions[index].request = value
-                amendBucket(completions[index].bucket, request: value, by: 1)
             } else {
                 let bucket = buckets.last?.id ?? Int(now)
                 completions.append(LiveCompletion(id: key, wall: wall, request: value, bucket: bucket))
-                amendBucket(bucket, request: value, by: 1)
+                countCompletion(in: bucket)
             }
         } else if value.dispatched { active[key] = value }
         sampleRates(at: now, wall: wall, gap: interrupted || !disconnected.isEmpty)
@@ -265,13 +253,12 @@ struct LiveActivityAccumulator {
         }
         rateHistory.record(at: wall, rates: rates, active: active.count, reported: reported, gap: gap, missingWorkspaces: missing)
     }
-    private mutating func amendBucket(_ id: Int, request: LiveRequestState, by sign: Int) {
+    /// A completed request is counted once, in the second it settled. No
+    /// per-request rate is kept here: settled speed is the archive's decode
+    /// rate, and the live one is the interval rate above.
+    private mutating func countCompletion(in id: Int) {
         guard let index = buckets.firstIndex(where: { $0.id == id }) else { return }
-        buckets[index].completions += sign
-        if let rate = request.rate, let output = request.output, let duration = request.duration {
-            buckets[index].rateSamples += sign; buckets[index].output += Double(sign) * output; buckets[index].duration += Double(sign) * duration
-            if sign > 0 { buckets[index].minimumRate = min(buckets[index].minimumRate ?? rate, rate); buckets[index].maximumRate = max(buckets[index].maximumRate ?? rate, rate) }
-        }
+        buckets[index].completions += 1
     }
     private mutating func trim() {
         if buckets.count > Self.bucketLimit { buckets.removeFirst(buckets.count - Self.bucketLimit) }

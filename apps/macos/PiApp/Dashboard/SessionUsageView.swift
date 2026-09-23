@@ -406,7 +406,7 @@ struct SessionUsageView: View {
                 .help("Time from dispatch to the first model content of the latest request; the median covers every retained request with a measurement.")
                 .accessibilityIdentifier("session-info-ttft")
             PiStatTile(title: "Latest tok/s", value: SessionUsagePresentation.rate(timing.latestRate), caption: "session average \(SessionUsagePresentation.rate(timing.averageRate))" + (mixedRoutes ? " · per model below" : ""), symbol: "gauge.with.dots.needle.67percent", tone: .info)
-                .help("The latest completed request's provider output tokens over its own decode span.")
+                .help("The latest completed request's output tokens after the first ÷ its time from the first generated token to the last (hidden reasoning included).")
                 .accessibilityIdentifier("session-info-rate")
             PiStatTile(title: "Model time", value: timing.sessionModelMs.map(workDuration) ?? "n/a", caption: timing.modelCaption, symbol: "brain", tone: .accent)
                 .help("Wall-clock time this session spent waiting on model responses, as recorded by the helper.")

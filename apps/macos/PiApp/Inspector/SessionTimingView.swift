@@ -103,7 +103,7 @@ struct SessionTimingHistoryView: View {
                             .font(PiFont.body.weight(.semibold)).monospacedDigit()
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Text("Average: \(history.settledThroughput.samples)/\(history.samples.count) listed requests reported both a decode span and their output tokens.")
+                Text("Average: \(history.settledThroughput.samples)/\(history.samples.count) listed requests measured.")
                     .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
                 ForEach(charts.series(for: history), id: \.metric.rawValue) {
                     SessionTimingChart(series: $0, selection: selection)
@@ -112,7 +112,7 @@ struct SessionTimingHistoryView: View {
             }
             Text(history.hasOlderRequests ? "Most recent \(history.samples.count) completed requests in this session." : "\(history.samples.count) completed requests in this session.")
                 .font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-            Text(SettledThroughput.explanation + " The session figure divides summed output by summed decode time; gaps indicate missing measurements.")
+            Text(SettledThroughput.explanation + " The session figure divides the summed tokens after each request's first by their summed generation time; gaps indicate missing measurements.")
                 .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(PiSpacing.lg).frame(width: 430).foregroundStyle(Color.piInk)

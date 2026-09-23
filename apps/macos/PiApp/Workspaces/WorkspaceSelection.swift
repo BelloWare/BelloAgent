@@ -5,7 +5,7 @@ import Foundation
 // focused, and the displays of chats nobody is reading let go of.
 
 extension WorkspaceModel {
-    func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveFilter: Bool = false) async {
+    func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveFilter: Bool = false, reopensSide: Bool = true) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
         // A chat whose load ended without a page (nothing is reading it any
         // more) is read again rather than left on "Preparing…" for good.
@@ -51,11 +51,20 @@ extension WorkspaceModel {
         view.publishTranscript()
         clearFailureMark(sessionID: id)
         if item.workspaceID != WorkspaceRecord.scratchID { selectedWorkspaceID = item.workspaceID }
+        // The side shown beside this chat comes back with it: the one open in
+        // this launch, or else the saved side it showed when the app last
+        // closed (`WorkspaceLaunchSelection.swift`).
+        var shownSide: (child: ChatRecord, view: SessionDisplay)?
         if let info = sides[id], let sideView = displays[info.id], let child = record(info.id) {
             sideView.presentation.begin(); sideView.presentationGeneration = sideView.presentation.generation
             sideView.historyProgress = nil; sideView.historyState = .loading; sideView.browsingHistory = true
             sideView.draftReady = sideView.selectionMetadataLoaded || info.pending
             sideView.publishTranscript()
+            shownSide = (child, sideView)
+        } else if reopensSide, sides[id] == nil, !installPreparing, let child = rememberedSide(of: id) {
+            shownSide = (child, mountSide(child, beside: id))
+        }
+        if case let (child, sideView)? = shownSide {
             let sideGeneration = sideView.presentationGeneration
             Task { [weak self, weak sideView] in
                 guard let self, let sideView, self.selectedID == id, self.sides[id]?.id == child.id,

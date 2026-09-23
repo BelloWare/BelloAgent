@@ -120,7 +120,8 @@ extension WorkspaceModel {
             row.startedUptimeMs = activityNumber(view.turnTiming["startedAt"])
             row.elapsedMs = activityNumber(view.turnTiming["elapsedMs"])
             // The settled rate the sidebar and Session info quote for the same
-            // request: output over its decode span, not over its round trip.
+            // request: its tokens after the first over its decode span, not
+            // its output over its round trip.
             row.latestRate = view.footer.timing.latest.flatMap(SessionTimingMetric.rate.value(in:))
             row.ttft = view.footer.timing.latest?.ttftMilliseconds
             row.utility = record.isBackgroundTask
