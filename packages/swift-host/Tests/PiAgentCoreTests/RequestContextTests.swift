@@ -125,7 +125,10 @@ final class RequestContextTests: XCTestCase {
         XCTAssertEqual(unknown.json["source"].text, "Pending until the next reply")
         XCTAssertLessThan(unknown.requestTokens, 100, "the stale 195,000 never sizes the compacted request")
         XCTAssertEqual(unknown.requestTokens, PiContext.messageTokens(context), "the messages' characters over four")
-        XCTAssertEqual(try RequestContextCounter().count(messages: context, profile: profile, request: request(profile, messages: context)).requestMethod, "request-utf8-bytes")
+        let sized = try RequestContextCounter().count(messages: context, profile: profile, request: request(profile, messages: context))
+        XCTAssertEqual(sized.requestMethod, "characters")
+        XCTAssertEqual(sized.requestTokens, PiContext.messageTokens(context) + RequestContextCounter.prefixTokens(try request(profile, messages: context)),
+                       "estimateContextTokens(context): the rows, the system prompt and the tools, each characters over four")
         context.append(reply("response3", usage(25_000, 0)))
         let measured = try RequestContextCounter().count(messages: context, profile: profile)
         XCTAssertEqual(measured.tokens, 25_000); XCTAssertEqual(measured.requestTokens, 25_000)
@@ -212,13 +215,15 @@ final class RequestContextTests: XCTestCase {
         XCTAssertFalse(sent.warnings.contains { $0.contains("not sent as a server-enforced cap") })
         XCTAssertTrue(omitted.warnings.contains { $0.contains("compatibility setting omits") && $0.contains("not sent as a server-enforced cap") })
         XCTAssertTrue(unlisted.warnings.contains { $0.contains("no output ceiling") && $0.contains("not sent as a server-enforced cap") })
-        // Near the end of the window the ceiling is clipped to the room the input leaves.
-        var small = withCeiling; small["contextWindow"] = 6_000; small["maxOutputTokens"] = 1_000
+        // Near the end of the window the ceiling is clipped as clampMaxTokensToContext clips it.
+        var small = withCeiling; small["contextWindow"] = 12_000; small["maxOutputTokens"] = 1_000
         let crowded = try Profile(small), crowdedMessages = [user(String(repeating: "x", count: 9_000))]
-        let clipped = try counter.count(messages: crowdedMessages, profile: crowded, request: request(crowded, messages: crowdedMessages))
+        let crowdedBody = try request(crowded, messages: crowdedMessages)
+        let clipped = try counter.count(messages: crowdedMessages, profile: crowded, request: crowdedBody)
         XCTAssertEqual(clipped.tokens, 2_250, "pi's figure")
-        XCTAssertEqual(clipped.requestMethod, "request-utf8-bytes"); XCTAssertGreaterThan(clipped.requestTokens, 3_000, "an unmeasured request is sized from its bytes")
-        XCTAssertEqual(clipped.outputCap, clipped.replyRoom); XCTAssertEqual(clipped.replyRoom, 6_000 - clipped.requestTokens - 60)
+        XCTAssertEqual(clipped.requestMethod, "characters")
+        XCTAssertEqual(clipped.requestTokens, 2_250 + RequestContextCounter.prefixTokens(crowdedBody), "estimateContextTokens(context): the rows plus the prefix")
+        XCTAssertEqual(clipped.outputCap, clipped.replyRoom); XCTAssertEqual(clipped.replyRoom, 12_000 - clipped.requestTokens - 4_096)
         XCTAssertEqual(try crowded.dispatching(clipped).wireOutputLimit, clipped.outputCap)
         XCTAssertEqual(try bounded.dispatching(sent).raw, bounded.raw, "nothing changes when the ceiling already fits")
     }
@@ -254,9 +259,9 @@ final class RequestContextTests: XCTestCase {
         XCTAssertEqual(try counter.count(messages: messages, profile: profile).tokens, 71_050)
     }
 
-    // MARK: sizing a request no reply has measured (the helper's own bound)
+    // MARK: sizing a request no reply has measured (pi's estimateContextTokens)
 
-    func testOpaqueReplayIsSizedOnlyWhenActuallyIncludedAndWarnsAboutUnknownContextCost() throws {
+    func testOpaqueReplayAddsNothingToPisEstimate() throws {
         let pinned = try pinnedProfile()
         var message = ChatMessage(role: "assistant", content: [textBlock("Short answer")])
         message.providerItems = [["type": "reasoning", "encrypted_content": JSON(String(repeating: "opaque-state", count: 300))],
@@ -270,43 +275,34 @@ final class RequestContextTests: XCTestCase {
         let counter = RequestContextCounter()
         let opaque = try counter.count(messages: [message], profile: pinned, request: retained)
         let plain = try counter.count(messages: [message], profile: portable, request: projected)
-        XCTAssertGreaterThan(opaque.requestTokens, plain.requestTokens + 500)
-        XCTAssertEqual(opaque.tokens, plain.tokens, "pi's figure counts the reply's text, not its opaque replay")
-        XCTAssertTrue(opaque.warnings.contains { $0.contains("Opaque reasoning") && $0.contains("unknown") })
-        XCTAssertFalse(plain.warnings.contains { $0.contains("Opaque reasoning") })
+        XCTAssertEqual(opaque.requestTokens, plain.requestTokens, "pi counts the reply's text, not its opaque replay")
+        XCTAssertEqual(opaque.tokens, plain.tokens)
     }
 
-    func testImagesAreSizedByTheirDimensionsWhilePiCountsEach4800Characters() throws {
+    func testImagesCountAs4800CharactersWhateverTheirSize() throws {
         #if canImport(ImageIO)
         let profile = try pinnedProfile(), counter = RequestContextCounter()
+        var sizes: [Int] = []
         for side in [1, 512] {
             let messages = [ChatMessage(role: "user", content: [["type": "image", "mimeType": "image/png", "data": JSON(try png(side: side).base64EncodedString())]])]
-            let result = try counter.count(messages: messages, profile: profile, request: request(profile, messages: messages))
+            let body = try request(profile, messages: messages)
+            let result = try counter.count(messages: messages, profile: profile, request: body)
             XCTAssertEqual(result.tokens, 1_200, "pi: 4,800 characters whatever the image")
-            XCTAssertGreaterThan(result.requestTokens, 4096, "Pinned gpt-4o-mini high-detail accounting must not use the former fixed 4,096 allowance (\(side)×\(side))")
-            XCTAssertLessThan(result.requestTokens, 30000, "Compressed image bytes are not counted as model-facing base64 text")
-            XCTAssertFalse(result.warnings.contains { $0.contains("dimensions are unavailable") })
+            XCTAssertEqual(result.requestTokens, 1_200 + RequestContextCounter.prefixTokens(body), "the image's base64 bytes are never counted as text")
+            sizes.append(result.requestTokens)
         }
-        let unknown = try fixtureProfile()
-        func sized(_ side: Int) throws -> RequestContextCount {
-            let messages = [ChatMessage(role: "user", content: [["type": "image", "mimeType": "image/png", "data": JSON(try png(side: side).base64EncodedString())]])]
-            return try counter.count(messages: messages, profile: unknown, request: request(unknown, messages: messages))
-        }
-        let small = try sized(1), large = try sized(512)
-        XCTAssertGreaterThan(large.requestTokens, small.requestTokens)
-        XCTAssertTrue(large.warnings.contains { $0.contains("unverified model policy") })
-        XCTAssertEqual(large.json["estimated"], true)
+        XCTAssertEqual(sizes[0], sizes[1])
         #else
-        throw XCTSkip("ImageIO dimension checks require macOS")
+        throw XCTSkip("PNG fixtures require macOS")
         #endif
     }
 
-    func testUnknownRemoteImageDimensionsRemainExplicitlyUncertain() throws {
+    func testTheCountSizesTheRowsNotItemsOnlyTheBodyCarries() throws {
+        // Pi's estimate reads the conversation's rows; a body item with no row adds nothing.
         let profile = try pinnedProfile()
         let body: JSON = ["model": JSON(profile.model), "input": [["type": "message", "role": "user", "content": [["type": "input_image", "image_url": "https://fixture.invalid/image.png"]]]]]
         let count = try RequestContextCounter().count(messages: [], profile: profile, request: body)
-        XCTAssertGreaterThanOrEqual(count.requestTokens, 16384)
-        XCTAssertTrue(count.warnings.contains { $0.contains("dimensions are unavailable") && $0.contains("not a capacity guarantee") })
+        XCTAssertEqual(count.requestTokens, 0)
         XCTAssertEqual(count.json["estimated"], true)
     }
 

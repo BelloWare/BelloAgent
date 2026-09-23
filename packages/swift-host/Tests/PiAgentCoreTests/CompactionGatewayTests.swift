@@ -38,10 +38,19 @@ final class CompactionGatewayTests: XCTestCase {
         let traces=TraceStore()
         func attempts(_ id: String) async throws -> [JSON] { try await traces.command("debug.list",session:id,params:[:])["attempts"].list }
         func records() throws -> [JSON] { try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) } }
+        // A body longer than one 32,768-byte page is read page by page.
+        func body(_ id: String, _ attempt: JSON, _ which: String) async throws -> Data {
+            var data=Data(), offset: JSON=0
+            while true {
+                let page=try await traces.command("debug.body",session:id,params:["attemptId":attempt["attemptId"],"body":JSON(which),"offset":offset])
+                data.append(Data(base64Encoded:page["bytes"].text ?? "") ?? Data())
+                guard !page["next"].isNull else { return data }
+                offset=page["next"]
+            }
+        }
         func captured(_ id: String, _ attempt: JSON) async throws {
-            let request=try await traces.command("debug.body",session:id,params:["attemptId":attempt["attemptId"],"body":"request"])
-            let response=try await traces.command("debug.body",session:id,params:["attemptId":attempt["attemptId"],"body":"response"])
-            XCTAssertTrue(try records().contains { $0["request"]==request["bytes"] && $0["response"]==response["bytes"] })
+            let request=try await body(id,attempt,"request").base64EncodedString(), response=try await body(id,attempt,"response").base64EncodedString()
+            XCTAssertTrue(try records().contains { $0["request"].text==request && $0["response"].text==response })
             XCTAssertFalse(attempt["operation"]["lastAttempt"].isNull)
         }
 

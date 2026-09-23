@@ -1,0 +1,7 @@
+<h2>Bello Agent 0.1.89</h2>
+<ul>
+  <li>Long chats no longer stop with "Estimated request input plus the safety margin exceeds configured capacity". Every request is now sized the way pi sizes it: the last reply's reported tokens, plus about 4 characters per token for what came after.</li>
+  <li>As in pi, no estimate refuses a request. The gateway decides, and if it says the chat is too long, the chat is compacted and the request retried once.</li>
+  <li>The reply's output limit leaves the same room pi leaves: the window, less the estimate and 4,096 tokens.</li>
+  <li>Compaction measures in the same units, so it packs more history into each summary request.</li>
+</ul>

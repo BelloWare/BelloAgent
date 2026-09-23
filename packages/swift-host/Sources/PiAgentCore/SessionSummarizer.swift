@@ -22,11 +22,11 @@ extension AgentSession {
         func fits(_ count: RequestContextCount) -> Bool { count.fits && count.requestTokens<=capacity }
         while offset<pending.count {
             try validateCompaction(revision,profile:originalProfile)
-            // Pack whole parts by their escaped size, then count the request itself.
+            // Pack whole parts by pi's characters over four, then count the request itself.
             let empty=try measure(pending[offset..<offset]), room=min(empty.inputBudget,capacity)-empty.requestTokens
             var count=0, used=0
             while offset+count<pending.count {
-                let part=pending[offset+count], cost=(JSON(part).encoded().utf8.count+4)/3
+                let part=pending[offset+count], cost=PiContext.tokens(chars:part.utf16.count+2)
                 if used+cost<=room { used += cost; count += 1; continue }
                 // A long part fills the rest of this request and continues in the next.
                 guard room-used>=256, let pieces=CompactionSourceBuilder.split(part,fraction:Double(room-used)/Double(cost)) else { break }

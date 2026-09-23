@@ -54,8 +54,8 @@ final class CompactionPiTests: XCTestCase {
 
     func testHistoryFarBeyondTheOldTwoMiBSourceCapCompacts() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        // One task of 300 reads, 24,000 characters each: 7 MB of history.
-        let seed=[user("task","Survey every file.")]+(0..<300).flatMap { read("r\($0)",path:"src/f\($0).swift",output:"R\($0) "+String(repeating:"x",count:24_000),root:"task") }
+        // One task of 400 reads, 24,000 characters each: 9.6 MB of history.
+        let seed=[user("task","Survey every file.")]+(0..<400).flatMap { read("r\($0)",path:"src/f\($0).swift",output:"R\($0) "+String(repeating:"x",count:24_000),root:"task") }
         XCTAssertGreaterThan(seed.reduce(0) { $0+$1.text.utf8.count },3*2*1024*1024)
         let client=PiSummaryClient(), s=try session(root,client,seed:seed,window:200_000)
         let state=try await compact(s), context=await s.context, prompts=await client.prompts
@@ -64,10 +64,16 @@ final class CompactionPiTests: XCTestCase {
         XCTAssertGreaterThan(prompts.count,1,"The source is larger than one request, so it is summarized in chained chunks")
         for (n,prompt) in prompts.enumerated() { XCTAssertEqual(prompt.contains("<previous-summary>\nSUMMARY \(n)\n</previous-summary>"),n>0) }
         // Each result appears once, cut to 2,000 characters: "Rn " and the x's after it.
+        // A result split between chunks continues at the start of the next one.
         let results=prompts.flatMap { $0.components(separatedBy:"[Tool result]: R").dropFirst() }
-        XCTAssertEqual(results.map { Int($0.prefix { $0 != " " }) ?? -1 },Array(0..<297))
-        XCTAssertTrue(results.allSatisfy { $0.drop { $0 != " " }.dropFirst().prefix { $0 == "x" }.count == 2000-2-$0.prefix { $0 != " " }.count })
-        XCTAssertEqual(context.dropFirst().map(\.id),["task"]+(297..<300).flatMap { ["call-r\($0)","result-r\($0)"] })
+        XCTAssertEqual(results.map { Int($0.prefix { $0 != " " }) ?? -1 },Array(0..<397))
+        var lengths: [Int]=[]
+        for prompt in prompts {
+            if let mark=prompt.range(of:"[continued]: "), !lengths.isEmpty { lengths[lengths.count-1] += prompt[mark.upperBound...].prefix { $0 == "x" }.count }
+            lengths += prompt.components(separatedBy:"[Tool result]: R").dropFirst().map { $0.drop { $0 != " " }.dropFirst().prefix { $0 == "x" }.count }
+        }
+        XCTAssertEqual(lengths,(0..<397).map { 2000-2-String($0).count })
+        XCTAssertEqual(context.dropFirst().map(\.id),["task"]+(397..<400).flatMap { ["call-r\($0)","result-r\($0)"] })
         XCTAssertTrue(context.first?.text.contains("<read-files>\nsrc/f0.swift\nsrc/f1.swift") == true,"Pi's file lists close the summary")
         await s.close()
     }

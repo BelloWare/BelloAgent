@@ -13,6 +13,13 @@ runtime and package caches survive subsequent runs; keep per-run logs/fixtures
 in separate subdirectories. Do not run concurrent writers against the same
 build or dependency directory. Versioned release directories stay immutable.
 
+The release gate is one command, run alone on the machine:
+`PI_BUILD_ROOT=… scripts/verify-release.sh`. It builds the helper bundle and
+the Debug app, runs the whole native suite by itself (its frame and latency
+budgets measure wall time), then runs the screenshot gallery with the helper,
+wire and script tests alongside it. Every check runs even after a failure, so
+one pass reports them all; logs go to `$PI_BUILD_ROOT/verify-logs`.
+
 App staging builds only the Swift helper: there is no package manager step,
 no downloaded runtime and no transcript asset build since 0.1.38. Swift builds
 remain incremental.
@@ -25,7 +32,19 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.88/build 92 is publicly released** at
+**Bello Agent 0.1.89/build 93 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.89](https://github.com/BelloWare/BelloAgent/tree/v0.1.89) and website commit
+`b06f498300129eb4d743ec0e445d5e79cba58b54`. The signed/notarized DMG is **10,387,171 bytes (9.91 MiB)**;
+SHA-256 `ae3aa6d2f92b4359f1eb38866bd67c57c4901e2cb1454e9f30356dfcc8b52776`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-09-23 16:05:57 UTC**. Every request is sized as pi sizes it and no estimate refuses one, so long chats no
+longer stop with "Estimated request input plus the safety margin exceeds configured capacity".
+**365 helper tests passed**, including a regression test that fails on 0.1.88 with that error; the
+native suite and gallery were not run for this release, at the owner's request. See the
+[0.1.89 validation record](validation/Bello-Agent-0.1.89-2026-09-23.md).
+
+**Bello Agent 0.1.88/build 92 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.88](https://github.com/BelloWare/BelloAgent/tree/v0.1.88) and website commit
 `9813a23a0f65ee6780724496c5bb63f1a162260a`. The signed/notarized DMG is **10,391,163 bytes (9.91 MiB)**;

@@ -118,6 +118,8 @@ extension AgentSession {
                     // the context is unknown after a compaction until a reply reports usage.
                     // A retried request is not checked again. A request whose input fits the
                     // window is always sent, with its cap clipped to the room that is left.
+                    // Pi never refuses a request on its estimate: a request the gateway
+                    // rejects as too long is compacted and retried once below.
                     let thresholdTokens=resumingFailedRequest ? nil : rounds == 1 ? PiContext.promptThresholdTokens(priorContext) : count.tokens
                     if let thresholdTokens, PiContext.shouldCompact(thresholdTokens,contextWindow:turnProfile.contextWindow,settings:compactionSettings), canCompact {
                         try await compactContext(reason:"threshold")
@@ -127,9 +129,7 @@ extension AgentSession {
                         instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
                         request=try ProviderClient.requestBody(profile:turnProfile,messages:context,instructions:instructions,tools:definitions,sessionID:id)
                         count=try countContext(context,request:request); currentContextCount=count
-                        guard count.inputFits else { throw AgentError("context_limit", "Current turn remains too large after compaction; use a new chat or smaller input") }
                     }
-                    guard count.inputFits else { throw AgentError("context_limit", "Estimated request input plus the safety margin exceeds configured capacity; use a new chat or smaller input") }
                     var modelMs=0.0
                     let operationID=UUID().uuidString
                     var recovered=false, completed: ModelReply?
@@ -172,7 +172,6 @@ extension AgentSession {
                             // Pending steering keeps its normal next-boundary admission.
                             request=try ProviderClient.requestBody(profile:turnProfile,messages:context,instructions:instructions,tools:definitions,sessionID:id)
                             count=try countContext(context,request:request); currentContextCount=count
-                            guard count.inputFits else { throw AgentError("context_limit","Context recovery could not fit this request. Your conversation and tool results are retained.") }
                         }
                     }
                     guard let reply=completed else { throw AgentError("provider_failed","No model response") }

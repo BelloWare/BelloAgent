@@ -79,7 +79,7 @@ final class TurnCapacityTests: XCTestCase {
         // By pi's estimate that request alone, beside the summary cap, cannot
         // stay in the smaller window, so pi's cut moves past it.
         var first = answer("old answer"); first.usage = ["input": 4_400, "inputIncludingCache": 4_400, "output": 5]
-        let client = ScriptClient([first, answer("summary of the first half"), answer("short summary"), answer("new answer")])
+        let client = ScriptClient([first, answer("short summary"), answer("new answer")])
         let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore())
         _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 12000)), steer: false)
         try await eventually { !(await session.isRunning) }
@@ -89,10 +89,11 @@ final class TurnCapacityTests: XCTestCase {
         try await eventually { !(await session.isRunning) }
         let purposes = await client.purposes, profiles = await client.profiles, snapshot = await session.snapshot()
         XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
-        XCTAssertEqual(purposes, ["turn", "compaction", "compaction", "turn"], "The previous reply's reported tokens are measured against the selected model's smaller window")
-        XCTAssertEqual(profiles.map(\.contextWindow), [100000, 5000, 5000, 5000])
-        XCTAssertEqual(profiles.map(\.maxOutput), [4096, 1000, 1000, 1000])
-        XCTAssertEqual(profiles.map(\.model), ["fixture-model", "small-model", "small-model", "small-model"])
+        // In pi's units (characters over four) the source fits one summary request.
+        XCTAssertEqual(purposes, ["turn", "compaction", "turn"], "The previous reply's reported tokens are measured against the selected model's smaller window")
+        XCTAssertEqual(profiles.map(\.contextWindow), [100000, 5000, 5000])
+        XCTAssertEqual(profiles.map(\.maxOutput), [4096, 1000, 1000])
+        XCTAssertEqual(profiles.map(\.model), ["fixture-model", "small-model", "small-model"])
         await session.close()
     }
 

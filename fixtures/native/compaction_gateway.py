@@ -2,7 +2,7 @@
 
 Generation routes compacted history through a deliberately smaller capacity:
 the serialized replay input must be <=1,500 bytes. This is an independent
-gateway acceptance contract, not the application's UTF-8/3 estimate.
+gateway acceptance contract, not the application's estimate.
 """
 import base64
 import http.server
@@ -57,7 +57,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 if sid.startswith('compaction-budget'):
                     assert body['reasoning']['effort'] == 'high'
                     assert body['max_output_tokens'] == 6400
-                    assert len(json.dumps(body['input'], separators=(',', ':')).encode()) / 3 + body['max_output_tokens'] < 16000
+                    # Pi's estimate of the request, characters over four, leaves the cap's room.
+                    assert (len(prompt) + len(body['instructions'])) / 4 + body['max_output_tokens'] < 16000
                     incomplete = sid == 'compaction-budget-exhausted'
                     text = 'Observed evidence retained. Continue the original objective.'
                 elif '<previous-summary>' in prompt:

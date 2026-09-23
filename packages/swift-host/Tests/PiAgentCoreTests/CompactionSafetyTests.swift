@@ -202,7 +202,7 @@ final class CompactionSafetyTests: XCTestCase {
         XCTAssertEqual(state["contextState"]["reason"].text,"compaction-committed")
         XCTAssertTrue(state["contextState"]["currentRequest"].isNull)
         XCTAssertEqual(state["contextState"]["replayRevision"].int,1)
-        XCTAssertEqual(state["compaction"]["after"]["requestMethod"].text,"request-utf8-bytes");XCTAssertTrue(state["compaction"]["after"]["lastUsageMessageID"].isNull,"A candidate is never measured by a reply's usage");await s.close()
+        XCTAssertEqual(state["compaction"]["after"]["requestMethod"].text,"characters");XCTAssertTrue(state["compaction"]["after"]["lastUsageMessageID"].isNull,"A candidate is never measured by a reply's usage");await s.close()
     }
     func testInvalidSummariesNeverAdoptAndBudgetIsSharedWithRetries() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }

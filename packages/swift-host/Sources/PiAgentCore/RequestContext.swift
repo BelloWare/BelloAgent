@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(ImageIO)
-import ImageIO
-#endif
 
 /// Pi 0.85.1's context estimate (coding-agent/src/core/compaction/compaction.ts
 /// and agent-session.ts), ported onto the helper's messages: the last valid
@@ -16,6 +13,8 @@ enum PiContext {
     }
     /// ESTIMATED_IMAGE_CHARS.
     static let estimatedImageChars = 4_800
+    /// CONTEXT_SAFETY_TOKENS of clampMaxTokensToContext (packages/ai).
+    static let contextSafetyTokens = 4_096
 
     struct Estimate: Sendable, Equatable {
         let tokens: Int
@@ -96,6 +95,12 @@ enum PiContext {
     }
     /// Math.ceil(chars / 4).
     static func tokens(chars: Int) -> Int { chars / 4 + (chars % 4 == 0 ? 0 : 1) }
+    /// clampMaxTokensToContext: the room a reply has beside the estimated input,
+    /// at least one token; an unknown window clamps nothing.
+    static func outputRoom(contextWindow: Int, requestTokens: Int) -> Int {
+        guard contextWindow > 0 else { return Int.max }
+        return max(1, contextWindow - requestTokens - contextSafetyTokens)
+    }
 
     /// estimateContextTokens over the rows the next request replays.
     static func estimateContextTokens(_ messages: [ChatMessage]) -> Estimate {
@@ -183,7 +188,7 @@ struct RequestContextCount: Sendable {
     let tokens: Int?
     let requestTokens: Int
     let estimate: PiContext.Estimate
-    /// How `requestTokens` was reached: "request-utf8-bytes", "last-reply-usage" or "characters".
+    /// How `requestTokens` was reached: "last-reply-usage" or "characters".
     let requestMethod: String
     let lastUsageID: String?
     let countedModel: String?
@@ -208,7 +213,7 @@ struct RequestContextCount: Sendable {
     /// The input itself fits the window; only when it does not is a turn stopped.
     var inputFits: Bool { requestTokens <= contextWindow - safetyMargin }
     /// Room for the reply once the input and the safety margin are in the window.
-    var replyRoom: Int { requestTokens >= contextWindow - safetyMargin ? 1 : max(1, contextWindow - safetyMargin - requestTokens) }
+    var replyRoom: Int { PiContext.outputRoom(contextWindow: contextWindow, requestTokens: requestTokens) }
     var json: JSON {
         var value: JSON = ["tokens": tokens.map { JSON($0) } ?? .null, "method": JSON(method), "requestedModel": JSON(requestedModel),
             "countedModel": countedModel.map { JSON($0) } ?? .null, "requestFingerprint": requestFingerprint.map { JSON($0) } ?? .null,
@@ -248,11 +253,15 @@ struct RequestContextCounter: Sendable {
         let unmeasured = measured == nil ? PiContext.messageTokens(messages) : 0
         let anchor = measured?.lastUsageIndex.map { messages[$0] }
         var warnings: [String] = [], requestTokens: Int, requestMethod: String
-        if let request {
-            var heuristic = InputHeuristic(model: profile.raw["routing"]["replayPolicy"].text == "pinned" ? profile.raw["routing"]["expectedModel"].text.map(Self.modelName) : nil)
-            requestTokens = heuristic.count(Self.modelInput(request)); warnings += heuristic.warnings; requestMethod = "request-utf8-bytes"
-        } else if let measured, measured.lastUsageIndex != nil { requestTokens = measured.tokens; requestMethod = "last-reply-usage" }
-        else { requestTokens = measured?.tokens ?? unmeasured; requestMethod = "characters" }
+        // Pi sizes a request as estimateContextTokens(context) does in packages/ai:
+        // the last valid reply's reported total plus chars/4 for the rows after
+        // it; before a reply has measured this context, chars/4 of the rows, the
+        // system prompt and the tool schemas.
+        if let measured, measured.lastUsageIndex != nil { requestTokens = measured.tokens; requestMethod = "last-reply-usage" }
+        else {
+            requestTokens = PiContext.sum([measured?.tokens ?? unmeasured, request.map(Self.prefixTokens) ?? 0])
+            requestMethod = "characters"
+        }
         if reportedUsage && measured == nil {
             warnings.append("The last reported tokens predate the compaction, so the context is unknown until the next reply reports usage.")
         } else if anchor == nil {
@@ -263,8 +272,7 @@ struct RequestContextCounter: Sendable {
                 ? "The gateway compatibility setting omits the output limit; the gateway decides where the reply stops. The output budget is a local reserve and is not sent as a server-enforced cap."
                 : "The model catalog gave no output ceiling for this model, so no output limit is sent; the gateway decides where the reply stops. The output budget is a local reserve and is not sent as a server-enforced cap.")
         }
-        let available = profile.contextWindow - RequestContextCount.safetyMargin(contextWindow: profile.contextWindow)
-        let room = requestTokens >= available ? 1 : max(1, available - requestTokens)
+        let room = PiContext.outputRoom(contextWindow: profile.contextWindow, requestTokens: requestTokens)
         let identity = anchor?.providerIdentity
         return RequestContextCount(tokens: reportedUsage ? measured?.tokens : unmeasured, requestTokens: requestTokens,
             estimate: measured ?? PiContext.Estimate(tokens: unmeasured, usageTokens: 0, trailingTokens: unmeasured, lastUsageIndex: nil),
@@ -282,66 +290,14 @@ struct RequestContextCounter: Sendable {
         sha256(try JSON.object(["request":request,"configuration":configuration(profile)]).data())
     }
     static func modelName(_ name: String) -> String { name.hasPrefix("openai/") ? String(name.dropFirst(7)) : name }
-    static func modelInput(_ request: JSON) -> JSON {
-        .object(request.map.filter { ["instructions","input","messages","system","tools","text","tool_choice"].contains($0.key) })
-    }
-}
-
-
-/// JSON overhead scales with the actual schema rather than a fixed 2,048-token
-/// allowance. Image bytes are never mistaken for model-facing base64 text.
-private struct InputHeuristic {
-    let model: String?
-    var warnings: [String] = []
-    private var imageTokens = 0
-    init(model: String?) { self.model = model }
-    mutating func count(_ value: JSON) -> Int {
-        if value.list.isEmpty && value.map.isEmpty && value.text == nil { return 0 }
-        let projected = project(value)
-        return (projected.encoded().utf8.count + 2) / 3 + imageTokens
-    }
-    private mutating func warn(_ warning: String) { if !warnings.contains(warning) { warnings.append(warning) } }
-    private mutating func project(_ value: JSON) -> JSON {
-        if case .array(let items) = value { return .array(items.map { project($0) }) }
-        guard case .object(let fields) = value else { return value }
-        if ["input_image","image"].contains(value["type"].text ?? "") {
-            let url = value["image_url"].text, encoded = value["source"]["data"].text ?? url.flatMap { $0.hasPrefix("data:") ? $0.components(separatedBy:",").dropFirst().joined(separator:",") : nil }
-            let size = encoded.flatMap { Self.dimensions($0) }
-            imageTokens += imageCost(width:size?.0,height:size?.1,detail:value["detail"].text ?? "auto")
-            return ["type":value["type"],"detail":value["detail"],"width":size.map { JSON($0.0) } ?? .null,"height":size.map { JSON($0.1) } ?? .null]
+    /// estimateTextTokens(systemPrompt) + estimateToolsTokens(tools).
+    static func prefixTokens(_ request: JSON) -> Int {
+        var system = request["instructions"].text ?? request["system"].text ?? ""
+        if system.isEmpty { system = request["system"].list.compactMap { $0["text"].text }.joined() }
+        if system.isEmpty {
+            system = request["messages"].list.filter { ["system", "developer"].contains($0["role"].text ?? "") }.compactMap { $0["content"].text }.joined()
         }
-        if !value["encrypted_content"].isNull || ["reasoning","redacted_thinking"].contains(value["type"].text ?? "") {
-            warn("Opaque reasoning replay uses a ciphertext-size allowance; its real context cost is unknown and is not inferred from previous output tokens.")
-        }
-        return .object(fields.mapValues { project($0) })
-    }
-    private mutating func imageCost(width: Int?, height: Int?, detail: String) -> Int {
-        guard let width, let height else {
-            warn("Image dimensions are unavailable; a 16,384-token image allowance is uncertain, not a capacity guarantee.")
-            return 16_384
-        }
-        let w = Double(width), h = Double(height)
-        if let model, ["gpt-4o","gpt-4.1","gpt-4o-mini"].contains(model) {
-            let base = model == "gpt-4o-mini" ? 2833 : 85, tile = model == "gpt-4o-mini" ? 5667 : 170
-            if detail == "low" { return base }
-            let scale = min(1, 2048 / max(w,h), 768 / min(w,h))
-            return base + Int(ceil(w * scale / 512) * ceil(h * scale / 512)) * tile
-        }
-        warn("Image cost is a dimension-based 32-pixel-patch allowance for an unverified model policy; actual image tokens may differ.")
-        // No model-identity guessing for aliases or automatic routing. Keep the
-        // dimensions visible in the request and uncertainty visible in count.
-        return Int(ceil(w / 32) * ceil(h / 32)) + 256
-    }
-    private static func dimensions(_ base64: String) -> (Int, Int)? {
-        #if canImport(ImageIO)
-        guard let bytes = Data(base64Encoded:base64),
-              let image = CGImageSourceCreateWithData(bytes as CFData, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(image,0,nil) as? [CFString:Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? Int, let height = properties[kCGImagePropertyPixelHeight] as? Int,
-              (1...100_000).contains(width), (1...100_000).contains(height) else { return nil }
-        return (width,height)
-        #else
-        return nil
-        #endif
+        let tools = request["tools"].list.isEmpty ? 0 : PiContext.tokens(chars: request["tools"].encoded().utf16.count)
+        return PiContext.sum([PiContext.tokens(chars: system.utf16.count), tools])
     }
 }

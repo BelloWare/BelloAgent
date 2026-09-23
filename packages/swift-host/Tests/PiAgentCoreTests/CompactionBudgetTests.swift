@@ -37,7 +37,8 @@ private actor BudgetProbe: ModelClient {
 private func oversized(_ s: AgentSession, _ policy: CompactionPolicy = CompactionPolicy()) async throws -> String {
     let original=await s.profile,revision=await s.contextMutation
     let p=try policy.summaryProfile(original,cap:policy.summaryTokens(for:original))
-    return try await s.summarize(["[Assistant]: "+String(repeating:"e",count:240000)],previous:nil,turnPrefix:false,profile:p,originalProfile:original,revision:revision,sourceIDs:[])
+    // 80,000 of pi's tokens (characters over four): two chunks in an 80,000 window.
+    return try await s.summarize(["[Assistant]: "+String(repeating:"e",count:320000)],previous:nil,turnPrefix:false,profile:p,originalProfile:original,revision:revision,sourceIDs:[])
 }
 
 final class CompactionBudgetTests: XCTestCase {
@@ -108,7 +109,7 @@ final class CompactionBudgetTests: XCTestCase {
         XCTAssertEqual(requests.count,2)
         XCTAssertTrue(requests.allSatisfy { $0["max_output_tokens"].int==13107 && $0["reasoning"]["effort"].text=="high" })
         XCTAssertTrue(texts[1].contains("[continued]: e"));XCTAssertTrue(texts[1].contains("<previous-summary>\nObserved work; preserve the objective.\n</previous-summary>"))
-        XCTAssertEqual(texts.map { $0.split(whereSeparator: { $0 != "e" }).map(\.count).max() ?? 0 }.reduce(0,+),240000,"Nothing is dropped between chunks")
+        XCTAssertEqual(texts.map { $0.split(whereSeparator: { $0 != "e" }).map(\.count).max() ?? 0 }.reduce(0,+),320000,"Nothing is dropped between chunks")
         await s.close()
     }
 

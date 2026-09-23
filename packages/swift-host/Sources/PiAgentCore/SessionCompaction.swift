@@ -72,8 +72,10 @@ extension AgentSession {
             func body(_ messages: [ChatMessage]) throws -> JSON {
                 try ProviderClient.requestBody(profile:originalProfile,messages:messages,instructions:instructions,tools:definitions,sessionID:id)
             }
-            // Pi's figure is what the checkpoint records. Every request here,
-            // the context and each candidate, is sized from its own bytes.
+            // Pi's figure is what the checkpoint records. A candidate is sized as
+            // pi sizes a request no reply has measured: characters over four with
+            // the prefix. Like pi, a summary is not required to be smaller than
+            // the rows it replaces; it only has to leave a request that fits.
             func count(_ messages: [ChatMessage], reported: Bool = false, request: JSON? = nil) throws -> RequestContextCount {
                 try contextCounter.count(messages:messages,profile:originalProfile,request:request ?? body(messages),reportedUsage:reported)
             }
@@ -94,7 +96,7 @@ extension AgentSession {
             // Reserve room for the summary before summarizing: a kept group
             // that cannot fit beside it is summarized too, never discarded.
             while cut<source.body.count {
-                let room=ChatMessage(role:"system",content:[textBlock(String(repeating:"s",count:(cap+(plan.turnPrefix.isEmpty ? 0:prefixCap))*3))])
+                let room=ChatMessage(role:"system",content:[textBlock(String(repeating:"s",count:(cap+(plan.turnPrefix.isEmpty ? 0:prefixCap))*4))])
                 if try count([room]+plan.keptMessages).fits { break }
                 cut += 1; plan=CompactionPlanner.plan(source,cut:cut)
             }
@@ -124,7 +126,7 @@ extension AgentSession {
             var summary=ChatMessage(role:"system",content:[textBlock(CompactionCheckpoint.replayPrefix+text)])
             let retained=plan.keptMessages, candidate=[summary]+retained
             let request=try body(candidate), after=try count(candidate,request:request)
-            guard after.inputFits, after.requestTokens < before.requestTokens else { throw AgentError("compact_no_progress", "Summary did not sufficiently reduce this request. Original context and tool results are retained; choose a larger model or make an explicit handoff.") }
+            guard after.inputFits else { throw AgentError("compact_no_progress", "The summary and the rows kept after it still do not fit this model's window. Original context and tool results are retained; choose a larger model or make an explicit handoff.") }
             try CompactionPlanner.validateRequest(request)
             operationStatus("Candidate summary validated")
             var metadata=compactionState

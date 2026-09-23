@@ -124,7 +124,7 @@ final class ContextGatewayTests: XCTestCase {
         await session.close()
     }
 
-    func testLargeToolSchemaIsCountedInPreviewAndBlocksDispatch() async throws {
+    func testLargeToolSchemaIsCountedInPreviewAndTheRequestIsStillSent() async throws {
         let root = try Self.scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let traces = TraceStore(), client = ScriptClient([])
         let tools = ContextGatewayTools(detail: String(repeating: "Required schema instructions and accepted values. ", count: 1500))
@@ -137,14 +137,14 @@ final class ContextGatewayTests: XCTestCase {
         let prepared = try await session.prepareContext(params)
         XCTAssertEqual(prepared["count"]["fits"].flag, false)
         XCTAssertGreaterThan(try XCTUnwrap(prepared["count"]["requestTokens"].int), 4000,
-            "Actual schema contents must replace the old fixed tool allowance")
+            "pi counts the tool schemas, characters over four, before a reply has measured the context")
         _ = try await session.submit(Submission(commandID: "blocked", turnID: "blocked", text: "Small question",
             model: "small-model", contextWindow: 4000, maxOutputTokens: 512, modelOutputLimit: 2048), steer: false)
         try await eventually { !(await session.isRunning) }
         let blocked = await session.snapshot(["includeMessages": false]), requests = await client.count
-        XCTAssertEqual(requests, 0, "An oversized tool schema must be rejected before calling the model client")
-        XCTAssertEqual(blocked["state"].text, "error")
-        XCTAssertTrue(blocked["preflightError"].text?.contains("exceeds configured capacity") == true)
+        XCTAssertEqual(requests, 1, "pi never refuses a request on its estimate; the gateway decides")
+        let profiles = await client.profiles
+        XCTAssertEqual(profiles.first?.wireOutputLimit, 1, "with no room left the cap is clampMaxTokensToContext's one token")
         XCTAssertEqual(blocked["context"]["tokens"], prepared["count"]["tokens"])
         XCTAssertEqual(blocked["context"]["requestTokens"], prepared["count"]["requestTokens"])
         XCTAssertEqual(blocked["context"]["requestFingerprint"], prepared["count"]["requestFingerprint"])
