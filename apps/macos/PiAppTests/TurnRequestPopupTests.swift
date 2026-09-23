@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import Combine
 @testable import PiApp
 
 final class TurnRequestPopupTests: XCTestCase {
@@ -53,6 +54,77 @@ final class TurnRequestPopupTests: XCTestCase {
         XCTAssertEqual(reads, completedReads, "Resizing cannot restart the request lookup")
         popup.animates = false
         presenter.close(); XCTAssertFalse(popup.isShown)
+    }
+    /// A streaming response grows between the popup's polls. Each poll used to
+    /// hand the body viewer a new revision (the byte counters are part of the
+    /// descriptor), so the whole response was read again every two seconds:
+    /// a spinner or a "capture changed" notice blinked and the outline was
+    /// rebuilt collapsed at the top. The reader's position must hold.
+    @MainActor func testStreamingResponseIsReadOnceWhilePollsReportGrowth() async throws {
+        var received = 6, metadataReads = 0, finished = false
+        func stream(_ count: Int) -> Data { Data((0..<count).map { "event: message\ndata: {\"n\":\($0)}\n\n" }.joined().utf8) }
+        func descriptor() -> [String: WireValue] {
+            let bytes = Double(stream(received).count)
+            return ["state": .string(finished ? "complete" : "partial"), "observedBytes": .number(bytes), "retainedBytes": .number(bytes)]
+        }
+        var source = TurnRequestSource(sessionID: "session", list: { _ in
+            if !finished { received += 3 }
+            var value = self.metadata("streaming"); value["response"] = .object(descriptor())
+            if finished { value["outcome"] = .string("completed") }
+            return TurnRequestPage(records: [TurnRequestRecord(metadata: value, liveOnly: true)])
+        }, body: { _, _ in
+            CapturedBodySource(metadata: { metadataReads += 1; return CapturedBodyMetadata(body: descriptor(), hash: nil) }, page: { offset in
+                let bytes = stream(received)
+                return (bytes.subdata(in: min(offset, bytes.count)..<min(bytes.count, offset + 32_768)), bytes.count)
+            })
+        })
+        source.pollInterval = .milliseconds(150)
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 1000, height: 800), styleMask: [.titled], backing: .buffered, defer: false)
+        let anchor = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: 800)); window.contentView = anchor
+        window.makeKeyAndOrderFront(nil)
+        let button = NSButton(frame: NSRect(x: 600, y: 500, width: 20, height: 20)); anchor.addSubview(button)
+        var running = turn(); running.live = true; running.outcome = nil; running.endedAt = nil
+        running.taskKey = "streaming-task"; running.startedAt = Date().timeIntervalSince1970 * 1000 - 1000
+        running.liveStartedUptimeMs = ProcessInfo.processInfo.systemUptime * 1000 - 1000
+        let presenter = TurnInfoButton.Coordinator(turn: running, actions: TranscriptActions(turnRequestSource: { source }))
+        presenter.toggle(button)
+        let popup = try XCTUnwrap(presenter.popover)
+        defer { popup.animates = false; presenter.close(); window.orderOut(nil) }
+        func outline() -> NSOutlineView? {
+            func find(_ view: NSView) -> NSOutlineView? { (view as? NSOutlineView) ?? view.subviews.lazy.compactMap(find).first }
+            return popup.contentViewController.flatMap { find($0.view) }
+        }
+        for _ in 0..<200 where outline().map({ $0.numberOfRows < 2 }) ?? true { try await Task.sleep(for: .milliseconds(10)) }
+        let view = try XCTUnwrap(outline(), "The events outline appears once the first read lands")
+        let root = try XCTUnwrap(view.item(atRow: 0) as AnyObject?)
+        let frame = try XCTUnwrap(view.item(atRow: 2))
+        view.expandItem(frame)
+        XCTAssertEqual(metadataReads, 2, "One read checks the descriptor before and after its pages")
+        // Several polls report more received bytes for the same running request.
+        let reported = received
+        for _ in 0..<300 where received < reported + 9 { try await Task.sleep(for: .milliseconds(10)) }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertGreaterThanOrEqual(received, reported + 9, "The popup kept polling the running turn")
+        XCTAssertEqual(metadataReads, 2, "Growth reported by a poll must not re-read the whole body")
+        XCTAssertTrue(outline() === view, "The outline keeps its identity")
+        XCTAssertTrue(view.item(atRow: 0) as AnyObject? === root, "The outline was not rebuilt from a new document")
+        XCTAssertTrue(view.isItemExpanded(frame), "An event the reader opened stays open")
+
+        // The response finishes: one more read replaces the document in place.
+        let rows = view.numberOfRows
+        finished = true
+        var blanked = false
+        for _ in 0..<300 where metadataReads < 4 || view.item(atRow: 0) as AnyObject? === root {
+            if outline() !== view { blanked = true }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(metadataReads, 4, "The finished response is read once more, and only once")
+        XCTAssertFalse(blanked, "The outline never gave way to a spinner or a notice while the final read ran")
+        XCTAssertTrue(outline() === view)
+        XCTAssertFalse(view.item(atRow: 0) as AnyObject? === root, "The final document is on screen")
+        XCTAssertGreaterThan(view.numberOfRows, rows, "The events that arrived since the first read are listed")
+        XCTAssertTrue(view.isItemExpanded(view.item(atRow: 2)), "The event the reader opened is still open in the final document")
     }
     func testExpandedPopupFitsSmallerDisplays() {
         let size = TurnInfoPopupLayout.size(expanded: true, available: CGSize(width: 900, height: 700))
@@ -226,6 +298,27 @@ final class TurnRequestPopupTests: XCTestCase {
         XCTAssertTrue(controller.result?.text.contains("Response body") == true)
         await controller.search(document: nil, format: .json, headers: headers, kind: "request", query: "authorization")
         XCTAssertEqual(controller.result?.matches.count, 1, "Headers remain searchable when the body expired")
+    }
+    /// Refining a search ("a", then "an") removed the results, which tore
+    /// down the text view, and rendered the whole body text again although it
+    /// does not depend on the query.
+    @MainActor func testRefiningASearchKeepsItsResultsAndRendersTheBodyOnce() async throws {
+        let bytes = Data((0..<200).map { "event: message\ndata: {\"text\":\"answer \($0)\"}\n\n" }.joined().utf8)
+        let descriptor = CapturedBodyMetadata(body: ["state": .string("complete"), "retainedBytes": .number(Double(bytes.count))], hash: nil)
+        let document = try CapturedBodyDocument.parse(bytes: bytes, metadata: descriptor, combine: false)
+        let controller = PayloadSearchController()
+        var blanks = 0
+        let observer = controller.$result.dropFirst().sink { if $0 == nil { blanks += 1 } }
+        defer { observer.cancel() }
+        await controller.search(document: document, format: .json, headers: [:], kind: "response", query: "a")
+        let first = try XCTUnwrap(controller.result)
+        await controller.search(document: document, format: .json, headers: [:], kind: "response", query: "an")
+        let refined = try XCTUnwrap(controller.result)
+        XCTAssertEqual(blanks, 0, "The previous results stay on screen while the refined query runs")
+        XCTAssertEqual(controller.renders, 1, "The body text is rendered once for both queries")
+        XCTAssertEqual(refined.textID, first.textID, "The text view keeps its text and swaps only the highlights")
+        XCTAssertGreaterThanOrEqual(refined.matches.count, 200)
+        XCTAssertLessThan(refined.matches.count, first.matches.count, "The refined query found fewer matches")
     }
     func testLiveLabelsUseExistingCompactionAndRetryStyle() {
         var value = turn(); value.live = true; value.phase = "compacting"

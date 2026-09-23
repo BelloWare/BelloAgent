@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.84
-    CURRENT_PROJECT_VERSION: 88
+    MARKETING_VERSION: 0.1.85
+    CURRENT_PROJECT_VERSION: 89
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Live model charts, routing and cost analytics, expandable turn details, and stable cached and reasoning token breakdowns while work continues."
+    RELEASE_MESSAGE: "Scrolling that stays where you put it, smoother streaming, honest tool outcomes and one tokens-per-second figure everywhere."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO

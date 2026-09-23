@@ -41,7 +41,13 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
     /// Brushed sub-range; tiles and the table use it when present.
     @Published private(set) var focused: DashboardSnapshot?
     @Published private(set) var brush: DashboardBrush?
-    @Published var brushPreview: DashboardBrush?
+    /// A selection the chart shows while its results are read, or until a
+    /// refresh that was running when it was made finishes. The current
+    /// `brush` and its totals stay until the new ones arrive.
+    @Published private(set) var brushPreview: DashboardBrush?
+    /// What a chart should draw as its selection: the pending one, else the applied one.
+    var chartSelection: DashboardBrush? { brushPreview ?? brush }
+    private var pendingBrush: DashboardBrush?
     @Published private(set) var aliases: [String] = []
     @Published private(set) var models: [String] = []
     @Published private(set) var purposes: [String] = []
@@ -64,6 +70,11 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
     private var sessionTasks: [String: Task<Void, Never>] = [:]
     private var sessionRevision = 0
     private var sessionPageRevision = 0
+    /// Expanded sessions whose requests were read for the current filter and
+    /// selection. Older pages stay on screen until their replacements land.
+    private var freshSessionRequests: Set<String> = []
+    private var accountingTask: Task<Void, Never>?
+    private var accountingAgain = false
 
     private weak var model: WorkspaceModel?
     private var ready = false
@@ -82,10 +93,14 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
     typealias PageQuery = @Sendable (PayloadArchive, DashboardFilter, Int) async throws -> DashboardRequestPage
     typealias SessionQuery = @Sendable (PayloadArchive, DashboardFilter, Int) async throws -> DashboardSessionPage
     typealias ModelQuery = @Sendable (PayloadArchive, DashboardFilter) async throws -> [DashboardModelSummary]
+    /// Brings the chats' retained totals up to date after the report's own
+    /// reads expired metrics.
+    typealias Accounting = @MainActor (WorkspaceModel) async -> Void
     private let query: Query
     private let pageQuery: PageQuery
     private let sessionQuery: SessionQuery
     private let modelQuery: ModelQuery
+    private let accounting: Accounting
 
     private nonisolated static func queryArchive(_ archive: PayloadArchive, _ filter: DashboardFilter, _ offset: Int) async throws -> DashboardSnapshot {
         try await archive.dashboard(filter, offset: offset)
@@ -100,11 +115,12 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
     private nonisolated static func queryModels(_ archive: PayloadArchive, _ filter: DashboardFilter) async throws -> [DashboardModelSummary] {
         try await archive.modelSummaries(filter)
     }
-    init(query: @escaping Query = ReportController.queryArchive, pageQuery: @escaping PageQuery = ReportController.queryPage, sessionQuery: @escaping SessionQuery = ReportController.querySessions, modelQuery: @escaping ModelQuery = ReportController.queryModels) {
+    init(query: @escaping Query = ReportController.queryArchive, pageQuery: @escaping PageQuery = ReportController.queryPage, sessionQuery: @escaping SessionQuery = ReportController.querySessions, modelQuery: @escaping ModelQuery = ReportController.queryModels, accounting: @escaping Accounting = { await $0.refreshRetainedAccounting() }) {
         self.query = query
         self.pageQuery = pageQuery
         self.sessionQuery = sessionQuery
         self.modelQuery = modelQuery
+        self.accounting = accounting
         $preferences.dropFirst().removeDuplicates().sink { [weak self] _ in self?.scheduleRefresh() }.store(in: &observers)
         $unreportedOnly.dropFirst().removeDuplicates().sink { [weak self] _ in self?.scheduleRefresh() }.store(in: &observers)
     }
@@ -171,6 +187,17 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
         }
     }
 
+    /// Narrows the report to one row of "By model": its API and alias, and
+    /// its served model, or "no resolved model" (the grouping's own
+    /// definition) for a route the gateway did not resolve.
+    func narrow(toRoute summary: DashboardModelSummary) {
+        var chosen = preferences
+        chosen.api = summary.api.isEmpty ? nil : summary.api
+        chosen.requestedAlias = summary.alias
+        chosen.effectiveModel = summary.model
+        preferences = chosen
+        unreportedOnly = summary.model == nil
+    }
     func setWorkspace(_ id: String?) {
         if preferences.workspaceID != id { preferences.sessionID = nil; sessionEntry = false }
         preferences.workspaceID = id
@@ -216,6 +243,8 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
         visible = true
         debounce?.cancel(); debounce = nil
         if let running = refreshTask { await running.task.value; return }
+        // A selection still being read is applied again after this refresh.
+        if brushTask != nil, let reading = brushPreview { pendingBrush = reading }
         cancelBrushQuery()
         invalidateSessionQueries()
         let id = UUID()
@@ -263,6 +292,7 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
         repeat {
             dirty = false
             let applied = filter(), preset = window.preset, revision = filterRevision
+            let expirations = await model.traces.metricExpirations
             do {
                 let result = try await query(model.traces, applied, 0)
                 guard isCurrent(id) else { return }
@@ -272,10 +302,6 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
                 if let selection, selection.fits(applied) { selected = try await query(model.traces, selection.narrowed(applied), 0) }
                 guard isCurrent(id) else { return }
                 guard revision == filterRevision, selectionRevision == brushRevision else { dirty = true; continue }
-                snapshot = result; appliedPreset = preset; filtersPending = false
-                focused = selected
-                sessions = nil; modelSummaries = nil
-                failure = nil
                 async let aliasValues = model.traces.distinctAliases(applied)
                 async let modelValues = model.traces.distinctModels(applied)
                 async let purposeValues = model.traces.distinctPurposes(applied)
@@ -287,6 +313,9 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
                 let byModel = try await modelQuery(model.traces, groupFilter)
                 guard isCurrent(id) else { return }
                 guard revision == filterRevision, selectionRevision == brushRevision else { dirty = true; continue }
+                // One publication: the tiles, chart, routing map and grouped
+                // lists change together and never pass through an empty or
+                // loading state between two results.
                 aliases = values.0; models = values.1; purposes = values.2
                 snapshot = result; appliedPreset = preset; filtersPending = false
                 sessions = grouped; modelSummaries = byModel
@@ -294,9 +323,10 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
                 if let selection, !selection.fits(applied) { clearBrush() }
                 refreshExpandedSessions()
                 failure = nil
-                await model.refreshRetainedAccounting()
-                guard isCurrent(id) else { return }
                 notice = "At most 128 requests per page and 60 time buckets; 100,000 retained request records. Captures marked off, partial, expired, purged or corrupt remain explicit in Inspector."
+                // The report's reads may have expired metrics the chats still
+                // count. Their totals refresh afterwards, never inside the report.
+                if await model.traces.metricExpirations != expirations { refreshChatTotals(model) }
             } catch {
                 guard isCurrent(id) else { return }
                 if revision == filterRevision { failure = error.localizedDescription }
@@ -309,6 +339,20 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
         guard refreshTask?.id == id else { return }
         refreshTask = nil; loading = brushTask != nil
         if dirty { scheduleQuery() }
+        else if let pending = pendingBrush { applyBrush(pending) }
+    }
+    /// Brings the chats' retained totals up to date, one pass at a time; a
+    /// request made during a pass runs once more after it.
+    private func refreshChatTotals(_ model: WorkspaceModel) {
+        guard accountingTask == nil else { accountingAgain = true; return }
+        accountingTask = Task { [weak self, weak model] in
+            defer { self?.accountingTask = nil }
+            repeat {
+                self?.accountingAgain = false
+                guard let self, let model else { return }
+                await self.accounting(model)
+            } while self?.accountingAgain == true
+        }
     }
     /// Pages the table within the brushed sub-range when one is active.
     func page(offset: Int) async {
@@ -334,9 +378,21 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
         await task.value
     }
     func applyBrush(_ selection: DashboardBrush?) {
-        guard visible, !loading, !filtersPending else { return }
-        clearBrush()
-        guard let model, let selection, let snapshot, selection.fits(snapshot.filter) else { return }
+        guard visible else { return }
+        guard let selection else { clearBrush(); return }
+        if refreshTask != nil || filtersPending {
+            // A range dragged while the report reads (or while an edit is
+            // pending) stays on the chart and is applied once the report settles.
+            pendingBrush = selection; brushPreview = selection; return
+        }
+        pendingBrush = nil
+        guard let model, let snapshot, selection.fits(snapshot.filter) else {
+            if brushPreview == selection { brushPreview = nil }
+            return
+        }
+        // Replace, never clear first: the chart would see "no selection" and
+        // reset its zoom, and the current totals would blink to the window's.
+        brushRevision += 1; brushTask?.cancel(); brushTask = nil
         brushPreview = selection
         let revision = filterRevision, selectionRevision = brushRevision
         loading = true
@@ -360,11 +416,14 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
         }
     }
     private func cancelBrushQuery() {
-        brushRevision += 1; brushTask?.cancel(); brushTask = nil; brushPreview = nil
+        brushRevision += 1; brushTask?.cancel(); brushTask = nil
+        // A range waiting for a refresh to finish stays on the chart.
+        if brushPreview != pendingBrush { brushPreview = pendingBrush }
         loading = refreshTask != nil
     }
     func clearBrush() {
         let hadBrush = brush != nil
+        pendingBrush = nil
         cancelBrushQuery(); brush = nil; focused = nil
         if dirty { scheduleQuery() } else if hadBrush { Task { [weak self] in await self?.reloadSessions() } }
     }
@@ -388,6 +447,7 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
         visible = false
         debounce?.cancel(); debounce = nil
         refreshTask?.task.cancel(); refreshTask = nil
+        pendingBrush = nil
         cancelBrushQuery()
         invalidateSessionQueries()
         loading = false
@@ -437,14 +497,18 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
     }
     private func invalidateSessionQueries() {
         sessionRevision += 1; sessionPageRevision += 1
-        sessionTasks.values.forEach { $0.cancel() }; sessionTasks = [:]; sessionRequests = [:]
+        sessionTasks.values.forEach { $0.cancel() }; sessionTasks = [:]
+        // Expanded sessions keep their rows until the replacements land.
+        freshSessionRequests = []
     }
     private func refreshExpandedSessions() {
         invalidateSessionQueries()
+        let listed = Set((sessions?.sessions ?? []).map(\.id))
+        if sessionRequests.keys.contains(where: { !listed.contains($0) }) { sessionRequests = sessionRequests.filter { listed.contains($0.key) } }
         for row in sessions?.sessions ?? [] where expandedSessions.contains(row.id) { loadSession(row.id) }
     }
     private func loadSession(_ id: String) {
-        guard visible, !filtersPending, expandedSessions.contains(id), sessionRequests[id] == nil, sessionTasks[id] == nil,
+        guard visible, !filtersPending, expandedSessions.contains(id), !freshSessionRequests.contains(id), sessionTasks[id] == nil,
               let model, var applied = groupedFilter else { return }
         applied.sessionID = id
         let revision = filterRevision, selectionRevision = brushRevision, expandedRevision = sessionRevision
@@ -457,7 +521,7 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
             do {
                 let result = try await self.pageQuery(model.traces, applied, 0)
                 guard current() else { return }
-                self.sessionRequests[id] = result
+                self.sessionRequests[id] = result; self.freshSessionRequests.insert(id)
             } catch {
                 guard current() else { return }
                 self.failure = error.localizedDescription

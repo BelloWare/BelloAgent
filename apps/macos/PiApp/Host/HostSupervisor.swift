@@ -39,6 +39,10 @@ final class HostSupervisor: ObservableObject {
     private let commandSender: (@MainActor ([String: WireValue]) -> Void)?
     private let acknowledgmentTimeout: Duration?
     var queuedCommandCount: Int { queuedRequests.count }
+    /// Test seam: every answered request — what was asked and the result as
+    /// the caller received it, display transfers already reassembled. Nil in
+    /// the app, where it costs one comparison per reply.
+    var requestObserver: ((_ method: String, _ params: [String: WireValue], _ result: WireValue) -> Void)?
 
     // Dependency injection keeps admission/timeout races deterministic in
     // tests. Production commands always use the connected native transport.
@@ -86,7 +90,11 @@ final class HostSupervisor: ObservableObject {
             ]
             // The vault supplies only tool search paths here; credentials use private IPC.
             connection.start(executable: helper, arguments: [], cwd: cwd, environment: environment)
-            connection.send(["v": .number(1), "kind": .string("hello"), "major": .number(1), "minor": .number(1), "displayTransfers": .bool(true), "build": .string(ReleaseConfiguration.current.build)])
+            // `unknownToolOutcomes`: this app reads a call stopped while it ran
+            // as "unknown" (TranscriptActivity.outcome). Without it the helper
+            // sends such a call as "cancelled" live and "failed" once saved.
+            connection.send(["v": .number(1), "kind": .string("hello"), "major": .number(1), "minor": .number(1), "displayTransfers": .bool(true),
+                             "unknownToolOutcomes": .bool(true), "build": .string(ReleaseConfiguration.current.build)])
         }
         let attempt = transport
         try await withCheckedThrowingContinuation { continuation in
@@ -104,10 +112,12 @@ final class HostSupervisor: ObservableObject {
     func request(_ method: String, sessionID: String? = nil, params: [String: WireValue] = [:], commandID: String = UUID().uuidString) async throws -> WireValue {
         let connection = connectionID
         let result = try await requestFrame(method, sessionID:sessionID, params:params, commandID:commandID)
-        guard result.object?["_displayTransfer"]?.number == 1 else { return result }
-        return try await DisplayResultReader.read(result) { [self] id, offset in
+        guard result.object?["_displayTransfer"]?.number == 1 else { requestObserver?(method, params, result); return result }
+        let whole = try await DisplayResultReader.read(result) { [self] id, offset in
             try await readDisplayTransfer(id, offset:offset, connection:connection)
         }
+        requestObserver?(method, params, whole)
+        return whole
     }
     private func readDisplayTransfer(_ id: String, offset: Int, connection: UUID?) async throws -> WireValue {
         guard connectionID == connection else { throw HostError.failure("The helper changed while loading the conversation. Reload it to continue.") }

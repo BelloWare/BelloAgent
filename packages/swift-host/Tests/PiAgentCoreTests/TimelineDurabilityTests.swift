@@ -32,7 +32,61 @@ private actor TimelineFixtureClient: ModelClient {
     }
 }
 
+/// A three-part Responses reply as a gateway streams it: every part opens,
+/// takes deltas, and closes with both its `.done` event and the enclosing
+/// part's `.done`, then the response completes.
+private actor ThreePartClient: ModelClient {
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        try await complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,turnID:turnID,purpose:purpose,onObservation:{ _ in },onDelta:onDelta)
+    }
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        let attempt = "attempt-\(turnID)"
+        await onObservation(RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:purpose,fingerprint:"fixture",profile:profile))
+        var adapter = ProviderDisplayEvents(api:"openai-responses",attempt:attempt)
+        var frames: [JSON] = []
+        func part(_ index: Int, item: String, prefix: String, kind: String, words: [String]) {
+            let text = words.joined()
+            frames.append(["type":JSON("response.\(prefix)_part.added"),"output_index":JSON(index),"item_id":JSON(item),kind == "summary" ? "summary_index" : "content_index":0,"part":["type":JSON(kind == "summary" ? "summary_text" : "output_text"),"text":""]])
+            for word in words { frames.append(["type":JSON(kind == "summary" ? "response.reasoning_summary_text.delta" : "response.output_text.delta"),"output_index":JSON(index),"item_id":JSON(item),kind == "summary" ? "summary_index" : "content_index":0,"delta":JSON(word)]) }
+            frames.append(["type":JSON(kind == "summary" ? "response.reasoning_summary_text.done" : "response.output_text.done"),"output_index":JSON(index),"item_id":JSON(item),kind == "summary" ? "summary_index" : "content_index":0,"text":JSON(text)])
+            frames.append(["type":JSON("response.\(prefix)_part.done"),"output_index":JSON(index),"item_id":JSON(item),kind == "summary" ? "summary_index" : "content_index":0,"part":["type":JSON(kind == "summary" ? "summary_text" : "output_text"),"text":JSON(text)]])
+        }
+        part(0, item: "r", prefix: "reasoning_summary", kind: "summary", words: ["Checking ", "the ", "file."])
+        part(1, item: "m1", prefix: "content", kind: "text", words: ["It ", "reads ", "cleanly. "])
+        part(2, item: "m2", prefix: "content", kind: "text", words: ["No ", "change ", "needed."])
+        for frame in frames {
+            for event in adapter.consume(frame,at:nowMS()) { try await onDelta(.part(event)) }
+            if frame["type"].text == "response.output_text.delta" { try await onDelta(.text(frame["delta"].text!)) }
+            if frame["type"].text == "response.reasoning_summary_text.delta" { try await onDelta(.thinking(frame["delta"].text!)) }
+        }
+        var reply = answer("It reads cleanly. No change needed.")
+        adapter.timeline.finish("completed"); reply.message.responseTimeline = adapter.timeline
+        return reply
+    }
+}
+
 final class TimelineDurabilityTests: XCTestCase {
+    /// The request ledger is journaled when a part begins and when the reply
+    /// ends, not again for every `.done` of a part it already holds.
+    func testALedgerIsJournaledOncePerPartAndAtItsEnd() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let session = try make(root,client:ThreePartClient())
+        _ = try await session.submit(Submission(commandID:"one",turnID:"one",text:"Check the file"),steer:false)
+        try await eventually { !(await session.isRunning) }
+        let saved = await session.path; await session.close()
+        let path = try XCTUnwrap(saved)
+        let records = try String(contentsOfFile:path,encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) }
+        let updates = records.filter { $0["customType"].text == "pi-app.presentation.update.v1" }
+        let bytes = updates.reduce(0) { $0 + ((try? $1.data().count) ?? 0) }
+        print("PERF ledger-journal parts=3 updateRecords=\(updates.count) updateBytes=\(bytes)")
+        XCTAssertLessThanOrEqual(updates.count, 4, "three parts and the terminal receipt")
+        let reopened = try make(root,client:ScriptClient([]),path:path)
+        let ledger = await reopened.visible.first { $0.kind == "requestLedger" }
+        XCTAssertEqual(ledger?.responseTimeline?.segments.map(\.text), ["Checking the file.", "It reads cleanly. ", "No change needed."])
+        XCTAssertEqual(ledger?.responseTimeline?.terminal, "completed")
+        XCTAssertTrue(ledger?.responseTimeline?.segments.allSatisfy { $0.state == "completed" } == true)
+        await reopened.close()
+    }
     private func make(_ root: URL, id: String = "timeline", client: any ModelClient, path: String? = nil, seed: [ChatMessage] = [], ephemeral: Bool = false) throws -> AgentSession {
         try AgentSession(id:id,profile:fixtureProfile(),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),resumePath:path,seed:ephemeral ? seed : nil,autoCompaction:false)
     }

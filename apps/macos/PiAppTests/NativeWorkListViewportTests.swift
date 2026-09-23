@@ -189,6 +189,43 @@ final class NativeWorkListViewportTests: XCTestCase {
         assertCardsFit(list, "the turn as first laid out")
     }
 
+    /// Every closed card of a turn stands at one shared measurement, checked
+    /// against the first few cards that mount. A change of environment that
+    /// can change a card's geometry — text size, locale, layout direction —
+    /// changes every card, so the shared height is measured again in the new
+    /// environment and the checks start over; nothing stands at a height one
+    /// environment measured while another is drawn.
+    @MainActor func testAnEnvironmentChangeMeasuresTheSharedClosedCardAgain() throws {
+        let tools = (0..<24).map { index in
+            ToolView(id: "t\(index)", name: index % 3 == 0 ? "bash" : "read", state: "completed",
+                     input: "{\"path\":\"Sources/File\(index).swift\"}", output: "ok", durationMs: 12, truncated: false,
+                     path: "Sources/File\(index).swift")
+        }
+        let width: CGFloat = 640
+        var environment = TranscriptRowEnvironment()
+        let list = NativeWorkListContainer()
+        list.update(tools: tools, openTools: [], fetched: [:], toggle: { _ in }, environment: environment)
+        let before = list.measure(width: width).height
+        let measured = list.rowMeasurementCount
+        XCTAssertGreaterThan(before, 0)
+        for change in [{ (value: inout TranscriptRowEnvironment) in value.dynamicTypeSize = .accessibility3 },
+                       { (value: inout TranscriptRowEnvironment) in value.layoutDirection = .rightToLeft },
+                       { (value: inout TranscriptRowEnvironment) in value.locale = Locale(identifier: "ar") }] {
+            change(&environment)
+            let count = list.rowMeasurementCount
+            list.update(tools: tools, openTools: [], fetched: [:], toggle: { _ in }, environment: environment)
+            let after = list.measure(width: width).height
+            XCTAssertGreaterThan(list.rowMeasurementCount, count,
+                                 "after \(environment.dynamicTypeSize), \(environment.layoutDirection), \(environment.locale.identifier) the closed cards still stand at the height the old environment measured")
+            // What a list that only ever knew this environment measures.
+            let fresh = NativeWorkListContainer()
+            fresh.update(tools: tools, openTools: [], fetched: [:], toggle: { _ in }, environment: environment)
+            XCTAssertEqual(after, fresh.measure(width: width).height, accuracy: 0.5,
+                           "the turn's height in the new environment must be the one that environment measures")
+        }
+        XCTAssertGreaterThan(list.rowMeasurementCount, measured)
+    }
+
     @MainActor func testANarrowerPaneRelaysTheCardsOutWithoutOverlap() async throws {
         let fixture = Fixture(tools: 60); defer { fixture.close() }
         await fixture.settle()

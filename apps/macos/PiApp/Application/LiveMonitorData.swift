@@ -47,6 +47,9 @@ struct MonitorChartZoom: Equatable {
     }
     mutating func cancel() { brush = nil; dragDomain = nil }
     mutating func reset() { range = nil; cancel() }
+    /// Shows a range chosen elsewhere (the report's selection) without
+    /// touching a drag in progress.
+    mutating func show(_ selected: ClosedRange<Date>?) { if range != selected { range = selected } }
     func domain(following: ClosedRange<Date>) -> ClosedRange<Date> { dragDomain ?? range ?? following }
     static func date(x: Double, width: Double, domain: ClosedRange<Date>) -> Date {
         domain.lowerBound.addingTimeInterval(min(1, max(0, x / width)) * domain.upperBound.timeIntervalSince(domain.lowerBound))

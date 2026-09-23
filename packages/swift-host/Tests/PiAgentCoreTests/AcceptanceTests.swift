@@ -91,9 +91,16 @@ final class AcceptanceTests: XCTestCase {
         XCTAssertEqual(results.count, 2)
         XCTAssertTrue(try XCTUnwrap(results.first?["text"].text).contains("Effects may already have occurred"))
         XCTAssertTrue(try XCTUnwrap(results.last?["text"].text).contains("Not executed"))
+        // The call that was running when Stop came has an unknown outcome; the
+        // one that never started was skipped. The same after a reopen, when
+        // the cards come from the journal instead of the live state.
+        func cards(_ value: JSON) -> [String] { value["messages"].list.filter { $0["role"].text == "assistant" }.flatMap { $0["tools"].list }.compactMap { $0["state"].text } }
+        XCTAssertEqual(cards(before), ["unknown", "cancelled"])
         await first.close()
         let client = ScriptClient([answer("Continued")])
         let resumed = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: resources, client: client, tools: tools, traces: traces, resumePath: path, autoCompaction: false)
+        let reopened = await resumed.snapshot()
+        XCTAssertEqual(cards(reopened), ["unknown", "cancelled"])
         try await resumed.resumeQueue(); try await eventually { !(await resumed.isRunning) }
         let calls = await tools.calls, requests = await client.requests
         XCTAssertEqual(calls, ["first"]); XCTAssertEqual(requests.count, 1)
@@ -223,7 +230,10 @@ final class AcceptanceTests: XCTestCase {
         for value in [snapshot, page] {
             let cards = assistantIDs.compactMap { id in value["messages"].list.first { $0["id"].text == id }?["tools"].list.first }
             XCTAssertEqual(cards.count, 3)
-            XCTAssertEqual(cards.map { $0["state"].text }, ["completed", "failed", "failed"])
+            // A result from an older journal has no recorded outcome and keeps
+            // its isError reading; the call a crash left without a result was
+            // paired with an outcome-unknown result, and its card says so.
+            XCTAssertEqual(cards.map { $0["state"].text }, ["completed", "failed", "unknown"])
             XCTAssertEqual(cards.first?["output"].text, "first durable result", "A reused call ID must not replace an earlier result")
             XCTAssertTrue(cards.allSatisfy { $0["durationMs"].isNull }, "Restart cannot reconstruct elapsed time from a result")
             XCTAssertTrue(cards.last?["output"].text?.contains("Outcome unknown") == true)

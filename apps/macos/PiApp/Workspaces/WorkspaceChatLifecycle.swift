@@ -199,6 +199,7 @@ extension WorkspaceModel {
             for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", "session-read"] { try await store.remove(kind: kind, id: item.id) }
             try await store.removeAll(kind: "receipt:\(item.id)")
             for intent in try await store.list(CommandIntent.self, kind: "pending:\(item.id)") { try await store.remove(kind: "pending:\(item.id)", id: intent.id) }
+            pendingIntentsChanged(item.id)
             chats.removeAll { $0.id == item.id }; displays.removeValue(forKey: item.id)
             if selectedID == item.id { selectedID = nil; selected = nil }
             if focusedSessionID == item.id { focusedSessionID = nil }

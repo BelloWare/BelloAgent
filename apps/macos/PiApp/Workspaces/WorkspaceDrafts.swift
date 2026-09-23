@@ -60,9 +60,11 @@ extension WorkspaceModel {
             else { try? await store?.remove(kind: "anchor", id: view.id) } }
     }
     func recoverDraft(_ intent: CommandIntent, insert: Bool) {
-        guard let view = selected else { return }
+        // The banner sits in the pane of the chat the submission belongs to,
+        // a side's included: it acts on that chat, not on the selected one.
+        guard let view = displays[intent.sessionID] else { return }
         if insert { view.attachments = Array((view.attachments + (intent.attachments ?? [])).prefix(4)); for chip in intent.skills ?? [] where !view.skills.contains(where: { $0.id == chip.id }) && view.skills.count < 8 { view.skills.append(chip) }; view.draft += (view.draft.isEmpty ? "" : "\n\n") + intent.text; view.directCommand = false; draftChanged(view) }
-        Task { do { try await store?.remove(kind: "pending:\(view.id)", id: intent.id); view.recovered.removeAll { $0.id == intent.id }; if view.recovered.isEmpty { view.uncertain = false } }
+        Task { do { try await store?.remove(kind: "pending:\(view.id)", id: intent.id); pendingIntentsChanged(view.id); view.recovered.removeAll { $0.id == intent.id }; if view.recovered.isEmpty { view.uncertain = false } }
             catch { self.error = error.localizedDescription } }
     }
 }

@@ -154,3 +154,31 @@ extension SmoothShellTests {
         XCTAssertEqual(recorder.reports.last, false, "a torn-down reader has to report that it is gone")
     }
 }
+
+extension SmoothShellTests {
+    /// The pane is kept across chats, so a switch hands the composer the
+    /// arriving chat's draft. That is not typing: it used to write the
+    /// unchanged draft back to the store on every click in the sidebar.
+    @MainActor func testSwitchingChatsDoesNotWriteTheArrivingDraftBack() async throws {
+        let shell = try shell(["First", "Second"], rows: 8)
+        defer { shell.close() }
+        let store = try XCTUnwrap(shell.model.store)
+        for chat in [shell.chats[0], shell.chats[1], shell.chats[0], shell.chats[1], shell.chats[0]] {
+            await shell.model.select(chat.id)
+            await shell.settle(0.5)
+        }
+        XCTAssertEqual(shell.editor?.string, "An unsent draft for First")
+        for chat in shell.chats {
+            let written = try await store.get(DraftRecord.self, kind: "draft", id: chat.id)
+            XCTAssertNil(written, "Showing \(chat.title) wrote its unchanged draft back to the store")
+        }
+        // Typing is still saved.
+        let editor = try XCTUnwrap(shell.editor)
+        XCTAssertTrue(shell.window.makeFirstResponder(editor))
+        editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0))
+        editor.insertText("!", replacementRange: editor.selectedRange())
+        await shell.settle(0.6)
+        let typed = try await store.get(DraftRecord.self, kind: "draft", id: shell.chats[0].id)
+        XCTAssertEqual(typed?.text, "An unsent draft for First!")
+    }
+}

@@ -13,6 +13,19 @@ extension DashboardFilter {
     }
 }
 
+/// The time axis of the report's throughput chart. The live series follows
+/// the clock; the retained request averages cover exactly the window they
+/// were read for, so they never slide out of view before the next refresh.
+enum ReportThroughputDomain {
+    static func live(_ window: DashboardWindow, observedAt: Date) -> ClosedRange<Date> {
+        let until = window.preset == .custom ? window.until : max(window.until, observedAt)
+        return until.addingTimeInterval(-window.span)...until
+    }
+    static func following(metric: MonitorRateMetric, live: ClosedRange<Date>, retained: DashboardFilter) -> ClosedRange<Date> {
+        metric == .average ? retained.from...retained.until : live
+    }
+}
+
 /// Only this leaf observes the paced live snapshot. Chart ticks never query
 /// SQLite or rebuild the report's routing, cost or request tables.
 @MainActor struct ReportThroughputPanel: View {
@@ -22,30 +35,40 @@ extension DashboardFilter {
     let palette: MonitorModelPalette
     let controls: () -> AnyView
     let registerModels: ([String]) -> Void
+    /// The report's selection. The chart's zoom shows and follows it; it is
+    /// never a second copy that has to be synchronised back.
     var selection: DashboardBrush?
+    /// The reader zoomed or reset the chart: the only way this panel changes the selection.
     var select: (ClosedRange<Date>?) -> Void = { _ in }
     @State private var observer = UUID().uuidString
     @State private var zoom = MonitorChartZoom()
     @State private var metric: MonitorRateMetric?
 
-    private var following: ClosedRange<Date> {
-        let until = window.preset == .custom ? window.until : max(window.until, live.snapshot.observedAt)
-        return until.addingTimeInterval(-window.span)...until
-    }
-    private var samples: [LiveRateSample] { live.snapshot.rateHistory.samples(in: zoom.domain(following: following)) }
-    private var chosenMetric: MonitorRateMetric {
+    private func chosenMetric(_ samples: [LiveRateSample]) -> MonitorRateMetric {
         guard snapshot.filter.supportsProjectLiveHistory else { return .average }
         return metric ?? (samples.contains { !$0.hasGap(workspace: snapshot.filter.workspaceID) && !$0.models(workspace: snapshot.filter.workspaceID).isEmpty } ? .live : .average)
+    }
+    /// Writes from the chart: a drag in progress stays local; a committed
+    /// zoom or a reset goes to the report, whose selection then comes back
+    /// through `selection` without another round trip.
+    private var chartZoom: Binding<MonitorChartZoom> {
+        Binding(get: { zoom }, set: { next in
+            let changed = next.range != zoom.range
+            zoom = next
+            if changed { select(next.range) }
+        })
     }
     private var retained: MenuBarSnapshot {
         MenuBarSnapshot(period: .day, from: snapshot.filter.from, until: snapshot.filter.until,
             counts: snapshot.scopeCounts, gateway: snapshot.gateway, workspaces: 0, sessions: 0,
             compactionRequests: 0, costUnreported: 0, costInvalid: 0, costConflicts: 0, models: [], modelGroups: 0, offset: 0,
-            historicalRate: snapshot.historicalRate, buckets: snapshot.buckets.map {
-                MenuBarBucket(id: $0.id, start: $0.start, end: $0.end, gateway: $0.gateway, historicalRate: $0.historicalRate)
-            })
+            buckets: snapshot.buckets.map { MenuBarBucket(id: $0.id, start: $0.start, end: $0.end, gateway: $0.gateway) })
     }
     var body: some View {
+        let liveDomain = ReportThroughputDomain.live(window, observedAt: live.snapshot.observedAt)
+        // Filtered once per update: the metric choice and the chart share it.
+        let samples = live.snapshot.rateHistory.samples(in: zoom.domain(following: liveDomain))
+        let metric = chosenMetric(samples)
         PiCard(padding: PiSpacing.md) {
             VStack(alignment: .leading, spacing: 12) {
                 PiSectionHeader("Throughput by model") { controls() }
@@ -58,7 +81,8 @@ extension DashboardFilter {
                     }.monospacedDigit()
                 }
                 MonitorRateChart(samples: samples, usage: retained, workspace: snapshot.filter.workspaceID,
-                    following: following, zoom: $zoom, metric: chosenMetric, palette: palette, selectMetric: { metric = $0 },
+                    following: ReportThroughputDomain.following(metric: metric, live: liveDomain, retained: snapshot.filter),
+                    zoom: chartZoom, metric: metric, palette: palette, selectMetric: { self.metric = $0 },
                     showsMetricSelection: snapshot.filter.supportsProjectLiveHistory, chartHeight: 180)
                 if !snapshot.filter.supportsProjectLiveHistory {
                     Text("Showing completed requests matching your filters. Live history is available for whole projects.")
@@ -69,9 +93,9 @@ extension DashboardFilter {
         .background(WindowVisibilityReader { live.setVisible($0, owner: observer) })
         .onDisappear { live.setVisible(false, owner: observer) }
         .onChange(of: live.snapshot.rateHistory.modelNames, initial: true) { _, names in registerModels(Array(names)) }
-        .onChange(of: window) { _, _ in zoom.reset() }
-        .onChange(of: zoom.range) { _, range in select(range) }
-        .onChange(of: selection) { _, value in if value == nil { zoom.reset() } }
+        // The selection drives the zoom; a refresh that keeps it keeps the
+        // zoom, one that drops it (or a cleared chip) resets it.
+        .onChange(of: selection, initial: true) { _, value in zoom.show(value.map { $0.from...$0.until }) }
         .accessibilityIdentifier("analytics-throughput")
     }
 }
@@ -109,6 +133,13 @@ extension MonitorDistribution {
         guard let value, let total, value.isFinite, total.isFinite, value >= 0, total > 0, value <= total else { return nil }
         return value / total
     }
+    /// Costliest first; routes without a reported cost last, in their token order.
+    static func byCost(_ models: [Self]) -> [Self] {
+        models.enumerated().sorted { a, b in
+            let x = a.element.cost ?? -1, y = b.element.cost ?? -1
+            return x != y ? x > y : a.offset < b.offset
+        }.map(\.element)
+    }
 }
 
 /// Bounded native drawing; no chart engine or transcript work per live tick.
@@ -143,7 +174,7 @@ struct ModelDistributionRing: View {
                 }.padding(.horizontal, 17)
             }.frame(width: 136, height: 136)
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(Array(models.prefix(4))) { row in
+                ForEach(Self.legend(models, metric: metric)) { row in
                     HStack(spacing: 6) {
                         Circle().fill(Color.monitorModel(palette.index(row.id))).frame(width: 7, height: 7)
                         Text(row.id).lineLimit(1).truncationMode(.middle)
@@ -158,11 +189,17 @@ struct ModelDistributionRing: View {
             }.frame(maxWidth: .infinity, alignment: .leading)
         }.accessibilityIdentifier("model-distribution-ring")
     }
+    /// The four models the legend names, ranked by the share it shows.
+    static func legend(_ models: [MonitorDistribution], metric: MonitorShareMetric) -> [MonitorDistribution] {
+        Array((metric == .cost ? MonitorDistribution.byCost(models) : models).prefix(4))
+    }
 }
 
 struct ModelRoutingMap: View {
     let rows: [DashboardModelSummary]
     let palette: MonitorModelPalette
+    /// The routes have not been read yet: not the same as none reported.
+    var loading = false
     @State private var showAll = false
     private var aliases: [String] { Array(Set(rows.map(\.alias))).sorted() }
     var body: some View {
@@ -170,7 +207,7 @@ struct ModelRoutingMap: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Model routing").font(PiFont.heading)
                 Text("Requested → returned by the gateway").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-                if rows.isEmpty { Text("No model routes reported in this range.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
+                if rows.isEmpty { Text(loading ? "Reading routes…" : "No model routes reported in this range.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
                 ForEach(Array(aliases.prefix(showAll ? 64 : 2)), id: \.self) { alias in
                     let destinations = rows.filter { $0.alias == alias }
                     HStack(spacing: 0) {
@@ -221,11 +258,13 @@ struct ModelCostBreakdown: View {
     let models: [MonitorDistribution]
     let total: GatewayTotals
     let palette: MonitorModelPalette
+    /// The routes have not been read yet: not the same as no reported cost.
+    var loading = false
     var body: some View {
         PiCard(padding: PiSpacing.md) {
             VStack(alignment: .leading, spacing: 13) {
                 HStack { Text("Cost by model").font(PiFont.heading); Spacer(); Text(monitorCost(total.costUSD)).font(PiFont.caption).monospacedDigit() }
-                ForEach(Array(models.prefix(8))) { row in
+                ForEach(Self.shown(models)) { row in
                     VStack(alignment: .leading, spacing: 5) {
                         HStack {
                             Circle().fill(Color.monitorModel(palette.index(row.id))).frame(width: 7, height: 7)
@@ -240,12 +279,15 @@ struct ModelCostBreakdown: View {
                         }.frame(height: 5)
                     }.help("\(row.id): \(gatewayUSD(row.cost)) · \(row.requests) requests")
                 }
-                if models.isEmpty { Text("No model costs reported.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
+                if models.isEmpty { Text(loading ? "Reading routes…" : "No model costs reported.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
                 Text("\(total.costSamples)/\(total.requests) requests reported cost · reasoning included in total")
                     .font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
         }.accessibilityIdentifier("analytics-model-costs")
     }
+    /// The eight costliest routes. The distribution arrives ranked by output
+    /// tokens, which could leave an expensive, terse route off a cost card.
+    static func shown(_ models: [MonitorDistribution]) -> [MonitorDistribution] { Array(MonitorDistribution.byCost(models).prefix(8)) }
 }
 
 struct AnalyticsTokenBreakdown: View {

@@ -13,6 +13,11 @@ struct GitStatusEntry: Identifiable, Equatable, Sendable {
     var staged: Bool { !untracked && indexState != "." }
     var unstaged: Bool { untracked || worktreeState != "." }
     var renamed: Bool { originalPath != nil }
+    /// A rename in the index or in the working tree. Git shows it as one row
+    /// with both names, and to git it is still two paths: the old name's
+    /// removal and the new name's addition. A copy is not one: its source is
+    /// still there, changed, in a row of its own.
+    var isRename: Bool { originalPath != nil && (indexState == "R" || worktreeState == "R") }
     /// One letter for the row badge: the worktree change, else the index change.
     var badge: String {
         if untracked { return "U" }
@@ -531,9 +536,42 @@ actor GitService {
     func headMessage(in root: String) async throws -> String {
         try require(await run(["log", "-1", "--format=%B"], in: root), "Reading HEAD").text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    /// Throws away the working-tree and index changes of the given paths; untracked files are deleted.
-    func discard(_ entries: [GitStatusEntry], in root: String) async throws {
-        let tracked = entries.filter { !$0.untracked }.map(\.path), untracked = entries.filter(\.untracked).map(\.path)
+    /// What an action on some rows asks of git, for `paths(_:renames:for:held:)`.
+    enum PathUse { case stage, unstage, commit, discard }
+
+    /// The paths git has to be given to act on these rows. Naming only a
+    /// rename's new name commits a copy and leaves the old name's removal
+    /// staged, discards into a deletion, and stages or unstages half of the
+    /// rename; so the old name comes along — to an unstage while the rename is
+    /// in the index, to a stage only while it is not (once the removal is
+    /// staged git has the old name nowhere, and naming it is fatal), and to a
+    /// commit or a discard unless `held` names it: a row of its own the action
+    /// leaves alone, a new file saved where the old one was, which is not the
+    /// action's to commit or overwrite. `renames` is any list holding the rows.
+    static func paths(_ paths: [String], renames rows: [GitStatusEntry], for use: PathUse, held: Set<String> = []) -> [String] {
+        var renames: [String: GitStatusEntry] = [:]
+        for row in rows where row.isRename { renames[row.path] = row }
+        guard !renames.isEmpty else { return paths }
+        return paths.flatMap { path -> [String] in
+            guard let row = renames[path], let old = row.originalPath else { return [path] }
+            let joins = switch use {
+            case .stage: row.indexState != "R"
+            case .unstage: row.indexState == "R"
+            case .commit, .discard: !held.contains(old)
+            }
+            return joins ? [old, path] : [path]
+        }
+    }
+
+    /// Throws away the working-tree and index changes of the given rows;
+    /// untracked files are deleted. A rename goes back to its old name; when
+    /// another row, one this discard leaves alone, is `held` at that name now,
+    /// only the index goes back, and the file saved there stays as it is.
+    func discard(_ entries: [GitStatusEntry], in root: String, held: Set<String> = []) async throws {
+        let rows = entries.filter { !$0.untracked }, untracked = entries.filter(\.untracked).map(\.path)
+        let tracked = Self.paths(rows.map(\.path), renames: rows, for: .discard, held: held)
+        let indexOnly = rows.compactMap { $0.isRename && $0.indexState == "R" ? $0.originalPath : nil }.filter(held.contains)
+        if !indexOnly.isEmpty { try await runBatched(["restore", "--staged", "--"], paths: indexOnly, in: root, "Discarding changes") }
         if !tracked.isEmpty { try await runBatched(["restore", "--staged", "--worktree", "--"], paths: tracked, in: root, "Discarding changes") }
         if !untracked.isEmpty { try await runBatched(["clean", "-f", "--"], paths: untracked, in: root, "Removing untracked files") }
     }
@@ -550,7 +588,11 @@ actor GitService {
     }
     /// Commits the staged index, or only the given paths (their working-tree
     /// state, as IntelliJ's checked files), optionally amending HEAD.
-    func commit(message: String, in root: String, paths: [String] = [], amend: Bool = false) async throws -> String {
+    /// `staging` is what has to be staged first so git knows every path: the
+    /// untracked ones. Left nil, every path is staged first, which fails for a
+    /// path git has only in the index that is gone from disk, and for a staged
+    /// rename's old name, which git has nowhere.
+    func commit(message: String, in root: String, paths: [String] = [], staging: [String]? = nil, amend: Bool = false) async throws -> String {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw GitFailure(message: "Enter a commit message.") }
         var arguments = ["commit", "-q", "-m", trimmed]
@@ -558,7 +600,7 @@ actor GitService {
         var pathspecFile: URL?
         defer { if let pathspecFile { try? FileManager.default.removeItem(at: pathspecFile) } }
         if !paths.isEmpty {
-            try await stage(paths, in: root)
+            try await stage(staging ?? paths, in: root)
             // One commit cannot be split, so a path list too long for argv is
             // handed to git in a file instead.
             if Self.batches(of: paths, prefix: arguments + ["--only", "--"]).count > 1, let file = try? Self.writePathspec(paths) {
@@ -568,7 +610,13 @@ actor GitService {
                 arguments += ["--only", "--"] + paths
             }
         }
-        _ = try require(await run(arguments, in: root), "Committing")
+        let committed = try await run(arguments, in: root)
+        // Git refuses a commit that would change nothing with its status on
+        // stdout and nothing on stderr, which read as "git exit 1".
+        if committed.status != 0, ["nothing to commit", "nothing added to commit", "no changes added to commit"].contains(where: committed.text.contains) {
+            throw GitFailure(message: paths.isEmpty ? "Nothing to commit: nothing is staged." : "Nothing to commit: the chosen files on disk match HEAD.")
+        }
+        _ = try require(committed, "Committing")
         return try require(await run(["rev-parse", "--short", "HEAD"], in: root), "Reading HEAD").text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

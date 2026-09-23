@@ -362,6 +362,47 @@ final class CapturedBodyTests: XCTestCase {
         } catch { XCTAssertTrue(error.localizedDescription.contains("expired")) }
     }
 
+    /// A response the helper is still receiving grows between the reader's
+    /// pages. The read used to fail ("The capture changed while reading")
+    /// until the stream ended; it keeps the length it began with instead, and
+    /// a later read of the same body replaces the document without a blank.
+    @MainActor func testGrowingCaptureReadsItsStartingPrefixAndRereadsNeverBlank() async throws {
+        var body = Data((0..<3).map { "event: message\ndata: {\"n\":\($0)}\n\n" }.joined().utf8)
+        let started = body.count
+        var pages = 0
+        let source = CapturedBodySource(metadata: {
+            CapturedBodyMetadata(body: ["state": .string("partial"), "retainedBytes": .number(Double(body.count)), "observedBytes": .number(Double(body.count))], hash: nil)
+        }, page: { offset in
+            pages += 1
+            // More of the stream arrives while the read is paging.
+            body.append(Data("event: message\ndata: {\"n\":\(pages + 2)}\n\n".utf8))
+            return (body.subdata(in: min(offset, body.count)..<min(body.count, offset + 32_768)), body.count)
+        })
+        let controller = CapturedBodyController()
+        var published: [UUID?] = []
+        let observation = controller.$document.sink { published.append($0?.id) }
+        defer { observation.cancel() }
+        await controller.load(kind: "response", source: source)
+        let first = try XCTUnwrap(controller.document, controller.notice)
+        XCTAssertEqual(first.bytes, body.prefix(started), "The read holds exactly the prefix it began with")
+        XCTAssertTrue(first.metadata.summary.contains("still being written"), first.metadata.summary)
+        XCTAssertEqual(first.eventStream?.frames.count, 3)
+        await controller.load(kind: "response", source: source, preservingDocument: true)
+        let latest = try XCTUnwrap(controller.document, controller.notice)
+        XCTAssertGreaterThan(latest.bytes.count, started)
+        XCTAssertEqual(latest.replaces, first.id, "The newer read names the document it replaced")
+        XCTAssertFalse(published.drop { $0 == nil }.contains(nil), "The document never blanks between two reads of the same body")
+        // A same-length change in a growable state is still a change.
+        let fixed = Data(repeating: 97, count: 100)
+        var described = 0
+        let rewritten = CapturedBodySource(metadata: {
+            described += 1
+            return CapturedBodyMetadata(body: ["state": .string("partial"), "retainedBytes": .number(100)], hash: .string(described == 1 ? "before" : "after"))
+        }, page: { _ in (fixed, fixed.count) })
+        do { _ = try await CapturedBodyReader.read(kind: "response", source: rewritten); XCTFail("A rewritten body is not growth") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("changed")) }
+    }
+
     @MainActor func testCancellationStopsAtCurrentPageAndDoesNotPublishPartialDocument() async throws {
         let gate = BodyReadGate(), controller = CapturedBodyController()
         let bytes = Data(repeating: 97, count: 70_000), description = metadata(Data(repeating: 97, count: 70_000))

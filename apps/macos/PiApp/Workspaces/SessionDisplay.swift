@@ -43,7 +43,17 @@ import Combine
     var monitoringCursor: Double?
     let transcriptChanges = CurrentValueSubject<[TranscriptMessage], Never>([])
     let presentationChanges = CurrentValueSubject<TranscriptPresentationInput, Never>(.init(messages:[], lifecycle:nil))
-    var taskPresentation: TaskPresentationProjection? { didSet { if oldValue != taskPresentation { publishTranscript() } } }
+    /// The chat's tasks as the helper last presented them. Any write that
+    /// is not the snapshot loop adopting a presentation (`adoptTaskPresentation`)
+    /// forgets its revision, so the next snapshot carries the helper's whole
+    /// presentation again, as every snapshot did before 0.1.85.
+    var taskPresentation: TaskPresentationProjection? { didSet { taskPresentationRevision = nil; if oldValue != taskPresentation { publishTranscript() } } }
+    /// The helper's revision of `taskPresentation`, sent back with the next
+    /// snapshot so an unchanged presentation is left out of the reply.
+    var taskPresentationRevision: String?
+    func adoptTaskPresentation(_ value: TaskPresentationProjection, revision: String?) {
+        taskPresentation = value; taskPresentationRevision = revision
+    }
     private var transcriptBatchDepth = 0
     func beginTranscriptBatch() { transcriptBatchDepth += 1 }
     func endTranscriptBatch() { transcriptBatchDepth -= 1; if transcriptBatchDepth == 0 { publishTranscript() } }
@@ -191,7 +201,9 @@ import Combine
             compactionBaselineLoaded = true; observedCompactionID = id
             return
         }
-        if snapshot["runStatus"]?.string == "compacting" { compactionNotice = nil }
+        // Published on the whole display: written only when it changes, not
+        // once per snapshot for as long as a compaction runs.
+        if snapshot["runStatus"]?.string == "compacting", compactionNotice != nil { compactionNotice = nil }
         guard id != observedCompactionID else { return }
         observedCompactionID = id
         compactionNotice = id == nil ? nil : summary?["detail"]?.string
@@ -221,6 +233,9 @@ import Combine
             footer.preparedContext=nil; footer.context=[:]; footer.contextState=[:]
             footer.requestObservation=[:]; footer.lastRequestObservation=[:]
             footer.contextObservationRevision=nil; footer.contextStateRevision=nil
+            // A chat opened again, or on a new helper, is sent its receipts and
+            // tasks whole: nothing held here describes that helper's state.
+            commandsRevision=nil; taskPresentationRevision=nil
         }
         if let revision=snapshot["contextStateRevision"]?.string, let payload=snapshot["contextState"] {
             if var state=payload.object, state["version"]?.number == 1,
@@ -325,6 +340,29 @@ import Combine
     var accountingRevision = 0
     var messageAccounting: [String: GatewayTotals] = [:]
     var lastSequence: Double = -1
+    /// The finished tasks of the last task presentation, decoded once.
+    var taskPresentationDecoder = TaskPresentationDecoder()
+    /// The command receipts of the last snapshot that carried them, and the
+    /// helper's revision of them. A snapshot that leaves them out had none
+    /// that changed; pending submissions settle against these.
+    var receipts: [[String: WireValue]] = []
+    var commandsRevision: String?
+    /// Test seams: whether the snapshot loop asks the helper to leave out
+    /// the receipts and tasks this display holds unchanged, and to send tool
+    /// arguments still streaming as appends. Off, every reply carries them
+    /// whole, as before 0.1.85.
+    var leavesOutHeldState = true
+    var takesToolInputAppends = true
+    /// Bumped by every write of this chat's pending submissions
+    /// (`WorkspaceModel.pendingIntentsChanged`).
+    var pendingIntentRevision = 0
+    /// What the snapshot loop last read of them, and at which revision.
+    var pendingIntents: (revision: Int, intents: [CommandIntent])?
+    // Test seams: what the snapshot loop did for this chat.
+    /// Reads of this chat's pending submissions from the store.
+    var intentReads = 0
+    /// Full decodes of the task presentation's finished tasks.
+    var taskPresentationDecodes: Int { taskPresentationDecoder.decodes }
     var snapshotInFlight = false
     var dirty = false
     var uncertain = false { didSet { if uncertain != oldValue { activityChanges.send() } } }

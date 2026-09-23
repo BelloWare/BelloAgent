@@ -115,7 +115,7 @@ final class MenuBarPresentationTests: XCTestCase {
         let view = SessionDisplay(id: "live"); view.state = "running"; view.runStatus = "running"
         view.activity = ["phase": .string("model"), "model": .string("auto-router"), "modelActive": .bool(true), "estimatedOutputTokensPerSecond": .number(9999)]
         view.turnTiming = ["startedAt": .number(10_000), "elapsedMs": .number(1_000)]
-        view.footer.timing = SessionTimingHistory(samples: [SessionTimingSample(id: "done", wall: Date(), ttftMilliseconds: 100, streamingMilliseconds: 200, outputTokens: 300, requestMilliseconds: 2_000)])
+        view.footer.timing = SessionTimingHistory(samples: [SessionTimingSample(id: "done", wall: Date(), ttftMilliseconds: 100, streamingMilliseconds: 300, outputTokens: 450, requestMilliseconds: 2_000)])
         model.displays[view.id] = view
         model.publishChatStats(GatewayTotals(requests: 1, costSamples: 1, costUSD: 0.0123), sessionID: view.id)
         let live = model.menuBarActivity()
@@ -123,7 +123,11 @@ final class MenuBarPresentationTests: XCTestCase {
         let row = try XCTUnwrap(live.runningRows.first)
         XCTAssertEqual(row.startedUptimeMs,10_000)
         XCTAssertEqual(row.elapsed(atUptimeMs:15_000), 5_000)
-        XCTAssertEqual(row.latestRate, 150, "Use reported output including hidden reasoning, not visible bytes")
+        // Reported output over the request's decode span (450 tokens in
+        // 300 ms — a span under 250 ms is one burst, not a rate), the settled
+        // rate every other caption quotes: never visible bytes, and never
+        // output over the whole two-second round trip.
+        XCTAssertEqual(row.latestRate, 1_500, "Use reported output including hidden reasoning, not visible bytes")
         XCTAssertEqual(row.costUSD, 0.0123)
         view.runStatus = "retrying"
         view.observeRetry(["retry": .object(["attempt": .number(4), "of": .number(6), "reason": .string("Temporary failure")])])
@@ -140,15 +144,17 @@ final class MenuBarPresentationTests: XCTestCase {
         guard let path = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") else {
             throw XCTSkip("Set PI_APP_USAGE_CAPTURE_ROOT for the optional menu preview")
         }
-        func totals(requests: Int, input: Double, output: Double, cost: Double) -> GatewayTotals {
+        /// Totals whose settled rate is `output` over `decode` milliseconds.
+        func totals(requests: Int, input: Double, output: Double, cost: Double, decode: Double) -> GatewayTotals {
             var result = GatewayTotals(requests: requests, costSamples: requests, costUSD: cost)
             result.tokens = GatewayTokenTotals(input: input, output: output, total: input + output, inputSamples: requests, outputSamples: requests, samples: requests)
+            result.decodeMilliseconds = decode; result.decodeOutputTokens = output; result.decodeSamples = requests
             return result
         }
         let models = [
-            MenuBarModelDistribution(api: "openai-responses", requestedAlias: "auto-router", resolvedModel: "openai/gpt-5.4-mini", identityStatus: "reported", gateway: totals(requests: 6, input: 15_000, output: 1_200, cost: 0.0096), allRequests: 10, historicalRate: HistoricalOutputRate(outputTokens: 1_200, generationMilliseconds: 25_000, samples: 6), costShare: 0.384),
-            MenuBarModelDistribution(api: "openai-responses", requestedAlias: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0-extended-thinking-router", resolvedModel: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0", identityStatus: "reported", gateway: totals(requests: 3, input: 9_000, output: 900, cost: 0.0210), allRequests: 10, historicalRate: HistoricalOutputRate(outputTokens: 900, generationMilliseconds: 12_000, samples: 3)),
-            MenuBarModelDistribution(api: "openai-responses", requestedAlias: "auto-router", resolvedModel: "openai/gpt-5.4", identityStatus: "reported", gateway: totals(requests: 4, input: 5_000, output: 800, cost: 0.0154), allRequests: 10, historicalRate: HistoricalOutputRate(outputTokens: 800, generationMilliseconds: 25_000, samples: 4), costShare: 0.616)
+            MenuBarModelDistribution(api: "openai-responses", requestedAlias: "auto-router", resolvedModel: "openai/gpt-5.4-mini", identityStatus: "reported", gateway: totals(requests: 6, input: 15_000, output: 1_200, cost: 0.0096, decode: 20_000), allRequests: 10, costShare: 0.384),
+            MenuBarModelDistribution(api: "openai-responses", requestedAlias: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0-extended-thinking-router", resolvedModel: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0", identityStatus: "reported", gateway: totals(requests: 3, input: 9_000, output: 900, cost: 0.0210, decode: 9_600), allRequests: 10),
+            MenuBarModelDistribution(api: "openai-responses", requestedAlias: "auto-router", resolvedModel: "openai/gpt-5.4", identityStatus: "reported", gateway: totals(requests: 4, input: 5_000, output: 800, cost: 0.0154, decode: 20_000), allRequests: 10, costShare: 0.616)
         ]
         let until = Date(timeIntervalSince1970: 1_000_000)
         let from = MenuPeriodStart(until)
@@ -156,12 +162,12 @@ final class MenuBarPresentationTests: XCTestCase {
             var bucket = MenuBarBucket(id: index, start: from.addingTimeInterval(Double(index) * 3600), end: from.addingTimeInterval(Double(index + 1) * 3600))
             let requests = [0, 0, 1, 2, 0, 3, 1, 0, 0, 2, 4, 1, 0, 0, 1, 3, 2, 0, 1, 0, 0, 2, 1, 0][index]
             if requests > 0 {
-                bucket.gateway = totals(requests: requests, input: Double(requests) * 1_500, output: Double(requests) * 200, cost: Double(requests) * 0.0025)
-                bucket.historicalRate = HistoricalOutputRate(outputTokens: Double(requests) * 200, generationMilliseconds: Double(requests) * 5_000 + Double(index % 5) * 800, samples: requests)
+                bucket.gateway = totals(requests: requests, input: Double(requests) * 1_500, output: Double(requests) * 200, cost: Double(requests) * 0.0025,
+                                        decode: Double(requests) * 4_000 + Double(index % 5) * 640)
             }
             return bucket
         }
-        let snapshot = MenuBarSnapshot(period: .day, from: from, until: until, counts: DashboardCounts(dispatched: 10, completed: 10), gateway: totals(requests: 10, input: 20_000, output: 2_000, cost: 0.025), workspaces: 2, sessions: 3, compactionRequests: 0, costUnreported: 0, costInvalid: 0, costConflicts: 0, models: models, modelGroups: 2, offset: 0, historicalRate: HistoricalOutputRate(outputTokens: 2_000, generationMilliseconds: 50_000, samples: 10), buckets: buckets)
+        let snapshot = MenuBarSnapshot(period: .day, from: from, until: until, counts: DashboardCounts(dispatched: 10, completed: 10), gateway: totals(requests: 10, input: 20_000, output: 2_000, cost: 0.025, decode: 40_000), workspaces: 2, sessions: 3, compactionRequests: 0, costUnreported: 0, costInvalid: 0, costConflicts: 0, models: models, modelGroups: 2, offset: 0, buckets: buckets)
         let activity = MenuBarActivitySnapshot(rows: [
             MenuBarActivityRow(id: "running", title: "Harden the payment retry loop", workspace: "pi-app", phase: "tool", model: "auto-router", resolvedModel: "openai/gpt-5.4-mini", tools: ["bash"], followUps: 1, steering: 0, unread: 0, startedUptimeMs: ProcessInfo.processInfo.systemUptime * 1_000 - 82_000, elapsedMs: 82_000, latestRate: 85, tokens: 18_421, costUSD: 0.042),
             MenuBarActivityRow(id: "paused", title: "Explain cache accounting", workspace: "pi-app", phase: "paused", model: "auto-router", resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: 0),

@@ -167,7 +167,7 @@ struct ContentGeometry: Equatable {
         subscription?.cancel(); subscription = nil
         presentationTask?.cancel(); presentationTask = nil; pendingPresentation = nil
         stopFlushLink(); heldSince = nil
-        presentationSession = session; lastPresentationAt = 0
+        presentationSession = session; lastPresentationAt = 0; lastReportedAnchor = nil
         completionBaselineAt = Date().timeIntervalSince1970 * 1000
         freshTask?.cancel(); freshTask = nil
         reportTask?.cancel(); reportTask = nil
@@ -182,10 +182,17 @@ struct ContentGeometry: Equatable {
         // row's height: republish so the document reconciles and re-measures.
         session.toolInputs.onChanged = { [weak self] in self?.republish() }
         // Folding a whole response changes what several rows draw without any
-        // message changing. The page republishes for it directly, so the
-        // clicked row and its siblings are re-measured and moved in the same
-        // pass as the click rather than a SwiftUI update later.
-        session.disclosure.spanningChange = { [weak self] in self?.republish() }
+        // message changing. The page republishes for it and hands the page to
+        // its document at once, so the clicked row and its siblings are
+        // re-measured and moved in the same pass as the click. Left to
+        // SwiftUI's next update, the rows took their new content there and
+        // their geometry a run-loop turn later, and a frame drew one in the
+        // other's place.
+        session.disclosure.spanningChange = { [weak self] in
+            guard let self else { return }
+            self.republish()
+            (self.scrollView?.documentView as? TranscriptNativeDocument)?.spanningDisclosureChanged()
+        }
         reset()
         scrollView?.transcriptReading.bind(scope: session.id + ":" + session.presentationGeneration.uuidString)
         frames = [:]
@@ -205,7 +212,13 @@ struct ContentGeometry: Equatable {
     /// Defend the source-selected resident window without evicting its reading
     /// anchor. The history/live source already chooses which edge to retain.
     nonisolated static func displayPage(_ messages: [TranscriptMessage]) -> [TranscriptMessage] {
-        TranscriptPaging.window(messages, keepingEarlier: true)
+        // A retry notice and the failure where the conversation stopped come
+        // after it, added by the app rather than read from the history. The
+        // resident window is for the conversation: at a full window they were
+        // the rows it cut, so the retry and its Retry button never showed.
+        let added = messages.reversed().prefix { $0.role == "system" && ["notice", "failure"].contains($0.kind ?? "")
+            && ($0.id.hasPrefix("notice:retry:") || $0.id.hasPrefix("failure:")) }.count
+        return TranscriptPaging.window(Array(messages.dropLast(added)), keepingEarlier: true) + messages.suffix(added)
     }
 
     /// One leading and one trailing presentation per pane, not a debounce:
@@ -300,12 +313,14 @@ struct ContentGeometry: Equatable {
     private func receive(_ input: TranscriptPresentationInput, viewportRequest request: Int, from session: SessionDisplay) {
         guard session.id == sessionID, session.presentationGeneration == generation else { return }
         let messages = input.messages
+        var navigated = false
         if viewportRequest != request {
             // A jump to the latest page or a prepended earlier page: the page starts over from the session's anchor.
             let navigating = viewportRequest != nil
             viewportRequest = request
             reset()
             explicitDestination = navigating && session.scrollAnchor?.followsBottom == false
+            navigated = navigating
         }
         if snapshot?.messages.first?.id != messages.first?.id, viewportRequest == request {
             preserveReadingPositionForLayout()
@@ -314,7 +329,11 @@ struct ContentGeometry: Equatable {
         let patched = snapshot.flatMap { current in
             Self.sameLifecycle(current.lifecycle, input.lifecycle) ? TranscriptActivity.patched(current.items, from: current.messages, to: page) : nil
         }
-        let items = patched ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle)
+        // A page short of the conversation's newest row — cut by the resident
+        // window, or a history window with newer rows after it — may end in
+        // the middle of a turn; that turn folds only on its task's receipt.
+        let items = patched ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle,
+                                                         complete: page.count == messages.count && !session.newerPage.available)
         guard Set(page.map(\.id)).count == page.count, Set(items.map(\.id)).count == items.count else {
             projectionError = "This conversation contains conflicting row identities. The last valid page is retained; inspect the session file to repair it. No history was deleted."
             return
@@ -333,7 +352,12 @@ struct ContentGeometry: Equatable {
                 explicitDestination = !anchor.followsBottom
                 followsBottom = anchor.followsBottom; pendingAnchor = anchor.followsBottom ? nil : anchor
             } else { followsBottom = true; pendingAnchor = nil }
-            openingPlacementPending = followsBottom && !busy && !page.isEmpty
+            // A chat the reader opens starts at the question of its last turn.
+            // A jump they asked for — back to the latest reply, which reloads
+            // the page with an anchor that names no row, or the turn they have
+            // just sent — lands where they asked, not at that question.
+            let askedForLatest = navigated || (session.scrollAnchor.map { $0.followsBottom && $0.id.isEmpty } ?? false)
+            openingPlacementPending = followsBottom && !busy && !page.isEmpty && !askedForLatest
         }
         let completed = TranscriptActivity.latestCompletedAssistant(page)
         if initialized, !session.browsingHistory, snapshot?.lifecycle?.epoch == input.lifecycle?.epoch,
@@ -414,8 +438,13 @@ struct ContentGeometry: Equatable {
         guard self.scrollView !== scrollView else { return }
         for observer in scrollObservers { NotificationCenter.default.removeObserver(observer) }
         scrollObservers = []
+        self.scrollView?.transcriptReading.classifyMovement = nil
         self.scrollView = scrollView
         guard let scrollView else { return }
+        // Whoever reaches the reading anchor first after a movement asks the
+        // page whose it was, so a reader's scroll is never undone by an
+        // anchor taken before it landed.
+        scrollView.transcriptReading.classifyMovement = { [weak self] in self?.classifyMovement() }
         // A reply held back by the reader's gesture goes out the moment it ends.
         (scrollView as? TranscriptNativeScrollView)?.onScrollGestureEnded = { [weak self] in
             self?.flushHeldPresentation()
@@ -607,10 +636,23 @@ struct ContentGeometry: Equatable {
         }
         return messageID
     }
-    /// Frame of the row that holds a message, relative to the viewport.
-    private func viewportFrame(of messageID: String) -> CGRect? {
-        guard let frame = frames[rowIdentifier(for: messageID)] else { return nil }
-        return frame.offsetBy(dx: 0, dy: -position.offset)
+    /// The row a message ends in. A response read in order is a header line,
+    /// its parts and its accounting line, every one of them carrying the
+    /// response's id: its end is the last of them, not the header.
+    private func endRowIdentifier(for messageID: String) -> String {
+        guard let snapshot else { return messageID }
+        for item in snapshot.items.reversed() {
+            switch item {
+            case .message(let message): if message.id == messageID { return item.id }
+            case .block(let block): if block.replies.contains(where: { $0.id == messageID }) { return item.id }
+            }
+        }
+        return messageID
+    }
+    /// Whether the end of a reply is on the screen: what counts it as read.
+    func replyEndIsOnScreen(_ messageID: String) -> Bool {
+        guard let frame = frames[endRowIdentifier(for: messageID)]?.offsetBy(dx: 0, dy: -position.offset) else { return false }
+        return TranscriptActivity.replyEndIsVisible(top: frame.minY, bottom: frame.maxY, height: frame.height, viewportHeight: viewport.height)
     }
 
     /// The reader scrolled: decide whether the page still follows the newest
@@ -642,8 +684,11 @@ struct ContentGeometry: Equatable {
     /// is visibly at the end is never a fraction of a point short of it.
     private var isWithinBottomBand: Bool { liveDistanceToBottom <= Self.followThreshold + 1 }
 
-    /// AppKit has given the clip view a new origin, and the ledger says whose
-    /// movement it was.
+    /// AppKit has given the clip view a new origin.
+    private func positionDelivered() {
+        classifyMovement()
+    }
+    /// The ledger says whose movement the clip's current origin was.
     ///
     /// A movement the page wrote leaves ownership exactly as it was: the page
     /// keeps following if it was following, and a document that has just
@@ -653,7 +698,16 @@ struct ContentGeometry: Equatable {
     /// Anything else is the reader's. That hands them the destination — an
     /// opening placement, a restored anchor, a jump still in flight all give
     /// way — and the bottom band alone then decides whether the page follows.
-    private func positionDelivered() {
+    /// The line of text the pane was holding goes too: it was taken where
+    /// the reader stood before this movement — AppKit lands a mouse wheel a
+    /// frame or more after the event, and moves a dragged scroller many times
+    /// after the drag began — so restoring it would put them back there. The
+    /// next pass that changes the geometry around them takes it again, where
+    /// they are now.
+    ///
+    /// Asking again about the same offset changes nothing: the ledger has
+    /// already seen it and answers that nothing moved.
+    private func classifyMovement() {
         guard let scrollView, position.viewport > 0 else { scheduleReport(); return }
         viewportChanged(scrollView.contentView.bounds.size)
         let short = liveDistanceToBottom
@@ -664,8 +718,15 @@ struct ContentGeometry: Equatable {
         // be: AppKit's own clamping as the rows above them settle is not the
         // reader taking over, and must not abandon the placement half way. A
         // real gesture still does, through `readerWillNavigate`.
-        let placing = openingPlacementPending || openingReadingAnchor != nil || jumping || viewportResizePending
+        //
+        // The question a chat opened at is not among these: the page has put
+        // the reader there, and a movement nothing announced — a selection
+        // dragged past the edge, a control reached with Tab — is theirs.
+        // Read as the page's, it left the question pinned, and the next
+        // pass of idle measuring put them back on it.
+        let placing = openingPlacementPending || jumping || viewportResizePending
         if delivery == .reader, initialized, !placing {
+            scrollView.transcriptReading.readerMoved()
             readerOwnsPosition()
             setPinned(inBand)
         } else if followsBottom {
@@ -684,16 +745,22 @@ struct ContentGeometry: Equatable {
             // them there.
             atBottom = inBand
         }
-        scheduleReport()
+        // Where the reader is is remembered a moment after it changes: after
+        // a movement of theirs, or one of the page's that puts them somewhere.
+        // Following the newest row, the page writes a scroll for every token
+        // of a reply, and none of those is a place anyone chose — remembering
+        // each was a write to the chat's saved state several times a second.
+        if delivery == .reader || (delivery == .page && !followsBottom) { scheduleReport() }
     }
     /// The reader has taken the position. Everything the page was still
     /// intending to do with it is dropped.
     ///
-    /// The reading anchor is a different thing and is not dropped here: it is
-    /// what holds the line of text they are on while blocks above them
-    /// re-measure, and it is released where a gesture begins — in
-    /// `readerWillNavigate` and `userScrolled` — rather than from a bounds
-    /// change that may arrive after the page has already captured a new one.
+    /// The reading anchor is a different thing: it is what holds the line of
+    /// text they are on while blocks above them re-measure. It is released
+    /// where a gesture begins, in `readerWillNavigate`, and where a movement
+    /// of theirs lands, in `classifyMovement` — never from a notification
+    /// about a gesture that has already been attributed, which can arrive
+    /// after the page has taken a new anchor where the reader now is.
     private func readerOwnsPosition() {
         viewportResizePending = false
         pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
@@ -741,13 +808,25 @@ struct ContentGeometry: Equatable {
             self.requestReadCheck()
         }
     }
+    /// The last place the page said the reader was, so the same place is not
+    /// said again.
+    private var lastReportedAnchor: TranscriptAnchor?
     private func reportAnchor() {
         guard let snapshot else { return }
         let scrollY = scrollY
         for item in snapshot.items {
             guard let frame = frames[item.id], frame.maxY - scrollY > 0 else { continue }
             let id: String = { if case .block(let block) = item { return block.message?.id ?? block.activity.first?.id ?? item.id }; return item.id }()
-            onAnchorChanged(TranscriptAnchor(id: id, offset: frame.minY - scrollY, followsBottom: followsBottom))
+            // The anchor names a message, and it is put back against the row
+            // that message resolves to — for a response read in order, its
+            // header. Measured from that same row, a reader on a later part of
+            // the response comes back to that part rather than to the header.
+            let held = frames[rowIdentifier(for: id)] ?? frame
+            let anchor = TranscriptAnchor(id: id, offset: held.minY - scrollY, followsBottom: followsBottom)
+            if let last = lastReportedAnchor, last.id == anchor.id, last.followsBottom == anchor.followsBottom,
+               abs(last.offset - anchor.offset) < 0.5 { return }
+            lastReportedAnchor = anchor
+            onAnchorChanged(anchor)
             return
         }
     }
@@ -861,10 +940,8 @@ struct ContentGeometry: Equatable {
         }
     }
     private func checkRead() {
-        guard let sessionID, let completed = completedAssistant, canRead, let frame = viewportFrame(of: completed) else { return }
-        if TranscriptActivity.replyEndIsVisible(top: frame.minY, bottom: frame.maxY, height: frame.height, viewportHeight: viewport.height) {
-            onReadReply(sessionID, completed)
-        }
+        guard let sessionID, let completed = completedAssistant, canRead, replyEndIsOnScreen(completed) else { return }
+        onReadReply(sessionID, completed)
     }
 }
 
@@ -907,6 +984,14 @@ struct TranscriptRowEnvironment: Equatable {
         colorScheme = values.colorScheme; contrast = values.colorSchemeContrast
         dynamicTypeSize = values.dynamicTypeSize; layoutDirection = values.layoutDirection; locale = values.locale
         isEnabled = values.isEnabled
+    }
+    /// Whether a row measured under these values is as tall under those.
+    /// The type size, the writing direction and the locale decide how text
+    /// wraps; the colour scheme, the contrast and whether the pane takes input
+    /// only decide how it is painted. The pane is disabled while Reports is
+    /// in front, and that must not cost every row its measurement.
+    func hasSameGeometry(as other: TranscriptRowEnvironment) -> Bool {
+        return dynamicTypeSize == other.dynamicTypeSize && layoutDirection == other.layoutDirection && locale == other.locale
     }
 }
 
@@ -996,6 +1081,8 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     /// reply that made the call.
     var onToolInputNeeded: ((String, String) -> Void)?
     private var disclosure: TranscriptRowDisclosure
+    /// The store and tool-document revisions `disclosure` was read at.
+    private var disclosureRevisions = (-1, -1)
     /// Called when the reader opens or closes part of this row, so the document
     /// lays the rows out again in the same pass rather than a run loop later.
     var onDisclosureChanged: (() -> Void)?
@@ -1044,6 +1131,8 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     private(set) var sharedMeasurementHits = 0
     var itemID: String { item.id }
     var contentItem: TranscriptItem { item }
+    /// The values this row is drawn with, for checks that a change reached it.
+    var renderingEnvironment: TranscriptRowEnvironment { environment }
     /// What the hosted content actually needs at this width, for checks that a
     /// row never draws more than its own frame holds.
     var hostedFittingHeight: CGFloat { ceil(host().fittingSize.height) }
@@ -1260,13 +1349,55 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         streamingSurface = found; streamingSurfaceID = messageID
         return found
     }
+    /// A native surface in this row measured blocks it had stood at an
+    /// estimate — the reader scrolled onto them, or a token opened one — and
+    /// its text is that much taller or shorter. The row is the rest of it plus
+    /// that text, so it changes by the same amount; neither a row that took
+    /// its height from the surface token by token nor one measured whole
+    /// hears its hosting tree resize, and the difference stood as a gap under
+    /// the reply, or its last lines cut off, until the next full measurement.
+    func surfaceResolved(_ delta: CGFloat) {
+        // Measuring right now: the height this pass arrives at includes it.
+        guard !measuring, let cached = measurements.last(where: { $0.width == width }) else { return }
+        measurements = [CGSize(width: cached.width, height: max(1, cached.height + delta))]
+        if let hosted, hosted.frame.height != measurements[0].height {
+            hosted.frame = CGRect(x: 0, y: 0, width: cached.width, height: measurements[0].height)
+        }
+        if let cache = geometryCache, let sessionID = geometrySessionID, let scale = measurementScale {
+            cache.invalidate(sessionID: sessionID, item: item, width: cached.width, backingScale: scale)
+        }
+        // The surface resolves as it is laid out, which can be inside the
+        // document's own pass; the page is placed again after it, as for any
+        // other row whose height changed.
+        DispatchQueue.main.async { [weak self] in self?.onHeightInvalidated?() }
+    }
     /// Returns whether anything that decides this row's height changed.
     @discardableResult
     func update(item: TranscriptItem, fresh: Bool, actions: TranscriptActions, environment: TranscriptRowEnvironment = TranscriptRowEnvironment()) -> Bool {
         self.actions = actions
+        let sameItem = self.item == item
         // New content can bring parts the reader already opened or closed.
-        let disclosure = disclosureStore.map { TranscriptRowDisclosure.of(item, in: $0, inputs: toolInputs) } ?? .default
-        guard self.item != item || self.fresh != fresh || self.environment != environment || self.disclosure != disclosure else { return false }
+        // Otherwise what the row shows open changes only when the reader
+        // opens or closes something, or a card's document lands: not with
+        // every token of a reply somewhere else on the page.
+        let disclosure: TranscriptRowDisclosure
+        let revisions = (disclosureStore?.revision ?? -1, toolInputs?.revision ?? -1)
+        if sameItem, revisions == disclosureRevisions { disclosure = self.disclosure }
+        else {
+            if TranscriptLayoutClock.recording { TranscriptLayoutClock.disclosureReads += 1 }
+            disclosure = disclosureStore.map { TranscriptRowDisclosure.of(item, in: $0, inputs: toolInputs) } ?? .default
+        }
+        disclosureRevisions = revisions
+        guard !sameItem || self.fresh != fresh || self.environment != environment || self.disclosure != disclosure else { return false }
+        // Only how the row is painted changed: it is drawn with the new values
+        // and keeps every height it has.
+        if sameItem, self.fresh == fresh, self.disclosure == disclosure, self.environment.hasSameGeometry(as: environment) {
+            self.environment = environment
+            measuring = true
+            updateRoot()
+            measuring = false
+            return false
+        }
         // A token: the reply's own surface takes the text and says how much
         // taller the message became. The row's SwiftUI tree is not rebuilt and
         // not sized again — the one measurement it already has is adjusted by
@@ -1314,11 +1445,18 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         let oldItem = self.item
         let fixedClosedPart: Bool = {
             guard case .block(let old) = self.item, case .block(let new) = item,
-                  old.presentation == .timeline, new.presentation == .timeline,
+                  old.presentation == new.presentation, old.presentation == .timeline || old.presentation == .work,
                   let a = old.part, let b = new.part,
                   !self.disclosure.work, !disclosure.work,
                   self.disclosure.openTools.isEmpty, disclosure.openTools.isEmpty,
                   !["text", "refusal", "status"].contains(a.part.kind) else { return false }
+            // A call's card is one line while it is closed, whatever its
+            // arguments say, so it keeps its height while they arrive — as
+            // long as it is still the same call in the same state.
+            if old.presentation == .work {
+                guard let was = old.message?.tools?.first, let now = new.message?.tools?.first,
+                      was.id == now.id, was.name == now.name, was.state == now.state else { return false }
+            }
             // Everything the reader has opened or closed must agree, not only
             // this row's own work fold: a card whose whole response has just
             // been folded changes height although its own text has not.
@@ -1364,16 +1502,6 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         updateRoot()
         invalidateIntrinsicContentSize()
         return true
-    }
-    /// Which reply made a call, so the host can be asked for its arguments.
-    private func replyOwning(callID: String) -> String? {
-        func owner(_ messages: [TranscriptMessage]) -> String? {
-            messages.first { ($0.tools ?? []).contains { $0.id == callID } }?.id
-        }
-        switch item {
-        case .message(let message): return owner([message])
-        case .block(let block): return owner(block.replies)
-        }
     }
     /// Only a new, unmeasured native host can borrow default-state geometry.
     /// No retained local disclosure state is ever replaced by a shared size.
@@ -1436,14 +1564,11 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         // A card the reader just opened whose arguments the host had to cut
         // asks for the rest, once. The card draws the inline document until it
         // lands, and this row is measured again when it does.
-        if part.kind == .tool, disclosureStore.isOpen(part) {
-            if case .block(let block) = item, block.presentation == .work {
-                for reply in block.replies { for tool in reply.tools ?? [] where ToolOccurrence.key(reply.id,tool.id) == part.id {
-                    onToolInputNeeded?(reply.id,tool.id)
-                } }
-            } else if let owner = replyOwning(callID:part.id) { onToolInputNeeded?(owner,part.id) }
+        if disclosureStore.isOpen(part), let card = TranscriptToolInputs.cutCard(part, in: item) {
+            onToolInputNeeded?(card.messageID, card.callID)
         }
         let updated = TranscriptRowDisclosure.of(item, in: disclosureStore, inputs: toolInputs)
+        disclosureRevisions = (disclosureStore.revision, toolInputs?.revision ?? -1)
         guard updated != disclosure else { return }
         disclosure = updated
         measurements.removeAll(keepingCapacity: true)

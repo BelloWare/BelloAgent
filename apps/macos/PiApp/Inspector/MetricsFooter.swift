@@ -197,12 +197,16 @@ struct WorkSplit: Equatable {
 }
 
 /// 0.4s · 12.3s · 1m 12s · 1h 2m, matching the transcript's turn headers.
+/// Under a minute the figure is rounded to a tenth, and a rounding that
+/// reaches the minute is written as one: 59.96 s is `1m 0s`, never `60.0s`.
+/// From a minute up it counts whole seconds and minutes, as a clock does.
 func workDuration(_ milliseconds: Double) -> String {
     guard DurationObservation.valid(milliseconds) != nil else { return "n/a" }
-    let seconds = milliseconds / 1000
-    if seconds < 60 { return String(format: "%.1fs", seconds) }
-    let minutes = Int(seconds / 60), rest = Int(seconds) % 60
-    if minutes < 60 { return "\(minutes)m \(rest)s" }
+    let tenths = (milliseconds / 100).rounded()
+    if tenths < 600 { return String(format: "%.1fs", tenths / 10) }
+    guard let counted = Int(exactly: (milliseconds / 1_000).rounded(.down)) else { return "n/a" }
+    let seconds = max(60, counted), minutes = seconds / 60
+    if minutes < 60 { return "\(minutes)m \(seconds % 60)s" }
     return "\(minutes / 60)h \(minutes % 60)m"
 }
 
@@ -275,12 +279,19 @@ struct ContextMeterPresentation {
         let scope=context["scope"]?.string == "last-request" ? " · last request" : context["scope"]?.string == "next-input" ? " · next input" : ""
         let preparation = context["preparation"]?.string.map { " · " + $0 } ?? ""
         let warning = warnings.isEmpty ? "" : " · " + warnings.joined(separator: " ")
-        return fullLabel + String(format:" configured · %.1f%% · %@ · %@",counts.tokens / counts.capacity * 100,methodLabel,source) + scope + preparation + warning
+        // The ring's own honest rounding, one decimal finer: 99.96% is never
+        // "100.0%". A count past the window (the ring stops at full) keeps
+        // its figure, so the detail still says by how much.
+        let ratio = counts.tokens / counts.capacity
+        let percent = ratio > 1 ? String(format: "%.1f", ratio * 100) : MetricFormat.occupancyPercent(ratio, decimals: 1) ?? "—"
+        return fullLabel + " configured · \(percent)% · \(methodLabel) · \(source)" + scope + preparation + warning
     }
+    /// Each unit starts where the one below would round up to a thousand of
+    /// itself: 999,600 tokens is "1M", never "1000k".
     private func compact(_ value: Double) -> String {
-        if value >= 1_000_000 { return String(format:"%.1fM",value / 1_000_000).replacingOccurrences(of:".0M",with:"M") }
+        if value >= 999_500 { return String(format:"%.1fM",value / 1_000_000).replacingOccurrences(of:".0M",with:"M") }
         if value >= 10_000 { return String(format:"%.0fk",value / 1000) }
-        if value >= 1_000 { return String(format:"%.1fk",value / 1000).replacingOccurrences(of:".0k",with:"k") }
+        if value >= 999.5 { return String(format:"%.1fk",value / 1000).replacingOccurrences(of:".0k",with:"k") }
         return String(format:"%.0f",value)
     }
 }

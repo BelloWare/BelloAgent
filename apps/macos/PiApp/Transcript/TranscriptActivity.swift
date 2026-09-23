@@ -24,8 +24,10 @@ struct ActionDescription: Equatable, Sendable {
     var path: String? = nil
 }
 
-/// Where a call stands, as the transcript reads it.
-enum ActionOutcome: String, Sendable { case running, done, failed, cancelled }
+/// Where a call stands, as the transcript reads it. `unknown` is a call that
+/// began and never reported — stopped while it ran, or cut off by a crash —
+/// so it may have had effects: it is not done, not failed and not skipped.
+enum ActionOutcome: String, Sendable { case running, done, failed, cancelled, unknown }
 
 enum ActivityState: String, Sendable { case running, failed, completed }
 
@@ -69,6 +71,19 @@ struct TurnAccounting: Equatable, Sendable {
     var throughput = SettledThroughput()
     /// First-token latency over the same requests, for the turn-time dialog.
     var latency = SettledLatency()
+
+    /// A parent and its subset from the same requests — input and its cached
+    /// part, or output and its reasoning part: the paired split the gateway
+    /// recorded, or, for a snapshot from before it did, the totals themselves
+    /// when every request reported both. A share is only ever drawn from this.
+    func split(input: Bool) -> GatewayTokenSplit? {
+        if let pair = input ? inputSplit : outputSplit { return pair.valid ? pair : nil }
+        let samples = input ? inputSamples : outputSamples, partSamples = input ? cachedSamples : reasoningSamples
+        guard requests > 0, samples == requests, partSamples == requests,
+              let total = input ? self.input : output, let part = input ? cached : reasoning else { return nil }
+        let pair = GatewayTokenSplit(total: total, part: part, samples: requests)
+        return pair.valid ? pair : nil
+    }
 }
 
 /// Everything the assistant did since the user's message, across every reply of the turn.
@@ -92,6 +107,10 @@ struct TurnSummary: Equatable, Sendable {
     var current: ToolView?
     /// While live: a status the host attached to the turn, such as a retry in progress.
     var notice: String?
+    /// The run's failure card at the foot of the chat says `notice` already,
+    /// with Retry beside it, so the report does not say it a second time.
+    /// Copy Turn Info still carries it.
+    var noticeOnFailureCard = false
     var toolCountPartial = false
     var taskKey: String? = nil
     var taskRootID: String? = nil
@@ -196,8 +215,8 @@ extension TranscriptMessage {
     var isStreaming: Bool { state == "streaming" }
     /// A reply with no prose: only tool calls, exposed reasoning, or both. It folds into the next reply's block.
     var isActivityOnly: Bool {
-        role == "assistant" && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (!(tools ?? []).isEmpty || !(thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        role == "assistant" && !TranscriptActivity.hasVisibleText(text)
+            && (!(tools ?? []).isEmpty || TranscriptActivity.hasVisibleText(thinking))
     }
 }
 
@@ -206,17 +225,28 @@ enum TranscriptActivity {
 
     static func parseInput(_ input: String) -> [String: Any] { decodeArguments(input).values }
 
+    private static let argumentCountLock = NSLock()
+    nonisolated(unsafe) private static var argumentBytes = 0
+    /// Bytes of call arguments decoded as JSON so far, as evidence that
+    /// drawing a row does not read a growing document again.
+    static var argumentBytesDecoded: Int {
+        argumentCountLock.lock(); defer { argumentCountLock.unlock() }
+        return argumentBytes
+    }
+
     /// A call's arguments as JSON. The host bounds what it sends, which can cut
     /// the JSON in the middle of a string, so a fragment is closed up and read
     /// for whatever survived rather than thrown away: a card that shows part of
     /// a request is worth more than one that shows raw bytes, and `complete`
     /// says which of the two the reader is looking at.
     static func decodeArguments(_ input: String) -> (values: [String: Any], complete: Bool) {
-        if let data = input.data(using: .utf8), let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+        argumentCountLock.lock(); argumentBytes += input.utf8.count; argumentCountLock.unlock()
+        let data = Data(input.utf8)
+        if let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
             return (object, true)
         }
-        for candidate in repairedArguments(input) {
-            if let data = candidate.data(using: .utf8), let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+        for candidate in repairedArguments(data) {
+            if let object = (try? JSONSerialization.jsonObject(with: candidate)) as? [String: Any] {
                 return (object, false)
             }
         }
@@ -224,42 +254,154 @@ enum TranscriptActivity {
     }
     /// Ways a cut fragment might be closed, most complete first: close the
     /// string and the containers it was inside, or drop back to the last member
-    /// that arrived whole when the cut landed in a key.
-    private static func repairedArguments(_ input: String) -> [String] {
-        var text = input
+    /// that arrived whole when the cut landed in a key. JSON's structure is
+    /// ASCII, so this reads bytes: walking a large fragment by grapheme was
+    /// most of what reading it cost.
+    private static func repairedArguments(_ input: Data) -> [Data] {
+        var bytes = [UInt8](input)
         // A cut inside an escape leaves a backslash with nothing to escape.
-        while text.hasSuffix("\\") { text.removeLast() }
-        guard text.first == "{" else { return [] }
-        var stack: [Character] = [], inString = false, escaped = false
-        var lastMemberEnd: String.Index? = nil
-        for index in text.indices {
-            let character = text[index]
+        while bytes.last == JSONByte.backslash { bytes.removeLast() }
+        guard bytes.first == JSONByte.openObject else { return [] }
+        var stack: [UInt8] = [], inString = false, escaped = false
+        var lastMemberEnd: Int? = nil
+        for (index, byte) in bytes.enumerated() {
             if escaped { escaped = false; continue }
-            if character == "\\" { if inString { escaped = true }; continue }
-            if character == "\"" { inString.toggle(); continue }
+            if byte == JSONByte.backslash { if inString { escaped = true }; continue }
+            if byte == JSONByte.quote { inString.toggle(); continue }
             if inString { continue }
-            switch character {
-            case "{", "[": stack.append(character)
-            case "}", "]": if !stack.isEmpty { stack.removeLast() }
-            case ",": if stack.count == 1 { lastMemberEnd = index }
+            switch byte {
+            case JSONByte.openObject, JSONByte.openArray: stack.append(byte)
+            case JSONByte.closeObject, JSONByte.closeArray: if !stack.isEmpty { stack.removeLast() }
+            case JSONByte.comma: if stack.count == 1 { lastMemberEnd = index }
             default: break
             }
         }
-        var closed = text
-        if inString { closed.append("\"") }
-        for opener in stack.reversed() { closed.append(opener == "{" ? "}" : "]") }
-        var candidates = [closed]
-        if let lastMemberEnd { candidates.append(String(text[text.startIndex..<lastMemberEnd]) + "}") }
+        var closed = bytes
+        if inString { closed.append(JSONByte.quote) }
+        for opener in stack.reversed() { closed.append(opener == JSONByte.openObject ? JSONByte.closeObject : JSONByte.closeArray) }
+        var candidates = [Data(closed)]
+        if let lastMemberEnd { candidates.append(Data(bytes[..<lastMemberEnd] + [JSONByte.closeObject])) }
         return candidates
+    }
+    private enum JSONByte {
+        static let quote = UInt8(ascii: "\""), backslash = UInt8(ascii: "\\"), comma = UInt8(ascii: ","), colon = UInt8(ascii: ":")
+        static let openObject = UInt8(ascii: "{"), closeObject = UInt8(ascii: "}"), openArray = UInt8(ascii: "["), closeArray = UInt8(ascii: "]")
+        static func isSpace(_ byte: UInt8) -> Bool { byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D }
+    }
+
+    /// One top-level string member of a call's arguments — a file tool's
+    /// `path` — read without decoding the rest of the document. A write's
+    /// arguments carry the whole file after its path, and while they stream
+    /// the row redraws on every delta: reading the path must cost the path,
+    /// not the file. A document cut inside the value (as a stream or the
+    /// host's bound leaves it) yields the part that arrived, as the repaired
+    /// decode does; anything that is not a JSON object, or a member that is
+    /// not a string, yields nothing.
+    static func argumentString(_ key: String, in input: String) -> String? {
+        let name = Array(key.utf8)
+        if let found = input.utf8.withContiguousStorageIfAvailable({ member(name, in: $0) }) { return found }
+        return Array(input.utf8).withUnsafeBufferPointer { member(name, in: $0) }
+    }
+    private static func member(_ name: [UInt8], in bytes: UnsafeBufferPointer<UInt8>) -> String? {
+        let count = bytes.count
+        var index = 0
+        func skipSpace() { while index < count, JSONByte.isSpace(bytes[index]) { index += 1 } }
+        /// The index past a string token's closing quote, or nil when the
+        /// document ends inside it.
+        func stringEnd(from start: Int) -> Int? {
+            var cursor = start + 1
+            while cursor < count {
+                switch bytes[cursor] {
+                case JSONByte.backslash: cursor += 2
+                case JSONByte.quote: return cursor + 1
+                default: cursor += 1
+                }
+            }
+            return nil
+        }
+        /// Skips one value; false when the document ends inside it.
+        func skipValue() -> Bool {
+            guard index < count else { return false }
+            switch bytes[index] {
+            case JSONByte.quote:
+                guard let end = stringEnd(from: index) else { return false }
+                index = end; return true
+            case JSONByte.openObject, JSONByte.openArray:
+                var depth = 0
+                while index < count {
+                    switch bytes[index] {
+                    case JSONByte.quote:
+                        guard let end = stringEnd(from: index) else { return false }
+                        index = end; continue
+                    case JSONByte.openObject, JSONByte.openArray: depth += 1
+                    case JSONByte.closeObject, JSONByte.closeArray:
+                        depth -= 1
+                        if depth == 0 { index += 1; return true }
+                    default: break
+                    }
+                    index += 1
+                }
+                return false
+            default:
+                while index < count, bytes[index] != JSONByte.comma, bytes[index] != JSONByte.closeObject, !JSONByte.isSpace(bytes[index]) { index += 1 }
+                return index < count
+            }
+        }
+        func decoded(_ token: ArraySlice<UInt8>) -> String? {
+            (try? JSONSerialization.jsonObject(with: Data(token), options: .fragmentsAllowed)) as? String
+        }
+        skipSpace()
+        guard index < count, bytes[index] == JSONByte.openObject else { return nil }
+        index += 1
+        while true {
+            skipSpace()
+            guard index < count, bytes[index] == JSONByte.quote, let keyEnd = stringEnd(from: index) else { return nil }
+            let key = UnsafeBufferPointer(rebasing: bytes[(index + 1)..<(keyEnd - 1)])
+            // A key written with escapes is compared as the key it decodes to.
+            let matches = key.elementsEqual(name) || (key.contains(JSONByte.backslash) && decoded(ArraySlice(bytes[index..<keyEnd])).map { Array($0.utf8) == name } == true)
+            index = keyEnd
+            skipSpace()
+            guard index < count, bytes[index] == JSONByte.colon else { return nil }
+            index += 1
+            skipSpace()
+            guard index < count else { return nil }
+            if matches {
+                guard bytes[index] == JSONByte.quote else { return nil }
+                if let end = stringEnd(from: index) { return decoded(ArraySlice(bytes[index..<end])) }
+                // Cut inside the value: close what arrived, without a
+                // backslash left with nothing to escape.
+                var partial = Array(bytes[index..<count])
+                var trailing = 0
+                while partial.count - trailing > 1, partial[partial.count - 1 - trailing] == JSONByte.backslash { trailing += 1 }
+                if trailing % 2 == 1 { partial.removeLast() }
+                return decoded(ArraySlice(partial + [JSONByte.quote]))
+            }
+            guard skipValue() else { return nil }
+            skipSpace()
+            guard index < count, bytes[index] == JSONByte.comma else { return nil }
+            index += 1
+        }
     }
     static func shortPath(_ path: String) -> String {
         let parts = path.split(separator: "/").filter { !$0.isEmpty }
         return parts.count > 2 ? parts.suffix(2).joined(separator: "/") : path
     }
+    /// The first line, bounded. It reads up to the first newline and no
+    /// further: a streaming part redraws its row on every delta, and splitting
+    /// the whole text into lines to keep one of them grew with every delta.
     static func firstLine(_ text: String, max: Int = 96) -> String {
-        let line = (text.split(separator: "\n", omittingEmptySubsequences: false).first.map(String.init) ?? "").trimmingCharacters(in: .whitespaces)
+        let scalars = text.unicodeScalars
+        let end = scalars.firstIndex(of: "\n") ?? scalars.endIndex
+        let line = String(Substring(scalars[..<end])).trimmingCharacters(in: .whitespacesAndNewlines)
         return line.count > max ? String(line.prefix(max - 1)) + "…" : line
     }
+    /// Whether a text holds anything but whitespace, without copying it: the
+    /// answer is usually its first character.
+    static func hasVisibleText(_ text: String?) -> Bool {
+        guard let text else { return false }
+        return text.unicodeScalars.contains { !blank.contains($0) }
+    }
+    private static let blank = CharacterSet.whitespacesAndNewlines
     private static func text(_ value: Any?) -> String? {
         guard let string = value as? String, !string.isEmpty else { return nil }
         return string
@@ -268,49 +410,91 @@ enum TranscriptActivity {
         if ["running", "preparing", "prepared"].contains(tool.state) { return .running }
         if tool.state == "cancelled" { return .cancelled }
         if tool.state == "failed" { return .failed }
+        // Sent only to an app that says it reads it (the hello's
+        // `unknownToolOutcomes`); an older app sees "cancelled" or "failed".
+        if tool.state == "unknown" { return .unknown }
         return .done
     }
-    /// "Edited" once done, "Editing" under way, "Failed editing" or "Skipped editing" otherwise: the verb never claims work that did not happen.
+    /// What a reply that ended before its natural end says under itself, from
+    /// its stop reason. Only "length" is the output limit; the helper passes
+    /// any other reason the provider gave (its content filter, say) through as
+    /// the stop reason. Nil for a reply the reader stopped — it has its own
+    /// chip — and for the reasons a reply ends on normally, which older
+    /// journals record too.
+    static func earlyEnd(_ stopReason: String?, toolArguments: Bool = false) -> String? {
+        guard let reason = stopReason, !reason.isEmpty, !ordinaryEnds.contains(reason) else { return nil }
+        let notice: String
+        switch reason {
+        case "length": notice = "Output limit reached"
+        case "content_filter": notice = "Stopped by the provider's content filter"
+        default: notice = "The provider ended this reply early (\(reason))"
+        }
+        return toolArguments ? notice + "; tool arguments may be incomplete." : notice
+    }
+    /// Stop reasons that are not an early end: the reader's stop, and the
+    /// ends a Pi journal records for a reply that finished or failed.
+    private static let ordinaryEnds: Set<String> = ["interrupted", "stop", "toolUse", "tool_use", "end_turn", "stop_sequence", "completed", "aborted", "error"]
+    /// "Edited" once done, "Editing" under way, "Failed editing", "Skipped
+    /// editing" or "Stopped editing" otherwise: the verb never claims work that
+    /// did not happen.
     private static func conjugate(_ done: String, _ doing: String, _ outcome: ActionOutcome) -> String {
         switch outcome {
         case .running: return doing.prefix(1).uppercased() + doing.dropFirst()
         case .failed: return "Failed " + doing
         case .cancelled: return "Skipped " + doing
+        case .unknown: return "Stopped " + doing
         case .done: return done
         }
     }
     /// One verb-and-object line per tool call, like "Ran npm test", "Editing retry.swift" or "Failed reading notes.md".
-    static func describe(_ tool: ToolView) -> ActionDescription {
-        // Native file tools already report their resolved path. Their input can
-        // contain a whole file or edit, and is irrelevant to a collapsed label.
-        // Only decode it if a legacy row needs a path, or the tool needs arguments.
-        let reportedPath = text(tool.path)
-        let isFileTool = ["read", "write", "edit", "ls"].contains(tool.name)
-        let input = isFileTool && reportedPath != nil ? [:] : parseInput(tool.input)
-        let path = reportedPath ?? text(input["path"])
-        let outcome = outcome(of: tool)
-        func verb(_ done: String, _ doing: String) -> String { conjugate(done, doing, outcome) }
+    static func describe(_ tool: ToolView) -> ActionDescription { describe(actionParts(tool), outcome: outcome(of: tool)) }
+    static func describe(_ parts: ActionParts, outcome: ActionOutcome) -> ActionDescription {
+        ActionDescription(kind: parts.kind, verb: conjugate(parts.done, parts.doing, outcome), object: parts.object, path: parts.path)
+    }
+    /// A call's line before its outcome is applied: the kind of work, the
+    /// verb it reads with once finished and while under way, and what it
+    /// names. Worked out once per drawing of a row, because the arguments it
+    /// reads can be a whole file still streaming in.
+    struct ActionParts: Equatable, Sendable {
+        let kind: ActionKind
+        let done: String
+        let doing: String
+        let object: String
+        var path: String? = nil
+    }
+    static func actionParts(_ tool: ToolView) -> ActionParts {
         switch tool.name {
+        case "read", "write", "edit", "ls":
+            // Native file tools report their resolved path once they run.
+            // Until then the path is the one member read out of arguments that
+            // can carry a whole file or edit behind it — never the whole document.
+            let path = text(tool.path) ?? text(argumentString("path", in: tool.input))
+            let object = path.map(shortPath)
+            switch tool.name {
+            case "read": return ActionParts(kind: .read, done: "Read", doing: "reading", object: object ?? "file", path: path)
+            case "write":
+                let created = tool.added != nil && (tool.removed ?? 0) == 0
+                return ActionParts(kind: .write, done: created ? "Created" : "Wrote", doing: "writing", object: object ?? "file", path: path)
+            case "edit": return ActionParts(kind: .write, done: "Edited", doing: "editing", object: object ?? "file", path: path)
+            default: return ActionParts(kind: .list, done: "Listed", doing: "listing", object: object ?? "directory", path: path)
+            }
         case "bash":
-            let command = firstLine(text(input["command"]) ?? tool.input)
-            return ActionDescription(kind: .command, verb: verb("Ran", "running"), object: command.isEmpty ? "command" : command)
-        case "read": return ActionDescription(kind: .read, verb: verb("Read", "reading"), object: path.map(shortPath) ?? "file", path: path)
-        case "write":
-            let created = tool.added != nil && (tool.removed ?? 0) == 0
-            return ActionDescription(kind: .write, verb: verb(created ? "Created" : "Wrote", "writing"), object: path.map(shortPath) ?? "file", path: path)
-        case "edit": return ActionDescription(kind: .write, verb: verb("Edited", "editing"), object: path.map(shortPath) ?? "file", path: path)
-        case "ls": return ActionDescription(kind: .list, verb: verb("Listed", "listing"), object: path.map(shortPath) ?? "directory", path: path)
-        case "find", "grep": return ActionDescription(kind: .search, verb: verb("Searched", "searching"), object: text(input["pattern"]) ?? "files")
+            // A command can carry a whole heredoc; the row shows its first line.
+            let command = firstLine(text(argumentString("command", in: tool.input)) ?? tool.input)
+            return ActionParts(kind: .command, done: "Ran", doing: "running", object: command.isEmpty ? "command" : command)
+        case "find", "grep":
+            return ActionParts(kind: .search, done: "Searched", doing: "searching", object: text(argumentString("pattern", in: tool.input)) ?? "files")
         case "mcp":
             // The meta-tool's action says what happened: a server list, schema loads or one invocation.
+            let input = parseInput(tool.input)
             let action = text(input["action"]) ?? "invoke", server = text(input["server"])
-            if action == "list" { return ActionDescription(kind: .mcp, verb: verb("Listed", "listing"), object: server.map { "tools on \($0)" } ?? "MCP servers") }
+            if action == "list" { return ActionParts(kind: .mcp, done: "Listed", doing: "listing", object: server.map { "tools on \($0)" } ?? "MCP servers") }
             if action == "describe" {
                 let count = (input["targets"] as? [Any])?.count ?? 0
-                return ActionDescription(kind: .mcp, verb: verb("Loaded", "loading"), object: count > 0 ? "\(count) tool \(count == 1 ? "schema" : "schemas")" : "tool schemas")
+                return ActionParts(kind: .mcp, done: "Loaded", doing: "loading", object: count > 0 ? "\(count) tool \(count == 1 ? "schema" : "schemas")" : "tool schemas")
             }
-            return ActionDescription(kind: .mcp, verb: verb("Called", "calling"), object: "\(server ?? "server") · \(text(input["tool"]) ?? "call")")
-        default: return ActionDescription(kind: .other, verb: verb("Used", "using"), object: tool.name)
+            return ActionParts(kind: .mcp, done: "Called", doing: "calling", object: "\(server ?? "server") · \(text(input["tool"]) ?? "call")")
+        default: return ActionParts(kind: .other, done: "Used", doing: "using", object: tool.name)
         }
     }
 
@@ -336,7 +520,7 @@ enum TranscriptActivity {
     }
     static func state(of tools: [ToolView]) -> ActivityState {
         if tools.contains(where: { ["running", "preparing", "prepared"].contains($0.state) }) { return .running }
-        if tools.contains(where: { ["failed", "cancelled"].contains($0.state) }) { return .failed }
+        if tools.contains(where: { ["failed", "cancelled", "unknown"].contains($0.state) }) { return .failed }
         return .completed
     }
     /// "Reasoned", "Read 1 file" or "Reasoned, read 1 file, ran 2 commands".
@@ -345,14 +529,16 @@ enum TranscriptActivity {
     }
 
     static func blockReasoned(_ block: TranscriptBlock) -> Bool {
-        block.replies.contains { !($0.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        block.replies.contains { hasVisibleText($0.thinking) }
     }
 
     // MARK: Formatting
 
     static func formatDuration(_ ms: Double) -> String {
         guard DurationObservation.valid(ms) != nil else { return "" }
-        if ms < 1_000 { return String(format: "%.1fs", ms / 1000) }
+        // A tenth that rounds up to the second is written as the second:
+        // 990 ms is "1s", never "1.0s".
+        if (ms / 100).rounded() < 10 { return String(format: "%.1fs", ms / 1000) }
         // Retained history can contain finite values outside Int's range.
         guard let seconds = Int(exactly: (ms / 1000).rounded()) else { return "" }
         if seconds < 60 { return "\(seconds)s" }
@@ -381,13 +567,15 @@ enum TranscriptActivity {
     static func formatTokenCount(_ value: Double) -> String { value < 10_000 ? grouped(value) : formatCompactTokens(value) }
     static func formatCompactTokens(_ value: Double) -> String {
         guard value.isFinite else { return "—" }
-        if value < 1_000 { return grouped(value) }
+        // Each unit ends where its rounding would reach the next one: 999,500
+        // tokens is "1M", never "1000k".
+        if value.rounded() < 1_000 { return grouped(value) }
         if value < 10_000 {
             var text = String(format: "%.1f", value / 1_000)
             if text.hasSuffix(".0") { text.removeLast(2) }
             return text + "k"
         }
-        if value < 1_000_000 { return "\(Int((value / 1_000).rounded()))k" }
+        if (value / 1_000).rounded() < 1_000 { return "\(Int((value / 1_000).rounded()))k" }
         var text = String(format: "%.2f", value / 1_000_000)
         while text.hasSuffix("0") { text.removeLast() }
         if text.hasSuffix(".") { text.removeLast() }
@@ -725,8 +913,27 @@ enum TranscriptActivity {
         guard affected == Set(replacements.keys) else { return nil }
         return items.map { replacements[$0.id] ?? $0 }
     }
-    static func blocks(of messages: [TranscriptMessage], lifecycle: TaskPresentationProjection? = nil) -> [TranscriptItem] {
-        TaskTranscriptPlan.items(messages, lifecycle: lifecycle)
+    /// `complete` says whether the page reaches the conversation's newest
+    /// row (see `TaskTranscriptPlan.items`).
+    static func blocks(of messages: [TranscriptMessage], lifecycle: TaskPresentationProjection? = nil, complete: Bool = true) -> [TranscriptItem] {
+        sayingFailuresOnce(TaskTranscriptPlan.items(messages, lifecycle: lifecycle, complete: complete), in: messages)
+    }
+    /// A failed turn's notice is the host's error message, and while that run
+    /// is the chat's current failure its card at the foot of the page says
+    /// the same words with Retry beside them. The turn's report then leaves
+    /// them to the card. An older failed turn, whose card is gone, keeps them.
+    static func sayingFailuresOnce(_ items: [TranscriptItem], in messages: [TranscriptMessage]) -> [TranscriptItem] {
+        let failures = messages.filter { $0.kind == "failure" && $0.id.hasPrefix("failure:run:") }.map(\.text)
+        guard !failures.isEmpty else { return items }
+        return items.map { item in
+            guard case .block(var block) = item, block.presentation == .summary, var turn = block.turn,
+                  turn.outcome == "failed", let notice = turn.notice,
+                  // The report's copy is the host's bounded preview of the same message.
+                  failures.contains(where: { $0 == notice || $0.hasPrefix(notice) }) else { return item }
+            turn.noticeOnFailureCard = true
+            block.turn = turn
+            return .block(block)
+        }
     }
 
     // MARK: Read visibility

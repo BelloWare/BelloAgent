@@ -39,9 +39,12 @@ enum TurnInfoPresentation {
     static func tokenLabel(_ turn: TurnSummary) -> String {
         TranscriptActivity.tokens(of:turn.accounting).map(TranscriptActivity.formatTokenCount) ?? (turn.isRunning ? "Pending" : "Unreported")
     }
+    /// The turn's reported cost. A cost only some requests reported is those
+    /// requests' cost, and says how many: it must not pass for the turn's.
     static func costLabel(_ turn: TurnSummary) -> String {
-        guard let cost = turn.accounting.costUSD, cost.isFinite, cost >= 0 else { return turn.isRunning ? "Pending" : "Unreported" }
-        return "$" + MetricFormat.preciseDecimal(cost)
+        let a = turn.accounting
+        guard let cost = a.costUSD, cost.isFinite, cost >= 0 else { return turn.isRunning ? "Pending" : "Unreported" }
+        return "$" + MetricFormat.preciseDecimal(cost) + (a.costSamples > 0 && a.costSamples < a.requests ? " (\(a.costSamples)/\(a.requests) reported)" : "")
     }
     static func inlineFigures(_ turn: TurnSummary) -> [String] {
         var parts = ["\(tokenLabel(turn)) tokens", "Cost \(costLabel(turn))"]
@@ -51,7 +54,6 @@ enum TurnInfoPresentation {
         }
         add(a.input,"In",a.inputSamples); add(a.output,"Out",a.outputSamples)
         add(a.cached,"Cached",a.cachedSamples); add(a.reasoning,"Reasoning",a.reasoningSamples)
-        if a.costSamples > 0 && a.costSamples < a.requests { parts[1] += " (\(a.costSamples)/\(a.requests) reported)" }
         if turn.modelMs > 0 { parts.append("Model " + TranscriptActivity.formatDuration(turn.modelMs)) }
         if turn.toolMs > 0 { parts.append("Tools " + TranscriptActivity.formatDuration(turn.toolMs)) }
         if let model = a.model { parts.append(model) }
@@ -267,7 +269,8 @@ struct TurnInfoView: View {
                     CapturedBodyView(source: source.body(record, tab), sessionID: record.sessionID, attemptID: record.id,
                                      kind: tab, retained: record.retained(tab), revision: record.revision(tab),
                                      copySource: $copySource, initialFormat: tab == "response" ? .combined : .json,
-                                     searchQuery: query, searchHeaders: record.metadata[tab + "Headers"]?.object ?? [:])
+                                     searchQuery: query, searchHeaders: record.metadata[tab + "Headers"]?.object ?? [:],
+                                     growingBytes: record.growingBytes(tab))
                         .id(record.id + ":" + tab)
                         .frame(width: bounds.size.width, height: bounds.size.height)
                 }
@@ -306,7 +309,7 @@ struct TurnInfoView: View {
             guard let source else { return }
             await controller.load(refresh.scope, source: source)
             while turn.isRunning && !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: source.pollInterval)
                 guard !Task.isCancelled else { return }
                 if onScreen { await controller.load(refresh.scope, source: source) }
             }

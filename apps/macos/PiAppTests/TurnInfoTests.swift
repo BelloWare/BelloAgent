@@ -89,6 +89,44 @@ final class TurnInfoTests: XCTestCase {
         var partial = micro; partial.accounting.requests = 2
         XCTAssertTrue(TurnInfoPresentation.inlineFigures(partial).contains("Cost $0.000001 (1/2 reported)"))
     }
+    /// A failed turn's error is said once: on the card at the foot of the
+    /// chat, which offers Retry. The turn's report above that card used to
+    /// repeat the same words. An older failed turn, whose error no longer has
+    /// a card, keeps the words in its report — and Copy Turn Info keeps them
+    /// either way.
+    @MainActor func testAFailedTurnSaysItsErrorOnce() throws {
+        let error = "Provider returned HTTP 500: upstream overloaded"
+        let session = SessionDisplay(id: "failing")
+        var task = TaskPresentationRecord(rootID: "u1", executionID: "e1", startedAt: 1_000)
+        task.outcome = "failed"; task.phase = "terminal"; task.endedAt = 4_000; task.detail = error
+        task.lastSourceID = "a1"; task.replies = 1
+        session.messages = [TranscriptMessage(id: "u1", role: "user", text: "Run the tests", state: "complete", turn: "u1", taskRootID: "u1", taskExecutionID: "e1"),
+                            TranscriptMessage(id: "a1", role: "assistant", text: "Running them now.", state: "complete", turn: "u1", taskRootID: "u1", taskExecutionID: "e1")]
+        session.taskPresentation = TaskPresentationProjection(sessionID: "failing", epoch: "epoch", timeline: "root", sequence: 1,
+                                                              sourceRevision: "1", active: nil, recent: [task])
+        session.observeRunState(["state": .string("error"), "runStatus": .string("failed"), "preflightError": .string(error)])
+        func shown(_ items: [TranscriptItem]) -> [String] {
+            items.compactMap { item in
+                switch item {
+                case .message(let message): return message.text == error ? "card " + message.id : nil
+                case .block(let block):
+                    guard let turn = block.turn, StableTurnSummaryView.shownNotice(turn) == error else { return nil }
+                    return "report " + block.key
+                }
+            }
+        }
+        let failed = TranscriptActivity.blocks(of: session.presentedMessages, lifecycle: session.taskPresentation)
+        XCTAssertEqual(shown(failed), ["card failure:run:failing"], "The error is said once, on the card that offers Retry")
+        let summary = try XCTUnwrap(failed.lazy.compactMap { item -> TurnSummary? in if case .block(let block) = item { return block.turn }; return nil }.first)
+        XCTAssertTrue(TurnLineView.copyText(summary).contains(error), "Copy Turn Info still carries the turn's error")
+        // The next run clears the card; the turn's report is then where the
+        // error of that turn is read.
+        session.observeRunState(["state": .string("idle"), "runStatus": .string("idle")])
+        let later = TranscriptActivity.blocks(of: session.presentedMessages, lifecycle: session.taskPresentation)
+        XCTAssertEqual(shown(later).count, 1)
+        XCTAssertTrue(shown(later).first?.hasPrefix("report ") == true, "\(shown(later))")
+    }
+
     @MainActor func testMountedBannerKeepsMetricsHeightAndTerminalFiguresWrapInNarrowPane() throws {
         var task = record(); task.replies = 1
         var turn = TaskTranscriptPlan.summary([message("u",role:"user",cost:0)],task:task)

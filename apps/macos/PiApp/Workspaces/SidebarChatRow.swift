@@ -39,6 +39,8 @@ struct SidebarChatRowState: Equatable {
     /// What this row's metrics line has to itself; see `ChatRowMetrics`.
     var available: CGFloat = .infinity
     var indent: CGFloat = 0
+    /// A failed run is something to look at too; Mark as Read clears it.
+    var offersMarkAsRead: Bool { unreadCount > 0 || unreadFailure }
 }
 
 /// The open, unsaved side conversation drawn under its parent row.
@@ -124,7 +126,7 @@ struct SidebarChatRow: View, Equatable {
             SessionOrganizationActions(model: model, chat: chat)
             Divider()
             SessionReferenceActions(model: model, sessionID: chat.id)
-            if state.unreadCount > 0 { Divider(); Button("Mark as Read") { model.markSessionRead(chat.id) } }
+            if state.offersMarkAsRead { Divider(); Button("Mark as Read") { model.markSessionRead(chat.id) } }
         }
     }
 }
@@ -268,7 +270,7 @@ extension WorkspaceModel {
         let inner = topic.title.localizedCaseInsensitiveContains(filter) ? "" : filter
         let header = TopicHeaderState(projectID: project.id, topicID: topic.id, title: topic.title, trusted: project.trusted,
                                       expanded: expanded, filtering: !filter.isEmpty,
-                                      hasUnread: entries.contains { unreadOutputCount(sessionID: $0.id) > 0 },
+                                      hasUnread: entries.contains { unreadOutputCount(sessionID: $0.id) > 0 || unreadFailure(sessionID: $0.id) },
                                       chats: entries.count)
         let contents = expanded
             ? sidebarGroupContents(in: project, topicID: topic.id, archived: archived, filter: inner, showEmpty: true,

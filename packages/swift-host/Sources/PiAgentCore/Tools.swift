@@ -19,19 +19,40 @@ func objectSchema(_ properties: JSON, required: [String]) -> JSON { ["type":"obj
 /// Output is drained on both pipes even after its retention cap is reached.
 /// The output file is private; only a bounded preview enters model context.
 ///
-/// Concurrency: `@unchecked` because the two pipe readers run on Dispatch
-/// worker threads and the termination handler on another. The invariant is
-/// that every mutable property is read and written only while `lock` is held,
-/// and that `continuation` is resumed exactly once: `completeIfReady` clears
-/// it under the same lock that sets `finished`. `child`, `file` and `url` are
-/// immutable, and `file` is written only from `consume`, itself under `lock`.
+/// A command is complete when bash has exited and its output has reached end
+/// of file. A process bash started can keep that output open for as long as
+/// it lives (`server &`, or a daemon that left the group with setsid), so the
+/// output is never waited on without bound: the result is returned a short
+/// grace after bash exits, saying that a background process still held the
+/// output, and the pipes are then closed. Stop and the deadline signal the
+/// process group and wait for bash the same way, never for what escaped it.
+///
+/// Concurrency: `@unchecked` because the two pipe readers run on a serial
+/// Dispatch queue, the termination handler and the grace timers on others.
+/// The invariant is that every mutable property is read and written only
+/// while `lock` is held, and that `continuation` is resumed exactly once:
+/// `completeIfReady` clears it under the same lock that sets `finished`.
+/// `child`, `file` and `url` are immutable; `file` is written only from
+/// `consume`, under `lock` and before `finished`, and closed only after it.
 final class ShellRun: @unchecked Sendable {
+    /// How long output may stay open after bash exits by itself, and after
+    /// it exits because Stop or the deadline signalled its group.
+    static let exitGrace = 1.5, stopGrace = 0.5
+    /// The longest Stop or the deadline waits for bash itself to be reaped.
+    static let stopLimit = 3.0
+    static let backgroundNote = "Note: a background process still held this command's output when bash exited, so output after that point was not read and the process may be stopped by SIGPIPE if it writes again. Redirect a background job's output to keep it running, for example: cmd > cmd.log 2>&1 &"
     let child: ManagedChild
     private let lock = NSLock(), file: FileHandle, url: URL
-    private var previewBytes = Data(), observed = 0, retained = 0, readers = 2
-    private var latestUpdate=0.0
+    private let readQueue = DispatchQueue(label: "pi.shell.output")
+    private var sources: [DispatchSourceRead] = []
+    private var previewBytes = Data(), observed = 0, retained = 0, openStreams = 2
+    private var latestUpdate=0.0, publishedPreview = 0
     private let onUpdate: @Sendable (JSON) async -> Void
     private var exitCode: Int32?, continuation: CheckedContinuation<JSON, Error>?, cancellation = false, timedOut = false, finished = false, ioError = false
+    /// Set by the grace timers: the output no longer has to reach end of file
+    /// (`graceElapsed`, once bash has exited), and bash no longer has to be
+    /// reaped (`stopElapsed`, the last resort after Stop or the deadline).
+    private var graceElapsed = false, stopElapsed = false
     private var limitSeconds = 0
     init(command: String, cwd: URL, outputDirectory: URL, onUpdate: @escaping @Sendable (JSON) async -> Void) throws {
         self.onUpdate=onUpdate
@@ -49,20 +70,7 @@ final class ShellRun: @unchecked Sendable {
                 child.process.terminationHandler = { [weak self] process in self?.exited(process.terminationStatus) }
                 // A very short-lived process can exit before the handler is set.
                 if !child.process.isRunning { exited(child.process.terminationStatus) }
-                for handle in [child.output.fileHandleForReading, child.errors.fileHandleForReading] {
-                    DispatchQueue.global(qos:.utility).async { [self] in
-                        defer { try? handle.close(); readerDone() }
-                        var bytes = [UInt8](repeating: 0, count: 65_536)
-                        while true {
-                            let count = read(handle.fileDescriptor, &bytes, bytes.count)
-                            if count > 0 { consume(Data(bytes.prefix(count))) }
-                            else if count == 0 { break }
-                            else if errno != EINTR {
-                                lock.lock(); ioError = true; lock.unlock(); child.stop(); break
-                            }
-                        }
-                    }
-                }
+                for handle in [child.output.fileHandleForReading, child.errors.fileHandleForReading] { startReading(handle) }
                 // The command deadline. Bounded rather than owned: it sleeps
                 // once, holds only a weak reference, and `expire` is a no-op
                 // once the run has finished or been cancelled.
@@ -74,34 +82,96 @@ final class ShellRun: @unchecked Sendable {
             }
         }, onCancel: { [weak self] in self?.cancel() })
     }
+    /// Reads one pipe without ever blocking a thread on it: a descriptor that
+    /// a background process keeps open must not strand a worker for as long
+    /// as that process lives. Closing is the cancel handler's job, after the
+    /// source can no longer read the descriptor.
+    private func startReading(_ handle: FileHandle) {
+        let fd = handle.fileDescriptor
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: readQueue)
+        source.setEventHandler { [self, unowned source] in
+            var bytes = [UInt8](repeating: 0, count: 65_536)
+            for _ in 0..<16 {
+                let count = read(fd, &bytes, bytes.count)
+                if count > 0 { consume(Data(bytes.prefix(count))); continue }
+                if count < 0, errno == EINTR { continue }
+                if count < 0, errno == EAGAIN || errno == EWOULDBLOCK { return }
+                if count < 0 { lock.lock(); ioError = true; lock.unlock(); child.stop() }
+                source.cancel(); return
+            }
+        }
+        source.setCancelHandler { [self] in try? handle.close(); streamClosed() }
+        lock.lock(); sources.append(source); lock.unlock()
+        source.resume()
+    }
     private func consume(_ data: Data) {
-        lock.lock(); defer { lock.unlock() }; observed += data.count
+        lock.lock(); defer { lock.unlock() }
+        guard !finished else { return }
+        observed += data.count
         if previewBytes.count < 32768 { previewBytes.append(data.prefix(32768 - previewBytes.count)) }
         let keep = data.prefix(max(0, 64 * 1024 * 1024 - retained))
         do { try file.write(contentsOf:keep); retained += keep.count } catch { ioError=true }
-        // At most one live-output notice every 66 ms, handed to the session
-        // actor from a Dispatch reader thread. Unowned because it carries the
-        // preview by value and holds nothing: a dropped notice would only
-        // leave the card showing the previous preview until the next one.
-        if nowMS()-latestUpdate >= 66 { latestUpdate=nowMS();let update=resultText(String(decoding:previewBytes,as:UTF8.self));let callback=onUpdate;Task { await callback(update) } }
+        // At most one live-output notice every 66 ms, and only when the
+        // preview grew: once it holds its 32 KiB, more output changes nothing
+        // the card shows. Handed to the session actor from the reader queue.
+        // Unowned because it carries the preview by value and holds nothing:
+        // a dropped notice would only leave the card showing the previous
+        // preview until the next one.
+        if previewBytes.count > publishedPreview, nowMS()-latestUpdate >= 66 {
+            latestUpdate=nowMS(); publishedPreview=previewBytes.count
+            let update=resultText(String(decoding:previewBytes,as:UTF8.self));let callback=onUpdate;Task { await callback(update) }
+        }
     }
-    private func exited(_ code: Int32) { lock.lock(); exitCode=code; lock.unlock(); completeIfReady() }
-    private func readerDone() { lock.lock(); readers -= 1; lock.unlock(); completeIfReady() }
-    private func cancel() { lock.lock(); if finished { lock.unlock(); return }; cancellation=true; lock.unlock(); child.stop() }
+    private func exited(_ code: Int32) {
+        lock.lock(); guard exitCode == nil else { lock.unlock(); return }
+        exitCode=code; let grace = cancellation || timedOut ? Self.stopGrace : Self.exitGrace; lock.unlock()
+        after(grace) { $0.graceElapsed = true }
+        completeIfReady()
+    }
+    private func streamClosed() { lock.lock(); openStreams -= 1; lock.unlock(); completeIfReady() }
+    private func cancel() {
+        lock.lock(); if finished || cancellation { lock.unlock(); return }; cancellation=true; lock.unlock()
+        stopGroup()
+    }
     /// The deadline kills the process like a cancellation, but the outcome is
     /// reported to the model as a failed result so the turn can continue.
-    private func expire() { lock.lock(); if finished || cancellation { lock.unlock(); return }; timedOut=true; lock.unlock(); child.stop() }
+    private func expire() {
+        lock.lock(); if finished || cancellation || timedOut { lock.unlock(); return }; timedOut=true; lock.unlock()
+        stopGroup()
+    }
+    private func stopGroup() {
+        child.stop()
+        lock.lock(); let exited = exitCode != nil; lock.unlock()
+        if exited { after(Self.stopGrace) { $0.graceElapsed = true } }
+        after(Self.stopLimit) { $0.stopElapsed = true }
+        completeIfReady()
+    }
+    /// Marks a grace as elapsed and completes if that was all it waited for.
+    /// The timer holds the run weakly: a finished run has nothing to mark.
+    private func after(_ seconds: Double, _ mark: @escaping @Sendable (ShellRun) -> Void) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + seconds) { [weak self] in
+            guard let self else { return }
+            lock.lock(); mark(self); lock.unlock()
+            completeIfReady()
+        }
+    }
     private func completeIfReady() {
         lock.lock()
-        guard !finished, readers == 0, let code=exitCode, let c=continuation else { lock.unlock(); return }
+        guard !finished, let c=continuation, (exitCode != nil && (openStreams == 0 || graceElapsed)) || stopElapsed else { lock.unlock(); return }
         finished=true; continuation=nil
+        let code=exitCode, held=openStreams > 0, open=sources
         let cancelled=cancellation, expired=timedOut, limit=limitSeconds, failedIO=ioError, seen=observed, kept=retained, bytes=previewBytes; lock.unlock()
+        // Whatever still holds the output is no longer read: closing the
+        // pipes releases the readers, and the process is not waited for.
+        for source in open { source.cancel() }
         child.finishedNormally();try? file.synchronize(); try? file.close()
         if cancelled { c.resume(throwing: CancellationError()); return }
-        var text = String(decoding:bytes,as:UTF8.self) + "\nExit code: \(code)"
+        var text = String(decoding:bytes,as:UTF8.self) + "\nExit code: \(code.map(String.init) ?? "unknown")"
         if expired { text = "Command timed out after \(limit) seconds and was terminated. Re-run with a larger timeout (up to 600 seconds) or split the work.\n" + text }
         if seen > bytes.count { text += "\nOutput preview truncated. Retained \(kept) of \(seen) bytes at \(url.path). Use read with offset/limit to inspect." }
         if failedIO { text += "\nWarning: output could not be fully retained." }
+        if held { text += "\n" + Self.backgroundNote }
         c.resume(returning:resultText(text,error:code != 0 || failedIO || expired))
     }
 }

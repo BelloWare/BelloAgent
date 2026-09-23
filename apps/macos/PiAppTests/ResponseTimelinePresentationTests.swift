@@ -16,7 +16,7 @@ final class ResponseTimelinePresentationTests: XCTestCase {
         let before=TaskTranscriptPlan.items(rows,lifecycle:nil)
         let segments=before.compactMap { if case .block(let block)=$0 { return block.part };return nil }
         XCTAssertEqual(segments.map(\.part.kind),["text","reasoningSummary","text","toolArguments"])
-        reply.accounting=GatewayTotals();reply.modelMs=30;reply.accounting?.costUSD=0
+        reply.accounting=GatewayTotals();reply.modelMs=300;reply.accounting?.costUSD=0
         let after=TaskTranscriptPlan.items([rows[0],reply],lifecycle:nil)
         // Late figures reach the response's own header line — that is the line
         // a folded response reads as — and nothing else. No part row is
@@ -25,8 +25,46 @@ final class ResponseTimelinePresentationTests: XCTestCase {
         XCTAssertEqual(partRows(before),partRows(after))
         func header(_ items:[TranscriptItem]) -> TranscriptBlock? { items.compactMap { if case .block(let b)=$0, b.presentation == .response { return b };return nil }.first }
         XCTAssertNil(header(before)?.responseSummary?.duration)
-        XCTAssertEqual(header(after)?.responseSummary?.duration,"0.0s","The folded line shows the request's duration once it is known")
+        XCTAssertEqual(header(after)?.responseSummary?.duration,"0.3s","The folded line shows the request's duration once it is known")
         XCTAssertEqual(header(before)?.responseSummary?.parts,header(after)?.responseSummary?.parts)
+    }
+    /// A request answered from a cache in a few milliseconds read "Answered ·
+    /// 0.0s". The line keeps the floor the cards keep: below a twentieth of a
+    /// second it says nothing about time.
+    func testAResponseLineSaysNothingAboutADurationBelowTheCardsFloor() {
+        var reply=TranscriptMessage(id:"reply",role:"assistant",text:"Cached answer")
+        for (ms,expected) in [(0.0,nil),(12,nil),(49.9,nil),(60,"0.1s"),(300,"0.3s"),(4_200,"4s")] as [(Double,String?)] {
+            reply.modelMs=ms
+            XCTAssertEqual(TaskTranscriptPlan.responseLine(reply,parts:1).duration,expected,"\(ms) ms")
+        }
+        reply.modelMs=50
+        XCTAssertNotNil(TaskTranscriptPlan.responseLine(reply,parts:1).duration,"The floor itself is shown, as on a card")
+        XCTAssertEqual(TaskTranscriptPlan.responseLine(reply,parts:1).work,"Answered")
+    }
+    /// A retried turn's second execution has no user row of its own: its
+    /// root question is the first execution's. It is not partial history
+    /// when that question is on the page.
+    func testARetriedTurnIsNotPartialHistory() throws {
+        var failed=TaskPresentationRecord(rootID:"u1",executionID:"e1",startedAt:10)
+        failed.outcome="failed";failed.phase="terminal";failed.endedAt=20;failed.lastSourceID="a1";failed.replies=1
+        var retried=TaskPresentationRecord(rootID:"u1",executionID:"e2",startedAt:30)
+        retried.outcome="completed";retried.phase="terminal";retried.endedAt=40;retried.lastSourceID="a2";retried.replies=1
+        retried.anchorSourceID="a1"
+        let projection=TaskPresentationProjection(sessionID:"s",epoch:"epoch",timeline:"root",sequence:1,sourceRevision:"1",active:nil,recent:[failed,retried])
+        let rows=[TranscriptMessage(id:"u1",role:"user",text:"Ask",taskRootID:"u1",taskExecutionID:"e1"),
+                  TranscriptMessage(id:"a1",role:"assistant",text:"Partial",state:"interrupted",taskRootID:"u1",taskExecutionID:"e1"),
+                  TranscriptMessage(id:"a2",role:"assistant",text:"Answer",taskRootID:"u1",taskExecutionID:"e2")]
+        let items=TaskTranscriptPlan.items(rows,lifecycle:projection,display:.normal)
+        let summaries=items.compactMap { item -> TurnSummary? in if case .block(let b)=item, b.presentation == .summary { return b.turn }; return nil }
+        XCTAssertEqual(summaries.map(\.taskKey),[failed.key,retried.key])
+        XCTAssertEqual(summaries.map(\.partial),[false,false],"The retry's question is on the page: nothing about it is partial")
+        // A retry whose question scrolled away is partial, and so is a page
+        // that holds fewer of its replies than the task made.
+        let away=TaskTranscriptPlan.items(Array(rows.dropFirst(2)),lifecycle:projection,display:.normal)
+        XCTAssertEqual(away.compactMap { item -> Bool? in if case .block(let b)=item, b.presentation == .summary { return b.turn?.partial }; return nil },[true])
+        var more=retried;more.replies=2
+        let short=TaskTranscriptPlan.items(rows,lifecycle:TaskPresentationProjection(sessionID:"s",epoch:"epoch",timeline:"root",sequence:1,sourceRevision:"1",active:nil,recent:[failed,more]),display:.normal)
+        XCTAssertEqual(short.compactMap { item -> Bool? in if case .block(let b)=item, b.presentation == .summary { return b.turn?.partial }; return nil },[false,true])
     }
     func testCosmeticPlannerPatchMatchesFullChronologyWithoutRebuildingOtherResponses() throws {
         var response = TranscriptMessage(id:"r",role:"assistant",text:"First",state:"streaming")

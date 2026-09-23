@@ -126,10 +126,20 @@ extension WorkspaceModel {
         let display = SessionDisplay(id: taskID); displays[taskID] = display; display.loading = true
         var host: HostSupervisor?
         defer {
-            let closing = host
+            let closing = host, abandoned = Task.isCancelled
             Task { [weak self] in
                 guard let self else { return }
-                if let closing, opened.contains(taskID) { _ = try? await closing.request("session.close", sessionID: taskID); opened.remove(taskID) }
+                if let closing, opened.contains(taskID) {
+                    // Abandoned mid-request (its sheet closed): stop the request
+                    // as well as the polling. A running session refuses to
+                    // unload until the stop has landed.
+                    if abandoned { _ = try? await closing.request("turn.stop", sessionID: taskID) }
+                    for attempt in 0..<(abandoned ? 20 : 1) {
+                        if attempt > 0 { try? await Task.sleep(for: .milliseconds(100)) }
+                        if (try? await closing.request("session.close", sessionID: taskID)) != nil { break }
+                    }
+                    opened.remove(taskID)
+                }
                 chats.removeAll { $0.id == taskID }; displays.removeValue(forKey: taskID)
                 try? await store.remove(kind: "chat", id: taskID)
             }
@@ -171,6 +181,7 @@ extension WorkspaceModel {
         titleGenerationTasks[sourceID] = Task { [weak self] in
             guard let self else { return }
             defer { self.titleGenerationTasks[sourceID] = nil }
+            if force { await self.releaseTitle(sourceID) }
             await self.generateSessionTitle(sourceID: sourceID, input: input)
         }
     }
@@ -178,17 +189,28 @@ extension WorkspaceModel {
     /// The chat's action menu asks for a title again, from the first message,
     /// replacing an edited or earlier generated one; failures show in the footer.
     func regenerateTitle(_ chatID: String) {
-        guard let item = record(chatID), !item.imported, !item.isArchived, !item.isBackgroundTask, item.connectionTest != true, let store else { return }
+        guard let item = record(chatID), !item.imported, !item.isArchived, !item.isBackgroundTask, item.connectionTest != true, store != nil else { return }
         let text = displays[chatID]?.messages.first(where: { $0.role == "user" && $0.kind == nil })?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !text.isEmpty else { displays[chatID]?.notice = "The title comes from the first message; send one first."; return }
-        Task {
-            if var current = record(chatID), current.titleWasEdited == true || current.titleWasGenerated == true {
-                current.titleWasEdited = nil; current.titleWasGenerated = nil
-                try? await store.put(current, kind: "chat", id: chatID)
-                if let index = chats.firstIndex(where: { $0.id == chatID }) { chats[index].titleWasEdited = nil; chats[index].titleWasGenerated = nil }
-            }
-            displays[chatID]?.notice = "Asking the mini model for a title…"
-            scheduleTitleGeneration(sourceID: chatID, input: text, force: true)
+        // A request already on its way for this chat answers this press too.
+        guard titleGenerationTasks[chatID] == nil else { return }
+        displays[chatID]?.notice = "Asking the mini model for a title…"
+        scheduleTitleGeneration(sourceID: chatID, input: text, force: true)
+    }
+
+    /// Frees a chat for a title asked for by hand: forgets that the title
+    /// was edited or generated, and drops the claim of the request that made
+    /// it. A claim outlives its request (a generated title keeps it, and so
+    /// does a request the app quit during), and left in place it made
+    /// Generate Title do nothing at all. Runs inside this chat's own title
+    /// task, so no request of this launch still needs the claim.
+    private func releaseTitle(_ chatID: String) async {
+        guard let store, var current = record(chatID),
+              current.titleWasEdited == true || current.titleWasGenerated == true || current.titleTaskSessionID != nil else { return }
+        current.titleWasEdited = nil; current.titleWasGenerated = nil; current.titleTaskSessionID = nil
+        try? await store.put(current, kind: "chat", id: chatID, releasingTitleClaim: true)
+        if let index = chats.firstIndex(where: { $0.id == chatID }) {
+            chats[index].titleWasEdited = nil; chats[index].titleWasGenerated = nil; chats[index].titleTaskSessionID = nil
         }
     }
 
@@ -243,12 +265,16 @@ extension WorkspaceModel {
             commandID = command
             try await store.put(CommandIntent(id: command, sessionID: taskID, turnID: turn, text: plan.prompt,
                                               state: "intent", epoch: connected.epoch), kind: "pending:\(taskID)", id: command)
+            pendingIntentsChanged(taskID)
             try Task.checkCancellation()
             try requireConnection(lease)
             _ = try await connected.request("turn.submit", sessionID: taskID,
                 params: TurnOverrides.params(for: item, base: ["text": .string(plan.prompt), "clientTurnId": .string(turn)]), commandID: command)
-            try await store.acknowledgeCommand(sessionID: taskID, commandID: command)
+            try await store.acknowledgeCommand(sessionID: taskID, commandID: command); pendingIntentsChanged(taskID)
             let deadline = ProcessInfo.processInfo.systemUptime + 60
+            // A snapshot may leave out receipts that did not change (0.1.85);
+            // the last ones received are then still the task's.
+            var receipts: [[String: WireValue]] = []
             while ProcessInfo.processInfo.systemUptime < deadline {
                 try Task.checkCancellation()
                 let snapshot = try await connected.request("session.snapshot", sessionID: taskID).object ?? [:]
@@ -256,7 +282,8 @@ extension WorkspaceModel {
                     chats[index].path = path; try await store.put(chats[index], kind: "chat", id: taskID)
                 }
                 let state = snapshot["state"]?.string ?? ""
-                let receipt = snapshot["commands"]?.array?.compactMap(\.object).last { $0["commandId"]?.string == command }
+                if let carried = snapshot["commands"]?.array { receipts = carried.compactMap(\.object) }
+                let receipt = receipts.last { $0["commandId"]?.string == command }
                 if receipt?["state"]?.string == "completed", state == "idle" {
                     let messages = try TranscriptMessage.page(snapshot["messages"] ?? .array([]))
                     display.messages = messages
@@ -279,7 +306,7 @@ extension WorkspaceModel {
             }
             throw HostError.failure("Title generation timed out. The original title was kept; nothing was retried.")
         } catch {
-            if let commandID, case HostError.rejected = error { try? await store.remove(kind: "pending:\(taskID)", id: commandID) }
+            if let commandID, case HostError.rejected = error { try? await store.remove(kind: "pending:\(taskID)", id: commandID); pendingIntentsChanged(taskID) }
             if let host, commandID != nil { _ = try? await host.request("turn.stop", sessionID: taskID) }
             display.loading = false
             display.notice = error is CancellationError ? "Title generation interrupted. Nothing was retried." : error.localizedDescription

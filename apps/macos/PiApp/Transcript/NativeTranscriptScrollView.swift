@@ -227,6 +227,9 @@ final class TranscriptNativeScrollView: NSScrollView {
     private var placingCorrection = false
     static let bufferCorrectionLimit = 8
     private var liveResizing = false
+    /// What the last idle unit spent placing the page. The next one measures
+    /// rows for at least that long before placing it again.
+    private var slicePlacementSeconds: TimeInterval = 0
     private var resolveScheduled = false
     private var approximatedAt: TimeInterval = 0
     /// How long an approximate page may stand before it is measured anyway,
@@ -250,6 +253,8 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// history behind it, so a streamed delta costs what its own row costs
     /// and the rest of the page waits for the next quiet moment.
     static let sliceQuietPeriod: TimeInterval = 0.15
+    /// At most this many rows are measured in one idle unit.
+    static let sliceRowLimit = 16
     private weak var observedClip: NSClipView?
     nonisolated(unsafe) private var boundsObserver: NSObjectProtocol?
     /// All exact rows stay retained; only the buffered viewport participates
@@ -360,8 +365,9 @@ final class TranscriptNativeScrollView: NSScrollView {
             page?.preserveReadingPositionForLayout()
         }
         contentChangedAt = ProcessInfo.processInfo.systemUptime
-        // A different rendering environment changes every row's height.
-        if self.environment != environment { dirtyFrom = 0; motionNeedsRetarget = true }
+        // A different type size, writing direction or locale changes every
+        // row's height; a different colour or an enabled state does not.
+        if !(self.environment?.hasSameGeometry(as: environment) ?? false) { dirtyFrom = 0; motionNeedsRetarget = true }
         if (self.snapshot?.sessionID != snapshot?.sessionID || self.snapshot?.generation != snapshot?.generation) {
             quoteSelection.dismiss()
             finishDisclosureMotion(settling: false)
@@ -377,8 +383,14 @@ final class TranscriptNativeScrollView: NSScrollView {
         self.environment = environment
         // A chat the reader left keeps nothing; rows that left drop their parts.
         // Walking every id of the page is only worth doing when the reader has
-        // actually opened or closed something, which is most often not the case.
-        if let disclosure, disclosure.changedCount > 0, let items = snapshot?.items {
+        // actually opened or closed something, which is most often not the case,
+        // and only when rows have come or gone: a token of a reply changes
+        // neither, and once anything was open every token used to walk every
+        // row and every tool of the page to find that out.
+        let sameRows = (snapshot?.items.count ?? 0) == rows.count
+            && zip(snapshot?.items ?? [], rows).allSatisfy { $0.id == $1.itemID }
+        if !sameRows, let disclosure, disclosure.changedCount > 0, let items = snapshot?.items {
+            if TranscriptLayoutClock.recording { TranscriptLayoutClock.disclosurePrunes += 1 }
             let live = Set(items.flatMap { item -> [String] in
                 switch item {
                 case .message(let message): return [message.id] + (message.tools ?? []).map(\.id)
@@ -388,7 +400,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             })
             disclosure.forget(disclosure.changedIDs.subtracting(live))
         }
-        if let toolInputs, !toolInputs.knownIDs.isEmpty, let items = snapshot?.items {
+        if !sameRows, let toolInputs, !toolInputs.knownIDs.isEmpty, let items = snapshot?.items {
             let live = Set(items.flatMap { item -> [String] in
                 switch item {
                 case .message(let message): return (message.tools ?? []).flatMap { [$0.id,ToolOccurrence.key(message.id,$0.id)] }
@@ -484,13 +496,26 @@ final class TranscriptNativeScrollView: NSScrollView {
             guard let clip = self.enclosingScrollView?.contentView else { return false }
             let edge = self.travelingForward ? clip.bounds.maxY : clip.bounds.minY
             // Host construction, measurement, cache and placement are one
-            // indivisible unit, timed together by the shared scheduler.
-            guard let row = self.rows.filter({ self.approximate.contains($0.itemID) })
-                .min(by: { abs($0.frame.midY - edge) < abs($1.frame.midY - edge) }) else { return false }
-            if row.superview == nil { self.addSubview(row) }
-            _ = row.measure(width: self.rowWidth)
-            self.markDirty(from: row.layoutIndex)
+            // indivisible unit, timed together by the shared scheduler. It
+            // measures the rows nearest the reader's edge for at least as
+            // long as placing the page takes, then places it once for all of
+            // them: placed after every row, the history of a long chat cost a
+            // whole-page pass for each row it measured.
+            let nearest = self.rows.filter { self.approximate.contains($0.itemID) }
+                .sorted { abs($0.frame.midY - edge) < abs($1.frame.midY - edge) }.prefix(Self.sliceRowLimit)
+            guard !nearest.isEmpty else { return false }
+            let measuring = ProcessInfo.processInfo.systemUptime
+            var first = self.rows.count
+            for row in nearest {
+                if row.superview == nil { self.addSubview(row) }
+                _ = row.measure(width: self.rowWidth)
+                first = min(first, row.layoutIndex)
+                if ProcessInfo.processInfo.systemUptime - measuring >= self.slicePlacementSeconds { break }
+            }
+            self.markDirty(from: first)
+            let placing = ProcessInfo.processInfo.systemUptime
             self.layoutNow()
+            self.slicePlacementSeconds = ProcessInfo.processInfo.systemUptime - placing
             return !self.approximate.isEmpty
         }
     }
@@ -565,19 +590,52 @@ final class TranscriptNativeScrollView: NSScrollView {
 
     private func disclosureChanged(_ row: TranscriptRowContainer) {
         markDirty(from: row.layoutIndex)
-        guard !Self.reducesMotion, enclosingScrollView != nil, !rows.isEmpty,
-              rows.contains(where: { $0 === row }) else {
+        guard rows.contains(where: { $0 === row }) else {
             finishDisclosureMotion(settling: false)
+            layoutNow()
+            return
+        }
+        moveDisclosure()
+    }
+
+    /// A fold that spans several rows — a whole response, a whole turn — has
+    /// changed, and the page has republished for it. The document takes that
+    /// page now, in the pass that changed it, and every row it resized moves
+    /// with the others. Handed over by SwiftUI's next update instead, each
+    /// row drew its new content in its old frame for a frame — the space a
+    /// folded turn had taken, empty — and moved a run-loop turn later.
+    func spanningDisclosureChanged() {
+        guard let page, let snapshot = page.snapshot, let environment, !rows.isEmpty,
+              snapshot.sessionID == self.snapshot?.sessionID, snapshot.generation == self.snapshot?.generation else { return }
+        let actions = actionRelay.current, disclosure = disclosure, toolInputs = toolInputs
+        moveDisclosure {
+            self.update(snapshot: snapshot, actions: actions, environment: environment, disclosure: disclosure, toolInputs: toolInputs)
+        }
+    }
+
+    /// Lays the page out for a disclosure and moves every row it resized
+    /// from where it is on screen to where it now belongs. `reconcile` brings
+    /// the rows' new content in first, after the geometry they are moving
+    /// from has been taken.
+    private func moveDisclosure(reconciling reconcile: (() -> Void)? = nil) {
+        guard !Self.reducesMotion, enclosingScrollView != nil, !rows.isEmpty else {
+            finishDisclosureMotion(settling: false)
+            reconcile?()
             layoutNow()
             return
         }
         // Where the page is right now — which, for a second click part way
         // through, is where the last motion had got to. Nothing snaps.
+        let identities = rows.map(ObjectIdentifier.init)
         let startOrigins = rows.map(\.frame.minY), startHeights = rows.map(\.frame.height)
         let fromDocument = frame.height
         motion = nil
         stopMotionLink()
         for row in rows { row.endDisclosureMotion() }
+        reconcile?()
+        // A page that came back with other rows than it had is placed, not
+        // moved: there is nothing on screen to move them from.
+        guard rows.map(ObjectIdentifier.init) == identities else { layoutNow(); return }
         preparingMotion = true
         layoutNow()
         preparingMotion = false
@@ -675,8 +733,8 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// A normal layout computes the latest target immediately. Put compatible
     /// motion back at the same fraction; changed geometry starts at the height
     /// already on screen, never at either old endpoint. No snapshots are held.
-    private func resumeMotion(_ previous: DisclosureMotion?, presentedHeight: CGFloat?, retarget: Bool) {
-        guard var moving = previous, let shown = presentedHeight else { return }
+    private func resumeMotion(_ previous: DisclosureMotion?, presentedHeights: [String: CGFloat], retarget: Bool) {
+        guard var moving = previous, !presentedHeights.isEmpty else { return }
         // Every row the motion is moving, where the new layout has put it.
         var changes: [DisclosureMotion.Change] = []
         for change in moving.changes {
@@ -690,10 +748,12 @@ final class TranscriptNativeScrollView: NSScrollView {
         let retargeting = retarget || zip(changes, moving.changes).contains { abs($0.to - $1.to) > 0.5 }
         if retargeting {
             // Changed geometry starts from the height on screen, never from
-            // either old endpoint. Only the row that was moving knows that
-            // height; the others start from where this layout has them.
+            // either old endpoint — for every row the motion is moving. A fold
+            // that spans a response moves several, and only the first used to
+            // keep its place: the others restarted from the height this pass
+            // had just given them, which is the end, so they snapped there.
             for index in changes.indices {
-                let presented = changes[index].rowID == moving.changes.first?.rowID ? shown : rows[changes[index].index].frame.height
+                let presented = presentedHeights[changes[index].rowID] ?? rows[changes[index].index].frame.height
                 changes[index].from = presented
             }
             moving.opening = changes.reduce(0) { $0 + ($1.to - $1.from) } > 0
@@ -958,8 +1018,12 @@ final class TranscriptNativeScrollView: NSScrollView {
         guard dirty || rowWidth != nextWidth || frame.width != width else { mountVisibleRows(); return }
         if Self.reducesMotion { finishDisclosureMotion(settling: false) }
         let moving = motion
-        let movingRow = moving?.changes.first.flatMap { value in rows.first { $0.itemID == value.rowID } }
-        let presentedHeight = movingRow?.frame.height
+        // The height every moving row is on screen at, before this pass gives
+        // it its new one.
+        var presentedHeights: [String: CGFloat] = [:]
+        for change in moving?.changes ?? [] {
+            if let row = rows.first(where: { $0.itemID == change.rowID }) { presentedHeights[change.rowID] = row.frame.height }
+        }
         let retarget = motionNeedsRetarget || rowWidth != nextWidth
         let wasPreparingMotion = preparingMotion
         if let moving {
@@ -975,7 +1039,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         layoutPassCount += 1
         layingOut = true
         defer {
-            resumeMotion(moving, presentedHeight: presentedHeight, retarget: retarget)
+            resumeMotion(moving, presentedHeights: presentedHeights, retarget: retarget)
             preparingMotion = wasPreparingMotion
             layingOut = false
             if !placingCorrection { mountVisibleRows() }
@@ -1030,13 +1094,13 @@ final class TranscriptNativeScrollView: NSScrollView {
         // see a screenful, and the rest can stand until a slice reaches them.
         let unmeasured = firstPlaced > 0 ? 0 : rows.reduce(0) { $0 + ($1.hasMeasurement(width: nextWidth) ? 0 : 1) }
         var plainBytes = 0
-        let rich = rows.contains { row in
+        let rich = { [rows] () -> Bool in rows.contains { row in
             let messages: [TranscriptMessage]
             switch row.contentItem { case .message(let m): messages = [m]; case .block(let b): messages = b.replies }
             plainBytes += messages.reduce(0) { $0 + $1.text.utf8.count }
             return plainBytes > 32_768 || messages.contains { !$0.text.isEmpty && ($0.text.utf8.count > 8192 || $0.text.contains("```") || $0.text.contains("~~~") || $0.text.contains("\n#") || $0.text.contains("|")) || !($0.tools ?? []).isEmpty || !($0.thinking ?? "").isEmpty }
-        }
-        let slicing = (unmeasured > Self.sliceThreshold || (rich && unmeasured > 0) || !unresolved.isEmpty || deferring) && firstPlaced == 0
+        } }
+        let slicing = firstPlaced == 0 && (unmeasured > Self.sliceThreshold || !unresolved.isEmpty || deferring || (unmeasured > 0 && rich()))
         // A long chat that opens at its newest row is parked there by this very
         // pass, so it need not also measure the top of the history the reader
         // would otherwise see for one frame.

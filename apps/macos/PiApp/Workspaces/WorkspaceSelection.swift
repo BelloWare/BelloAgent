@@ -7,8 +7,14 @@ import Foundation
 extension WorkspaceModel {
     func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveFilter: Bool = false) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
-        if selectedID == id, let selected, selected.historyState != .dormant {
+        // A chat whose load ended without a page (nothing is reading it any
+        // more) is read again rather than left on "Preparing…" for good.
+        if selectedID == id, let selected, selected.historyState != .dormant,
+           !(selected.historyState == .loading && selected.presentation.navigation == nil) {
             page = .chats; focusedSessionID = id
+            // A run that failed while another app was in front marked this
+            // chat; clicking it is looking at it.
+            clearFailureMark(sessionID: id)
             if revealInSidebar { revealProjectChat(item) }
             // Keep the transcript idempotent while allowing an expired or
             // missing optional preview to recover after helper eviction.
@@ -22,7 +28,7 @@ extension WorkspaceModel {
         }
         selectionRevision += 1
         let selection = selectionRevision
-        if let previous = selectedID, previous != id, isPendingEmpty(previous) { discardPendingChat(previous) }
+        let previous = selectedID
         if preserveArchiveFilter {
             setProjectExpanded(item.workspaceID, expanded: true)
             if let topicID = effectiveTopicID(for: item) { setTopicExpanded(topicID, expanded: true) }
@@ -38,6 +44,10 @@ extension WorkspaceModel {
         view.used = Date(); displays[id] = view
         selectedID = id; selected = view; profileChoice = item.profileID
         focusedSessionID = id; page = .chats
+        // An empty New chat is dropped once the next chat is in its place, so
+        // the selection changes once: through nil first, it read as a second
+        // navigation to anything waiting on this one (`revealMessage`).
+        if let previous, previous != id, isPendingEmpty(previous) { discardPendingChat(previous) }
         view.publishTranscript()
         clearFailureMark(sessionID: id)
         if item.workspaceID != WorkspaceRecord.scratchID { selectedWorkspaceID = item.workspaceID }
@@ -53,16 +63,22 @@ extension WorkspaceModel {
                 await self.loadSideDisplay(child, view: sideView)
             }
         }
-        for other in displays.values.sorted(by: { $0.used < $1.used }) where displays.count > 8 && other.id != id && !other.hasWork && !other.loading && !sides.values.contains(where: { $0.id == other.id || $0.parentID == other.id }) {
+        // A new chat that was never sent has nothing written anywhere (see
+        // `materializeChat`): its display is the only place its draft lives,
+        // so it is not let go of while it holds one.
+        for other in displays.values.sorted(by: { $0.used < $1.used }) where displays.count > 8 && other.id != id && !other.hasWork && !other.loading
+            && !(pendingChatIDs.contains(other.id) && !isPendingEmpty(other.id)) && !sides.values.contains(where: { $0.id == other.id || $0.parentID == other.id }) {
             other.presentation.cancel(); displays.removeValue(forKey: other.id)
         }
         let generation = view.presentationGeneration
         PerformanceProbe.shared.observe("selectionLoadingFeedbackMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
         let task = Task { [weak self, weak view] in
             guard let self, let view else { return }
+            // However this ends, nothing is reading the chat any more.
+            defer { if view.presentationGeneration == generation { view.presentation.navigation = nil } }
             @MainActor func current() -> Bool {
                 !Task.isCancelled && self.selectionRevision == selection && self.selectedID == id &&
-                    self.displays[id] === view && view.presentationGeneration == generation && self.record(id)?.path == item.path
+                    self.displays[id] === view && view.presentationGeneration == generation
             }
             do {
                 let wantsMetadata = !view.selectionMetadataLoaded
@@ -79,8 +95,17 @@ extension WorkspaceModel {
                 view.draftReady = true
                 view.recovered = metadata?.recovered ?? []; view.uncertain = !view.recovered.isEmpty
                 view.composerFocusRequest += 1
-                let page = try await self.readConversationWindow(item, cursor: nil)
-                guard current() else { return }
+                // The chat's file can be named while its page is read: its
+                // first message writes the journal, and the helper can report
+                // a moved one. A page read under the old name is read again
+                // under the new one instead of being dropped with nothing in
+                // its place.
+                var source = item, page = try await self.readConversationWindow(source, cursor: nil)
+                for _ in 0..<3 {
+                    guard current(), let now = self.record(id), now.path != source.path else { break }
+                    source = now; page = try await self.readConversationWindow(source, cursor: nil)
+                }
+                guard current(), self.record(id)?.path == source.path else { return }
                 self.adoptInitialHistory(page, into: view)
                 if let profile = self.profiles.first(where: { $0.id == item.profileID }), profile.api != LiteLLMConfiguration.supportedAPI {
                     view.notice = LiteLLMConfiguration.unsupportedAPIMessage

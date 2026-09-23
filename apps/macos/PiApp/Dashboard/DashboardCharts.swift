@@ -7,9 +7,13 @@ import Charts
 struct DashboardBrushOverlay: ViewModifier {
     @Namespace private var chartCoordinates
     let filter: DashboardFilter
-    @Binding var preview: DashboardBrush?
+    /// The selection the report applies or is reading.
     let committed: DashboardBrush?
     let commit: (DashboardBrush?) -> Void
+    /// The range under the pointer while it drags. It lives here, so a
+    /// pointer move redraws this overlay only; the report page used to
+    /// re-render at every move because the preview was its published state.
+    @State private var preview: DashboardBrush?
 
     func body(content: Content) -> some View {
         content.chartOverlay { proxy in
@@ -55,8 +59,8 @@ extension View {
     @ViewBuilder func chartPercentScale(_ percent: Bool) -> some View {
         if percent { chartYScale(domain: 0.0...100.0) } else { self }
     }
-    func dashboardBrush(filter: DashboardFilter, preview: Binding<DashboardBrush?>, committed: DashboardBrush?, commit: @escaping (DashboardBrush?) -> Void) -> some View {
-        modifier(DashboardBrushOverlay(filter: filter, preview: preview, committed: committed, commit: commit))
+    func dashboardBrush(filter: DashboardFilter, committed: DashboardBrush?, commit: @escaping (DashboardBrush?) -> Void) -> some View {
+        modifier(DashboardBrushOverlay(filter: filter, committed: committed, commit: commit))
     }
 }
 

@@ -1,6 +1,17 @@
 import SwiftUI
 import Charts
 
+/// The report's headline output rate and how it was measured.
+/// It is the app's settled decode rate — provider output over first token to
+/// completion — the figure each route's row, Session info and the pills show.
+enum ReportThroughputTile {
+    static func rate(_ snapshot: DashboardSnapshot) -> SettledThroughput { snapshot.gateway.settledThroughput }
+    static func caption(_ snapshot: DashboardSnapshot) -> String {
+        let rate = rate(snapshot)
+        return "decode, first token to completion · \(rate.samples)/\(snapshot.gateway.requests) measured"
+    }
+}
+
 /// Usage report as a page inside the main window. The default view is a
 /// time range, reported metrics, routing and token splits. Request rows and
 /// advanced filters remain available through progressive disclosure.
@@ -14,6 +25,8 @@ struct ReportPage: View {
     @State private var routingPalette = MonitorModelPalette()
     @State private var requestListOpen = false
     init(model: WorkspaceModel) { self.model = model; self.report = model.report }
+    /// A page over a controller with its own queries, for tests.
+    init(model: WorkspaceModel, report: ReportController) { self.model = model; self.report = report }
 
     private var motion: Animation? { reduceMotion ? nil : .easeOut(duration: 0.2) }
     private var chips: [ReportFilterChip] { report.activeFilters(workspaces: model.workspaces, chats: model.chats) }
@@ -233,23 +246,21 @@ struct ReportPage: View {
 
     // MARK: Summary
 
+    /// One view tree at every width: the layout changes, the cards do not, so
+    /// the chart keeps its zoom and metric and the map its "Show all" when the
+    /// page crosses the wide breakpoint.
     @ViewBuilder private func routingOverview(_ snapshot: DashboardSnapshot, active: DashboardSnapshot, wide: Bool) -> some View {
         let rows = report.modelSummaries ?? []
         let models = MonitorDistribution.report(rows, total: active.gateway)
-        if wide {
-            HStack(alignment: .top, spacing: PiSpacing.md) {
-                chart(snapshot).frame(maxWidth: .infinity)
-                ModelRoutingMap(rows: rows, palette: routingPalette).frame(width: 350)
-            }
-            HStack(alignment: .top, spacing: PiSpacing.md) {
-                ModelCostBreakdown(models: models, total: active.gateway, palette: routingPalette).frame(maxWidth: .infinity)
-                AnalyticsTokenBreakdown(gateway: active.gateway).frame(maxWidth: .infinity)
-            }
-        } else {
-            chart(snapshot)
-            ModelRoutingMap(rows: rows, palette: routingPalette)
-            ModelCostBreakdown(models: models, total: active.gateway, palette: routingPalette)
-            AnalyticsTokenBreakdown(gateway: active.gateway)
+        let loading = report.modelSummaries == nil
+        let row = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: PiSpacing.md)) : AnyLayout(VStackLayout(alignment: .leading, spacing: PiSpacing.lg))
+        row {
+            chart(snapshot).frame(maxWidth: .infinity)
+            ModelRoutingMap(rows: rows, palette: routingPalette, loading: loading).frame(width: wide ? 350 : nil).frame(maxWidth: wide ? nil : .infinity)
+        }
+        row {
+            ModelCostBreakdown(models: models, total: active.gateway, palette: routingPalette, loading: loading).frame(maxWidth: .infinity)
+            AnalyticsTokenBreakdown(gateway: active.gateway).frame(maxWidth: .infinity)
         }
     }
 
@@ -276,8 +287,8 @@ struct ReportPage: View {
                 .help(reportReasoningDetail(active.gateway) + "\n" + active.gateway.promptCacheCoverageLabel)
             PiStatTile(title: "Input cache hit", value: monitorCacheShare(active.gateway), caption: active.gateway.promptCacheCoverageLabel, symbol: "memorychip", tone: .success)
             PiStatTile(title: "First token", value: "p50 " + milliseconds(active.ttft.p50), caption: "p99 \(milliseconds(active.ttft.p99)) · HTTP p50 \(milliseconds(active.http.p50))", symbol: "timer", tone: .info)
-            PiStatTile(title: "Output tok/s", value: menuBarRate(active.historicalRate.tokensPerSecond), caption: "\(active.historicalRate.samples) completed requests · duration-weighted", symbol: "speedometer", tone: .info)
-                .help("Reported output, including reasoning, divided by dispatch-to-completion time. Per-route details remain available below.")
+            PiStatTile(title: "Output tok/s", value: menuBarRate(ReportThroughputTile.rate(active).tokensPerSecond), caption: ReportThroughputTile.caption(active), symbol: "speedometer", tone: .info)
+                .help(SettledThroughput.explanation + " Each route's rate is listed under By model.")
         }
         .animation(motion, value: report.brush)
     }
@@ -287,7 +298,7 @@ struct ReportPage: View {
     @ViewBuilder private func chart(_ snapshot: DashboardSnapshot) -> some View {
         if report.chartMetric == "Output tok/s" {
             ReportThroughputPanel(live: model.liveActivity, snapshot: snapshot, window: report.appliedWindow, palette: routingPalette,
-                controls: { AnyView(chartMetricPicker) }, registerModels: { routingPalette.include($0) }, selection: report.brush,
+                controls: { AnyView(chartMetricPicker) }, registerModels: { routingPalette.include($0) }, selection: report.chartSelection,
                 select: { range in
                     if let range, let brush = DashboardBrush(range.lowerBound, range.upperBound, in: snapshot.filter) { report.applyBrush(brush) }
                     else { report.clearBrush() }
@@ -349,7 +360,7 @@ struct ReportPage: View {
                 .chartYAxis { AxisMarks(position: .leading) { AxisGridLine().foregroundStyle(Color.piHairline); AxisValueLabel().foregroundStyle(Color.piInkTertiary) } }
                 .chartXAxis { AxisMarks(preset: .aligned) { AxisGridLine().foregroundStyle(Color.piHairline); AxisValueLabel(format: axisFormat, centered: false, anchor: .top).foregroundStyle(Color.piInkTertiary) } }
                 .chartPlotStyle { $0.padding(.trailing, PiSpacing.sm) }
-                .dashboardBrush(filter: snapshot.filter, preview: $report.brushPreview, committed: report.brush, commit: { report.applyBrush($0) })
+                .dashboardBrush(filter: snapshot.filter, committed: report.chartSelection, commit: { report.applyBrush($0) })
                 .frame(height: 200)
                 if report.brush != nil { Button("Reset selection") { report.clearBrush() }.buttonStyle(.piGhost) }
                 if metric == "Latency" {
@@ -362,7 +373,7 @@ struct ReportPage: View {
     /// "Bucket" is how the query groups rows; a reader sees a chart over time.
     private var chartSubtitle: String {
         switch report.chartMetric {
-        case "Output tok/s": return "Reported output / request duration · drag to select a range"
+        case "Output tok/s": return "Output tokens / decode time · drag to select a range"
         case "Cost": return "Reported USD over time · drag to select a range"
         case "Latency": return "p50 and p99 over time, in milliseconds · drag to select a range"
         case "Ratio": return "Cache hit ratio over time, % of reported · drag to select a range"
@@ -433,9 +444,14 @@ struct ReportPage: View {
             PiPager(previous: { Task { await report.page(offset: max(0, snapshot.offset - 128)) } },
                     next: { Task { await report.page(offset: snapshot.offset + 128) } },
                     canPrevious: snapshot.offset > 0 && !report.loading && !report.filtersPending, canNext: snapshot.hasNext && !report.loading && !report.filtersPending, previousLabel: "Previous", nextLabel: "Next") {
-                Text(snapshot.requests.isEmpty ? "No rows" : "\(snapshot.offset + 1)–\(snapshot.offset + snapshot.requests.count) of \(snapshot.selectedRequests)")
+                Text(Self.requestPageLabel(snapshot))
             }
         }
+    }
+    /// "129–145 of 145": the rows on this page and the total they were read
+    /// with. A paged read counts again; the report's own total may be older.
+    static func requestPageLabel(_ snapshot: DashboardSnapshot) -> String {
+        snapshot.requests.isEmpty ? "No rows" : "\(snapshot.offset + 1)–\(snapshot.offset + snapshot.requests.count) of \(snapshot.rowCount ?? snapshot.selectedRequests)"
     }
 
     /// Configured projects, the scratch group when it holds chats, and a
@@ -459,8 +475,7 @@ struct ReportPage: View {
             LazyVStack(spacing: 0) {
                 ForEach(summaries) { summary in
                     ReportModelRow(summary: summary, allRequests: allRequests, allCost: allCost, detailed: report.detailsOpen) {
-                        report.preferences.requestedAlias = summary.alias
-                        report.preferences.effectiveModel = summary.model
+                        report.narrow(toRoute: summary)
                     }
                     Rectangle().fill(Color.piHairline).frame(height: 1)
                 }

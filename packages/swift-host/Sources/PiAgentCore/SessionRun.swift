@@ -20,7 +20,8 @@ extension AgentSession {
     }
     /// A model request gets five retries after its initial failure before it is
     /// reported. Only transient gateway conditions are retried: transport
-    /// failures, HTTP 408/425/429/5xx and provider errors that describe
+    /// failures, a stream that ended before its terminal event, HTTP
+    /// 408/425/429/5xx and provider errors that describe
     /// overload, rate limits or temporary unavailability. Anything about the
     /// request itself (a bad model, an oversized body, an auth failure) fails
     /// at once, and a cancellation is never retried.
@@ -29,7 +30,9 @@ extension AgentSession {
     static func isRetryable(_ error: AgentError) -> Bool {
         if let failure=error.failure, [.inputContextExceeded,.inputPlusOutputContextExceeded,.outputLimitInvalid,.requestBodyTooLarge,.authentication].contains(failure) { return false }
         switch error.code {
-        case "provider_transport", "stream_backpressure": return true
+        // A stream cut before its terminal event ran no tool; its partial
+        // reply is kept as an interrupted row before the request is resent.
+        case "provider_transport", "stream_backpressure", "incomplete_stream": return true
         case "provider_http":
             guard let status = httpStatus(in: error.message) else { return true }
             return status == 408 || status == 425 || status == 429 || status >= 500
@@ -46,23 +49,32 @@ extension AgentSession {
     }
     func completeWithRetries(profile: Profile, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], turnID: String, purpose: String, operation: JSON = .null, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void, reset: () throws -> Void) async throws -> ModelReply {
         var attempt = 0
+        modelRequestsMs = 0; modelReplyMs = 0
+        // The retry notice describes this request only. It goes whichever way
+        // the request ends: a reply, a failure, or a Stop that cancels the
+        // retried request itself (thrown as a CancellationError, not an
+        // AgentError, so no catch below would see it).
+        defer { retryInfo = .null }
         while true {
             attempt += 1
             let generation=beginObservationGeneration(profile:profile)
+            // Each attempt's own duration; the back-off below is not model time.
+            let started=nowMS(); var measured=false
+            defer { if !measured { modelRequestsMs += nowMS()-started } }
             do {
                 let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,turnID:turnID,purpose:purpose,onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
-                retryInfo = .null
+                modelReplyMs = nowMS()-started; modelRequestsMs += modelReplyMs; measured = true
                 return reply
             } catch let error as AgentError {
+                modelRequestsMs += nowMS()-started; measured = true
                 guard attempt < Self.modelAttempts, Self.isRetryable(error), !Task.isCancelled else {
-                    retryInfo = .null
                     throw attempt > 1 ? AgentError(error.code, "Failed after \(attempt) attempts. " + error.message,failure:error.failure,attemptID:error.attemptID) : error
                 }
                 try reset()
                 retryInfo = ["attempt": JSON(attempt + 1), "of": JSON(Self.modelAttempts), "reason": JSON(error.message)]
                 runStatus = "retrying"; event("retry", retryInfo)
                 let delay = Self.retryDelays[min(attempt - 1, Self.retryDelays.count - 1)]
-                do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) } catch { retryInfo = .null; throw error }
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 runStatus = "running"; event("state")
             }
         }
@@ -121,7 +133,6 @@ extension AgentSession {
                         let dispatchProfile=try turnProfile.dispatching(count)
                         partialID=UUID().uuidString; partialStartedAt=Date().timeIntervalSince1970 * 1000; activeTaskPresentation?.operationID=operationID
                         partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus="running"; modelActive=true; event("message_start")
-                        let requestStart=nowMS()
                         do {
                             completed=try await completeWithRetries(profile:dispatchProfile,messages:context,instructions:instructions,tools:definitions,turnID:currentTurnID,purpose:titleTask ? "title" : "turn",operation:["logicalRequestId":JSON(operationID),"recovered":JSON(recovered),"recovery":recovered ? contextRecovery : .null],onDelta:{ [weak self] delta in await self?.delta(delta) },reset:{
                                 if let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty {
@@ -135,9 +146,9 @@ extension AgentSession {
                                 partialText=""; partialThinking=""; resetPartialRow()
                                 if let partialID { recordDisplayChange(partialID, at: displayClock()) }
                             })
-                            modelMs += nowMS()-requestStart
+                            modelMs += modelRequestsMs
                         } catch let error as AgentError {
-                            modelMs += nowMS()-requestStart
+                            modelMs += modelRequestsMs
                             guard error.failure?.contextRejection == true, autoCompaction, !titleTask, !recovered, canCompact, !Task.isCancelled else { throw error }
                             // Recovery surrounds only this failed model operation.
                             // The completed tool batch is never entered a second time.
@@ -167,9 +178,16 @@ extension AgentSession {
                     saveResponseLedger(persist:true,terminal:reply.truncated ? "incomplete":"completed"); partialLedgerID=nil
                     var assistant=reply.message
                     if !partialTimeline.segments.isEmpty { assistant.responseTimeline=partialTimeline }
-                    assistant.id=partialID ?? assistant.id; assistant.modelMs=modelMs; partialID=nil; currentAttemptIDs=assistant.requestAttemptIDs ?? []
-                    // A reply cut at the output budget is a complete row with a reason, not a failed run.
-                    if reply.truncated { assistant.stopReason="length" }
+                    // The reply's model time is its own request's; the turn's counts every attempt.
+                    assistant.id=partialID ?? assistant.id; assistant.modelMs=modelReplyMs; partialID=nil; currentAttemptIDs=assistant.requestAttemptIDs ?? []
+                    // An incomplete reply is a complete row with a reason, not a
+                    // failed run, and its calls never run. Only a reply cut at
+                    // the output budget is output-limited; the provider can end
+                    // one early for another reason (its content filter), which
+                    // the row names instead of claiming the limit.
+                    let stoppedEarly = reply.truncated ? (reply.terminal?.incompleteReason ?? "max_output_tokens") : nil
+                    let outputLimited = stoppedEarly == "max_output_tokens"
+                    if let stoppedEarly { assistant.stopReason = outputLimited ? "length" : stoppedEarly }
                     try append(assistant); cumulativeUsage.observe(reply.usage)
                     contextBaseline=try RequestUsageBaseline(request:request,profile:turnProfile,reply:reply)
                     event("message_end")
@@ -180,8 +198,11 @@ extension AgentSession {
                             for pending in reply.calls.dropFirst(i) { try recordTool(pending,result:resultText("Not executed: cancelled before invocation",error:true),started:nil,state:"cancelled") }
                             throw CancellationError()
                         }
-                        if reply.truncated { try recordTool(call,result:resultText("Not executed: model hit its output limit and arguments may be truncated. Re-issue a complete tool call.",error:true),started:nil,state:"failed"); continue }
-                        let start=nowMS(); runStatus="waitingTool"
+                        if let stoppedEarly {
+                            let reason = outputLimited ? "Not executed: model hit its output limit and arguments may be truncated. Re-issue a complete tool call." : "Not executed: the provider ended the reply early (\(stoppedEarly)), so its arguments may be incomplete. Re-issue a complete tool call if it is still needed."
+                            try recordTool(call,result:resultText(reason,error:true),started:nil,state:"failed"); continue
+                        }
+                        let start=nowMS(); runStatus="waitingTool"; toolInvocationBegan=nil
                         setToolStateOwner(call.id)
                         let fields=toolInputFields(call.arguments)
                         setToolState(call.id,merging(["id":JSON(call.id),"name":JSON(call.name),"state":"running","output":"","durationMs":.null,"truncated":JSON(fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false)],fields))
@@ -190,8 +211,14 @@ extension AgentSession {
                         do { let result=try await invokeTool(call); try recordTool(call,result:result,started:start,state:result["isError"].flag == true ? "failed" : "completed") }
                         catch {
                             let cancelled=Task.isCancelled || error is CancellationError
-                            let text=cancelled ? "Tool interrupted. Effects may already have occurred; inspect before retrying. No automatic replay." : (error as? AgentError)?.message ?? "Tool failed; inspect its effects before retrying."
-                            try recordTool(call,result:resultText(text,error:true),started:start,state:cancelled ? "cancelled" : "failed",uncertain:Self.isEditing(call))
+                            // A call stopped before its tool was entered (still
+                            // waiting for the workspace editing gate) never ran.
+                            let began=toolInvocationBegan == call.id
+                            let text=cancelled ? (began ? "Tool interrupted. Effects may already have occurred; inspect before retrying. No automatic replay." : "Not executed: cancelled before invocation") : (error as? AgentError)?.message ?? "Tool failed; inspect its effects before retrying."
+                            // Only an editing tool that had begun, and failed other
+                            // than by rejecting the call outright, may have left
+                            // effects: its outcome is unknown, never just failed.
+                            try recordTool(call,result:resultText(text,error:true),started:began ? start : nil,state:cancelled ? "cancelled" : "failed",uncertain:began && Self.isEditing(call) && !Self.isRejection(error))
                             if cancelled { for pending in reply.calls.dropFirst(i+1) { try recordTool(pending,result:resultText("Not executed: cancelled",error:true),started:nil,state:"cancelled") }; throw CancellationError() }
                         }
                     }
@@ -203,8 +230,8 @@ extension AgentSession {
                     if !reply.truncated && !reply.calls.isEmpty { continue }
                     // A reply that stopped at the output budget ends the turn like any
                     // other: the row says so, and queued follow-ups go on.
-                    if reply.truncated { event("output_limit") }
-                    try finishPresentedTask(reply.truncated ? "output-limited" : "completed")
+                    if outputLimited { event("output_limit") }
+                    try finishPresentedTask(outputLimited ? "output-limited" : "completed")
                     if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
                     if try await startFollowUp() { continue }
                     break

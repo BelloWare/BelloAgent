@@ -243,12 +243,18 @@ struct GatewayTotals: Codable, Sendable, Equatable {
         add(tokens?.output, tokens?.outputSamples ?? 0)
         return any ? total : nil
     }
-    /// The cache-hit share of prompt-side input, honestly rounded.
+    /// The cache-hit share of prompt-side input, honestly rounded, over the
+    /// requests that reported both their input and their cache reads. A
+    /// request that reported input but no cache counter is not a miss: summing
+    /// every reported read over every reported input divided two different
+    /// populations, diluting the share (or, when reads came from requests
+    /// whose input went unreported, hiding it).
     var cacheHitPercent: String? {
-        guard cacheReadSamples > 0, let read = cacheReadTokens,
-              let tokens, tokens.inputSamples > 0, let input = tokens.input else { return nil }
-        return MetricFormat.cacheHitPercent(read: read, prompt: input)
+        guard let split = GatewayTokenSplit.reported(self, input: true) else { return nil }
+        return MetricFormat.cacheHitPercent(read: split.part, prompt: split.total)
     }
+    /// The requests the cache hit covers.
+    var cacheHitSamples: Int { GatewayTokenSplit.reported(self, input: true)?.samples ?? 0 }
     var costLabel: String { gatewayUSD(costUSD) + " · \(costSamples)/\(requests) requests reported" }
     var cacheLabel: String {
         "Cache \(cacheHits) hit · \(cacheMisses) miss · \(cacheUnreported) unreported" + (cacheConflicts > 0 ? " · \(cacheConflicts) invalid/conflicting" : "")
@@ -314,9 +320,12 @@ extension PayloadArchive {
 
     /// The settled rate's population: a completed request that reported both
     /// its decode span (first content to model completion) and its provider
-    /// output tokens. Anything else contributes nothing — never a zero.
+    /// output tokens, over a span long enough to be a measurement
+    /// (`SettledThroughput.minimumDecodeMilliseconds`). Anything else
+    /// contributes nothing — never a zero.
     static let settledThroughputSQL: String = {
-        let sample = "outcome='completed' AND stream_ms>0 AND stream_ms<=1.7976931348623157e308 AND output_tokens>=0 AND output_tokens<=1.7976931348623157e308"
+        let floor = Int(SettledThroughput.minimumDecodeMilliseconds)
+        let sample = "outcome='completed' AND stream_ms>=\(floor) AND stream_ms<=1.7976931348623157e308 AND output_tokens>=0 AND output_tokens<=1.7976931348623157e308"
         return "SUM(CASE WHEN \(sample) THEN stream_ms END) AS decode_ms,SUM(CASE WHEN \(sample) THEN output_tokens END) AS decode_output_tokens,COUNT(CASE WHEN \(sample) THEN 1 END) AS decode_samples"
     }()
 

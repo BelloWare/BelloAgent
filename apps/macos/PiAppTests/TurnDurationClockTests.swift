@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import PiApp
 
 @MainActor final class TurnDurationClockTests: XCTestCase {
@@ -76,6 +77,26 @@ import XCTest
         XCTAssertEqual(SessionRunLine.elapsed(timing, atUptimeMs: 500_000), MetricFormat.runDuration(2_500))
         var withoutElapsed = timing; withoutElapsed.removeValue(forKey: "elapsedMs")
         XCTAssertEqual(SessionRunLine.elapsed(withoutElapsed, atUptimeMs: 500_000), MetricFormat.runDuration(2_500))
+    }
+
+    /// While the turn runs, its clock counts whole seconds in tabular digits:
+    /// a live reading never shows milliseconds, so ticking from one reading
+    /// to the next never changes how wide the clock is. The settled reading
+    /// keeps its reported precision.
+    func testTheLiveClockCountsWholeSecondsAtOneWidth() {
+        var widths: [CGFloat: [Double]] = [:]
+        for milliseconds in stride(from: 10_000.0, through: 58_000, by: 375) {
+            var turn = TaskTranscriptPlan.summary([], task: nil)
+            turn.live = true; turn.elapsedMs = milliseconds
+            turn.modelMs = milliseconds; turn.toolMs = 10_000 + (milliseconds - 10_000) / 2
+            let host = NSHostingView(rootView: TurnDurationMetrics(turn: turn).fixedSize())
+            widths[host.fittingSize.width, default: []].append(milliseconds)
+        }
+        XCTAssertEqual(widths.count, 1, "The live clock changed width between readings: \(widths.mapValues { $0.prefix(4) })")
+        XCTAssertEqual(TurnDurationMetrics.label(12_345, live: true), "12s")
+        XCTAssertEqual(TurnDurationMetrics.label(59_999, live: true), "59s", "A live clock never rounds up to a second it has not reached")
+        XCTAssertEqual(TurnDurationMetrics.label(65_000, live: true), "1m 05s")
+        XCTAssertEqual(TurnDurationMetrics.label(12_345, live: false), "12.345s", "A settled reading keeps its precision")
     }
 
     func testNewTaskResetsImmediatelyWithoutReusingThePreviousClock() {

@@ -63,6 +63,7 @@
 		2526527827645CE7BFEC2BBC /* DashboardReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B5AD8CE65CF1E547E8EC42F /* DashboardReader.swift */; };
 		255E668836E8AF6A347D45BE /* NativeUIAcceptanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B407113C78220CCBC708031 /* NativeUIAcceptanceTests.swift */; };
 		271B6B1EA2A68A1C69630931 /* PiTextWidth.swift in Sources */ = {isa = PBXBuildFile; fileRef = E891E08703A6452E5E43BB30 /* PiTextWidth.swift */; };
+		27B9C88B223DE2E5DF198B96 /* TimelineStreamingFastPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64112AFE7D8571BC21CA68EF /* TimelineStreamingFastPathTests.swift */; };
 		2914EEE7DAC796044594126F /* TurnInfoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1355E6FA85965C7FEBCE5A8A /* TurnInfoTests.swift */; };
 		295EFBABF72B68A91180C485 /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 094BA9BAED004F12DFEF0436 /* TerminalScreen.swift */; };
 		2B8EF1102E44368B82A8FFDD /* TranscriptQuoteSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E707EF3DE571D1E85799967 /* TranscriptQuoteSelection.swift */; };
@@ -97,6 +98,7 @@
 		459C3D4F5E05310B047039F7 /* TranscriptMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A30BA54AF35541FF5E06EF4 /* TranscriptMessage.swift */; };
 		45A606B189BB34591B6E2656 /* TraceArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83F12BFDED4D79FC5B73C8BA /* TraceArchiveTests.swift */; };
 		463FBD88C7B1D72D8468DEF7 /* LiveWorkingIndicatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD282C27A66B54D03789BCC2 /* LiveWorkingIndicatorTests.swift */; };
+		47236015E33BE062CF9BA0E4 /* WireContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4316F0B0B646C3E9888B037 /* WireContractTests.swift */; };
 		4756A95FE87BF6B6CB76F6F2 /* WorkspaceCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EE3C88CFA59752678D1BAD0 /* WorkspaceCommands.swift */; };
 		47F69D086A3FF74DB2E21EFD /* WorkspaceContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48B202B6A630835604556E2C /* WorkspaceContent.swift */; };
 		49973F424C808887EA8FCA1D /* GitDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51B1A941BBD60D3F64FE2342 /* GitDiff.swift */; };
@@ -147,6 +149,7 @@
 		6169572D6A709CF329A292EE /* WorkspaceSides.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE927D98B65BC6568517EA28 /* WorkspaceSides.swift */; };
 		6225DFFF9F23A4072212A1C1 /* StreamingMarkdownState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 614DCEBE7F26389A933CB544 /* StreamingMarkdownState.swift */; };
 		624EB171EB2E58D761870F50 /* TerminalEmulatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1AAA80A99BDE13D24724386 /* TerminalEmulatorTests.swift */; };
+		63F4C39BC81AE4F21A6A2FD4 /* NativeMarkdownSurfaceStreamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69466F66E2437F3843F98A6A /* NativeMarkdownSurfaceStreamingTests.swift */; };
 		64638C2311DD6E4418DC3DB5 /* TerminalPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B97A6C5ECFB3E0EE7C2B8CCF /* TerminalPanel.swift */; };
 		64A10C62424EC36F7E6606F8 /* ReportPageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B640CB5874643AC443BB149 /* ReportPageTests.swift */; };
 		64B9634585AAE2EC76A655DC /* ComposerBarLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = C792828E792086EBEDDFD376 /* ComposerBarLayout.swift */; };
@@ -538,6 +541,7 @@
 		6295E7C21EDC3C636693C1A9 /* ApplicationLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationLifecycle.swift; sourceTree = "<group>"; };
 		635FC9221BECB535808C6FF7 /* GitDiffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitDiffView.swift; sourceTree = "<group>"; };
 		6371829EC4909ABE377E7EA4 /* SmoothShellTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmoothShellTests.swift; sourceTree = "<group>"; };
+		64112AFE7D8571BC21CA68EF /* TimelineStreamingFastPathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineStreamingFastPathTests.swift; sourceTree = "<group>"; };
 		6427530A7EFDEB3F383961E5 /* NativeCodeEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCodeEditor.swift; sourceTree = "<group>"; };
 		644B9F5FC44D5E0EFCDC8311 /* ComposerSubmissionIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerSubmissionIntent.swift; sourceTree = "<group>"; };
 		647DAB639CB6BB55020C122C /* TranscriptCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptCopy.swift; sourceTree = "<group>"; };
@@ -550,6 +554,7 @@
 		68966EFDD5290BC5AF3E4373 /* TranscriptPresentationInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPresentationInput.swift; sourceTree = "<group>"; };
 		6897FF60C60BA8224C9134D3 /* ModelCatalogEndpointTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCatalogEndpointTests.swift; sourceTree = "<group>"; };
 		68EA3EE2DE495E889C907B47 /* GitPanelLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitPanelLayoutTests.swift; sourceTree = "<group>"; };
+		69466F66E2437F3843F98A6A /* NativeMarkdownSurfaceStreamingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownSurfaceStreamingTests.swift; sourceTree = "<group>"; };
 		697C5999F093A6457E1B28F8 /* ReportWorkerPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportWorkerPerformanceTests.swift; sourceTree = "<group>"; };
 		6A2130404BB1343F0E6E2EDC /* ConnectionSettingsFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionSettingsFlowTests.swift; sourceTree = "<group>"; };
 		6A8B28DC425C46E1CBD466B5 /* WorkspaceHosts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceHosts.swift; sourceTree = "<group>"; };
@@ -658,6 +663,7 @@
 		B390B250F975CE90CAD677A4 /* OnboardingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingTests.swift; sourceTree = "<group>"; };
 		B3921B40B1C151EEDA7086F6 /* TranscriptIdleSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptIdleSchedulerTests.swift; sourceTree = "<group>"; };
 		B3FE9EC1E51DB6F6850942D9 /* SidebarMetricsLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarMetricsLayoutTests.swift; sourceTree = "<group>"; };
+		B4316F0B0B646C3E9888B037 /* WireContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireContractTests.swift; sourceTree = "<group>"; };
 		B74A3097492A15D3817A77F3 /* NativeMarkdownSizingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownSizingTests.swift; sourceTree = "<group>"; };
 		B86F7ED7F3CCACE2FD042B50 /* HistoricalEditingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoricalEditingTests.swift; sourceTree = "<group>"; };
 		B899017B78649F24C63E87C6 /* WireValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireValue.swift; sourceTree = "<group>"; };
@@ -1194,6 +1200,7 @@
 				497CD2AF387A3D4E010D0A4F /* NativeCodeTextTests.swift */,
 				8443EA853DB6B67454507263 /* NativeDeferredViewTests.swift */,
 				B74A3097492A15D3817A77F3 /* NativeMarkdownSizingTests.swift */,
+				69466F66E2437F3843F98A6A /* NativeMarkdownSurfaceStreamingTests.swift */,
 				257DC826AE1FB36FD73009F8 /* NativeMarkdownViewportTests.swift */,
 				C1B2AA8816B75673F6434294 /* NativeTranscriptDocumentTests.swift */,
 				CF1E2878659E996871B3531E /* NativeTranscriptSafetyTests.swift */,
@@ -1250,6 +1257,7 @@
 				F1AAA80A99BDE13D24724386 /* TerminalEmulatorTests.swift */,
 				8BF5F1265A90148AF8BFA94D /* TerminalPanelAuditTests.swift */,
 				D483C74CCB258B823206B76E /* TestSeams.swift */,
+				64112AFE7D8571BC21CA68EF /* TimelineStreamingFastPathTests.swift */,
 				B2C2882724D20ED912E073B6 /* TitleGenerationTests.swift */,
 				414043A9F1D8760A98114445 /* ToolCallSummaryTests.swift */,
 				75DA385EB875ED50F3D1C977 /* TopicOrganizationTests.swift */,
@@ -1283,6 +1291,7 @@
 				8700C445D6D2C744C4467AFD /* WindowLifecycleTests.swift */,
 				57E11A79CA743AD7BD50CB10 /* WindowPresentationTests.swift */,
 				519B28CD58ED3F34FF163300 /* WindowVisibilityProbe.swift */,
+				B4316F0B0B646C3E9888B037 /* WireContractTests.swift */,
 				ABE2CEB5F75EC41AEDC697A9 /* WorkspaceConcurrencyTests.swift */,
 				E7CE949A57011EBD4F84EE4D /* WorkspaceDisplayMemoryTests.swift */,
 				90FD267BA67D40FFF44BFBDC /* WorkspaceDurabilityTests.swift */,
@@ -1698,6 +1707,7 @@
 				F8FC99565F35D2D1180607E0 /* NativeCodeTextTests.swift in Sources */,
 				F0B4A6337EE88CBA980D5DFA /* NativeDeferredViewTests.swift in Sources */,
 				C64B2DF0184B93B3C1C03700 /* NativeMarkdownSizingTests.swift in Sources */,
+				63F4C39BC81AE4F21A6A2FD4 /* NativeMarkdownSurfaceStreamingTests.swift in Sources */,
 				3726F759EA67166FB775556A /* NativeMarkdownViewportTests.swift in Sources */,
 				54D3712345AF02140621A33B /* NativeTranscriptDocumentTests.swift in Sources */,
 				947AD675396ADB9FA4AD25CF /* NativeTranscriptSafetyTests.swift in Sources */,
@@ -1754,6 +1764,7 @@
 				624EB171EB2E58D761870F50 /* TerminalEmulatorTests.swift in Sources */,
 				A8B2614FE6F2AE02680CA56B /* TerminalPanelAuditTests.swift in Sources */,
 				948076874074E3B4877F11F7 /* TestSeams.swift in Sources */,
+				27B9C88B223DE2E5DF198B96 /* TimelineStreamingFastPathTests.swift in Sources */,
 				EF9231C86205472ADCC1DE43 /* TitleGenerationTests.swift in Sources */,
 				A7ABDFDBBB5606D4BFD89EF6 /* ToolCallSummaryTests.swift in Sources */,
 				D5D33C1AC57C94EB8AAD9199 /* TopicOrganizationTests.swift in Sources */,
@@ -1787,6 +1798,7 @@
 				EACE4BFFDA215B86D88FFBB7 /* WindowLifecycleTests.swift in Sources */,
 				C64030B917974911DB04D868 /* WindowPresentationTests.swift in Sources */,
 				2145DF8F7CB976A34DCC5876 /* WindowVisibilityProbe.swift in Sources */,
+				47236015E33BE062CF9BA0E4 /* WireContractTests.swift in Sources */,
 				F810A73752D1C2BF0C653DE0 /* WorkspaceConcurrencyTests.swift in Sources */,
 				8E25266B778FF43C87B62DC4 /* WorkspaceDisplayMemoryTests.swift in Sources */,
 				05638893F82B59F526CD89A1 /* WorkspaceDurabilityTests.swift in Sources */,
@@ -1885,7 +1897,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 88;
+				CURRENT_PROJECT_VERSION = 89;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1900,11 +1912,11 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.84;
+				MARKETING_VERSION = 0.1.85;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				RELEASE_MESSAGE = "Live model charts, routing and cost analytics, expandable turn details, and stable cached and reasoning token breakdowns while work continues.";
+				RELEASE_MESSAGE = "Scrolling that stays where you put it, smoother streaming, honest tool outcomes and one tokens-per-second figure everywhere.";
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
@@ -1966,7 +1978,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 88;
+				CURRENT_PROJECT_VERSION = 89;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -1987,12 +1999,12 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.84;
+				MARKETING_VERSION = 0.1.85;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				RELEASE_MESSAGE = "Live model charts, routing and cost analytics, expandable turn details, and stable cached and reasoning token breakdowns while work continues.";
+				RELEASE_MESSAGE = "Scrolling that stays where you put it, smoother streaming, honest tool outcomes and one tokens-per-second figure everywhere.";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";

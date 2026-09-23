@@ -435,12 +435,12 @@ struct GitPanelView: View {
                     } else {
                         DiffView(files: controller.detailFile == nil ? controller.detailDiff : controller.detailFileDiff,
                                  title: controller.detailFile, subtitle: controller.detailFile == nil ? nil : "In \(detail.commit.shortHash)",
-                                 identity: GitController.diffIdentity(commit: detail.commit.hash, file: controller.detailFile), loading: controller.diffLoading, embedded: true,
+                                 identity: GitController.diffIdentity(commit: detail.commit.hash, file: controller.detailFile), loading: controller.commitLoading, embedded: true,
                                  split: $controller.splitDiff, expanded: $controller.wholeDiffShown)
                     }
                 }
             }
-        } else if controller.diffLoading {
+        } else if controller.commitLoading {
             placeholder("Loading…")
         } else {
             placeholder("Select a commit to see what it changed.")

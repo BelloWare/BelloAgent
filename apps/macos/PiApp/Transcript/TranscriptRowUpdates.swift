@@ -2,8 +2,9 @@ import Foundation
 
 /// The reader's side of the helper's row updates. The helper sends the page
 /// once and afterwards says only what changed in it: the rows whose content is
-/// new, the tokens appended to the reply still arriving, and the row order when
-/// it moved. Everything else is the page this display already holds, reused by
+/// new, the tokens appended to the reply still arriving (its text, its
+/// timeline parts and the arguments of the calls it is making), and the row
+/// order when it moved. Everything else is the page this display already holds, reused by
 /// identity — a settled row is immutable, so the row the transcript compares
 /// against is literally the same value it compared against last time.
 ///
@@ -57,6 +58,20 @@ enum TranscriptRowUpdates {
             timeline.terminal = fields["terminal"]?.string
             guard timeline.supported else { return nil }
             row.responseTimeline = timeline; rows[id] = row
+        }
+        // Tool arguments still streaming grow in place (sent only to a reader
+        // that asked with `toolInputAppends`): the text appended to one call's
+        // input since the row held here, and the byte size of the whole input.
+        // The size is also the check — the input held plus what arrived must
+        // come to it exactly, or this is not the row the helper updated.
+        for input in update["toolInputs"]?.array ?? [] {
+            guard let fields = input.object, let id = fields["id"]?.string, var row = rows[id],
+                  let call = fields["callID"]?.string, let text = fields["text"]?.string,
+                  let bytes = fields["inputBytes"]?.number.flatMap(Int.init(exactly:)),
+                  let index = row.tools?.firstIndex(where: { $0.id == call }), var card = row.tools?[index],
+                  card.input.utf8.count + text.utf8.count == bytes else { return nil }
+            card.input += text; card.inputBytes = bytes
+            row.tools?[index] = card; rows[id] = row
         }
         if let sent = update["order"]?.array {
             order = sent.compactMap(\.string)

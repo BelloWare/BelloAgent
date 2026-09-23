@@ -12,6 +12,8 @@ struct RenameChatSheet: View {
     @State private var suggesting = false
     @State private var notice = ""
     @State private var saving = false
+    /// A suggestion asked for with the button; it ends with the sheet.
+    @State private var requested: Task<Void, Never>?
     @Environment(\.dismiss) private var dismiss
     private var chat: ChatRecord? { model.record(chatID) }
     private var canSuggest: Bool { chat.flatMap { item in model.profiles.first { $0.id == item.profileID } }.map { model.titleSuggestionsAvailable(for: $0) } ?? false }
@@ -25,7 +27,7 @@ struct RenameChatSheet: View {
                     Text("Suggestions").font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textCase(.uppercase).tracking(0.4)
                     Spacer()
                     if suggesting { ProgressView().controlSize(.small) }
-                    Button { Task { await suggest() } } label: { Label(suggestions.isEmpty ? "Suggest titles" : "Suggest again", systemImage: "sparkles") }
+                    Button { requested?.cancel(); requested = Task { await suggest() } } label: { Label(suggestions.isEmpty ? "Suggest titles" : "Suggest again", systemImage: "sparkles") }
                         .buttonStyle(.piSecondaryCompact).disabled(suggesting || !canSuggest)
                         .help(canSuggest ? "Ask the connection's mini model for three titles" : "Suggestions need a mini model for this connection; choose one in Settings.")
                 }
@@ -54,10 +56,12 @@ struct RenameChatSheet: View {
                     .disabled(saving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .onAppear {
-            title = chat?.title ?? ""
-            if canSuggest { Task { await suggest() } }
-        }
+        .onAppear { title = chat?.title ?? "" }
+        // The suggestions are a request to the mini model that polls for its
+        // answer. They belong to the sheet: closing it cancels them, where an
+        // unowned task went on polling for up to 45 seconds.
+        .task { if canSuggest { await suggest() } }
+        .onDisappear { requested?.cancel() }
     }
 
     private func suggest() async {

@@ -9,8 +9,9 @@ extension AgentSession {
     func resetPartialRow() {
         saveResponseLedger(persist:true,terminal:"interrupted")
         partialTimeline = ResponseTimeline(); partialLedgerID = nil
-        partialTools=[:]; partialToolOrder=[]; partialToolSeen=[]
-        partialCardsVersion &+= 1
+        partialTools=[:]; partialToolOrder=[]; partialToolSeen=[]; partialToolInputs=[:]; partialToolInputSizes=[:]
+        partialTextSize=(0,0); partialThinkingSize=(0,0); streamedSegments=[:]
+        partialCardsVersion &+= 1; partialGeneration &+= 1
     }
     func delta(_ value: StreamDelta) {
         let observedAt = displayClock()
@@ -20,9 +21,12 @@ extension AgentSession {
             presentationOrdinal += 1; part.sessionOrdinal=presentationOrdinal
             let previous = partialTimeline.segments.last?.id
             changed = partialTimeline.consume(part)
-            if changed, previous != partialTimeline.segments.last?.id || part.update == "end" || part.update == "replace" {
-                saveResponseLedger(persist:true)
-            }
+            // The ledger is journaled when a part begins and, with its
+            // terminal receipt, when the reply ends; every record holds the
+            // whole timeline so far. An end or a repeated `.done` of a part
+            // it holds only refreshes the row in memory.
+            if changed, previous != partialTimeline.segments.last?.id { saveResponseLedger(persist:true) }
+            else if changed, part.update == "end" || part.update == "replace" { saveResponseLedger(persist:false) }
         case .text(let text):
             partialText += text
             changed = !text.isEmpty
@@ -30,19 +34,18 @@ extension AgentSession {
             partialThinking += text
             changed = !text.isEmpty
         case .tool(let id,let name,let arguments):
-            let previous = partialTools[id]
-            if previous == nil {
-                partialToolSeen.insert(id)
-                partialToolOrder.append(id); partialCardsVersion &+= 1
-            }
-            var tool=previous ?? ["id":JSON(id),"name":JSON(name),"state":"preparing","input":"","output":"","durationMs":.null,"truncated":false,"inputTruncated":false,"inputBytes":0]
-            if !name.isEmpty { tool["name"]=JSON(name) }
-            let joined=(tool["input"].text ?? "")+arguments
-            tool["input"]=JSON(joined); tool["inputBytes"]=JSON(joined.utf8.count)
-            tool["inputTruncated"]=false
-            partialTools[id]=tool
-            changed = previous != tool
-            if changed { partialCardsVersion &+= 1 }
+            // The card changes only when a call appears or is named; its
+            // arguments grow in place beside it, so a delta costs its own
+            // size, and a reader that takes appends is sent just those bytes.
+            var card = partialTools[id], cardChanged = false
+            if card == nil {
+                partialToolSeen.insert(id); partialToolOrder.append(id)
+                card = ["id":JSON(id),"name":JSON(name),"state":"preparing","output":"","durationMs":.null,"truncated":false,"inputTruncated":false]
+                cardChanged = true
+            } else if !name.isEmpty, card?["name"].text != name { card?["name"] = JSON(name); cardChanged = true }
+            if cardChanged { partialTools[id]=card; partialCardsVersion &+= 1 }
+            if !arguments.isEmpty { partialToolInputs[id, default: ""] += arguments }
+            changed = cardChanged || !arguments.isEmpty
         }
         if changed { recordDisplayChange(partialID, at: observedAt) }
         event("message_update")

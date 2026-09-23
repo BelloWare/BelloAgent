@@ -163,6 +163,41 @@ struct ToolInputDocument: Equatable, Sendable {
     }
     func isLoading(_ callID: String) -> Bool { inFlight.contains(callID) || inFlight.contains { callNames[$0] == callID } }
 
+    /// Whether opening this card should ask the host for its arguments. Only a
+    /// card whose inline document the host had to cut has more to show; a
+    /// whole inline document — and every card of an older host or a journal,
+    /// which say nothing — is already all of it, and asking would cost a
+    /// round trip and a republish for nothing.
+    static func needsFullInput(_ tool: ToolView) -> Bool { tool.inputTruncated == true }
+    /// The call a click on a row's card opened, when that card has more to
+    /// show than its inline document: the reply that made the call and the
+    /// call, which is what the host answers for. A work row keys its cards by
+    /// reply and call; any other row by the call alone.
+    static func cutCard(_ part: TranscriptDisclosure.Part, in item: TranscriptItem) -> (messageID: String, callID: String)? {
+        guard part.kind == .tool else { return nil }
+        let replies: [TranscriptMessage]
+        switch item {
+        case .message(let message): replies = [message]
+        case .block(let block):
+            if block.presentation == .work {
+                for reply in block.replies { for tool in reply.tools ?? [] where ToolOccurrence.key(reply.id, tool.id) == part.id {
+                    return needsFullInput(tool) ? (reply.id, tool.id) : nil
+                } }
+                return nil
+            }
+            replies = block.replies
+        }
+        for reply in replies { if let tool = (reply.tools ?? []).first(where: { $0.id == part.id }) {
+            return needsFullInput(tool) ? (reply.id, tool.id) : nil
+        } }
+        return nil
+    }
+    /// Ask for a call's full arguments, once, when its card has more to show.
+    func request(messageID: String, tool: ToolView) {
+        guard Self.needsFullInput(tool) else { return }
+        request(messageID: messageID, callID: tool.id)
+    }
+
     /// Ask for a call's full arguments, once. A call whose arguments are still
     /// arriving is asked again the next time the reader opens its card.
     func request(messageID: String, callID: String) {

@@ -30,7 +30,9 @@ struct NativeCodeText: NSViewRepresentable {
     private var environment: TranscriptRowEnvironment?
     private var sizes: [CGSize] = []
     private(set) var appendCount = 0
-    private var checkpoint = 0
+    /// Where the highlighter last stood in a neutral lexical state, as a byte
+    /// offset into the code and a UTF-16 offset into the text storage.
+    private var checkpoint = (utf8: 0, utf16: 0)
     private(set) var highlightedScalarVisits = 0
     private(set) var lastAttributeRange = NSRange(location: 0, length: 0)
     convenience init() { self.init(frame: .zero, textContainer: nil) }
@@ -57,10 +59,11 @@ struct NativeCodeText: NSViewRepresentable {
     required init?(coder: NSCoder) { nil }
 
     func update(source next: String, language: String?, size: CGFloat, environment: TranscriptRowEnvironment) {
-        guard !source.utf8.elementsEqual(next.utf8) || self.language != language || pointSize != size || self.environment != environment,
+        // Bytes, compared as memory: a token must not walk the whole fence.
+        guard !source.hasSameUTF8(as: next) || self.language != language || pointSize != size || self.environment != environment,
               let storage = textStorage else { return }
         let sameStyle = self.language == language && pointSize == size && self.environment == environment
-        let append = sameStyle && next.utf8.starts(with: source.utf8)
+        let append = sameStyle && next.hasUTF8Prefix(source)
         let previousLength = storage.length, ranges = selectedRanges
         let font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
         let paragraph = NSMutableParagraphStyle()
@@ -76,22 +79,33 @@ struct NativeCodeText: NSViewRepresentable {
         // Resume only at a scanner-certified neutral lexical state. Preserve
         // attributes before that checkpoint. Oversized tails remain plain;
         // crossing the cap never strips already validated prefix colours.
+        // Only the code from the checkpoint on is scanned, and only its
+        // characters are located in the storage: a checkpoint follows a line
+        // break in a neutral state, so scanning from there alone finds exactly
+        // the tokens a scan of the whole code finds after it.
         var dirtyStart = append ? previousLength : 0
-        var bound = next.utf8.index(next.utf8.startIndex, offsetBy: min(next.utf8.count, SyntaxHighlighter.limit))
-        while bound != next.utf8.startIndex, bound.samePosition(in: next.unicodeScalars) == nil { bound = next.utf8.index(before: bound) }
-        let bounded = String(next[..<bound])
         if let name = language, let grammar = SyntaxHighlighter.language(named: name),
            !append || source.utf8.count < SyntaxHighlighter.limit {
-            let start = append ? checkpoint : 0
-            let scan = SyntaxHighlighter.scan(bounded, language: grammar, from: start)
-            let scalars = Array(bounded.unicodeScalars)
-            highlightedScalarVisits += max(0, scalars.count - start)
-            var offsets = [0], offset = 0
-            for scalar in scalars { offset += scalar.value > 0xffff ? 2 : 1; offsets.append(offset) }
-            dirtyStart = offsets[min(start, offsets.count - 1)]
+            let resume = append ? checkpoint : (utf8: 0, utf16: 0)
+            let tail: String = next.withUTF8Bytes { bytes in
+                // The colourable part ends at the limit, on a scalar boundary.
+                var bound = min(bytes.count, SyntaxHighlighter.limit)
+                while bound > 0, bound < bytes.count, bytes[bound] & 0xC0 == 0x80 { bound -= 1 }
+                return String(decoding: UnsafeBufferPointer(rebasing: bytes[min(resume.utf8, bound)..<bound]), as: UTF8.self)
+            }
+            let scan = SyntaxHighlighter.scan(tail, language: grammar)
+            // Where each of the tail's scalars begins, in the storage and in the code.
+            var utf16 = [resume.utf16], utf8 = [resume.utf8]
+            utf16.reserveCapacity(tail.utf8.count + 1); utf8.reserveCapacity(tail.utf8.count + 1)
+            for scalar in tail.unicodeScalars {
+                utf16.append(utf16[utf16.count - 1] + (scalar.value > 0xffff ? 2 : 1))
+                utf8.append(utf8[utf8.count - 1] + UTF8.width(scalar))
+            }
+            highlightedScalarVisits += utf16.count - 1
+            dirtyStart = resume.utf16
             storage.setAttributes(base, range: NSRange(location: dirtyStart, length: storage.length - dirtyStart))
             for token in scan.tokens {
-                let range = NSRange(location: offsets[token.range.lowerBound], length: offsets[token.range.upperBound] - offsets[token.range.lowerBound])
+                let range = NSRange(location: utf16[token.range.lowerBound], length: utf16[token.range.upperBound] - utf16[token.range.lowerBound])
                 let color: Color
                 switch token.kind {
                 case .keyword: color = TranscriptPalette.keyword
@@ -103,8 +117,9 @@ struct NativeCodeText: NSViewRepresentable {
                 }
                 storage.addAttribute(.foregroundColor, value: NSColor(color), range: range)
             }
-            checkpoint = scan.checkpoints.last(where: { $0 < scalars.count }) ?? start
-        } else if !append { checkpoint = 0 }
+            if let last = scan.checkpoints.last(where: { $0 < utf16.count - 1 }) { checkpoint = (utf8[last], utf16[last]) }
+            else { checkpoint = resume }
+        } else if !append { checkpoint = (0, 0) }
         lastAttributeRange = NSRange(location: dirtyStart, length: storage.length - dirtyStart)
         storage.endEditing()
         source = next; self.language = language; pointSize = size; self.environment = environment

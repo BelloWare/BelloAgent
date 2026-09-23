@@ -59,11 +59,15 @@ extension AgentSession {
                     guard compactionPhysicalAttempts<budget else { throw AgentError("compact_budget", "Compaction reached its \(budget)-request limit, including retries. Original context is retained.") }
                     compactionPhysicalAttempts += 1; transient += 1
                     compactionState["httpAttempts"]=JSON(compactionPhysicalAttempts); modelActive=true
-                    let start=nowMS()
-                    defer { let ms=nowMS()-start; turnModelMs += ms; cumulativeModelMs=ObservedDuration.adding(cumulativeModelMs,ms) }
+                    // The request's own duration is model time; the back-off
+                    // before a retry, below, is not.
+                    let start=nowMS(); var requestMs: Double?
+                    defer { let ms=requestMs ?? (nowMS()-start); turnModelMs += ms; cumulativeModelMs=ObservedDuration.adding(cumulativeModelMs,ms) }
                     do {
                         reply=try await client.complete(profile:effectiveProfile,apiKey:apiKey,messages:questions(records),instructions:"",tools:[],sessionID:id,turnID:currentTurnID,purpose:"compaction",onObservation:{ [weak self] in await self?.compactionObservation($0) },onDelta:{ [weak self] in await self?.compactionDelta($0) })
+                        requestMs=nowMS()-start
                     } catch let error as AgentError {
+                        requestMs=nowMS()-start
                         operationStatus("Summary request failed: " + error.message)
                         if let attempt=error.attemptID, !compactionAttemptIDs.contains(attempt) { compactionAttemptIDs.append(attempt) }
                         if error.failure?.contextRejection == true {

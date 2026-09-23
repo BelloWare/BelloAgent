@@ -57,4 +57,36 @@ final class OutputBudgetTests: XCTestCase {
         let overrides = try NativeHostService.turnOverrides(["model":"selected", "contextWindow":16_000, "maxOutputTokens":2_048, "modelOutputLimit":8_192])
         XCTAssertEqual(overrides.maxOutputTokens, 2_048); XCTAssertEqual(overrides.modelOutputLimit, 8_192)
     }
+
+    /// A reply the provider stopped for another reason (its content filter) is
+    /// incomplete, so its calls do not run, but it did not reach the output
+    /// limit and must not say so.
+    func testAReplyStoppedByTheContentFilterIsNotAnOutputLimit() async throws {
+        for reason in ["content_filter", "max_output_tokens"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+            var cut = toolReply(["first"]); cut.truncated = true
+            cut.terminal = ModelTerminalOutcome(status: "incomplete", incompleteReason: reason)
+            let tools = RecordingTools()
+            let session = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: false, resources: Resources(cwd: root, home: root), client: ScriptClient([cut]), tools: tools, traces: TraceStore(), autoCompaction: false)
+            _ = try await session.submit(Submission(commandID: "c", turnID: "t", text: "go"), steer: false)
+            try await eventually { !(await session.isRunning) }
+            let snapshot = await session.snapshot(), calls = await tools.calls
+            let events = await session.eventPage(since: 0)["events"].list.compactMap { $0["type"].text }
+            let reply = snapshot["messages"].list.first { $0["role"].text == "assistant" }
+            let result = snapshot["messages"].list.first { $0["role"].text == "tool" }?["text"].text ?? ""
+            XCTAssertTrue(calls.isEmpty, "\(reason): an incomplete reply's calls never run")
+            if reason == "content_filter" {
+                XCTAssertEqual(reply?["stopReason"].text, "content_filter")
+                XCTAssertFalse(events.contains("output_limit"))
+                XCTAssertEqual(snapshot["taskPresentation"]["recent"].list.last?["outcome"].text, "completed")
+                XCTAssertTrue(result.contains("content_filter") && !result.contains("output limit"), result)
+            } else {
+                XCTAssertEqual(reply?["stopReason"].text, "length")
+                XCTAssertTrue(events.contains("output_limit"))
+                XCTAssertEqual(snapshot["taskPresentation"]["recent"].list.last?["outcome"].text, "output-limited")
+                XCTAssertTrue(result.contains("output limit"), result)
+            }
+            await session.close()
+        }
+    }
 }

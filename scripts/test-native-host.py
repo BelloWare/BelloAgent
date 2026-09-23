@@ -535,8 +535,15 @@ class NativeIntegration(unittest.TestCase):
         edited=str(uuid.uuid4()); self.peer.command('turn.edit',{'messageId':first,'clientTurnId':edited,'text':'edited question'},session)
         value=self.settled(session); self.assertEqual(value['state'],'idle')
         kinds=[m.get('kind') for m in value['messages']]; texts=[m['text'] for m in value['messages']]
-        self.assertEqual(kinds,['branch',None,None]); self.assertEqual(texts[0],'Edited from here · earlier replies stay in the journal'); self.assertEqual(texts[1],'edited question')
-        request=json.loads(base64.b64decode(self.peer.command('debug.body',{'attemptId':self.peer.command('debug.list',session=session)['attempts'][0]['attemptId'],'body':'request'},session)['bytes']))
+        # Since 0.1.79 every reply is preceded by its request-ledger row. The one
+        # row left belongs to the edited turn's own reply; the rows of the two
+        # replies edited away leave the page with them (they stay in the journal).
+        self.assertEqual(kinds,['branch',None,'requestLedger',None]); self.assertEqual(texts[0],'Edited from here · earlier replies stay in the journal'); self.assertEqual(texts[1],'edited question')
+        ledger,reply=value['messages'][2],value['messages'][3]
+        latest=self.peer.command('debug.list',session=session)['attempts'][0]; self.assertEqual(latest['turnId'],edited)
+        self.assertEqual(ledger['presentationSourceID'],reply['id']); self.assertEqual(ledger['turn'],edited)
+        self.assertEqual({s['part']['attemptID'] for s in ledger['responseTimeline']['segments']},{latest['attemptId']})
+        request=json.loads(base64.b64decode(self.peer.command('debug.body',{'attemptId':latest['attemptId'],'body':'request'},session)['bytes']))
         self.assertEqual([i['content'][0]['text'] for i in request['input'] if i.get('role')=='user'],['edited question'])
         self.peer.command('turn.edit',{'messageId':first,'clientTurnId':str(uuid.uuid4()),'text':'again'},session,fail=True)
         path=value['path']; self.peer.command('session.close',session=session)
@@ -544,8 +551,13 @@ class NativeIntegration(unittest.TestCase):
         self.assertTrue(any(r.get('type')=='branch' and r['fromMessageId']==first and r['keptIds']==[] for r in journal))
         self.assertEqual([r for r in journal if r.get('type')=='message' and r['id']==second][0]['thinkingLevel'],'high')
         self.assertEqual(sum(1 for r in journal if r.get('type')=='message' and r['message']['role']=='user'),3)
+        ledgers=[(i,r['message']['nativeTurn']) for i,r in enumerate(journal) if r.get('type')=='message' and r['message'].get('nativeKind')=='requestLedger']
+        branch_at=next(i for i,r in enumerate(journal) if r.get('type')=='branch')
+        self.assertEqual([turn for _,turn in ledgers],[first,second,edited],'the journal keeps every ledger row')
+        self.assertEqual([i>branch_at for i,_ in ledgers],[False,False,True],'only the edited turn\'s ledger row was written after the branch')
         reopened=self.open(model='text',session=session,path=path)
-        self.assertEqual([m.get('kind') for m in reopened['messages']],['branch',None,None]); self.assertEqual(reopened['total'],3)
+        self.assertEqual([m.get('kind') for m in reopened['messages']],['branch',None,'requestLedger',None]); self.assertEqual(reopened['total'],4)
+        self.assertEqual(reopened['messages'][2]['id'],ledger['id'])
         self.peer.command('session.message.read',{'messageId':first},session)
         self.peer.command('session.close',session=session)
     def test_responses_capacity_overrides_reach_all_tool_rounds(self):
@@ -968,8 +980,23 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(latest['response']['state'],'complete'); self.assertEqual(latest['transportOutcome'],'eof')
         self.assertIsNone(latest['timings']['modelComplete']); self.assertIsNone(latest['metrics']['observedTTFTms'])
         self.peer.command('session.close',session='s')
-        self.open(model='incomplete',session='other');self.submit('other');value=self.settled('other');self.assertEqual(value['state'],'error')
+        # A stream that ends without its terminal event ran no tool, so since
+        # 0.1.85 it is retried like a dropped connection (this fixture cuts every
+        # attempt). The cut attempt is never completed: its partial reply stays as
+        # an interrupted row, and the attempt is not recorded as completed.
+        self.open(model='incomplete',session='other');self.submit('other')
+        deadline=time.monotonic()+8
+        while time.monotonic()<deadline:
+            value=self.peer.command('session.snapshot',session='other')
+            if value.get('retry'): break
+            time.sleep(.02)
+        self.assertEqual(value['retry']['attempt'],2); self.assertIn('terminal event',value['retry']['reason'])
         self.assertIn('partial',json.dumps(value['messages']))
+        self.assertEqual([m['text'] for m in value['messages'] if m.get('stopReason')=='interrupted'],['partial'])
+        cut=self.peer.command('debug.list',session='other')['attempts'][0]
+        self.assertEqual(cut['outcome'],'failed'); self.assertEqual(cut['modelOutcome'],'interrupted')
+        self.peer.command('turn.stop',session='other'); value=self.settled('other')
+        self.assertEqual(value['state'],'paused'); self.assertIsNone(value['retry'])
     def test_cancellation_keeps_queued_message_paused(self):
         self.open(model='slow');self.submit();time.sleep(.1)
         self.submit(text='queued question');self.peer.command('turn.stop',session='s');value=self.settled()

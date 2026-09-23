@@ -191,6 +191,50 @@ final class ResponseChronologyTests: XCTestCase {
                        "A card already filled in stays filled in")
         let fresh = TranscriptMessage.project(id: "a1", message: reply.object ?? [:])
         XCTAssertEqual(TranscriptMessage.resolvingToolResults([fresh], results: [:]).first?.tools?.first?.state, "recorded")
+
+        // A provider may reuse a call id on a later turn. Each card shows
+        // the result of its own call, whichever direction the page was read
+        // in, and each result is shown exactly once.
+        func call(_ turn: String, _ at: Double) -> WireValue {
+            .object(["role": .string("assistant"), "timestamp": .number(at), "nativeTurn": .string(turn),
+                     "content": .array([.object(["type": .string("toolCall"), "id": .string("call-1"), "name": .string("bash"), "arguments": arguments])])])
+        }
+        func output(_ turn: String, _ at: Double, _ text: String) -> WireValue {
+            .object(["role": .string("toolResult"), "timestamp": .number(at), "nativeTurn": .string(turn),
+                     "toolCallId": .string("call-1"), "toolName": .string("bash"), "isError": .bool(false),
+                     "content": .array([.object(["type": .string("text"), "text": .string(text)])])])
+        }
+        let reused = root.appendingPathComponent("reused.jsonl")
+        let turns: [(String, String?, WireValue)] = [
+            ("u1", nil, .object(["role": .string("user"), "content": .string("First run")])),
+            ("a1", "u1", call("u1", 2_000)), ("r1", "a1", output("u1", 2_500, "first")),
+            ("u2", "r1", .object(["role": .string("user"), "content": .string("Second run")])),
+            ("a2", "u2", call("u2", 4_000)), ("r2", "a2", output("u2", 4_500, "second"))]
+        var journal = Data()
+        journal.append(try JSONEncoder().encode(WireValue.object(["type": .string("session"), "version": .number(3), "id": .string("s")]))); journal.append(10)
+        for (id, parent, message) in turns {
+            var record: [String: WireValue] = ["type": .string("message"), "id": .string(id), "message": message]
+            if let parent { record["parentId"] = .string(parent) }
+            journal.append(try JSONEncoder().encode(WireValue.object(record))); journal.append(10)
+        }
+        try journal.write(to: reused)
+        let reader = HistoryReader()
+        let backward = try await reader.read(path: reused.path)
+        let forward = try await reader.read(path: reused.path, around: "u1")
+        let window = try await reader.window(path: reused.path)
+        for (name, page) in [("backward", backward), ("forward", forward), ("window", window)] {
+            XCTAssertEqual(page.messages.map(\.id), ["u1", "a1", "r1", "u2", "a2", "r2"], name)
+            let cards = page.messages.filter { $0.role == "assistant" }.map { $0.tools?.first?.output }
+            XCTAssertEqual(cards, ["first", "second"], "\(name): each card shows its own call's result")
+            let items = TaskTranscriptPlan.items(page.messages, lifecycle: nil, display: .normal)
+            let shown = items.flatMap { item -> [String] in
+                switch item {
+                case .message(let message): return message.kind == "toolResult" ? [message.text] : []
+                case .block(let block): return block.presentation == .work ? (block.message?.tools ?? []).map(\.output) : []
+                }
+            }
+            XCTAssertEqual(shown, ["first", "second"], "\(name): every result is on the page exactly once")
+        }
     }
 
     /// Two responses may reuse a provider call id. Opening one card must not
@@ -199,6 +243,9 @@ final class ResponseChronologyTests: XCTestCase {
     @MainActor func testTwoResponsesReusingACallIdKeepTheirOwnCards() throws {
         var first = interleaved(), second = interleaved()
         second.id = "second"
+        // The second card is one whose arguments the host had to cut, so
+        // opening it asks for the rest. A whole card asks nothing.
+        second.tools?[0].inputTruncated = true; second.tools?[0].inputBytes = 90_000
         second.responseTimeline = ResponseTimeline()
         var timeline = ResponseTimeline()
         timeline.consume(ResponsePartEvent(attemptID: "attempt-2", ordinal: 0, itemID: "item-0", outputIndex: 0, partIndex: 0,

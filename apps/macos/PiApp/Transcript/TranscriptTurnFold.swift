@@ -44,8 +44,11 @@ enum TranscriptDisplay {
 
 /// What one finished turn folded away, and what its one line says.
 struct TurnFoldSpec: Equatable, Sendable {
-    /// The turn this fold belongs to; also the key the reader's choice is kept
-    /// under, so opening a turn survives streaming, paging and a chat switch.
+    /// The id of the reader's message that opened this display turn: the key
+    /// the reader's choice is kept under, so opening a turn survives
+    /// streaming, paging and a chat switch. It is a row on the page by
+    /// construction, so it lives exactly as long as the turn does, and it is
+    /// unique even when a steer puts two display turns under one task root.
     var group: String
     /// The response whose words are the answer. Its prose never folds.
     var answerResponseID: String
@@ -117,6 +120,11 @@ struct TurnFoldControlRow: View {
 /// ended, it must have ended with actual words, its own beginning must be on
 /// the page (a window that starts mid-turn cannot know what it is folding),
 /// and the reader must have asked for a compact transcript at all.
+///
+/// A display turn is what one message of the reader's opened — every visible
+/// input, a steer included, as the history window counts turns. A steer keeps
+/// its task's root, so a task's root cannot name a fold: two display turns
+/// would share it. The reader's message that opened the turn names it.
 enum TranscriptTurnFold {
     /// Rows a turn's fold never touches: the reader's own message, the turn's
     /// receipts, and anything that reports a failure.
@@ -132,28 +140,34 @@ enum TranscriptTurnFold {
     /// begins in the middle of a turn cannot know what it would be hiding, so
     /// it hides nothing. That is this method's reading of "never while the
     /// history is incomplete", and it is why the scan starts at a user row.
-    static func apply(_ items: [TranscriptItem], display: TranscriptDisplayMode, running: String? = nil) -> [TranscriptItem] {
+    /// The same holds at the other end: `complete` says whether the page
+    /// reaches the conversation's newest row. When it does not, the page's
+    /// last turn folds only on its own receipt that it ended.
+    static func apply(_ items: [TranscriptItem], display: TranscriptDisplayMode, running: String? = nil,
+                      complete: Bool = true) -> [TranscriptItem] {
         guard display == .compact else { return items }
         var result = items
-        var turnStart: Int? = nil
+        var opened: (index: Int, id: String)? = nil
         var inserts: [(at: Int, item: TranscriptItem)] = []
-        func close(_ range: Range<Int>) {
-            guard let spec = fold(&result, range: range, running: running) else { return }
+        func close(_ range: Range<Int>, group: String, ended: Bool) {
+            guard let spec = fold(&result, range: range, group: group, running: running, ended: ended) else { return }
             inserts.append((spec.at, .block(spec.control)))
         }
         for (index, item) in items.enumerated() {
             guard case .message(let message) = item, message.role == "user", message.kind == nil else { continue }
-            if let start = turnStart { close(start..<index) }
-            turnStart = index + 1
+            // The next message of the reader's ends this display turn.
+            if let turn = opened { close(turn.index + 1 ..< index, group: turn.id, ended: true) }
+            opened = (index, message.id)
         }
-        if let start = turnStart, start < result.count { close(start..<result.count) }
+        if let turn = opened, turn.index + 1 < result.count { close(turn.index + 1 ..< result.count, group: turn.id, ended: complete) }
         for insert in inserts.reversed() { result.insert(insert.item, at: insert.at) }
         return result
     }
 
     /// Marks one turn's process rows and builds its control, or answers nil
     /// when this turn must not fold.
-    private static func fold(_ items: inout [TranscriptItem], range: Range<Int>, running: String?) -> (at: Int, control: TranscriptBlock)? {
+    private static func fold(_ items: inout [TranscriptItem], range: Range<Int>, group: String, running: String?,
+                             ended: Bool) -> (at: Int, control: TranscriptBlock)? {
         guard !range.isEmpty else { return nil }
         // A turn still running keeps every row it has: the fold is what the end
         // of a turn does, never something a reader watches happen mid-reply.
@@ -164,50 +178,67 @@ enum TranscriptTurnFold {
             case .block(let block): if block.live { return nil }
             case .message(let message): if message.isStreaming { return nil }
             }
+            if let running, root(of: items[index]) == running { return nil }
         }
-        if let running, turnKey(items, range: range) == running { return nil }
-        // The answer is the last response of the turn that actually said
-        // something. A turn that only ran tools has nothing to fold behind.
-        var answer: String? = nil
-        var legacyAnswer: Int? = nil
-        for index in range {
-            guard case .block(let block) = items[index] else { continue }
-            if let part = block.part, ["text", "refusal"].contains(part.part.kind),
-               !part.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               let response = block.responseID {
-                answer = response; legacyAnswer = nil
-            } else if block.presentation == .body, let message = block.message,
-                      !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                answer = nil; legacyAnswer = index
+        // A page that stops short of the conversation's newest row may have
+        // cut this turn anywhere. Only the task's own receipt, the last thing
+        // a finished task writes, says it ended here.
+        if !ended {
+            let tail = range.last { index in
+                if case .message(let message) = items[index], independent(message) { return false }
+                return true
             }
+            guard let tail, case .block(let receipt) = items[tail], receipt.presentation == .summary else { return nil }
         }
-        guard answer != nil || legacyAnswer != nil else { return nil }
-        let group = turnKey(items, range: range) ?? "turn:\(range.lowerBound)"
+        // The answer is the reply the turn's last content belongs to, and it
+        // must have said something and asked for nothing more. A reply that
+        // made a call did not end its turn, wherever its words fall: the host
+        // runs the call and asks the model again. A turn whose last content is
+        // such a reply, or a result, stopped in its work — or the page cut it
+        // there — and its narration is not an answer.
+        guard let last = range.last(where: { content(items[$0]) }), case .block(let closing) = items[last] else { return nil }
+        // A chronological reply is its response id; a legacy reply's rows
+        // carry the reply itself.
+        let answer = closing.responseID
+        guard let answerRow = answer ?? closing.replies.first?.id else { return nil }
+        func own(_ block: TranscriptBlock) -> Bool {
+            answer.map { block.responseID == $0 } ?? (block.responseID == nil && block.replies.contains { $0.id == answerRow })
+        }
+        var spoke = false
+        for index in range {
+            guard case .block(let block) = items[index], own(block) else { continue }
+            if block.replies.contains(where: { !($0.tools ?? []).isEmpty }) { return nil }
+            if prose(block) { spoke = true }
+        }
+        guard spoke else { return nil }
+        // Only the answer's own accounting line may follow it; another
+        // request after it is work that came after the answer.
+        for index in last + 1 ..< range.upperBound {
+            if case .message(let message) = items[index], message.kind == "requestInfo", message.id != answerRow { return nil }
+        }
         var spec = TurnFoldSpec(group: group, answerResponseID: answer ?? "")
         // Everything from the turn's first process row up to the answer, plus
         // whatever the answer itself had to do before it could speak.
         var members: [Int] = []
-        var answerReached = false
+        var answerHeader: Int? = nil
         var textResponses = Set<String>()
         for index in range {
             switch items[index] {
             case .message(let message):
                 if independent(message) { continue }
-                if message.kind == "requestInfo", message.id == answer { continue }
-                if !answerReached { members.append(index) }
+                if message.kind == "requestInfo", message.id == answerRow { continue }
+                members.append(index)
             case .block(let block):
-                if let legacyAnswer, index == legacyAnswer { answerReached = true; continue }
-                if block.presentation == .summary { continue }
-                let isAnswerRow = block.responseID != nil && block.responseID == answer
-                let prose = block.part.map { ["text", "refusal"].contains($0.part.kind) } ?? (block.presentation == .body)
-                // The answer's own header line folds with the work it
-                // summarises: a folded turn should read as one line and the
-                // answer, not as two lines and the answer.
-                if isAnswerRow, prose { answerReached = true; continue }
-                if let part = block.part, prose, let response = block.responseID,
-                   !part.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, response != answer {
-                    textResponses.insert(response)
+                if block.presentation == .summary || block.presentation == .turnFold { continue }
+                // A legacy answer's words never fold.
+                if block.presentation == .body, answer == nil, own(block) { continue }
+                if let response = block.responseID, response == answer {
+                    if block.presentation == .response { answerHeader = index; continue }
+                    // The answer's words never fold.
+                    if prose(block) { continue }
                 }
+                // Another reply that said something before the answer.
+                if block.part != nil, prose(block), let response = block.responseID { textResponses.insert(response) }
                 // A part row carries its call on its own message; a legacy
                 // group carries the reply's whole run on the block.
                 for tool in block.tools.isEmpty ? (block.message?.tools ?? []) : block.tools {
@@ -216,8 +247,14 @@ enum TranscriptTurnFold {
                 members.append(index)
             }
         }
+        // An answer with no work under it has nothing to fold: a line that
+        // opened onto the answer's own header would hide nothing.
+        guard !members.isEmpty else { return nil }
+        // The answer's own header line folds with the work it summarises: a
+        // folded turn should read as one line and the answer, not as two
+        // lines and the answer.
+        if let answerHeader { members.append(answerHeader); members.sort() }
         spec.messages = textResponses.count
-        guard let first = members.first else { return nil }
         for index in members {
             switch items[index] {
             case .message(var message): message.foldGroup = group; items[index] = .message(message)
@@ -230,19 +267,32 @@ enum TranscriptTurnFold {
         control.presentation = .turnFold
         control.foldControl = group
         control.foldSummary = spec
-        return (first, control)
+        return (members[0], control)
     }
 
-    /// The turn a range of rows belongs to, from whatever named it.
-    private static func turnKey(_ items: [TranscriptItem], range: Range<Int>) -> String? {
-        for index in range {
-            switch items[index] {
-            case .message(let message): if let key = message.taskRootID ?? message.turn { return key }
-            case .block(let block):
-                if let key = block.turnID { return key }
-                if let key = block.message?.taskRootID ?? block.message?.turn { return key }
-            }
+    /// A response's words, or a legacy reply's prose: the rows an answer is.
+    private static func prose(_ block: TranscriptBlock) -> Bool {
+        if let part = block.part { return ["text", "refusal"].contains(part.part.kind) && TaskTranscriptPlan.visible(part.text) }
+        return block.presentation == .body && TaskTranscriptPlan.visible(block.message?.text ?? "")
+    }
+    /// Whether a row is something the turn did or said, as opposed to its
+    /// receipts, its accounting and the rows no fold touches. Words that are
+    /// only whitespace draw nothing and say nothing.
+    private static func content(_ item: TranscriptItem) -> Bool {
+        switch item {
+        case .message(let message): return !independent(message) && message.kind != "requestInfo"
+        case .block(let block):
+            if block.presentation == .summary || block.presentation == .turnFold { return false }
+            if let part = block.part, ["text", "refusal"].contains(part.part.kind) { return TaskTranscriptPlan.visible(part.text) }
+            if block.presentation == .body { return TaskTranscriptPlan.visible(block.message?.text ?? "") }
+            return true
         }
-        return nil
+    }
+    /// The task a row belongs to, from whatever named it.
+    private static func root(of item: TranscriptItem) -> String? {
+        switch item {
+        case .message(let message): return message.taskRootID ?? message.turn
+        case .block(let block): return block.turnID ?? block.message?.taskRootID ?? block.message?.turn
+        }
     }
 }

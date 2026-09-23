@@ -534,8 +534,10 @@ actor HistoryReader {
         var start = forward ? range.lowerBound : range.upperBound, end = start
         // What each call's result recorded, so the reply that made the call
         // can show it in that call's own card, exactly as a live snapshot
-        // does. Collected while the window is decoded; the page is filled in
-        // once below, so the direction it was read in does not matter.
+        // does. Collected while the window is decoded, keyed by the result's
+        // own row: a call id alone is not unique, since providers reuse them.
+        // The page is filled in once below, in page order, so the direction
+        // it was read in does not matter.
         var toolResults: [String: ToolResultRecord] = [:]
         for index in (forward ? Array(range) : Array(range.reversed())) {
             try Task.checkCancellation()
@@ -554,7 +556,7 @@ actor HistoryReader {
             }
             else {
                 let row = value["message"]?.object ?? [:]
-                if let result = ToolResultRecord.of(row) { toolResults[result.call] = result.record }
+                if let result = ToolResultRecord.of(row) { toolResults[ref.id] = result.record }
                 message = TranscriptMessage.project(id: ref.id, message: row)
             }
             if ref.adopted { message.responseTimeline?.finish("completed"); message.detail="Compaction · Checkpoint durably adopted" }

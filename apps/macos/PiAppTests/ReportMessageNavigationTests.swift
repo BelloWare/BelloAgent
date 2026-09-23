@@ -110,3 +110,34 @@ final class ReportMessageNavigationTests: XCTestCase {
         XCTAssertEqual(totals.tokens?.total, 340); XCTAssertEqual(totals.costUSD, 0.0013875)
     }
 }
+
+extension ReportMessageNavigationTests {
+    /// Opening a message from the Report while the chat on screen is an empty
+    /// New chat: that chat is dropped on the way, and dropping it used to
+    /// count as another navigation, so this one gave up without a word.
+    @MainActor func testOpeningAMessageWhileAnEmptyNewChatIsOnScreenReachesIt() async throws {
+        let base = testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()
+        let root = URL(fileURLWithPath: base).appendingPathComponent("message-navigation-empty-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        try await model.reloadConfiguration()
+        let empty = ChatRecord(id: "empty", workspaceID: "workspace", title: "New chat", path: nil, profileID: "profile")
+        let saved = ChatRecord(id: "saved", workspaceID: "workspace", title: "Saved chat", path: nil, profileID: "profile")
+        model.chats = [empty, saved]; model.pendingChatIDs = [empty.id]
+        let blank = SessionDisplay(id: empty.id)
+        model.displays[empty.id] = blank; model.selectedID = empty.id; model.selected = blank; model.focusedSessionID = empty.id
+        model.historyWindowLoader = { id, _, _, _ in
+            try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture:" + id), "lineage": .string("root"),
+                "messages": .array([.object(["id": .string("question"), "role": .string("user"), "text": .string("Question")]),
+                                    .object(["id": .string("target"), "role": .string("assistant"), "text": .string("The answer")])]),
+                "older": .null, "newer": .null]))
+        }
+        model.openReport()
+        let result = await model.revealMessage(sessionID: saved.id, messageID: "target")
+        XCTAssertTrue(result, "The message opens")
+        XCTAssertEqual(model.selectedID, saved.id); XCTAssertEqual(model.page, .chats)
+        XCTAssertEqual(model.displays[saved.id]?.scrollAnchor?.id, "target")
+        XCTAssertFalse(model.chats.contains { $0.id == empty.id }, "The empty New chat was dropped on the way")
+        try await close(model, root: root)
+    }
+}

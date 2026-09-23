@@ -40,13 +40,16 @@ extension WorkspaceModel {
         }
         host.onLoss = { [weak self, weak host] in
             guard let self, let host, self.hosts[workspace.id] === host else { return }
+            // A helper stopped for being idle has not crashed: nothing was
+            // running, and what the footers show is still what the chats hold.
+            let retired = self.retiringHosts.remove(ObjectIdentifier(host)) != nil
             self.boundHostConnections.removeValue(forKey: workspace.id)
             self.liveActivity.disconnect(workspace.id)
             self.discardLostSides(workspaceID: workspace.id)
             for chat in self.chats where chat.workspaceID == workspace.id {
                 self.opened.remove(chat.id); self.displays[chat.id]?.captureAvailable = false
                 self.displays[chat.id]?.lastSequence = -1
-                self.displays[chat.id]?.observeContext([:],baseline:true)
+                if !retired { self.displays[chat.id]?.observeContext([:],baseline:true) }
                 self.displays[chat.id]?.footer.pendingContextSubmission=nil
                 if let view = self.displays[chat.id], view.hasWork, view.state != "error" { view.state = "interrupted"; view.runStatus = "interrupted"; view.queueCount = 0; view.uncertain = true; view.notice = "Host interrupted. Outcome uncertain. No command was replayed."; view.settleInterruptedRows() }
             }
@@ -63,6 +66,9 @@ extension WorkspaceModel {
             guard let type = packet["type"]?.string, ["begin", "metadata", "finish", "links", "interrupted"].contains(type) else { return }
             Task { @MainActor [weak self] in await self?.captureDidPersist(packet, workspaceID: workspaceID) }
         })
+        // The previous helper has exited by now, or never had a process to
+        // exit: a stop that marked it retired no longer describes this one.
+        retiringHosts.remove(ObjectIdentifier(host))
         try Task.checkCancellation()
         let connection = host.connectionID
         // "cwd" remains for hosts that predate multi-folder roots; "roots" lists every trusted folder, primary first.

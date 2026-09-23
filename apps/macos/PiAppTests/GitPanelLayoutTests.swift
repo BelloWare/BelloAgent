@@ -51,7 +51,10 @@ extension GitPanelAuditTests {
         // (All three thousand at once takes about fifty seconds.)
         let quadruple = cost(shown: 4 * GitCommitFileChips.step)
         print(String(format: "PERF commit chips: first %d of 3000 in %.0f ms, %d of them in %.0f ms", GitCommitFileChips.step, capped, 4 * GitCommitFileChips.step, quadruple))
-        XCTAssertLessThan(capped, 1_000, "opening a commit that touches thousands of files must not stall the pane")
+        // An absolute budget is a Release figure: in Debug, on a machine
+        // running other builds, it measures the machine. The shape check
+        // below holds in every configuration.
+        XCTAssertLessThan(capped, releaseBudget(1.0) * 1_000, "opening a commit that touches thousands of files must not stall the pane")
         XCTAssertLessThan(capped * 3, quadruple, "and it is the cap that makes the difference")
 
         // The reader can still ask for more, a step at a time.

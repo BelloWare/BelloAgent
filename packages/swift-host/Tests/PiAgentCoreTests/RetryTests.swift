@@ -21,6 +21,17 @@ private actor FlakyClient: ModelClient {
     }
 }
 
+/// Fails its first request as a dropped connection, then holds every later
+/// request until it is cancelled: a retried request the reader stops.
+private actor HeldRetryClient: ModelClient {
+    var requests = 0
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        requests += 1
+        if requests == 1 { try await onDelta(.text("partial ")); throw AgentError("provider_transport", "stream dropped") }
+        while true { try await Task.sleep(nanoseconds: 5_000_000) }
+    }
+}
+
 final class RetryTests: XCTestCase {
     private func session(_ client: FlakyClient, root: URL) throws -> AgentSession {
         try AgentSession(id:"s",profile:fixtureProfile(),apiKey:"test",cwd:root,directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false)
@@ -129,7 +140,61 @@ final class RetryTests: XCTestCase {
         await session.close()
     }
 
+    /// A stream that stopped before its terminal event ran no tool: its partial
+    /// reply stays as an interrupted row and the request is sent again.
+    func testAStreamThatEndsWithoutItsTerminalEventIsRetried() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=FlakyClient(failures:[AgentError("incomplete_stream","The stream ended without its terminal event. No tool arguments were executed.")],replies:[answer("complete")])
+        let session=try session(client,root:root)
+        _ = try await session.submit(Submission(commandID:"c1",turnID:"t1",text:"go"),steer:false)
+        try await eventually { !(await session.isRunning) }
+        let requests = await client.requests, final = await session.snapshot()
+        XCTAssertEqual(requests, 2, "the cut stream is retried once and the reply lands")
+        XCTAssertEqual(final["state"].text, "idle"); XCTAssertEqual(final["messages"].list.last?["text"].text, "complete")
+        XCTAssertEqual(final["messages"].list.filter { $0["stopReason"].text == "interrupted" }.count, 1, "the partial reply stays inspectable")
+        await session.close()
+    }
+
+    /// Stop while the retried request is in flight: the run is cancelled and
+    /// the notice of the retry it was making goes with it.
+    func testStopDuringARetriedRequestClearsTheRetryNotice() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=HeldRetryClient()
+        let session=try AgentSession(id:"s",profile:fixtureProfile(),apiKey:"test",cwd:root,directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false)
+        _ = try await session.submit(Submission(commandID:"c1",turnID:"t1",text:"go"),steer:false)
+        try await eventually { await session.snapshot()["runStatus"].text == "retrying" }
+        try await eventually { let status = await session.snapshot()["runStatus"].text, requests = await client.requests; return status == "running" && requests == 2 }
+        let during = await session.snapshot()
+        XCTAssertEqual(during["retry"]["attempt"].int, 2, "the retried request says which attempt it is while it runs")
+        await session.stop()
+        try await eventually { !(await session.isRunning) }
+        let final = await session.snapshot()
+        XCTAssertEqual(final["runStatus"].text, "cancelled"); XCTAssertEqual(final["state"].text, "paused")
+        XCTAssertTrue(final["retry"].isNull, "a stopped run is not retrying: \(final["retry"].encoded())")
+        await session.close()
+    }
+
+    /// Model time is time spent in model requests: the back-off between a
+    /// failed attempt and its retry is waiting, and the failed attempt is not
+    /// the reply's own request.
+    func testModelTimeCountsRequestsNotTheBackoffBetweenThem() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=FlakyClient(failures:[AgentError("provider_transport","stream dropped")],replies:[answer("done")])
+        let session=try session(client,root:root)
+        _ = try await session.submit(Submission(commandID:"c1",turnID:"t1",text:"go"),steer:false)
+        try await eventually { !(await session.isRunning) }
+        let state=await session.snapshot()
+        let reply=try XCTUnwrap(state["messages"].list.last { $0["role"].text == "assistant" && $0["text"].text == "done" })
+        let replyMs=try XCTUnwrap(reply["modelMs"].double), turnMs=try XCTUnwrap(state["turnMetrics"]["modelMs"].double)
+        print("PERF model-time-with-retry replyModelMs=\(replyMs) turnModelMs=\(turnMs)")
+        XCTAssertLessThan(replyMs, 500, "the reply's model time is its own request, not the one-second back-off before it")
+        XCTAssertLessThan(turnMs, 500, "the turn's model time sums its requests, not the waits between them")
+        await session.close()
+    }
+
     func testRetryPolicy() {
+        XCTAssertTrue(AgentSession.isRetryable(AgentError("incomplete_stream", "The stream ended without its terminal event. No tool arguments were executed.")))
+        XCTAssertTrue(AgentSession.isRetryable(AgentError("provider_failed", "Overloaded (529)")))
         XCTAssertTrue(AgentSession.isRetryable(AgentError("provider_transport", "x")))
         XCTAssertTrue(AgentSession.isRetryable(AgentError("stream_backpressure", "Consumer could not keep up")), "a dropped stream is retried, never reported as the model's failure")
         XCTAssertTrue(AgentSession.isRetryable(AgentError("provider_http", "Provider returned HTTP 429. slow down")))

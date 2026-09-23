@@ -214,6 +214,482 @@ final class TranscriptStreamingStressTests: XCTestCase {
 
     // MARK: 1 — A long turn arriving while the reader is higher up
 
+    /// A reply long enough that its native surface stands the blocks it has
+    /// not mounted at an estimate. The block a token opens — a list starting
+    /// under forty paragraphs — is the one the reader is watching, and blocks
+    /// the surface resolves as the reader scrolls back through the reply
+    /// change its height as well. After every token the row is as tall as its
+    /// text: not an estimate's worth taller (a gap under the last line) or
+    /// shorter (the last line clipped) until the next full measurement.
+    @MainActor func testALongStreamingReplysRowStaysAsTallAsItsText() async throws {
+        let paragraphs = (0..<40).map { "Paragraph \($0). " + String(repeating: "The streamed answer keeps explaining the retry loop. ", count: 3) }
+        let session = SessionDisplay(id: "long-streaming-blocks")
+        session.messages = [.init(id: "u", role: "user", text: "Explain it at length."),
+                            .init(id: "a", role: "assistant", text: paragraphs.joined(separator: "\n\n"), state: "streaming")]
+        let stage = Stage(session, height: 560)
+        defer { stage.close() }
+        stage.page.presentationInterval = 0; stage.page.state = "running"
+        await stage.settle(turns: 4)
+        let row = try XCTUnwrap(stage.rows.last)
+        /// How tall the reply's text is, as its own surface has laid it out.
+        /// Everything else in the row — the header, the space around the
+        /// text — keeps its height while tokens arrive, so the row must stay
+        /// exactly that much taller than its text.
+        func text() -> CGFloat {
+            func surfaces(_ view: NSView) -> [NativeMarkdownContainer] {
+                ((view as? NativeMarkdownContainer).map { [$0] } ?? []) + view.subviews.flatMap { surfaces($0) }
+            }
+            return surfaces(row).first?.intrinsicContentSize.height ?? -1
+        }
+        XCTAssertGreaterThan(text(), 1_000, "the reply must be drawn by its native surface for this to mean anything")
+        let chrome = row.frame.height - text()
+        func assertFits(_ what: String) {
+            let needed = text()
+            XCTAssertEqual(row.frame.height - needed, chrome, accuracy: 1,
+                           "\(what): the reply's row is \(row.frame.height) pt for \(needed) pt of text; it opened \(chrome) pt taller than its text")
+        }
+        // A list begins at the end of the reply, a token at a time, with the
+        // reader at the end watching it arrive.
+        stage.readerScroll(to: max(0, stage.document.frame.height - stage.scroll.contentView.bounds.height))
+        await stage.settle(turns: 4)
+        XCTAssertTrue(stage.page.followsBottom, "the reader must be following the end of the reply")
+        assertFits("at the end")
+        var source = session.messages[1].text + "\n\n- the first item of a list the reply has just begun"
+        for step in 0..<6 {
+            session.messages[1].text = source
+            stage.refresh()
+            assertFits("the frame list token \(step) arrives in")
+            await stage.settle(turns: 2)
+            assertFits("list token \(step)")
+            source += step.isMultiple(of: 2) ? " and more words for it" : "\n- another item of the list"
+        }
+        XCTAssertGreaterThan(row.streamingAppendCount, 0, "the tokens must take the streaming path for this to mean anything")
+        // The reader goes back up through the reply while it is arriving.
+        for fraction in [0.75, 0.5, 0.25] {
+            stage.readerScroll(to: row.frame.minY + row.frame.height * fraction)
+            await stage.settle(turns: 2)
+            source += " and a few more words"
+            session.messages[1].text = source
+            stage.refresh()
+            await stage.settle(turns: 2)
+            assertFits("scrolled back to \(Int(fraction * 100))% of the reply")
+        }
+    }
+
+    /// The pane is disabled while Reports or the dashboard is in front, and
+    /// the appearance can change under it. Neither changes how tall a row is:
+    /// every row keeps its measurement and is painted with the new values.
+    /// A round trip to Reports used to re-measure every row twice — the
+    /// visible band at once, the rest in slices for seconds after.
+    @MainActor func testPaintOnlyEnvironmentChangesKeepEveryRowsMeasurement() async throws {
+        let session = SessionDisplay(id: "paint-only")
+        session.messages = Self.history(turns: 60)
+        let stage = Stage(session); defer { stage.close() }
+        await stage.settleUntilExact()
+        XCTAssertGreaterThan(stage.rows.count, 100)
+        TranscriptLayoutClock.recording = true
+        TranscriptLayoutClock.reset()
+        defer { TranscriptLayoutClock.recording = false }
+        let started = ProcessInfo.processInfo.systemUptime
+        let changes: [(String, () -> Void)] = [
+            ("Reports in front", { stage.environment.isEnabled = false }),
+            ("back from Reports", { stage.environment.isEnabled = true }),
+            ("dark", { stage.environment.colorScheme = .dark }),
+            ("light", { stage.environment.colorScheme = .light })
+        ]
+        for (what, change) in changes {
+            change()
+            stage.refresh()
+            await stage.settle(turns: 2)
+            for row in stage.rows where row.isHosted {
+                XCTAssertEqual(row.renderingEnvironment, stage.environment, "\(what): row \(row.itemID) is still drawn with the old values")
+            }
+        }
+        await stage.settleUntilExact(seconds: 10)
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        print(String(format: "PERF paint-only environment: a Reports round trip and an appearance switch re-measured %d rows and %d markdown blocks in %.0f ms",
+                     TranscriptLayoutClock.measuredRows, TranscriptLayoutClock.markdownBlocksMeasured, elapsed * 1_000))
+        XCTAssertEqual(TranscriptLayoutClock.measuredRows, 0, "a change of colour or of the enabled state re-measured rows")
+        XCTAssertEqual(TranscriptLayoutClock.markdownBlocksMeasured, 0, "a change of colour or of the enabled state re-measured markdown")
+        XCTAssertEqual(stage.document.approximateRowCount, 0, "no row was left standing at an estimate")
+        assertStacked(stage, "after the round trip")
+    }
+
+    /// A long answer read in order: one header line, its parts, its
+    /// accounting line, every row carrying the answer's id.
+    @MainActor static func orderedAnswer(_ id: String, turn: String, parts: Int, at: Double) -> TranscriptMessage {
+        var timeline = ResponseTimeline()
+        for ordinal in 0..<parts {
+            let body = (0..<10).map { "Part \(ordinal), paragraph \($0): the answer keeps explaining the change in some detail." }.joined(separator: "\n\n")
+            timeline.consume(ResponsePartEvent(attemptID: "attempt-" + id, ordinal: ordinal, itemID: "\(id)-item-\(ordinal)",
+                                               outputIndex: ordinal, partIndex: 0, kind: "text", update: "replace",
+                                               text: body, callID: nil, name: nil))
+        }
+        timeline.finish("completed")
+        var message = TranscriptMessage(id: id, role: "assistant", text: "An answer in \(parts) parts.", state: "complete", at: at, turn: turn)
+        message.responseTimeline = timeline
+        return message
+    }
+
+    /// Its end is the last of its rows: the header line being on screen is
+    /// not the answer having been read. And a reader who leaves the chat on a
+    /// later part of it comes back to that part, not to its header.
+    @MainActor func testAnAnswerReadInOrderIsReadAtItsEndAndReturnedToAtItsPart() async throws {
+        let session = SessionDisplay(id: "ordered-answer")
+        var messages = Self.history(turns: 4)
+        messages.append(TranscriptMessage(id: "ulast", role: "user", text: "Walk me through it.", at: 9_000, turn: "ulast"))
+        messages.append(Self.orderedAnswer("answer", turn: "ulast", parts: 3, at: 9_100))
+        session.messages = messages
+        let stage = Stage(session); defer { stage.close() }
+        stage.page.onAnchorChanged = { [weak stage] anchor in stage?.session.scrollAnchor = anchor }
+        await stage.settleUntilExact()
+        func rows(where match: (TranscriptBlock) -> Bool) -> [TranscriptRowContainer] {
+            stage.rows.filter { if case .block(let block) = $0.contentItem { return block.responseID == "answer" && match(block) }; return false }
+        }
+        let header = try XCTUnwrap(rows { $0.presentation == .response }.first)
+        let parts = rows { $0.part != nil }
+        XCTAssertEqual(parts.count, 3, "the answer must be read in order, a row per part")
+
+        // The receipt.
+        stage.readerScroll(to: header.frame.minY - 20)
+        await stage.settle()
+        XCTAssertFalse(stage.page.replyEndIsOnScreen("answer"), "the answer's header line on screen counted as reading the whole answer")
+        stage.readerScroll(to: max(0, stage.document.frame.height - stage.scroll.contentView.bounds.height))
+        await stage.settle()
+        XCTAssertTrue(stage.page.replyEndIsOnScreen("answer"), "the end of the answer on screen is reading it")
+
+        // The way back to where the reader was.
+        let second = parts[1]
+        stage.readerScroll(to: second.frame.minY + 10)
+        await stage.settle(turns: 30)
+        let line = second.frame.minY - stage.scrollY
+        let saved = try XCTUnwrap(session.scrollAnchor, "the page never said where the reader was")
+        XCTAssertEqual(saved.id, "answer")
+        let elsewhere = SessionDisplay(id: "elsewhere")
+        elsewhere.messages = Self.history(turns: 2)
+        stage.show(elsewhere)
+        await stage.settle()
+        stage.show(session)
+        await stage.settleUntilExact()
+        let back = try XCTUnwrap(stage.rows.first { $0.itemID == second.itemID })
+        XCTAssertEqual(back.frame.minY - stage.scrollY, line, accuracy: 1,
+                       "the reader left the answer's second part \(line) pt from the top and came back \(back.frame.minY - stage.scrollY) pt from it")
+    }
+
+    /// "Back to latest" asked for the newest reply and lands on it: at the end
+    /// of the page, with the way back gone — not at the question the last
+    /// turn began with, which is where a chat the reader opens starts.
+    @MainActor func testBackToLatestLandsAtTheEndOfAnIdleChat() async throws {
+        let session = SessionDisplay(id: "back-to-latest")
+        var messages = Self.history(turns: 6)
+        messages.append(TranscriptMessage(id: "ulast", role: "user", text: "One long answer, please.", at: 9_000, turn: "ulast"))
+        messages.append(TranscriptMessage(id: "alast", role: "assistant",
+                                          text: (0..<40).map { "Paragraph \($0) of a long final answer that runs past the bottom of the pane." }.joined(separator: "\n\n"),
+                                          at: 9_100, turn: "ulast"))
+        session.messages = messages
+        let stage = Stage(session); defer { stage.close() }
+        await stage.settleUntilExact()
+        func bottom() -> CGFloat { max(0, stage.document.frame.height - stage.scroll.contentView.bounds.height) }
+        XCTAssertLessThan(stage.scrollY, bottom() - 200, "an idle chat whose last turn is taller than the pane opens at its last question")
+        XCTAssertFalse(stage.page.atBottom)
+        // What the model does for "Back to latest": an anchor that follows the
+        // end and names no row, and the page read again under a new generation.
+        session.scrollAnchor = TranscriptAnchor(id: "", offset: 0, followsBottom: true)
+        session.presentation.begin()
+        session.presentationGeneration = session.presentation.generation
+        stage.show(session)
+        await stage.settleUntilExact()
+        XCTAssertEqual(stage.scrollY, bottom(), accuracy: 2, "back to latest landed \(Int(bottom() - stage.scrollY)) pt short of the end")
+        XCTAssertTrue(stage.page.atBottom, "the way back to the latest reply is still offered after taking it")
+    }
+
+    /// A chat that opened at its last question, moved by the reader in a way
+    /// nothing announces — a selection dragged past the edge, a control
+    /// reached with Tab. The page leaves them there while it measures the rest
+    /// of the chat, rather than putting them back on the question.
+    @MainActor func testAChatThatOpenedAtItsLastQuestionStaysWhereTheReaderMovedIt() async throws {
+        let session = SessionDisplay(id: "moved-off-the-question")
+        var messages = Self.history(turns: 30)
+        messages.append(TranscriptMessage(id: "ulast", role: "user", text: "One long answer, please.", at: 9_000, turn: "ulast"))
+        messages.append(TranscriptMessage(id: "alast", role: "assistant",
+                                          text: (0..<40).map { "Paragraph \($0) of a long final answer that runs past the bottom of the pane." }.joined(separator: "\n\n"),
+                                          at: 9_100, turn: "ulast"))
+        session.messages = messages
+        let stage = Stage(session); defer { stage.close() }
+        await stage.settle(turns: 6)
+        let question = try XCTUnwrap(stage.page.rowFrame(of: "ulast"))
+        XCTAssertTrue((0...60).contains(question.minY - stage.scrollY), "an idle chat with a tall last turn opens at its last question, not \(question.minY - stage.scrollY) pt from the top")
+        XCTAssertGreaterThan(stage.document.approximateRowCount, 0, "the rest of the chat must still be being measured for this to mean anything")
+        let clip = stage.scroll.contentView
+        clip.setBoundsOrigin(NSPoint(x: 0, y: max(0, stage.scrollY - 900)))
+        stage.scroll.reflectScrolledClipView(clip)
+        await stage.settle(turns: 2)
+        func readingLine() -> (id: String, y: CGFloat)? {
+            for row in stage.rows where row.frame.maxY > stage.scrollY + 1 { return (row.itemID, row.frame.minY - stage.scrollY) }
+            return nil
+        }
+        let moved = try XCTUnwrap(readingLine())
+        await stage.settleUntilExact()
+        let after = try XCTUnwrap(readingLine())
+        XCTAssertEqual(after.id, moved.id, "the reader moved to \(moved.id) and the page put them back on \(after.id)")
+        XCTAssertEqual(after.y, moved.y, accuracy: 1)
+    }
+
+    /// At a full resident window a retry notice and the failure where the
+    /// conversation stopped still show, after the rows of the conversation
+    /// that fit: they are what the reader has to act on.
+    @MainActor func testTheRetryNoticeAndTheFailureShowAtAFullWindow() async throws {
+        let session = SessionDisplay(id: "full-window")
+        session.messages = (0..<HistoryWindowPolicy.residentRows).map { index in
+            TranscriptMessage(id: "m\(index)", role: index.isMultiple(of: 2) ? "user" : "assistant", text: "Row \(index).",
+                              at: Double(index), turn: "m\(index - index % 2)")
+        }
+        session.retryNotice = "Retrying (attempt 2 of 6) after: the gateway is overloaded."
+        session.failureMessage = "The gateway refused the request."
+        let shown = TranscriptPage.displayPage(session.presentedMessages)
+        XCTAssertEqual(shown.suffix(2).map(\.id), ["notice:retry:full-window", "failure:run:full-window"],
+                       "the rows the reader acts on were cut by the resident window")
+        XCTAssertEqual(shown.count, HistoryWindowPolicy.residentRows + 2)
+        let stage = Stage(session); defer { stage.close() }
+        await stage.settle()
+        XCTAssertNotNil(stage.page.snapshot?.items.first { $0.id == "failure:run:full-window" }, "the failure is not on the page")
+    }
+
+    /// Following the newest row, the page writes a scroll for every token of
+    /// a reply. None of them is a place the reader chose, so none is
+    /// remembered: remembering one is a write to the chat's saved state, and
+    /// a reply used to cost several of those a second.
+    @MainActor func testFollowingAReplyRemembersNoPositionForEachToken() async throws {
+        let session = SessionDisplay(id: "follow-reports")
+        session.messages = Self.history(turns: 20)
+        let stage = Stage(session); defer { stage.close() }
+        stage.page.presentationInterval = 0; stage.page.state = "running"
+        await stage.settleUntilExact()
+        stage.readerScroll(to: max(0, stage.document.frame.height - stage.scroll.contentView.bounds.height))
+        await stage.settle(turns: 20)
+        XCTAssertTrue(stage.page.followsBottom, "the reader must be following the newest row")
+        var reports: [TranscriptAnchor] = []
+        stage.page.onAnchorChanged = { anchor in if let anchor { reports.append(anchor) } }
+        session.messages.append(TranscriptMessage(id: "stream:r", role: "assistant", text: "#", state: "streaming", at: 99_000, turn: "hu19"))
+        var text = "#"
+        for step in 0..<30 {
+            text += " token \(step) of a reply that keeps the page at the end of the conversation."
+            session.messages[session.messages.count - 1].text = text
+            stage.refresh()
+            await stage.settle(turns: 2)
+        }
+        await stage.settle(turns: 25)
+        print("PERF follow reports: the page remembered the reader's position \(reports.count) times over 30 tokens while following")
+        XCTAssertTrue(stage.page.followsBottom)
+        XCTAssertLessThanOrEqual(reports.count, 1, "the page remembered its own follow scrolls as the reader's position")
+        // The reader's own movement is still remembered.
+        stage.readerScroll(to: max(0, stage.scrollY - 400))
+        await stage.settle(turns: 25)
+        XCTAssertEqual(reports.last?.followsBottom, false, "where the reader moved to was not remembered")
+    }
+
+    /// Opening a long chat measures its history in idle units after the rows
+    /// in view. Placing the whole page again after every single row made that
+    /// a full pass per row; a unit now measures rows for as long as placing
+    /// the page takes and places it once.
+    @MainActor func testMeasuringALongChatsHistoryPlacesThePageFarLessOftenThanOncePerRow() async throws {
+        let session = SessionDisplay(id: "idle-history")
+        session.messages = Self.history(turns: 250)
+        let stage = Stage(session); defer { stage.close() }
+        let estimated = stage.document.estimatedRowCount, passesAtOpen = stage.document.layoutPassCount
+        TranscriptLayoutClock.recording = true
+        TranscriptLayoutClock.reset()
+        defer { TranscriptLayoutClock.recording = false }
+        let started = ProcessInfo.processInfo.systemUptime
+        await stage.settleUntilExact(seconds: 180)
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        let passes = stage.document.layoutPassCount - passesAtOpen
+        print(String(format: "PERF idle history: %d rows, %d standing at an estimate when the chat opened, exact after %d more layout passes (%.0f ms of layout, %.0f ms measuring) in %.1f s",
+                     stage.rows.count, estimated, passes, TranscriptLayoutClock.layoutSeconds * 1_000,
+                     TranscriptLayoutClock.measureSeconds * 1_000, elapsed))
+        XCTAssertEqual(stage.document.approximateRowCount, 0)
+        XCTAssertGreaterThan(estimated, 300, "the chat must open with most of its history at an estimate for this to mean anything")
+        XCTAssertLessThan(passes, estimated / 2, "measuring history placed the whole page again for nearly every row it measured")
+    }
+
+    /// With a card open somewhere in a long chat, a token of the reply costs
+    /// what it costs with nothing open: nothing walks every row and every
+    /// tool of the page to keep track of what the reader opened.
+    @MainActor func testATokenCostsTheSameWithACardOpen() async throws {
+        let session = SessionDisplay(id: "token-with-a-card")
+        var messages = Self.history(turns: 200)
+        var worker = TranscriptMessage(id: "worker", role: "assistant", text: "Working through it.", at: 1_001, turn: "hu0")
+        worker.tools = (0..<3).map { Self.toolCall($0) }
+        messages.insert(worker, at: 1)
+        messages.append(TranscriptMessage(id: "stream:c", role: "assistant", text: "#", state: "streaming", at: 99_000, turn: "hu199"))
+        XCTAssertLessThan(messages.count, HistoryWindowPolicy.residentRows, "the reply must be inside the resident window")
+        session.messages = messages
+        let stage = Stage(session); defer { stage.close() }
+        stage.page.presentationInterval = 0; stage.page.state = "running"
+        await stage.settleUntilExact(seconds: 180)
+        var text = "#"
+        func tokens(_ count: Int) -> (seconds: Double, reads: Int, prunes: Int) {
+            TranscriptLayoutClock.recording = true
+            TranscriptLayoutClock.reset()
+            defer { TranscriptLayoutClock.recording = false }
+            for step in 0..<count {
+                text += " token \(step)"
+                session.messages[session.messages.count - 1].text = text
+                stage.document.update(snapshot: stage.page.snapshot, actions: stage.actions, environment: stage.environment,
+                                      disclosure: session.disclosure, toolInputs: session.toolInputs)
+            }
+            return (TranscriptLayoutClock.updateSeconds / Double(count), TranscriptLayoutClock.disclosureReads, TranscriptLayoutClock.disclosurePrunes)
+        }
+        _ = tokens(10)
+        let closed = tokens(60)
+        XCTAssertEqual(stage.page.snapshot?.messages.last?.text, text, "the tokens must reach the page for this to mean anything")
+        let row = try XCTUnwrap(stage.workRow)
+        let part = try XCTUnwrap(stage.workPart(row))
+        row.toggleDisclosure(part)
+        await stage.settle()
+        _ = tokens(10)
+        let open = tokens(60)
+        print(String(format: "PERF a token's reconciliation in %d rows: %.3f ms with nothing open, %.3f ms with a card open; with it open, 60 tokens read %d rows' disclosure and walked the page %d times",
+                     stage.rows.count, closed.seconds * 1_000, open.seconds * 1_000, open.reads, open.prunes))
+        XCTAssertLessThanOrEqual(open.reads, 60 * 2, "with a card open every token read what every row of the page has open")
+        XCTAssertEqual(open.prunes, 0, "with a card open every token walked every row and tool of the page")
+    }
+
+    /// A reply calling a tool, the call's arguments still arriving.
+    @MainActor static func streamingCard(_ arguments: String, turn: String) -> TranscriptMessage {
+        var timeline = ResponseTimeline()
+        timeline.consume(ResponsePartEvent(attemptID: "attempt-card", ordinal: 0, itemID: "card-item-0", outputIndex: 0, partIndex: 0,
+                                           kind: "toolArguments", update: "begin", text: arguments, callID: "call-1", name: "bash"))
+        var message = TranscriptMessage(id: "card-reply", role: "assistant", text: "",
+                                        tools: [ToolView(id: "call-1", name: "bash", state: "running", input: arguments, output: "",
+                                                         durationMs: nil, truncated: false)],
+                                        state: "streaming", at: 99_000, turn: turn)
+        message.responseTimeline = timeline
+        return message
+    }
+
+    /// A call's card is one line while it is closed, whatever its arguments
+    /// say. While they stream in, each token draws the card again and
+    /// measures nothing, and far from the reader nothing is built at all.
+    /// Opened, the card grows with them.
+    @MainActor func testAClosedCardStreamingItsArgumentsIsDrawnAgainAndNeverMeasured() async throws {
+        let session = SessionDisplay(id: "streaming-card")
+        var arguments = "{\"command\":\"swift build --package-path packages/host"
+        session.messages = Self.history(turns: 60) + [Self.streamingCard(arguments, turn: "hu59")]
+        let stage = Stage(session); defer { stage.close() }
+        stage.page.presentationInterval = 0; stage.page.state = "running"
+        await stage.settleUntilExact()
+        let card = try XCTUnwrap(stage.rows.first { row in
+            if case .block(let block) = row.contentItem { return block.presentation == .work && block.part != nil }
+            return false
+        }, "the call must be drawn as its card, at the position it was made")
+        func token(_ step: Int, _ text: String? = nil) async {
+            arguments += text ?? " --flag-\(step)"
+            session.messages[session.messages.count - 1] = Self.streamingCard(arguments, turn: "hu59")
+            stage.refresh()
+            await stage.settle(turns: 1)
+        }
+        func bottom() -> CGFloat { max(0, stage.document.frame.height - stage.scroll.contentView.bounds.height) }
+
+        // At the card.
+        stage.readerScroll(to: bottom())
+        await stage.settle()
+        XCTAssertTrue(card.isHosted, "the card must be on screen")
+        for step in 0..<3 { await token(step) }
+        let closed = card.frame.height
+        TranscriptLayoutClock.recording = true
+        TranscriptLayoutClock.reset()
+        for step in 3..<43 { await token(step) }
+        let near = (roots: TranscriptLayoutClock.rootUpdates, measured: TranscriptLayoutClock.measuredRows,
+                    sizing: TranscriptLayoutClock.rowSizingPasses, validations: TranscriptLayoutClock.intrinsicInvalidations)
+        TranscriptLayoutClock.recording = false
+
+        // Far from the reader.
+        stage.readerScroll(to: 0)
+        await stage.settle(turns: 12)
+        XCTAssertFalse(card.isHosted, "the card must be far enough away to have let its tree go")
+        TranscriptLayoutClock.recording = true
+        TranscriptLayoutClock.reset()
+        for step in 43..<83 { await token(step) }
+        let far = (builds: TranscriptLayoutClock.hostBuilds, measured: TranscriptLayoutClock.measuredRows)
+        TranscriptLayoutClock.recording = false
+        print("PERF closed card streaming 40 argument tokens: at the card \(near.roots) root updates, \(near.measured) row measurements, \(near.sizing) sizing passes, \(near.validations) size invalidations; far away \(far.builds) row trees built, \(far.measured) row measurements")
+        XCTAssertEqual(card.frame.height, closed, accuracy: 0.5, "the closed card changed height while its arguments arrived")
+        XCTAssertLessThanOrEqual(near.roots, 40, "more than one root update a token")
+        XCTAssertEqual(near.measured, 0, "a closed card was measured again for tokens that cannot change its height")
+        XCTAssertEqual(near.sizing, 0, "a closed card was put through SwiftUI's sizing for tokens that cannot change its height")
+        XCTAssertEqual(far.builds, 0, "a closed card far from the reader built its tree for every token")
+
+        // Opened, it grows with its arguments.
+        stage.readerScroll(to: bottom())
+        await stage.settle()
+        card.toggleDisclosure(.tool(ToolOccurrence.key("card-reply", "call-1")))
+        await stage.settle()
+        let opened = card.frame.height
+        XCTAssertGreaterThan(opened, closed + 20, "the card opened")
+        for step in 83..<89 { await token(step, " && echo \\\"line \(step) of a command long enough to wrap onto another line of the card\\\"") }
+        XCTAssertGreaterThan(card.frame.height, opened, "an open card must grow with the arguments arriving in it")
+        assertStacked(stage, "after the open card grew")
+    }
+
+    /// A reply full of curly quotes and em dashes, taking tokens. The reply's
+    /// own surface checks each token against the text it holds; compared as
+    /// characters, that walked every grapheme of the reply for every token,
+    /// where plain ASCII is compared as bytes. What the surface itself does
+    /// with a token — everything but reading the markdown, which is the
+    /// parser's — must not grow with how long the reply is, nor cost more
+    /// for a curly quote than for a straight one.
+    ///
+    /// The three replies have the same number of blocks and end in the same
+    /// paragraph, the one taking the tokens; only the length of the text
+    /// before it differs, so the surface's work on its blocks is the same.
+    @MainActor func testATokenOfAReplyFullOfCurlyQuotesCostsTheSurfaceTheSameAtAnyLength() async throws {
+        func perToken(_ label: String, sentence: String, repeats: Int, token: String) async throws -> (surface: Double, reading: Double, bytes: Int) {
+            let body = (0..<119).map { "Paragraph \($0). " + String(repeating: sentence, count: repeats) }
+            var source = (body + ["The last paragraph, still arriving"]).joined(separator: "\n\n")
+            let session = SessionDisplay(id: "prefix-" + label)
+            session.messages = [.init(id: "u", role: "user", text: "Explain it."),
+                                .init(id: "a", role: "assistant", text: source, state: "streaming")]
+            let stage = Stage(session, height: 560); defer { stage.close() }
+            stage.page.presentationInterval = 0; stage.page.state = "running"
+            await stage.settle(turns: 4)
+            stage.readerScroll(to: max(0, stage.document.frame.height - stage.scroll.contentView.bounds.height))
+            await stage.settle(turns: 4)
+            let row = try XCTUnwrap(stage.rows.last)
+            for step in 0..<3 {
+                source += " and \(step) more words"
+                session.messages[1].text = source
+                stage.refresh()
+            }
+            let appendsBefore = row.streamingAppendCount
+            TranscriptLayoutClock.recording = true
+            TranscriptLayoutClock.reset()
+            let tokens = 20
+            for step in 0..<tokens {
+                source += step.isMultiple(of: 2) ? token : " and one more"
+                session.messages[1].text = source
+                stage.refresh()
+            }
+            let append = TranscriptLayoutClock.markdownAppendSeconds, reading = TranscriptLayoutClock.markdownReadingSeconds
+            TranscriptLayoutClock.recording = false
+            XCTAssertEqual(row.streamingAppendCount - appendsBefore, tokens, "\(label): the tokens must reach the reply's surface for this to mean anything")
+            return ((append - reading) / Double(tokens), reading / Double(tokens), source.utf8.count)
+        }
+        let curly = "“The retry loop” keeps the reader’s place — and the answer goes on. "
+        let plain = "\"The retry loop\" keeps the reader's place - and the answer goes on. "
+        let long = try await perToken("curly-long", sentence: curly, repeats: 13, token: " — “another” word")
+        let short = try await perToken("curly-short", sentence: curly, repeats: 1, token: " — “another” word")
+        let ascii = try await perToken("plain-long", sentence: plain, repeats: 13, token: " - \"another\" word")
+        print(String(format: "PERF a token's own cost to the reply's surface, 120 blocks: %.3f ms at %d KB of curly quotes and em dashes, %.3f ms at %d KB of them, %.3f ms at %d KB of plain text (the markdown reading beside it: %.3f, %.3f, %.3f ms)",
+                     long.surface * 1_000, long.bytes / 1_000, short.surface * 1_000, short.bytes / 1_000, ascii.surface * 1_000, ascii.bytes / 1_000,
+                     long.reading * 1_000, short.reading * 1_000, ascii.reading * 1_000))
+        XCTAssertGreaterThan(long.bytes, 100_000, "the long reply must be long for this to mean anything")
+        XCTAssertLessThan(long.surface, short.surface * 2 + 0.000_5,
+                          "a token cost the surface \(long.surface * 1_000) ms at \(long.bytes / 1_000) KB and \(short.surface * 1_000) ms at \(short.bytes / 1_000) KB")
+        XCTAssertLessThan(long.surface, ascii.surface * 2 + 0.000_5,
+                          "curly quotes made a token cost the surface \(long.surface * 1_000) ms against \(ascii.surface * 1_000) ms for plain text")
+    }
+
     @MainActor func testALongTurnStreamsWithoutMovingTheReaderOrOverlappingRows() async throws {
         let session = SessionDisplay(id: "stream")
         session.messages = Self.history(turns: 14)
@@ -798,7 +1274,14 @@ final class TranscriptStreamingStressTests: XCTestCase {
                                              at: Double(index * 2 + 1), turn: "eu\(index)"))
         }
         session.messages = TranscriptPaging.prefix(earlier: earlier, shown: session.messages) + session.messages
+        // The pass that places the earlier page puts the reader's row back
+        // where it was, and the frame it draws shows it there. Put back a
+        // run-loop turn later, that frame showed the earlier page's first
+        // rows where the reader's row had been.
         stage.refresh()
+        let placed = try XCTUnwrap(stage.row("hu1"))
+        XCTAssertEqual(placed.frame.minY - stage.scrollY, screenY, accuracy: 3,
+                       "the pass that placed the earlier page drew the reader's row \(Int(placed.frame.minY - stage.scrollY - screenY)) pt from where it was")
         await stage.settle()
         assertStacked(stage, "after the earlier page")
         let moved = try XCTUnwrap(stage.row("hu1"))

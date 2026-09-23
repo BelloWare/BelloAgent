@@ -88,17 +88,27 @@ struct TurnDurationMetrics: View {
         self.input = input
         _clock = StateObject(wrappedValue: TurnDurationClock(input: input))
     }
+    /// A running clock counts whole seconds, as every running clock in the
+    /// app does: a live reading with milliseconds changed its digits — and,
+    /// trailing zeros trimmed, its width — on every tick. A settled reading
+    /// keeps the precision it was reported with.
+    nonisolated static func label(_ milliseconds: Double, live: Bool) -> String {
+        live ? MetricFormat.runDuration(milliseconds) : MetricFormat.detailedDuration(milliseconds)
+    }
     var body: some View {
+        let live = input.live
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
                 Text("Duration").foregroundStyle(TranscriptPalette.faint)
-                Text(clock.reading.elapsedMs.map(MetricFormat.detailedDuration) ?? "—")
+                Text(clock.reading.elapsedMs.map { Self.label($0, live: live) } ?? "—")
                     .foregroundStyle(TranscriptPalette.text).accessibilityIdentifier("elapsedClock")
             }.font(.system(size: 11, weight: .medium))
-            Text("AI \(MetricFormat.detailedDuration(clock.reading.modelMs)) · Tools \(MetricFormat.detailedDuration(clock.reading.toolMs))")
+            Text("AI \(Self.label(clock.reading.modelMs, live: live)) · Tools \(Self.label(clock.reading.toolMs, live: live))")
                 .font(.system(size: 10)).foregroundStyle(TranscriptPalette.muted)
-                .help("Recorded AI and tool time. Live readings refresh every half second; completed readings retain their reported precision.")
-        }.monospacedDigit().fixedSize(horizontal: true, vertical: true)
+                .help("Recorded AI and tool time. Live readings count whole seconds; completed readings retain their reported precision.")
+        // Live, the readings keep one line each, so a tick can never wrap the
+        // dock. Settled, they no longer change and may wrap rather than cut.
+        }.monospacedDigit().lineLimit(live ? 1 : nil).fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .transaction { $0.animation = nil }
             .onChange(of: input) { _, next in clock.update(next) }

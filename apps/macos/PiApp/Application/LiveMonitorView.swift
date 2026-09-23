@@ -41,17 +41,21 @@ extension Color {
     private var rows: [MenuBarActivityRow] { controller.activity.runningRows.filter { project == nil || $0.workspaceID == project } }
     private var current: (rate: Double?, reported: Int, active: Int) { live.snapshot.currentRates(workspace: project) }
     private var samples: [LiveRateSample] { live.snapshot.rateHistory.samples(in: domain) }
-    private var chartMetric: MonitorRateMetric { metric ?? (samples.contains { !$0.hasGap(workspace: project) && !$0.models(workspace: project).isEmpty } ? .live : .average) }
+    private func chartMetric(_ samples: [LiveRateSample]) -> MonitorRateMetric {
+        metric ?? (samples.contains { !$0.hasGap(workspace: project) && !$0.models(workspace: project).isEmpty } ? .live : .average)
+    }
 
     private var colorModels: [String] {
         Array(Set(Array(live.snapshot.rateHistory.modelNames) + live.snapshot.requests.map { $0.model ?? "\($0.alias) · \($0.identityStatus)" } + MonitorDistribution.make(controller.snapshot?.models ?? []).map(\.id))).sorted()
     }
     var body: some View {
+        // Filtered once per update: the chart and its metric choice share it.
+        let samples = samples
         VStack(alignment: .leading, spacing: 12) {
             scope
             ranges
             rates
-            MonitorRateChart(samples: samples, usage: controller.snapshot, workspace: project, following: following, zoom: $zoom, metric: chartMetric, palette: palette, selectMetric: { metric = $0 })
+            MonitorRateChart(samples: samples, usage: controller.snapshot, workspace: project, following: following, zoom: $zoom, metric: chartMetric(samples), palette: palette, selectMetric: { metric = $0 })
             if let range = zoom.range {
                 Text("\(range.lowerBound.formatted(date: .omitted, time: .standard)) – \(range.upperBound.formatted(date: .omitted, time: .standard)) · selected interval")
                     .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).monospacedDigit()
@@ -114,13 +118,13 @@ extension Color {
             Rectangle().fill(Color.piHairlineStrong).frame(width: 1, height: 62)
             VStack(alignment: .trailing, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(controller.snapshot?.historicalRate.tokensPerSecond.map { menuBarRate($0) } ?? "—").font(PiFont.title(24))
+                    Text(controller.snapshot?.gateway.settledThroughput.tokensPerSecond.map { menuBarRate($0) } ?? "—").font(PiFont.title(24))
                     Text("tok/s").font(PiFont.heading)
                 }.monospacedDigit()
-                Text("Avg / completed request").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                Text("\(controller.snapshot?.historicalRate.samples ?? 0) timed requests").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
+                Text("Avg decode / completed request").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                Text("\(controller.snapshot?.gateway.settledThroughput.samples ?? 0) measured requests").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
             }.frame(maxWidth: .infinity, alignment: .trailing)
-        }.help("Current is the sum of fresh gateway-reported output counter intervals; partial coverage is labeled. Average is reported output divided by total dispatch-to-completion time for completed requests in the chosen scope, including hidden reasoning and time to first content.")
+        }.help("Current is the sum of fresh gateway-reported output counter intervals; partial coverage is labeled. Average: " + SettledThroughput.explanation)
     }
     private var totals: some View {
         let gateway = controller.snapshot?.gateway

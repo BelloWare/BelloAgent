@@ -17,7 +17,21 @@ typealias SessionUsageLoader = @MainActor (SessionUsageScope, Date, Int) async t
     @Published private(set) var offset = 0
     @Published var breakdown = SessionUsageBreakdown.models
     /// Per-request timing and cost of this session, fed by the chat's footer.
-    @Published var timing = SessionTimingHistory()
+    @Published var timing = SessionTimingHistory() {
+        didSet {
+            guard timing != oldValue else { return }
+            ledger = SessionRequestLedger(history: timing); timingSeries = SessionTimingSeries.all(timing)
+        }
+    }
+    /// The request ledger of `timing`, built once per history instead of on
+    /// every render of the window.
+    private(set) var ledger = SessionRequestLedger(history: SessionTimingHistory())
+    /// The timing charts' points of `timing`, with their accessibility
+    /// strings formatted once per history, never on a hover or a redraw.
+    private(set) var timingSeries = SessionTimingSeries.all(SessionTimingHistory())
+    /// The timing charts' hovered request, held without publishing it; see
+    /// `SessionTimingSelection`.
+    let timingSelection = SessionTimingSelection()
     /// The helper's session and last-turn model/tool clocks, fed by the chat's footer.
     @Published var work: [String: WireValue] = [:]
     private let load: SessionUsageLoader
@@ -42,13 +56,24 @@ typealias SessionUsageLoader = @MainActor (SessionUsageScope, Date, Int) async t
         self.visible = visible; restart()
     }
     func refresh() { restart() }
+    /// Paging keeps the current page on screen, pager disabled while it
+    /// reads, and swaps in the requested page when it lands.
     func previousPage() {
         guard offset > 0, !loading else { return }
-        offset = max(0, offset - MenuBarSnapshot.pageSize); snapshot = nil; restart()
+        offset = max(0, offset - MenuBarSnapshot.pageSize); restart()
     }
     func nextPage() {
         guard snapshot?.hasNext == true, !loading else { return }
-        offset += MenuBarSnapshot.pageSize; snapshot = nil; restart()
+        offset += MenuBarSnapshot.pageSize; restart()
+    }
+    /// Whether a poll read the same figures. `until`, the bucket bounds that
+    /// follow it and the read stamps differ on every read; Session info shows
+    /// none of them, so they must not redraw the window.
+    static func sameFigures(_ a: MenuBarSnapshot, _ b: MenuBarSnapshot) -> Bool {
+        a.period == b.period && a.from == b.from && a.counts == b.counts && a.gateway == b.gateway
+            && a.workspaces == b.workspaces && a.sessions == b.sessions && a.compactionRequests == b.compactionRequests
+            && a.costUnreported == b.costUnreported && a.costInvalid == b.costInvalid && a.costConflicts == b.costConflicts
+            && a.models == b.models && a.modelGroups == b.modelGroups && a.offset == b.offset
     }
     private func restart() {
         task?.cancel(); task = nil; generation += 1; loading = false; notice = ""
@@ -63,11 +88,11 @@ typealias SessionUsageLoader = @MainActor (SessionUsageScope, Date, Int) async t
                     try Task.checkCancellation()
                     guard let self, self.generation == generation else { return }
                     if offset > 0 && value.models.isEmpty {
-                        self.offset = 0; self.snapshot = nil; self.restart(); return
+                        self.offset = 0; self.restart(); return
                     }
                     // The fallback poll re-reads the same archive rows; only a
                     // change may redraw the charts and the model table.
-                    if self.snapshot != value { self.snapshot = value }
+                    if !(self.snapshot.map { Self.sameFigures($0, value) } ?? false) { self.snapshot = value }
                     if self.loading { self.loading = false }
                     if !self.notice.isEmpty { self.notice = "" }
                 } catch is CancellationError { return }
@@ -140,6 +165,22 @@ enum SessionUsagePresentation {
     static func milliseconds(_ value: Double?) -> String {
         guard let value, value.isFinite, value >= 0 else { return "n/a" }
         return value < 1_000 ? String(format: "%.0f ms", value) : String(format: "%.2f s", value / 1_000)
+    }
+    /// The line under the per-request charts for the request the pointer is
+    /// on. Each figure is the one its chart plots: the rate is the settled
+    /// decode rate, not output over the whole request.
+    static func requestCaption(index: Int, sample: SessionTimingSample) -> String { caption("Request \(index)", sample) }
+    /// The line for the request under the pointer, else for the latest
+    /// request, as the timing popover reads it. Empty only with no requests.
+    static func requestCaption(selected: Int?, in history: SessionTimingHistory) -> String {
+        if let selected, history.samples.indices.contains(selected - 1) { return requestCaption(index: selected, sample: history.samples[selected - 1]) }
+        return history.latest.map { caption("Latest", $0) } ?? ""
+    }
+    private static func caption(_ title: String, _ sample: SessionTimingSample) -> String {
+        func figure(_ metric: SessionTimingMetric) -> String { metric.label(metric.value(in: sample)) }
+        let when = sample.wall.formatted(date: .abbreviated, time: .standard)
+        let parts: [String] = [title, when, figure(.ttft) + " TTFT", figure(.rate) + " decode", figure(.output) + " out", figure(.cost)]
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -217,6 +258,64 @@ struct SessionUsageButton: View {
     }
 }
 
+/// The per-request charts and the figures of the request the pointer is on.
+/// The section holds that selection without watching it: each chart's rule
+/// and the request caption do, so a hover redraws those and nothing else —
+/// not the Session info page with its ledger and tables, not this section,
+/// not a chart's marks.
+struct SessionTimingSection: View {
+    let history: SessionTimingHistory
+    let series: [SessionTimingSeries]
+    let selection: SessionTimingSelection
+    var body: some View {
+        let _ = SessionUsageRenderCount.timingBuilt()
+        VStack(alignment: .leading, spacing: PiSpacing.sm) {
+            PiSectionHeader("Per-request timing and cost", subtitle: history.hasOlderRequests ? "Most recent \(history.samples.count) completed requests" : "\(history.samples.count) completed requests · hover a point for its figures")
+            if history.samples.isEmpty {
+                Text("No completed requests with retained metrics yet.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                    .frame(maxWidth: .infinity, minHeight: 80)
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: PiSpacing.md), GridItem(.flexible(), spacing: PiSpacing.md)], alignment: .leading, spacing: PiSpacing.md) {
+                    ForEach(series, id: \.metric.rawValue) { chart in
+                        PiCard(padding: PiSpacing.md) { SessionTimingChart(series: chart, selection: selection, height: 120) }
+                    }
+                }
+                SessionTimingRequestCaption(history: history, selection: selection)
+                Text(SettledThroughput.explanation + " Session figure: \(SessionTimingMetric.rate.label(history.settledThroughput.tokensPerSecond)) over \(history.settledThroughput.samples)/\(history.samples.count) listed requests. Gaps indicate missing measurements; costs are gateway-reported.")
+                    .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityIdentifier("session-timing-charts")
+        .onChange(of: history) { _, _ in if let index = selection.request, !history.samples.indices.contains(index - 1) { selection.select(nil) } }
+    }
+}
+
+/// The figures of the request the pointer is on, else of the latest request,
+/// under the Session info charts. The line is always there and always two
+/// lines tall, so hovering a chart never moves what is below it. With the
+/// charts' rules, the only part of the section that watches the pointer.
+private struct SessionTimingRequestCaption: View {
+    let history: SessionTimingHistory
+    @ObservedObject var selection: SessionTimingSelection
+    var body: some View {
+        let _ = SessionTimingRenderCount.captionDrawn()
+        Text(SessionUsagePresentation.requestCaption(selected: selection.request, in: history))
+            .font(PiFont.caption).monospacedDigit().foregroundStyle(Color.piInk)
+            .lineLimit(2, reservesSpace: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// How many times the Session info page and its timing section built their
+/// views. A test seam: hovering a chart must redraw the section, not the page.
+@MainActor enum SessionUsageRenderCount {
+    private(set) static var builds = 0
+    private(set) static var timingBuilds = 0
+    static func reset() { builds = 0; timingBuilds = 0 }
+    static func built() { builds &+= 1 }
+    static func timingBuilt() { timingBuilds &+= 1 }
+}
+
 struct SessionUsageView: View {
     let title: String
     @ObservedObject var controller: SessionUsageController
@@ -228,6 +327,7 @@ struct SessionUsageView: View {
     }
 
     var body: some View {
+        let _ = SessionUsageRenderCount.built()
         VStack(alignment: .leading, spacing: 0) {
             // The window's own title bar: it drags and zooms the window, names
             // the session, and leaves the leading room the buttons need.
@@ -483,33 +583,12 @@ struct SessionUsageView: View {
     /// The Trajectory equivalent: what each request was, what it consumed and
     /// how fast it decoded, in the order it ran.
     private var requestLedger: some View {
-        SessionRequestLedgerView(ledger: SessionRequestLedger(history: controller.timing))
+        SessionRequestLedgerView(ledger: controller.ledger)
     }
 
-    @State private var selectedRequest: Int?
     /// Every retained completed request of this session, oldest to newest.
     private var timingCharts: some View {
-        let history = controller.timing
-        return VStack(alignment: .leading, spacing: PiSpacing.sm) {
-            PiSectionHeader("Per-request timing and cost", subtitle: history.hasOlderRequests ? "Most recent \(history.samples.count) completed requests" : "\(history.samples.count) completed requests · hover a point for its figures")
-            if history.samples.isEmpty {
-                Text("No completed requests with retained metrics yet.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                    .frame(maxWidth: .infinity, minHeight: 80)
-            } else {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: PiSpacing.md), GridItem(.flexible(), spacing: PiSpacing.md)], alignment: .leading, spacing: PiSpacing.md) {
-                    ForEach(SessionTimingMetric.allCases, id: \.rawValue) { metric in
-                        PiCard(padding: PiSpacing.md) { SessionTimingChart(history: history, metric: metric, selectedRequest: $selectedRequest, height: 120) }
-                    }
-                }
-                if let index = selectedRequest, history.samples.indices.contains(index - 1) {
-                    let sample = history.samples[index - 1]
-                    Text("Request \(index) · \(sample.wall.formatted(date: .abbreviated, time: .standard)) · \(SessionTimingMetric.ttft.label(sample.ttftMilliseconds)) TTFT · \(SessionTimingMetric.rate.label(sample.outputTokensPerSecond)) · \(SessionTimingMetric.output.label(sample.outputTokens)) out · \(SessionTimingMetric.cost.label(sample.costUSD))")
-                        .font(PiFont.caption).monospacedDigit().foregroundStyle(Color.piInk).lineLimit(2)
-                }
-                Text(SettledThroughput.explanation + " Session figure: \(SessionTimingMetric.rate.label(history.settledThroughput.tokensPerSecond)) over \(history.settledThroughput.samples)/\(history.samples.count) listed requests. Gaps indicate missing measurements; costs are gateway-reported.")
-                    .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
-            }
-        }.accessibilityIdentifier("session-timing-charts")
+        SessionTimingSection(history: controller.timing, series: controller.timingSeries, selection: controller.timingSelection)
     }
 
     private func methodology(_ snapshot: MenuBarSnapshot) -> some View {

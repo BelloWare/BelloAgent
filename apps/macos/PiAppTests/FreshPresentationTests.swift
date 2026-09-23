@@ -281,7 +281,7 @@ final class FreshPresentationTests: XCTestCase {
         XCTAssertLessThanOrEqual(departed.filter { $0.value != nil }.count, 1, "Outgoing generations do not accumulate retained sessions")
         let sorted = timings.sorted(), work = units.sorted()
         print("FRESH 50 UI generations p50=\(sorted[25]) p95=\(sorted[47]) max=\(sorted.last!) ms; layout/draw work p95=\(work[Int(Double(work.count-1)*0.95)]) p99=\(work[Int(Double(work.count-1)*0.99)]) max=\(work.last!) ms")
-        XCTAssertLessThan(sorted[47], 200)
+        XCTAssertLessThan(sorted[47], releaseBudget(0.200) * 1_000, "p95 of fifty fresh presentations")
     }
     @MainActor private final class WeakSession {
         weak var value: SessionDisplay?
@@ -318,8 +318,8 @@ final class FreshPresentationTests: XCTestCase {
         }
         let times = draws.sorted(), sourceTimes = sources.sorted(), feedbackTimes = feedback.sorted()
         print("FRESH 20 indexed source+UI p50=\(times[10]) p95=\(times[18]) max=\(times[19]) ms; source p95=\(sourceTimes[18]) ms; selection feedback p95=\(feedbackTimes[19]) ms")
-        XCTAssertLessThan(times[18], 200)
-        XCTAssertLessThan(feedbackTimes[19], 50)
+        XCTAssertLessThan(times[18], releaseBudget(0.200) * 1_000, "p95 of indexed source and UI")
+        XCTAssertLessThan(feedbackTimes[19], releaseBudget(0.050) * 1_000, "worst selection feedback")
         XCTAssertTrue(model.hosts.isEmpty, "Display-only history must not launch an agent")
     }
 

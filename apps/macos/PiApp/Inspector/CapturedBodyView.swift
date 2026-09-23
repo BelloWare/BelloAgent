@@ -4,6 +4,19 @@ import AppKit
 struct CapturedBodyMetadata: Equatable, Sendable {
     let body: [String: WireValue]
     let hash: WireValue?
+    /// The loaded bytes are the start of a body that was still being written
+    /// while they were read; later bytes belong to the next read.
+    var growingPrefix = false
+
+    init(body: [String: WireValue], hash: WireValue?) { self.body = body; self.hash = hash }
+    /// Describes the first `length` bytes of a capture that grew during the read.
+    /// A prefix has no digest of its own.
+    init(prefix length: Int, of described: CapturedBodyMetadata) {
+        var body = described.body
+        body["retainedBytes"] = .number(Double(length))
+        body["observedBytes"] = .number(max(Double(length), body["observedBytes"]?.number ?? 0))
+        self.body = body; hash = nil; growingPrefix = true
+    }
 
     func count(limit: Int) throws -> Int {
         guard let number = body["retainedBytes"]?.number, number.isFinite,
@@ -17,6 +30,7 @@ struct CapturedBodyMetadata: Equatable, Sendable {
         let retained = body["retainedBytes"]?.number.map { String(format: "%.0f", $0) } ?? "unknown"
         let observed = body["observedBytes"]?.number.map { String(format: "%.0f", $0) } ?? "unknown"
         let reason = body["reason"]?.string ?? ""
+        if growingPrefix { return "\(state) · first \(retained) bytes loaded while the capture was still being written" + (reason.isEmpty ? "" : " · \(reason)") }
         return "\(state) · all \(retained) retained bytes loaded / \(observed) observed" + (reason.isEmpty ? "" : " · \(reason)")
     }
 }
@@ -231,6 +245,8 @@ struct CapturedBodyDocument: Sendable {
     var combinedResponse: CombinedResponse?
     var combinationFinished = false
     var hasResponseEvents = false
+    /// The document on screen that this newer read of the same body replaced.
+    var replaces: UUID?
     var structured: CapturedJSON? { json ?? eventStream?.outline }
 
     func availableFormats(kind: String) -> [(CapturedBodyFormat, String)] {
@@ -308,30 +324,47 @@ struct CapturedBodyDocument: Sendable {
 
 enum CapturedBodyReader {
     static func limit(_ kind: String) -> Int { kind == "request" ? 33_554_432 : 67_108_864 }
+    /// Capture states whose retained bytes can still grow: the archive is
+    /// recording, or the helper is still receiving the response. Bytes are
+    /// only ever appended, so the prefix a read starts with never changes.
+    static func growable(_ state: String) -> Bool { state == "recording" || state == "partial" }
 
-    @MainActor static func read(kind: String, source: CapturedBodySource, progress: @escaping @MainActor @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> CapturedBodyDocument {
+    /// `combine` also builds the combined response view before returning, so
+    /// a document that replaces one on screen never passes through a spinner.
+    @MainActor static func read(kind: String, source: CapturedBodySource, combine: Bool = false, progress: @escaping @MainActor @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> CapturedBodyDocument {
         try Task.checkCancellation()
         let before = try await source.metadata()
-        guard MessageBodyReader.canReadRetained(before.body["state"]?.string ?? "") else {
+        let state = before.body["state"]?.string ?? ""
+        guard MessageBodyReader.canReadRetained(state) else {
             throw HostError.failure("Body unavailable: \(before.body["state"]?.string ?? "not captured"). \(before.body["reason"]?.string ?? "")")
         }
-        let count = try before.count(limit: limit(kind))
+        let count = try before.count(limit: limit(kind)), growing = growable(state)
         let bytes: Data
         if let whole = source.whole { bytes = try await whole(progress) }
         else {
-            guard let assembled = try await MessageBodyReader.assemble(limit: limit(kind), progress: progress, page: source.page) else {
+            // A body still being written is read up to the length it had
+            // when the read began; failing whenever a byte arrived meant a
+            // streaming response could not be viewed until it finished.
+            guard let assembled = try await MessageBodyReader.assemble(limit: limit(kind), length: growing ? count : nil, progress: progress, page: source.page) else {
                 throw HostError.failure("The capture changed while reading. Refresh and try again.")
             }
             bytes = assembled
         }
-        guard bytes.count == count else {
-            throw HostError.failure("The capture changed while reading. Refresh and try again.")
-        }
         try Task.checkCancellation()
-        guard before == (try await source.metadata()) else {
-            throw HostError.failure("The capture changed while reading. Refresh and try again.")
+        let after = try await source.metadata()
+        var described = before
+        if bytes.count != count || before != after {
+            // Only growth past the prefix this read holds is not a change; a
+            // body that did not grow must still have the same digest.
+            guard growing, bytes.count >= count, MessageBodyReader.canReadRetained(after.body["state"]?.string ?? ""),
+                  let now = try? after.count(limit: limit(kind)), now >= bytes.count, now > count || after.hash == before.hash else {
+                throw HostError.failure("The capture changed while reading. Refresh and try again.")
+            }
+            // Every byte the capture holds now was read: `after` describes them.
+            described = now == bytes.count ? after : CapturedBodyMetadata(prefix: bytes.count, of: before)
         }
-        return try await CapturedBodyWorker.shared.run { try CapturedBodyDocument.parse(bytes: bytes, metadata: before, combine: false) }
+        let metadata = described
+        return try await CapturedBodyWorker.shared.run { try CapturedBodyDocument.parse(bytes: bytes, metadata: metadata, combine: combine) }
     }
 }
 
@@ -345,14 +378,16 @@ enum CapturedBodyReader {
     private var readTask: Task<CapturedBodyDocument, Error>?
     private var combinationTask: Task<CombinedResponse?, Error>?
 
-    func load(kind: String, source: CapturedBodySource, preservingDocument: Bool = false) async {
+    /// `preservingDocument` keeps the body on screen until its replacement
+    /// lands; `combine` prepares the replacement's combined view first.
+    func load(kind: String, source: CapturedBodySource, preservingDocument: Bool = false, combine: Bool = false) async {
         readTask?.cancel(); combinationTask?.cancel(); combinationTask = nil
         generation += 1
-        let revision = generation
+        let revision = generation, replacing = preservingDocument ? document?.id : nil
         if !preservingDocument { document = nil }
         loaded = 0; total = 0; notice = ""; loading = true
         let job = Task { @MainActor [weak self] in
-            try await CapturedBodyReader.read(kind: kind, source: source) { [weak self] loaded, total in
+            try await CapturedBodyReader.read(kind: kind, source: source, combine: combine) { [weak self] loaded, total in
                 guard let self, self.generation == revision else { return }
                 // Coalesce UI progress without changing the archive's 32 KiB reads.
                 if loaded == total || loaded - self.loaded >= 131_072 || self.total == 0 {
@@ -363,9 +398,10 @@ enum CapturedBodyReader {
         readTask = job
         defer { if generation == revision { readTask = nil } }
         do {
-            let result = try await withTaskCancellationHandler { try await job.value } onCancel: { job.cancel() }
+            var result = try await withTaskCancellationHandler { try await job.value } onCancel: { job.cancel() }
             try Task.checkCancellation()
             guard generation == revision else { return }
+            result.replaces = replacing
             document = result; loading = false
         } catch {
             guard generation == revision else { return }
@@ -407,6 +443,9 @@ struct CapturedBodyView: View {
     var copySource: Binding<CapturedBodyCopySource?>? = nil
     var searchQuery = ""
     var searchHeaders: [String: WireValue] = [:]
+    /// Retained bytes the owner's latest poll reported for a body that is
+    /// still being written. Newer bytes are offered, never read on each poll.
+    var growingBytes: Int? = nil
     @StateObject private var controller = CapturedBodyController()
     @StateObject private var search = PayloadSearchController()
     @State private var previousSelection: Selection?
@@ -416,12 +455,19 @@ struct CapturedBodyView: View {
     @State private var expandAll = false
     @State private var outlineCommand: JSONOutlineCommand?
     @State private var hex = ""
+    @State private var hexDocument: UUID?
     /// The retained bytes decoded as UTF-8, once per document.
     @State private var utf8 = ""
+    @State private var utf8Document: UUID?
+    /// The document and format the selection and disclosure state belong to.
+    @State private var shown: FormatSelection?
+    /// "Load latest" presses; each reads the growing body once more.
+    @State private var latestRequests = 0
     private struct Selection: Equatable {
         let session: String, attempt: String, kind: String
         let retained: Bool
         let revision: Int
+        let latest: Int
     }
     private struct FormatSelection: Equatable {
         let format: CapturedBodyFormat
@@ -444,12 +490,13 @@ struct CapturedBodyView: View {
     }
     init(source: CapturedBodySource, sessionID: String, attemptID: String, kind: String, retained: Bool,
          revision: Int = 0, copySource: Binding<CapturedBodyCopySource?>? = nil,
-         initialFormat: CapturedBodyFormat = .json, searchQuery: String = "", searchHeaders: [String: WireValue] = [:]) {
+         initialFormat: CapturedBodyFormat = .json, searchQuery: String = "", searchHeaders: [String: WireValue] = [:], growingBytes: Int? = nil) {
         self.source = source; self.sessionID = sessionID; self.attemptID = attemptID; self.kind = kind; self.retained = retained
         self.revision = revision; self.copySource = copySource; self.searchQuery = searchQuery; self.searchHeaders = searchHeaders
+        self.growingBytes = growingBytes
         _format = State(initialValue: initialFormat)
     }
-    private var identity: Selection { Selection(session: sessionID, attempt: attemptID, kind: kind, retained: retained, revision: revision) }
+    private var identity: Selection { Selection(session: sessionID, attempt: attemptID, kind: kind, retained: retained, revision: revision, latest: latestRequests) }
     private var activeFormat: CapturedBodyFormat { controller.document?.resolvedFormat(format, kind: kind) ?? .json }
     private var selectedFormat: Binding<CapturedBodyFormat> {
         Binding(get: { activeFormat }, set: { format = $0 })
@@ -465,7 +512,7 @@ struct CapturedBodyView: View {
             } else if let document = controller.document {
                 if let json = document.structured(format: activeFormat) {
                     JSONOutlineView(json: json, selection: $selection, expandRevision: expandRevision, expandAll: expandAll,
-                                    command: outlineCommand)
+                                    command: outlineCommand, stateKey: "\(sessionID):\(attemptID):\(kind):\(activeFormat.rawValue)")
                         .piInset(sunken: true)
                     // Outside the scroll view: these controls remain reachable
                     // even at the end of a very large expanded request.
@@ -500,6 +547,14 @@ struct CapturedBodyView: View {
                     if activeFormat == .json { Text("Not a JSON document or UTF-8 event stream · showing retained UTF-8.").font(PiFont.micro).foregroundStyle(Color.piInkTertiary) }
                 }
                 Text(document.metadata.summary).font(PiFont.micro).foregroundStyle(Color.piInkSecondary).textSelection(.enabled)
+                if let growingBytes, growingBytes > document.bytes.count {
+                    HStack(spacing: PiSpacing.sm) {
+                        Text("\(growingBytes.formatted()) bytes so far · showing the first \(document.bytes.count.formatted())")
+                            .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).monospacedDigit()
+                        if controller.loading { Text("Loading…").font(PiFont.micro).foregroundStyle(Color.piInkTertiary) }
+                        else { Button("Load latest") { latestRequests += 1 }.buttonStyle(.piGhost).font(PiFont.micro).accessibilityIdentifier("payload-load-latest") }
+                    }
+                }
             } else if controller.loading {
                 VStack(spacing: PiSpacing.sm) {
                     ProgressView(value: Double(controller.loaded), total: Double(max(1, controller.total))).frame(maxWidth: 300)
@@ -521,14 +576,25 @@ struct CapturedBodyView: View {
         .task(id: identity) {
             let preserve = previousSelection.map { $0.session == identity.session && $0.attempt == identity.attempt && $0.kind == identity.kind } ?? false
             previousSelection = identity
-            displayedText?.wrappedValue = ""; copySource?.wrappedValue = nil; selection = ""; hex = ""; utf8 = ""
-            if !preserve { expandAll = false; expandRevision = 0; outlineCommand = nil }
-            await controller.load(kind: kind, source: source, preservingDocument: preserve)
+            // A newer read of the body on screen keeps what the reader is
+            // looking at, and what Copy would copy, until its replacement lands.
+            if !preserve {
+                displayedText?.wrappedValue = ""; copySource?.wrappedValue = nil; selection = ""; hex = ""; utf8 = ""
+                hexDocument = nil; utf8Document = nil
+                expandAll = false; expandRevision = 0; outlineCommand = nil
+            }
+            await controller.load(kind: kind, source: source, preservingDocument: preserve, combine: preserve && activeFormat == .combined)
             guard !Task.isCancelled else { return }
             await updateDisplayedText()
         }
         .task(id: FormatSelection(format: activeFormat, document: controller.document?.id)) {
-            selection = ""; expandAll = false; expandRevision = 0; outlineCommand = nil
+            let current = FormatSelection(format: activeFormat, document: controller.document?.id)
+            // The same body, re-read, keeps its selection and open sections; the
+            // outline carries them onto the new document. A new body or another
+            // format starts fresh.
+            let inPlace = controller.document?.replaces != nil && shown == FormatSelection(format: activeFormat, document: controller.document?.replaces)
+            shown = current
+            if !inPlace { selection = ""; expandAll = false; expandRevision = 0; outlineCommand = nil }
             if activeFormat == .combined { await controller.prepareCombined() }
             guard !Task.isCancelled else { return }
             await updateHexIfNeeded()
@@ -580,22 +646,22 @@ struct CapturedBodyView: View {
     /// task. This used to run inside `body`, so every progress tick, poll,
     /// hover or resize re-decoded the whole payload on the main thread.
     private func updateUTF8IfNeeded() async {
-        guard activeFormat != .hex, utf8.isEmpty, let document = controller.document,
+        guard activeFormat != .hex, let document = controller.document, utf8Document != document.id,
               document.structured(format: activeFormat) == nil, !document.bytes.isEmpty else { return }
         let identity = identity, bytes = document.bytes, requested = activeFormat
         let decoding = Task.detached(priority: .userInitiated) { String(decoding: bytes, as: UTF8.self) }
         let value = await withTaskCancellationHandler(operation: { await decoding.value }, onCancel: { decoding.cancel() })
-        guard !Task.isCancelled, identity == self.identity, activeFormat == requested else { return }
-        utf8 = value
+        guard !Task.isCancelled, identity == self.identity, activeFormat == requested, controller.document?.id == document.id else { return }
+        utf8 = value; utf8Document = document.id
     }
     private func updateHexIfNeeded() async {
-        guard activeFormat == .hex, hex.isEmpty, let bytes = controller.document?.bytes else { return }
-        let identity = identity
+        guard activeFormat == .hex, let document = controller.document, hexDocument != document.id else { return }
+        let identity = identity, bytes = document.bytes
         let rendering = Task.detached(priority: .userInitiated) { try CapturedBodyHex.render(bytes) }
         do {
             let value = try await withTaskCancellationHandler(operation: { try await rendering.value }, onCancel: { rendering.cancel() })
-            guard !Task.isCancelled, identity == self.identity, format == .hex else { return }
-            hex = value
+            guard !Task.isCancelled, identity == self.identity, format == .hex, controller.document?.id == document.id else { return }
+            hex = value; hexDocument = document.id
         } catch { /* Leaving the view or format cancels expensive rendering. */ }
     }
 }
@@ -620,6 +686,10 @@ enum CapturedBodyHex {
 
 @MainActor final class JSONOutlineNode {
     private let baseKey: String
+    /// The node's name in its parent, independent of whether an event frame
+    /// has been decoded yet: a path of these finds the same node in a newer
+    /// document of the same body.
+    var pathKey: String { baseKey }
     let value: Any
     var prepared: CapturedEventContent?
     var key: String {
@@ -636,6 +706,22 @@ enum CapturedBodyHex {
     }
     var count: Int { (value as? CapturedEventFrame).map { prepared == nil ? 0 : $0.count } ?? (value as? [String: Any])?.count ?? (value as? [Any])?.count ?? 0 }
     var cachedChildren: Int { children.count }
+    /// The child named `key`, without building every sibling of a long array.
+    func childIndex(forPathKey key: String) -> Int? {
+        if value is [String: Any] {
+            // Keys are sorted; a binary search keeps a wide object cheap.
+            var low = 0, high = keys.count
+            while low < high { let middle = (low + high) / 2; if keys[middle] < key { low = middle + 1 } else { high = middle } }
+            return low < keys.count && keys[low] == key ? low : nil
+        }
+        if let list = value as? [Any] {
+            let position = key.hasPrefix("[") && key.hasSuffix("]") ? Int(key.dropFirst().dropLast())
+                : Int(key.prefix { $0.isNumber }).map { $0 - 1 }
+            guard let position, list.indices.contains(position), child(position).pathKey == key else { return nil }
+            return position
+        }
+        return (0..<count).first { child($0).pathKey == key }
+    }
     func child(_ index: Int) -> JSONOutlineNode {
         if let result = children[index] { return result }
         let result: JSONOutlineNode
@@ -688,6 +774,10 @@ struct JSONOutlineView: NSViewRepresentable {
     let expandRevision: Int
     let expandAll: Bool
     var command: JSONOutlineCommand? = nil
+    /// What the outline shows: an attempt's body in one format. A new
+    /// document under the same key is a newer read of what is on screen, and
+    /// the reader's open sections, selection and scroll position carry over.
+    var stateKey = ""
     func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
@@ -710,12 +800,14 @@ struct JSONOutlineView: NSViewRepresentable {
         // One controller document is immutable. Rebuild only after a new body,
         // not after selecting a row or changing the expanded state.
         if coordinator.documentID != json.id {
+            let carried = !stateKey.isEmpty && coordinator.stateKey == stateKey ? coordinator.capture(outline) : nil
             coordinator.cancelPendingSelection()
-            coordinator.documentID = json.id
+            coordinator.documentID = json.id; coordinator.stateKey = stateKey
             coordinator.root = JSONOutlineNode(key: json.rootLabel, value: json.value, formattedDetail: json.eagerFormatted)
             coordinator.revision = expandRevision
             coordinator.commandID = command?.id
             outline.reloadData(); outline.expandItem(coordinator.root)
+            if let carried { coordinator.restore(carried, in: outline) }
         }
         if coordinator.revision != expandRevision {
             coordinator.revision = expandRevision
@@ -739,6 +831,57 @@ struct JSONOutlineView: NSViewRepresentable {
     @MainActor final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
         var root: JSONOutlineNode?
         var documentID: UUID?
+        var stateKey = ""
+        /// What the reader had open, selected and scrolled to, by node path.
+        struct Carried {
+            var expanded: [[String]] = []
+            var selected: [String]?
+            var anchor: [String]?
+            var offset: CGFloat = 0
+            var everything = false
+        }
+        private func path(_ node: JSONOutlineNode, in outline: NSOutlineView) -> [String] {
+            var keys: [String] = [], item: Any? = node
+            while let current = item as? JSONOutlineNode { keys.append(current.pathKey); item = outline.parent(forItem: current) }
+            return keys.reversed()
+        }
+        private func node(at path: [String]) -> JSONOutlineNode? {
+            guard var node = root, path.first == node.pathKey else { return nil }
+            for key in path.dropFirst() {
+                guard let index = node.childIndex(forPathKey: key) else { return nil }
+                node = node.child(index)
+            }
+            return node
+        }
+        func capture(_ outline: NSOutlineView) -> Carried? {
+            guard root != nil else { return nil }
+            var state = Carried(everything: expandEverything)
+            if !expandEverything {
+                for row in 0..<outline.numberOfRows {
+                    guard let node = outline.item(atRow: row) as? JSONOutlineNode, node !== root, outline.isItemExpanded(node) else { continue }
+                    state.expanded.append(path(node, in: outline))
+                }
+            }
+            if let node = outline.item(atRow: outline.selectedRow) as? JSONOutlineNode { state.selected = path(node, in: outline) }
+            let visible = outline.rows(in: outline.visibleRect)
+            if visible.length > 0, let node = outline.item(atRow: visible.location) as? JSONOutlineNode {
+                state.anchor = path(node, in: outline)
+                state.offset = outline.visibleRect.minY - outline.rect(ofRow: visible.location).minY
+            }
+            return state
+        }
+        func restore(_ state: Carried, in outline: NSOutlineView) {
+            if state.everything { expandEverything = true; expandAll(in: outline) }
+            // Parents are listed before their children, so each path's parent is already open.
+            else { for path in state.expanded { if let node = node(at: path) { outline.expandItem(node) } } }
+            if let selected = state.selected, let node = node(at: selected), outline.row(forItem: node) >= 0 {
+                outline.selectRowIndexes(IndexSet(integer: outline.row(forItem: node)), byExtendingSelection: false)
+            }
+            if let anchor = state.anchor, let node = node(at: anchor), let scroll = outline.enclosingScrollView, outline.row(forItem: node) >= 0 {
+                scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.minX, y: outline.rect(ofRow: outline.row(forItem: node)).minY + state.offset))
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+        }
         var revision = 0
         var commandID: UUID?
         var selection: Binding<String>

@@ -3,11 +3,29 @@ import Foundation
 /// One grouping rule for cold history and incremental presentation. Work never
 /// owns a prose host; immutable source IDs own bodies throughout a stream.
 enum TaskTranscriptPlan {
+    /// `complete` says whether the page reaches the conversation's newest row.
+    /// A page cut short of it may end in the middle of a turn, and that turn
+    /// folds only on its own receipt that it ended.
     static func items(_ messages: [TranscriptMessage], lifecycle: TaskPresentationProjection?,
-                      display: TranscriptDisplayMode = TranscriptDisplay.mode) -> [TranscriptItem] {
-        TranscriptTurnFold.apply(rows(messages, lifecycle: lifecycle), display: display,
-                                 running: lifecycle?.active?.rootID)
+                      display: TranscriptDisplayMode = TranscriptDisplay.mode, complete: Bool = true) -> [TranscriptItem] {
+        runs.lock(); plannedPages += 1; runs.unlock()
+        return TranscriptTurnFold.apply(rows(messages, lifecycle: lifecycle), display: display,
+                                        running: lifecycle?.active?.rootID, complete: complete)
     }
+    /// Pages planned in this process. Test evidence for the readers that must
+    /// not plan a whole page just to ask a question of it, such as a menu.
+    static var planned: Int { runs.lock(); defer { runs.unlock() }; return plannedPages }
+    private static let runs = NSLock()
+    nonisolated(unsafe) private static var plannedPages = 0
+    /// Whether text holds anything but whitespace: the negation of
+    /// `trimmingCharacters(in: .whitespacesAndNewlines).isEmpty`, without
+    /// copying the text. The first visible character answers, where trimming
+    /// copied a whole reply — twice more for the fold — on every plan.
+    static func visible(_ text: String) -> Bool { text.unicodeScalars.contains { !whitespace.contains($0) } }
+    private static let whitespace = CharacterSet.whitespacesAndNewlines
+    /// A request shorter than a twentieth of a second says nothing about its
+    /// time, as a tool card's clock does not: "0.0s" tells the reader nothing.
+    static let shortestShownDurationMs = 50.0
     /// The conversation as rows, before any end-of-turn fold.
     static func rows(_ messages: [TranscriptMessage], lifecycle: TaskPresentationProjection?) -> [TranscriptItem] {
         let sourceIDs = Set(messages.map(\.id))
@@ -43,16 +61,24 @@ enum TaskTranscriptPlan {
         // cannot show — a page read from a journal, whose cards hold only the
         // request — keeps its own row, and so does a result whose call is not
         // on this page at all.
+        //
+        // Both are keyed by the reply that made the call as well as the call:
+        // providers reuse call ids, and a result belongs to one card — the
+        // latest reply before it that made that call, as the helper pairs them
+        // — never to every card that shares its id.
         var cardCalls = Set<String>(), shownCalls = Set<String>()
         for message in messages where message.role == "assistant" {
             guard let timeline = message.responseTimeline, timeline.supported else { continue }
             let cards = Dictionary((message.tools ?? []).map { ($0.id,$0) }, uniquingKeysWith: { first,_ in first })
             for segment in timeline.segments where segment.part.kind == "toolArguments" {
                 guard let call = segment.part.callID, let card = cards[call] else { continue }
-                cardCalls.insert(call)
-                if !["preparing","prepared","running","recorded"].contains(card.state) { shownCalls.insert(call) }
+                let occurrence = ToolOccurrence.key(message.id, call)
+                cardCalls.insert(occurrence)
+                if !["preparing","prepared","running","recorded"].contains(card.state) { shownCalls.insert(occurrence) }
             }
         }
+        var issuers: [String: String] = [:]
+        func occurrence(_ call: String) -> String? { issuers[call].map { ToolOccurrence.key($0, call) } }
         var result: [TranscriptItem] = [], opened = Set<String>(), summaries = Set<String>()
         func block(_ key: String, _ rows: [TranscriptMessage], kind: TranscriptBlock.Presentation) -> TranscriptBlock {
             let replies = rows.filter { $0.role == "assistant" }, tools = replies.flatMap { $0.tools ?? [] }
@@ -70,13 +96,13 @@ enum TaskTranscriptPlan {
                   groups[key]?.contains(where: { $0.role == "assistant" }) != true,
                   opened.insert(key).inserted else { return }
             var work = block("work:" + key, [], kind: .work)
-            work.task = task; work.live = true; work.taskSummary = summary([],task:task)
+            work.task = task; work.live = true; work.taskSummary = summary([],task:task,rootShown:sourceIDs.contains(task.rootID))
             result.append(.block(work))
         }
         func endWork(_ task: TaskPresentationRecord) {
             guard task.terminal, summaries.insert(task.key).inserted else { return }
             var footer = block("summary:" + task.key, [], kind:.summary)
-            footer.task = task; footer.turn = summary(groups[task.key] ?? [],task:task)
+            footer.task = task; footer.turn = summary(groups[task.key] ?? [],task:task,rootShown:sourceIDs.contains(task.rootID))
             result.append(.block(footer))
         }
         for message in messages {
@@ -90,21 +116,23 @@ enum TaskTranscriptPlan {
                     if task.lastSourceID == message.id { endWork(task) }
                 }
             }
+            // The reply a later result or start record belongs to.
+            if message.role == "assistant" { for tool in message.tools ?? [] { issuers[tool.id] = message.id } }
             guard let key = keys[message.id] else {
                 // A call and its result are one card, at the position the call
                 // was made: a result whose call is shown there is that same
                 // result, and the record that the call started is what the
                 // card's own status says. Neither becomes a row of its own.
                 if message.kind == "toolResult" || message.role == "tool",
-                   let call = message.toolCallID, shownCalls.contains(call) { continue }
-                if message.kind == "execution", let call = startedCall(message), cardCalls.contains(call) { continue }
+                   let call = message.toolCallID, let card = occurrence(call), shownCalls.contains(card) { continue }
+                if message.kind == "execution", let call = startedCall(message), let card = occurrence(call), cardCalls.contains(card) { continue }
                 result.append(.message(message))
                 continue
             }
             if message.role == "user" { result.append(.message(message)) }
             openWork(key)
             if message.role == "tool" {
-                if let call = message.toolCallID, shownCalls.contains(call) { continue }
+                if let call = message.toolCallID, let card = occurrence(call), shownCalls.contains(card) { continue }
                 var resultMessage = message; resultMessage.kind = "toolResult"; result.append(.message(resultMessage))
             }
             if message.role == "assistant" {
@@ -162,7 +190,7 @@ enum TaskTranscriptPlan {
                         legacy.live = message.isStreaming; legacy.taskSummary = summary([message],task:nil)
                         result.append(.block(legacy))
                     }
-                    if !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if visible(message.text) {
                         var body = block(TranscriptRenderIdentity.block(message.id).key, [], kind:.body)
                         var prose = message
                         prose.at = nil; prose.modelMs = nil; prose.tools = nil; prose.thinking = nil; prose.accounting = nil; prose.toolCallCount = nil
@@ -192,18 +220,23 @@ enum TaskTranscriptPlan {
     /// from the settled fields of the reply, never from a part's growing text,
     /// so a header row keeps its height while the response streams.
     static func responseLine(_ message: TranscriptMessage, parts: Int, foldable: Bool = false) -> ResponseLine {
-        let reasoned = !(message.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let reasoned = visible(message.thinking ?? "")
         let calls = ToolCallSummary(tools: message.tools ?? [])
-        let work = calls.label(reasoned: reasoned) ?? (message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Response" : "Answered")
-        let duration = DurationObservation.valid(message.modelMs).map(TranscriptActivity.formatDuration)
+        let work = calls.label(reasoned: reasoned) ?? (visible(message.text) ? "Answered" : "Response")
+        let duration = DurationObservation.valid(message.modelMs).flatMap { $0 >= shortestShownDurationMs ? TranscriptActivity.formatDuration($0) : nil }
         let figures: String? = message.accounting.map { TranscriptActivity.accountingPresentation($0).summary }.flatMap { $0.isEmpty ? nil : $0 }
         return ResponseLine(work: work, duration: duration, figures: figures, parts: parts, foldable: foldable)
     }
 
-    static func summary(_ rows: [TranscriptMessage], task: TaskPresentationRecord?) -> TurnSummary {
+    /// `rootShown` says the task's own question is on the page. A retried
+    /// execution has no user row of its own — its question is the first
+    /// execution's — so its rows alone cannot say whether the page holds it.
+    static func summary(_ rows: [TranscriptMessage], task: TaskPresentationRecord?, rootShown: Bool = false) -> TurnSummary {
         let replies = rows.filter { $0.role == "assistant" }, tools = replies.flatMap { $0.tools ?? [] }
         let calls = ToolCallSummary(rows:replies)
-        let partial = task == nil || rows.first?.id != task?.rootID || replies.count < (task?.replies ?? 0)
+        // Partial: the question is above the loaded history, or the page holds
+        // fewer of the task's replies than it made.
+        let partial = task == nil || !(rootShown || rows.first?.id == task?.rootID) || replies.count < (task?.replies ?? 0)
         let started = task == nil ? rows.first?.at : task?.startedAtUnixMs, ended = task?.endedAtUnixMs
         var summary = TurnSummary(replies:task?.replies ?? replies.count, tools:task?.issuedCalls ?? calls.total,
             startedAt:started, endedAt:ended, elapsedMs:task?.elapsedMilliseconds(),
@@ -225,7 +258,7 @@ enum TaskTranscriptPlan {
             // this execution's rows, including interim reports and tool rounds.
             // A retry or another loaded turn must never donate its figures.
             let rows = messages.filter { $0.taskRootID == task.rootID && $0.taskExecutionID == task.executionID }
-            return summary(rows, task:task)
+            return summary(rows, task:task, rootShown:messages.contains { $0.id == task.rootID })
         }
         guard let phase = lifecycle?.utilityPhase else { return nil }
         var result = summary([], task:nil); result.live = true; result.phase = phase

@@ -34,4 +34,35 @@ final class CaptureTraceTests: XCTestCase {
         _ = try await traces.command("debug.clear",session:"s",params:[:])
         let empty=try await traces.command("debug.list",session:"s",params:[:]);XCTAssertEqual(empty["total"].int,0)
     }
+
+    /// A request's context links (every message id it carries) are sent to
+    /// the recorder after the request is dispatched, not awaited before it:
+    /// the recorder acknowledges each packet, and a long chat's context takes
+    /// several. A request that never went out still links its context.
+    func testContextLinksDoNotHoldUpDispatch() async throws {
+        let recorder = SlowRecorder(delay: 20_000_000), traces = TraceStore(sink: { await recorder.accept($0) })
+        let ids = (0..<2000).map { "message-\($0)" }
+        let start = nowMS()
+        let id = await traces.begin(session: "s", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: Data("{}".utf8), headers: [:], messageIDs: ids)
+        let untilDispatch = nowMS() - start
+        let before = await recorder.types
+        await traces.dispatched(id, at: nowMS())
+        let linked = await recorder.packets.filter { $0["type"].text == "links" }.flatMap { $0["messageIds"].list }.count
+        print("PERF capture-before-dispatch contextIds=2000 packetsBeforeDispatch=\(before.count) msBeforeDispatch=\(Int(untilDispatch))")
+        XCTAssertEqual(before, ["begin"], "only the attempt itself is recorded before the request goes out")
+        XCTAssertLessThan(untilDispatch, 80, "four link packets (~20 ms each) no longer precede dispatch")
+        XCTAssertEqual(linked, 2000, "every context id is still linked")
+        let failed = await traces.begin(session: "s", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: Data("{}".utf8), headers: [:], messageIDs: ["a", "b"])
+        await traces.finish(failed, outcome: "failed", modelOutcome: "interrupted")
+        let packets = await recorder.packets.filter { $0["attemptId"].text == failed || $0["metadata"]["attemptId"].text == failed }.compactMap { $0["type"].text }
+        XCTAssertEqual(packets, ["begin", "links", "finish"], "an attempt that never dispatched links its context before it finishes")
+    }
+}
+
+private actor SlowRecorder {
+    let delay: UInt64
+    var packets: [JSON] = []
+    init(delay: UInt64) { self.delay = delay }
+    var types: [String] { packets.compactMap { $0["type"].text } }
+    func accept(_ packet: JSON) async -> Bool { packets.append(packet); try? await Task.sleep(nanoseconds: delay); return true }
 }

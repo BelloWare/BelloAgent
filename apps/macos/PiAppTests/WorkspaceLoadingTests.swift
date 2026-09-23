@@ -191,3 +191,50 @@ final class WorkspaceLoadingTests: XCTestCase {
         try await close(model)
     }
 }
+
+/// Holds a history read until the test lets it go.
+private actor LoadingReadGate {
+    private(set) var reads = 0
+    private var open = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    func read() async {
+        reads += 1
+        if open { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+    func release() { open = true; waiting.forEach { $0.resume() }; waiting = [] }
+}
+
+extension WorkspaceLoadingTests {
+    /// A chat's file can be named while its page is being read: the first
+    /// message of a new chat writes the journal, and the helper can report a
+    /// moved one. The read that was in flight belonged to the old name. It
+    /// used to be dropped with nothing read in its place, which left
+    /// "Preparing…" up for good, and clicking the chat again did nothing.
+    @MainActor func testAChatWhoseFileIsNamedWhileItLoadsStillFinishesLoading() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await fixture(root: root)
+        let gate = LoadingReadGate()
+        let page = try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture"), "lineage": .string("root"),
+            "messages": .array([.object(["id": .string("q"), "role": .string("user"), "text": .string("Question")])]), "older": .null, "newer": .null]))
+        model.historyWindowLoader = { _, _, _, _ in await gate.read(); return page }
+        let selecting = Task { await model.select("a") }
+        for _ in 0..<500 { if await gate.reads == 1 { break }; try await Task.sleep(for: .milliseconds(2)) }
+        let view = try XCTUnwrap(model.displays["a"])
+        XCTAssertEqual(view.historyState, .loading)
+        model.chats[0].path = root.appendingPathComponent("a.jsonl").path
+        await gate.release()
+        await selecting.value
+        XCTAssertNotEqual(view.historyState, .loading, "The chat finished loading under its new name")
+        XCTAssertEqual(view.messages.map(\.id), ["q"])
+        let reads = await gate.reads
+        XCTAssertEqual(reads, 2, "The page is read again for the file it now has")
+
+        // A load that ended without a page leaves the chat clickable.
+        view.presentation.begin(); view.historyState = .loading
+        XCTAssertNil(view.presentation.navigation)
+        await model.select("a")
+        XCTAssertNotEqual(view.historyState, .loading, "Clicking a chat stuck loading reads it again")
+        try await close(model)
+    }
+}

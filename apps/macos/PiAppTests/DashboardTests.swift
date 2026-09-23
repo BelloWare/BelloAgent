@@ -353,9 +353,11 @@ extension DashboardTests {
         let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
         try await archive.configure(key: key, quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
         func usage(_ output: Double) -> WireValue { .object(["inputIncludingCache": .number(100), "cacheRead": .number(0), "output": .number(output)]) }
-        var a1 = metadata(id: UUID().uuidString, wall: 1950, model: "model-a", ttft: 10, stream: 20); a1["usage"] = usage(60)
-        var a2 = metadata(id: UUID().uuidString, wall: 1960, model: "model-a", ttft: 30, stream: 20); a2["usage"] = usage(100)
-        var b1 = metadata(id: UUID().uuidString, wall: 1970, alias: "fast", model: "model-b", ttft: 50, stream: 50); b1["usage"] = usage(400)
+        // Each measured request decodes for longer than the 250 ms a span
+        // needs to be a measurement, and its HTTP exchange ends after that.
+        var a1 = metadata(id: UUID().uuidString, wall: 1950, model: "model-a", ttft: 10, stream: 400, http: 500); a1["usage"] = usage(60)
+        var a2 = metadata(id: UUID().uuidString, wall: 1960, model: "model-a", ttft: 30, stream: 400, http: 500); a2["usage"] = usage(100)
+        var b1 = metadata(id: UUID().uuidString, wall: 1970, alias: "fast", model: "model-b", ttft: 50, stream: 500, http: 600); b1["usage"] = usage(400)
         let c1 = metadata(id: UUID().uuidString, wall: 1980, alias: "fast", model: nil, ttft: 5, stream: 5)
         for record in [a1, a2, b1, c1] { try await save(archive, record) }
         let summaries = try await archive.modelSummaries(filter())
@@ -363,14 +365,52 @@ extension DashboardTests {
         let a = summaries[0]
         XCTAssertEqual(a.requests, 2); XCTAssertEqual(a.completed, 2); XCTAssertEqual(a.problems, 0)
         XCTAssertEqual(a.ttftP50, 10, "nearest-rank median of 10 and 30"); XCTAssertEqual(a.ttftSamples, 2)
-        XCTAssertEqual(try XCTUnwrap(a.rate.tokensPerSecond), 160 / 0.08, accuracy: 1e-9, "160 output tokens over 30 ms plus 50 ms of generation")
+        XCTAssertEqual(try XCTUnwrap(a.gateway.settledThroughput.tokensPerSecond), 160 / 0.8, accuracy: 1e-9, "160 output tokens over 400 ms plus 400 ms of decoding")
         XCTAssertEqual(a.gateway.tokens?.output, 160)
         let b = summaries[1]
-        XCTAssertEqual(b.ttftP50, 50); XCTAssertEqual(b.rate.tokensPerSecond, 4_000); XCTAssertEqual(b.httpP50, 100)
-        XCTAssertEqual(summaries[2].status, "unreported"); XCTAssertNil(summaries[2].rate.tokensPerSecond, "no reported output usage, no rate")
+        XCTAssertEqual(b.ttftP50, 50); XCTAssertEqual(try XCTUnwrap(b.gateway.settledThroughput.tokensPerSecond), 400 / 0.5, accuracy: 1e-9); XCTAssertEqual(b.httpP50, 600)
+        XCTAssertEqual(summaries[2].status, "unreported"); XCTAssertNil(summaries[2].gateway.settledThroughput.tokensPerSecond, "no reported output usage, no rate")
         let window = try await archive.dashboard(filter())
-        XCTAssertEqual(window.historicalRate.samples, 3)
-        XCTAssertEqual(try XCTUnwrap(window.historicalRate.tokensPerSecond), 560 / 0.18, accuracy: 1e-9, "the window blends every measured route")
+        XCTAssertEqual(window.gateway.settledThroughput.samples, 3)
+        XCTAssertEqual(try XCTUnwrap(window.gateway.settledThroughput.tokensPerSecond), 560 / 1.3, accuracy: 1e-9, "the window blends every measured route")
+    }
+
+    /// The report's "Output tok/s" headline divided by dispatch-to-completion
+    /// time while each route's "Output tok/s" column (and the rest of the app)
+    /// uses the settled decode rate: one request, two different figures.
+    func testHeadlineOutputRateIsTheSettledDecodeRateEachRouteShows() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
+        try await archive.configure(key: key, quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
+        // Dispatch at 0 ms, first content at 2 s, model completion at 5 s, 300 output tokens.
+        var request = metadata(id: UUID().uuidString, ttft: 2_000, stream: 3_000, http: 5_100, dispatch: 0)
+        request["usage"] = .object(["inputIncludingCache": .number(100), "output": .number(300)])
+        try await save(archive, request)
+        let window = try await archive.dashboard(filter())
+        let routes = try await archive.modelSummaries(filter())
+        let route = try XCTUnwrap(routes.first)
+        let headline = try XCTUnwrap(ReportThroughputTile.rate(window).tokensPerSecond)
+        XCTAssertEqual(headline, 100, accuracy: 1e-9, "300 tokens over the 3 s decode span")
+        XCTAssertEqual(try XCTUnwrap(route.gateway.settledThroughput.tokensPerSecond), headline, accuracy: 1e-9, "The headline and the route's column agree")
+        XCTAssertTrue(ReportThroughputTile.caption(window).contains("first token to completion"), ReportThroughputTile.caption(window))
+    }
+
+    /// Each snapshot read counted the selected requests with its own scan
+    /// although the aggregate read beside it returns the same count, and did
+    /// the same once more per bucket.
+    func testReportSnapshotReadsEachAggregateOnce() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
+        try await archive.configure(key: key, quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
+        for (index, wall) in [1910.0, 1950, 1960, 1990].enumerated() {
+            try await save(archive, metadata(id: UUID().uuidString, wall: wall, outcome: index == 3 ? "failed" : "completed"))
+        }
+        let read = try await archive.dashboardStatements(filter())
+        print("PERF a report snapshot read used \(read.statements) statements")
+        XCTAssertEqual(read.snapshot.selectedRequests, 3)
+        XCTAssertEqual(read.snapshot.buckets.map(\.requests), [2, 1])
+        XCTAssertEqual(read.snapshot.buckets.map(\.gateway.requests), [2, 1])
+        XCTAssertEqual(read.statements, 11, "The request count and each bucket's count come from the aggregate rows")
     }
 
     func testSessionSummariesGroupRequestsWithTokensMediansAndLinks() async throws {

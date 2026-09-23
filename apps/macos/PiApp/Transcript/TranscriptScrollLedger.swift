@@ -84,6 +84,11 @@ import AppKit
         self.lastDelivered = offset
         if claim(offset, floor: floor, from: previous) { return .page }
         writes.removeAll()
+        // The reader has the position. Where the page last asked to be says
+        // nothing about where they go from here: kept, it made the reader
+        // coming back down onto the end look like the document clamping them
+        // there, and the page stopped following although it showed the end.
+        lastWritten = nil
         readerTakeoverCount += 1
         return .reader
     }
@@ -113,8 +118,22 @@ import AppKit
         // reader moving. Reading it as their own scroll would say they had
         // just chosen the bottom of the page, and pin the page there.
         let stood = max(lastWritten ?? previous, previous)
-        if stood > floor + Self.tolerance, abs(offset - floor) <= Self.tolerance { return true }
+        if stood > floor + Self.tolerance, abs(offset - floor) <= Self.tolerance {
+            // The page stands at the new end now, not beyond it.
+            lastWritten = offset
+            return true
+        }
         return false
+    }
+
+    /// Whether the clip is at an offset nobody has asked about yet. A bounds
+    /// change reaches every observer of the clip, in an order AppKit does not
+    /// promise, so one of them can be looking at a movement before the page
+    /// has been told whose it was. Before the first reading there is nothing
+    /// to be behind.
+    func awaitsDelivery(of offset: CGFloat) -> Bool {
+        guard let lastDelivered else { return false }
+        return abs(offset - lastDelivered) > Self.tolerance
     }
 
     /// The reader has touched the page: nothing written before they did still

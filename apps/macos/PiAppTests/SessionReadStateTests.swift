@@ -261,3 +261,162 @@ extension SessionReadStateTests {
         await model.flushReadStates()
     }
 }
+
+extension SessionReadStateTests {
+    /// The chat the reader is looking at, at the bottom of its page, reads its
+    /// own new reply a frame or two after the reply lands. It must never be
+    /// marked unread first: that put a dot on its sidebar row, and a count on
+    /// the Dock, for those frames every time a run finished.
+    @MainActor func testTheChatBeingReadNeverFlashesUnreadWhenItsRunFinishes() async throws {
+        let shell = try SmoothShellTests.Shell(chats: ["Reading"], rows: 12)
+        registerWorkspaceFixtureTeardown(shell.model, root: shell.root)
+        defer { shell.close() }
+        let model = shell.model, chat = shell.chats[0]
+        NSApp.activate(ignoringOtherApps: true); shell.window.makeKeyAndOrderFront(nil)
+        for _ in 0..<100 where !NSApp.isActive { try await Task.sleep(for: .milliseconds(20)) }
+        await model.select(chat.id)
+        await shell.settle(1.0)
+        shell.page?.jumpToLatest()
+        await shell.settle(0.8)
+        guard shell.page?.readingIsVisible == true else {
+            throw XCTSkip("Reading a reply needs this app's own key, unoccluded window; this desktop cannot provide one.")
+        }
+        let view = try XCTUnwrap(model.displays[chat.id])
+        XCTAssertEqual(view.scrollAnchor?.followsBottom, true, "The reader is at the newest row")
+        let latest = try XCTUnwrap(view.messages.last { $0.role == "assistant" }?.id)
+        model.observeAssistantOutputs(sessionID: chat.id, snapshot: ["assistantMessageCount": .number(6), "latestAssistantMessageId": .string(latest), "state": .string("idle")])
+        model.updateDockBadge()
+        XCTAssertEqual(model.unreadOutputCount(sessionID: chat.id), 0); XCTAssertNil(NSApp.dockTile.badgeLabel)
+        /// A run finishes: its reply and its count arrive in one snapshot.
+        /// Returns the frames, of those drawn over the next 1.5 s, that showed
+        /// the chat unread or put a count on the Dock.
+        @MainActor func finishRun(_ index: Int) async -> (unread: Int, badge: Int, frames: Int) {
+            var answer = TranscriptMessage(id: "fresh-answer-\(index)", role: "assistant", text: "The finished answer to question \(index).", turn: chat.id + "-m10")
+            answer.at = Double(20_000 + index)
+            view.messages.append(answer)
+            model.observeAssistantOutputs(sessionID: chat.id, snapshot: ["assistantMessageCount": .number(Double(6 + index)),
+                                                                         "latestAssistantMessageId": .string(answer.id), "state": .string("idle")])
+            var unread = 0, badge = 0, frames = 0
+            let deadline = Date().addingTimeInterval(1.5)
+            repeat {
+                if model.unreadOutputCount(sessionID: chat.id) > 0 || model.projectHasUnread(shell.project.id) { unread += 1 }
+                if NSApp.dockTile.badgeLabel != nil { badge += 1 }
+                shell.draw(); frames += 1
+                await Task.yield(); try? await Task.sleep(for: .milliseconds(8))
+            } while Date() < deadline
+            return (unread, badge, frames)
+        }
+        // The path this replaced, in the same window: the reply is published
+        // unread at once and the page reads it a few frames later.
+        model.applicationIsActiveOverride = false
+        let unheld = await finishRun(1)
+        print("PERF unread flash for the chat being read, published at once (before): \(unheld.unread) of \(unheld.frames) frames unread, \(unheld.badge) with a Dock badge")
+        XCTAssertEqual(model.unreadOutputCount(sessionID: chat.id), 0, "The page read the first reply")
+        model.applicationIsActiveOverride = nil
+        let held = await finishRun(2)
+        print("PERF unread flash for the chat being read, held for the page's read check (after): \(held.unread) of \(held.frames) frames unread, \(held.badge) with a Dock badge")
+        XCTAssertEqual(held.unread, 0, "The reply the reader is looking at never shows as unread")
+        XCTAssertEqual(held.badge, 0, "Nor does it put a count on the Dock")
+        XCTAssertEqual(model.unreadStates[chat.id]?.observedAssistantCount, 8)
+        XCTAssertEqual(model.unreadOutputCount(sessionID: chat.id), 0)
+    }
+
+    /// The same, frame by frame, without depending on this desktop letting the
+    /// test app come to the front: the reader follows the newest row of the
+    /// chat in front, the reply lands, and the page reads it three frames
+    /// later. No frame in between shows it unread or counts it on the Dock. A
+    /// reply the page does not read within the grace becomes unread then.
+    @MainActor func testAReplyInTheChatBeingReadWaitsForThePagesReadCheck() async throws {
+        let (model, root, view) = try await makeModel()
+        model.applicationIsActiveOverride = true
+        view.scrollAnchor = .init(id: "a1", offset: 0, followsBottom: true)
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(1, "a1"))
+        model.updateDockBadge()
+        view.messages = [.init(id: "a2", role: "assistant", text: "The answer")]
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(2, "a2"))
+        var unreadFrames = 0
+        for frame in 0..<12 {
+            if model.unreadOutputCount(sessionID: "chat") > 0 || model.unreadCount > 0 || NSApp.dockTile.badgeLabel != nil { unreadFrames += 1 }
+            if frame == 3 { model.acknowledgeVisibleReply(sessionID: "chat", messageID: "a2") }
+            try await Task.sleep(for: .milliseconds(16))
+        }
+        XCTAssertEqual(unreadFrames, 0, "The reply the reader is looking at never shows as unread")
+        try await Task.sleep(for: WorkspaceModel.visibleReplyGrace + .milliseconds(150))
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0, "Read within the grace, it stays read")
+        XCTAssertEqual(model.unreadStates["chat"]?.observedAssistantCount, 2)
+        // A reply the page cannot read (a sheet is up, say) is unread once the grace is over.
+        view.messages.append(.init(id: "a3", role: "assistant", text: "Another answer"))
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(3, "a3"))
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0)
+        try await Task.sleep(for: WorkspaceModel.visibleReplyGrace + .milliseconds(150))
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1, "Unread once the page has had its chance")
+        XCTAssertEqual(model.unreadStates["chat"]?.unreadTargetID, "a3")
+        model.acknowledgeVisibleReply(sessionID: "chat", messageID: "a3")
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0)
+        // In the background the reply is unread at once, as before.
+        model.applicationIsActiveOverride = false
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(4, "a4"))
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1)
+        try await close(model, root: root)
+    }
+
+    /// A reply that lands while the reader is scrolled up is unread as before,
+    /// only a moment later, and stays unread until they reach it.
+    @MainActor func testAReplyTheReaderIsNotLookingAtStillBecomesUnread() async throws {
+        let (model, root, view) = try await makeModel()
+        view.scrollAnchor = .init(id: "earlier", offset: -40, followsBottom: false)
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(1, "a1"))
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(2, "a2"))
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1, "A reader scrolled away has not read the reply")
+        try await close(model, root: root)
+    }
+
+    /// A run that failed while another app was in front marks the chat. When
+    /// the reader comes back to it the mark must be clearable: clicking the
+    /// chat again, or Mark as Read, which used to be offered only for replies.
+    @MainActor func testAFailureMarkOnTheChatBeingViewedCanBeCleared() async throws {
+        let (model, root, view) = try await makeModel()
+        model.chats.append(ChatRecord(id: "other", workspaceID: "workspace", title: "Other", path: nil, profileID: "profile"))
+        model.selectedID = "other"
+        model.markRunFailed(sessionID: "chat")
+        XCTAssertTrue(model.unreadFailure(sessionID: "chat"))
+        // The chat is the one on screen when the reader returns.
+        model.selectedID = "chat"; model.selected = view; view.historyState = .ready
+        await model.select("chat")
+        XCTAssertFalse(model.unreadFailure(sessionID: "chat"), "Clicking the chat that is already open clears its failure mark")
+        model.selectedID = "other"; model.markRunFailed(sessionID: "chat"); model.selectedID = "chat"
+        var state = SidebarChatRowState(); state.unreadFailure = model.unreadFailure(sessionID: "chat")
+        XCTAssertTrue(state.offersMarkAsRead, "Mark as Read is offered for a failure mark too")
+        model.markSessionRead("chat")
+        XCTAssertFalse(model.unreadFailure(sessionID: "chat"))
+        try await close(model, root: root)
+    }
+
+    /// A collapsed topic says it holds something to look at: a failed run is
+    /// such a thing, as it is for the project's own header.
+    @MainActor func testACollapsedTopicShowsAFailureMarkInside() async throws {
+        let (model, root, _) = try await makeModel()
+        let project = WorkspaceRecord(id: "workspace", path: root.path, trusted: true)
+        model.workspaces = [project]
+        model.topics = [TopicRecord(id: "topic", workspaceID: project.id, title: "Billing", expanded: false)]
+        var chat = model.chats[0]; chat.topicID = "topic"; model.chats = [chat, ChatRecord(id: "other", workspaceID: "workspace", title: "Other", path: nil, profileID: "profile")]
+        model.selectedID = "other"
+        model.markRunFailed(sessionID: "chat")
+        XCTAssertTrue(model.projectHasUnread(project.id))
+        let header = model.topicGroupContents(in: project, topic: model.topics[0], archived: false, filter: "", sidebarWidth: 300, namesConnection: false).header
+        XCTAssertTrue(header.hasUnread, "The topic's header shows the failed chat inside it")
+        try await close(model, root: root)
+    }
+
+    /// Deleting a chat forgets its read state; the Dock must stop counting it.
+    @MainActor func testForgettingAReadStateTakesItOffTheDockBadge() async throws {
+        let (model, root, _) = try await makeModel()
+        model.selectedID = nil
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(1, "a1"))
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(2, "a2"))
+        XCTAssertEqual(NSApp.dockTile.badgeLabel, "1")
+        model.forgetReadState("chat")
+        XCTAssertNil(NSApp.dockTile.badgeLabel, "A forgotten chat no longer counts on the Dock")
+        try await close(model, root: root)
+    }
+}

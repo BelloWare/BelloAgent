@@ -224,6 +224,40 @@ extension ConversationPaneTests {
             while Date() < deadline { if condition() { return }; await settle(2) }
             XCTFail("\(what) (state \(session.state), notice “\(session.notice)”)", file: file, line: line)
         }
+        /// Sends `text` the way Return does, and returns once the helper has
+        /// taken it.
+        func send(_ text: String, file: StaticString = #filePath, line: UInt = #line) async {
+            session.draft = text
+            model.send(sessionID: chat.id)
+            XCTAssertTrue(session.loading, "The composer did not take “\(text)”", file: file, line: line)
+            await taken(text, file: file, line: line)
+        }
+        /// Waits until the helper has taken the message on its way.
+        ///
+        /// A message shows before it is taken: the chat shows the run the
+        /// moment Send is pressed, and a follow-up shows in the queue as soon
+        /// as a snapshot carries it. The composer takes nothing new until the
+        /// helper's answer has been recorded (`loading`: Send is disabled and
+        /// Return does nothing), so a message sent on those first signals
+        /// stays in the composer, unsent, whenever that answer is slow to land.
+        func taken(_ text: String, file: StaticString = #filePath, line: UInt = #line) async {
+            await waitUntil("The helper never took “\(text)”", file: file, line: line) { !session.loading }
+            XCTAssertNil(session.sendFailure, "“\(text)” was refused: \(session.sendFailure ?? "")", file: file, line: line)
+            XCTAssertTrue(session.draft.isEmpty, "Taking “\(text)” clears the composer", file: file, line: line)
+        }
+        /// Stops the chat's helper process while `body` runs, so every answer
+        /// it owes lands after `body` returns: the order a slow helper, or a
+        /// slow write of its answer, produces now and then, made certain.
+        func holdingHelper(_ body: () async -> Void) async throws {
+            _ = try await model.open(chat)
+            // Nothing may be on its way back: a snapshot of the idle chat
+            // landing inside `body` would take down the run a send puts up.
+            await waitUntil("The chat never settled before its helper was held") { !session.snapshotInFlight && !session.loading }
+            let helper = try XCTUnwrap(model.hosts[chat.workspaceID]?.helperProcessIdentifier, "The packaged helper must be running for this chat")
+            kill(helper, SIGSTOP)
+            defer { kill(helper, SIGCONT) }
+            await body()
+        }
         func close() async {
             for host in model.hosts.values { try? await host.shutdownAndWait() }
             try? await model.traces.close(); await model.store?.close()
@@ -242,18 +276,29 @@ extension ConversationPaneTests {
         var closed = false
         defer { if !closed { Task { await live.close() } } }
         await live.settle(20)
-        live.session.draft = "slow: walk through the retry loop step by step"
-        live.model.send(sessionID: live.chat.id)
-        await live.waitUntil("The turn never started") { live.session.busy }
-        for index in 0..<3 {
-            live.session.draft = "Follow-up \(index)"
+        // The run shows before the helper has taken the message that starts
+        // it. Its answer is held back here, so the follow-ups meet that gap
+        // every time rather than on a slow run: each goes in once the message
+        // before it is taken, never merely once something shows.
+        let slow = "slow: walk through the retry loop step by step"
+        try await live.holdingHelper {
+            live.session.draft = slow
             live.model.send(sessionID: live.chat.id)
+            await live.waitUntil("The turn never started") { live.session.busy }
+            XCTAssertTrue(live.session.loading, "The run shows before the held helper has taken the message")
+        }
+        await live.taken(slow)
+        for index in 0..<3 {
+            await live.send("Follow-up \(index)")
             await live.waitUntil("Follow-up \(index) never reached the queue") { QueuedMessage.from(live.session.queue).count == index + 1 }
         }
         // Promote the first one to steering, so both lanes are populated.
         let queued = QueuedMessage.from(live.session.queue)
         XCTAssertEqual(queued.map(\.text), ["Follow-up 0", "Follow-up 1", "Follow-up 2"])
-        live.model.action("queue.steer", params: ["turnId": .string(queued[0].id)], sessionID: live.chat.id)
+        // A queue that never filled has already failed above; unwrapping keeps
+        // that a failure of this test instead of a crash of the whole run.
+        let first = try XCTUnwrap(queued.first, "No follow-up reached the queue")
+        live.model.action("queue.steer", params: ["turnId": .string(first.id)], sessionID: live.chat.id)
         await live.waitUntil("The follow-up never moved into the steering lane") {
             QueuedMessage.from(live.session.queue).contains(where: \.steering)
         }

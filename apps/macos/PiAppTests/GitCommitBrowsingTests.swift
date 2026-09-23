@@ -61,11 +61,11 @@ final class GitCommitBrowsingTests: XCTestCase {
         controller.selectedCommit = newest
         XCTAssertEqual(controller.detail?.commit.hash, newest.hash, "the cached detail is there before any await")
         XCTAssertEqual(controller.detailDiff.map(\.path), ["file3.txt"])
-        XCTAssertFalse(controller.diffLoading, "a cached commit starts no git process")
+        XCTAssertFalse(controller.commitLoading, "a cached commit starts no git process")
 
         // Racing through commits leaves the last one showing, never an earlier one.
         for commit in controller.commits { controller.selectedCommit = commit }
-        try await eventually("settle on the oldest commit") { !controller.diffLoading && controller.detail?.commit.hash == controller.commits[2].hash }
+        try await eventually("settle on the oldest commit") { !controller.commitLoading && controller.detail?.commit.hash == controller.commits[2].hash }
         XCTAssertEqual(controller.detailDiff.map(\.path), ["file1.txt"])
         XCTAssertEqual(controller.notice, "")
     }

@@ -102,7 +102,10 @@ extension AgentSession {
     }
     func deliver(_ submission: Submission, lane: String = "follow-up", newTask: Bool = true) async throws {
         _ = try profile.overriding(model:submission.model,thinkingLevel:submission.thinkingLevel,contextWindow:submission.contextWindow,maxOutputTokens:submission.maxOutputTokens,modelOutputLimit:submission.modelOutputLimit)
-        if newTask { beginPresentedTask(submission.turnID); event("state") }
+        // A new task is a new turn, also when a queued follow-up starts inside
+        // a run that is already going: its clock and model/tool split start
+        // now, not when the run's first task did.
+        if newTask { begin=nowMS(); end=nil; turnModelMs=0; turnToolMs=0; beginPresentedTask(submission.turnID); event("state") }
         try await resources.validate(submission.skills,tools:await tools.capabilityIDs(readOnly:readOnly)); appliedSnapshot=try await resources.resolve(); appliedRevision=appliedSnapshot?.revision; try Task.checkCancellation()
         let images=try loadImages(submission.attachments)
         guard images.isEmpty || profile.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
@@ -132,7 +135,11 @@ extension AgentSession {
             // edited or moved while suspended; new entries belong to the next batch.
             guard let index=steering.firstIndex(where: { selected.contains($0.turnID) }) else { break }
             let next=steering.remove(at:index)
-            do { try await deliver(next,lane:"steering",newTask:false) }
+            // Steering joins the task that is running. With none running (a
+            // resume that found only steering pending), the first message
+            // starts one, with its live indicator, turn clock and receipt.
+            let starts = activeTaskPresentation == nil && !titleTask
+            do { try await deliver(next,lane:"steering",newTask:starts) }
             catch {
                 if !hasDelivered(next) { steering.insert(next,at:0) }
                 commandState(next,"failed"); throw error

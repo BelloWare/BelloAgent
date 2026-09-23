@@ -44,7 +44,7 @@ private struct NativeMarkdownItem: Equatable {
 
     func hasSameGeometry(as other: Self) -> Bool {
         guard block == other.block, style == other.style, capsWidth == other.capsWidth,
-              environment == other.environment else { return false }
+              environment.hasSameGeometry(as: other.environment) else { return false }
         // Code switches from a continuous stream to bounded source sections
         // at completion. That is a local layout dependency, unlike a caret.
         if case .code = block { return caret == other.caret }
@@ -57,6 +57,10 @@ private struct NativeHostedMarkdownBlock: View {
     let width: CGFloat
     let decoration: MarkdownBlockDecoration
     var nativeCodeChoice: Bool? = nil
+    /// The scale the block is drawn at, for a host measured before its
+    /// surface has a window: SwiftUI would otherwise lay the text out at 1x,
+    /// taller than it draws, and the block would carry the difference as blank.
+    var displayScale: CGFloat = 2
     var body: some View {
         MarkdownBlockView(block: item.block, style: item.style, capsWidth: item.capsWidth,
                           caret: item.caret, headingTarget: nil, nativeCodeChoice: nativeCodeChoice, decoration: decoration)
@@ -67,6 +71,7 @@ private struct NativeHostedMarkdownBlock: View {
             .environment(\.dynamicTypeSize, item.environment.dynamicTypeSize)
             .environment(\.layoutDirection, item.environment.layoutDirection)
             .environment(\.locale, item.environment.locale)
+            .environment(\.displayScale, displayScale)
             .disabled(!item.environment.isEnabled)
             .piStableLayout()
     }
@@ -85,6 +90,16 @@ private struct NativeHostedMarkdownBlock: View {
     private var sizes: [CGSize] = []
     var frame = CGRect.zero
     private(set) var measurementCount = 0
+    var displayScale: CGFloat = 2 {
+        didSet {
+            guard displayScale != oldValue else { return }
+            sizes.removeAll(keepingCapacity: true)
+            view?.rootView = hosted
+        }
+    }
+    private var hosted: NativeHostedMarkdownBlock {
+        NativeHostedMarkdownBlock(item: item, width: width, decoration: decoration, nativeCodeChoice: nativeCodeChoice, displayScale: displayScale)
+    }
 
     init(item: NativeMarkdownItem) {
         self.item = item
@@ -95,7 +110,7 @@ private struct NativeHostedMarkdownBlock: View {
     }
     private func host() -> NSHostingView<NativeHostedMarkdownBlock> {
         if let view { return view }
-        let next = NSHostingView(rootView: NativeHostedMarkdownBlock(item: item, width: width, decoration: decoration, nativeCodeChoice: nativeCodeChoice))
+        let next = NSHostingView(rootView: hosted)
         next.safeAreaRegions = []; next.sizingOptions = [.intrinsicContentSize]
         view = next; applyAppearance()
         return next
@@ -103,16 +118,28 @@ private struct NativeHostedMarkdownBlock: View {
     /// Geometry and source outlive the expensive native tree. No sizing
     /// surrogate is shared, and a selected owner is excluded by the caller.
     func releaseDetachedHost() { if view?.superview == nil { view = nil } }
+    /// Whether this is the block a streaming reply is still being written into.
+    var hasCaret: Bool { item.caret }
     @discardableResult func update(_ item: NativeMarkdownItem,
                                   source: () -> (previous: MarkdownSelection.Source?, current: MarkdownSelection.Source)? = { nil }) -> Bool {
         guard self.item != item else { return false }
         decoration.update(caret: item.caret, target: item.headingTarget)
-        guard !self.item.hasSameGeometry(as: item) else { self.item = item; return false }
+        guard !self.item.hasSameGeometry(as: item) else {
+            // A colour scheme, a contrast or an enabled state: painted again,
+            // measured the same.
+            let repaint = self.item.environment != item.environment
+            self.item = item
+            if repaint {
+                view?.rootView = hosted
+                applyAppearance()
+            }
+            return false
+        }
         selectionRevision &+= 1
         restoredSelection = nil; selectionEditor = nil
         if case .paragraph(let oldText) = self.item.block, case .paragraph(let newText) = item.block {
             let old = String(oldText.characters), new = String(newText.characters)
-            if !new.hasPrefix(old) {
+            if !new.hasUTF8Prefix(old) {
                 reconciliation = source().map {
                     MarkdownSelection.Reconciliation(previous: old, source: $0.current, previousSource: $0.previous,
                                                      rendered: new, keepsSoftBreaks: item.style.keepsSoftBreaks)
@@ -120,7 +147,7 @@ private struct NativeHostedMarkdownBlock: View {
             }
             if let editor = view?.window?.firstResponder as? NSTextView,
                textOwners.contains(where: { ($0 as? NSTextField)?.currentEditor() === editor }),
-               !new.hasPrefix(old), let range = reconciliation?.range(editor.selectedRange()) {
+               !new.hasUTF8Prefix(old), let range = reconciliation?.range(editor.selectedRange()) {
                 selectionEditor = editor
                 restoredSelection = (range, editor.selectedRange(), new)
             }
@@ -135,7 +162,7 @@ private struct NativeHostedMarkdownBlock: View {
         } else { nativeCodeChoice = nil }
         self.item = item
         sizes.removeAll(keepingCapacity: true)
-        view?.rootView = NativeHostedMarkdownBlock(item: item, width: width, decoration: decoration, nativeCodeChoice: nativeCodeChoice)
+        view?.rootView = hosted
         applyAppearance()
         // The field editor is updated by SwiftUI after the hosting root. A
         // bounded next-run-loop correction preserves the same editor without
@@ -161,11 +188,23 @@ private struct NativeHostedMarkdownBlock: View {
         case .quote(let blocks): return CGFloat(blocks.count) * 60
         }
     }
-    func measure(width: CGFloat) -> CGSize {
+    /// This block's exact size at a width. Measured in `surface`'s window when
+    /// it has one: detached, SwiftUI lays text out as if at 1x — even told the
+    /// display's scale, a line lands half a point apart — which is taller
+    /// than it draws, and the block would carry the difference as blank.
+    func measure(width: CGFloat, in surface: NSView? = nil) -> CGSize {
         if let cached = sizes.last(where: { $0.width == width }) { return cached }
         if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownBlocksMeasured += 1 }
         setWidth(width)
-        let size = CGSize(width: width, height: max(1, ceil(host().fittingSize.height)))
+        let view = host()
+        let visiting = surface?.window != nil && view.superview == nil
+        if visiting, let surface { surface.addSubview(view) }
+        defer { if visiting { view.removeFromSuperview() } }
+        // Exact: SwiftUI lays text out on the pixel grid, and rounding to
+        // half a point only drops the arithmetic's noise. The page rounds the
+        // bottom of each block, or of a list drawn in segments, to a whole
+        // point below it; the host is exactly as tall as what it draws.
+        let size = CGSize(width: width, height: max(1, (view.fittingSize.height * 2).rounded() / 2))
         if sizes.count == 4 { sizes.removeFirst() }
         sizes.append(size)
         measurementCount += 1
@@ -221,7 +260,7 @@ private struct NativeHostedMarkdownBlock: View {
               let window = surface.window, owner.window === window else { return nil }
         let rendered = (owner as? NSTextField)?.stringValue ?? (owner as? NSTextView)?.string ?? ""
         let range: NSRange
-        if !rendered.hasPrefix(anchor.rendered), let mapped = reconciliation?.range(anchor.range, from: anchor.rendered, to: rendered) {
+        if !rendered.hasUTF8Prefix(anchor.rendered), let mapped = reconciliation?.range(anchor.range, from: anchor.rendered, to: rendered) {
             range = mapped
         } else { range = anchor.range }
         let screen = owner.accessibilityFrame(for: range)
@@ -232,7 +271,7 @@ private struct NativeHostedMarkdownBlock: View {
     func setWidth(_ width: CGFloat) {
         guard self.width != width else { return }
         self.width = width
-        view?.rootView = NativeHostedMarkdownBlock(item: item, width: width, decoration: decoration, nativeCodeChoice: nativeCodeChoice)
+        view?.rootView = hosted
     }
     func place(in container: NSView) {
         setWidth(frame.width)
@@ -267,24 +306,79 @@ private struct NativeHostedMarkdownBlock: View {
 }
 
 @MainActor final class NativeMarkdownContainer: NSView {
+    /// How many items of a list one block host draws. A longer list is drawn
+    /// as consecutive segments of this many items, spaced as its items are, so
+    /// a token on its last item rebuilds and measures one segment, not the
+    /// list. A test seam: `.max` draws every list whole.
+    static var listSegmentLength = 16
+    /// The space between two blocks, and between two segments of one list,
+    /// which is the space between the list's items.
+    static let blockSpacing: CGFloat = 10
+    static let listItemSpacing: CGFloat = 4
     private final class Layout {
         let width: CGFloat
+        /// Each block's exact height, and the space above it as this layout
+        /// added it up: the spacing, and after a block — or a list drawn in
+        /// segments — whatever takes its bottom to a whole point.
         var heights: [CGFloat] = []
+        var gaps: [CGFloat] = []
+        /// That rounding after the last block.
+        var trailing: CGFloat = 0
         var total: CGFloat = 0
         var validPrefix = 0
         var provisional: Set<Int> = []
+        /// No provisional block is at or past this index.
+        var provisionalBound = 0
         init(width: CGFloat) { self.width = width }
+        func insertProvisional(_ index: Int) { provisional.insert(index); provisionalBound = max(provisionalBound, index + 1) }
+        /// Drops what a change from `index` on has made stale.
+        func invalidate(from index: Int) {
+            validPrefix = min(validPrefix, index)
+            if provisionalBound > index { provisional = provisional.filter { $0 < index }; provisionalBound = index }
+        }
+    }
+    /// One block as drawn: a record of the reading, or one segment of a long list in it.
+    private struct Placement {
+        var identity: MarkdownBlockIdentity
+        var range: Range<Int>?
+        var heading: Bool
+        /// Drawn as one of several segments of a list.
+        var segmented: Bool
+        /// Continues the list the block above began: it sits as far below it
+        /// as the list's items sit from each other, and the list's bottom is
+        /// rounded to a whole point only after its last segment.
+        var continues: Bool
+    }
+    /// What an update draws with besides the blocks: when these are what the
+    /// last update drew with, the blocks it did not change keep their hosts.
+    private struct Inputs: Equatable {
+        var style: MarkdownStyle
+        var capsWidth: Bool
+        var streaming: Bool
+        var headings: [MarkdownCopyTarget]
+        var environment: TranscriptRowEnvironment
     }
     private var blocks: [NativeMarkdownBlockHost] = []
-    private var identities: [MarkdownBlockIdentity] = []
+    private var placements: [Placement] = []
+    /// Which block an identity is, where each record of the reading begins
+    /// among the blocks, and how many headings come before each block.
+    private var positions: [MarkdownBlockIdentity: Int] = [:]
+    private var recordStarts: [Int] = [0]
+    private var headingsBefore: [Int] = [0]
+    private var lastInputs: Inputs?
+    /// Whether the last update drew this surface's own reading, whose
+    /// unchanged prefix the next one can then take on trust.
+    private var drewReading = false
     private var priorSourceText: String?
-    private var priorSourceRanges: [Range<Int>]?
     var blockOwnerIdentities: [ObjectIdentifier] { blocks.map(ObjectIdentifier.init) }
     private var layouts: [Layout] = []
     private var laidOutWidth: CGFloat?
     private var layoutDirtyFrom: Int? = 0
     private(set) var aggregateMeasurementVisits = 0
     private(set) var framePlacements = 0
+    /// Blocks the last update compared with what they were: a token's should
+    /// not grow with the reply.
+    private(set) var reconciledBlockVisits = 0
     private var invalidationScheduled = false
     private var applyingLayout = false
     private var resolvingViewport = false
@@ -295,12 +389,16 @@ private struct NativeHostedMarkdownBlock: View {
     var didDrawPreparedContent: (() -> Void)?
     private var resolveScheduled = false
     private var loadingSection: NSProgressIndicator?
+    /// The hosts in the view tree, and the ones with a native tree out of it,
+    /// which the idle scheduler reclaims once they are far from the viewport.
+    private var mountedHosts: [ObjectIdentifier: NativeMarkdownBlockHost] = [:]
+    private var detachedHosts: [ObjectIdentifier: NativeMarkdownBlockHost] = [:]
     var hasProvisionalGeometry: Bool { layouts.last?.provisional.isEmpty == false }
     var visibleContentPrepared: Bool {
         guard let clip = observedClip, let layout = layouts.last(where: { $0.width == bounds.width }) else { return blocks.isEmpty }
         let viewport = convert(clip.bounds, from: clip)
         guard !resolveScheduled else { return false }
-        return !layout.provisional.contains { blocks.indices.contains($0) && blocks[$0].frame.intersects(viewport) }
+        return !onScreen(viewport).contains { layout.provisional.contains($0) }
     }
     var provisionalBlockCount: Int { layouts.last?.provisional.count ?? 0 }
     /// A logical source/block identity, independent of estimated row heights.
@@ -308,16 +406,16 @@ private struct NativeHostedMarkdownBlock: View {
     var logicalAnchor: LogicalAnchor? {
         guard let clip = observedClip else { return nil }
         let y = convert(clip.bounds, from: clip).minY
-        guard let index = blocks.firstIndex(where: { $0.frame.maxY > y }), identities.indices.contains(index) else { return nil }
-        return LogicalAnchor(block: identities[index], offset: blocks[index].frame.minY - y)
+        let index = firstBlock(below: y)
+        guard index < blocks.count else { return nil }
+        return LogicalAnchor(block: placements[index].identity, offset: blocks[index].frame.minY - y)
     }
     var preparedLogicalAnchor: LogicalAnchor? {
         guard let clip = observedClip else { return nil }
         let viewport = convert(clip.bounds, from: clip)
-        guard let index = blocks.indices.first(where: {
-            blocks[$0].frame.intersects(viewport) && blocks[$0].exactMeasurement(width: bounds.width) != nil
-        }) else { return nil }
-        return LogicalAnchor(block: identities[index], offset: blocks[index].frame.minY - viewport.minY, character: blocks[index].characterAnchor(in: self, viewportTop: viewport.minY))
+        guard let index = onScreen(viewport).first(where: { blocks[$0].exactMeasurement(width: bounds.width) != nil }) else { return nil }
+        return LogicalAnchor(block: placements[index].identity, offset: blocks[index].frame.minY - viewport.minY,
+                             character: blocks[index].characterAnchor(in: self, viewportTop: viewport.minY))
     }
     func displacement(of anchor: LogicalAnchor) -> CGFloat? {
         guard let clip = observedClip, let top = top(for: anchor) else { return nil }
@@ -365,13 +463,17 @@ private struct NativeHostedMarkdownBlock: View {
         // longer of the two is the one to read, and everything else in the
         // update (the appearance, the width, the copy targets) still applies.
         var source = source
-        if streaming, identity == readingContext?.identity, source != reading.source, reading.source.hasPrefix(source) {
+        if streaming, identity == readingContext?.identity, source != reading.source, reading.source.hasUTF8Prefix(source) {
             source = reading.source
         }
+        let sameReply = readingContext?.identity == identity
         readingContext = (style, capsWidth, streaming, headings, environment, identity)
+        let readingStarted = TranscriptLayoutClock.recording && appending ? TranscriptLayoutClock.now : 0
         let records = reading.update(source, style: style, streaming: streaming, identity: identity)
-        update(blocks: records.map(\.block), style: style, capsWidth: capsWidth, streaming: streaming, headings: headings,
-               environment: environment, identities: records.map(\.id), sourceText: source, sourceRanges: records.map(\.range))
+        if readingStarted > 0 { TranscriptLayoutClock.markdownReadingSeconds += TranscriptLayoutClock.now - readingStarted }
+        reconcile(records, unchangedPrefix: drewReading && sameReply ? reading.unchangedPrefix : 0, sourceText: source,
+                  inputs: Inputs(style: style, capsWidth: capsWidth, streaming: streaming, headings: headings, environment: environment))
+        drewReading = true
     }
     /// A token arrived: this reply's text grew by a suffix. The block still
     /// open is read again and measured again; every block above it keeps the
@@ -379,13 +481,15 @@ private struct NativeHostedMarkdownBlock: View {
     /// how much taller the message became, or nil when this surface is not
     /// the one carrying that reply.
     func appendStreaming(_ next: String, identity: String) -> CGFloat? {
+        let appendStarted = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
+        defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownAppendSeconds += TranscriptLayoutClock.now - appendStarted } }
         // A pass already running owns this geometry: a block being prepared
         // for the viewport is part way through re-placing every block. Such a
         // token takes the ordinary path rather than changing the ground under
         // that pass.
         guard let context = readingContext, context.streaming, context.identity == identity, !identity.isEmpty,
               bounds.width > 0, !applyingLayout, !resolvingViewport,
-              next != reading.source, next.hasPrefix(reading.source), !reading.source.isEmpty else { return nil }
+              next.utf8.count > reading.source.utf8.count, !reading.source.isEmpty, next.hasUTF8Prefix(reading.source) else { return nil }
         let before = exactLayout(width: bounds.width).total
         appending = true
         read(source: next, style: context.style, capsWidth: context.capsWidth, streaming: true,
@@ -404,49 +508,115 @@ private struct NativeHostedMarkdownBlock: View {
 
     func update(blocks source: [MarkdownBlock], style: MarkdownStyle, capsWidth: Bool, streaming: Bool,
                 headings: [MarkdownCopyTarget], environment: TranscriptRowEnvironment, identities: [MarkdownBlockIdentity]? = nil, sourceText: String? = nil, sourceRanges: [Range<Int>]? = nil) {
+        let ids = identities?.count == source.count ? identities! : source.indices.map { MarkdownBlockIdentity(generation: 0, sourceOffset: $0) }
+        let records = source.indices.map { index in
+            StreamingMarkdownRecord(id: ids[index], range: sourceRanges.flatMap { $0.indices.contains(index) ? $0[index] : nil } ?? 0..<0,
+                                    block: source[index], provisional: false)
+        }
+        drewReading = false
+        reconcile(records, unchangedPrefix: 0, sourceText: sourceText, hasRanges: sourceRanges != nil,
+                  inputs: Inputs(style: style, capsWidth: capsWidth, streaming: streaming, headings: headings, environment: environment))
+    }
+
+    /// Draws `records`: every one, a long list as segments. The records before
+    /// `unchangedPrefix` are the ones the last update drew, unchanged, so their
+    /// blocks keep their hosts without being looked at; the last of them is
+    /// compared again, since it may have just stopped being the reply's last
+    /// block and so lost its caret. Everything after is matched by identity,
+    /// so a block keeps its host, its selection and its exact heights.
+    private func reconcile(_ records: [StreamingMarkdownRecord], unchangedPrefix: Int, sourceText: String?, hasRanges: Bool = true, inputs: Inputs) {
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownUpdateSeconds += TranscriptLayoutClock.now - clock } }
-        var ids = identities?.count == source.count ? identities! : source.indices.map { MarkdownBlockIdentity(generation: 0, sourceOffset: $0) }
-        var seen = Set<MarkdownBlockIdentity>()
-        for index in ids.indices {
-            while !seen.insert(ids[index]).inserted { ids[index].component += 1 }
-        }
         enclosingScrollView?.transcriptReading.capture(self)
-        var changedFrom = min(self.identities.count, ids.count), headingIndex = 0
-        for index in 0..<min(self.identities.count, ids.count) where self.identities[index] != ids[index] { changedFrom = index; break }
-        var changed = self.identities != ids
-        let old = Dictionary(uniqueKeysWithValues: zip(self.identities, blocks.enumerated()))
+        let keep = inputs == lastInputs ? max(0, min(unchangedPrefix, recordStarts.count - 1, records.count) - 1) : 0
+        let keepBlocks = recordStarts[keep]
+        // The blocks from `keep` on: identities made unique, a duplicate
+        // taking the next component, and a long list cut into segments.
+        var drawn: [(block: MarkdownBlock, placement: Placement)] = []
+        var starts: [Int] = []
+        var seen = Set<MarkdownBlockIdentity>()
+        let length = max(1, Self.listSegmentLength)
+        for index in keep..<records.count {
+            let record = records[index]
+            var id = record.id
+            while !seen.insert(id).inserted || (positions[id].map { $0 < keepBlocks } ?? false) { id.component += 1 }
+            starts.append(keepBlocks + drawn.count)
+            let range: Range<Int>? = hasRanges ? record.range : nil
+            if case .list(let ordered, let start, let items) = record.block, items.count > length {
+                var first = 0, segment = 0
+                while first < items.count {
+                    let last = min(items.count, first + length)
+                    var part = id; part.segment = segment
+                    drawn.append((.list(ordered: ordered, start: start + first, items: Array(items[first..<last])),
+                                  Placement(identity: part, range: range, heading: false, segmented: true, continues: segment > 0)))
+                    first = last; segment += 1
+                }
+            } else {
+                var heading = false
+                if case .heading = record.block { heading = true }
+                drawn.append((record.block, Placement(identity: id, range: range, heading: heading, segmented: false, continues: false)))
+            }
+        }
+        let oldCount = blocks.count, count = keepBlocks + drawn.count
+        var old: [MarkdownBlockIdentity: Int] = [:]
+        for index in keepBlocks..<oldCount { old[placements[index].identity] = index }
+        var changedFrom = count == oldCount ? count : min(count, oldCount)
         var next: [NativeMarkdownBlockHost] = []
-        for (index, block) in source.enumerated() {
-            var heading: MarkdownCopyTarget?
-            if case .heading = block {
-                if headings.indices.contains(headingIndex) { heading = headings[headingIndex] }
+        next.reserveCapacity(drawn.count)
+        var headingIndex = headingsBefore[keepBlocks]
+        let scale = displayScale
+        var nextHeadings: [Int] = []
+        nextHeadings.reserveCapacity(drawn.count + 1)
+        for (offset, entry) in drawn.enumerated() {
+            let index = keepBlocks + offset
+            nextHeadings.append(headingIndex)
+            var target: MarkdownCopyTarget?
+            if entry.placement.heading {
+                if inputs.headings.indices.contains(headingIndex) { target = inputs.headings[headingIndex] }
                 headingIndex += 1
             }
-            let item = NativeMarkdownItem(block: block, style: style, capsWidth: capsWidth,
-                                          caret: streaming && index == source.count - 1, headingTarget: heading, environment: environment)
-            if let prior = old[ids[index]] {
-                let retained = prior.element
-                if retained.update(item, source: {
-                    guard let sourceText, let sourceRanges, sourceRanges.indices.contains(index),
-                          let current = MarkdownSelection.Source(sourceText, bytes: sourceRanges[index]) else { return nil }
-                    var previous: MarkdownSelection.Source?
-                    if let priorSourceText, let priorSourceRanges, priorSourceRanges.indices.contains(prior.offset) {
-                        previous = MarkdownSelection.Source(priorSourceText, bytes: priorSourceRanges[prior.offset])
-                    }
+            let item = NativeMarkdownItem(block: entry.block, style: inputs.style, capsWidth: inputs.capsWidth,
+                                          caret: inputs.streaming && index == count - 1, headingTarget: target, environment: inputs.environment)
+            reconciledBlockVisits += 1
+            if let prior = old.removeValue(forKey: entry.placement.identity) {
+                let host = blocks[prior], was = placements[prior]
+                let range = entry.placement.range, priorSource = priorSourceText
+                let updated = host.update(item, source: {
+                    guard let sourceText, let range, let current = MarkdownSelection.Source(sourceText, bytes: range) else { return nil }
+                    let previous = priorSource.flatMap { text in was.range.flatMap { MarkdownSelection.Source(text, bytes: $0) } }
                     return (previous, current)
-                }) { changed = true; changedFrom = min(changedFrom, index) }
-                next.append(retained)
-            } else { next.append(NativeMarkdownBlockHost(item: item)); changed = true }
+                })
+                host.displayScale = scale
+                if updated || prior != index || was.continues != entry.placement.continues || was.segmented != entry.placement.segmented {
+                    changedFrom = min(changedFrom, index)
+                }
+                next.append(host)
+            } else {
+                let host = NativeMarkdownBlockHost(item: item)
+                host.displayScale = scale
+                next.append(host)
+                changedFrom = min(changedFrom, index)
+            }
         }
-        let retained = Set(ids)
-        for (id, prior) in old where !retained.contains(id) { prior.element.view?.removeFromSuperview() }
-        blocks = next; self.identities = ids
-        priorSourceText = sourceText; priorSourceRanges = sourceRanges
-        guard changed else { return }
+        nextHeadings.append(headingIndex)
+        // Hosts no longer drawn leave the view tree and every list of them.
+        for (_, index) in old {
+            let host = blocks[index]
+            host.view?.removeFromSuperview()
+            mountedHosts[ObjectIdentifier(host)] = nil; detachedHosts[ObjectIdentifier(host)] = nil
+        }
+        for index in keepBlocks..<oldCount where positions[placements[index].identity] == index { positions[placements[index].identity] = nil }
+        blocks.replaceSubrange(keepBlocks..., with: next)
+        placements.replaceSubrange(keepBlocks..., with: drawn.map(\.placement))
+        headingsBefore.replaceSubrange(keepBlocks..., with: nextHeadings)
+        recordStarts.replaceSubrange(keep..., with: starts + [count])
+        for index in keepBlocks..<count { positions[placements[index].identity] = index }
+        priorSourceText = sourceText
+        lastInputs = inputs
+        guard changedFrom < count || oldCount != count else { return }
         // Completed blocks retain their exact width-specific heights. Only the
         // changed suffix participates in aggregate sizing and frame placement.
-        for layout in layouts { layout.validPrefix = min(layout.validPrefix, changedFrom); layout.provisional = layout.provisional.filter { $0 < changedFrom } }
+        for layout in layouts { layout.invalidate(from: changedFrom) }
         layoutDirtyFrom = min(layoutDirtyFrom ?? changedFrom, changedFrom)
         needsLayout = true
         // A token's own pass has already told the row how much taller the
@@ -465,6 +635,29 @@ private struct NativeHostedMarkdownBlock: View {
         }
     }
 
+    /// The scale this surface draws at, or will once it is in a window.
+    private var displayScale: CGFloat { window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2 }
+    /// Drawn at a new scale: every block is measured again at it.
+    private func adoptDisplayScale() {
+        let scale = displayScale
+        guard blocks.contains(where: { $0.displayScale != scale }) else { return }
+        for block in blocks { block.displayScale = scale }
+        layouts.removeAll(); laidOutWidth = nil; layoutDirtyFrom = 0
+        needsLayout = true
+        invalidateIntrinsicContentSize()
+    }
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        adoptDisplayScale()
+    }
+    /// What takes the bottom of the run of blocks ending at `index` — one
+    /// block, or every segment of one list — to a whole point.
+    private func rounding(afterRunEndingAt index: Int, _ layout: Layout) -> CGFloat {
+        var bottom = layout.heights[index], block = index
+        while block > 0, placements[block].continues { bottom += layout.gaps[block] + layout.heights[block - 1]; block -= 1 }
+        return max(0, (bottom - 0.001).rounded(.up) - bottom)
+    }
+
     private func exactLayout(width: CGFloat) -> Layout {
         let layout: Layout
         if let cached = layouts.last(where: { $0.width == width }) { layout = cached }
@@ -476,21 +669,37 @@ private struct NativeHostedMarkdownBlock: View {
         guard layout.validPrefix < blocks.count || layout.heights.count != blocks.count else { return layout }
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownLayoutSeconds += TranscriptLayoutClock.now - clock } }
-        let prefix = min(layout.validPrefix, blocks.count)
-        let oldSpacing = CGFloat(max(0, layout.heights.count - 1)) * 10
-        let removed = layout.heights[prefix...].reduce(0, +)
-        layout.total -= oldSpacing + removed
-        layout.heights.removeSubrange(prefix...)
+        let prefix = min(layout.validPrefix, blocks.count, layout.heights.count)
+        layout.total -= layout.heights[prefix...].reduce(0, +) + layout.gaps[prefix...].reduce(0, +) + layout.trailing
+        layout.heights.removeSubrange(prefix...); layout.gaps.removeSubrange(prefix...); layout.trailing = 0
         for index in prefix..<blocks.count {
+            let block = blocks[index]
             // Descriptor estimates never enter a shared exact-size cache.
             // A giant message prepares a few blocks, then only the viewport.
-            let known = blocks[index].exactMeasurement(width: width)
-            let deferred = known == nil && blocks.count > 32 && index >= 6 && blocks[index].view?.superview == nil
-            let height = known?.height ?? (deferred ? max(20, blocks[index].estimate(width: width)) : blocks[index].measure(width: width).height)
-            if deferred { layout.provisional.insert(index) } else { layout.provisional.remove(index) }
-            layout.heights.append(height); layout.total += height; aggregateMeasurementVisits += 1
+            let known = block.exactMeasurement(width: width)
+            // The block a streaming reply is still being written into is the
+            // one the reader is watching, and a token has just changed it: it
+            // is measured, never stood at an estimate the row would then carry
+            // until its next full measurement.
+            let deferred = known == nil && blocks.count > 32 && index >= 6 && block.view?.superview == nil && !block.hasCaret
+            var height: CGFloat
+            if let known { height = known.height }
+            else if deferred { height = max(20, block.estimate(width: width)) }
+            else {
+                height = block.measure(width: width, in: self).height
+                if block.view?.superview !== self { detachedHosts[ObjectIdentifier(block)] = block }
+            }
+            if deferred { layout.insertProvisional(index) } else { layout.provisional.remove(index) }
+            // A segment sits below the one before it as the list's items sit
+            // from each other; any other block below the whole point the run
+            // above it ends on.
+            let gap = index == 0 ? 0 : placements[index].continues ? Self.listItemSpacing
+                : Self.blockSpacing + rounding(afterRunEndingAt: index - 1, layout)
+            layout.heights.append(height); layout.gaps.append(gap); layout.total += height + gap
+            aggregateMeasurementVisits += 1
         }
-        layout.total += CGFloat(max(0, blocks.count - 1)) * 10
+        layout.trailing = blocks.isEmpty ? 0 : rounding(afterRunEndingAt: blocks.count - 1, layout)
+        layout.total += layout.trailing
         layout.validPrefix = blocks.count
         return layout
     }
@@ -500,6 +709,16 @@ private struct NativeHostedMarkdownBlock: View {
         let width = proposed.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? (bounds.width > 0 ? bounds.width : TranscriptMetrics.pageWidth)
         return CGSize(width: width, height: exactLayout(width: width).total)
     }
+    /// Puts every block from `first` down where the layout says it goes.
+    private func place(from first: Int, layout: Layout) {
+        guard first < blocks.count else { return }
+        var y: CGFloat = first > 0 ? blocks[first - 1].frame.maxY + layout.gaps[first] : 0
+        for index in first..<blocks.count {
+            framePlacements += 1
+            blocks[index].frame = CGRect(x: 0, y: y, width: bounds.width, height: layout.heights[index])
+            y += layout.heights[index] + (index + 1 < blocks.count ? layout.gaps[index + 1] : 0)
+        }
+    }
     override func layout() {
         super.layout()
         guard bounds.width > 0, !applyingLayout else { return }
@@ -507,14 +726,7 @@ private struct NativeHostedMarkdownBlock: View {
         defer { applyingLayout = false }
         if laidOutWidth != bounds.width || layoutDirtyFrom != nil {
             let layout = exactLayout(width: bounds.width)
-            let first = laidOutWidth == bounds.width ? min(layoutDirtyFrom ?? 0, blocks.count) : 0
-            var y: CGFloat = first > 0 ? blocks[first - 1].frame.maxY + 10 : 0
-            for index in first..<blocks.count {
-                let block = blocks[index]
-                framePlacements += 1
-                block.frame = CGRect(x: 0, y: y, width: bounds.width, height: layout.heights[index])
-                y += layout.heights[index] + 10
-            }
+            place(from: laidOutWidth == bounds.width ? min(layoutDirtyFrom ?? 0, blocks.count) : 0, layout: layout)
             laidOutWidth = bounds.width; layoutDirtyFrom = nil
         }
         bindViewport()
@@ -523,6 +735,7 @@ private struct NativeHostedMarkdownBlock: View {
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if window != nil { adoptDisplayScale() }
         bindViewport()
         mountVisibleBlocks()
     }
@@ -559,10 +772,36 @@ private struct NativeHostedMarkdownBlock: View {
         }
     }
     private func scheduleFrameCorrection() { enclosingScrollView?.transcriptReading.geometryChanged() }
+
+    /// The first block reaching below `y`. The blocks are placed top to
+    /// bottom, so finding it is a bisection, not a walk down the reply.
+    private func firstBlock(below y: CGFloat) -> Int {
+        var low = 0, high = min(blocks.count, layoutDirtyFrom ?? blocks.count)
+        while low < high {
+            let middle = (low + high) / 2
+            if blocks[middle].frame.maxY > y { high = middle } else { low = middle + 1 }
+        }
+        return low
+    }
+    /// The blocks in `rect`: the placed ones found by bisection, and any not
+    /// yet placed since the last change, by where they stood.
+    private func onScreen(_ rect: CGRect) -> [Int] {
+        guard !rect.isNull, !blocks.isEmpty else { return [] }
+        let placed = min(blocks.count, layoutDirtyFrom ?? blocks.count)
+        var result: [Int] = []
+        var index = firstBlock(below: rect.minY)
+        while index < placed, blocks[index].frame.minY < rect.maxY {
+            if blocks[index].frame.intersects(rect) { result.append(index) }
+            index += 1
+        }
+        for index in placed..<blocks.count where blocks[index].frame.intersects(rect) { result.append(index) }
+        return result
+    }
+
     private func resolveVisibleBlocks(in viewport: CGRect) {
         guard !resolvingViewport, !viewport.isNull, let layout = layouts.last(where: { $0.width == bounds.width }),
               !layout.provisional.isEmpty else { return }
-        let candidates = layout.provisional.sorted().filter { blocks.indices.contains($0) && blocks[$0].frame.intersects(viewport) }
+        let candidates = onScreen(viewport).filter { layout.provisional.contains($0) }
         guard !candidates.isEmpty else { loadingSection?.removeFromSuperview(); return }
         if candidates.count > 4 {
             let spinner = loadingSection ?? NSProgressIndicator()
@@ -577,23 +816,34 @@ private struct NativeHostedMarkdownBlock: View {
         // new intrinsic height. Keep one logical position through that batch,
         // unless the reader has moved the clip in the meantime.
         enclosingScrollView?.transcriptReading.capture(self)
-        var changedFrom = blocks.count
         willPrepareVisibleBlocks?()
-        for index in candidates.prefix(4) {
-            let height = blocks[index].measure(width: bounds.width).height
-            layout.total += height - layout.heights[index]; layout.heights[index] = height
-            layout.provisional.remove(index); changedFrom = min(changedFrom, index)
+        let totalBefore = layout.total
+        let prepared = Array(candidates.prefix(4))
+        for index in prepared {
+            _ = blocks[index].measure(width: bounds.width, in: self)
+            if blocks[index].view?.superview !== self { detachedHosts[ObjectIdentifier(blocks[index])] = blocks[index] }
+            layout.provisional.remove(index)
         }
+        // The layout takes their heights from here down — including where a
+        // list drawn in segments now ends — and the blocks are placed again.
+        let changedFrom = prepared.min() ?? blocks.count
+        layout.validPrefix = min(layout.validPrefix, changedFrom)
+        _ = exactLayout(width: bounds.width)
+        let resolved = layout.total - totalBefore
         layoutDirtyFrom = min(layoutDirtyFrom ?? changedFrom, changedFrom)
         // Reposition descriptors synchronously, but ask the enclosing hosting
         // row to resize after this native layout callback has returned.
-        var y: CGFloat = 0
-        for index in blocks.indices {
-            blocks[index].frame = CGRect(x: 0, y: y, width: bounds.width, height: layout.heights[index])
-            y += layout.heights[index] + 10
-        }
+        place(from: changedFrom, layout: layout)
         enclosingScrollView?.transcriptReading.capture(self)
         didPrepareVisibleBlocks?()
+        // The row this reply is drawn in is as tall as the rest of it plus
+        // this text, so it changes by exactly as much. It hears of it here:
+        // nothing the hosting tree reports afterwards reaches it.
+        if abs(resolved) > 0.01 {
+            var ancestor = superview
+            while let view = ancestor, !(view is TranscriptRowContainer) { ancestor = view.superview }
+            (ancestor as? TranscriptRowContainer)?.surfaceResolved(resolved)
+        }
         enclosingScrollView?.transcriptReading.geometryChanged()
         resolvingViewport = false
         guard !resolveScheduled else { return }
@@ -614,16 +864,16 @@ private struct NativeHostedMarkdownBlock: View {
     /// landed. If a block disappeared, use its nearest surviving predecessor,
     /// then successor; never substitute the newest response.
     func top(for anchor: LogicalAnchor) -> CGFloat? {
-        let index = identities.firstIndex(of: anchor.block) ?? identities.lastIndex(where: {
-            $0.generation == anchor.block.generation && $0.sourceOffset <= anchor.block.sourceOffset
-        }) ?? identities.firstIndex(where: { $0.generation == anchor.block.generation })
+        let index = positions[anchor.block] ?? placements.lastIndex(where: {
+            $0.identity.generation == anchor.block.generation && $0.identity.sourceOffset <= anchor.block.sourceOffset
+        }) ?? placements.firstIndex(where: { $0.identity.generation == anchor.block.generation })
         guard let index, blocks.indices.contains(index) else { return nil }
-        if let character = anchor.character, identities[index] == anchor.block,
+        if let character = anchor.character, placements[index].identity == anchor.block,
            let top = blocks[index].characterTop(character, in: self) { return top }
         return blocks[index].frame.minY - anchor.offset
     }
-    private func containsSelection(_ block: NativeMarkdownBlockHost) -> Bool {
-        guard let view = block.view, let responder = window?.firstResponder as? NSView else { return false }
+    private func containsSelection(_ block: NativeMarkdownBlockHost, responder: NSView?) -> Bool {
+        guard let view = block.view, let responder else { return false }
         if responder === view || responder.isDescendant(of: view) { return true }
         if let editor = responder as? NSTextView, editor.isFieldEditor, let owner = editor.delegate as? NSView {
             return owner === view || owner.isDescendant(of: view)
@@ -645,28 +895,36 @@ private struct NativeHostedMarkdownBlock: View {
         let visible = viewport.isNull ? viewport : viewport.insetBy(dx: 0, dy: -max(120, viewport.height / 4))
         resolveVisibleBlocks(in: visible)
         let provisional = layouts.last(where: { $0.width == bounds.width })?.provisional ?? []
-        for (index, block) in blocks.enumerated() {
-            if ((!visible.isNull && block.frame.intersects(visible)) || containsSelection(block)) && !provisional.contains(index) { block.place(in: self) }
-            else if block.view?.superview === self { block.view?.removeFromSuperview() }
+        // The blocks on screen, found by bisection; a block holding the
+        // reader's selection stays, wherever it is.
+        var wanted: [ObjectIdentifier: NativeMarkdownBlockHost] = [:]
+        for index in onScreen(visible) where !provisional.contains(index) { wanted[ObjectIdentifier(blocks[index])] = blocks[index] }
+        let responder = window?.firstResponder as? NSView
+        for (key, host) in mountedHosts where wanted[key] == nil && containsSelection(host, responder: responder) { wanted[key] = host }
+        for (key, host) in mountedHosts where wanted[key] == nil {
+            if host.view?.superview === self { host.view?.removeFromSuperview() }
+            if host.view != nil { detachedHosts[key] = host }
         }
+        for (key, host) in wanted { host.place(in: self); detachedHosts[key] = nil }
+        mountedHosts = wanted
         // Reclaim distant trees only during the shared input-quiet budget.
         // Measurements stay exact. Visible/nearby trees and selection owners
         // survive; reconstruction is required only after travelling well away.
         let retention = viewport.isNull ? viewport : viewport.insetBy(dx: 0, dy: -max(720, viewport.height * 3))
-        let candidates = blocks.filter { $0.view != nil && $0.view?.superview == nil &&
-            (retention.isNull || !$0.frame.intersects(retention)) && !containsSelection($0) }
+        let candidates = detachedHosts.values.filter { $0.view != nil && $0.view?.superview == nil && (retention.isNull || !$0.frame.intersects(retention)) }
         guard !candidates.isEmpty else { TranscriptIdleScheduler.shared.cancel(self); return }
         var cursor = 0
         TranscriptIdleScheduler.shared.request(self, after: ProcessInfo.processInfo.systemUptime + TranscriptNativeDocument.sliceQuietPeriod) { [weak self] in
             guard let self else { return false }
+            let responder = self.window?.firstResponder as? NSView
             while cursor < candidates.count {
                 let block = candidates[cursor]; cursor += 1
-                guard block.view != nil, block.view?.superview == nil, !self.containsSelection(block) else { continue }
+                guard block.view != nil, block.view?.superview == nil, !self.containsSelection(block, responder: responder) else { continue }
                 block.releaseDetachedHost()
+                self.detachedHosts[ObjectIdentifier(block)] = nil
                 return cursor < candidates.count
             }
             return false
         }
-
     }
 }

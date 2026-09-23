@@ -4,6 +4,9 @@ import SwiftUI
 // list over it, and the bar of controls under it whose form is measured
 // rather than laid out.
 
+/// Which chat's draft changed, and to what: see the `onChange` below.
+private struct ComposerDraftEdit: Equatable { let session: String; let text: String }
+
 struct ComposerInput: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var session: SessionDisplay
@@ -48,7 +51,12 @@ struct ComposerInput: View {
                     attachFiles: { model.attachImageFiles($0, sessionID: session.id) },
                     heightChanged: { height in if abs(contentHeight - height) >= 1 { contentHeight = height } }, focusToken: session.composerFocusRequest)
                     .id(session.id).disabled(!session.draftReady).frame(height: min(maximumHeight, max(minimumHeight, contentHeight)))
-                    .onChange(of: draft.text) { _, _ in model.draftChanged(session) }
+                    // The pane is kept across chats, so a switch hands this
+                    // bar another chat's draft. That is not typing: saving it
+                    // wrote the unchanged draft back on every click.
+                    .onChange(of: ComposerDraftEdit(session: session.id, text: draft.text)) { old, new in
+                        if old.session == new.session { model.draftChanged(session) }
+                    }
                     // The keyboard hints are the empty composer's placeholder; they leave once typing starts.
                     .overlay(alignment: .topLeading) {
                         if draft.text.isEmpty && session.skills.isEmpty {

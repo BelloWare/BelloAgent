@@ -127,4 +127,151 @@ final class SideTests: XCTestCase {
         model.displays["parent"] = SessionDisplay(id: "parent"); model.displays["ephemeral"] = SessionDisplay(id: "ephemeral")
         model.discardLostSides(workspaceID: "w"); XCTAssertTrue(model.sides.isEmpty); XCTAssertNil(model.displays["ephemeral"]); XCTAssertNotNil(model.displays["parent"])
     }
+
+    // MARK: A draft side's first message, against a helper this test answers
+
+    @MainActor private final class FrameLog { var frames: [[String: WireValue]] = [] }
+    @MainActor private final class ScriptedSide {
+        let root: URL
+        let model: WorkspaceModel
+        let parent: ChatRecord
+        let parentView: SessionDisplay
+        let host: HostSupervisor
+        let log: FrameLog
+        var frames: [[String: WireValue]] { log.frames }
+        init(root: URL, model: WorkspaceModel, parent: ChatRecord, parentView: SessionDisplay, host: HostSupervisor, log: FrameLog) {
+            self.root = root; self.model = model; self.parent = parent; self.parentView = parentView; self.host = host; self.log = log
+        }
+        func frame(_ method: String) -> [String: WireValue]? { frames.first { $0["method"]?.string == method } }
+        func count(_ method: String) -> Int { frames.filter { $0["method"]?.string == method }.count }
+        func reply(_ frame: [String: WireValue], result: [String: WireValue], ok: Bool = true) throws {
+            let connection = try XCTUnwrap(host.connectionID), epoch = try XCTUnwrap(host.epoch)
+            host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(epoch),
+                "commandId": try XCTUnwrap(frame["commandId"]), "ok": .bool(ok), "result": .object(result)]), connectionID: connection)
+        }
+        func until(_ what: String, _ condition: () -> Bool) async throws {
+            for _ in 0..<1_000 where !condition() { try await Task.sleep(for: .milliseconds(5)) }
+            XCTAssertTrue(condition(), what)
+            if !condition() { throw HostError.failure(what) }
+        }
+    }
+
+    /// A parent chat that is open on a helper whose commands the test answers.
+    @MainActor private func scriptedSide() async throws -> ScriptedSide {
+        let root = try scratch()
+        let workspace = WorkspaceRecord(id: "project", path: root.path, trusted: true)
+        var profile = ProfileRecord(); profile.id = "p"; profile.baseUrl = "http://127.0.0.1:9/v1"; profile.modelId = "router"
+        let vault = ConfigurationVault(storage: MemoryVaultStorage()), saved = profile
+        _ = try await vault.update(expectedRevision: 0) { $0.workspaces = [workspace]; $0.profiles = [.init(profile: saved, apiKey: "synthetic-unused-key")] }
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.reloadConfiguration()
+        let parent = ChatRecord(id: "parent", workspaceID: workspace.id, title: "Parent", path: nil, profileID: profile.id)
+        try await model.store?.put(parent, kind: "chat", id: parent.id); model.chats = [parent]
+        let view = SessionDisplay(id: parent.id); view.historyState = .ready; view.selectionMetadataLoaded = true
+        model.displays[parent.id] = view; model.selectedID = parent.id; model.selected = view; model.focusedSessionID = parent.id
+        let log = FrameLog()
+        let host = HostSupervisor(commandSender: { log.frames.append($0) })
+        try await host.connect(cwd: root, state: root.appendingPathComponent("host"))
+        model.hosts[workspace.id] = host; model.opened.insert(parent.id)
+        let scripted = ScriptedSide(root: root, model: model, parent: parent, parentView: view, host: host, log: log)
+        addTeardownBlock { @MainActor in try? await host.shutdownAndWait() }
+        return scripted
+    }
+
+    /// The first message of a draft side creates it on the helper. When the
+    /// helper refuses, nothing was created and the side is still a draft: it
+    /// can be sent again or closed. It used to be left half-open, neither a
+    /// draft nor a saved side, which nothing could close, keep or replace,
+    /// and which refused quitting and every update while it existed.
+    @MainActor func testAFailedFirstMessageLeavesTheSideADraftThatCanBeClosed() async throws {
+        let f = try await scriptedSide()
+        f.model.openSide(parentID: f.parent.id)
+        let info = try XCTUnwrap(f.model.sides[f.parent.id]); XCTAssertTrue(info.pending)
+        let side = try XCTUnwrap(f.model.displays[info.id])
+        side.draft = "A question for the side"
+        f.model.send(sessionID: info.id)
+        try await f.until("side.open was never sent") { f.frame("side.open") != nil }
+        try f.reply(try XCTUnwrap(f.frame("side.open")), result: ["code": .string("parent_busy"), "message": .string("The parent is busy")], ok: false)
+        try await f.until("the send never finished") { !side.loading }
+        let after = try XCTUnwrap(f.model.sides[f.parent.id])
+        XCTAssertTrue(after.pending, "Nothing was created: the side is still a draft")
+        XCTAssertFalse(f.model.hasActiveWork, "A draft side never blocks quitting or updating")
+        XCTAssertFalse(f.host.isBusy, "Nor does it keep the helper from going idle")
+        XCTAssertEqual(side.draft, "A question for the side", "What was typed is still there")
+        let stored = try await f.model.store?.get(DraftRecord.self, kind: "draft", id: info.id)
+        let intent = try await f.model.store?.get(SideKeepIntent.self, kind: "side-keep", id: info.id)
+        XCTAssertNil(stored, "A draft side's text is not left in the store"); XCTAssertNil(intent, "Nor a recovery intent for a side that was never created")
+        f.model.closeSide(info.id)
+        XCTAssertNil(f.model.sides[f.parent.id], "It closes")
+        XCTAssertEqual(f.parentView.draft, "A question for the side", "Its text goes back to the parent, as for any draft side")
+    }
+
+    /// The side's first message is one submission. Creating the side used to
+    /// clear the busy flag the send had set while the message itself was
+    /// still on its way, so Send worked again and submitted it twice.
+    @MainActor func testADraftSideFirstMessageIsSubmittedOnce() async throws {
+        let f = try await scriptedSide()
+        f.model.openSide(parentID: f.parent.id)
+        let info = try XCTUnwrap(f.model.sides[f.parent.id])
+        let side = try XCTUnwrap(f.model.displays[info.id])
+        side.draft = "A question for the side"
+        // The journal the helper writes for the side.
+        let path = f.model.root.appendingPathComponent("Workspaces/project/Sessions/side_\(info.id).jsonl")
+        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{\"type\":\"session\",\"version\":3,\"id\":\"\(info.id)\"}\n".utf8).write(to: path)
+        f.model.send(sessionID: info.id)
+        var loadingWhenSubmitted: Bool?
+        var answered = 0
+        for _ in 0..<2_000 {
+            while answered < f.frames.count {
+                let frame = f.frames[answered]; answered += 1
+                switch frame["method"]?.string {
+                case "side.open": try f.reply(frame, result: ["sessionId": .string(info.id), "path": .string(path.path), "side": .object(["parentSessionId": .string(f.parent.id)])])
+                case "debug.mode", "session.status": try f.reply(frame, result: [:])
+                case "turn.submit":
+                    loadingWhenSubmitted = side.loading
+                    // The reader presses Send again while the first message is on its way.
+                    f.model.send(sessionID: info.id)
+                default: break
+                }
+            }
+            if loadingWhenSubmitted != nil { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(loadingWhenSubmitted, true, "The side is still sending its first message")
+        for _ in 0..<40 { await Task.yield() }
+        XCTAssertEqual(f.count("turn.submit"), 1, "The first message is submitted once")
+    }
+
+    /// The "Interrupted submissions" banner in a side acts on the side: its
+    /// Insert puts the text in the side's composer and its Dismiss removes the
+    /// side's record. Both used to act on the main chat.
+    @MainActor func testASidesInterruptedSubmissionIsRecoveredIntoTheSide() async throws {
+        let root = try scratch()
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let parent = SessionDisplay(id: "parent"), side = SessionDisplay(id: "side")
+        parent.draft = "Parent draft"
+        model.chats = [ChatRecord(id: "parent", workspaceID: "w", title: "Parent", path: nil, profileID: "p"),
+                       ChatRecord(id: "side", workspaceID: "w", title: "Side", path: nil, profileID: "p", toolMode: "read-only", parentSessionID: "parent")]
+        model.displays = ["parent": parent, "side": side]; model.selectedID = "parent"; model.selected = parent
+        model.sides["parent"] = SideRecord(id: "side", parentID: "parent", workspaceID: "w", profileID: "p", title: "Side", kept: true)
+        let parentIntent = CommandIntent(id: "parent-command", sessionID: "parent", turnID: "t0", text: "Parent question", state: "intent", epoch: nil)
+        let intent = CommandIntent(id: "side-command", sessionID: "side", turnID: "t1", text: "Interrupted side question", state: "intent", epoch: nil)
+        try await model.store?.put(parentIntent, kind: "pending:parent", id: parentIntent.id)
+        try await model.store?.put(intent, kind: "pending:side", id: intent.id)
+        parent.recovered = [parentIntent]; parent.uncertain = true
+        side.recovered = [intent]; side.uncertain = true
+        model.recoverDraft(intent, insert: true)
+        XCTAssertEqual(side.draft, "Interrupted side question", "The text goes into the side's composer")
+        XCTAssertEqual(parent.draft, "Parent draft", "The parent's draft is untouched")
+        for _ in 0..<200 where !side.recovered.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(side.recovered.isEmpty); XCTAssertFalse(side.uncertain)
+        XCTAssertEqual(parent.recovered.map(\.id), ["parent-command"], "The parent's own interrupted submission stays")
+        let left = try await model.store?.list(CommandIntent.self, kind: "pending:side")
+        XCTAssertEqual(left?.count, 0, "The side's record is the one removed")
+        let parentLeft = try await model.store?.list(CommandIntent.self, kind: "pending:parent")
+        XCTAssertEqual(parentLeft?.count, 1)
+    }
 }

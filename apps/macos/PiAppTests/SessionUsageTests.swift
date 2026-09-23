@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import XCTest
 @testable import PiApp
@@ -158,6 +159,271 @@ final class SessionUsageTests: XCTestCase {
         XCTAssertNil(controller.snapshot)
     }
 
+    /// Every 10 s poll embedded a fresh `until`, bucket bounds and read
+    /// stamps, so identical figures never compared equal and the whole
+    /// Session info window re-rendered on each poll.
+    @MainActor func testPollingRepublishesOnlyWhenTheSessionsFiguresChange() async throws {
+        var polls = 0, clock = until
+        let controller = SessionUsageController(scope: scope, load: { _, now, offset in
+            polls += 1
+            let from = self.until.addingTimeInterval(-3_600)
+            return MenuBarSnapshot(period: .retained, from: from, until: now, counts: DashboardCounts(dispatched: 3, completed: 3), gateway: GatewayTotals(requests: 3),
+                                   workspaces: 1, sessions: 1, compactionRequests: 0, costUnreported: 3, costInvalid: 0, costConflicts: 0, models: [], modelGroups: 0, offset: offset,
+                                   buckets: [MenuBarBucket(id: 0, start: from, end: now)], summaryReadAt: now, modelPageReadAt: now)
+        }, interval: .milliseconds(10), now: { clock = clock.addingTimeInterval(10); return clock })
+        var publications = 0
+        let observer = controller.$snapshot.dropFirst().sink { _ in publications += 1 }
+        defer { observer.cancel(); controller.setVisible(false) }
+        controller.setVisible(true)
+        try await waitFor("The window did not keep polling") { polls >= 5 }
+        XCTAssertEqual(publications, 1, "The same figures are published once, however often they are read")
+    }
+
+    /// Paging the Models table set the snapshot to nil until the page
+    /// landed: the whole window blanked to "Reading session info…".
+    @MainActor func testPagingTheModelsTableKeepsTheWindowOnScreen() async throws {
+        var pending: CheckedContinuation<Void, Never>?
+        let controller = SessionUsageController(scope: scope, load: { _, _, offset in
+            if offset > 0 { await withCheckedContinuation { pending = $0 } }
+            return self.pagedSnapshot(offset: offset)
+        }, interval: .seconds(60))
+        defer { controller.setVisible(false) }
+        controller.setVisible(true)
+        try await waitFor("First model page did not load") { controller.snapshot != nil }
+        var blanks = 0
+        let observer = controller.$snapshot.dropFirst().sink { if $0 == nil { blanks += 1 } }
+        defer { observer.cancel() }
+        controller.nextPage()
+        try await waitFor("The next page was not requested") { pending != nil }
+        XCTAssertNotNil(controller.snapshot, "The current page stays while the next one is read")
+        XCTAssertTrue(controller.loading)
+        pending?.resume()
+        try await waitFor("Second model page did not load") { controller.snapshot?.offset == MenuBarSnapshot.pageSize }
+        XCTAssertEqual(blanks, 0)
+    }
+
+    /// Hovering a timing chart moved the selected request, which the page
+    /// owned: the whole Session info window, ledger and tables included,
+    /// re-rendered at every pointer step. Then the section around the charts
+    /// did, and with it all four charts rebuilt their marks and formatted
+    /// every point's accessibility strings again, to move a one-point rule.
+    /// Only each chart's rule and the request caption watch the pointer now.
+    @MainActor func testHoveringATimingChartRedrawsOnlyTheChartsAndTheirCaption() async throws {
+        let controller = SessionUsageController(scope: scope, load: { _, _, offset in self.pagedSnapshot(offset: offset) }, interval: .seconds(60))
+        var samples: [SessionTimingSample] = []
+        for index in 1...16 {
+            let step = Double(index)
+            samples.append(SessionTimingSample(id: "r\(index)", wall: until.addingTimeInterval(step), ttftMilliseconds: 100 * step, streamingMilliseconds: 1_000,
+                                               outputTokens: 40 * step, costUSD: 0.001 * step, requestMilliseconds: 1_500))
+        }
+        controller.timing = SessionTimingHistory(samples: samples)
+        defer { controller.setVisible(false) }
+        controller.setVisible(true)
+        try await waitFor("Session info did not load") { controller.snapshot != nil }
+        SessionTimingRenderCount.reset()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 1600), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.acceptsMouseMovedEvents = true
+        let hosted = NSHostingView(rootView: SessionUsageView(title: "Session", controller: controller))
+        window.contentView = hosted; window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        for _ in 0..<10 { try await Task.sleep(for: .milliseconds(20)); hosted.layoutSubtreeIfNeeded() }
+        // The charts sit below the ledger and the models table: scroll the
+        // page to its end, as a reader does to reach them. A chart off screen
+        // never lays out its overlay, so it would have no rule to redraw.
+        func scrollViews(_ view: NSView) -> [NSScrollView] {
+            var found: [NSScrollView] = []
+            if let scroll = view as? NSScrollView { found.append(scroll) }
+            for child in view.subviews { found += scrollViews(child) }
+            return found
+        }
+        let page = try XCTUnwrap(scrollViews(hosted).max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) })
+        let document = try XCTUnwrap(page.documentView)
+        document.scroll(NSPoint(x: 0, y: document.isFlipped ? max(0, document.frame.height - page.contentView.bounds.height) : 0))
+        for _ in 0..<10 { try await Task.sleep(for: .milliseconds(20)); hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
+        XCTAssertGreaterThanOrEqual(SessionTimingRenderCount.marks, SessionTimingMetric.allCases.count, "The four charts are built")
+        XCTAssertGreaterThanOrEqual(SessionTimingRenderCount.rules, SessionTimingMetric.allCases.count, "and on screen, each with its rule")
+        SessionUsageRenderCount.reset(); SessionTimingRenderCount.reset()
+        // What a pointer moving over the charts writes, one request at a time.
+        // (A test host is not the active app: SwiftUI's continuous hover does
+        // not answer synthetic events sent to the window, the application
+        // queue, the hosting view or its tracking-area owners.)
+        for request in [1, 2, 3, 5, 8, 13, 16, nil] {
+            controller.timingSelection.request = request
+            try await Task.sleep(for: .milliseconds(10)); hosted.layoutSubtreeIfNeeded()
+        }
+        for _ in 0..<5 { try await Task.sleep(for: .milliseconds(20)); hosted.layoutSubtreeIfNeeded() }
+        print("PERF 8 hover steps re-rendered the Session info window \(SessionUsageRenderCount.builds) times and its timing section \(SessionUsageRenderCount.timingBuilds) times, rebuilt the charts' marks \(SessionTimingRenderCount.marks) times, drew their rules \(SessionTimingRenderCount.rules) times and the request caption \(SessionTimingRenderCount.captions) times")
+        XCTAssertEqual(SessionUsageRenderCount.builds, 0, "Hover never redraws the page, its ledger or its tables")
+        XCTAssertEqual(SessionUsageRenderCount.timingBuilds, 0, "nor the section around the charts")
+        XCTAssertEqual(SessionTimingRenderCount.marks, 0, "nor any chart's marks and their per-point accessibility strings")
+        XCTAssertGreaterThanOrEqual(SessionTimingRenderCount.rules, SessionTimingMetric.allCases.count, "Each chart's rule follows the hover")
+        XCTAssertGreaterThan(SessionTimingRenderCount.captions, 0, "and so does the request caption")
+    }
+
+    /// The caption under the Session info charts existed only while the
+    /// pointer was on a chart: the section grew by a line on every hover and
+    /// everything below it — the token mix, the token and cache cards — moved
+    /// down and back. The line is always there now, reading the latest
+    /// request until a chart is hovered, so nothing below ever moves.
+    @MainActor func testHoveringATimingChartMovesNothingBelowIt() async throws {
+        var samples: [SessionTimingSample] = []
+        for index in 1...16 {
+            let step = Double(index)
+            samples.append(SessionTimingSample(id: "r\(index)", wall: until.addingTimeInterval(step), ttftMilliseconds: 100 * step, streamingMilliseconds: 1_000,
+                                               outputTokens: 40 * step, costUSD: 0.001 * step, requestMilliseconds: 1_500))
+        }
+        let history = SessionTimingHistory(samples: samples)
+        // The 16th request: 1,600 ms to its first token, then 640 tokens in 1 s.
+        let latest = SessionUsagePresentation.requestCaption(selected: nil, in: history)
+        XCTAssertTrue(latest.hasPrefix("Latest · ") && latest.contains("1600 ms TTFT") && latest.contains("640 tok/s decode"), latest)
+        XCTAssertTrue(SessionUsagePresentation.requestCaption(selected: 3, in: history).hasPrefix("Request 3 · "))
+        XCTAssertEqual(SessionUsagePresentation.requestCaption(selected: 99, in: history), latest, "A request no longer listed reads as the latest")
+
+        // The section, with a row below it whose frame AppKit reports.
+        let selection = SessionTimingSelection()
+        let below = NSView()
+        let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 760, height: 900), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        // The test is the pointer: wherever the real one rests, it must not
+        // hover a chart and select a request of its own.
+        let hosted = NSHostingView(rootView: VStack(alignment: .leading, spacing: 0) {
+            SessionTimingSection(history: history, series: SessionTimingSeries.all(history), selection: selection)
+            RowBelowTheCaption(view: below).frame(height: 24)
+            Spacer(minLength: 0)
+        }.padding(16).frame(width: 760, height: 900, alignment: .topLeading).background(Color.piContent).allowsHitTesting(false))
+        window.contentView = hosted; window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        func settle() async throws {
+            for _ in 0..<8 { try await Task.sleep(for: .milliseconds(20)); hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
+        }
+        try await settle()
+        let idle = below.convert(below.bounds, to: nil)
+        XCTAssertGreaterThan(idle.height, 0, "The row below is laid out")
+        let rendered = try await SessionTimingTests.recognizedText(in: window, filename: "session-timing-caption-idle.jpg")
+        XCTAssertNotNil(rendered.range(of: #"1600 ms ttft\W+640 tok/s decode"#, options: .regularExpression),
+                        "Before any hover the caption reads the latest request. OCR: \(rendered)")
+        for request in [3, 16, 1, nil] {
+            selection.select(request)
+            try await settle()
+            XCTAssertEqual(below.convert(below.bounds, to: nil), idle, "hovering request \(request.map(String.init) ?? "none") moved the row below the caption")
+        }
+
+        // And the whole Session info page keeps its height.
+        let controller = SessionUsageController(scope: scope, load: { _, _, offset in self.pagedSnapshot(offset: offset) }, interval: .seconds(60))
+        controller.timing = history
+        defer { controller.setVisible(false) }
+        controller.setVisible(true)
+        try await waitFor("Session info did not load") { controller.snapshot != nil }
+        let pageWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 1000), styleMask: [.borderless], backing: .buffered, defer: false)
+        pageWindow.isReleasedWhenClosed = false
+        let pageView = NSHostingView(rootView: SessionUsageView(title: "Session", controller: controller).allowsHitTesting(false))
+        pageWindow.contentView = pageView; pageWindow.orderFront(nil)
+        defer { pageWindow.contentView = nil; pageWindow.close() }
+        func settlePage() async throws {
+            for _ in 0..<8 { try await Task.sleep(for: .milliseconds(20)); pageView.layoutSubtreeIfNeeded(); pageWindow.displayIfNeeded() }
+        }
+        try await settlePage()
+        func scrollViews(_ view: NSView) -> [NSScrollView] {
+            var found: [NSScrollView] = []
+            if let scroll = view as? NSScrollView { found.append(scroll) }
+            for child in view.subviews { found += scrollViews(child) }
+            return found
+        }
+        let page = try XCTUnwrap(scrollViews(pageView).max { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) })
+        let document = try XCTUnwrap(page.documentView)
+        document.scroll(NSPoint(x: 0, y: document.isFlipped ? max(0, document.frame.height - page.contentView.bounds.height) : 0))
+        try await settlePage()
+        let height = document.frame.height
+        for request in [3, 16, 1, nil] {
+            controller.timingSelection.select(request)
+            try await settlePage()
+            XCTAssertEqual(document.frame.height, height, "hovering request \(request.map(String.init) ?? "none") changed the page's height")
+        }
+    }
+
+    /// The hover rule is drawn over the chart from its own x scale, no longer
+    /// as a mark, so a hover rebuilds no marks. It must still stand on the
+    /// request under the pointer, come with the selection and go with it.
+    @MainActor func testTheHoverRuleStandsOnTheSelectedRequest() async throws {
+        // Sixteen requests of which only the eighth reported a first token:
+        // the TTFT chart draws one point, at request 8.
+        let samples = (1...16).map { index in
+            SessionTimingSample(id: "r\(index)", wall: until.addingTimeInterval(Double(index)), ttftMilliseconds: index == 8 ? 400 : nil,
+                                streamingMilliseconds: 1_000, outputTokens: 100, requestMilliseconds: 1_500)
+        }
+        let series = SessionTimingSeries(history: SessionTimingHistory(samples: samples), metric: .ttft)
+        XCTAssertEqual(series.points.map(\.index), [8]); XCTAssertEqual(series.requests, 16)
+        let selection = SessionTimingSelection()
+        let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 420, height: 200), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        // The test is the pointer: the real one must not hover the chart.
+        window.contentView = NSHostingView(rootView: SessionTimingChart(series: series, selection: selection, height: 120)
+            .padding(12).frame(width: 420, height: 200, alignment: .topLeading).background(Color.white).allowsHitTesting(false))
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        typealias Pixels = (width: Int, height: Int, bytes: [UInt8])
+        /// The window as the window server shows it, as 8-bit RGBA rows.
+        func capture() async throws -> Pixels {
+            try await Task.sleep(for: .milliseconds(250))
+            window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            typealias ListImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+            let symbol = try XCTUnwrap(dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage"))
+            let image = try XCTUnwrap(unsafeBitCast(symbol, to: ListImage.self)(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber),
+                                                                                 CGWindowImageOption.boundsIgnoreFraming.rawValue)?.takeRetainedValue())
+            var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+            let drawn = bytes.withUnsafeMutableBytes { raw -> Bool in
+                guard let context = CGContext(data: raw.baseAddress, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+                context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+                return true
+            }
+            XCTAssertTrue(drawn)
+            return (image.width, image.height, bytes)
+        }
+        /// Columns holding a pixel that differs between two captures.
+        func changedColumns(_ a: Pixels, _ b: Pixels) -> [Int] {
+            guard a.width == b.width, a.height == b.height else { return Array(0..<max(a.width, b.width)) }
+            return (0..<a.width).filter { x in
+                (0..<a.height).contains { y in
+                    let i = (y * a.width + x) * 4
+                    return (0..<3).contains { abs(Int(a.bytes[i + $0]) - Int(b.bytes[i + $0])) > 24 }
+                }
+            }
+        }
+        func center(_ columns: [Int]) -> Double { Double(columns.reduce(0, +)) / Double(max(1, columns.count)) }
+        let idle = try await capture()
+        // The point is the only saturated ink: axis labels and grid are grey.
+        let pointColumns = (0..<idle.width).filter { x in
+            (0..<idle.height).contains { y in
+                let i = (y * idle.width + x) * 4
+                let channels = (0..<3).map { Int(idle.bytes[i + $0]) }
+                return channels.max()! - channels.min()! > 60
+            }
+        }
+        let scale = Double(window.backingScaleFactor)
+        XCTAssertFalse(pointColumns.isEmpty, "The chart drew its one point")
+        selection.select(8)
+        let hovered = try await capture()
+        let rule = changedColumns(idle, hovered)
+        XCTAssertFalse(rule.isEmpty, "Selecting a request draws its rule")
+        XCTAssertLessThanOrEqual(Double((rule.max() ?? 0) - (rule.min() ?? 0) + 1), 3 * scale, "Only a one-point rule appeared: columns \(rule)")
+        XCTAssertEqual(center(rule), center(pointColumns), accuracy: 1.5 * scale, "The rule stands on request 8's point")
+        selection.select(nil)
+        let cleared = try await capture()
+        XCTAssertEqual(changedColumns(idle, cleared), [], "Clearing the selection takes the rule away and leaves the chart as it was")
+    }
+
+    /// The caption under the per-request charts quoted output over the whole
+    /// request time, while the chart above it plots the settled decode rate.
+    func testRequestCaptionQuotesTheRateTheChartPlots() {
+        let sample = SessionTimingSample(id: "r", wall: until, ttftMilliseconds: 2_000, streamingMilliseconds: 3_000, outputTokens: 300, costUSD: 0.01, requestMilliseconds: 5_000)
+        let caption = SessionUsagePresentation.requestCaption(index: 1, sample: sample)
+        let plotted = SessionTimingMetric.rate.label(SessionTimingMetric.rate.value(in: sample))
+        XCTAssertEqual(plotted, "100 tok/s")
+        XCTAssertTrue(caption.contains(plotted), caption)
+        XCTAssertFalse(caption.contains("60 tok/s"), caption)
+    }
+
     @MainActor func testRetentionShrinkingCurrentPageReturnsToFirstPage() async throws {
         var offsets: [Int] = []
         let controller = SessionUsageController(scope: scope, load: { _, _, offset in
@@ -205,7 +471,6 @@ final class SessionUsageTests: XCTestCase {
             SessionTimingSample(id: "2", wall: base.addingTimeInterval(1), ttftMilliseconds: nil, streamingMilliseconds: nil, outputTokens: 90, requestMilliseconds: 900),
             SessionTimingSample(id: "3", wall: base.addingTimeInterval(2), ttftMilliseconds: 250, streamingMilliseconds: 750, outputTokens: 500, requestMilliseconds: 1_000),
         ]
-        history.historicalRate = HistoricalOutputRate(outputTokens: 790, generationMilliseconds: 3_900, samples: 3)
         let work: [String: WireValue] = ["sessionModelMs": .number(72_000), "sessionToolMs": .number(14_300), "modelMs": .number(4_200), "toolMs": .number(300)]
         let timing = SessionInfoTiming(history: history, work: work)
         XCTAssertEqual(timing.latestTTFT, 250); XCTAssertEqual(timing.medianTTFT, 325, "The median skips the request without a measurement"); XCTAssertEqual(timing.ttftSamples, 2)
@@ -436,8 +701,10 @@ final class SessionUsageTests: XCTestCase {
             return value
         }
         let count = costs && !zero ? 10 : 3
-        let total = totals(requests: count, cost: costs ? (zero ? 0 : 0.1) : nil, input: costs ? (zero ? 0 : 18_250) : nil,
+        var total = totals(requests: count, cost: costs ? (zero ? 0 : 0.1) : nil, input: costs ? (zero ? 0 : 18_250) : nil,
                            output: costs ? (zero ? 0 : 5_910) : nil, reasoningCost: costs ? (zero ? 0 : 0.05232) : nil)
+        // The session's settled rate: output over 48 s of decoding.
+        if costs { total.decodeMilliseconds = 48_000; total.decodeOutputTokens = zero ? 0 : 5_910; total.decodeSamples = count }
         var rows: [MenuBarModelDistribution]
         if costs && !zero {
             rows = [
@@ -450,9 +717,7 @@ final class SessionUsageTests: XCTestCase {
             rows = [MenuBarModelDistribution(api: "openai-responses", requestedAlias: "auto-router", resolvedModel: zero ? "openai/gpt-5.4-mini" : nil,
                                              identityStatus: zero ? "reported" : "unreported", gateway: total, allRequests: count)]
         }
-        var result = snapshot(requests: count, models: rows, groups: rows.count, gateway: total)
-        if costs { result.historicalRate = HistoricalOutputRate(outputTokens: zero ? 0 : 5_910, generationMilliseconds: 60_000, samples: count) }
-        return result
+        return snapshot(requests: count, models: rows, groups: rows.count, gateway: total)
     }
 
     private func snapshot(requests: Int = 0, offset: Int = 0, models: [MenuBarModelDistribution] = [], groups: Int = 0, gateway: GatewayTotals? = nil) -> MenuBarSnapshot {
@@ -469,4 +734,12 @@ final class SessionUsageTests: XCTestCase {
         }
         return snapshot(requests: 25, offset: offset, models: models, groups: 25, gateway: GatewayTotals(requests: 25, costSamples: 25, costUSD: 10))
     }
+}
+
+/// A plain AppKit view placed in a SwiftUI layout, so a test can read the
+/// frame SwiftUI gave the row it stands for.
+private struct RowBelowTheCaption: NSViewRepresentable {
+    let view: NSView
+    func makeNSView(context: Context) -> NSView { view }
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }

@@ -121,9 +121,9 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
                        "\(label): the page never finished measuring itself")
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         XCTAssertTrue(document.isFlipped, "Positions in this fixture use the transcript's top-down AppKit coordinates")
-        let documentHeight = document.frame.height
-        let bottom = documentHeight - scroll.contentView.bounds.height
-        XCTAssertGreaterThan(bottom, 4_000)
+        let openedHeight = document.frame.height
+        let openedBottom = openedHeight - scroll.contentView.bounds.height
+        XCTAssertGreaterThan(openedBottom, 4_000)
 
         @MainActor func step(to requested: CGFloat) async -> (total: Double, sync: Double, prepared: Int) {
             let start = ProcessInfo.processInfo.systemUptime
@@ -145,7 +145,7 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
 
         // Both directions and widely separated positions warm the same exact
         // layout. This must not turn into a test of only the initially visible row.
-        for fraction in [0.25, 0.5, 0.75, 0.95, 0.5, 0.05] { _ = await step(to: bottom * fraction) }
+        for fraction in [0.25, 0.5, 0.75, 0.95, 0.5, 0.05] { _ = await step(to: openedBottom * fraction) }
         // A row can have exact outer geometry while its large Markdown
         // surface still has provisional inner blocks. Warm the actual measured
         // traversal, not just six isolated destinations. Cold preparation is
@@ -155,10 +155,11 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
         repeat {
             prepared = 0; warmPasses += 1
             for fraction in [0.08, 0.45, 0.83] {
-                let start = min(bottom - 4_000, max(0, bottom * fraction))
+                let current = document.frame.height - scroll.contentView.bounds.height
+                let start = min(current - 4_000, max(0, current * fraction))
                 for index in 0..<40 {
                     let displacement = CGFloat(index < 20 ? index : 39 - index) * 96
-                    prepared += await step(to: min(bottom, max(0, start + displacement))).prepared
+                    prepared += await step(to: min(current, max(0, start + displacement))).prepared
                 }
             }
             // Estimates can expose an additional edge block on the return
@@ -167,6 +168,13 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
             // draw-time assertions in StableReadingTests.
         } while prepared > 0 && warmPasses < 5
         XCTAssertEqual(prepared, 0, "The measured traversal must have finished provisional preparation")
+        // Cold preparation measured the blocks the answer's surface had stood
+        // at an estimate, and the answer's row followed its text rather than
+        // leaving the difference as a gap under it (or its end cut off). What
+        // steady scrolling must hold is the page those corrections left.
+        let documentHeight = document.frame.height
+        let bottom = documentHeight - scroll.contentView.bounds.height
+        print(String(format: "SCROLL PREPARE %@ corrected the document from %.0f to %.0f pt", label, openedHeight, documentHeight))
         print(String(format: "SCROLL PREPARE %@ actual-traversal %d passes, %.3f ms", label, warmPasses,
                      (ProcessInfo.processInfo.systemUptime - warmStart) * 1000))
         let rowsBefore = (document as? TranscriptNativeDocument)?.retainedRows ?? descendants(TranscriptRowContainer.self, in: hosted)

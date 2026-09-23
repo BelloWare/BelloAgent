@@ -21,6 +21,8 @@ final class GatewayAccountingTests: XCTestCase {
         ].enumerated() {
             var metadata = value(output: ["answer-\(index)"], outcome: index == 3 ? "running" : "completed")
             metadata["usage"] = .object(usage.mapValues(WireValue.number))
+            // 300 ms of decoding: long enough to be a measurement, not one burst.
+            metadata["timings"] = .object(["dispatch": .number(100), "firstContent": .number(110), "modelComplete": .number(410), "httpEnd": .number(420)])
             try await save(archive, metadata)
         }
         let snapshot = try await archive.dashboard(filter())
@@ -31,7 +33,8 @@ final class GatewayAccountingTests: XCTestCase {
         let restored = try JSONDecoder().decode(GatewayTotals.self, from: JSONEncoder().encode(snapshot.gateway))
         XCTAssertEqual(restored.inputSplit, snapshot.gateway.inputSplit)
         XCTAssertEqual(restored.outputSplit, snapshot.gateway.outputSplit)
-        XCTAssertEqual(snapshot.buckets.compactMap(\.historicalRate.tokensPerSecond).count, 1)
+        XCTAssertEqual(snapshot.buckets.compactMap(\.gateway.settledThroughput.tokensPerSecond).count, 1, "Only the slice with measured requests has a rate")
+        XCTAssertEqual(snapshot.gateway.settledThroughput.samples, 2, "the two completed requests that reported output; not the one without, not the running one")
         try await archive.close()
     }
     func testCacheHeaderContractCannotReadAuthenticationOrReuseModelHeader() throws {
@@ -328,6 +331,13 @@ final class GatewayAccountingTests: XCTestCase {
             XCTAssertEqual(totals.tokens?.inputSamples, 4)
             XCTAssertTrue(totals.promptCacheCoverageLabel.contains("2/5"))
         }
+        // The session's cache-hit pill reads the same pairs: 90 of the 150
+        // input tokens of the two requests that reported both counters. The
+        // unpaired counters (a cache read with no input, an input with no
+        // cache read, a read larger than its input) are not in the share.
+        let pill = SessionStatsPresentation(gateway: session.session, work: nil)
+        XCTAssertEqual(pill.cacheHit, "60")
+        XCTAssertEqual(pill.usageRows.first { $0.name == "Cache hit" }?.coverage, "2/5 requests reported")
         try await archive.close()
         try await archive.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
         let restored = try await archive.dashboard(filter())

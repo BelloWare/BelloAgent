@@ -92,7 +92,7 @@ import AppKit
                      disclosure: TranscriptRowDisclosure = .default, width: CGFloat, backingScale: CGFloat) -> CGSize? {
         let key = Key(sessionID: sessionID, rowID: item.id, width: width, backingScale: backingScale)
         guard var entry = entries[key] else { return nil }
-        guard entry.item == item, entry.fresh == fresh, entry.environment == environment, entry.disclosure == disclosure else {
+        guard entry.item == item, entry.fresh == fresh, entry.environment.hasSameGeometry(as: environment), entry.disclosure == disclosure else {
             remove(key)
             return nil
         }

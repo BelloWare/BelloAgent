@@ -4,6 +4,46 @@ import Foundation
 // state, queue, context and metrics; this applies the parts that changed and
 // nothing else, and decides when an idle project's helper can go.
 
+/// What a snapshot asks of the rows: a whole page, a patch to the page held,
+/// or nothing. Done off the main actor.
+enum SnapshotRowWork: Sendable {
+    case skip, page(WireValue), patch(WireValue, [TranscriptMessage])
+    var needed: Bool { if case .skip = self { return false }; return true }
+    func apply() throws -> (rows: [TranscriptMessage]?, resync: Bool) {
+        switch self {
+        case .skip: return (nil, false)
+        case .page(let value): return (try TranscriptMessage.page(value), false)
+        case .patch(let patch, let held):
+            // A patch that does not fit the page held asks for a whole page.
+            guard let applied = TranscriptRowUpdates.apply(patch, to: held) else { return (nil, true) }
+            return (applied, false)
+        }
+    }
+}
+
+/// Decodes a snapshot's task presentation, reusing the finished tasks of the
+/// last one when they arrive unchanged. They are up to 64 records with
+/// details of up to 8 KB each, and nearly every snapshot of a running chat
+/// repeats them; the JSON round trip of all of them used to run on the main
+/// actor for every token.
+struct TaskPresentationDecoder: Sendable {
+    private var recentSource: WireValue?
+    private var recent: [TaskPresentationRecord] = []
+    /// How many times the finished tasks were decoded in full (a test seam).
+    private(set) var decodes = 0
+    mutating func decode(_ value: WireValue) -> TaskPresentationProjection? {
+        guard var object = value.object, let source = object["recent"] else { return nil }
+        if source != recentSource {
+            guard let records = try? JSONDecoder().decode([TaskPresentationRecord].self, from: JSONEncoder().encode(source)) else { return nil }
+            recent = records; recentSource = source; decodes += 1
+        }
+        object["recent"] = .array([])
+        guard var projection = try? JSONDecoder().decode(TaskPresentationProjection.self, from: JSONEncoder().encode(WireValue.object(object))) else { return nil }
+        projection.recent = recent
+        return projection
+    }
+}
+
 extension WorkspaceModel {
     func refresh(_ id: String) {
         guard let item = record(id), let host = hosts[item.workspaceID], opened.contains(id) else { return }
@@ -44,7 +84,19 @@ extension WorkspaceModel {
                 // any revision it did not just send, which is also the resync.
                 if let revision=view.footer.contextStateRevision { params["contextStateRevision"] = .string(revision) }
                 if let revision = view.footer.contextObservationRevision { params["contextObservationRevision"] = .string(revision) }
-                if requestedRevision != nil, !view.projectedRows.isEmpty { params["messageDelta"] = .bool(true) }
+                // The receipts and tasks held here, by revision: the helper
+                // leaves out whichever has not changed since (up to 128
+                // receipts and 64 finished tasks, once per streamed token).
+                if view.leavesOutHeldState {
+                    if let revision = view.commandsRevision { params["commandsRevision"] = .string(revision) }
+                    if let revision = view.taskPresentationRevision { params["taskPresentationRevision"] = .string(revision) }
+                }
+                if requestedRevision != nil, !view.projectedRows.isEmpty {
+                    params["messageDelta"] = .bool(true)
+                    // Tool arguments still streaming arrive as what was
+                    // appended to them, not as the whole row again.
+                    if view.takesToolInputAppends { params["toolInputAppends"] = .bool(true) }
+                }
                 // Human-readable footer accounting refreshes at 4 Hz. Decide
                 // here, so a poll that will not show those figures does not
                 // carry them: they are larger than the token that changed.
@@ -55,25 +107,32 @@ extension WorkspaceModel {
                 await applySideStatus(id: id, result: result)
                 guard current() else { return }
                 let sequence = result["seq"]?.number ?? -1
-                // Decoding and applying the page happen off the main
-                // actor; only the finished rows cross back to it.
-                var incoming: [TranscriptMessage]?, resyncNeeded = false
-                if !view.browsingHistory, view.presentationGeneration == generation {
-                    if let value = result["messages"] {
-                        incoming = try await Task.detached { try TranscriptMessage.page(value) }.value
-                    } else if let patch = result["messageDelta"] {
-                        let held = view.projectedRows
-                        let applied = await Task.detached { TranscriptRowUpdates.apply(patch, to: held) }.value
-                        if let applied { incoming = applied } else { resyncNeeded = true }
-                    }
+                // Decoding and applying the page, and decoding the task
+                // presentation, happen off the main actor in one hop; only
+                // the finished values cross back to it.
+                let rows: SnapshotRowWork = !view.browsingHistory && view.presentationGeneration == generation
+                    ? result["messages"].map(SnapshotRowWork.page) ?? result["messageDelta"].map { .patch($0, view.projectedRows) } ?? .skip : .skip
+                // A snapshot older than the one applied is not applied; its
+                // presentation is not worth decoding. A snapshot that leaves
+                // it out has an unchanged one: the presentation held stays.
+                let presentation = sequence >= view.lastSequence ? result["taskPresentation"] : nil
+                var incoming: [TranscriptMessage]?, resyncNeeded = false, lifecycle: TaskPresentationProjection?
+                if rows.needed || presentation != nil {
+                    let decoder = view.taskPresentationDecoder
+                    let decoded = try await Task.detached { () throws -> (rows: [TranscriptMessage]?, resync: Bool, lifecycle: TaskPresentationProjection?, decoder: TaskPresentationDecoder) in
+                        let applied = try rows.apply()
+                        var decoder = decoder
+                        let lifecycle = presentation.flatMap { decoder.decode($0) }
+                        return (applied.rows, applied.resync, lifecycle, decoder)
+                    }.value
+                    guard current() else { return }
+                    view.taskPresentationDecoder = decoded.decoder
+                    incoming = decoded.rows; resyncNeeded = decoded.resync; lifecycle = decoded.lifecycle
                 }
                 guard current() else { return }
                 guard view.presentationGeneration == generation else { view.dirty = true; return }
                 guard view.browsingHistory || (view.projectionRevision == requestedRevision && view.viewportRequest == requestedViewport) else {
                     view.dirty = true; return
-                }
-                let lifecycle = result["taskPresentation"].flatMap { value in
-                    try? JSONDecoder().decode(TaskPresentationProjection.self, from: JSONEncoder().encode(value))
                 }
                 if sequence >= view.lastSequence {
                     view.beginTranscriptBatch()
@@ -82,7 +141,11 @@ extension WorkspaceModel {
                        Double(lifecycle.sequence) == sequence, lifecycle.sourceRevision == result["displayRevision"]?.string,
                        lifecycle.epoch == result["monitoring"]?.object?["epoch"]?.string,
                        view.presentation.identity.map({ $0.lineage == lifecycle.timeline }) ?? true {
-                        view.taskPresentation = lifecycle
+                        view.adoptTaskPresentation(lifecycle, revision: result["taskPresentationRevision"]?.string)
+                    } else if presentation != nil {
+                        // Sent but not taken: without a revision held, the
+                        // next snapshot carries the presentation again.
+                        view.taskPresentationRevision = nil
                     }
                     view.lastSequence = sequence
                     observeAssistantOutputs(sessionID: id, snapshot: result)
@@ -161,13 +224,26 @@ extension WorkspaceModel {
                             if accountingChanged { scheduleAccounting(id, workspaceID: item.workspaceID) }
                         }
                         view.projectionRevision = result["displayRevision"]?.string
-                        if let before = result["before"] { view.hostBefore = before.number }
+                        // The page cursors below are published on the whole
+                        // display. Writing them unchanged, once per streamed
+                        // token, re-evaluated the conversation pane, its
+                        // composer and its footer for every token.
+                        if let before = result["before"], view.hostBefore != before.number { view.hostBefore = before.number }
                         if overlaps, let incarnation, let lineage, let first = messages.first {
                             view.presentation.identity = (incarnation, lineage)
                             let liveOlder = try ConversationHistoryPage.cursor(result["historyOlder"])
-                            if messages.first?.id == projected.first?.id { view.olderPage = .init(cursor: liveOlder) }
-                            else if view.olderPage.cursor != nil { view.olderPage.cursor = .init(incarnation: incarnation, lineage: lineage, entry: first.id) }
-                            view.before = view.olderPage.cursor?.entry
+                            let older: ConversationCursor?? = messages.first?.id == projected.first?.id ? .some(liveOlder)
+                                : view.olderPage.cursor != nil ? .some(.init(incarnation: incarnation, lineage: lineage, entry: first.id)) : .none
+                            if let older, older != view.olderPage.cursor {
+                                if !view.olderPage.loading { view.olderPage = .init(cursor: older) }
+                                // An earlier page is being read from the
+                                // current boundary: a streamed token must not
+                                // end that read or start a second one. Only a
+                                // first row that really moved replaces the
+                                // cursor, and the read then drops what it got.
+                                else if older?.entry != view.olderPage.cursor?.entry { view.olderPage.cursor = older }
+                            }
+                            if view.before != view.olderPage.cursor?.entry { view.before = view.olderPage.cursor?.entry }
                         }
                         if view.historyState == .dormant || view.historyState == .empty { view.historyState = messages.isEmpty ? .empty : .preparing }
                         }
@@ -184,36 +260,64 @@ extension WorkspaceModel {
                     if view.notice != notice, !view.uncertain, view.failureMessage == nil { view.notice = notice }
                     if let preflight = result["preflightError"]?.string { if view.failureMessage == nil { view.notice = preflight }; view.uncertain = true }
                 }
-                if let path = result["path"]?.string, let index = chats.firstIndex(where: { $0.id == id }), chats[index].path != path {
+                // Looked up by id; finding the index is only needed to write.
+                if let path = result["path"]?.string, let known = chatRecord(id), known.path != path, let index = chats.firstIndex(where: { $0.id == id }) {
                     chats[index].path = path; try await store?.put(chats[index], kind: "chat", id: id)
                     guard current() else { return }
                 }
-                let intents = try await store?.list(CommandIntent.self, kind: "pending:\(id)") ?? []
-                guard current() else { return }
-                for var intent in intents {
-                    guard let receipt = result["commands"]?.array?.compactMap(\.object).last(where: { $0["commandId"]?.string == intent.id }), let state = receipt["state"]?.string else { continue }
-                    if state != "dispatched" {
-                        intent.state = state; intent.text = ""; intent.attachments = nil; intent.skills = nil
-                        try await store?.put(intent, kind: "receipt:\(id)", id: intent.id)
-                        guard current() else { return }
-                        try await store?.remove(kind: "pending:\(id)", id: intent.id)
-                        guard current() else { return }
-                    }
+                // The chat's pending submissions come from the store only when
+                // they can have changed since the last read: the app wrote one
+                // (`pendingIntentsChanged`), or this snapshot's receipts settle
+                // one. Two reads per streamed token held up the next snapshot.
+                //
+                // A snapshot leaves the receipts out when none changed since the
+                // revision sent back; they are then the ones held. Settling runs
+                // against those too, so a settle cut short, or a record written
+                // after its receipt arrived, still settles without a new receipt.
+                if let carried = result["commands"]?.array {
+                    view.receipts = carried.compactMap(\.object); view.commandsRevision = result["commandsRevision"]?.string
                 }
-                let recovered = try await store?.list(CommandIntent.self, kind: "pending:\(id)") ?? []
-                guard current() else { return }
-                if recovered != view.recovered { view.recovered = recovered }
+                let receipts = view.receipts
+                let revision = view.pendingIntentRevision
+                var intents: [CommandIntent]
+                if let known = view.pendingIntents, known.revision == revision { intents = known.intents }
+                else {
+                    view.intentReads += 1
+                    intents = try await store?.list(CommandIntent.self, kind: "pending:\(id)") ?? []
+                    guard current() else { return }
+                }
+                var settled: Set<String> = []
+                for var intent in intents {
+                    guard let receipt = receipts.last(where: { $0["commandId"]?.string == intent.id }), let state = receipt["state"]?.string,
+                          state != "dispatched" else { continue }
+                    intent.state = state; intent.text = ""; intent.attachments = nil; intent.skills = nil
+                    try await store?.put(intent, kind: "receipt:\(id)", id: intent.id)
+                    guard current() else { return }
+                    try await store?.remove(kind: "pending:\(id)", id: intent.id)
+                    guard current() else { return }
+                    settled.insert(intent.id)
+                }
+                if !settled.isEmpty { intents.removeAll { settled.contains($0.id) } }
+                // Held against the revision read: a write during the awaits
+                // above moves the revision on, and the next snapshot reads again.
+                view.pendingIntents = (revision, intents)
+                if intents != view.recovered { view.recovered = intents }
                 if view.recovered.isEmpty { view.uncertain = false }
                 updateHostActivity(workspaceID: item.workspaceID)
                 scheduleIdle(workspaceID: item.workspaceID, host: host)
             } catch { if current() { view.notice = error.localizedDescription } }
         }
     }
+    /// Every write of a chat's pending submissions calls this, so the
+    /// snapshot loop reads them again instead of trusting what it holds.
+    func pendingIntentsChanged(_ id: String) { displays[id]?.pendingIntentRevision &+= 1 }
     func cancelIdle(workspaceID: String) { idleTasks.removeValue(forKey: workspaceID)?.cancel() }
     func scheduleIdle(workspaceID: String, host: HostSupervisor) {
         idleTasks[workspaceID]?.cancel(); guard !host.isBusy, !sides.values.contains(where: { $0.workspaceID == workspaceID && !$0.kept && !$0.pending }) else { return }
         let grace = configuration.runtime.idleGraceSeconds
         idleTasks[workspaceID] = Task { try? await Task.sleep(for: .seconds(grace)); guard !Task.isCancelled, !host.isBusy else { return }
+            // A deliberate stop: its exit is not a crash (see `startHost`).
+            retiringHosts.insert(ObjectIdentifier(host))
             host.shutdown(); opened.subtract(chats.filter { $0.workspaceID == workspaceID }.map(\.id))
         }
     }

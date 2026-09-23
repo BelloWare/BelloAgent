@@ -37,15 +37,9 @@ struct SessionTimingSample: Sendable, Equatable, Identifiable {
         self.cacheWriteTokens = Self.observed(cacheWriteTokens); self.reasoningTokens = Self.observed(reasoningTokens)
     }
 
-    var outputTokensPerSecond: Double? {
-        guard let outputTokens, let duration = requestMilliseconds else { return nil }
-        guard duration.isFinite, duration > 0 else { return nil }
-        let rate = outputTokens / (duration / 1_000)
-        return rate.isFinite ? rate : nil
-    }
-
     /// The settled rate of this one request: its provider output tokens over
-    /// its decode span. Nil unless the request reported both.
+    /// its decode span. Nil unless the request reported both. This is the
+    /// only per-request rate: `requestMilliseconds` is latency, never speed.
     var settledTokensPerSecond: Double? {
         guard outcome == "completed" else { return nil }
         var fold = SettledThroughput()
@@ -85,9 +79,11 @@ struct SessionRatePresentation: Equatable {
     /// finishes; the exact rate stays in Session info and in the help.
     static func compactRate(_ value: Double) -> String {
         guard value.isFinite, value >= 0 else { return SessionTimingMetric.rate.label(value) }
-        if value >= 1_000_000 { return String(format: "%.1fM tok/s", value / 1_000_000).replacingOccurrences(of: ".0M", with: "M") }
+        // Each unit starts where the one below would round up to a thousand
+        // of itself: 999,600 tok/s is "1M", never "1000k".
+        if value >= 999_500 { return String(format: "%.1fM tok/s", value / 1_000_000).replacingOccurrences(of: ".0M", with: "M") }
         if value >= 10_000 { return String(format: "%.0fk tok/s", value / 1_000) }
-        if value >= 1_000 { return String(format: "%.1fk tok/s", value / 1_000).replacingOccurrences(of: ".0k", with: "k") }
+        if value >= 999.5 { return String(format: "%.1fk tok/s", value / 1_000).replacingOccurrences(of: ".0k", with: "k") }
         return SessionTimingMetric.rate.label(value)
     }
 }
@@ -97,9 +93,8 @@ struct SessionTimingHistory: Sendable, Equatable {
     /// Chronological request order. Kept small even for very long sessions.
     var samples: [SessionTimingSample] = []
     var hasOlderRequests = false
-    /// The weighted average and coverage include every retained completed
+    /// The session figure and its coverage include every retained completed
     /// request in this session, not only the bounded chart samples.
-    var historicalRate = HistoricalOutputRate()
     var completedRequests = 0
     var historicalSettledThroughput: SettledThroughput? = nil
     /// Ledger includes failed/interrupted requests; timing charts remain completed-only.
@@ -178,7 +173,7 @@ extension PayloadArchive {
         let retainedScope = "session=? AND workspace=? AND metrics_retained=1 AND wall<? AND dispatch IS NOT NULL"
         let scope = retainedScope + " AND outcome='completed'"
         let values: [CaptureSQLValue] = [.text(sessionID), .text(workspaceID), .real(until.timeIntervalSince1970)]
-        let summary = try db.rows("SELECT \(Self.historicalOutputRateSQL),\(Self.settledThroughputSQL),COUNT(*) AS completed_requests FROM attempts WHERE \(scope)", values).first ?? [:]
+        let summary = try db.rows("SELECT \(Self.settledThroughputSQL),COUNT(*) AS completed_requests FROM attempts WHERE \(scope)", values).first ?? [:]
         try Task.checkCancellation()
         func requestRows(_ scope: String) throws -> [[String: CaptureSQLValue]] {
             try db.rows("""
@@ -209,7 +204,7 @@ extension PayloadArchive {
                                         samples: Int(summary["decode_samples"]?.number ?? 0),
                                         requests: Int(summary["completed_requests"]?.number ?? 0))
         return SessionTimingHistory(samples: samples, hasOlderRequests: rows.count > SessionTimingHistory.limit,
-                                    historicalRate: Self.historicalOutputRate(summary), completedRequests: Int(summary["completed_requests"]?.number ?? 0),
+                                    completedRequests: Int(summary["completed_requests"]?.number ?? 0),
                                     historicalSettledThroughput: settled, ledgerSamples: ledger,
                                     hasOlderLedgerRequests: ledgerRows.count > SessionTimingHistory.limit)
     }

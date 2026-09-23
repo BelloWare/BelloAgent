@@ -85,6 +85,67 @@ final class MetricPillsTests: XCTestCase {
         XCTAssertNil(MetricFormat.occupancyPercent(.nan))
     }
 
+    // MARK: Boundaries
+
+    /// Rounding that reaches the next unit is written in it: 999,500 tokens
+    /// is "1M", never "1000K", and 59.96 s is a minute, never "60.0s". Past
+    /// a minute a work duration counts whole seconds, as a clock does.
+    func testRoundingCarriesIntoTheNextUnit() {
+        XCTAssertEqual(MetricFormat.tokens(999_499), "999K")
+        XCTAssertEqual(MetricFormat.tokens(999_500), "1M")
+        XCTAssertEqual(MetricFormat.tokens(999_999), "1M")
+        XCTAssertEqual(MetricFormat.tokens(99_949), "99.9K")
+        XCTAssertEqual(MetricFormat.tokens(99_950), "100K")
+        XCTAssertEqual(MetricFormat.tokens(999_500_000), "1B")
+        XCTAssertEqual(TranscriptActivity.formatCompactTokens(999_499), "999k")
+        XCTAssertEqual(TranscriptActivity.formatCompactTokens(999_500), "1M")
+        XCTAssertEqual(TranscriptActivity.formatTokenCount(999_999), "1M")
+        XCTAssertEqual(workDuration(59_949), "59.9s")
+        XCTAssertEqual(workDuration(59_960), "1m 0s")
+        XCTAssertEqual(workDuration(119_600), "1m 59s")
+        XCTAssertEqual(workDuration(3_599_600), "59m 59s")
+        XCTAssertEqual(workDuration(3_753_000), "1h 2m")
+        XCTAssertEqual(workDuration(400), "0.4s")
+        XCTAssertEqual(TranscriptActivity.formatDuration(949), "0.9s")
+        XCTAssertEqual(TranscriptActivity.formatDuration(990), "1s")
+        XCTAssertEqual(MetricFormat.latency(999.4), "999 ms")
+        XCTAssertEqual(MetricFormat.latency(999.6), "1s")
+        XCTAssertEqual(MetricFormat.detailedDuration(999.999), "999.999 ms")
+        XCTAssertEqual(MetricFormat.detailedDuration(999.9996), "1s")
+        XCTAssertEqual(SessionRatePresentation.compactRate(999.6), "1k tok/s")
+        XCTAssertEqual(SessionRatePresentation.compactRate(999_499), "999k tok/s")
+        XCTAssertEqual(SessionRatePresentation.compactRate(999_500), "1M tok/s")
+        let context = ContextMeterPresentation(context: ["tokens": .number(999_600), "contextWindow": .number(2_000_000), "scope": .string("last-request")])
+        XCTAssertEqual(context.compactLabel, "≈1M / 2M · last request")
+    }
+
+    /// A small cache hit is a hit: 0.4% must not read as a 0% cache hit.
+    /// Only no cached token at all reads zero.
+    func testASmallButRealCacheHitIsNeverWrittenAsZero() {
+        XCTAssertEqual(MetricFormat.cacheHitPercent(read: 4, prompt: 1_000), "<1")
+        XCTAssertEqual(MetricFormat.cacheHitPercent(read: 4, prompt: 10_000, decimals: 1), "<0.1")
+        XCTAssertEqual(MetricFormat.cacheHitPercent(read: 0, prompt: 1_000), "0", "No cached token at all is a zero")
+        var totals = GatewayTotals(requests: 1, costSamples: 0, cacheReadTokens: 4, cacheReadSamples: 1)
+        totals.tokens = GatewayTokenTotals(input: 1_000, output: 10, total: 1_010, inputSamples: 1, outputSamples: 1, samples: 1)
+        totals.inputSplit = GatewayTokenSplit(total: 1_000, part: 4, samples: 1)
+        XCTAssertEqual(SessionStatsPresentation(gateway: totals, work: nil).usageLabel, "1K tok · Cache hit <1%")
+    }
+
+    /// The context dialog's detail line and the ring it explains agree to the
+    /// last digit either of them shows: 99.96% is never "100.0%".
+    func testTheContextDetailAgreesWithTheRingItExplains() {
+        let meter = ContextMeterPresentation(context: ["tokens": .number(199_920), "contextWindow": .number(200_000),
+                                                       "estimated": .bool(false), "method": .string("provider-count"),
+                                                       "scope": .string("last-request")])
+        XCTAssertEqual(meter.fraction.flatMap { MetricFormat.occupancyPercent($0) }, "99.96")
+        XCTAssertTrue(meter.detailLabel.contains(" 99.96% "), meter.detailLabel)
+        XCTAssertFalse(meter.detailLabel.contains("100.0%"), meter.detailLabel)
+        let small = ContextMeterPresentation(context: ["tokens": .number(24_600), "contextWindow": .number(200_000), "scope": .string("last-request")])
+        XCTAssertTrue(small.detailLabel.contains(" 12.3% "), small.detailLabel)
+        let over = ContextMeterPresentation(context: ["tokens": .number(210_000), "contextWindow": .number(200_000), "scope": .string("last-request")])
+        XCTAssertTrue(over.detailLabel.contains(" 105.0% "), "A count past the window says by how much: \(over.detailLabel)")
+    }
+
     // MARK: The settled rate
 
     func testTheSettledRateFoldsOnlyTheRequestsThatReportedBothHalves() {
@@ -224,6 +285,34 @@ final class MetricPillsTests: XCTestCase {
         XCTAssertEqual(turn.totalTokens, 15_800)
         XCTAssertEqual(turn.cacheHit, "50")
         XCTAssertEqual(turn.usageRows.first { $0.name == "Cache write" }?.value, "600 tok")
+    }
+
+    /// A cache hit is the cached share of the input of the requests that
+    /// reported both counters. Two requests that reported their input but no
+    /// cache counter at all are not two requests that missed the cache: they
+    /// stay out of the share, and the coverage says so.
+    func testTheCacheHitCountsOnlyTheRequestsThatReportedBothCounters() {
+        var gateway = GatewayTotals(requests: 3, costSamples: 3, costUSD: 0.003, cacheReadTokens: 900, cacheReadSamples: 1)
+        gateway.tokens = GatewayTokenTotals(input: 3_000, output: 300, total: 3_300, inputSamples: 3, outputSamples: 3, samples: 3)
+        gateway.inputSplit = GatewayTokenSplit(total: 1_000, part: 900, samples: 1)
+        gateway.uncachedInputReportedTokens = 100; gateway.uncachedInputSamples = 1
+        let session = SessionStatsPresentation(gateway: gateway, work: nil)
+        XCTAssertEqual(session.cacheHit, "90")
+        XCTAssertEqual(session.usageLabel, "3.3K tok · Cache hit 90% · $0.003")
+        XCTAssertEqual(session.usageRows.first { $0.name == "Cache hit" }?.value, "90%")
+        XCTAssertEqual(session.usageRows.first { $0.name == "Cache hit" }?.coverage, "1/3 requests reported")
+
+        var summary = fixtureTurn()
+        summary.accounting.requests = 3
+        summary.accounting.input = 3_000; summary.accounting.inputSamples = 3
+        summary.accounting.cached = 900; summary.accounting.cachedSamples = 1
+        summary.accounting.inputSplit = GatewayTokenSplit(total: 1_000, part: 900, samples: 1)
+        let turn = TurnPillsPresentation(summary)
+        XCTAssertEqual(turn.cacheHit, "90")
+        XCTAssertEqual(turn.usageRows.first { $0.name == "Cache hit" }?.coverage, "1/3 requests reported")
+        // With no request reporting both, there is no share to show.
+        summary.accounting.inputSplit = nil
+        XCTAssertNil(TurnPillsPresentation(summary).cacheHit)
     }
 
     func testTurnPillsReadAsTheOwnerAskedFor() throws {

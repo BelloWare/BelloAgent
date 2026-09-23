@@ -67,6 +67,35 @@ final class DeferredCreationTests: XCTestCase {
         model.shutdown()
     }
 
+    /// Reading more than eight other chats lets their displays go. A new
+    /// chat that was never sent has nothing written anywhere: its display is
+    /// the only place its draft exists, so it must not be let go of.
+    @MainActor func testAnUnsentNewChatKeepsItsDraftWhileOtherChatsAreRead() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let (model, _) = try await model(root: root)
+        let store = try XCTUnwrap(model.store)
+        model.newChat()
+        try await settle(model) { model.selectedID != nil }
+        let id = try XCTUnwrap(model.selectedID)
+        model.displays[id]?.draft = "Half a thought I have not sent"
+        for index in 0..<11 {
+            let other = ChatRecord(id: "saved-\(index)", workspaceID: "project", title: "Saved \(index)", path: nil, profileID: model.profileChoice)
+            try await store.put(other, kind: "chat", id: other.id); model.chats.append(other)
+            await model.select(other.id)
+        }
+        XCTAssertLessThanOrEqual(model.displays.count, 9, "The other chats' displays are still let go of")
+        XCTAssertTrue(model.chats.contains { $0.id == id }, "The New chat row stays")
+        XCTAssertEqual(model.displays[id]?.draft, "Half a thought I have not sent", "Its draft is still in memory")
+        await model.select(id)
+        XCTAssertEqual(model.selected?.draft, "Half a thought I have not sent", "Coming back shows what was typed")
+        // Quitting gives the text a chat, as it would have before the eviction.
+        await model.select("saved-0")
+        try await model.flushDrafts()
+        let saved = try await store.get(DraftRecord.self, kind: "draft", id: id)
+        XCTAssertEqual(saved?.text, "Half a thought I have not sent")
+        model.shutdown()
+    }
+
     @MainActor func testSideOpensOnScreenAndIsCreatedByItsFirstMessage() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let (model, _) = try await model(root: root)

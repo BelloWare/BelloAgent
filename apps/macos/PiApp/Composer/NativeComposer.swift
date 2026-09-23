@@ -208,15 +208,26 @@ struct ComposerEditMeasurement {
         guard let scroll = enclosingScrollView else { return true }
         return (scroll.documentView?.frame.height ?? 0) <= scroll.contentSize.height + 1
     }
-    /// The conversation this composer sits under.
+    /// The conversation this composer sits under: the transcript showing this
+    /// editor's own chat. A side conversation's composer is under the side's
+    /// transcript; the first one in the window is always the chat's, and the
+    /// side's page keys used to scroll that one.
     func conversationScrollView() -> TranscriptNativeScrollView? {
-        func find(_ view: NSView) -> TranscriptNativeScrollView? {
-            if let scroll = view as? TranscriptNativeScrollView { return scroll }
-            for child in view.subviews { if let found = find(child) { return found } }
-            return nil
+        func collect(_ view: NSView, into found: inout [TranscriptNativeScrollView]) {
+            if let scroll = view as? TranscriptNativeScrollView { found.append(scroll); return }
+            for child in view.subviews { collect(child, into: &found) }
         }
         guard let root = window?.contentView else { return nil }
-        return find(root)
+        var found: [TranscriptNativeScrollView] = []
+        collect(root, into: &found)
+        if let own = found.first(where: { ($0.documentView as? TranscriptNativeDocument)?.shownSessionID == sessionID }) { return own }
+        // A document names its chat one update after the composer does: while
+        // a switch lands, the transcript in this editor's own column.
+        let column = convert(bounds, to: nil).midX
+        return found.first { scroll in
+            let frame = scroll.convert(scroll.bounds, to: nil)
+            return frame.minX <= column && column <= frame.maxX
+        }
     }
     /// The chat this editor belongs to (see `WindowPresentationController.redirectTyping`).
     var sessionID = ""
@@ -297,7 +308,7 @@ struct ComposerEditMeasurement {
     func pasteAttachments(from pasteboard: NSPasteboard) -> Bool {
         guard let attachFiles else { return false }
         if let urls = Self.imageFiles(on: pasteboard) { attachFiles(urls); return true }
-        guard let pasted = Self.pastedImage(on: pasteboard) else { return false }
+        guard Self.imageIsWhatWasCopied(on: pasteboard), let pasted = Self.pastedImage(on: pasteboard) else { return false }
         let destination = attachmentDestination?() ?? AttachmentDestination(attach: attachFiles, reject: imageRejected)
         // Decoding a screenshot, re-encoding it and writing it out takes long
         // enough to freeze the window: a 4000x3000 paste is hundreds of
@@ -323,6 +334,17 @@ struct ComposerEditMeasurement {
     /// Drag admission must not fetch/decode a promised screenshot's bytes.
     static func acceptsImageTypes(on pasteboard: NSPasteboard) -> Bool {
         pasteboard.availableType(from: [.fileURL, .png, .tiff]) != nil
+    }
+    /// Image bytes on the pasteboard are what was copied only when nothing
+    /// else was. Text copied from a document often carries a picture of
+    /// itself, and a file copied in Finder carries its icon: pasting either
+    /// attached the picture and dropped the text or the file's name. An image
+    /// copied from a browser comes with its own address as text; it is still
+    /// the image. (Image files were taken before this is asked.)
+    static func imageIsWhatWasCopied(on pasteboard: NSPasteboard) -> Bool {
+        if pasteboard.availableType(from: [.fileURL]) != nil { return false }
+        guard let text = pasteboard.string(forType: .string), text.contains(where: { !$0.isWhitespace }) else { return true }
+        return pasteboard.availableType(from: [.URL]) != nil
     }
     static func pastedImage(on pasteboard: NSPasteboard) -> PastedImage? {
         if let png = pasteboard.data(forType: .png) { return PastedImage(data: png, isPNG: true) }
@@ -357,6 +379,12 @@ struct ComposerEditMeasurement {
     }
     override func didChangeText() { measurement.edited(); super.didChangeText(); reportContentHeight() }
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        // The comparison below feeds a measurement that is off in the app.
+        // Copying and comparing the whole draft for it on every input-method
+        // step was the cost of the keystroke on a long draft.
+        guard PerformanceProbe.shared.enabled else {
+            super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange); return
+        }
         let previous = self.string, range = markedRange()
         super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
         if self.string != previous || markedRange() != range { measurement.edited() }

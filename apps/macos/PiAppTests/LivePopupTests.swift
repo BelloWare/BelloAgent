@@ -338,7 +338,10 @@ final class LivePopupTests: XCTestCase {
         var queries: [(Date?, Date)] = []
         let monitor = MenuBarMetricsController(load: { _,_,_ in throw CaptureFailure.unavailable }, scopedLoad: { period, until, _, from, _ in
             queries.append((from, until))
-            return MenuBarSnapshot(period: period, from: from ?? period.start(until: until), until: until, counts: DashboardCounts(dispatched: 36, completed: 36), gateway: gateway(output: 48_200, cost: 1.24), workspaces: 1, sessions: 3, compactionRequests: 0, costUnreported: 0, costInvalid: 0, costConflicts: 0, models: models, modelGroups: 3, offset: 0, historicalRate: HistoricalOutputRate(outputTokens: 48_200, generationMilliseconds: 430_000, samples: 36))
+            // The average decode rate the monitor quotes: 48,200 tokens over 344 s.
+            var totals = gateway(output: 48_200, cost: 1.24)
+            totals.decodeMilliseconds = 344_000; totals.decodeOutputTokens = 48_200; totals.decodeSamples = 36
+            return MenuBarSnapshot(period: period, from: from ?? period.start(until: until), until: until, counts: DashboardCounts(dispatched: 36, completed: 36), gateway: totals, workspaces: 1, sessions: 3, compactionRequests: 0, costUnreported: 0, costInvalid: 0, costConflicts: 0, models: models, modelGroups: 3, offset: 0)
         }, period: .fifteenMinutes, activity: { activity }, interval: .seconds(60), now: { date.addingTimeInterval(seconds) })
         let view = MenuBarMetricsView(load: { _,_,_ in throw CaptureFailure.unavailable }, projects: { [MonitorProject(id: "project", title: "Bello Agent")] }, live: live, monitorController: monitor, openApp: {}, openReport: {})
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 720), styleMask: [.borderless], backing: .buffered, defer: false)

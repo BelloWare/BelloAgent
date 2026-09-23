@@ -98,7 +98,8 @@ enum TranscriptRowEstimate {
         let body = min(width, TranscriptMetrics.proseWidth)
         var total = prose(message.text, width: max(40, body), size: MarkdownStyle.prose.baseSize)
         if message.truncated == true { total += line }
-        if message.stopReason == "length" { total += line }
+        // Any early end draws its notice line, not only the output limit.
+        if MessageRowView.earlyEnd(message.stopReason) != nil { total += line }
         total += 22 + 4 + 10
         return max(24, total)
     }

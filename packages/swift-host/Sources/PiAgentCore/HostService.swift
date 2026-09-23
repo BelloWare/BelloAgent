@@ -24,6 +24,8 @@ public actor NativeHostService {
     private var hello=false, closing=false, quiesced=false, opening=false
     private var displayTransfers = DisplayResultTransfers()
     private var allowsDisplayTransfers = false
+    /// Set by a reader whose hello says it shows the `unknown` tool card state.
+    private var unknownToolOutcomes = false
     private var cwd: URL?, roots: [URL]=[], directory: URL?, resources: Resources?, mcp: MCPManager?, nativeTools: NativeTools?
     private let traces: TraceStore, capture: CaptureDelivery
     private let editingGate=AsyncGate(), runtimeGate=AsyncGate()
@@ -48,8 +50,8 @@ public actor NativeHostService {
         }
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
-            hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true
-            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":"1.0.0","piBehaviorReference":"0.85.1","limits":["frameBytes":1048576,"captureBytes":134217728],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read"]]); return
+            hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true; unknownToolOutcomes = frame["unknownToolOutcomes"].flag == true
+            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":"1.0.0","piBehaviorReference":"0.85.1","limits":["frameBytes":1048576,"captureBytes":134217728],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends"]]); return
         }
         let id=frame["commandId"].text ?? ""
         guard hello, frame["v"].int == 1, frame["kind"].text == "command", frame["hostEpoch"].text == epoch, !id.isEmpty, id.utf8.count <= 128, let method=frame["method"].text, frame["params"].isNull || frame["params"].isObject else { reply(id,.failure(AgentError("invalid_command", "Invalid command or stale host epoch"))); return }
@@ -74,8 +76,8 @@ public actor NativeHostService {
         fingerprints[id]=fingerprint
         tasks[id]=Task { [weak self] in
             guard let self else { return }
-            do { let result=try await self.command(method,sessionID:frame["sessionId"].text,params:frame["params"].isNull ? [:] : frame["params"],commandID:id); await self.finish(id,.success(result)) }
-            catch { await self.finish(id,.failure(error as? AgentError ?? AgentError("command_failed", "Command failed: \(error.localizedDescription)"))) }
+            do { let result=try await self.command(method,sessionID:frame["sessionId"].text,params:frame["params"].isNull ? [:] : frame["params"],commandID:id); await self.finish(id,.success(result),retain:!readOnly) }
+            catch { await self.finish(id,.failure(error as? AgentError ?? AgentError("command_failed", "Command failed: \(error.localizedDescription)")),retain:!readOnly) }
         }
     }
     /// The reply frame for one command. `error` and `result` carry the same
@@ -89,9 +91,12 @@ public actor NativeHostService {
     /// Refuses a command before it starts: nothing is cached, because the
     /// command identity was never accepted.
     private func reply(_ id: String,_ result: Result<JSON,AgentError>) { emit(replyFrame(id,result)) }
-    /// Completes an accepted command: the frame is bounded, cached for an
-    /// identical retry of the same command identity, and emitted.
-    private func finish(_ id:String,_ result:Result<JSON,AgentError>) {
+    /// Completes an accepted command: the frame is bounded and emitted. A
+    /// command that changes something keeps its reply for an identical retry
+    /// of the same identity, which must never run it twice. A read keeps
+    /// nothing: a retried read simply runs again, so a snapshot page or a
+    /// display-transfer chunk (up to 1 MiB each) is not held for 512 replies.
+    private func finish(_ id:String,_ result:Result<JSON,AgentError>,retain:Bool) {
         var message=replyFrame(id,result)
         if ((try? message.data().count) ?? 1048577)>1048576 {
             if allowsDisplayTransfers, case .success(let value) = result {
@@ -99,10 +104,17 @@ public actor NativeHostService {
                 catch { message = replyFrame(id, .failure(error as? AgentError ?? AgentError("display_failed", "Could not prepare the complete display result"))) }
             } else { message = replyFrame(id, .failure(AgentError("reply_limit", "Result exceeds the IPC frame limit; request a smaller range"))) }
         }
-        tasks.removeValue(forKey:id); replies[id]=message; replyOrder.append(id)
-        while replyOrder.count > 512 { let old=replyOrder.removeFirst(); replies.removeValue(forKey:old); fingerprints.removeValue(forKey:old) }
+        tasks.removeValue(forKey:id)
+        if retain {
+            replies[id]=message; replyOrder.append(id)
+            while replyOrder.count > 512 { let old=replyOrder.removeFirst(); replies.removeValue(forKey:old); fingerprints.removeValue(forKey:old) }
+        } else { fingerprints.removeValue(forKey:id) }
         emit(message)
     }
+    /// Test seam: the replies kept for an identical retry, and their size.
+    var cachedReplies: (count: Int, bytes: Int) { (replies.count, replies.values.reduce(0) { $0 + ((try? $1.data().count) ?? 0) }) }
+    /// Test seam: a loaded session.
+    func loadedSession(_ id: String) -> AgentSession? { sessions[id] }
     private func mark(_ id:String,_ seq:Int) async {
         if let session=sessions[id], !(await session.isEphemeral) { sideParents.removeValue(forKey:id) }
         dirty[id]=max(seq,dirty[id] ?? 0)
@@ -198,7 +210,14 @@ public actor NativeHostService {
                 let titleTask = params["backgroundTask"].text == "session-title"
                 guard params["backgroundTask"].isNull || titleTask else { throw AgentError("invalid_params", "Unknown background task") }
                 let sessionResources = titleTask ? Resources(cwd: cwd, titleTask: true) : resources
-                let session=try AgentSession(id:id,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:titleTask || mode == "read-only",resources:sessionResources,client:ProviderClient(traces:traces),tools:titleTask || params["connectionTest"].flag == true ? DisabledTools() : nativeTools,traces:traces,editingGate:editingGate,resumePath:params["path"].text,autoCompaction:!titleTask,titleTask:titleTask,changed:notification())
+                // Opening parses and replays the whole journal. Do it off this
+                // actor, which every other chat's commands go through; the
+                // runtime gate still serializes opens and closes.
+                let tools: any ToolExecuting = titleTask || params["connectionTest"].flag == true ? DisabledTools() : nativeTools
+                let client=ProviderClient(traces:traces), traces=traces, gate=editingGate, changed=notification(), resume=params["path"].text, readOnly=titleTask || mode == "read-only", outcomes=unknownToolOutcomes
+                let session=try await Task.detached(priority:.userInitiated) {
+                    try AgentSession(id:id,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:readOnly,resources:sessionResources,client:client,tools:tools,traces:traces,editingGate:gate,resumePath:resume,autoCompaction:!titleTask,titleTask:titleTask,unknownToolOutcomes:outcomes,changed:changed)
+                }.value
                 sessions[id]=session; profiles[id]=(profile,key); touch(id)
                 if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
                 await runtimeGate.release(); return await session.snapshot()
@@ -243,7 +262,7 @@ public actor NativeHostService {
             do {
                 guard sessions[forkID] == nil, let (profile,key)=profiles[id] else { throw AgentError("session_conflict", "Fork identity is already in use") }
                 let result=try await session.fork(to:forkID)
-                let fork=try await AgentSession(id:forkID,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:session.readOnly,resources:resources,client:ProviderClient(traces:traces),tools:session.isConnectionTest ? DisabledTools() : nativeTools,traces:traces,editingGate:editingGate,resumePath:result["path"].text,changed:notification())
+                let fork=try await AgentSession(id:forkID,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:session.readOnly,resources:resources,client:ProviderClient(traces:traces),tools:session.isConnectionTest ? DisabledTools() : nativeTools,traces:traces,editingGate:editingGate,resumePath:result["path"].text,unknownToolOutcomes:unknownToolOutcomes,changed:notification())
                 sessions[forkID]=fork; profiles[forkID]=(profile,key); touch(forkID)
                 _=try await traces.command("debug.mode",session:forkID,params:["mode":JSON(await traces.mode(id))])
                 await runtimeGate.release(); return result
@@ -258,7 +277,7 @@ public actor NativeHostService {
                 if let existing=sideParents.first(where:{$0.value==id})?.key, let side=sessions[existing] { await runtimeGate.release(); return ["accepted":true,"sessionId":JSON(existing),"side":await side.snapshot()["side"],"ephemeral":true] }
                 guard sessions[sideID] == nil, let (profile,key)=profiles[id] else { throw AgentError("side_conflict", "Side identity is already in use") }
                 let seed=await session.sideSeed()
-                let side=try AgentSession(id:sideID,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:true,resources:resources,client:ProviderClient(traces:traces),tools:nativeTools,traces:traces,editingGate:editingGate,seed:seed.messages,parent:seed.info,changed:notification())
+                let side=try AgentSession(id:sideID,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:true,resources:resources,client:ProviderClient(traces:traces),tools:nativeTools,traces:traces,editingGate:editingGate,seed:seed.messages,parent:seed.info,unknownToolOutcomes:unknownToolOutcomes,changed:notification())
                 let saved=try await side.preserveSide()
                 sessions[sideID]=side; profiles[sideID]=(profile,key); touch(sideID)
                 _=try await traces.command("debug.mode",session:sideID,params:["mode":JSON(await traces.mode(id))])

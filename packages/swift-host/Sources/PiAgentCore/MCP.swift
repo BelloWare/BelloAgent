@@ -59,6 +59,31 @@ public protocol MCPTransport: Sendable {
     func request(_ method: String, params: JSON) async throws -> JSON
     func notify(_ method: String, params: JSON) async throws
     func close() async
+    /// False once the connection can carry no further request: the server
+    /// process exited or its pipe broke, or an HTTP server forgot the session.
+    /// The manager then sets up a new connection for the next request.
+    func isAlive() async -> Bool
+    /// Advances each time the server says its tool catalog changed.
+    func catalogGeneration() async -> Int
+}
+public extension MCPTransport {
+    func isAlive() async -> Bool { true }
+    func catalogGeneration() async -> Int { 0 }
+}
+/// Errors that mean the server refused a request without processing it: a
+/// JSON-RPC rejection of the request itself, an HTTP refusal, a session the
+/// server no longer knows, or a request that was never sent. The call did not
+/// run, so it leaves no unknown outcome behind.
+let mcpNotExecutedCodes: Set<String> = ["mcp_rejected", "mcp_session_expired", "mcp_unavailable"]
+/// A JSON-RPC error answer. Parse errors, invalid requests, unknown methods
+/// and invalid params (an unknown tool or bad arguments) reject the request
+/// itself; any other code can come from the tool while it ran.
+func mcpRemoteError(_ error: JSON) -> AgentError {
+    let detail = preview(error["message"].text ?? "", bytes: 512)
+    if let code = error["code"].int, [-32700, -32600, -32601, -32602].contains(code) {
+        return AgentError("mcp_rejected", "MCP server rejected the call (JSON-RPC \(code)" + (detail.isEmpty ? "" : ": " + detail) + "); it was not executed.")
+    }
+    return AgentError("mcp_remote_error", "MCP server returned JSON-RPC error \(error["code"].encoded()); invocation outcome may be unknown. No replay attempted.")
 }
 
 /// Bounded JSON-RPC stdio peer. No server-provided instructions are elevated to
@@ -76,6 +101,7 @@ final class StdioMCP: MCPTransport, @unchecked Sendable {
     private var writer: MCPWriteQueue!
     private var serverRequestWindow = 0.0, serverRequests = 0
     private var pending: [String: CheckedContinuation<JSON, Error>] = [:], closed = false, buffer = Data()
+    private var catalogChanges = 0
     private let timeout: UInt64
     init(command: String, args: [String], cwd: URL, environment: [String: String], timeoutSeconds: Int) throws {
         child = try ManagedChild(command: command, arguments: args, cwd: cwd, environment: environment); timeout = UInt64(timeoutSeconds) * 1_000_000_000
@@ -126,6 +152,10 @@ final class StdioMCP: MCPTransport, @unchecked Sendable {
         }, onCancel: { [weak self] in self?.cancel(id, error: CancellationError()) })
     }
     func notify(_ method: String, params: JSON) async throws { try Task.checkCancellation(); send(["jsonrpc":"2.0", "method":JSON(method), "params":params]) }
+    func isAlive() async -> Bool { !isClosed }
+    func catalogGeneration() async -> Int { changes }
+    private var isClosed: Bool { lock.lock(); defer { lock.unlock() }; return closed }
+    private var changes: Int { lock.lock(); defer { lock.unlock() }; return catalogChanges }
     private func cancel(_ id: String, error: Error) {
         lock.lock(); let c = pending.removeValue(forKey: id); lock.unlock()
         if let c { send(["jsonrpc":"2.0", "method":"notifications/cancelled", "params":["requestId":JSON(id),"reason":"Client cancelled or deadline exceeded"]]); c.resume(throwing: error) }
@@ -158,11 +188,11 @@ final class StdioMCP: MCPTransport, @unchecked Sendable {
                         if method == "ping" { response["result"] = [:] }
                         else { response["error"] = ["code":-32601,"message":"Client capability not supported"] }
                         send(response)
-                    }
+                    } else if method == "notifications/tools/list_changed" { lock.lock(); catalogChanges += 1; lock.unlock() }
                     continue // No sampling, elicitation, or server-initiated execution.
                 }
                 guard let id = v["id"].text else { continue }
-                if !v["error"].isNull { resolve(id, .failure(AgentError("mcp_remote_error", "MCP server returned JSON-RPC error \(v["error"]["code"].encoded())"))) }
+                if !v["error"].isNull { resolve(id, .failure(mcpRemoteError(v["error"]))) }
                 else if v.map.keys.contains("result") { resolve(id, .success(v["result"])) }
                 else { throw AgentError("mcp_protocol", "MCP response lacks result or error") }
             }
@@ -245,7 +275,12 @@ final class MCPWriteQueue: @unchecked Sendable {
 actor HTTPMCP: MCPTransport {
     let url: URL, headers: [String: String]
     var session: String?, version = "2025-11-25"
+    /// Set when the server answered 404 to a request carrying its session id:
+    /// it has forgotten the session, and this connection is spent.
+    private var expired = false, catalogChanges = 0
     init(url: URL, headers: [String: String]) { self.url=url; self.headers=headers }
+    func isAlive() -> Bool { !expired }
+    func catalogGeneration() -> Int { catalogChanges }
     func request(_ method: String, params: JSON) async throws -> JSON {
         let id = UUID().uuidString
         let result = try await exchange(["jsonrpc":"2.0","id":JSON(id),"method":JSON(method),"params":params], expected: id)
@@ -256,6 +291,7 @@ actor HTTPMCP: MCPTransport {
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.httpBody = try message.data()
         for (key,value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+        let sentSession = session
         if let session { request.setValue(session, forHTTPHeaderField: "Mcp-Session-Id") }
         if message["method"].text != "initialize" { request.setValue(version, forHTTPHeaderField: "MCP-Protocol-Version") }
         let transport = HTTPStream(); defer { transport.cancel() }
@@ -267,7 +303,16 @@ actor HTTPMCP: MCPTransport {
                 code=status; sse=fields.first(where: { $0.key.lowercased() == "content-type" })?.value.lowercased().contains("text/event-stream") ?? false
                 if let sid = fields.first(where: { $0.key.lowercased() == "mcp-session-id" })?.value, sid.utf8.count <= 1024 { session = sid }
                 if expected == nil, status == 202 || status == 204 { return [:] }
-                guard (200..<300).contains(status) else { throw AgentError("mcp_http", "MCP HTTP \(status); no automatic reconnection or invocation replay") }
+                guard (200..<300).contains(status) else {
+                    // A server that restarted forgets its sessions and answers
+                    // 404 without processing the request.
+                    if status == 404, sentSession != nil, message["method"].text != "initialize" {
+                        expired = true; session = nil
+                        throw AgentError("mcp_session_expired", "MCP server no longer knows this session (HTTP 404); the request was not processed")
+                    }
+                    if [400, 401, 403, 404, 405, 429].contains(status) { throw AgentError("mcp_rejected", "MCP server rejected the request with HTTP \(status); it was not executed. No automatic replay.") }
+                    throw AgentError("mcp_http", "MCP HTTP \(status); invocation outcome may be unknown. No automatic reconnection or invocation replay")
+                }
             case .bytes(let bytes, _):
                 // HTTPStream permits one body batch in flight. JSON needs EOF
                 // and SSE may span many batches; both must release ingress even
@@ -278,6 +323,7 @@ actor HTTPMCP: MCPTransport {
                         let v = try JSON.parse(Data(event.data.utf8))
                         if v["id"].text == expected, expected != nil { return try response(v) }
                         if !v["method"].isNull && !v["id"].isNull { throw AgentError("mcp_capability", "Server requested an unsupported client capability") }
+                        if v["method"].text == "notifications/tools/list_changed" { catalogChanges += 1 }
                     }
                 } else { body.append(bytes); guard body.count <= 4 * 1024 * 1024 else { throw AgentError("mcp_limit", "MCP body exceeds 4 MiB") } }
             }
@@ -288,7 +334,7 @@ actor HTTPMCP: MCPTransport {
     }
     private func response(_ v: JSON) throws -> JSON {
         guard v.isObject, v["jsonrpc"].text == "2.0" else { throw AgentError("mcp_protocol", "Invalid JSON-RPC response") }
-        if !v["error"].isNull { throw AgentError("mcp_remote_error", "MCP server returned an error; no replay attempted") }
+        if !v["error"].isNull { throw mcpRemoteError(v["error"]) }
         guard v.map.keys.contains("result") else { throw AgentError("mcp_protocol", "Missing MCP result") }; return v["result"]
     }
     func close() async { session = nil }
@@ -322,7 +368,12 @@ public actor AsyncGate {
 }
 
 public actor MCPManager {
-    struct Server { var name: String; var config: JSON; var transport: (any MCPTransport)?; var initialized = false }
+    struct Server {
+        var name: String; var config: JSON; var transport: (any MCPTransport)?; var initialized = false
+        /// The tool catalog this connection listed, at the catalog generation
+        /// it listed it. A new connection or a list_changed notice relists.
+        var catalog: [JSON]? = nil, catalogGeneration = 0
+    }
     private var servers: [String: Server] = [:]
     private var unknownOutcome=false
     private let gate = AsyncGate(), connectionGate = AsyncGate(), cwd: URL
@@ -373,7 +424,15 @@ public actor MCPManager {
         try await connectionGate.acquire()
         do {
             guard var server = servers[name] else { throw AgentError("mcp_server", "Unknown or disabled MCP server") }
-            if server.initialized, let ready = server.transport { await connectionGate.release(); return ready }
+            if server.initialized, let ready = server.transport {
+                if await ready.isAlive() { await connectionGate.release(); return ready }
+                // The connection died after setup: the process exited, its
+                // pipe broke or the server forgot the session. Start a new
+                // one (new process, new initialize). Nothing is replayed.
+                await ready.close()
+                server.transport = nil; server.initialized = false; server.catalog = nil
+                servers[name] = server
+            }
             if server.transport == nil {
                 if let configured = server.config["url"].text {
                     var headers: [String: String] = [:]
@@ -395,10 +454,17 @@ public actor MCPManager {
             await connectionGate.release(); return transport
         } catch { await connectionGate.release(); throw error }
     }
-    private func tools(_ name: String) async throws -> [JSON] {
-        let t = try await connect(name); var cursor: String?, seen = Set<String>(), result: [JSON] = [], names = Set<String>()
+    private static func same(_ a: (any MCPTransport)?, _ b: any MCPTransport) -> Bool { a.map { ObjectIdentifier($0 as AnyObject) == ObjectIdentifier(b as AnyObject) } ?? false }
+    /// The server's catalog, listed once per connection: an invocation checks
+    /// the tool against it without listing the whole catalog again.
+    private func tools(_ name: String, retried: Bool = false) async throws -> [JSON] {
+        let t = try await connect(name), generation = await t.catalogGeneration()
+        if let server = servers[name], let catalog = server.catalog, server.catalogGeneration == generation, Self.same(server.transport, t) { return catalog }
+        var cursor: String?, seen = Set<String>(), result: [JSON] = [], names = Set<String>()
         repeat {
-            let page = try await t.request("tools/list", params: cursor.map { ["cursor":JSON($0)] } ?? [:])
+            let page: JSON
+            do { page = try await t.request("tools/list", params: cursor.map { ["cursor":JSON($0)] } ?? [:]) }
+            catch let error as AgentError where error.code == "mcp_session_expired" && !retried { return try await tools(name, retried: true) }
             guard page["tools"].list.count <= 1000, result.count + page["tools"].list.count <= 2000 else { throw AgentError("mcp_limit", "MCP catalog exceeds supported limit") }
             for tool in page["tools"].list {
                 let n = try required(tool["name"], "MCP tool", maximum:256)
@@ -409,6 +475,7 @@ public actor MCPManager {
             cursor = page["nextCursor"].text
             if let cursor { guard seen.count < 100, seen.insert(cursor).inserted else { throw AgentError("mcp_cursor", "MCP cursor repeated or exceeded the page limit") } }
         } while cursor != nil
+        if Self.same(servers[name]?.transport, t) { servers[name]?.catalog = result; servers[name]?.catalogGeneration = generation }
         return result
     }
     public nonisolated static var definition: ToolDefinition {
@@ -420,7 +487,15 @@ public actor MCPManager {
         case "list":
             guard Set(p.map.keys).isSubset(of:["action","server"]) else { throw AgentError("mcp_arguments", "List accepts only an optional server") }
             if let server=p["server"].text { return ["server":JSON(server),"tools":.array(try await tools(server).map { $0.removing(["inputSchema","outputSchema"]) })] }
-            return ["servers":.array(servers.keys.sorted().map { ["server":JSON($0),"connected":JSON(servers[$0]?.initialized ?? false)] }),"outcomeUnknown":JSON(unknownOutcome)]
+            var rows: [JSON] = []
+            for name in servers.keys.sorted() {
+                // Connected means able to carry the next request, not merely
+                // initialized once: a server that exited is not connected.
+                var connected = servers[name]?.initialized ?? false
+                if connected, let transport = servers[name]?.transport { connected = await transport.isAlive() }
+                rows.append(["server":JSON(name),"connected":JSON(connected)])
+            }
+            return ["servers":.array(rows),"outcomeUnknown":JSON(unknownOutcome)]
         case "describe":
             guard Set(p.map.keys) == ["action","targets"], !p["targets"].list.isEmpty, p["targets"].list.count <= 32 else { throw AgentError("mcp_arguments", "Describe requires a list of 1–32 server/tool pairs") }
             var catalog: [String:[JSON]] = [:], result: [JSON] = []
@@ -437,22 +512,39 @@ public actor MCPManager {
             guard Set(p.map.keys) == ["action","server","tool","arguments"], p["arguments"].isObject else { throw AgentError("mcp_arguments", "Invoke requires exactly one server, tool and arguments object; batches are not supported") }
             let server=try required(p["server"],"server"), name=try required(p["tool"],"tool")
             try await gate.acquire()
-            var dispatched=false
+            // dispatched: a tools/call may have reached the server and run.
+            // marked: this invocation wrote the outcome marker.
+            var dispatched=false, marked=false
             do {
                 guard !unknownOutcome else { throw AgentError("mcp_outcome_unknown","A previous invocation has an unknown outcome. The user must verify it and acknowledge before another invocation.") }
                 guard try await tools(server).contains(where:{$0["name"].text == name}) else { throw AgentError("mcp_tool", "Unknown or disallowed MCP tool") }
-                let transport = try await connect(server)
+                var transport = try await connect(server)
                 if let outcomeMarker {
+                    marked=true
                     let bytes = try JSON.object(["server":JSON(server),"tool":JSON(name),"startedAt":JSON(isoNow()),"state":"outcome-unknown-until-result-retained"]).data()
                     try bytes.write(to:outcomeMarker,options:.atomic)
                     try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:outcomeMarker.path)
                     let marker = try FileHandle(forWritingTo:outcomeMarker);try marker.synchronize();try marker.close()
                 }
                 dispatched=true;invoking=true
-                let result = try await transport.request("tools/call", params:["name":JSON(name),"arguments":p["arguments"]])
+                let call: JSON = ["name":JSON(name),"arguments":p["arguments"]], result: JSON
+                do { result = try await transport.request("tools/call", params:call) }
+                catch let error as AgentError where error.code == "mcp_session_expired" {
+                    // The server forgot the session and did not process the
+                    // call: set the session up again and send it once more.
+                    dispatched=false; transport = try await connect(server); dispatched=true
+                    result = try await transport.request("tools/call", params:call)
+                }
                 if let outcomeMarker { try FileManager.default.removeItem(at:outcomeMarker) }
                 invoking=false;await gate.release(); return result
-            } catch { invoking=false;if dispatched { unknownOutcome=true }; await gate.release(); throw error }
+            } catch {
+                invoking=false
+                // A call the server refused without processing it did not run:
+                // it leaves no unknown outcome, in memory or on disk.
+                if dispatched, !mcpNotExecutedCodes.contains((error as? AgentError)?.code ?? "") { unknownOutcome=true }
+                else if marked, let outcomeMarker { try? FileManager.default.removeItem(at:outcomeMarker) }
+                await gate.release(); throw error
+            }
         default: throw AgentError("mcp_arguments", "Use list, describe, or invoke")
         }
     }

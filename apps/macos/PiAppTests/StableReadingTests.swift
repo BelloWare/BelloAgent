@@ -68,7 +68,11 @@ final class StableReadingTests: XCTestCase {
         let anchor = try XCTUnwrap(reading.readingAnchor)
         let parent = try XCTUnwrap(body.superview)
         let clip = stage.scroll.contentView
-        clip.setBoundsOrigin(NSPoint(x: 0, y: clip.bounds.minY + 40))
+        // The text under the viewport moves, as it does when something above
+        // it changes height. Moving the clip instead would be the reader's
+        // own scroll, which no anchor may undo.
+        parent.setFrameOrigin(NSPoint(x: parent.frame.minX, y: parent.frame.minY - 40))
+        XCTAssertGreaterThan(abs(body.displacement(of: anchor) ?? 0), 1, "the fixture must displace the anchor")
         var adopted = false
         let observer = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { _ in
             MainActor.assumeIsolated {

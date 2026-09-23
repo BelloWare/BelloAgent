@@ -1,4 +1,8 @@
 import XCTest
+import Combine
+import SwiftUI
+import AppKit
+import Charts
 @testable import PiApp
 
 /// Navigation to the report page and the controller state behind it.
@@ -317,14 +321,16 @@ final class ReportPageTests: XCTestCase {
         for _ in 0..<200 where report.sessionRequests["s"] == nil { try await Task.sleep(for: .milliseconds(5)) }
         XCTAssertEqual(report.sessionRequests["s"]?.selectedRequests, 1)
         try await record(model); await report.refresh()
-        for _ in 0..<200 where report.sessionRequests["s"] == nil { try await Task.sleep(for: .milliseconds(5)) }
+        // The row keeps its previous requests (never a spinner) until the reload lands.
+        for _ in 0..<200 where report.sessionRequests["s"]?.selectedRequests != 2 { try await Task.sleep(for: .milliseconds(5)) }
         XCTAssertTrue(report.expandedSessions.contains("s"))
         XCTAssertEqual(report.sessionRequests["s"]?.selectedRequests, 2, "An expanded row must reload instead of remaining a spinner")
         report.toggleSession("s"); await report.refresh()
         await probe.blockNext(fail: true); report.toggleSession("s"); await probe.waitForBlock()
         report.suspend(); await probe.release()
         for _ in 0..<10 { await Task.yield() }
-        XCTAssertNil(report.failure); XCTAssertTrue(report.sessionRequests.isEmpty)
+        XCTAssertNil(report.failure, "The cancelled expansion's failure is not published")
+        XCTAssertEqual(report.sessionRequests["s"]?.selectedRequests, 2, "Nor its result: the row keeps the last requests it read")
         await report.prepare()
         for _ in 0..<200 where report.sessionRequests["s"] == nil { try await Task.sleep(for: .milliseconds(5)) }
         XCTAssertEqual(report.sessionRequests["s"]?.selectedRequests, 2)
@@ -349,6 +355,352 @@ final class ReportPageTests: XCTestCase {
         report.suspend(); await gate.release(); await hidden.value
         XCTAssertNil(report.failure, "A hidden query cannot publish errors")
     }
+}
+
+extension ReportPageTests {
+    /// A refresh used to clear the per-route split, the session page and the
+    /// expanded sessions' requests while it read their replacements: the
+    /// routing map and cost card said "No model routes reported", the lists
+    /// showed spinners, then everything refilled.
+    @MainActor func testRefreshKeepsRoutingAndGroupedListsUntilTheirReplacementsLand() async throws {
+        let (model, _) = try makeModel()
+        try await model.reloadConfiguration(); try await record(model)
+        let gate = ReportGate()
+        let report = ReportController(modelQuery: { archive, filter in
+            await gate.pass()
+            return try await archive.modelSummaries(filter)
+        })
+        report.attach(model); await report.prepare()
+        report.toggleSession("s")
+        for _ in 0..<200 where report.sessionRequests["s"] == nil { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertNotNil(report.modelSummaries); XCTAssertNotNil(report.sessions); XCTAssertNotNil(report.sessionRequests["s"])
+        var blanks: [String] = []
+        let observers = [report.$modelSummaries.sink { if $0 == nil { blanks.append("routes") } },
+                         report.$sessions.sink { if $0 == nil { blanks.append("sessions") } },
+                         report.$sessionRequests.sink { if $0["s"] == nil { blanks.append("session requests") } }]
+        defer { observers.forEach { $0.cancel() }; report.suspend() }
+        try await record(model)
+        await gate.arm()
+        let refresh = Task { await report.refresh() }
+        await gate.waitForBlock()
+        XCTAssertNotNil(report.modelSummaries, "The routing map keeps its routes while the refresh reads new ones")
+        XCTAssertNotNil(report.sessions, "The session list stays while its replacement is read")
+        XCTAssertNotNil(report.sessionRequests["s"], "An expanded session keeps its requests")
+        await gate.release(); await refresh.value
+        for _ in 0..<200 where report.sessionRequests["s"]?.selectedRequests != 2 { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(report.snapshot?.selectedRequests, 2)
+        XCTAssertEqual(report.modelSummaries?.first?.requests, 2)
+        XCTAssertEqual(report.sessions?.sessions.first?.requests, 2)
+        XCTAssertEqual(report.sessionRequests["s"]?.selectedRequests, 2)
+        XCTAssertEqual(blanks, [], "No grouping passes through an empty or loading state between two real values")
+    }
+
+    /// Replacing a chart selection used to clear the old one first. The
+    /// throughput panel saw "no selection", reset its zoom, and that reset
+    /// cancelled the new selection's query: zooming inside a zoom snapped back.
+    @MainActor func testReplacingAChartSelectionNeverPassesThroughNoSelection() async throws {
+        let (model, _) = try makeModel()
+        try await model.reloadConfiguration(); try await record(model)
+        let report = model.report; await report.prepare()
+        defer { report.suspend() }
+        let window = try XCTUnwrap(report.snapshot).filter, now = Date()
+        let first = try XCTUnwrap(DashboardBrush(now.addingTimeInterval(-900), now.addingTimeInterval(-60), in: window))
+        report.applyBrush(first)
+        for _ in 0..<200 where report.brush != first || report.loading { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(report.brush, first)
+        var published: [DashboardBrush?] = []
+        let observer = report.$brush.dropFirst().sink { published.append($0) }
+        defer { observer.cancel() }
+        let second = try XCTUnwrap(DashboardBrush(now.addingTimeInterval(-700), now.addingTimeInterval(-500), in: window))
+        report.applyBrush(second)
+        XCTAssertEqual(report.brush, first, "The current selection and its totals stay until the new ones arrive")
+        XCTAssertEqual(report.brushPreview, second, "The chart shows the new selection meanwhile")
+        for _ in 0..<200 where report.brush != second || report.loading { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(report.brush, second)
+        XCTAssertEqual(report.focused?.filter.from, second.from)
+        XCTAssertNil(report.brushPreview)
+        XCTAssertFalse(published.contains(nil), "The selection never passes through none: \(published)")
+    }
+
+    @MainActor private func surfaces(_ view: NSView) -> [MonitorChartInteraction.Surface] {
+        (view as? MonitorChartInteraction.Surface).map { [$0] } ?? view.subviews.flatMap { surfaces($0) }
+    }
+    @MainActor private func drag(_ surface: MonitorChartInteraction.Surface, in window: NSWindow, from start: Double, to end: Double) throws {
+        let plot = surface.plot
+        func pointer(_ type: NSEvent.EventType, _ fraction: Double) throws -> NSEvent {
+            let point = surface.convert(CGPoint(x: plot.minX + plot.width * fraction, y: plot.midY), to: nil)
+            return try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        }
+        surface.mouseDown(with: try pointer(.leftMouseDown, start))
+        surface.mouseDragged(with: try pointer(.leftMouseDragged, (start + end) / 2))
+        surface.mouseDragged(with: try pointer(.leftMouseDragged, end))
+        surface.mouseUp(with: try pointer(.leftMouseUp, end))
+    }
+
+    /// The Output tok/s chart on a real report page: a second drag inside the
+    /// zoomed chart narrows the selection instead of snapping back, and a
+    /// refresh keeps it and reads the window and the selection once each.
+    @MainActor func testThroughputChartZoomsInsideItsZoomAndKeepsItThroughARefresh() async throws {
+        let (model, _) = try makeModel()
+        try await model.reloadConfiguration(); try await record(model)
+        let probe = ReportQueryProbe()
+        let report = ReportController(query: { try await probe.run($0, $1, $2) }, accounting: { _ in })
+        report.attach(model)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let hosted = NSHostingView(rootView: ReportPage(model: model, report: report))
+        window.contentView = hosted; window.orderFront(nil)
+        defer { report.suspend(); window.contentView = nil; window.close() }
+        func settle(_ done: () -> Bool) async throws {
+            for _ in 0..<300 where !done() { try await Task.sleep(for: .milliseconds(10)); hosted.layoutSubtreeIfNeeded() }
+            try await Task.sleep(for: .milliseconds(100)); hosted.layoutSubtreeIfNeeded()
+        }
+        try await settle { report.snapshot != nil && !report.loading && !surfaces(hosted).isEmpty }
+        try drag(try XCTUnwrap(surfaces(hosted).first), in: window, from: 0.2, to: 0.8)
+        try await settle { report.brush != nil && !report.loading }
+        let first = try XCTUnwrap(report.brush, "The first drag selects a range")
+        try drag(try XCTUnwrap(surfaces(hosted).first), in: window, from: 0.25, to: 0.75)
+        try await settle { report.brush != first && !report.loading }
+        let second = try XCTUnwrap(report.brush, "Zooming inside the zoomed chart keeps a selection")
+        XCTAssertGreaterThan(second.from, first.from); XCTAssertLessThan(second.until, first.until)
+        let domain = try XCTUnwrap(surfaces(hosted).first).domain
+        XCTAssertEqual(domain.lowerBound.timeIntervalSince1970, second.from.timeIntervalSince1970, accuracy: 1, "The chart shows the selection")
+        XCTAssertEqual(domain.upperBound.timeIntervalSince1970, second.until.timeIntervalSince1970, accuracy: 1)
+        let before = await probe.calls.count
+        await report.refresh()
+        try await settle { !report.loading }
+        XCTAssertEqual(report.brush, second, "A refresh keeps the chart selection")
+        let calls = await probe.calls.count - before
+        XCTAssertEqual(calls, 2, "One pass: the window and the selection, once each")
+    }
+
+    /// Clicking a route in "By model" set only its alias and model. For an
+    /// unresolved route (no model) that meant every model of the alias, on
+    /// either API; the route's own count and the narrowed report disagreed.
+    @MainActor func testChoosingARouteNarrowsTheReportToExactlyThatRoute() async throws {
+        let (model, _) = try makeModel()
+        try await model.reloadConfiguration()
+        func request(api: String, model reported: String?) async throws {
+            var metadata: [String: WireValue] = ["attemptId": .string(UUID().uuidString), "sessionId": .string("s"), "turnId": .string("t"), "purpose": .string("turn"), "api": .string(api), "requestedModel": .string("alias"), "mode": .string("off"), "outcome": .string("completed"), "wallTimestamp": .number(Date().timeIntervalSince1970 - 605), "dispatchWallTimestamp": .number(Date().timeIntervalSince1970 - 600), "timingVersion": .number(2), "messageIds": .array([.string("m")]), "timings": .object(["dispatch": .number(1000), "firstContent": .number(1010), "modelComplete": .number(1030), "httpEnd": .number(1100)])]
+            if let reported { metadata["identity"] = .object(["effectiveModel": .string(reported)]) }
+            try await model.traces.begin(metadata, workspace: "w"); try await model.traces.finish(metadata)
+        }
+        try await request(api: "anthropic-messages", model: nil)
+        try await request(api: "anthropic-messages", model: "alias")   // an alias echo is not a resolved model
+        try await request(api: "anthropic-messages", model: "claude-model")
+        try await request(api: "openai-responses", model: nil)
+        let report = ReportController(accounting: { _ in }); report.attach(model)
+        defer { report.suspend() }
+        await report.prepare()
+        let unresolved = try XCTUnwrap(report.modelSummaries?.first { $0.api == "anthropic-messages" && $0.model == nil })
+        let resolved = try XCTUnwrap(report.modelSummaries?.first { $0.model == "claude-model" })
+        XCTAssertEqual(unresolved.requests, 2)
+        report.narrow(toRoute: unresolved)
+        XCTAssertEqual(report.preferences.api, "anthropic-messages")
+        XCTAssertTrue(report.unreportedOnly)
+        await report.refresh()
+        XCTAssertEqual(report.snapshot?.selectedRequests, unresolved.requests, "The narrowed report lists exactly the route's requests")
+        XCTAssertEqual(report.modelSummaries?.map(\.id), [unresolved.id], "…and its routes are that one route")
+        report.narrow(toRoute: resolved)
+        XCTAssertFalse(report.unreportedOnly)
+        await report.refresh()
+        XCTAssertEqual(report.snapshot?.selectedRequests, 1)
+    }
+
+    /// Paging the request list replaced the rows but kept the total read with
+    /// the first page: "129–145 of 139".
+    @MainActor func testRequestPagerCountsWithTheTotalItsPageWasReadWith() {
+        let filter = DashboardFilter(from: Date(timeIntervalSince1970: 1_000), until: Date(timeIntervalSince1970: 2_000))
+        func row(_ index: Int) -> DashboardRequest {
+            DashboardRequest(id: "r\(index)", sessionID: "s", workspaceID: "w", wall: Date(timeIntervalSince1970: 1_500), purpose: "turn", api: "openai-responses", alias: "alias",
+                             effectiveModel: nil, identityStatus: "unreported", outcome: "completed", ttft: nil, streaming: nil, http: nil)
+        }
+        var snapshot = DashboardSnapshot(filter: filter, scopeCounts: DashboardCounts(), selectedRequests: 139, ttft: DashboardPercentiles(), streaming: DashboardPercentiles(),
+                                         http: DashboardPercentiles(), buckets: [], requests: (0..<128).map(row), offset: 0)
+        XCTAssertEqual(ReportPage.requestPageLabel(snapshot), "1–128 of 139")
+        snapshot.replaceRows(DashboardRequestPage(filter: filter, selectedRequests: 145, requests: (128..<145).map(row), offset: 128))
+        XCTAssertEqual(ReportPage.requestPageLabel(snapshot), "129–145 of 145")
+    }
+
+    /// "Cost by model" lists eight routes and the ring's legend four, both cut
+    /// from a list ranked by output tokens: an expensive route with little
+    /// output fell off the cost card.
+    @MainActor func testCostCardAndCostLegendRankRoutesByCost() {
+        var models = (0..<8).map { MonitorDistribution(id: "busy-\($0)", aliases: ["router"], tokens: Double(10_000 - $0), cost: 0.01, costShare: 0.01, requests: 10) }
+        models.append(MonitorDistribution(id: "expensive", aliases: ["router"], tokens: 10, cost: 5, costShare: 0.9, requests: 1))
+        XCTAssertEqual(ModelCostBreakdown.shown(models).first?.id, "expensive", "The costliest route leads the cost card")
+        XCTAssertEqual(ModelCostBreakdown.shown(models).count, 8)
+        XCTAssertEqual(ModelDistributionRing.legend(models, metric: .cost).first?.id, "expensive")
+        XCTAssertEqual(ModelDistributionRing.legend(models, metric: .tokens).first?.id, "busy-0", "The token view keeps its token ranking")
+    }
+
+    /// Resizing the report across its wide-layout breakpoint rebuilt the
+    /// throughput chart and routing map, resetting their zoom, metric and
+    /// "Show all": the two layouts were different view trees.
+    @MainActor func testThroughputChartKeepsItsIdentityAcrossTheWideLayoutBreakpoint() async throws {
+        let (model, _) = try makeModel()
+        try await model.reloadConfiguration(); try await record(model)
+        let report = ReportController(accounting: { _ in }); report.attach(model)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let hosted = NSHostingView(rootView: ReportPage(model: model, report: report))
+        window.contentView = hosted; window.orderFront(nil)
+        defer { report.suspend(); window.contentView = nil; window.close() }
+        for _ in 0..<300 where report.snapshot == nil || surfaces(hosted).isEmpty { try await Task.sleep(for: .milliseconds(10)); hosted.layoutSubtreeIfNeeded() }
+        let chart = try XCTUnwrap(surfaces(hosted).first)
+        for width in [1000.0, 1200, 1000] {
+            window.setContentSize(NSSize(width: width, height: 900))
+            for _ in 0..<5 { try await Task.sleep(for: .milliseconds(20)); hosted.layoutSubtreeIfNeeded() }
+            XCTAssertTrue(surfaces(hosted).first === chart, "At \(Int(width)) pt the chart is the same view, so its zoom and metric survive")
+        }
+    }
+
+    /// Dragging a range on the Requests/Cost/Latency/Cache chart wrote the
+    /// preview into the report controller at every pointer move, so the whole
+    /// report page re-rendered per move. Only the overlay should.
+    @MainActor func testDraggingARangeRedrawsOnlyTheSelectionOverlay() async throws {
+        let filter = DashboardFilter(from: Date(timeIntervalSince1970: 1_800_000_000), until: Date(timeIntervalSince1970: 1_800_003_600))
+        var commits: [DashboardBrush?] = []
+        BrushHostRenders.count = 0
+        let host = BrushHost(filter: filter, commit: { commits.append($0) }, store: BrushHostStore())
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 240), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let hosted = NSHostingView(rootView: host)
+        window.contentView = hosted; window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        for _ in 0..<10 { try await Task.sleep(for: .milliseconds(20)); hosted.layoutSubtreeIfNeeded() }
+        let rendered = BrushHostRenders.count
+        // Straight to the hosting view: a test app is rarely the active one,
+        // and an inactive window takes a first click as activation only.
+        func send(_ type: NSEvent.EventType, x: Double) throws {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 120), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+            switch type {
+            case .leftMouseDown: hosted.mouseDown(with: event)
+            case .leftMouseDragged: hosted.mouseDragged(with: event)
+            default: hosted.mouseUp(with: event)
+            }
+        }
+        try send(.leftMouseDown, x: 110)
+        for step in 1...20 {
+            try send(.leftMouseDragged, x: 110 + Double(step) * 10)
+            try await Task.sleep(for: .milliseconds(5)); hosted.layoutSubtreeIfNeeded()
+        }
+        try send(.leftMouseUp, x: 310)
+        for _ in 0..<10 { try await Task.sleep(for: .milliseconds(20)); hosted.layoutSubtreeIfNeeded() }
+        XCTAssertEqual(commits.count, 1, "The drag committed one range")
+        XCTAssertNotNil(commits.first ?? nil)
+        print("PERF range drag of 20 pointer moves re-rendered the chart's owner \(BrushHostRenders.count - rendered) times")
+        XCTAssertLessThanOrEqual(BrushHostRenders.count - rendered, 1, "The owner of the chart does not re-render per pointer move")
+    }
+
+    /// A short preset's retained averages slid out of view as the live clock
+    /// moved on: the chart's time axis followed the clock, its data did not.
+    @MainActor func testRetainedAverageChartKeepsItsOwnWindowWhenTheLiveClockMovesOn() async throws {
+        let from = Date(timeIntervalSince1970: 1_800_000_000), until = from.addingTimeInterval(900)
+        var measured = DashboardBucket(id: 0, start: from, end: from.addingTimeInterval(450), requests: 1)
+        measured.gateway = GatewayTotals(requests: 1)
+        measured.gateway.decodeMilliseconds = 3_000; measured.gateway.decodeOutputTokens = 300; measured.gateway.decodeSamples = 1
+        let snapshot = DashboardSnapshot(filter: DashboardFilter(from: from, until: until, bucketCount: 2), scopeCounts: DashboardCounts(dispatched: 1, completed: 1),
+                                         selectedRequests: 1, ttft: DashboardPercentiles(), streaming: DashboardPercentiles(), http: DashboardPercentiles(),
+                                         buckets: [measured, DashboardBucket(id: 1, start: from.addingTimeInterval(450), end: until)], requests: [], offset: 0)
+        var seconds = 1.0
+        let live = LiveActivityStore(now: { seconds }, wall: { until.addingTimeInterval(seconds) }, observeSleep: false)
+        defer { live.shutdown() }
+        let panel = ReportThroughputPanel(live: live, snapshot: snapshot, window: DashboardWindow(from: from, until: until, preset: .fifteenMinutes),
+                                          palette: MonitorModelPalette(), controls: { AnyView(EmptyView()) }, registerModels: { _ in })
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let hosted = NSHostingView(rootView: panel)
+        window.contentView = hosted; window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        // A full span after the retained window was read, with no refresh.
+        live.setVisible(true, owner: "test"); seconds = 900; live.tick()
+        for _ in 0..<20 { try await Task.sleep(for: .milliseconds(20)); hosted.layoutSubtreeIfNeeded() }
+        XCTAssertEqual(live.snapshot.observedAt, until.addingTimeInterval(900))
+        let domain = try XCTUnwrap(surfaces(hosted).first).domain
+        XCTAssertLessThanOrEqual(domain.lowerBound, from.addingTimeInterval(1), "The retained averages stay in view")
+        XCTAssertGreaterThanOrEqual(domain.upperBound, until.addingTimeInterval(-1))
+        live.setVisible(false, owner: "test")
+    }
+
+    /// The report used to stay "loading" after its figures appeared, while it
+    /// refreshed every open chat's retained totals; a range dragged meanwhile
+    /// was dropped. The chats' totals now refresh after the report, and only
+    /// when its reads expired metrics.
+    @MainActor func testReportIsReadyWhileChatTotalsRefreshAndKeepsARangeDraggedDuringARefresh() async throws {
+        let (model, _) = try makeModel()
+        try await model.reloadConfiguration()
+        try await model.traces.configure(quota: 1_048_576, bodyRetention: 100_000, metricRetention: 600.5)
+        try await record(model)
+        let gate = ReportGate(), probe = ReportQueryProbe()
+        var accountingRuns = 0
+        let report = ReportController(query: { try await probe.run($0, $1, $2) }, accounting: { _ in accountingRuns += 1; await gate.pass() })
+        report.attach(model)
+        defer { report.suspend() }
+        await report.prepare()
+        XCTAssertEqual(accountingRuns, 0, "Nothing expired, so the chats' totals are already current")
+        // The record's metrics expire; the next refresh's reads sweep them.
+        try await Task.sleep(for: .milliseconds(600))
+        await gate.arm()
+        let refresh = Task { await report.refresh() }
+        await gate.waitForBlock()
+        XCTAssertEqual(accountingRuns, 1)
+        XCTAssertNotNil(report.snapshot)
+        XCTAssertFalse(report.loading, "The report is ready once its own figures are published")
+        await gate.release(); await refresh.value
+        // A range dragged while a refresh runs is applied when it finishes.
+        await probe.blockNext()
+        let running = Task { await report.refresh() }
+        await probe.waitForBlock()
+        let window = try XCTUnwrap(report.snapshot).filter
+        let range = try XCTUnwrap(DashboardBrush(window.from.addingTimeInterval(60), window.until.addingTimeInterval(-60), in: window))
+        report.applyBrush(range)
+        XCTAssertEqual(report.brushPreview, range, "The dragged range stays on the chart")
+        await probe.release(); await running.value
+        for _ in 0..<200 where report.brush != range || report.loading { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(report.brush, range, "The range dragged during the refresh is applied after it")
+    }
+}
+
+@MainActor private enum BrushHostRenders { static var count = 0 }
+
+/// Stands in for the report controller: the chart's owner observes it, as
+/// the report page observes its controller. (Before the fix the drag preview
+/// was one of its published values, bound into the overlay: 20 pointer moves
+/// re-rendered the owner 21 times.)
+@MainActor private final class BrushHostStore: ObservableObject {
+    @Published var selection: DashboardBrush?
+}
+
+/// A chart with the report's drag-to-select overlay, owned by a view that
+/// counts its own renders.
+private struct BrushHost: View {
+    let filter: DashboardFilter
+    let commit: (DashboardBrush?) -> Void
+    @ObservedObject var store: BrushHostStore
+    var body: some View {
+        let _ = { BrushHostRenders.count += 1 }()
+        Chart { RuleMark(x: .value("Start", filter.from)) }
+            .chartXScale(domain: filter.from...filter.until)
+            .dashboardBrush(filter: filter, committed: store.selection, commit: commit)
+            .frame(width: 400, height: 200).padding(20)
+    }
+}
+
+/// Holds the next call that passes through it until released.
+private actor ReportGate {
+    private var armed = false, blocked = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+    func arm() { armed = true; blocked = false }
+    func pass() async {
+        guard armed else { return }
+        armed = false; blocked = true
+        entryWaiters.forEach { $0.resume() }; entryWaiters.removeAll()
+        await withCheckedContinuation { waiter = $0 }
+    }
+    func waitForBlock() async { if !blocked { await withCheckedContinuation { entryWaiters.append($0) } } }
+    func release() { waiter?.resume(); waiter = nil }
 }
 
 private actor ReportQueryProbe {

@@ -1,70 +1,585 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bello Agent — Native AI workspace for macOS | BelloWare</title>
-  <meta name="description" content="A native Mac app for AI conversations, coding tools and independent side discussions. Connect your LiteLLM gateway and inspect requests, cost, cache use and latency.">
-  <link rel="canonical" href="https://belloware.com/bello-agent.html">
-  <meta property="og:type" content="website">
-  <meta property="og:title" content="Bello Agent — Native AI workspace for macOS">
-  <meta property="og:description" content="Your projects, conversations and request insights. Built for the Mac, connected to your LiteLLM gateway.">
-  <meta property="og:url" content="https://belloware.com/bello-agent.html">
-  <meta property="og:image" content="https://belloware.com/assets/bello_agent_icon.png">
-  <style>
-    :root{color-scheme:light;--ink:#231d12;--muted:#655a46;--paper:#fbf6ea;--line:#ded4c0;--accent:#79532b}
-    *{box-sizing:border-box}body{margin:0;color:var(--ink);background:var(--paper);font:17px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    a{color:inherit}a:focus-visible,summary:focus-visible{outline:3px solid #805dce;outline-offset:5px}
-    nav{display:flex;align-items:center;justify-content:space-between;padding:24px max(24px,calc((100vw - 1100px)/2));border-bottom:1px solid var(--line)}
-    .brand{font-size:22px;font-weight:750;text-decoration:none}nav a:last-child{font-size:14px}
-    main{max-width:1100px;margin:auto;padding:64px 24px 80px}.hero{display:grid;grid-template-columns:1.6fr 1fr;gap:60px;align-items:center;margin-bottom:70px}
-    .eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:.16em;color:var(--accent);font-weight:700}.app-icon{width:96px;height:96px;border-radius:24px}
-    h1{font-size:clamp(42px,7vw,72px);line-height:1.08;letter-spacing:-.045em;margin:20px 0 24px}h2{font-size:30px;letter-spacing:-.025em;margin-top:0}h3{font-size:19px;margin:0 0 10px}
-    .lead{font-size:21px;color:var(--muted);max-width:640px}.download{display:inline-block;background:var(--ink);color:white;padding:14px 24px;border-radius:9px;text-decoration:none;font-weight:650;margin:16px 0 10px}
-    .details{font-size:13px;color:var(--muted)}.spec{background:#fffaf1;border:1px solid var(--line);padding:28px;border-radius:16px;box-shadow:0 18px 50px #5843230b}
-    .spec dl{margin:0}.spec dt{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-top:18px}.spec dd{margin:3px 0 0;font-weight:600}.spec dt:first-child{margin-top:0}
-    .features{display:grid;grid-template-columns:repeat(3,1fr);gap:30px;margin:30px 0 65px}.features article{border-top:1px solid var(--line);padding-top:22px}.features p{font-size:15px;color:var(--muted);margin-bottom:0}
-    .setup{display:grid;grid-template-columns:1fr 1.2fr;gap:50px;padding:35px 0;border-top:1px solid var(--line)}ol{padding-left:22px;margin-top:0}li{padding:0 0 16px 5px}
-    .privacy{font-size:15px;color:var(--muted);max-width:850px}footer{border-top:1px solid var(--line);padding:24px;text-align:center;font-size:13px;color:var(--muted)}
-    @media(max-width:720px){main{padding-top:24px}.download{font-size:15px;padding:14px 20px}.app-icon{width:64px;height:64px;border-radius:16px}h1{margin:16px 0 18px}.hero,.setup{grid-template-columns:1fr;gap:24px}.hero{margin-bottom:44px}.features{grid-template-columns:1fr;gap:24px}.spec{padding:22px}.lead{font-size:19px}}
-    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bello Agent — Native AI workspace for macOS | BelloWare</title>
+<meta name="description" content="A native Mac app for AI conversations, coding tools and side discussions. Connect your own LiteLLM gateway and inspect every request, token, cost and cache hit. Open source under the MIT License.">
+<link rel="canonical" href="https://belloware.com/bello-agent.html">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#FAF9F6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F0E0C" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="BelloWare">
+<meta property="og:title" content="Bello Agent — The AI workspace that shows its work">
+<meta property="og:description" content="A native Mac app for AI conversations and coding tools, connected to your own LiteLLM gateway. Every request, token and cost is one click away. Open source under the MIT License.">
+<meta property="og:url" content="https://belloware.com/bello-agent.html">
+<meta property="og:image" content="https://belloware.com/assets/bello_agent_icon.png">
+<meta property="og:image:alt" content="Bello Agent app icon">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Bello Agent — The AI workspace that shows its work">
+<meta name="twitter:description" content="A native Mac app for AI conversations and coding tools, connected to your own LiteLLM gateway. Every request, token and cost is one click away.">
+<meta name="twitter:image" content="https://belloware.com/assets/bello_agent_icon.png">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Bello Agent","url":"https://belloware.com/bello-agent.html","image":"https://belloware.com/assets/bello_agent_icon.png",
+"description":"A native Mac app for AI conversations, coding tools and side discussions, connected to your own LiteLLM gateway, with request, token and cost inspection.",
+"applicationCategory":"DeveloperApplication","operatingSystem":"macOS 14 or later","processorRequirements":"Apple Silicon","softwareVersion":"__VERSION__","downloadUrl":"__DOWNLOAD_URL__","fileSize":"__SIZE__ MiB",
+"license":"https://opensource.org/licenses/MIT","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"author":{"@type":"Organization","name":"BelloWare","url":"https://belloware.com"}}
+</script>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="assets/bello_agent_icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#FAF9F6;--card:#FFF;--well:#F6F4EF;--ink:#1A1814;--ink-2:#55504A;--ink-3:#6B655B;--line:#1a181417;--line-2:#1a181426;--y:#F5E050;--tile:#f5e05052;--tile-ink:#3A3000;--gold:#7A5E00;--brand:#B58900;--focus:#1F5FD6;--glow:#f5e05047;--glow-2:#f0964633;--ok:#3D8A57;--or:#d6752099;--amber:#C58A16;--shadow:0 1px 2px #281e0a0a,0 8px 28px -10px #281e0a1f;--sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--display:"Space Grotesk","Inter",sans-serif;--mac:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",sans-serif;--mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#0F0E0C;--card:#181714;--well:#12110F;--ink:#F2EFE8;--ink-2:#BDB6AA;--ink-3:#968F83;--line:#ffffff14;--line-2:#ffffff24;--tile:#f5e0501f;--tile-ink:#F5E050;--gold:#F5E050;--brand:#F5E050;--focus:#8AB4FF;--glow:#f5e0501f;--glow-2:#f096461a;--ok:#7CC48F;--or:#f0a052b2;--amber:#E3B15C;--shadow:inset 0 1px 0 #ffffff08,0 12px 32px -12px #00000099}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+@media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:inherit;text-underline-offset:3px;text-decoration-thickness:1px}
+a:hover{text-decoration-thickness:2px}
+:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+p a:focus-visible,li a:focus-visible{border-radius:4px}
+svg{flex:none;width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.skip{position:absolute;left:16px;top:-60px;z-index:50;padding:10px 14px;border-radius:10px;background:var(--ink);color:var(--bg);font-weight:600;text-decoration:none}
+.skip:focus{top:12px}
+.wrap{width:min(1120px,100% - 48px);margin-inline:auto}
+section[id]{scroll-margin-top:84px}
+h1,h2,h3{font-family:var(--display);color:var(--ink);text-wrap:balance}
+.top{position:sticky;top:0;z-index:20;background:var(--bg);background:color-mix(in srgb,var(--bg) 82%,transparent);-webkit-backdrop-filter:saturate(1.6) blur(14px);backdrop-filter:saturate(1.6) blur(14px);border-bottom:1px solid var(--line)}
+.nav{display:flex;align-items:center;justify-content:space-between;gap:16px;height:60px}
+.logo{font:700 21px/1 var(--display);letter-spacing:-.03em;text-decoration:none}
+.logo span{color:var(--brand)}
+.links{display:flex;align-items:center;gap:4px;font-size:14.5px;font-weight:500}
+.links a{padding:8px 12px;border-radius:999px;color:var(--ink-2);text-decoration:none}
+.links a:hover{color:var(--ink);background:var(--line)}
+.links .nav-dl,.links .nav-dl:hover{margin-left:8px;padding:8px 16px;background:var(--ink);color:var(--bg)}
+.links .nav-dl:hover{opacity:.88}
+.hero{position:relative;isolation:isolate;overflow-x:hidden;overflow-x:clip;padding:60px 0 0;text-align:center}
+.hero::before{content:"";position:absolute;z-index:-1;left:50%;top:-300px;width:1240px;height:820px;transform:translateX(-50%);background:radial-gradient(closest-side,var(--glow),#f5e05000);pointer-events:none}
+.app-icon{display:block;width:96px;height:96px;margin:0 auto 24px;border-radius:22px;overflow:hidden;box-shadow:0 0 0 1px #0000000d,0 2px 4px #3c230a14,0 16px 36px -10px #d6752073}
+.app-icon img{display:block;width:108px;height:108px;max-width:none;margin:-6px}
+h1{margin:0 auto;max-width:900px;font-size:clamp(42px,5.8vw,74px);line-height:1.02;letter-spacing:-.045em}
+.kicker{display:block;margin-bottom:14px;font-size:20px;line-height:1.2;letter-spacing:-.01em;font-weight:600;color:var(--ink-2)}
+.mark{background:linear-gradient(transparent 62%,#f5e050bf 62% 90%,transparent 90%);padding:0 .06em;-webkit-box-decoration-break:clone;box-decoration-break:clone}
+.lead{margin:22px auto 0;max-width:640px;font-size:20px;line-height:1.55;color:var(--ink-2);text-wrap:pretty}
+.dl{display:inline-flex;align-items:center;gap:11px;min-height:56px;margin-top:30px;padding:12px 26px 12px 22px;border-radius:15px;background:linear-gradient(#2E2B25,#15130F);color:#FFF;font-size:17px;font-weight:600;text-decoration:none;box-shadow:inset 0 1px 0 #ffffff24,0 1px 2px #00000038,0 14px 30px -12px #15130f8c;transition:transform .18s ease,filter .18s ease}
+.dl:hover{transform:translateY(-1px);filter:brightness(1.12)}
+.dl svg{width:20px;height:20px;stroke-width:2}
+.meta{margin:14px 0 0;font-size:14.5px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.trust{display:flex;flex-wrap:wrap;justify-content:center;gap:8px 22px;margin:14px 0 0;padding:0;list-style:none;font-size:14px;color:var(--ink-2)}
+.trust li{display:flex;align-items:center;gap:7px}
+.trust svg,.req svg{width:16px;height:16px;color:var(--ink-3)}
+.req{display:inline-flex;align-items:center;gap:8px;margin:18px 0 0;padding:7px 14px 7px 11px;border-radius:999px;background:var(--card);border:1px solid var(--line);font-size:14px;color:var(--ink-2)}
+.req svg{color:var(--gold)}
+.show{position:relative;margin:52px 0 0}
+.show::before{content:"";position:absolute;z-index:-1;inset:10% 4% 0;background:radial-gradient(50% 60% at 28% 40%,var(--glow),transparent 72%),radial-gradient(46% 56% at 74% 58%,var(--glow-2),transparent 72%);filter:blur(36px);pointer-events:none}
+.show figcaption{max-width:640px;margin:22px auto 0;font-size:14px;line-height:1.5;color:var(--ink-3)}
+.win{--w-side:#F6F1EA;--w-bg:#FCF9F5;--w-sf:#FFF;--w-ink:#1F1B17;--w-2:#6F675E;--w-3:#9E958A;--w-hair:#00000013;--w-hair2:#00000021;--w-fill:#0000000e;--w-acc:#984709;--w-bar:#984709bf;--w-brand:#D67520;--w-soft:#d6752021;--w-user:#F8ECDF;--w-code:#F3EEE7;--w-ok:#3D8A57;--w-pur:#7A57B8;--w-rep:#ffffff8c;display:grid;grid-template-columns:236px minmax(0,1fr);border-radius:13px;overflow:hidden;background:var(--w-bg);color:var(--w-ink);font:13px/1.45 var(--mac);font-variant-numeric:tabular-nums;text-align:left;box-shadow:0 0 0 .5px #00000033,0 1px 2px #0000000f,0 30px 70px -24px #3a280c61,0 70px 140px -60px #3a280c4c}
+@media (prefers-color-scheme:dark){.win{--w-side:#1E1B18;--w-bg:#26221E;--w-sf:#2E2925;--w-ink:#F1ECE5;--w-2:#B0A79C;--w-3:#7C7469;--w-hair:#ffffff17;--w-hair2:#ffffff29;--w-fill:#ffffff14;--w-acc:#F0A052;--w-bar:#f0a052bf;--w-brand:#F0A052;--w-soft:#f0a0522e;--w-user:#3A3129;--w-code:#211D1A;--w-ok:#7CC48F;--w-pur:#B39CF5;--w-rep:#2e29258c;box-shadow:0 0 0 1px #ffffff1a,0 30px 80px -20px #000000cc}}
+.win svg{width:14px;height:14px}
+.tbar{display:none}
+.lights{display:flex;gap:8px}
+.lights i{width:12px;height:12px;border-radius:50%;background:#FF5F57;box-shadow:inset 0 0 0 .5px #00000026}
+.lights i+i{background:#FEBC2E}
+.lights i+i+i{background:#28C840}
+.side{display:flex;flex-direction:column;gap:1px;min-width:0;overflow:hidden;padding:15px 10px 10px;background:var(--w-side);border-right:1px solid var(--w-hair)}
+.side .lights{padding:0 6px 20px}
+.sb-h{display:flex;align-items:center;gap:4px;padding:0 4px 8px 8px;font-size:10.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--w-3)}
+.sb-h span{flex:1}
+.ib{display:grid;place-items:center;width:24px;height:24px;border-radius:7px;color:var(--w-2)}
+.ib.on{background:var(--w-fill);color:var(--w-acc)}
+.sb-s{display:flex;align-items:center;gap:7px;height:29px;margin:0 2px 10px;padding:0 9px;border-radius:8px;background:var(--w-sf);box-shadow:0 0 0 1px var(--w-hair);color:var(--w-3);white-space:nowrap}
+.pj{display:flex;align-items:center;gap:7px;height:30px;padding:0 6px;font-weight:600;white-space:nowrap}
+.pj svg{color:var(--w-2)}
+.pj .ch{width:10px;height:10px;stroke-width:2.4;color:var(--w-3)}
+.shut .ch{transform:rotate(-90deg)}
+.pa{display:flex;gap:8px;margin-left:auto}
+.pa svg{width:13px;height:13px;color:var(--w-3)}
+.ct{position:relative;display:flex;gap:9px;padding:6px 10px 6px 13px;border-radius:8px}
+.ct>svg{margin-top:2px;color:var(--w-2)}
+.ct div{min-width:0}
+.ct b,.ct small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ct b{font-weight:500}
+.ct small{font-size:11.5px;color:var(--w-2)}
+.ct em{font-style:normal;color:var(--w-acc)}
+.ct.on{background:var(--w-soft)}
+.ct.on b{font-weight:600}
+.ct.on>svg{color:var(--w-brand)}
+.ct.kid{padding-left:30px}
+.ct.new{padding-right:26px}
+.new:after{content:"";position:absolute;right:11px;top:12px;width:7px;height:7px;border-radius:50%;background:var(--w-brand)}
+.sb-f{display:flex;gap:14px;margin-top:auto;padding:12px 8px 2px;border-top:1px solid var(--w-hair);color:var(--w-2)}
+.sb-f svg:last-child{margin-left:auto}
+.main{display:flex;flex-direction:column;min-width:0}
+.tx{flex:1;width:100%;max-width:640px;margin:0 auto;padding:30px 26px 18px}
+.u{width:fit-content;max-width:86%;margin:0 0 20px auto;padding:9px 15px;border-radius:15px;background:var(--w-user);font-size:13.5px}
+.fold{display:flex;align-items:center;gap:6px;height:25px;margin-bottom:5px;border-bottom:1px solid var(--w-hair);font-weight:500;color:var(--w-2)}
+.fold svg{width:10px;height:10px;stroke-width:2.4;color:var(--w-3)}
+.wr{display:flex;align-items:center;height:24px;color:var(--w-2);white-space:nowrap}
+.wr svg{margin:0 6px 0 1px;color:var(--w-3)}
+.wr i{flex:none;width:2px;height:2px;margin:0 8px;border-radius:1px;background:var(--w-3)}
+.wr span{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:12.5px;color:var(--w-3)}
+.wr .x{margin-left:8px}
+.wr .e{margin-left:auto;padding-left:8px;font-size:11.5px}
+.ans{margin:16px 0 14px;font-size:13.5px;line-height:1.55}
+.ans p{margin:0 0 8px}
+.ans ul{margin:0 0 8px;padding-left:20px}
+.ans li{margin:3px 0;padding-left:2px}
+.ans li::marker{color:var(--w-3)}
+.ans code{padding:1px 5px;border-radius:5px;background:var(--w-code);box-shadow:inset 0 0 0 1px var(--w-hair);font:12px var(--mono)}
+.rp{padding:7px 10px 8px;border-radius:8px;background:var(--w-rep);box-shadow:inset 0 0 0 1px var(--w-hair)}
+.rp-h{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:3px 8px;font-size:11px;font-weight:500;color:var(--w-2)}
+.rp-h>span{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.okc{color:var(--w-ok)}
+.rp-id{color:var(--w-3)}
+.rp-id i{font:400 10.5px var(--mac);color:var(--w-2)}
+.rp-id b{font-weight:500;color:var(--w-ink)}
+.rp-id svg{width:13px;height:13px}
+.rp-m{display:grid;grid-template-columns:150fr 185fr 185fr;gap:6px 14px;margin-top:6px}
+.rp-m p{margin:0;font-size:11px;font-weight:500;white-space:nowrap}
+.rp-m p span{margin-right:5px;color:var(--w-3)}
+.rp-m small{display:flex;align-items:center;gap:3px;font-size:9.5px;line-height:1.5;color:var(--w-2);white-space:nowrap}
+.rp-m .ai{font-size:10px}
+.bar{display:block;height:4px;margin:3px 0;border-radius:2px;overflow:hidden;background:var(--w-bar)}
+.bar b{display:block;height:100%;background:var(--w-ok)}
+.rp-m small i{width:4px;height:4px;border-radius:50%;background:var(--w-bar)}
+.rp-m small i.g{background:var(--w-ok)}
+.bar b.p,.rp-m small i.p{background:var(--w-pur)}
+.cp{padding:0 16px 10px}
+.cp-box{padding:12px 12px 10px 15px;border-radius:14px;background:var(--w-sf);box-shadow:0 0 0 1px var(--w-hair),0 2px 10px #0000000a}
+.cp-t{margin:0 0 14px;font-size:13.5px}
+.cp-b{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.cp-b .gap{flex:1}
+.cmd{font-size:14px}
+.pill{display:flex;align-items:center;gap:6px;height:26px;padding:0 8px 0 9px;border-radius:13px;box-shadow:inset 0 0 0 1px var(--w-hair2);font-size:12px;font-weight:500}
+.pill svg{color:var(--w-2)}
+.pill .ud{width:10px;height:10px;stroke-width:2.2;color:var(--w-3)}
+.pill.ef{background:var(--w-soft);box-shadow:inset 0 0 0 1px #d6752080}
+.pill.ef svg:first-child{color:var(--w-acc)}
+.send{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--w-brand);color:#FFF}
+.send svg{stroke-width:2.4}
+.st{display:flex;flex-wrap:wrap;gap:4px 18px;padding:9px 6px 0;font-size:11.5px;color:var(--w-2)}
+.st span{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.st svg{width:13px;height:13px;color:var(--w-3)}
+svg.ring{width:13px;height:13px;stroke-width:2.2}
+.ring .t{stroke:var(--w-fill,var(--line-2))}
+.ring .a{stroke:var(--w-brand,#D67520)}
+.sec{padding:128px 0 0}
+.head{max-width:680px}
+.head.c{margin-inline:auto;text-align:center}
+.eyebrow{display:inline-flex;align-items:center;gap:10px;margin:0;font-size:12.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--gold)}
+.eyebrow::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--y);box-shadow:0 0 0 4px #f5e05047}
+h2{margin:14px 0 0;font-size:clamp(32px,4vw,48px);line-height:1.06;letter-spacing:-.035em}
+.sub{margin:18px 0 0;font-size:18px;line-height:1.6;color:var(--ink-2);text-wrap:pretty}
+.head.c .sub{margin-inline:auto;max-width:600px}
+.glance{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:88px 0 0;border-block:1px solid var(--line)}
+.glance div{padding:24px 24px 26px 0}
+.glance div+div{padding-left:24px;border-left:1px solid var(--line)}
+.glance dt{font-size:12.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+.glance dd{margin:6px 0 0;font-size:15.5px;line-height:1.45;font-weight:500}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;margin-top:56px}
+.card{display:flex;flex-direction:column;padding:28px 28px 24px;border-radius:22px;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);transition:transform .2s ease}
+@media (hover:hover){.grid .card:hover{transform:translateY(-2px)}}
+.tile{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:var(--tile);color:var(--tile-ink)}
+.tile svg{width:21px;height:21px}
+.card h3{margin:20px 0 8px;font-size:20px;line-height:1.25;letter-spacing:-.02em;font-weight:600}
+.card p{margin:0;font-size:15.5px;line-height:1.6;color:var(--ink-2);text-wrap:pretty}
+.spec{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:auto;padding-top:22px;font:12px/1.2 var(--mac);color:var(--ink-2)}
+.spec>span{display:flex;align-items:center;gap:6px;min-height:28px;padding:5px 10px;border-radius:9px;background:var(--well);box-shadow:inset 0 0 0 1px var(--line);white-space:nowrap}
+.spec svg{width:14px;height:14px;color:var(--ink-3)}
+.keys kbd{display:grid;place-items:center;min-width:20px;height:20px;border-radius:5px;background:var(--card);box-shadow:inset 0 0 0 1px var(--line-2),0 1px 0 var(--line-2);font:11.5px var(--mac);color:var(--ink)}
+.keys b{font-weight:500;margin:0 6px 0 1px}
+.keys b:last-child{margin-right:0}
+.dotc{width:7px;height:7px;border-radius:50%;background:var(--amber)}
+.spec .seg{gap:2px;padding:3px}
+.seg b{padding:4px 9px;border-radius:6px;font-weight:500}
+.seg .on{background:var(--card);color:var(--ink);box-shadow:0 0 0 1px var(--line),0 1px 2px #0000000f}
+.spec .meter{flex:1;flex-direction:column;align-items:stretch;gap:6px;padding:9px 12px}
+.meter>b{font-weight:500;color:var(--ink)}
+.meter>b span{margin-right:6px;font-weight:400;color:var(--ink-3)}
+.meter .bar{height:5px;margin:0;border-radius:3px;background:var(--or)}
+.meter .bar b{width:85.55%;background:var(--ok)}
+.meter small{display:flex;gap:12px;font-size:11px}
+.meter small i{display:inline-block;width:6px;height:6px;margin-right:5px;border-radius:50%;background:var(--ok);vertical-align:1px}
+.meter small i.o{background:var(--or)}
+svg.donut{width:20px;height:20px;stroke-width:4;transform:rotate(-90deg)}
+.smooth{display:flex;align-items:center;gap:16px;margin-top:20px;padding:20px 26px;border-radius:18px;border:1px solid var(--line);background:linear-gradient(100deg,#f5e05033,#f5e05000 55%),var(--card)}
+.smooth p{margin:0;font-size:15.5px;color:var(--ink-2)}
+.smooth strong{color:var(--ink);font-weight:600}
+.smooth .tile{width:38px;height:38px;border-radius:11px}
+.start{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:72px;align-items:start}
+.start .head{position:sticky;top:100px}
+.note{margin:26px 0 0;padding:16px 18px;border-radius:14px;background:var(--card);border:1px solid var(--line);font-size:14.5px;line-height:1.55;color:var(--ink-2)}
+.note strong{color:var(--ink);font-weight:600}
+.steps{margin:0;padding:0;list-style:none;counter-reset:s}
+.steps li{display:grid;grid-template-columns:44px minmax(0,1fr);gap:20px;padding:26px 0;border-top:1px solid var(--line)}
+.steps li:last-child{border-bottom:1px solid var(--line)}
+.steps li::before{counter-increment:s;content:counter(s);display:grid;place-items:center;width:40px;height:40px;border-radius:50%;background:var(--card);border:1px solid var(--line-2);font:600 16px/1 var(--display)}
+.steps h3{margin:7px 0 6px;font-size:19px;letter-spacing:-.015em;font-weight:600}
+.steps p{margin:0;font-size:15.5px;color:var(--ink-2);text-wrap:pretty}
+.priv{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;margin-top:52px}
+.priv .card{padding:28px}
+.priv h3{margin-top:18px}
+.priv ul{margin:6px 0 0;padding:0;list-style:none}
+.priv li{position:relative;padding:9px 0 9px 26px;font-size:15px;line-height:1.55;color:var(--ink-2)}
+.priv li+li{border-top:1px solid var(--line)}
+.priv li svg{position:absolute;left:0;top:12px;width:16px;height:16px;stroke-width:2;color:var(--ink-3)}
+.priv .warn{color:var(--ink)}
+.priv .warn svg{color:var(--gold)}
+.oss{position:relative;isolation:isolate;overflow:hidden;display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:56px;align-items:center;padding:60px;border-radius:30px;background:#15130F;color:#F2EFE8}
+.oss::before{content:"";position:absolute;z-index:-1;right:-160px;top:-220px;width:560px;height:560px;background:radial-gradient(closest-side,#f5e05033,transparent);pointer-events:none}
+.oss h2{color:#F7F4EE}
+.oss .eyebrow{color:#F5E050}
+.oss .sub{color:#C4BDB1}
+.oss .sub a{color:#F7F4EE}
+.oss :focus-visible{outline-color:#8AB4FF}
+.gh{display:inline-flex;align-items:center;gap:10px;margin-top:30px;padding:13px 20px;border-radius:13px;background:#F5E050;color:#15130F;font-weight:600;text-decoration:none;box-shadow:inset 0 1px 0 #ffffff73,0 10px 26px -12px #f5e05099;transition:transform .18s ease}
+.gh:hover{transform:translateY(-1px)}
+.repo{border-radius:18px;background:#ffffff0a;border:1px solid #ffffff17}
+.repo-h{display:flex;align-items:center;gap:10px;margin:0;padding:16px 20px;border-bottom:1px solid #ffffff14;font:600 14px/1.3 var(--mono);color:#F7F4EE}
+.repo-h span{margin-left:auto;padding:3px 9px;white-space:nowrap;border-radius:999px;background:#f5e05024;color:#F5E050;font:600 12px/1.4 var(--sans)}
+.repo ul{margin:0;padding:6px 0;list-style:none}
+.repo li{display:grid;grid-template-columns:18px minmax(0,1fr);column-gap:12px;padding:11px 20px;font-size:13.5px;line-height:1.45;color:#A9A296}
+.repo li+li{border-top:1px solid #ffffff0f}
+.repo li svg{grid-row:span 2;margin-top:2px;width:17px;height:17px}
+.repo b{font:500 13.5px/1.4 var(--mono);color:#EDE9E1}
+.foot{margin-top:128px;padding:34px 0 44px;border-top:1px solid var(--line);text-align:center;font-size:14px;color:var(--ink-2)}
+.foot p{margin:0}
+.foot .sep{margin:0 4px;color:var(--ink-3)}
+.foot a,.foot .v{white-space:nowrap}
+.foot .fine{margin-top:8px;font-size:13px;color:var(--ink-3)}
+@media (prefers-color-scheme:dark){
+.mark{background:none;color:#F5E050;padding:0}
+.dl{background:linear-gradient(#FAEA73,#EED63E);color:#15130F;box-shadow:inset 0 1px 0 #ffffff8c,0 14px 34px -14px #f5e05080}
+.dl:hover{filter:brightness(1.05)}
+.app-icon{box-shadow:0 0 0 1px #ffffff14,0 18px 44px -12px #f0a05259}
+.oss{background:#1A1915;box-shadow:inset 0 0 0 1px #ffffff14}
+.smooth{background:linear-gradient(100deg,#f5e05017,#f5e05000 55%),var(--card)}
+.seg .on{box-shadow:0 0 0 1px var(--line-2)}
+}
+@media (max-width:1060px){
+.win{grid-template-columns:208px minmax(0,1fr)}
+.cn{display:none}
+.grid,.priv,.glance{grid-template-columns:repeat(2,minmax(0,1fr))}
+.glance div:nth-child(3){padding-left:0;border-left:0}
+.glance div:nth-child(n+3){border-top:1px solid var(--line)}
+.start{gap:48px}
+.oss{padding:48px;gap:40px}
+}
+@media (max-width:860px){
+.links a:not(.nav-dl){display:none}
+.win{grid-template-columns:196px minmax(0,1fr)}
+.pa{display:none}
+.ct small{font-size:11px}
+.tx{padding:24px 20px 16px}
+.rp-m{grid-template-columns:1fr 1fr}
+.rp-m>div:first-child{grid-column:1/-1;display:flex;align-items:baseline;gap:10px}
+.start,.oss{grid-template-columns:1fr}
+.start .head{position:static}
+.sec{padding-top:104px}
+}
+@media (max-width:640px){
+.wrap{width:calc(100% - 32px)}
+.hero{padding-top:44px}
+.hero::before{width:760px;height:640px;top:-260px;opacity:.75}
+.show::before{display:none}
+.kicker{font-size:18px}
+.lead{font-size:18px}
+.dl{font-size:16px}
+.req{font-size:13.5px}
+.show{margin-top:48px}
+.win{grid-template-columns:1fr;border-radius:11px}
+.side,.wr{display:none}
+.tbar{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;height:38px;padding:0 12px;background:var(--w-side);border-bottom:1px solid var(--w-hair);font-size:12.5px;font-weight:600}
+.tx{padding:18px 14px 12px}
+.u{max-width:92%}
+.fold svg{transform:rotate(-90deg)}
+.ans{margin-top:14px}
+.rp-m small{font-size:9px}
+.cp{padding:0 10px 10px}
+.cp-box{padding:11px 10px 9px 12px}
+.st span:nth-child(3){display:none}
+.sec{padding-top:88px}
+.glance{margin-top:64px;grid-template-columns:1fr}
+.glance div,.glance div+div{padding:18px 0;border-left:0}
+.glance div+div{border-top:1px solid var(--line)}
+.grid,.priv{grid-template-columns:1fr;margin-top:40px}
+.card,.priv .card{padding:24px 22px 22px}
+.smooth{align-items:flex-start;padding:18px 20px}
+.steps li{grid-template-columns:36px minmax(0,1fr);gap:16px;padding:22px 0}
+.steps li::before{width:34px;height:34px;font-size:15px}
+.steps h3{margin-top:4px}
+.oss{padding:36px 22px;border-radius:24px}
+.repo li{padding:10px 16px}
+.repo-h{gap:8px;padding:14px 16px;font-size:13px}
+.repo-h span{padding:3px 8px;font-size:11.5px}
+.foot{margin-top:96px}
+.foot .v{display:block;margin-bottom:4px}
+.v+.sep{display:none}
+}
+@media (max-width:350px){
+.rp-m{grid-template-columns:1fr}
+.cp-b .ib{display:none}
+}
+@media (prefers-reduced-motion:reduce){*,::before,::after{transition:none!important;animation:none!important}}
+</style>
 </head>
 <body>
-  <nav aria-label="Main navigation"><a class="brand" href="/">BelloWare</a><a href="/">All products</a></nav>
-  <main>
-    <section class="hero" aria-labelledby="title">
-      <div>
-        <img class="app-icon" src="assets/bello_agent_icon.png" alt="Bello Agent" width="96" height="96">
-        <p class="eyebrow">Mac native · AI conversations &amp; tools</p>
-        <h1 id="title">Bello Agent.<br>Room to think.</h1>
-        <p class="lead">AI conversations, coding tools and independent side discussions in a native Mac app, with request details close at hand.</p>
-        <a class="download" href="__DOWNLOAD_URL__">Download Bello Agent __VERSION__</a>
-        <div class="details">__SIZE__ MiB · Apple Silicon · macOS 14 or later<br>Developer ID signed and notarized · Updates through Sparkle<br>Open source under the MIT License · <a href="https://github.com/BelloWare/BelloAgent">Source on GitHub</a></div>
-      </div>
-      <aside class="spec" aria-label="At a glance">
-        <dl><dt>Bring your gateway</dt><dd>LiteLLM endpoint + API key</dd><dt>Responses API</dt><dd>Tools, streaming &amp; routed models</dd><dt>Keep your flow</dt><dd>Native editing, queues &amp; side chats</dd><dt>Stay informed from the menu bar</dt><dd>Running work, model distribution &amp; usage</dd><dt>Open source</dt><dd>MIT licensed on GitHub</dd></dl>
-      </aside>
-    </section>
-    <section aria-labelledby="features"><p class="eyebrow">An inspectable project</p><h2 id="features">From a question to a complete tool run.</h2>
-      <div class="features">
-        <article><h3>Built around the Mac</h3><p>Native message composers, familiar selection and undo, saved drafts, searchable chat history and a readable Markdown transcript. Group chats in collapsible projects, each with one or more trusted folders.</p></article>
-        <article><h3>Keep the main thread moving</h3><p>Pin frequent chats, rename sessions, and archive conversations without deleting their history. Delete an archived chat when you choose to. Open a saved child side conversation, fork the same context into another chat, queue follow-ups or steer between complete tool turns.</p></article>
-        <article><h3>Tools with clear outcomes</h3><p>Work with files, shell commands, selected skills and configured MCP tools. A compact work row keeps details close while answer text stays in place; the Turn summary appears when the task ends. Choose skills beside the text cursor, and disable skills only in Bello Agent without changing Codex. Interrupted operations remain visible and aren’t automatically repeated.</p></article>
-        <article><h3>Inspect the exchange</h3><p>Open a message’s details to see its model, cost, timing, headers and retained request and response bodies. Inspect streaming responses as one expandable JSON response or as their original events. Capture is on by default for 30 days. Authentication headers are masked, and known credentials in request bodies use labeled hashes.</p></article>
-        <article><h3>A clear view of usage</h3><p>Compact turn reports show precise costs, AI and tool time, requested and returned models, and token shares for cached input and reasoning output. Open Info for a brief summary and searchable request/response details. A session’s usage window adds historical speed and model/cost distributions; the Usage Report page covers requests across sessions.</p></article>
-        <article><h3>Activity in your menu bar</h3><p>Left or right click the menu bar icon for historical output speed, consumed tokens, reported cost with its reasoning portion, and model distribution. Switch to Activity for running work. Output speed uses gateway-reported tokens divided by request duration. Auto-router aliases stay visible alongside the models resolved by the gateway. Missing reports remain explicit.</p></article>
-        <article><h3>Choose the model for each chat</h3><p>Switch models and reasoning effort in the composer. The included Bello catalog supplies the model list, supported efforts and context limits; an optional custom catalog replaces it. Refresh reloads the saved catalog source and shows its update time. Older chats can choose a saved custom catalog without changing their request connection. Gateway fallback models are off by default and can be enabled per connection.</p></article>
-        <article><h3>Copy and revise messages</h3><p>Copy individual code blocks or Markdown sections, or edit a retained user message in a compacted chat or saved fork. The new reply uses the earlier context, while original history remains preserved. Right-click a session or open its “…” menu to copy its ID and retained conversation-file reference for inspection in another local chat.</p></article>
-        <article><h3>Keep context in view</h3><p>Context is calculated locally when a safe idle chat opens, without a model request. Click the circular indicator to inspect prepared instructions, messages, tools and request JSON. Compaction progress and its successful result appear above the composer; context usage remains an explicitly labeled estimate.</p></article>
-      </div>
-    </section>
-    <section class="setup" aria-labelledby="setup"><div><p class="eyebrow">Get started</p><h2 id="setup">Your connection.<br>Your project.</h2><p class="details">Bello Agent requires your own LiteLLM gateway. Model availability, routing, reported telemetry and usage charges depend on that gateway.</p></div>
-      <ol><li>Open the DMG and drag Bello Agent into Applications.</li><li>Configure your LiteLLM Responses endpoint, API key and model alias. Optionally replace the included model catalog with your own catalog URL.</li><li>Choose and trust your project. Test &amp; Start checks the selected model with a small request before opening your first chat.</li><li>Click Info on a turn report to inspect and search captured request/response bodies and headers, or open the Usage Report page for more requests. Adjust capture and retention in Settings.</li></ol>
-    </section>
-    <section class="privacy" aria-labelledby="source"><h2 id="source">Open source</h2><p>Bello Agent is open source under the MIT License. The application, its supervised Swift helper, the native SwiftUI/AppKit transcript, the build and release scripts and the validation record of every release are at <a href="https://github.com/BelloWare/BelloAgent">github.com/BelloWare/BelloAgent</a>. Building, running and the whole test suite need no credentials; signing and notarization use ones the repository does not carry.</p></section>
-    <section class="privacy" aria-labelledby="storage"><h2 id="storage">Local storage</h2><p>Credentials and app configuration are kept in the native Keychain vault. HTTP request and response capture is enabled by default with 30-day body retention, subject to your storage quota and settings. New bodies are stored locally without encryption. Authentication headers are masked; longer request tokens retain only their final four characters. Known credentials found in request bodies are replaced with SHA-256 fingerprints. Bodies can still contain your prompts, files and tool data. Existing encrypted captures remain readable.</p><p>Search chat history, or use the turn popup to search within a captured request or response and its headers. Gateway response-cache hits and provider prompt-cache tokens are shown separately. Cost totals include only values the gateway reports, with coverage counts.</p></section>
-  </main>
-  <footer>Bello Agent __VERSION__ · <a href="assets/bello_agent.appcast.xml">Update feed</a> · <a href="https://github.com/BelloWare/BelloAgent">Source on GitHub</a> · <a href="/">BelloWare</a></footer>
+<svg style="position:absolute;width:0;height:0" aria-hidden="true" focusable="false">
+<symbol id="i-dl" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.3 5.5 5.9v5.3c0 4 2.7 7.6 6.5 8.9 3.8-1.3 6.5-4.9 6.5-8.9V5.9z"/><path d="m9.3 12 2 2 3.6-3.7"/></symbol>
+<symbol id="i-sync" viewBox="0 0 24 24"><path d="M19 12a7 7 0 0 1-12.2 4.7M5 12a7 7 0 0 1 12.2-4.7"/><path d="M17.6 3.6v3.8h-3.8M6.4 20.4v-3.8h3.8"/></symbol>
+<symbol id="i-code" viewBox="0 0 24 24"><path d="m8.5 7.5-4.5 4.5 4.5 4.5m7-9 4.5 4.5-4.5 4.5m-2-11-3 13"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.2M12 7.9v.1"/></symbol>
+<symbol id="i-win" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M9.5 4.5v15M5.9 8.5h1.3M5.9 11.5h1.3"/></symbol>
+<symbol id="i-term" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="m7.5 9.5 3 2.5-3 2.5m5 .5h4"/></symbol>
+<symbol id="i-scope" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.2"/><path d="m15.2 15.2 4.8 4.8M8 9h5M8 12h3"/></symbol>
+<symbol id="i-bars" viewBox="0 0 24 24"><path d="M4 20h16"/><rect x="5.5" y="11" width="3" height="6" rx="1"/><rect x="10.5" y="6" width="3" height="11" rx="1"/><rect x="15.5" y="9" width="3" height="8" rx="1"/></symbol>
+<symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4.6 17a8 8 0 1 1 14.8 0"/><path d="m12 14.5 3.6-4"/><circle cx="12" cy="14.5" r="1.2"/></symbol>
+<symbol id="i-chip" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3.5V7m4-3.5V7m-4 10v3.5m4-3.5v3.5M3.5 10H7m-3.5 4H7m10-4h3.5M17 14h3.5"/></symbol>
+<symbol id="i-read" viewBox="0 0 24 24"><path d="M4 6h9M4 10h9M4 14h16M4 18h16"/><path d="M16 3.5v7l2-1.6 2 1.6v-7z"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5M12 14.5v2"/></symbol>
+<symbol id="i-mask" viewBox="0 0 24 24"><path d="M3 12s3.3-6 9-6c1.4 0 2.6.3 3.7.8M21 12s-3.3 6-9 6c-1.4 0-2.6-.3-3.7-.8M4 20 20 4"/><path d="M9.9 14.1a3 3 0 0 1 4.2-4.2"/></symbol>
+<symbol id="i-receipt" viewBox="0 0 24 24"><path d="M6 3.5h12v17l-2.5-1.5-2 1.5-1.5-1.2-1.5 1.2-2-1.5L6 20.5z"/><path d="M9 8h6M9 11.5h6M9 15h3.5"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+<symbol id="m-cmp" viewBox="0 0 24 24"><path d="M12 4.5H6.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V12"/><path d="m18.5 3.5 2 2-8 8h-2v-2z"/></symbol>
+<symbol id="m-fold" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
+<symbol id="m-srch" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+<symbol id="m-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="m-chat" viewBox="0 0 24 24"><path d="M5 5.5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-7l-4.5 3.5v-3.5H5a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z"/></symbol>
+<symbol id="m-fork" viewBox="0 0 24 24"><path d="M6.5 4v4a5 5 0 0 0 5 5h1a5 5 0 0 0 5-5V4M12 13v7"/></symbol>
+<symbol id="m-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="m-dots" viewBox="0 0 24 24"><g fill="currentColor" stroke="none"><circle cx="5.5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="18.5" cy="12" r="1.7"/></g></symbol>
+<symbol id="m-doc" viewBox="0 0 24 24"><path d="M14 3.5H7.5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V8z"/><path d="M14 3.5V8h4.5M9 12.5h6M9 16h4"/></symbol>
+<symbol id="m-pen" viewBox="0 0 24 24"><path d="M15.5 5 19 8.5 9 18.5l-4.5 1 1-4.5zM13.5 7l3.5 3.5"/></symbol>
+<symbol id="m-term" viewBox="0 0 24 24"><path d="m5 7 5 5-5 5M12.5 17.5H19"/></symbol>
+<symbol id="m-okc" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8.4 12.3 2.4 2.4 4.8-5"/></symbol>
+<symbol id="m-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5v-2a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></symbol>
+<symbol id="m-img" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17.5 5-4.5 4 3.5 2.5-2 4.5 3.5"/></symbol>
+<symbol id="m-ant" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1.6"/><path d="M8.3 8.3a5.2 5.2 0 0 0 0 7.4m7.4-7.4a5.2 5.2 0 0 1 0 7.4M5.5 5.5a9.2 9.2 0 0 0 0 13m13-13a9.2 9.2 0 0 1 0 13"/></symbol>
+<symbol id="m-ud" viewBox="0 0 24 24"><path d="m8 9.5 4-4 4 4M8 14.5l4 4 4-4"/></symbol>
+<symbol id="m-eff" viewBox="0 0 24 24"><path d="M4 8h9m4 0h3M4 16h3m4 0h9"/><circle cx="15" cy="8" r="2"/><circle cx="9" cy="16" r="2"/></symbol>
+<symbol id="m-up" viewBox="0 0 24 24"><path d="M12 19V5.5M6.5 11 12 5.5l5.5 5.5"/></symbol>
+<symbol id="m-db" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="2.5"/><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/></symbol>
+<symbol id="m-chart" viewBox="0 0 24 24"><path d="M4 4v16h16"/><path d="m7.5 14.5 3.5-4 3 2.5 5-6"/></symbol>
+<symbol id="m-gear" viewBox="0 0 24 24"><path d="M19 13.3 20.8 14.9 19 18.2 16.6 17.4 14.3 18.7 13.9 21.1 10.1 21.1 9.7 18.7 7.4 17.4 5 18.2 3.2 14.9 5 13.3 5 10.7 3.2 9.1 5 5.8 7.4 6.6 9.7 5.3 10.1 2.9 13.9 2.9 14.3 5.3 16.6 6.6 19 5.8 20.8 9.1 19 10.7z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+<symbol id="m-spin" viewBox="0 0 24 24"><path d="M12 4a8 8 0 1 1-8 8"/></symbol>
+<symbol id="m-gh" viewBox="0 0 16 16"><path fill="currentColor" stroke="none" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"/></symbol>
+</svg>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+<nav class="nav wrap" aria-label="Main navigation">
+<a class="logo" href="/">Bello<span>ware</span></a>
+<div class="links"><a href="#features">Features</a><a href="#start">Get started</a><a href="#privacy">Privacy</a><a href="#source">Open source</a><a class="nav-dl" href="__DOWNLOAD_URL__">Download</a></div>
+</nav>
+</header>
+<main id="main">
+<section class="hero" aria-labelledby="title">
+<div class="wrap">
+<span class="app-icon"><img src="assets/bello_agent_icon.png" alt="Bello Agent app icon" width="96" height="96"></span>
+<h1 id="title"><span class="kicker">Bello Agent<span class="sr-only">:</span></span> The AI workspace that <span class="mark">shows its work.</span></h1>
+<p class="lead">Conversations, coding tools and side discussions in a native Mac app, connected to your own LiteLLM gateway, with every request, token and cost one click away.</p>
+<a class="dl" href="__DOWNLOAD_URL__"><svg aria-hidden="true"><use href="#i-dl"/></svg>Download Bello Agent __VERSION__</a>
+<p class="meta">__SIZE__ MiB · Apple Silicon · macOS 14 or later</p>
+<ul class="trust">
+<li><svg aria-hidden="true"><use href="#i-shield"/></svg>Developer ID signed and notarized</li>
+<li><svg aria-hidden="true"><use href="#i-sync"/></svg>Updates through Sparkle</li>
+<li><svg aria-hidden="true"><use href="#i-code"/></svg>Open source under the MIT License</li>
+<li><svg aria-hidden="true"><use href="#m-gh"/></svg><a href="https://github.com/BelloWare/BelloAgent">Source on GitHub</a></li>
+</ul>
+<p class="req"><svg aria-hidden="true"><use href="#i-info"/></svg>Requires your own LiteLLM gateway.</p>
+<figure class="show">
+<div class="win" aria-hidden="true">
+<div class="tbar"><div class="lights"><i></i><i></i><i></i></div><span>Fix flaky retry test</span></div>
+<div class="side">
+<div class="lights"><i></i><i></i><i></i></div>
+<div class="sb-h"><span>Projects</span><b class="ib on"><svg><use href="#m-cmp"/></svg></b><b class="ib"><svg><use href="#m-fold"/></svg></b></div>
+<div class="sb-s"><svg><use href="#m-srch"/></svg>Filter chats and topics</div>
+<div class="pj"><svg class="ch"><use href="#m-chev"/></svg><svg><use href="#m-fold"/></svg>payments-api<span class="pa"><svg><use href="#m-fork"/></svg><svg><use href="#m-plus"/></svg><svg><use href="#m-dots"/></svg></span></div>
+<div class="ct on"><svg><use href="#m-chat"/></svg><div><b>Fix flaky retry test</b><small>$0.0412&ensp;Latest 91 tok/s</small></div></div>
+<div class="ct kid"><svg><use href="#m-fork"/></svg><div><b>Jitter strategies</b><small>$0.0036&ensp;Latest 104 tok/s</small></div></div>
+<div class="ct"><svg><use href="#m-spin"/></svg><div><b>Update the API docs</b><small><em>Working</em>&ensp;$0.0021</small></div></div>
+<div class="ct new"><svg><use href="#m-chat"/></svg><div><b>Webhook signatures</b><small>$0.0118&ensp;Latest 77 tok/s</small></div></div>
+<div class="pj shut"><svg class="ch"><use href="#m-chev"/></svg><svg><use href="#m-fold"/></svg>docs-site</div>
+<div class="sb-f"><svg><use href="#m-chart"/></svg><svg><use href="#m-gear"/></svg></div>
+</div>
+<div class="main">
+<div class="tx">
+<p class="u">The retry test in payments-api fails about one run in five. Can you find out why and fix it?</p>
+<div class="fold">4 tool calls<svg><use href="#m-chev"/></svg></div>
+<div class="wr"><svg><use href="#m-doc"/></svg>Read<i></i><span>src/retry.ts</span></div>
+<div class="wr"><svg><use href="#m-srch"/></svg>Searched<i></i><span>setTimeout</span></div>
+<div class="wr"><svg><use href="#m-pen"/></svg>Edited<i></i><span>src/retry.ts</span><span class="x">+12 −3</span></div>
+<div class="wr"><svg><use href="#m-term"/></svg>Ran<i></i><span>npm test</span><span class="e">2.1s</span></div>
+<div class="ans">
+<p>The flake came from real timers: with jitter, the third attempt could land after the test’s 500 ms timeout. Two changes:</p>
+<ul><li><code>retryWithBackoff</code> now takes an injected <code>clock</code>, so tests advance time instead of sleeping.</li><li>Jitter is capped at <code>maxDelayMs</code>, so no wait outlasts the retry budget.</li></ul>
+<p>All 48 tests pass.</p>
+</div>
+<div class="rp">
+<div class="rp-h"><span><svg class="okc"><use href="#m-okc"/></svg>Turn · Completed</span><span class="rp-id"><i>auto → coder-large</i><b>$0.02316</b><svg><use href="#i-info"/></svg><svg><use href="#m-copy"/></svg></span></div>
+<div class="rp-m">
+<div><p><span>Duration</span>18.642s</p><small class="ai">AI 16.459s · Tools 2.183s</small></div>
+<div><p><span>Input</span>61,840</p><i class="bar"><b style="width:85.55%"></b></i><small><i class="g"></i>Cached 52,904 · 85.55%</small><small><i></i>Uncached 8,936 · 14.45%</small></div>
+<div><p><span>Output</span>1,912</p><i class="bar"><b class="p" style="width:36.82%"></b></i><small><i class="p"></i>Reasoning 704 · 36.82%</small><small><i></i>Other 1,208 · 63.18%</small></div>
+</div>
+</div>
+</div>
+<div class="cp">
+<div class="cp-box">
+<p class="cp-t">Now add a regression test for the jitter cap.</p>
+<div class="cp-b"><span class="ib"><svg><use href="#m-img"/></svg></span><span class="ib cmd">⌘</span><span class="gap"></span><span class="pill cn"><svg><use href="#m-ant"/></svg>Team gateway · Responses<svg class="ud"><use href="#m-ud"/></svg></span><span class="pill"><svg><use href="#i-chip"/></svg>auto<svg class="ud"><use href="#m-ud"/></svg></span><span class="pill ef"><svg><use href="#m-eff"/></svg>Effort · high<svg class="ud"><use href="#m-ud"/></svg></span><span class="send"><svg><use href="#m-up"/></svg></span></div>
+</div>
+<div class="st"><span><svg><use href="#i-gauge"/></svg>3 turns 9 steps · 86 tok/s</span><span><svg><use href="#m-db"/></svg>108.4K tok · Cache hit 83% · $0.0412</span><span><svg class="ring" viewBox="0 0 16 16"><circle class="t" cx="8" cy="8" r="6"/><circle class="a" cx="8" cy="8" r="6" stroke-dasharray="2.6 40" transform="rotate(-90 8 8)"/></svg>7%</span></div>
+</div>
+</div>
+</div>
+<figcaption>Illustration of a finished turn: its tool calls one line each, the answer in Markdown, and a compact report with model, duration, token split and reported cost.</figcaption>
+</figure>
+</div>
+</section>
+
+<section class="wrap" aria-labelledby="glance-title">
+<h2 id="glance-title" class="sr-only">At a glance</h2>
+<dl class="glance">
+<div><dt>Native</dt><dd>SwiftUI and AppKit throughout, with no web view</dd></div>
+<div><dt>Your gateway</dt><dd>LiteLLM Responses API with tools, streaming and routed models</dd></div>
+<div><dt>Transparent</dt><dd>Model, tokens, cost and timing on every turn</dd></div>
+<div><dt>Open source</dt><dd>MIT License, with the full source on GitHub</dd></div>
+</dl>
+</section>
+
+<section class="sec wrap" id="features" aria-labelledby="features-title">
+<div class="head c">
+<p class="eyebrow">Features</p>
+<h2 id="features-title">Calm on the surface. Detailed underneath.</h2>
+<p class="sub">Each turn reads as a few quiet lines. Open any of them to see how the answer was made and what it cost.</p>
+</div>
+<div class="grid">
+<article class="card">
+<span class="tile"><svg aria-hidden="true"><use href="#i-win"/></svg></span>
+<h3>A native Mac workspace</h3>
+<p>Projects gather chats around trusted folders, with saved drafts and side conversations that branch off without derailing the main thread. Queue a follow-up or steer a task while it runs.</p>
+<div class="spec" aria-hidden="true"><span class="keys"><kbd>↩</kbd><b>Queue</b><kbd>⌘</kbd><kbd>↩</kbd><b>Steer</b></span></div>
+</article>
+<article class="card">
+<span class="tile"><svg aria-hidden="true"><use href="#i-term"/></svg></span>
+<h3>Tools with clear outcomes</h3>
+<p>Files, shell commands, skills and MCP tools each read as one line. A call stopped mid-run says “Stopped · outcome unknown”, a skipped one says “Skipped”, and nothing is replayed automatically.</p>
+<div class="spec" aria-hidden="true"><span><i class="dotc"></i>Stopped · outcome unknown</span><span><i class="dotc"></i>Skipped</span></div>
+</article>
+<article class="card">
+<span class="tile"><svg aria-hidden="true"><use href="#i-scope"/></svg></span>
+<h3>Inspect every request</h3>
+<p>Open any reply to see its model, cost, timing and headers, the retained request and response bodies, and the streaming events as they arrived.</p>
+<div class="spec" aria-hidden="true"><span class="seg"><b>Request</b><b class="on">Response</b><b>Raw events</b></span></div>
+</article>
+<article class="card">
+<span class="tile"><svg aria-hidden="true"><use href="#i-bars"/></svg></span>
+<h3>Usage you can trust</h3>
+<p>Each turn report splits input into cached and uncached and output into reasoning and the rest, next to the cost the gateway reported. The Usage Report adds it up across sessions.</p>
+<div class="spec" aria-hidden="true"><span class="meter"><b><span>Input</span>61,840</b><i class="bar"><b></b></i><small><span><i></i>Cached 85.55%</span><span><i class="o"></i>Uncached 14.45%</span></small></span></div>
+</article>
+<article class="card">
+<span class="tile"><svg aria-hidden="true"><use href="#i-gauge"/></svg></span>
+<h3>Activity in the menu bar</h3>
+<p>Click the menu bar icon for running work, output speed, tokens, cost and model distribution. Speed is output tokens, hidden reasoning included, over decode time from first token to completion; a reply that arrives in one burst gets none.</p>
+<div class="spec" aria-hidden="true"><span><svg class="donut" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" stroke="#D67520" stroke-dasharray="26 44"/><circle cx="10" cy="10" r="7" stroke="#3D8A57" stroke-dasharray="11 44" stroke-dashoffset="-26"/><circle cx="10" cy="10" r="7" stroke="#7A57B8" stroke-dasharray="7 44" stroke-dashoffset="-37"/></svg>86 tok/s</span><span>108.4K tok</span><span>$0.0412</span></div>
+</article>
+<article class="card">
+<span class="tile"><svg aria-hidden="true"><use href="#i-chip"/></svg></span>
+<h3>A model for every chat</h3>
+<p>Choose the model and reasoning effort per chat from the included catalog or your own. Context use is calculated locally, and long chats can be compacted.</p>
+<div class="spec" aria-hidden="true"><span><svg><use href="#i-chip"/></svg>auto</span><span><svg><use href="#m-eff"/></svg>Effort · high</span><span><svg class="ring" viewBox="0 0 16 16"><circle class="t" cx="8" cy="8" r="6"/><circle class="a" cx="8" cy="8" r="6" stroke-dasharray="2.6 40" transform="rotate(-90 8 8)"/></svg>7%</span></div>
+</article>
+</div>
+<div class="smooth">
+<span class="tile"><svg aria-hidden="true"><use href="#i-read"/></svg></span>
+<p><strong>Smooth by design.</strong> Scroll back while a reply streams and the transcript holds your reading position.</p>
+</div>
+</section>
+
+<section class="sec wrap" id="start" aria-labelledby="start-title">
+<div class="start">
+<div class="head">
+<p class="eyebrow">Get started</p>
+<h2 id="start-title">Your gateway. Your project. Four steps.</h2>
+<p class="note"><strong>Bello Agent requires your own LiteLLM gateway.</strong> Model availability, routing, reported telemetry and usage charges depend on that gateway.</p>
+</div>
+<ol class="steps">
+<li><div><h3>Install</h3><p>Open the DMG and drag Bello Agent into Applications.</p></div></li>
+<li><div><h3>Connect your gateway</h3><p>Enter your LiteLLM Responses endpoint, API key and model alias. Optionally, replace the included model catalog with your own catalog URL.</p></div></li>
+<li><div><h3>Choose and trust your project</h3><p>Test &amp; Start checks the selected model with a small request before your first chat opens.</p></div></li>
+<li><div><h3>Inspect turns and usage</h3><p>Click Info on a turn report to search its captured requests, responses and headers, or open the Usage Report for more.</p></div></li>
+</ol>
+</div>
+</section>
+
+<section class="sec wrap" id="privacy" aria-labelledby="privacy-title">
+<div class="head">
+<p class="eyebrow">Privacy and local storage</p>
+<h2 id="privacy-title">What Bello Agent keeps, and how.</h2>
+<p class="sub">Captured traffic is what makes every request inspectable. Adjust capture and retention in Settings.</p>
+</div>
+<div class="priv">
+<article class="card">
+<span class="tile"><svg aria-hidden="true"><use href="#i-lock"/></svg></span>
+<h3>Kept locally</h3>
+<ul>
+<li><svg aria-hidden="true"><use href="#i-check"/></svg>Credentials and configuration are kept in the native Keychain vault.</li>
+<li><svg aria-hidden="true"><use href="#i-check"/></svg>HTTP request and response capture is on by default, with 30-day body retention, subject to your storage quota and settings.</li>
+<li><svg aria-hidden="true"><use href="#i-check"/></svg>New bodies are stored locally without encryption.</li>
+</ul>
+</article>
+<article class="card">
+<span class="tile"><svg aria-hidden="true"><use href="#i-mask"/></svg></span>
+<h3>Masked in captures</h3>
+<ul>
+<li><svg aria-hidden="true"><use href="#i-check"/></svg>Authentication headers are masked; longer request tokens keep only their final four characters.</li>
+<li><svg aria-hidden="true"><use href="#i-check"/></svg>Known credentials found in request bodies are replaced with SHA-256 fingerprints.</li>
+<li class="warn"><svg aria-hidden="true"><use href="#i-info"/></svg>Bodies can still contain your prompts, files and tool data.</li>
+</ul>
+</article>
+<article class="card">
+<span class="tile"><svg aria-hidden="true"><use href="#i-receipt"/></svg></span>
+<h3>Figures as reported</h3>
+<ul>
+<li><svg aria-hidden="true"><use href="#i-check"/></svg>Cost totals include only values the gateway reports, with coverage counts.</li>
+<li><svg aria-hidden="true"><use href="#i-check"/></svg>Gateway response-cache hits and provider prompt-cache tokens are shown separately.</li>
+</ul>
+</article>
+</div>
+</section>
+
+<section class="sec wrap" id="source" aria-labelledby="source-title">
+<div class="oss">
+<div>
+<p class="eyebrow">Open source</p>
+<h2 id="source-title">Open source under the MIT License.</h2>
+<p class="sub">The app, its supervised Swift helper, the native transcript, the build and release scripts and every release’s validation record are at <a href="https://github.com/BelloWare/BelloAgent">github.com/BelloWare/BelloAgent</a>. Building, running and the test suite need no credentials; signing and notarization use ones the repository does not carry.</p>
+<a class="gh" href="https://github.com/BelloWare/BelloAgent"><svg aria-hidden="true"><use href="#m-gh"/></svg>View the source on GitHub</a>
+</div>
+<div class="repo">
+<p class="repo-h"><svg aria-hidden="true"><use href="#m-gh"/></svg>BelloWare/BelloAgent<span>MIT License</span></p>
+<ul aria-label="Repository layout">
+<li><svg aria-hidden="true"><use href="#m-fold"/></svg><b>apps/macos</b>The SwiftUI and AppKit app, native transcript and tests</li>
+<li><svg aria-hidden="true"><use href="#m-fold"/></svg><b>packages/swift-host</b>The supervised Swift helper</li>
+<li><svg aria-hidden="true"><use href="#m-fold"/></svg><b>scripts</b>Build and release scripts</li>
+<li><svg aria-hidden="true"><use href="#m-fold"/></svg><b>docs/validation</b>Every release’s validation record</li>
+</ul>
+</div>
+</div>
+</section>
+</main>
+<footer class="foot">
+<div class="wrap">
+<p><span class="v">Bello Agent __VERSION__</span><span class="sep" aria-hidden="true"> · </span><a href="assets/bello_agent.appcast.xml">Update feed</a><span class="sep" aria-hidden="true"> · </span><a href="https://github.com/BelloWare/BelloAgent">Source on GitHub</a><span class="sep" aria-hidden="true"> · </span><a href="/">BelloWare</a></p>
+<p class="fine">Open source under the MIT License. © 2026 BelloWare.</p>
+</div>
+</footer>
 </body>
 </html>

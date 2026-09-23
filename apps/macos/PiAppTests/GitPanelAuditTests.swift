@@ -213,6 +213,270 @@ final class GitPanelAuditTests: XCTestCase {
         XCTAssertEqual(seen["modified.txt"]?.first?.added, 1)
     }
 
+    // MARK: Renames
+
+    static let renamedContent = "one\ntwo\nthree\nfour\nfive\n"
+    /// A repository whose one commit holds `before.txt`.
+    func renameFixture(_ name: String) throws -> URL {
+        let root = try repository(name)
+        try start(root)
+        try Self.renamedContent.write(to: root.appendingPathComponent("before.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
+        return root
+    }
+    /// What git itself says about the index and the working tree, a line per path.
+    func porcelain(_ root: URL) throws -> [String] {
+        try git(["status", "--porcelain"], in: root).split(separator: "\n").map(String.init)
+    }
+
+    /// The rename's row arrives ticked, so Commit is one click away. It used
+    /// to commit the new name alone — a copy — and leave the old name's
+    /// removal staged for a second commit nobody asked for.
+    @MainActor func testCommittingARenameRecordsOneRenameAndLeavesNothingBehind() async throws {
+        let root = try renameFixture("git-rename-commit"); defer { try? FileManager.default.removeItem(at: root) }
+        try git(["mv", "before.txt", "after.txt"], in: root)
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
+        try await eventually("read the rename") { controller.status.entries.count == 1 && !controller.loading }
+        await controller.refresh()
+        let rename = try XCTUnwrap(controller.status.entries.first)
+        XCTAssertEqual(rename.path, "after.txt"); XCTAssertEqual(rename.originalPath, "before.txt")
+        XCTAssertEqual(controller.checked, ["after.txt"], "the rename is one row, ticked like any other")
+
+        controller.commitMessage = "Rename before.txt to after.txt"
+        await controller.commitChecked()
+        XCTAssertEqual(controller.notice, "")
+        XCTAssertNotNil(controller.lastCommit)
+        let recorded = try git(["show", "--name-status", "--format=", "HEAD"], in: root)
+            .split(separator: "\n").map { $0.split(separator: "\t").map(String.init) }
+        XCTAssertEqual(recorded.count, 1, "one change: \(recorded)")
+        XCTAssertEqual(recorded.first?.first?.first, "R", "recorded as a rename, not as a new file: \(recorded)")
+        XCTAssertEqual(Array(recorded.first?.dropFirst() ?? []), ["before.txt", "after.txt"])
+        XCTAssertEqual(try porcelain(root), [], "nothing is left staged or changed")
+        XCTAssertTrue(controller.status.entries.isEmpty)
+    }
+
+    /// "Discard Changes…" says tracked files go back to HEAD. On a rename it
+    /// removed the new name from disk and left the old one deleted: the file
+    /// was simply gone.
+    @MainActor func testDiscardingARenamePutsTheFileBackUnderItsOldName() async throws {
+        let root = try renameFixture("git-rename-discard"); defer { try? FileManager.default.removeItem(at: root) }
+        let before = root.appendingPathComponent("before.txt"), after = root.appendingPathComponent("after.txt")
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
+        try await eventually("settle on a clean tree") { controller.repositoryRoot != nil && !controller.loading }
+        // A plain rename, and one whose file was edited again after the move.
+        for edit in [nil, "six\n"] as [String?] {
+            try git(["mv", "before.txt", "after.txt"], in: root)
+            if let edit { try (Self.renamedContent + edit).write(to: after, atomically: true, encoding: .utf8) }
+            await controller.refresh()
+            let rename = try XCTUnwrap(controller.status.entries.first { $0.path == "after.txt" })
+            XCTAssertEqual(rename.originalPath, "before.txt")
+            await controller.discard([rename])
+            XCTAssertEqual(controller.notice, "")
+            XCTAssertEqual(try? String(contentsOf: before, encoding: .utf8), Self.renamedContent, "the file is back under its old name, as HEAD has it")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: after.path), "and the new name is gone")
+            XCTAssertEqual(try porcelain(root), [], "the tree matches HEAD again")
+            XCTAssertTrue(controller.status.entries.isEmpty)
+        }
+    }
+
+    /// Unstaging a rename used to unstage its new name alone, leaving the old
+    /// name's removal staged beside an untracked file; staging a rename git
+    /// saw only in the working tree staged the new file and left the removal
+    /// behind. Either way one rename came apart into two unrelated changes.
+    @MainActor func testStagingAndUnstagingARenameMovesBothOfItsNames() async throws {
+        let root = try renameFixture("git-rename-stage"); defer { try? FileManager.default.removeItem(at: root) }
+        try git(["mv", "before.txt", "after.txt"], in: root)
+        try (Self.renamedContent + "six\n").write(to: root.appendingPathComponent("after.txt"), atomically: true, encoding: .utf8)
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
+        try await eventually("read the rename") { controller.status.entries.count == 1 && !controller.loading }
+        await controller.refresh()
+        XCTAssertEqual(try porcelain(root), ["RM before.txt -> after.txt"])
+        XCTAssertEqual(controller.staged.map(\.path), ["after.txt"]); XCTAssertEqual(controller.unstaged.map(\.path), ["after.txt"])
+
+        // The row's + on its unstaged side stages the edit, and it stays one rename.
+        await controller.stage(["after.txt"])
+        XCTAssertEqual(controller.notice, "")
+        XCTAssertEqual(try porcelain(root), ["R  before.txt -> after.txt"])
+
+        // The row's − unstages the whole rename, not half of it.
+        await controller.unstage(["after.txt"])
+        XCTAssertEqual(controller.notice, "")
+        XCTAssertEqual(try git(["diff", "--cached", "--name-status"], in: root), "", "nothing of the rename is left staged")
+        XCTAssertTrue(controller.staged.isEmpty)
+        XCTAssertEqual(try porcelain(root), [" D before.txt", "?? after.txt"], "git shows an unstaged move as the old name deleted and the new one untracked")
+
+        // Stage all puts it back together as one rename.
+        await controller.stage(controller.unstaged.map(\.path))
+        XCTAssertEqual(controller.notice, "")
+        XCTAssertEqual(try porcelain(root), ["R  before.txt -> after.txt"])
+        XCTAssertEqual(controller.status.entries.count, 1)
+
+        // A rename git sees only in the working tree (the new file added with
+        // --intent-to-add) is one row too, and staging that row stages both names.
+        try git(["reset", "-q"], in: root)
+        try git(["add", "--intent-to-add", "after.txt"], in: root)
+        await controller.refresh()
+        XCTAssertEqual(try porcelain(root), [" R before.txt -> after.txt"])
+        XCTAssertEqual(controller.status.entries.first?.originalPath, "before.txt")
+        XCTAssertEqual(controller.unstaged.map(\.path), ["after.txt"])
+        await controller.stage(["after.txt"])
+        XCTAssertEqual(controller.notice, "")
+        XCTAssertEqual(try porcelain(root), ["R  before.txt -> after.txt"], "one rename, staged whole")
+    }
+
+    /// A new file saved where a renamed one used to be is a row of its own,
+    /// and only that row commits or discards it: taking a rename's old name
+    /// along must never commit that file unticked, or overwrite it.
+    @MainActor func testARenamesOldNameHoldingANewFileIsLeftToThatFilesRow() async throws {
+        let saved = "a new file where the old one was\n"
+        func heldRename(_ name: String) async throws -> (URL, GitController, GitStatusEntry) {
+            let root = try renameFixture(name)
+            try git(["mv", "before.txt", "after.txt"], in: root)
+            try saved.write(to: root.appendingPathComponent("before.txt"), atomically: true, encoding: .utf8)
+            let controller = GitController(roots: [root.path])
+            try await eventually("read both rows") { controller.status.entries.count == 2 && !controller.loading }
+            await controller.refresh()
+            XCTAssertEqual(controller.status.entries.first { $0.path == "before.txt" }?.untracked, true)
+            return (root, controller, try XCTUnwrap(controller.status.entries.first { $0.path == "after.txt" && $0.originalPath == "before.txt" }))
+        }
+
+        // Discarding the rename alone undoes it, and the new file stays as it is.
+        let (discarded, discarding, rename) = try await heldRename("git-rename-held-discard")
+        defer { discarding.stop(); try? FileManager.default.removeItem(at: discarded) }
+        await discarding.discard([rename])
+        XCTAssertEqual(discarding.notice, "")
+        XCTAssertEqual(try? String(contentsOf: discarded.appendingPathComponent("before.txt"), encoding: .utf8), saved, "the file saved at the old name is not overwritten")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: discarded.appendingPathComponent("after.txt").path))
+        XCTAssertEqual(try porcelain(discarded), [" M before.txt"], "the rename is undone; what was saved there is an ordinary change to before.txt")
+
+        // Committing the rename with that file unticked commits nothing of it.
+        let (committed, committing, _) = try await heldRename("git-rename-held-commit")
+        defer { committing.stop(); try? FileManager.default.removeItem(at: committed) }
+        committing.checked = ["after.txt"]
+        committing.commitMessage = "Move the old file aside"
+        await committing.commitChecked()
+        XCTAssertEqual(committing.notice, "")
+        XCTAssertEqual(try git(["show", "HEAD:before.txt"], in: committed), Self.renamedContent, "the unticked file is not in the commit")
+        XCTAssertEqual(try git(["show", "HEAD:after.txt"], in: committed), Self.renamedContent)
+        XCTAssertEqual(try? String(contentsOf: committed.appendingPathComponent("before.txt"), encoding: .utf8), saved)
+    }
+
+    /// A copy is not a rename: its source is still there, changed, in a row
+    /// of its own, and committing or discarding the copy leaves that row alone.
+    @MainActor func testACopyIsCommittedAndDiscardedWithoutItsSource() async throws {
+        let root = try repository("git-copy"); defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        let original = "a\nb\nc\nd\ne\nf\n", source = root.appendingPathComponent("src.txt")
+        try original.write(to: source, atomically: true, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
+        try git(["config", "status.renames", "copies"], in: root)
+        try (original + "g\n").write(to: source, atomically: true, encoding: .utf8)
+        try FileManager.default.copyItem(at: source, to: root.appendingPathComponent("copy.txt"))
+        try git(["add", "-A"], in: root)
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
+        try await eventually("read the copy and its source") { controller.status.entries.count == 2 && !controller.loading }
+        await controller.refresh()
+        XCTAssertEqual(controller.status.entries.first { $0.path == "copy.txt" }?.originalPath, "src.txt", "git reports a copy")
+        XCTAssertEqual(controller.status.entries.first { $0.path == "src.txt" }?.indexState, "M", "and its source changed, in a row of its own")
+
+        controller.checked = ["copy.txt"]
+        controller.commitMessage = "Only the copy"
+        await controller.commitChecked()
+        XCTAssertEqual(controller.notice, "")
+        XCTAssertEqual(try git(["show", "HEAD:src.txt"], in: root), original, "the unticked source is not committed with its copy")
+        XCTAssertEqual(try porcelain(root), ["M  src.txt"])
+
+        try FileManager.default.copyItem(at: source, to: root.appendingPathComponent("again.txt"))
+        try git(["add", "again.txt"], in: root)
+        await controller.refresh()
+        let copy = try XCTUnwrap(controller.status.entries.first { $0.path == "again.txt" })
+        XCTAssertEqual(copy.originalPath, "src.txt")
+        await controller.discard([copy])
+        XCTAssertEqual(controller.notice, "")
+        XCTAssertEqual(try? String(contentsOf: source, encoding: .utf8), original + "g\n", "discarding the copy leaves its source's change alone")
+        XCTAssertEqual(try porcelain(root), ["M  src.txt"])
+    }
+
+    /// A new file staged and then deleted from disk shows as deleted, and so
+    /// does a rename whose new name was deleted after the move. Every row
+    /// arrives ticked, and either one used to fail the whole commit ("pathspec
+    /// did not match any file(s) known to git"), taking every other ticked
+    /// change down with it. Each commits as its row shows: the new file never
+    /// reaches a commit and nothing stays staged for it, and the rename leaves
+    /// the old name's removal.
+    @MainActor func testRowsDeletedSinceTheyWereStagedCommitAsTheyShowWithTheRest() async throws {
+        let root = try renameFixture("git-staged-then-gone"); defer { try? FileManager.default.removeItem(at: root) }
+        let other = root.appendingPathComponent("other.txt"), fresh = root.appendingPathComponent("new.txt")
+        try "keep\n".write(to: other, atomically: true, encoding: .utf8)
+        try git(["add", "other.txt"], in: root); try git(["commit", "-q", "-m", "Other"], in: root)
+        try "fresh\n".write(to: fresh, atomically: true, encoding: .utf8)
+        try git(["add", "new.txt"], in: root)
+        try FileManager.default.removeItem(at: fresh)
+        try git(["mv", "before.txt", "after.txt"], in: root)
+        try FileManager.default.removeItem(at: root.appendingPathComponent("after.txt"))
+        try "changed\n".write(to: other, atomically: true, encoding: .utf8)
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
+        try await eventually("read the three rows") { controller.status.entries.count == 3 && !controller.loading }
+        await controller.refresh()
+        XCTAssertEqual(try porcelain(root), ["RD before.txt -> after.txt", "AD new.txt", " M other.txt"])
+        XCTAssertEqual(controller.status.entries.map(\.badge), ["D", "D", "M"], "both files that are gone show as deleted")
+        XCTAssertEqual(controller.checked, ["after.txt", "new.txt", "other.txt"], "and every row arrives ticked")
+
+        controller.commitMessage = "Commit around two files that are gone"
+        await controller.commitChecked()
+        XCTAssertNotNil(controller.lastCommit, "the commit goes through")
+        XCTAssertEqual(try git(["show", "--name-status", "--format=", "HEAD"], in: root).split(separator: "\n").map(String.init),
+                       ["D\tbefore.txt", "M\tother.txt"], "the old name's removal and the edit, and nothing of a file no commit ever held")
+        XCTAssertEqual(try porcelain(root), [], "nothing is left staged for either file")
+        XCTAssertTrue(controller.status.entries.isEmpty)
+        XCTAssertEqual(controller.commitMessage, "")
+
+        // Ticked alone, such a file is nothing to commit: no commit is made,
+        // nothing changes, and git's refusal is put in words.
+        try "again\n".write(to: fresh, atomically: true, encoding: .utf8)
+        try git(["add", "new.txt"], in: root)
+        try FileManager.default.removeItem(at: fresh)
+        await controller.refresh()
+        XCTAssertEqual(controller.checked, ["new.txt"])
+        let head = try git(["rev-parse", "HEAD"], in: root)
+        controller.commitMessage = "Nothing really"
+        await controller.commitChecked()
+        XCTAssertEqual(try git(["rev-parse", "HEAD"], in: root), head, "no commit is made")
+        XCTAssertEqual(try porcelain(root), ["AD new.txt"], "and the row is as it was")
+        XCTAssertEqual(controller.commitMessage, "Nothing really", "the message waits for another try")
+        do {
+            _ = try await GitService().commit(message: "Nothing really", in: root.path, paths: ["new.txt"], staging: [])
+            XCTFail("a commit that changes nothing is refused")
+        } catch { XCTAssertEqual(error.localizedDescription, "Nothing to commit: the chosen files on disk match HEAD.") }
+    }
+
+    /// A failed action said why for no time at all: the refresh after every
+    /// action begins by clearing the notice, and it ran in the same turn, so a
+    /// refused push, stage or commit left the panel as if nothing had been
+    /// pressed.
+    @MainActor func testAFailedActionKeepsItsMessageOnScreen() async throws {
+        let root = try renameFixture("git-failure-notice"); defer { try? FileManager.default.removeItem(at: root) }
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
+        try await eventually("settle") { controller.repositoryRoot != nil && !controller.loading }
+
+        await controller.push()
+        XCTAssertTrue(controller.notice.hasPrefix("Push: "), "a push with nowhere to go says so: \(controller.notice)")
+        XCTAssertFalse(controller.busy)
+        await controller.stage(["no-such-file.txt"])
+        XCTAssertTrue(controller.notice.contains("no-such-file.txt"), "so does a stage git refuses: \(controller.notice)")
+        await controller.refresh()
+        XCTAssertEqual(controller.notice, "", "the reader's own refresh clears it")
+
+        let fresh = root.appendingPathComponent("new.txt")
+        try "fresh\n".write(to: fresh, atomically: true, encoding: .utf8)
+        try git(["add", "new.txt"], in: root)
+        try FileManager.default.removeItem(at: fresh)
+        await controller.refresh()
+        controller.commitMessage = "Nothing really"
+        await controller.commitChecked()
+        XCTAssertEqual(controller.notice, "Commit: Nothing to commit: the chosen files on disk match HEAD.")
+    }
+
     /// A repository that is not one, one with no commits at all, a detached
     /// HEAD and several roots: none of these may leave the panel stuck or
     /// showing an error for something ordinary.

@@ -75,11 +75,12 @@ struct SessionTimingHistoryView: View {
     let history: SessionTimingHistory
     let sessionTitle: String
     let close: () -> Void
-    @State private var selectedRequest: Int?
-    private var selectedSample: SessionTimingSample? {
-        guard let selectedRequest, history.samples.indices.contains(selectedRequest - 1) else { return history.latest }
-        return history.samples[selectedRequest - 1]
-    }
+    /// Held, not observed: the charts' rules and the request line watch it,
+    /// so a hover never redraws the popover or rebuilds a chart's marks.
+    @State private var selection = SessionTimingSelection()
+    /// The charts' points and accessibility strings. The popover is rebuilt
+    /// whenever its chat row redraws; they are formatted once per history.
+    @State private var charts = SessionTimingSeriesMemo(metrics: SessionTimingMetric.footerMetrics)
     var body: some View {
         VStack(alignment: .leading, spacing: PiSpacing.md) {
             HStack(alignment: .top) {
@@ -104,16 +105,10 @@ struct SessionTimingHistoryView: View {
                 }
                 Text("Average: \(history.settledThroughput.samples)/\(history.samples.count) listed requests reported both a decode span and their output tokens.")
                     .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
-                ForEach(SessionTimingMetric.footerMetrics, id: \.rawValue) { SessionTimingChart(history: history, metric: $0, selectedRequest: $selectedRequest) }
-                if let sample = selectedSample {
-                    HStack(spacing: 5) {
-                        Text(selectedRequest.map { "Request \($0)" } ?? "Latest")
-                        Text("· " + sample.wall.formatted(date: .abbreviated, time: .standard))
-                        Spacer(minLength: 0)
-                    }.font(PiFont.micro).foregroundStyle(Color.piInkSecondary).monospacedDigit()
-                    Text(SessionTimingMetric.ttft.label(sample.ttftMilliseconds) + " TTFT · " + SessionTimingMetric.rate.label(sample.outputTokensPerSecond))
-                        .font(PiFont.caption).monospacedDigit().foregroundStyle(Color.piInk)
+                ForEach(charts.series(for: history), id: \.metric.rawValue) {
+                    SessionTimingChart(series: $0, selection: selection)
                 }
+                SessionTimingSelectedRequest(history: history, selection: selection)
             }
             Text(history.hasOlderRequests ? "Most recent \(history.samples.count) completed requests in this session." : "\(history.samples.count) completed requests in this session.")
                 .font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
@@ -122,7 +117,7 @@ struct SessionTimingHistoryView: View {
         }
         .padding(PiSpacing.lg).frame(width: 430).foregroundStyle(Color.piInk)
         .accessibilityIdentifier("session-timing-history")
-        .onChange(of: history) { _, _ in selectedRequest = nil }
+        .onChange(of: history) { _, _ in selection.select(nil) }
     }
 
     private func latest(_ metric: SessionTimingMetric) -> some View {
@@ -134,63 +129,139 @@ struct SessionTimingHistoryView: View {
 
 }
 
-/// One metric of a session's retained completed requests, oldest to newest.
-/// Hovering selects a request; the parent shows its figures.
-struct SessionTimingChart: View {
+/// The popover's line for the request under the pointer, else the latest.
+private struct SessionTimingSelectedRequest: View {
     let history: SessionTimingHistory
+    @ObservedObject var selection: SessionTimingSelection
+    var body: some View {
+        let _ = SessionTimingRenderCount.captionDrawn()
+        let index = selection.request.flatMap { history.samples.indices.contains($0 - 1) ? $0 : nil }
+        if let sample = index.map({ history.samples[$0 - 1] }) ?? history.latest {
+            VStack(alignment: .leading, spacing: PiSpacing.md) {
+                HStack(spacing: 5) {
+                    Text(index.map { "Request \($0)" } ?? "Latest")
+                    Text("· " + sample.wall.formatted(date: .abbreviated, time: .standard))
+                    Spacer(minLength: 0)
+                }.font(PiFont.micro).foregroundStyle(Color.piInkSecondary).monospacedDigit()
+                // The request's settled rate, as the tile and the chart
+                // above quote it: never output over the whole round trip.
+                Text(SessionTimingMetric.ttft.label(sample.ttftMilliseconds) + " TTFT · " + SessionTimingMetric.rate.label(SessionTimingMetric.rate.value(in: sample)))
+                    .font(PiFont.caption).monospacedDigit().foregroundStyle(Color.piInk)
+            }
+        }
+    }
+}
+
+/// The request the pointer is on in a set of timing charts. The charts only
+/// write it; each chart's rule and the request caption are the views that
+/// observe it, so a hover never rebuilds the marks or the page around them.
+@MainActor final class SessionTimingSelection: ObservableObject {
+    @Published var request: Int?
+    /// Every pointer event lands here: a step within the same request is not
+    /// a change and publishes nothing.
+    func select(_ request: Int?) { if self.request != request { self.request = request } }
+}
+
+/// A metric's plotted points and their accessibility strings, formatted once
+/// per history: moving the pointer never formats a date or a figure again.
+struct SessionTimingSeries: Equatable {
+    struct Point: Identifiable, Equatable {
+        let id: String
+        let index: Int
+        let segment: Int
+        let value: Double
+        /// When the request ran, and its figure, as VoiceOver reads them.
+        let wall: String
+        let figure: String
+    }
     let metric: SessionTimingMetric
-    @Binding var selectedRequest: Int?
+    let points: [Point]
+    /// Every listed request, observed or not: the x axis spans them all.
+    let requests: Int
+    init(history: SessionTimingHistory, metric: SessionTimingMetric) {
+        self.metric = metric; requests = history.samples.count
+        points = history.points(for: metric).map {
+            Point(id: $0.id, index: $0.index, segment: $0.segment, value: $0.value,
+                  wall: $0.wall.formatted(date: .abbreviated, time: .standard), figure: metric.label($0.value))
+        }
+    }
+    static func all(_ history: SessionTimingHistory, metrics: [SessionTimingMetric] = SessionTimingMetric.allCases) -> [SessionTimingSeries] {
+        metrics.map { SessionTimingSeries(history: history, metric: $0) }
+    }
+}
+
+/// The series of the last history a view drew, rebuilt only when the history
+/// changes: comparing two histories is far cheaper than formatting them.
+@MainActor final class SessionTimingSeriesMemo {
+    let metrics: [SessionTimingMetric]
+    private var history: SessionTimingHistory?
+    private var series: [SessionTimingSeries] = []
+    init(metrics: [SessionTimingMetric]) { self.metrics = metrics }
+    func series(for history: SessionTimingHistory) -> [SessionTimingSeries] {
+        if history != self.history { self.history = history; series = SessionTimingSeries.all(history, metrics: metrics) }
+        return series
+    }
+}
+
+/// One metric of a session's retained completed requests, oldest to newest.
+/// Hovering selects a request. The chart only writes the selection: its rule
+/// and the caption of the selected request are the views that watch it, so a
+/// pointer step never rebuilds the marks or their accessibility strings.
+struct SessionTimingChart: View {
+    let series: SessionTimingSeries
+    let selection: SessionTimingSelection
     var height: CGFloat = 92
     var body: some View {
-        let points = history.points(for: metric)
+        let metric = series.metric, points = series.points, requests = series.requests
         let tint: Color = switch metric { case .ttft: .piInfo; case .rate: .piAccent; case .output: .piBrandOrange; case .cost: .piSuccess }
         return VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(metric.title).font(PiFont.caption)
                 Spacer()
-                Text("\(points.count)/\(history.samples.count) observed").font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
+                Text("\(points.count)/\(requests) observed").font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
             }
             if points.isEmpty {
                 Text("Unavailable").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).frame(maxWidth: .infinity, minHeight: 70)
             } else {
                 Chart {
+                    let _ = SessionTimingRenderCount.markBuilt()
                     ForEach(points) { point in
                         if metric == .output || metric == .cost {
                             BarMark(x: .value("Request", Double(point.index)), y: .value(metric.unit, point.value), width: .ratio(0.6))
                                 .foregroundStyle(tint).cornerRadius(2)
-                                .accessibilityLabel(Text(point.wall.formatted(date: .abbreviated, time: .standard)))
-                                .accessibilityValue(Text(metric.label(point.value)))
+                                .accessibilityLabel(Text(point.wall))
+                                .accessibilityValue(Text(point.figure))
                         } else {
                             LineMark(x: .value("Request", Double(point.index)), y: .value(metric.unit, point.value), series: .value("Observed run", point.segment))
                                 .foregroundStyle(tint).interpolationMethod(.linear)
                             PointMark(x: .value("Request", Double(point.index)), y: .value(metric.unit, point.value))
                                 .foregroundStyle(tint).symbolSize(14)
-                                .accessibilityLabel(Text(point.wall.formatted(date: .abbreviated, time: .standard)))
-                                .accessibilityValue(Text(metric.label(point.value)))
+                                .accessibilityLabel(Text(point.wall))
+                                .accessibilityValue(Text(point.figure))
                         }
                     }
-                    if let selectedRequest {
-                        RuleMark(x: .value("Selected request", Double(selectedRequest))).foregroundStyle(Color.piInkTertiary.opacity(0.4))
-                    }
                 }
-                .chartXScale(domain: 0.5...(Double(history.samples.count) + 0.5))
+                .chartXScale(domain: 0.5...(Double(requests) + 0.5))
                 .chartYScale(domain: .automatic(includesZero: true))
                 .chartXAxis(.hidden)
                 .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) }
                 .chartOverlay { proxy in
                     GeometryReader { geometry in
-                        Rectangle().fill(Color.clear).contentShape(Rectangle())
-                            .onContinuousHover { phase in
-                                guard let plotFrame = proxy.plotFrame else { return }
-                                switch phase {
-                                case .active(let location):
-                                    let frame = geometry[plotFrame]
-                                    if frame.contains(location), let value = proxy.value(atX: location.x - frame.minX, as: Double.self) {
-                                        selectedRequest = max(1, min(history.samples.count, Int(value.rounded())))
-                                    } else { selectedRequest = nil }
-                                case .ended: selectedRequest = nil
+                        ZStack(alignment: .topLeading) {
+                            Rectangle().fill(Color.clear).contentShape(Rectangle())
+                                .onContinuousHover { phase in
+                                    guard let plotFrame = proxy.plotFrame else { return }
+                                    switch phase {
+                                    case .active(let location):
+                                        let frame = geometry[plotFrame]
+                                        if frame.contains(location), let value = proxy.value(atX: location.x - frame.minX, as: Double.self) {
+                                            selection.select(max(1, min(requests, Int(value.rounded()))))
+                                        } else { selection.select(nil) }
+                                    case .ended: selection.select(nil)
+                                    }
                                 }
-                            }
+                            SessionTimingHoverRule(selection: selection, proxy: proxy, plot: proxy.plotFrame.map { geometry[$0] } ?? .zero)
+                        }
                     }
                 }
                 .frame(height: height)
@@ -203,4 +274,37 @@ struct SessionTimingChart: View {
             }.font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
         }
     }
+}
+
+/// The selected request's rule, placed by the chart's own x scale over its
+/// plot. With the request caption, the only part of a timing chart that
+/// watches the pointer.
+private struct SessionTimingHoverRule: View {
+    @ObservedObject var selection: SessionTimingSelection
+    let proxy: ChartProxy
+    let plot: CGRect
+    var body: some View {
+        let _ = SessionTimingRenderCount.ruleDrawn()
+        if let request = selection.request, let x = proxy.position(forX: Double(request)) {
+            Path { path in
+                path.move(to: CGPoint(x: plot.minX + x, y: plot.minY))
+                path.addLine(to: CGPoint(x: plot.minX + x, y: plot.maxY))
+            }
+            .stroke(Color.piInkTertiary.opacity(0.4), lineWidth: 1)
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+/// How many times the timing charts built their marks, and how many times the
+/// parts that follow the pointer — each chart's rule, the selected request's
+/// caption — drew. A test seam: a hover must redraw only the latter.
+@MainActor enum SessionTimingRenderCount {
+    private(set) static var marks = 0
+    private(set) static var rules = 0
+    private(set) static var captions = 0
+    static func reset() { marks = 0; rules = 0; captions = 0 }
+    static func markBuilt() { marks &+= 1 }
+    static func ruleDrawn() { rules &+= 1 }
+    static func captionDrawn() { captions &+= 1 }
 }

@@ -65,53 +65,101 @@ enum TranscriptMarkdown {
     /// after a blank line outside any code fence, before a line that starts at the
     /// margin and is not a list item, so lists, fences, quotes and tables stay whole.
     static func settledCuts(in source: String) -> [String.Index] {
-        var cuts: [String.Index] = []
+        var scanner = CutScanner()
+        scanner.advance(over: source)
         let utf8 = source.utf8
-        var lineStart = utf8.startIndex
-        var previousBlank = false
-        var fence: (marker: UInt8, length: Int)? = nil
-        func isSpace(_ byte: UInt8) -> Bool { byte == 0x20 || byte == 0x09 }
-        while lineStart < utf8.endIndex {
-            var lineEnd = lineStart
-            while lineEnd < utf8.endIndex, utf8[lineEnd] != 0x0a { lineEnd = utf8.index(after: lineEnd) }
-            var index = lineStart, indent = 0
-            while index < lineEnd, isSpace(utf8[index]) { indent += utf8[index] == 0x09 ? 4 : 1; index = utf8.index(after: index) }
-            let blank = index == lineEnd
-            if let open = fence {
-                // The closing fence: the same marker, at least as long, nothing else on the line.
-                var run = 0, cursor = index
-                while cursor < lineEnd, utf8[cursor] == open.marker { run += 1; cursor = utf8.index(after: cursor) }
-                while cursor < lineEnd, isSpace(utf8[cursor]) { cursor = utf8.index(after: cursor) }
-                if indent <= 3, run >= open.length, cursor == lineEnd { fence = nil }
-                previousBlank = false
-            } else if blank {
-                previousBlank = true
-            } else {
-                let first = utf8[index]
-                var listItem = false
-                if first == 0x2d || first == 0x2b || first == 0x2a {
-                    let next = utf8.index(after: index); listItem = next == lineEnd || isSpace(utf8[next])
-                } else if first >= 0x30, first <= 0x39 {
-                    var cursor = index, digits = 0
-                    while cursor < lineEnd, utf8[cursor] >= 0x30, utf8[cursor] <= 0x39, digits < 10 { digits += 1; cursor = utf8.index(after: cursor) }
-                    if cursor < lineEnd, utf8[cursor] == 0x2e || utf8[cursor] == 0x29 {
-                        let next = utf8.index(after: cursor); listItem = next == lineEnd || isSpace(utf8[next])
+        return scanner.offsets.map { utf8.index(utf8.startIndex, offsetBy: $0) }
+    }
+
+    /// `settledCuts`, able to resume. A reply only grows at its end, and a cut
+    /// once found stays one however it grows: the line after a blank line
+    /// either already says it is not a list item, or the scanner waits until
+    /// it does ("1" may still become "1."). So the scanner keeps the cuts it
+    /// has found and where the line it has not seen the end of begins, and a
+    /// token is read from there, not from the reply's first byte.
+    struct CutScanner {
+        /// Every cut found so far, as UTF-8 offsets, in order.
+        private(set) var offsets: [Int] = []
+        /// Where the first line not yet seen to its end begins, and the state
+        /// the lines before it left.
+        private var lineStart = 0
+        private var previousBlank = false
+        private var fence: (marker: UInt8, length: Int)? = nil
+        /// How far that line has been searched for its end.
+        private var searched = 0
+        /// Bytes looked at in all, for the fixtures that check a token is not
+        /// read against the whole reply.
+        private(set) var bytesRead = 0
+
+        mutating func advance(over source: String) {
+            source.withUTF8Bytes { advance(over: $0) }
+        }
+
+        mutating func advance(over utf8: UnsafeBufferPointer<UInt8>) {
+            let end = utf8.count
+            func isSpace(_ byte: UInt8) -> Bool { byte == 0x20 || byte == 0x09 }
+            while lineStart < end {
+                let resume = max(lineStart, searched)
+                var lineEnd = resume
+                while lineEnd < end, utf8[lineEnd] != 0x0a { lineEnd += 1 }
+                bytesRead += lineEnd - resume
+                // A CR LF line ending is a line ending, not text on the line.
+                let content = lineEnd > lineStart && utf8[lineEnd - 1] == 0x0d ? lineEnd - 1 : lineEnd
+                var index = lineStart, indent = 0
+                while index < content, isSpace(utf8[index]) { indent += utf8[index] == 0x09 ? 4 : 1; index += 1 }
+                let blank = index == content
+                guard lineEnd < end else {
+                    // The line is still arriving. Whether it starts a new part
+                    // can be known already; what it leaves behind cannot.
+                    if fence == nil, !blank, previousBlank, indent == 0, lineStart > 0, offsets.last != lineStart,
+                       !Self.listItem(utf8, at: index, lineEnd: content, arriving: true) { offsets.append(lineStart) }
+                    searched = lineEnd
+                    return
+                }
+                if let open = fence {
+                    // The closing fence: the same marker, at least as long, nothing else on the line.
+                    var run = 0, cursor = index
+                    while cursor < content, utf8[cursor] == open.marker { run += 1; cursor += 1 }
+                    while cursor < content, isSpace(utf8[cursor]) { cursor += 1 }
+                    if indent <= 3, run >= open.length, cursor == content { fence = nil }
+                    previousBlank = false
+                } else if blank {
+                    previousBlank = true
+                } else {
+                    if previousBlank, indent == 0, lineStart > 0, offsets.last != lineStart,
+                       !Self.listItem(utf8, at: index, lineEnd: content, arriving: false) { offsets.append(lineStart) }
+                    previousBlank = false
+                    let first = utf8[index]
+                    if indent <= 3, first == 0x60 || first == 0x7e {
+                        var run = 0, cursor = index
+                        while cursor < content, utf8[cursor] == first { run += 1; cursor += 1 }
+                        // A backtick fence's info string may not contain a backtick.
+                        var infoHasMarker = false
+                        if first == 0x60 { var scan = cursor; while scan < content { if utf8[scan] == 0x60 { infoHasMarker = true; break }; scan += 1 } }
+                        if run >= 3, !infoHasMarker { fence = (first, run) }
                     }
                 }
-                if previousBlank, indent == 0, !listItem, lineStart > utf8.startIndex { cuts.append(lineStart) }
-                previousBlank = false
-                if indent <= 3, first == 0x60 || first == 0x7e {
-                    var run = 0, cursor = index
-                    while cursor < lineEnd, utf8[cursor] == first { run += 1; cursor = utf8.index(after: cursor) }
-                    // A backtick fence's info string may not contain a backtick.
-                    var infoHasMarker = false
-                    if first == 0x60 { var scan = cursor; while scan < lineEnd { if utf8[scan] == 0x60 { infoHasMarker = true; break }; scan = utf8.index(after: scan) } }
-                    if run >= 3, !infoHasMarker { fence = (first, run) }
-                }
+                lineStart = lineEnd + 1
+                searched = lineStart
             }
-            lineStart = lineEnd < utf8.endIndex ? utf8.index(after: lineEnd) : lineEnd
         }
-        return cuts
+
+        /// Whether the line whose first non-blank byte is at `index` is a list
+        /// item. A line still arriving whose digits run to its end may yet be
+        /// an ordered item's number, so it counts as one until it says not.
+        private static func listItem(_ utf8: UnsafeBufferPointer<UInt8>, at index: Int, lineEnd: Int, arriving: Bool) -> Bool {
+            func isSpace(_ byte: UInt8) -> Bool { byte == 0x20 || byte == 0x09 }
+            let first = utf8[index]
+            if first == 0x2d || first == 0x2b || first == 0x2a {
+                return index + 1 == lineEnd || isSpace(utf8[index + 1])
+            }
+            guard first >= 0x30, first <= 0x39 else { return false }
+            var cursor = index, digits = 0
+            while cursor < lineEnd, utf8[cursor] >= 0x30, utf8[cursor] <= 0x39, digits < 10 { digits += 1; cursor += 1 }
+            guard cursor < lineEnd else { return arriving }
+            guard utf8[cursor] == 0x2e || utf8[cursor] == 0x29 else { return false }
+            return cursor + 1 == lineEnd || isSpace(utf8[cursor + 1])
+        }
     }
     /// The document as blocks. A source the parser rejects outright renders as one plain paragraph.
     static func parse(_ source: String, style: MarkdownStyle = .prose) -> [MarkdownBlock] {
@@ -122,7 +170,7 @@ enum TranscriptMarkdown {
     static func locatedBlocks(_ source: String, style: MarkdownStyle) -> [(offset: Int, block: MarkdownBlock)] {
         let key = (style.id + "\u{0}" + source) as NSString
         if let cached = cache.object(forKey: key) { return cached.located }
-        let result = parseLocated(source, style: style)
+        let result = parseLocated(source, style: style).blocks
         cache.setObject(CachedBlocks(result), forKey: key, cost: source.utf8.count)
         return result
     }
@@ -130,12 +178,20 @@ enum TranscriptMarkdown {
     /// key, so remembering the answer would evict the settled fragments the
     /// cache exists for and hold a copy of every prefix of the reply.
     static func liveBlocks(_ source: String, style: MarkdownStyle) -> [(offset: Int, block: MarkdownBlock)] {
-        parseLocated(source, style: style)
+        parseLocated(source, style: style).blocks
     }
-    private static func parseLocated(_ source: String, style: MarkdownStyle) -> [(offset: Int, block: MarkdownBlock)] {
+    /// The same reading, with where each item of each top-level list begins:
+    /// the start of the line its first text is on, one array per block, in
+    /// the order of the list's items (empty for a block that is not a list).
+    /// A list that is still arriving is read again from its last item only.
+    static func liveBlocksWithItems(_ source: String, style: MarkdownStyle) -> (blocks: [(offset: Int, block: MarkdownBlock)], items: [[Int]]) {
+        parseLocated(source, style: style, collectingItems: true)
+    }
+    private static func parseLocated(_ source: String, style: MarkdownStyle, collectingItems: Bool = false) -> (blocks: [(offset: Int, block: MarkdownBlock)], items: [[Int]]) {
         let options = AttributedString.MarkdownParsingOptions(allowsExtendedAttributes: true, interpretedSyntax: .full, failurePolicy: .returnPartiallyParsedIfPossible, appliesSourcePositionAttributes: true)
         guard let parsed = try? AttributedString(markdown: source, options: options) else {
-            return source.isEmpty ? [] : [(0, .paragraph(inline(AttributedString(source), style: style, size: style.baseSize)))]
+            let blocks: [(offset: Int, block: MarkdownBlock)] = source.isEmpty ? [] : [(0, .paragraph(inline(AttributedString(source), style: style, size: style.baseSize)))]
+            return (blocks, collectingItems ? blocks.map { _ in [] } : [])
         }
         var lineOffsets = [0]
         for (offset, byte) in source.utf8.enumerated() where byte == 10 { lineOffsets.append(offset + 1) }
@@ -160,15 +216,30 @@ enum TranscriptMarkdown {
             leaves.append(Leaf(sourceOffset: lineOffsets[min(lineOffsets.count - 1, max(0, (run.markdownSourcePosition?.startLine ?? 1) - 1))], path: path, fragment: code ? AttributedString() : inline(run, text: plain, style: style, size: size, heading: heading), plain: plain))
         }
         var result: [(offset: Int, block: MarkdownBlock)] = []
+        var items: [[Int]] = []
         var index = 0
         while index < leaves.count {
             var end = index + 1
             while end < leaves.count, leaves[end].component(at: 0)?.identity == leaves[index].component(at: 0)?.identity { end += 1 }
             let group = leaves[index..<end]
-            result.append(contentsOf: build(group, depth: 0, style: style).map { (leaves[index].sourceOffset, $0) })
+            let built = build(group, depth: 0, style: style)
+            result.append(contentsOf: built.map { (leaves[index].sourceOffset, $0) })
+            if collectingItems {
+                // Where the list's items begin, grouped exactly as `build` groups them.
+                var starts: [Int] = []
+                if built.count == 1, case .list = built[0] {
+                    var item = group.startIndex
+                    while item < group.endIndex {
+                        guard let identity = group[item].component(at: 1)?.identity else { item += 1; continue }
+                        starts.append(group[item].sourceOffset)
+                        while item < group.endIndex, group[item].component(at: 1)?.identity == identity { item += 1 }
+                    }
+                }
+                for index in built.indices { items.append(index == 0 ? starts : []) }
+            }
             index = end
         }
-        return result
+        return (result, items)
     }
 
     /// One level of a run's block nesting: what kind of block, and which one.
@@ -300,6 +371,29 @@ enum TranscriptMarkdown {
         guard let parsed = try? AttributedString(markdown: source, options: options) else { return source }
         return String(parsed.characters)
     }
+}
+
+extension String {
+    /// This string's UTF-8 bytes in one buffer: a native string's own, a
+    /// bridged string's copied once.
+    func withUTF8Bytes<R>(_ body: (UnsafeBufferPointer<UInt8>) throws -> R) rethrows -> R {
+        if let result = try utf8.withContiguousStorageIfAvailable(body) { return result }
+        return try Array(utf8).withUnsafeBufferPointer(body)
+    }
+    /// Whether this string's bytes begin with all of `prefix`'s. The one
+    /// change a streamed reply makes is appending, and this answers it with a
+    /// single comparison of memory, where `hasPrefix` walks both strings a
+    /// character at a time whenever either holds anything but ASCII.
+    func hasUTF8Prefix(_ prefix: String) -> Bool {
+        let count = prefix.utf8.count
+        guard count <= utf8.count else { return false }
+        guard count > 0 else { return true }
+        return withUTF8Bytes { mine in
+            prefix.withUTF8Bytes { theirs in memcmp(mine.baseAddress!, theirs.baseAddress!, count) == 0 }
+        }
+    }
+    /// Whether the two strings are the same bytes, not merely canonically equal.
+    func hasSameUTF8(as other: String) -> Bool { utf8.count == other.utf8.count && hasUTF8Prefix(other) }
 }
 
 /// The transcript's palette, the same values the stylesheet carried, as

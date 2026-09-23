@@ -140,7 +140,7 @@ extension WorkspaceModel {
             return
         }
         let attachments = view.attachments, skills = view.skills
-        let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString, previousState = view.state
+        let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString
         let savedDraft = view.savedDraft
         var params = TurnOverrides.params(for: item, base: Self.editTurnParams(messageID: messageID, text: text, turnID: turnID, attachments: attachments, skills: skills))
         if let timeline = view.editSourceTimeline { params["editSourceTimeline"] = .string(timeline) }
@@ -150,6 +150,10 @@ extension WorkspaceModel {
         Task {
             defer { view.loading = false; view.editSubmitting = false }
             var dispatched = false
+            // As in `send`: only this resend's own "queued" is ever undone, and
+            // only while it is still what the chat shows.
+            var shown: (state: String, replaced: String)?
+            @MainActor func undoShownState() { if let shown, view.state == shown.state { view.state = shown.replaced } }
             do {
                 let connection = Result { try connectionLease(for: item) }
                 if !isEphemeral(item.id) { try await store.put(savedDraft, kind: "draft", id: item.id) }
@@ -157,12 +161,12 @@ extension WorkspaceModel {
                 try requireConnection(lease)
                 let host = try await open(item)
                 let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent", epoch: host.epoch, attachments: attachments, skills: skills)
-                if !isEphemeral(item.id) { try await store.put(intent, kind: "pending:\(item.id)", id: commandID) }
+                if !isEphemeral(item.id) { try await store.put(intent, kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
                 try requireConnection(lease)
                 dispatched = true
-                if !view.busy { view.state = "queued" }
+                if !view.busy { shown = ("queued", view.state); view.state = "queued" }
                 _ = try await host.request(Self.editTurnMethod, sessionID: item.id, params: params, commandID: commandID)
-                if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID) }
+                if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID); pendingIntentsChanged(item.id) }
                 if view.editGeneration == generation, view.editingMessageID == messageID {
                     if view.draft == text, view.attachments == attachments, view.skills == skills { finishEdit(view) }
                     else {
@@ -180,8 +184,12 @@ extension WorkspaceModel {
                 view.notice = error.localizedDescription
                 if view.editGeneration == generation { view.editNotice = error.localizedDescription }
                 if case HostError.rejected(let code, _) = error, code == "journal_uncertain" { view.uncertain = true; view.state = "interrupted" }
-                else if case HostError.rejected(let code, _) = error { try? await store.remove(kind: "pending:\(item.id)", id: commandID); view.state = code == "connection_unavailable" ? "interrupted" : previousState }
-                else { view.uncertain = dispatched; view.state = dispatched ? "interrupted" : previousState }
+                else if case HostError.rejected(let code, _) = error {
+                    try? await store.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id)
+                    if code == "connection_unavailable" { view.state = "interrupted" } else { undoShownState() }
+                }
+                else if dispatched { view.uncertain = true; view.state = "interrupted" }
+                else { undoShownState() }
             }
         }
     }

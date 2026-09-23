@@ -84,6 +84,9 @@ extension FocusedValues {
                     .keyboardShortcut(.leftArrow, modifiers: [.control, .command])
             }
             CommandMenu("Conversation") {
+                // The menu is rebuilt on every publish of the model: each fold
+                // availability is read once per build, from the rows.
+                let foldsTurns = commandModel.canFoldTurns, foldsResponses = commandModel.canFoldResponses
                 Button("Send / Queue Follow-up") { commandModel.send() }.keyboardShortcut(.return, modifiers: .command).disabled(!commandModel.conversationCommandsEnabled)
                 Button("Open Side") { commandModel.openSide() }.disabled(!commandModel.conversationCommandsEnabled)
                 Button("Steer Current Run") { commandModel.send(steer: true) }.disabled(!commandModel.conversationCommandsEnabled)
@@ -94,18 +97,18 @@ extension FocusedValues {
                 Divider()
                 // Folding a turn was a click on its chevron and nothing else.
                 Button("Fold This Turn") { commandModel.setFocusedTurnFolded(true) }
-                    .keyboardShortcut("[", modifiers: [.command, .option]).disabled(!commandModel.canFoldTurns)
+                    .keyboardShortcut("[", modifiers: [.command, .option]).disabled(!foldsTurns)
                 Button("Unfold This Turn") { commandModel.setFocusedTurnFolded(false) }
-                    .keyboardShortcut("]", modifiers: [.command, .option]).disabled(!commandModel.canFoldTurns)
+                    .keyboardShortcut("]", modifiers: [.command, .option]).disabled(!foldsTurns)
                 Button("Fold Every Turn") { commandModel.setEveryTurnFolded(true) }
-                    .keyboardShortcut("[", modifiers: [.command, .option, .shift]).disabled(!commandModel.canFoldTurns)
+                    .keyboardShortcut("[", modifiers: [.command, .option, .shift]).disabled(!foldsTurns)
                 Button("Unfold Every Turn") { commandModel.setEveryTurnFolded(false) }
-                    .keyboardShortcut("]", modifiers: [.command, .option, .shift]).disabled(!commandModel.canFoldTurns)
+                    .keyboardShortcut("]", modifiers: [.command, .option, .shift]).disabled(!foldsTurns)
                 // One more level: the response itself reads as one line.
                 Button("Fold This Response to One Line") { commandModel.setFocusedResponseCollapsed(true) }
-                    .disabled(!commandModel.canFoldResponses)
+                    .disabled(!foldsResponses)
                 Button("Show This Response") { commandModel.setFocusedResponseCollapsed(false) }
-                    .disabled(!commandModel.canFoldResponses)
+                    .disabled(!foldsResponses)
                 Divider()
                 Button("View Retained Message…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.viewMessages(id) } }.disabled(!commandModel.conversationCommandsEnabled)
                 Button("Search and Copy Conversation…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspectConversation(id) } }.keyboardShortcut("f").disabled(!commandModel.conversationCommandsEnabled)

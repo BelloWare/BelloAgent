@@ -41,7 +41,8 @@ struct InspectorView: View {
                     VStack(spacing: PiSpacing.sm) {
                         ScrollView {
                             LazyVStack(spacing: 2) {
-                                ForEach(Array(attempts.enumerated()), id: \.offset) { _, attempt in
+                                // Keyed by attempt: a row keeps its identity when newer attempts push it down.
+                                ForEach(Array(attempts.enumerated()), id: \.element.inspectorRowID) { _, attempt in
                                     let id = attempt["attemptId"]?.string ?? ""
                                     PiSelectableRow(selected: selectedID == id, action: { selectedID = id }) {
                                         AttemptRow(attempt: attempt, sessionID: sessionID, showsOwner: messageID != nil)
@@ -133,6 +134,13 @@ struct InspectorView: View {
         let fresh = Set(newest.compactMap { $0["attemptId"]?.string })
         return newest + existing.filter { !fresh.contains($0["attemptId"]?.string ?? "") }
     }
+    /// Appends a page the reader asked for with "Older Attempts". Attempts
+    /// that arrived since the list was paged shift every offset, so the page
+    /// can begin with rows already listed; each attempt is listed once.
+    static func appendingOlder(_ page: [[String: WireValue]], to existing: [[String: WireValue]]) -> [[String: WireValue]] {
+        let listed = Set(existing.compactMap { $0["attemptId"]?.string })
+        return existing + page.filter { !listed.contains($0["attemptId"]?.string ?? "") }
+    }
     private func refresh(older: Bool = false, reloadDetail: Bool = true, polling: Bool = false) async {
         do {
             if retained {
@@ -140,7 +148,7 @@ struct InspectorView: View {
                 let workspaceID = model.record(sessionID)?.workspaceID
                 if messageID != nil && workspaceID == nil { throw HostError.failure("The message's project is unavailable. Reopen its chat before looking up related requests.") }
                 let page = try await model.traces.list(sessionID: sessionID, messageID: messageID, workspaceID: workspaceID, offset: start)
-                let merged = older ? attempts + page : polling ? Self.merging(page, into: attempts) : page
+                let merged = older ? Self.appendingOlder(page, to: attempts) : polling ? Self.merging(page, into: attempts) : page
                 if attempts != merged { attempts = merged }
                 if !polling { next = page.count == 128 ? Double(start + page.count) : nil }
                 if let initialAttemptID, !attempts.contains(where: { $0["attemptId"]?.string == initialAttemptID }) {
@@ -154,7 +162,7 @@ struct InspectorView: View {
             else {
                 let value = try await model.debugRequest("debug.list", sessionID: sessionID, params: ["offset": .number(older ? next ?? 0 : 0)])
                 let page = value["attempts"]?.array?.compactMap(\.object) ?? []
-                let merged = older ? attempts + page : polling ? Self.merging(page, into: attempts) : page
+                let merged = older ? Self.appendingOlder(page, to: attempts) : polling ? Self.merging(page, into: attempts) : page
                 if attempts != merged { attempts = merged }
                 if !polling { next = value["next"]?.number }
                 // Unguarded, this re-rendered the whole sheet on every poll.
@@ -277,6 +285,10 @@ private struct AttemptRow: View {
             }
         }
     }
+}
+
+private extension Dictionary where Key == String, Value == WireValue {
+    var inspectorRowID: String { self["attemptId"]?.string ?? "" }
 }
 
 /// How a request attempt is named on screen. The wire counts attempts from

@@ -44,17 +44,27 @@ final class LiveAccountingTests: XCTestCase {
         model.hosts[chat.workspaceID] = host; model.opened.insert(chat.id)
         let connection = try XCTUnwrap(host.connectionID), epoch = try XCTUnwrap(host.epoch)
         var sequence = 0
+        /// One snapshot, answered the way the helper answers: this read and any
+        /// follow-up it asks for with the same state. A run that ends on a
+        /// reply that skipped the footer's figures asks once more, for them.
         @MainActor func snapshot(_ messages: [TranscriptMessage]?, state: String = "running") async throws {
             let count = sent.count; model.refresh(chat.id)
             for _ in 0..<1000 where sent.count == count { await Task.yield() }
-            let command = try XCTUnwrap(sent.dropFirst(count).first)
+            XCTAssertGreaterThan(sent.count, count, "The snapshot was never asked for")
             sequence += 1
             var result: [String: WireValue] = ["seq": .number(Double(sequence)), "state": .string(state),
                 "runStatus": .string(state), "displayRevision": .string("projection-\(sequence)")]
             if let messages { result["messages"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(messages)) }
-            host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(epoch),
-                "commandId": try XCTUnwrap(command["commandId"]), "ok": .bool(true), "result": .object(result)]), connectionID: connection)
-            for _ in 0..<1000 where view.snapshotInFlight { try await Task.sleep(for: .milliseconds(1)) }
+            var answered = count
+            for _ in 0..<2000 {
+                while answered < sent.count {
+                    let command = sent[answered]; answered += 1
+                    host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(epoch),
+                        "commandId": try XCTUnwrap(command["commandId"]), "ok": .bool(true), "result": .object(result)]), connectionID: connection)
+                }
+                if !view.snapshotInFlight && answered == sent.count { break }
+                try await Task.sleep(for: .milliseconds(1))
+            }
             XCTAssertFalse(view.snapshotInFlight); XCTAssertEqual(view.notice, "")
         }
 
@@ -78,7 +88,14 @@ final class LiveAccountingTests: XCTestCase {
             try await snapshot(rows)
         }
         // Status-only completion must not run another historical query either.
+        // The live footer throttle skips the figures on the read that sees the
+        // run end; exactly one follow-up then asks for them.
+        view.footerUpdatedAt = ProcessInfo.processInfo.systemUptime
+        let beforeIdle = sent.count
         try await snapshot(nil, state: "idle"); await waitForAccounting(model)
+        let idleReads = Array(sent.dropFirst(beforeIdle))
+        XCTAssertEqual(idleReads.map { $0["params"]?.object?["includeMetrics"]?.bool }, [false, true],
+                       "The read that saw the run end skipped the figures; one follow-up fetched them")
         XCTAssertEqual(view.accountingRevision, streamingRevision, "Text/thinking/status pulses do not poll historical accounting")
         let finish: [String: WireValue] = ["type": .string("finish"), "metadata": .object(metadata(id, session: chat.id, cost: 0.006))]
         try await model.traces.accept(finish, workspace: "w"); await model.captureDidPersist(finish, workspaceID: "w")

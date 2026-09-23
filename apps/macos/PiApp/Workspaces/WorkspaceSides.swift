@@ -108,6 +108,9 @@ extension WorkspaceModel {
         Task {
             do {
                 try await publishPendingSide(info, view: view)
+                // This flag was set here, for the side's creation; the send
+                // below sets its own.
+                view.loading = false
                 view.draft = question; send(sessionID: id)
             } catch {
                 view.loading = false; view.notice = error.localizedDescription
@@ -130,7 +133,11 @@ extension WorkspaceModel {
         guard let store else { throw StoreError.unavailable }
         guard let parent = record(info.parentID) else { throw HostError.failure("The parent chat is no longer available.") }
         let id = info.id, parentID = info.parentID
-        view.loading = true; defer { view.loading = false }
+        // A send that publishes the side holds this flag for the whole
+        // submission. Clearing it here, with the first message still on its
+        // way, let Send submit that message a second time.
+        let wasLoading = view.loading
+        view.loading = true; defer { if !wasLoading { view.loading = false } }
         var saved = info.chat
         saved.topicID = effectiveTopicID(for: parent)
         saved.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
@@ -138,9 +145,28 @@ extension WorkspaceModel {
         try await store.put(DraftRecord(id: id, text: view.draft), kind: "draft", id: id)
         let host = try await open(parent); host.isBusy = true
         sides[parentID]?.pending = false
-        let result = try await host.request("side.open", sessionID: parentID, params: ["sideSessionId": .string(id)]).object ?? [:]
-        guard result["sessionId"]?.string == id, sides[parentID]?.id == id else { throw HostError.failure("Side identity changed; reopen this project before creating another side.") }
-        try await registerKeptSide(id: id, path: result["path"]?.string)
+        let result: [String: WireValue]
+        var written = false
+        do {
+            result = try await host.request("side.open", sessionID: parentID, params: ["sideSessionId": .string(id)]).object ?? [:]
+            written = true
+            guard result["sessionId"]?.string == id, sides[parentID]?.id == id else { throw HostError.failure("Side identity changed; reopen this project before creating another side.") }
+            try await registerKeptSide(id: id, path: result["path"]?.string)
+        } catch {
+            // Nothing was kept, so the side is still the draft it was: it can
+            // be sent again or closed, and its text is where it was. Left
+            // half-open, nothing could close, keep or replace it, and while it
+            // existed the app refused to quit and blocked every update. A side
+            // the helper did write is still recovered from its intent; one it
+            // refused leaves nothing behind, since a draft side's text is
+            // never stored.
+            if sides[parentID]?.id == id, sides[parentID]?.kept != true { sides[parentID]?.pending = true }
+            if !written {
+                try? await store.remove(kind: "side-keep", id: id)
+                try? await store.remove(kind: "draft", id: id)
+            }
+            throw error
+        }
         let preference = try await capturePreference(sessionID: id)
         _ = try await host.request("debug.mode", sessionID: id, params: ["mode": .string(preference.mode)])
         view.captureMode = preference.mode
@@ -381,7 +407,8 @@ extension WorkspaceModel {
         return fork
     }
     func discardLostSides(workspaceID: String) {
-        for info in sides.values.filter({ $0.workspaceID == workspaceID && !$0.kept }) {
+        // A draft side has nothing on the helper to lose: it stays, with its text.
+        for info in sides.values.filter({ $0.workspaceID == workspaceID && !$0.kept && !$0.pending }) {
             let draft = displays[info.id]?.draft.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             sides.removeValue(forKey: info.parentID); displays.removeValue(forKey: info.id); opened.remove(info.id)
             forgetReadState(info.id)

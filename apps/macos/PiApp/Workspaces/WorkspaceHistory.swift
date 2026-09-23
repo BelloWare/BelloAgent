@@ -138,9 +138,11 @@ extension WorkspaceModel {
             do {
                 let page = try await self.readConversationWindow(item, cursor: cursor, newer: newer)
                 guard current() else { return false }
-                guard (newer ? view.newerPage.cursor : view.olderPage.cursor) == cursor else {
-                    throw HostError.failure("The reading window moved while loading. Retry its current boundary.")
-                }
+                // The window's edge row was let go of while this page was on
+                // its way, so the page no longer joins it. Nothing is wrong
+                // with the boundary it has now; the next request reads that.
+                // (Reporting it stopped earlier rows from loading on their own.)
+                guard (newer ? view.newerPage.cursor : view.olderPage.cursor) == cursor else { return false }
                 let handoff = page.incarnation.hasPrefix("file:") != cursor.incarnation.hasPrefix("file:")
                 guard (page.incarnation == cursor.incarnation || handoff), page.lineage == cursor.lineage else {
                     throw HostError.failure("History source changed. Use Latest to reload, or reopen the retained message.")

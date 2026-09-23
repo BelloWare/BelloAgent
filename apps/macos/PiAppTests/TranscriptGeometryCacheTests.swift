@@ -170,11 +170,23 @@ final class TranscriptGeometryCacheTests: XCTestCase {
         try await narrow.settle { narrow.document.retainedRows.count == 50 && (narrow.document.retainedRows.first?.frame.height ?? 0) > originalHeight }
         XCTAssertEqual(narrow.document.retainedRows.reduce(0) { $0 + $1.sharedMeasurementHits }, 0)
         narrow.close()
-        var environment = TranscriptRowEnvironment(); environment.isEnabled = false
-        let changed = Fixture(session: session, cache: cache, environment: environment)
+        // Colour and the enabled state are painted, not laid out: a pane
+        // disabled while Reports is in front borrows the geometry it had
+        // rather than measuring every row again.
+        var disabled = TranscriptRowEnvironment(); disabled.isEnabled = false
+        let painted = Fixture(session: session, cache: cache, environment: disabled)
+        try await painted.settle { painted.document.retainedRows.count == 50 && (painted.document.retainedRows.last?.frame.height ?? 0) > 0 }
+        XCTAssertGreaterThan(painted.document.retainedRows.reduce(0) { $0 + $1.sharedMeasurementHits }, 0,
+                             "A disabled pane measured every row again although nothing in it changed size")
+        XCTAssertEqual(try XCTUnwrap(painted.document.retainedRows.first).frame.height, originalHeight, accuracy: 0.5)
+        painted.close()
+        // A different type size lays the text out differently: nothing is
+        // borrowed across it.
+        var larger = TranscriptRowEnvironment(); larger.dynamicTypeSize = .xxxLarge
+        let changed = Fixture(session: session, cache: cache, environment: larger)
         defer { changed.close() }
         try await changed.settle { changed.document.retainedRows.count == 50 && (changed.document.retainedRows.last?.frame.height ?? 0) > 0 }
         XCTAssertEqual(changed.document.retainedRows.reduce(0) { $0 + $1.sharedMeasurementHits }, 0,
-                       "A differently rendered or disabled pane must not borrow another environment's geometry")
+                       "A pane laid out at another type size must not borrow another environment's geometry")
     }
 }

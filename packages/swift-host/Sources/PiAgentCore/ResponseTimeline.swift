@@ -50,10 +50,12 @@ public struct ResponseTimeline: Codable, Equatable, Sendable {
     /// segments. End/usage events never move an already displayed segment.
     @discardableResult public mutating func consume(_ event: ResponsePartEvent) -> Bool {
         if event.update == "end" {
+            var ended = false
             for index in segments.indices where segments[index].part.partKey == event.partKey && segments[index].state == "streaming" {
-                segments[index].state = "completed"; segments[index].revision += 1
+                segments[index].state = "completed"; segments[index].revision += 1; ended = true
             }
-            return true
+            // A second `.done` for a part already closed changes nothing.
+            return ended
         }
         if event.update == "replace" {
             if let corrected=segments.last(where: { $0.part.kind == "correction" && $0.part.attemptID == event.attemptID && $0.part.reconcilesPartKey == event.partKey }), corrected.text == event.text { return false }

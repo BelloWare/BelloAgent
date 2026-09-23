@@ -26,31 +26,14 @@ enum MenuBarPeriod: String, CaseIterable, Identifiable, Hashable, Sendable {
 }
 
 /// One time slice of the status-bar charts: requests, reported cost and the
-/// historical output rate of the attempts dispatched inside it.
+/// settled decode rate (`gateway.settledThroughput`) of the attempts
+/// dispatched inside it.
 struct MenuBarBucket: Sendable, Identifiable, Equatable {
     let id: Int
     let start: Date
     let end: Date
     var gateway = GatewayTotals()
-    var historicalRate = HistoricalOutputRate()
     var requests: Int { gateway.requests }
-}
-
-/// Output throughput from completed requests with both reported usage and an
-/// observed dispatch-to-model-completion interval. This includes time before
-/// first content (such as opaque reasoning and buffered JSON responses).
-/// Summing durations weights long requests fairly; individual rates are not averaged.
-struct HistoricalOutputRate: Sendable, Equatable {
-    var outputTokens: Double = 0
-    var generationMilliseconds: Double = 0
-    var samples: Int = 0
-
-    var tokensPerSecond: Double? {
-        guard samples > 0, outputTokens.isFinite, outputTokens >= 0,
-              generationMilliseconds.isFinite, generationMilliseconds > 0 else { return nil }
-        let rate = outputTokens / (generationMilliseconds / 1_000)
-        return rate.isFinite ? rate : nil
-    }
 }
 
 struct MenuBarModelDistribution: Sendable, Identifiable, Equatable {
@@ -66,7 +49,6 @@ struct MenuBarModelDistribution: Sendable, Identifiable, Equatable {
     let identityStatus: String
     let gateway: GatewayTotals
     let allRequests: Int
-    var historicalRate = HistoricalOutputRate()
     /// Share of all gateway-reported cost in the scope, including other pages.
     /// Missing model cost or a zero/unknown scope total has no meaningful share.
     var costShare: Double? = nil
@@ -104,7 +86,6 @@ struct MenuBarSnapshot: Sendable, Equatable {
     let models: [MenuBarModelDistribution]
     let modelGroups: Int
     let offset: Int
-    var historicalRate = HistoricalOutputRate()
     var buckets: [MenuBarBucket] = []
     /// Paging can read newer route rows than the retained summary. Keep both
     /// observations explicit rather than claiming one atomic snapshot.
@@ -178,7 +159,7 @@ extension DashboardQueryEngine {
             sessionCount = cached.sessions; totals = cached.gateway; counts = cached.counts
         } else {
         summary = try db.rows("""
-        SELECT \(PayloadArchive.gatewayAggregateSQL),\(PayloadArchive.historicalOutputRateSQL),COUNT(DISTINCT workspace) AS workspaces,
+        SELECT \(PayloadArchive.gatewayAggregateSQL),COUNT(DISTINCT workspace) AS workspaces,
           MIN(wall) AS first_wall,SUM(purpose='compaction') AS compactions,
           SUM(cost_status='unreported') AS cost_unreported,SUM(cost_status='invalid') AS cost_invalid,
           SUM(cost_status='conflict') AS cost_conflicts
@@ -221,7 +202,7 @@ extension DashboardQueryEngine {
         let groupCount = Int(try db.rows("\(normalized) SELECT COUNT(*) AS n FROM (SELECT 1 FROM selected \(grouping))", values).first?["n"]?.number ?? 0)
         let rows = try db.rows("""
         \(normalized)
-        SELECT api,alias,resolved_model,resolution_status,\(PayloadArchive.gatewayAggregateSQL),\(PayloadArchive.historicalOutputRateSQL),
+        SELECT api,alias,resolved_model,resolution_status,\(PayloadArchive.gatewayAggregateSQL),
           SUM(COUNT(*)) OVER() AS route_all_requests,SUM(SUM(cost_usd)) OVER() AS route_all_cost,
           SUM(SUM(output_tokens)) OVER() AS route_all_output
         FROM selected \(grouping)
@@ -240,7 +221,7 @@ extension DashboardQueryEngine {
             if let output = gateway.tokens?.output, let allOutput = row["route_all_output"]?.double, allOutput.isFinite, allOutput > 0 { outputShare = output / allOutput }
             else { outputShare = nil }
             return MenuBarModelDistribution(api: api, requestedAlias: alias, resolvedModel: row["resolved_model"]?.string, identityStatus: status, gateway: gateway, allRequests: Int(row["route_all_requests"]?.number ?? 0),
-                                            historicalRate: PayloadArchive.historicalOutputRate(row), costShare: share, outputShare: outputShare)
+                                            costShare: share, outputShare: outputShare)
         }
         if includeLatency, !models.isEmpty {
             let key = "api,alias,resolved_model,resolution_status"
@@ -265,32 +246,19 @@ extension DashboardQueryEngine {
             let width = until.timeIntervalSince(from) / Double(period.bucketCount)
             buckets = (0..<period.bucketCount).map { MenuBarBucket(id: $0, start: from.addingTimeInterval(Double($0) * width), end: from.addingTimeInterval(Double($0 + 1) * width)) }
             let bucketArgs: [CaptureSQLValue] = [.real(from.timeIntervalSince1970), .real(width)]
-            for row in try db.rows("SELECT CAST((wall-?)/? AS INTEGER) AS bucket,\(PayloadArchive.gatewayAggregateSQL),\(PayloadArchive.historicalOutputRateSQL) FROM attempts WHERE \(selected) GROUP BY bucket", bucketArgs + values) {
+            for row in try db.rows("SELECT CAST((wall-?)/? AS INTEGER) AS bucket,\(PayloadArchive.gatewayAggregateSQL) FROM attempts WHERE \(selected) GROUP BY bucket", bucketArgs + values) {
                 // The final slice is closed at `until`; an attempt exactly on it lands in the last bucket.
                 guard let raw = row["bucket"]?.number.map(Int.init) else { continue }
                 let index = min(raw, buckets.count - 1)
                 guard buckets.indices.contains(index) else { continue }
-                buckets[index].gateway = PayloadArchive.gatewayTotals(row); buckets[index].historicalRate = PayloadArchive.historicalOutputRate(row)
+                buckets[index].gateway = PayloadArchive.gatewayTotals(row)
             }
         }
         return MenuBarSnapshot(period: period, from: from, until: until, counts: counts, gateway: totals,
                                workspaces: count("workspaces"), sessions: sessionCount, compactionRequests: count("compactions"), costUnreported: count("cost_unreported"), costInvalid: count("cost_invalid"), costConflicts: count("cost_conflicts"),
-                               models: models, modelGroups: groupCount, offset: offset, historicalRate: cached?.historicalRate ?? PayloadArchive.historicalOutputRate(summary), buckets: buckets, summaryReadAt: cached?.summaryReadAt ?? Date(), modelPageReadAt: Date())
+                               models: models, modelGroups: groupCount, offset: offset, buckets: buckets, summaryReadAt: cached?.summaryReadAt ?? Date(), modelPageReadAt: Date())
     }
 
-}
-
-extension PayloadArchive {
-    // Projection already validates ordinary metadata. Explicit finite bounds
-    // also keep corrupt/legacy typed values out of the rate sample population.
-    static let historicalOutputRateSQL: String = {
-        let sample = "outcome='completed' AND dispatch IS NOT NULL AND output_tokens>=0 AND output_tokens<=1.7976931348623157e308 AND request_ms>0 AND request_ms<=1.7976931348623157e308"
-        return "SUM(CASE WHEN \(sample) THEN output_tokens END) AS rate_output_tokens,SUM(CASE WHEN \(sample) THEN request_ms END) AS rate_generation_ms,COUNT(CASE WHEN \(sample) THEN 1 END) AS rate_samples"
-    }()
-
-    static func historicalOutputRate(_ row: [String: CaptureSQLValue]) -> HistoricalOutputRate {
-        HistoricalOutputRate(outputTokens: row["rate_output_tokens"]?.double ?? 0, generationMilliseconds: row["rate_generation_ms"]?.double ?? 0, samples: Int(row["rate_samples"]?.number ?? 0))
-    }
 }
 
 func menuBarTokens(_ value: Double?) -> String {

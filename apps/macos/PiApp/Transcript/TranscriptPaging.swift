@@ -85,6 +85,15 @@ enum TranscriptPaging {
     /// Tokens the page had to answer by rebuilding the row, because something
     /// other than the arriving text changed with them.
     static var streamingRebuilds = 0
+    /// How many rows read what the reader has opened in them again, and how
+    /// many times the page walked every row to forget what left it.
+    static var disclosureReads = 0
+    static var disclosurePrunes = 0
+    /// What a reply's native surface spent taking tokens, and the part of it
+    /// that was the markdown reading of the text, so a fixture can tell the
+    /// surface's own share from the parser's.
+    static var markdownAppendSeconds = 0.0
+    static var markdownReadingSeconds = 0.0
     static var now: Double { ProcessInfo.processInfo.systemUptime }
     static func reset() {
         updateSeconds = 0; layoutSeconds = 0; measureSeconds = 0; measuredRows = 0; mountedRows = 0
@@ -95,5 +104,7 @@ enum TranscriptPaging {
         rowAttachmentSeconds = 0; rowDetachmentSeconds = 0
         placementSeconds = 0; validationSeconds = 0; intrinsicInvalidations = 0
         streamingAppends = 0; streamingEstimates = 0; streamingRebuilds = 0
+        disclosureReads = 0; disclosurePrunes = 0
+        markdownAppendSeconds = 0; markdownReadingSeconds = 0
     }
 }

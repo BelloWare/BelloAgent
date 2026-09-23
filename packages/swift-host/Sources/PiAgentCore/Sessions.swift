@@ -42,7 +42,15 @@ public actor AgentSession {
     // visible: the displayed timeline, i.e. history minus tails abandoned by
     // turn.edit branches. boundary: the latest complete side-chat boundary.
     var journal: SessionJournal?, history: [ChatMessage]=[], context: [ChatMessage]=[], boundary: [ChatMessage]=[], visible: [ChatMessage]=[]
-    var queue: [Submission]=[], steering: [Submission]=[], commands: [JSON]=[], events: [JSON]=[]
+    var queue: [Submission]=[], steering: [Submission]=[], events: [JSON]=[]
+    /// Command receipts. Every change advances `commandsGeneration`, the
+    /// revision a reader sends back to be spared receipts it already holds.
+    var commands: [JSON]=[] { didSet { commandsGeneration &+= 1 } }
+    var commandsGeneration: UInt64 = 0
+    /// The task presentation last compared for its revision, without the
+    /// sequence and display revision of the snapshot that carried it.
+    var presentedTasks: TaskPresentationProjection?
+    var presentedTasksGeneration: UInt64 = 0
     var runTask: Task<Void,Never>?, state="idle", runStatus="idle", errorMessage: String?, queuePaused=false
     /// While a transient gateway failure is being retried: attempt, total and the reason.
     var retryInfo: JSON = .null
@@ -60,15 +68,34 @@ public actor AgentSession {
     /// announces hundreds of calls must not grow the projected row without
     /// bound, because an oversized snapshot frame kills the helper process.
     var partialToolOrder: [String]=[], partialToolSeen=Set<String>()
+    /// Each streamed call's arguments so far, grown in place, and the running
+    /// encoded sizes (escaped bytes, no quotes) of those arguments and of the
+    /// partial text and thinking, as of the UTF-8 length each covers: a
+    /// projection brings them up to date by reading only what was appended.
+    var partialToolInputs: [String: String] = [:], partialToolInputSizes: [String: (utf8: Int, bytes: Int)] = [:]
+    var partialTextSize = (utf8: 0, bytes: 0), partialThinkingSize = (utf8: 0, bytes: 0)
+    /// Advanced whenever the partial is reset, so a reader's copy of one
+    /// partial's text is never extended into the next one's.
+    var partialGeneration: UInt64 = 0
+    /// The streaming row's timeline segments at the revision last projected.
+    var streamedSegments: [String: StreamedSegment] = [:]
     /// Live tool cards in arrival order, with the preview bytes each one holds.
     /// Eviction is oldest-first; a dictionary's key order is not arrival order,
     /// so sorting keys would retire a running card and keep a finished one.
     var toolStateOrder: [String]=[], toolStateBytes: [String:Int]=[:]
+    /// The call whose tool was actually entered, set just before the invoke.
+    /// A call stopped while it still waited for the workspace editing gate
+    /// never ran, and is recorded as not executed rather than unknown.
+    var toolInvocationBegan: String?
     var cumulativeUsage = CumulativeUsage()
     var currentTurnID="", appliedRevision: String?
     /// Where the time went: model requests versus tool execution, for the
     /// current turn and for the whole session. Session totals persist.
     var turnModelMs=0.0, turnToolMs=0.0
+    /// The last logical model request's own time: every attempt's request
+    /// duration (never the back-off between them), and the duration of the
+    /// attempt that produced its reply.
+    var modelRequestsMs=0.0, modelReplyMs=0.0
     var cumulativeModelMs: Double? = 0, cumulativeToolMs: Double? = 0
     var contextBaseline: RequestUsageBaseline?
     var contextMutation: UInt64 = 0
@@ -107,6 +134,10 @@ public actor AgentSession {
     var latestAssistantMessageID: String?
     let autoCompaction: Bool
     let titleTask: Bool
+    /// Whether tool cards report the recorded outcome (`unknown` for a call
+    /// that began and was interrupted, `cancelled` for one that never ran).
+    /// A reader that did not ask for this sees the states it always saw.
+    let reportsUnknownToolOutcomes: Bool
     /// Test seam: the clock the display observation stamps rows with, so a
     /// test can assert when a change became visible without sleeping.
     let displayClock: @Sendable () -> Double
@@ -134,8 +165,8 @@ public actor AgentSession {
     // integer increment each, on paths that already build a page.
     var displayProjectionBuildCount = 0
     var displayRowProjectionCount = 0
-    public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
-        self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.editingGate=editingGate; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
+    public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
+        self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.editingGate=editingGate; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
             history=seed; context=seed; boundary=seed; visible=seed; toolHistory=ToolHistoryIndex(seed); parentInfo=parent; ephemeral=true
             taskRootID=seed.last(where: { $0.role == "user" })?.taskRootID
@@ -180,10 +211,11 @@ public actor AgentSession {
                 contextRecovery = .null; compactionState = .null
             } else if item["customType"].text == "pi-app.presentation.update.v1" {
                 let target = try identity(item["data"]["id"])
-                if let position = history.firstIndex(where: { $0.id == target }), ["execution","requestLedger"].contains(history[position].kind ?? "") {
+                // An update follows the row it updates closely: search from the end.
+                if let position = history.lastIndex(where: { $0.id == target }), ["execution","requestLedger"].contains(history[position].kind ?? "") {
                     var replacement = try ChatMessage(id:target,pi:item["message"]); replacement.replayEligible=false
                     history[position]=replacement
-                    if let index=visible.firstIndex(where: { $0.id == target }) { visible[index]=replacement }
+                    if let index=visible.lastIndex(where: { $0.id == target }) { visible[index]=replacement }
                 }
             } else if item["customType"].text == "pi-app.task-terminal.v1" {
                 let task = try JSONDecoder().decode(TaskPresentationRecord.self, from: item["data"].data())
@@ -257,6 +289,7 @@ public actor AgentSession {
         for pending in unresolved {
             let call=pending.call
             var result=ChatMessage(role:"toolResult",content:[textBlock("Interrupted before durable tool result. Outcome unknown; inspect effects. The application did not rerun this tool.")]); result.toolCallId=call["id"].text; result.toolName=call["name"].text; result.isError=true
+            result.toolStats=["durationMs":.null,"outcome":"unknown"]
             result.requestAttemptIDs=pending.attempts; result.turn=pending.turn
             try opened.append(["type":"message","message":result.pi],id:result.id); history.append(result); context.append(result); visible.append(result); queuePaused=true
             for attempt in result.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(result.id) }

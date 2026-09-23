@@ -29,6 +29,31 @@ final class InspectorAttemptListTests: XCTestCase {
         XCTAssertTrue(merged.contains { $0["attemptId"]?.string == "a127" }, "the attempt pushed off the first page is still loaded")
     }
 
+    /// After new attempts arrived, "Older Attempts" asked for the offset it
+    /// recorded before they did; that page now began with rows already
+    /// listed, and the list showed them twice.
+    @MainActor func testOlderAttemptsNeverRepeatRowsAfterNewOnesArrive() {
+        let loaded = (0..<256).map { attempt("a\($0)") }
+        let polled = InspectorView.merging([attempt("n0"), attempt("n1")] + loaded.prefix(126), into: loaded)
+        XCTAssertEqual(polled.count, 258)
+        // The page at the recorded offset (256) now starts two rows earlier.
+        let older = (254..<382).map { attempt("a\($0)") }
+        let merged = InspectorView.appendingOlder(older, to: polled)
+        XCTAssertEqual(Set(merged.compactMap { $0["attemptId"]?.string }).count, merged.count, "No attempt is listed twice")
+        XCTAssertEqual(merged.count, 258 + 126)
+        XCTAssertEqual(merged.last?["attemptId"]?.string, "a381")
+    }
+
+    /// "Next Results" used the query as edited in the field with the cursor
+    /// of the results on screen, which belong to the query that was searched.
+    func testNextResultsPagesTheQueryThatProducedTheResults() {
+        let result = ContentSearch(hits: [], total: 40, next: 25, revision: "r")
+        let next = ConversationSearchPaging.next(after: result, searched: "cache", current: "cache miss")
+        XCTAssertEqual(next?.query, "cache")
+        XCTAssertEqual(next?.start, 25)
+        XCTAssertNil(ConversationSearchPaging.next(after: ContentSearch(hits: [], total: 3, next: nil, revision: "r"), searched: "cache", current: "cache"))
+    }
+
     @MainActor func testAReaderWhoNeverPagedJustSeesTheNewestPage() {
         let existing = (0..<10).map { attempt("a\($0)") }
         let refreshed = [attempt("new")] + existing.prefix(9)

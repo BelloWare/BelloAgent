@@ -17,6 +17,11 @@ enum WorkspacePage: String, Sendable { case chats, report }
     func chatRecord(_ id: String) -> ChatRecord? { sidebarIndex.chat(id, in: chats) }
     @Published var unreadStates: [String: SessionReadState] = [:] { didSet { readBadgeCache = nil; noteActivityChanged() } }
     var readBadgeCache: SidebarReadCounts?
+    /// Owned by `WorkspaceReadState.swift`: replies that finished in the chat
+    /// the reader is looking at, waiting for the page's own read check.
+    var heldUnread: [String: HeldUnread] = [:]
+    /// Test seam: whether the app is in front. Nil in the app, which asks NSApp.
+    var applicationIsActiveOverride: Bool?
     var dirtyReadStates: Set<String> = []
     var readStateWrites: [String: Task<Void, Never>] = [:]
     @Published var profiles: [ProfileRecord] = [] { didSet { noteActivityChanged() } }
@@ -230,6 +235,9 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// Owned by `WorkspaceRefresh.swift`: the delayed shutdown of an idle
     /// project's helper, cancelled the moment it is used again.
     var idleTasks: [String: Task<Void, Never>] = [:]
+    /// Owned by `WorkspaceHosts.swift`: helpers stopped on purpose for being
+    /// idle, whose exit therefore is not a lost host.
+    var retiringHosts: Set<ObjectIdentifier> = []
     /// Owned by `WorkspaceDrafts.swift`: the debounced write of each chat's
     /// draft, and the token saying which write owns the entry.
     var draftTasks: [String: Task<Void, Never>] = [:]

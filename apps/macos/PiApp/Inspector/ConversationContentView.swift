@@ -2,10 +2,21 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 
+/// What "Next Results" asks for after a search: the next page of the query
+/// that found the listed results. The cursor belongs to that query, not to
+/// whatever the field says now; a new query starts with Search.
+enum ConversationSearchPaging {
+    static func next(after result: ContentSearch, searched: String, current: String) -> (query: String, start: Int)? {
+        result.next.map { (searched, $0) }
+    }
+}
+
 struct ConversationContentView: View {
     @ObservedObject var model: WorkspaceModel
     let sessionID: String
     @State private var query = ""
+    /// The query the listed results were found with.
+    @State private var searched = ""
     @State private var selectedID: String?
     @State private var result = ContentSearch(hits: [], total: 0, next: nil, revision: "")
     @State private var first = 1
@@ -41,7 +52,9 @@ struct ConversationContentView: View {
                 HStack(spacing: PiSpacing.sm) {
                     Text("\(result.hits.count) matches on this page · \(result.total) retained messages").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                     Spacer()
-                    Button { search(start: result.next ?? 0) } label: { Label("Next Results", systemImage: "chevron.right") }.labelStyle(.trailingIcon).disabled(busy || result.next == nil)
+                    Button {
+                        if let next = ConversationSearchPaging.next(after: result, searched: searched, current: query) { search(next.query, start: next.start) }
+                    } label: { Label("Next Results", systemImage: "chevron.right") }.labelStyle(.trailingIcon).disabled(busy || result.next == nil)
                     Button { guard let selected else { return }; busy = true; Task { defer { busy = false }; do { try await model.revealConversationHit(sessionID, hit: selected); dismiss() } catch { notice = error.localizedDescription } } } label: { Label("Show in Transcript", systemImage: "text.viewfinder") }
                         .disabled(busy || selected == nil)
                 }
@@ -74,12 +87,13 @@ struct ConversationContentView: View {
         }
         .task { search() }
     }
-    private func search(start: Int = 0) {
+    private func search(_ text: String? = nil, start: Int = 0) {
         guard !busy else { return }; busy = true
+        let text = text ?? query
         Task { defer { busy = false }; do {
-            let found = try await model.searchConversation(sessionID, query: query, start: start)
+            let found = try await model.searchConversation(sessionID, query: text, start: start)
             if result.revision.isEmpty { last = max(1, found.total) }
-            result = found; selectedID = nil; notice = ""
+            result = found; searched = text; selectedID = nil; notice = ""
         } catch { notice = error.localizedDescription } }
     }
     private func collect(first: Int, last: Int, limit: Int, failure: String) async throws -> Data {

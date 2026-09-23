@@ -29,9 +29,13 @@ actor PayloadArchive {
     // before the next expiry must not sweep every manifest/chunk in the archive.
     private var nextReconciliation = -Double.infinity
     private struct Writer {
+        /// Who the attempt belongs to and where its chunks live, fixed at
+        /// `begin`: a body packet no longer re-reads the attempt's row.
+        let workspace: String, scope: String
         var chunker = CaptureChunker(), hasher = SHA256()
         var observed = 0, length = 0, ordinal = 0
         var failure: String?
+        init(workspace: String, scope: String) { self.workspace = workspace; self.scope = scope }
     }
     private var writers: [String: Writer] = [:]
     private var leases: Set<String> = []
@@ -41,6 +45,20 @@ actor PayloadArchive {
     /// Seeded on demand and dropped whenever rows are removed.
     private var chunkTotals: (count: Int64, bytes: Int64)?
     private var eventIndexCount: Int64?
+    /// Attempts on record, for the 100,000 bound each new request checks.
+    /// Rows are never deleted, so the count only grows once seeded.
+    private var attemptCount: Int64?
+    /// Chunk folders known to exist and to be durable in their parent.
+    private var chunkFolders: Set<String> = []
+    /// Requests whose metrics a sweep has expired so far. Retained totals
+    /// computed before a change of this count may still include them.
+    private(set) var metricExpirations = 0
+    /// Test seams: metadata records decoded, and directories synced for new chunks.
+    private(set) var decodedMetadata = 0
+    private(set) var directorySyncs = 0
+    /// Listed projections by attempt, with the row signature they were made from.
+    private var listedCache: [String: (key: String, value: [String: WireValue])] = [:]
+    private var listedOrder: [String] = []
     init(root: URL, now: @escaping @Sendable () -> Date = { Date() }, beforeChunkWrite: @escaping @Sendable () throws -> Void = {}, exportDidReadPage: @escaping @Sendable () async -> Void = { await Task.yield() }, didReconcile: @escaping @Sendable () -> Void = {}) {
         self.root = root; self.now = now; self.beforeChunkWrite = beforeChunkWrite; self.exportDidReadPage = exportDidReadPage
         self.didReconcile = didReconcile
@@ -52,6 +70,7 @@ actor PayloadArchive {
         if let database { try verifyLegacyKey(database, cipher: next) }
         legacyCipher = next; self.quota = quota; self.bodyRetention = bodyRetention; self.metricRetention = metricRetention
         nextReconciliation = -Double.infinity
+        listedCache.removeAll(); listedOrder.removeAll()
         if database == nil { try open() }
         try reconcile()
     }
@@ -146,7 +165,7 @@ actor PayloadArchive {
         let encoded = try JSONEncoder().encode(metadata)
         guard encoded.count <= 262_144 else { throw CaptureFailure.unavailable }
         try reconcile()
-        guard (try db.rows("SELECT COUNT(*) AS n FROM attempts").first?["n"]?.number ?? 0) < 100_000 else { throw CaptureFailure.quota }
+        guard try attemptCountNow() < 100_000 else { throw CaptureFailure.quota }
         try db.transaction {
             try db.execute("INSERT INTO attempts(id,session,workspace,turn,purpose,api,alias,model,outcome,wall,updated,metadata) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [.text(id), .text(session), .text(workspace), .text(turn), .text(metadata["purpose"]?.string ?? "turn"), .text(metadata["api"]?.string ?? ""), .text(metadata["requestedModel"]?.string ?? ""), .null, .text("running"), .real(metadata["wallTimestamp"]?.number ?? now().timeIntervalSince1970), .real(now().timeIntervalSince1970), .blob(encoded)])
             for kind in ["request", "response"] {
@@ -155,7 +174,23 @@ actor PayloadArchive {
             try link(metadata, id: id, db: db)
             try Self.projectDashboard(metadata, id: id, db: db)
         }
-        if mode == "persist" { for kind in ["request", "response"] { writers[writerKey(id, kind)] = Writer() } }
+        if let count = attemptCount { attemptCount = count + 1 }
+        if mode == "persist" {
+            let scope = CaptureContent.scope(session: session)
+            for kind in ["request", "response"] { writers[writerKey(id, kind)] = Writer(workspace: workspace, scope: scope) }
+        }
+    }
+    private func attemptCountNow() throws -> Int64 {
+        if let attemptCount { return attemptCount }
+        let value = try ready().rows("SELECT COUNT(*) AS n FROM attempts").first?["n"]?.number ?? 0
+        attemptCount = value
+        return value
+    }
+    /// Whether an attempt belongs to `workspace`: from its writer while its
+    /// body is being recorded, else from its row.
+    private func owned(_ id: String, kind: String? = nil, by workspace: String) throws -> Bool {
+        if let kind, let writer = writers[writerKey(id, kind)] { return writer.workspace == workspace }
+        return try record(id)["workspace"]?.string == workspace
     }
     private func link(_ metadata: [String: WireValue], id: String, db: CaptureDatabase) throws {
         for (field, role) in [("messageIds", "context"), ("outputMessageIds", "output")] {
@@ -172,12 +207,13 @@ actor PayloadArchive {
         guard ["request", "response"].contains(kind), !bytes.isEmpty, bytes.count <= 32_768,
               var writer = writers[key], writer.failure == nil, offset == writer.observed,
               offset + bytes.count <= (kind == "request" ? 33_554_432 : 67_108_864) else { throw CaptureFailure.sequence }
-        let row = try record(attempt), scope = CaptureContent.scope(session: try archiveText(row, "session"))
         writer.observed += bytes.count
         do {
-            let chunks = writer.chunker.feed(bytes)
-            for chunk in chunks { try publish(chunk, attempt: attempt, kind: kind, scope: scope, writer: &writer) }
-            try db.execute("UPDATE bodies SET observed=? WHERE attempt=? AND kind=?", [.integer(Int64(writer.observed)), .text(attempt), .text(kind)])
+            let chunks = writer.chunker.feed(bytes).filter { !$0.isEmpty }
+            // Each chunk's manifest write records the bytes observed so far;
+            // only a packet that completes no chunk writes that on its own.
+            for chunk in chunks { try publish(chunk, attempt: attempt, kind: kind, scope: writer.scope, writer: &writer) }
+            if chunks.isEmpty { try db.execute("UPDATE bodies SET observed=? WHERE attempt=? AND kind=?", [.integer(Int64(writer.observed)), .text(attempt), .text(kind)]) }
             writers[key] = writer
         } catch {
             let reason = error is CaptureFailure ? error.localizedDescription : "Capture disk write failed"
@@ -196,10 +232,17 @@ actor PayloadArchive {
             try reserve(Int64(bytes.count))
             try beforeChunkWrite()
             let folder = root.appendingPathComponent("chunks/" + scope, isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            for directory in [folder, folder.deletingLastPathComponent()] {
-                guard (try directory.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true else { throw CaptureFailure.corrupt }
-                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            // A session's folder is checked, and its own entry made durable in
+            // `chunks/` and the root, once per process; after that a new chunk
+            // changes only its folder. Syncing all three per chunk cost two
+            // fsyncs of directories that had not changed.
+            let settled = chunkFolders.contains(scope)
+            if !settled {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                for directory in [folder, folder.deletingLastPathComponent()] {
+                    guard (try directory.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true else { throw CaptureFailure.corrupt }
+                    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+                }
             }
             let file = folder.appendingPathComponent(id)
             try bytes.write(to: file, options: .atomic)
@@ -207,10 +250,12 @@ actor PayloadArchive {
             let handle = try FileHandle(forWritingTo: file); defer { try? handle.close() }; try handle.synchronize()
             // Content and directory entry are durable before a manifest refers
             // to them. Orphans from a crash are collected on restart.
-            for directory in [folder, folder.deletingLastPathComponent(), root] {
+            for directory in settled ? [folder] : [folder, folder.deletingLastPathComponent(), root] {
                 let fd = Darwin.open(directory.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW); guard fd >= 0 else { throw CaptureFailure.unavailable }
                 let synced = fsync(fd); Darwin.close(fd); guard synced == 0 else { throw CaptureFailure.unavailable }
+                directorySyncs += 1
             }
+            chunkFolders.insert(scope)
         }
         var hasher = writer.hasher; hasher.update(data: bytes)
         let digest = Data(hasher.finalize())
@@ -218,7 +263,7 @@ actor PayloadArchive {
         try db.transaction {
             try db.execute("INSERT OR IGNORE INTO chunks(scope,id,length,bytes,storage) VALUES(?,?,?,?,'plaintext-v2')", [.text(scope), .text(id), .integer(Int64(bytes.count)), .integer(Int64(bytes.count))])
             try db.execute("INSERT INTO refs VALUES(?,?,?,?,?,?,?)", [.text(attempt), .text(kind), .integer(Int64(writer.ordinal)), .text(scope), .text(id), .integer(Int64(writer.length)), .integer(Int64(bytes.count))])
-            try db.execute("UPDATE bodies SET length=?,digest=? WHERE attempt=? AND kind=?", [.integer(Int64(writer.length + bytes.count)), .blob(digest), .text(attempt), .text(kind)])
+            try db.execute("UPDATE bodies SET length=?,digest=?,observed=MAX(observed,?) WHERE attempt=? AND kind=?", [.integer(Int64(writer.length + bytes.count)), .blob(digest), .integer(Int64(writer.observed)), .text(attempt), .text(kind)])
         }
         if stored, let totals = chunkTotals { chunkTotals = (totals.count + 1, totals.bytes + Int64(bytes.count)) }
         writer.hasher.update(data: bytes); writer.length += bytes.count; writer.ordinal += 1
@@ -300,7 +345,7 @@ actor PayloadArchive {
             guard let id = packet["attemptId"]?.string, let kind = packet["body"]?.string,
                   let offset = packet["offset"]?.number, offset >= 0, offset <= 67_108_864, offset.rounded() == offset,
                   let base64 = packet["bytes"]?.string, base64.utf8.count <= 43_692, let bytes = Data(base64Encoded: base64),
-                  try record(id)["workspace"]?.string == workspace else { throw CaptureFailure.sequence }
+                  try owned(id, kind: kind, by: workspace) else { throw CaptureFailure.sequence }
             try append(attempt: id, kind: kind, offset: Int(offset), bytes: bytes)
         case "finish", "metadata":
             guard let metadata = packet["metadata"]?.object, let id = metadata["attemptId"]?.string,
@@ -350,6 +395,7 @@ actor PayloadArchive {
         guard UUID(uuidString: id) != nil else { throw CaptureFailure.corrupt }
         guard let bytes = row["metadata"]?.data else { throw CaptureFailure.corrupt }
         var value = try JSONDecoder().decode([String: WireValue].self, from: bytes)
+        decodedMetadata += 1
         value["workspaceId"] = .string(try archiveText(row, "workspace")); value["outcome"] = .string(try archiveText(row, "outcome"))
         value["storageVersion"] = .number(5); value["metricsRetained"] = .bool(row["metrics_retained"]?.number == 1)
         for body in bodies {
@@ -396,15 +442,51 @@ actor PayloadArchive {
         // Two statements for the page, not two per row: the inspector polls
         // this once a second, and 128 ids used to cost 257 statements and a
         // re-read of every attempt's metadata blob.
-        let rows = try db.rows(sql.replacingOccurrences(of: "SELECT id FROM attempts", with: "SELECT * FROM attempts"), values)
+        return try listed(try db.rows(sql.replacingOccurrences(of: "SELECT id FROM attempts", with: "SELECT \(Self.listedColumns) FROM attempts"), values), db: db)
+    }
+    /// What a listed row is keyed by: never its metadata blob.
+    private static let listedColumns = "id,updated,length(metadata) AS size,outcome,metrics_retained,workspace"
+    /// A listed page as the inspector and the turn popup show it. They poll
+    /// the same page every second or two: a row whose record and body
+    /// descriptors are unchanged since the last listing reuses its projection,
+    /// so only changed rows fetch and decode their metadata. Projections leave
+    /// out the context links (message ids), which can run to thousands per
+    /// request and are in `message_links`; one request's own metadata keeps them.
+    private func listed(_ rows: [[String: CaptureSQLValue]], db: CaptureDatabase) throws -> [[String: WireValue]] {
         guard !rows.isEmpty else { return [] }
         let ids = try rows.map { try archiveText($0, "id") }
-        let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
         var descriptors: [String: [[String: CaptureSQLValue]]] = [:]
-        for body in try db.rows("SELECT * FROM bodies WHERE attempt IN (\(placeholders))", ids.map { CaptureSQLValue.text($0) }) {
+        for body in try db.rows("SELECT * FROM bodies WHERE attempt IN (\(ids.map { _ in "?" }.joined(separator: ",")))", ids.map(CaptureSQLValue.text)) {
             descriptors[try archiveText(body, "attempt"), default: []].append(body)
         }
-        return try zip(rows, ids).map { try metadata(row: $0, bodies: descriptors[$1] ?? []) }
+        func signature(_ row: [String: CaptureSQLValue], _ id: String) -> String {
+            let record = "\(row["updated"]?.double ?? -1)|\(row["size"]?.number ?? -1)|\(row["outcome"]?.string ?? "")|\(row["metrics_retained"]?.number ?? -1)|\(row["workspace"]?.string ?? "")"
+            let bodies = (descriptors[id] ?? []).map { body in
+                ["kind", "state", "reason", "storage"].map { body[$0]?.string ?? "" }.joined(separator: ":")
+                    + ":\(body["observed"]?.number ?? -1):\(body["length"]?.number ?? -1):" + (body["digest"]?.data?.base64EncodedString() ?? "")
+            }.sorted().joined(separator: ";")
+            return record + "#" + bodies
+        }
+        let keys = zip(rows, ids).map { signature($0, $1) }
+        let missing = zip(ids, keys).filter { listedCache[$0]?.key != $1 }.map(\.0)
+        if !missing.isEmpty {
+            for row in try db.rows("SELECT * FROM attempts WHERE id IN (\(missing.map { _ in "?" }.joined(separator: ",")))", missing.map(CaptureSQLValue.text)) {
+                let id = try archiveText(row, "id")
+                guard let index = ids.firstIndex(of: id) else { continue }
+                var value = try metadata(row: row, bodies: descriptors[id] ?? [])
+                value["messageIds"] = nil; value["outputMessageIds"] = nil
+                if listedCache[id] == nil { listedOrder.append(id) }
+                listedCache[id] = (keys[index], value)
+            }
+            if listedOrder.count > 512 {
+                for old in listedOrder.prefix(listedOrder.count - 512) where !ids.contains(old) { listedCache[old] = nil }
+                listedOrder.removeAll { listedCache[$0] == nil }
+            }
+        }
+        return try ids.map { id in
+            guard let value = listedCache[id]?.value else { throw CaptureFailure.corrupt }
+            return value
+        }
     }
     /// The turn popup consumes only requests owned by this turn. General
     /// message inspection intentionally also follows later context reuse.
@@ -430,19 +512,12 @@ actor PayloadArchive {
             candidates.append("SELECT attempt FROM message_links WHERE role='output' AND message IN (\(marks))")
             args += scope.outputIDs.map(CaptureSQLValue.text)
         }
-        var sql = "SELECT * FROM attempts WHERE id IN (\(candidates.joined(separator: " UNION "))) AND workspace=?"
+        var sql = "SELECT \(Self.listedColumns) FROM attempts WHERE id IN (\(candidates.joined(separator: " UNION "))) AND workspace=?"
         args.append(.text(workspaceID))
         if let start = scope.started { sql += " AND wall>=?"; args.append(.real(start)) }
         if let end = scope.ended { sql += " AND wall<=?"; args.append(.real(end)) }
         sql += " ORDER BY wall,id LIMIT 128 OFFSET ?"; args.append(.integer(Int64(offset)))
-        let rows = try db.rows(sql, args)
-        guard !rows.isEmpty else { return [] }
-        let ids = try rows.map { try archiveText($0, "id") }
-        var descriptors: [String: [[String: CaptureSQLValue]]] = [:]
-        for body in try db.rows("SELECT * FROM bodies WHERE attempt IN (\(ids.map { _ in "?" }.joined(separator: ",")))", ids.map(CaptureSQLValue.text)) {
-            descriptors[try archiveText(body, "attempt"), default: []].append(body)
-        }
-        return try zip(rows, ids).map { try metadata(row: $0, bodies: descriptors[$1] ?? []) }
+        return try listed(try db.rows(sql, args), db: db)
     }
 
     func eventIndices(attemptID: String, offset: Int) throws -> [String: WireValue] {
@@ -573,7 +648,13 @@ actor PayloadArchive {
             }
         }
         let after = try metadata(attempt: attemptID)
-        guard before[body] == after[body], before[body + "Hash"] == after[body + "Hash"] else { throw TraceError.changed }
+        if before[body] != after[body] || before[body + "Hash"] != after[body + "Hash"] {
+            // A body still being recorded only grows: the manifest prefix read
+            // and verified above is unchanged by chunks published meanwhile.
+            guard descriptor["state"]?.string == "recording", let grown = after[body]?.object,
+                  ["complete", "credential-hashed", "credential-masked", "partial", "truncated", "interrupted", "recording"].contains(grown["state"]?.string ?? ""),
+                  let now = grown["retainedBytes"]?.number, now >= Double(count) else { throw TraceError.changed }
+        }
         await progress(count, count)
         try Task.checkCancellation()
         return output
@@ -647,6 +728,7 @@ actor PayloadArchive {
                 }
             }
             try db.execute("UPDATE attempts SET metrics_retained=0,dispatch=NULL,ttft_ms=NULL,stream_ms=NULL,request_ms=NULL,http_ms=NULL,model=NULL,identity_status='expired',reported_models=NULL,response_model=NULL,cost_usd=NULL,cost_status='unreported',cache_read_tokens=NULL,cache_write_tokens=NULL,input_tokens=NULL,output_tokens=NULL,reasoning_tokens=NULL,reasoning_cost_usd=NULL,reasoning_cost_status='unreported',cache_status='unreported',metadata=? WHERE id=?", [.blob(try JSONEncoder().encode(tombstone)), .text(id)])
+            metricExpirations += 1
         }
         }
         try collectGarbage()
@@ -728,7 +810,8 @@ actor PayloadArchive {
         usageSnapshots.removeAll()
         // Reject new writer/report work while the old read queue drains.
         writers.removeAll(); database = nil; legacyCipher = nil; nextReconciliation = -Double.infinity
-        chunkTotals = nil; eventIndexCount = nil
+        chunkTotals = nil; eventIndexCount = nil; attemptCount = nil; chunkFolders.removeAll()
+        listedCache.removeAll(); listedOrder.removeAll()
         // Concurrent shutdown callers share one drain. Its task owns cleanup,
         // so no second close can release the workspace lock before the reader
         // finishes, or release a newly reopened archive's ownership afterward.

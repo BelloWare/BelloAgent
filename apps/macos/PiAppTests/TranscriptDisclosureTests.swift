@@ -128,6 +128,56 @@ final class TranscriptDisclosureTests: XCTestCase {
         XCTAssertEqual(fixture.document.frame.height, bottom, accuracy: 1, "\(what): the document is not as tall as its rows", file: file, line: line)
     }
 
+    /// The reader's line is the top of the viewport. A card opened at that
+    /// line opens downward, whatever else is on the screen: a long reply
+    /// below it, drawn by its own native surface, is not where the reader is.
+    /// The pane used to hold the first such surface it came across, so the
+    /// card grew upward and its header slid off the top of the screen.
+    @MainActor func testACardOpenedAtTheReadersLineOpensDownward() async throws {
+        let previous = TranscriptDisplay.mode
+        TranscriptDisplay.use(.normal)
+        defer { TranscriptDisplay.use(previous) }
+        var worker = TranscriptMessage(id: "w0", role: "assistant", text: "Reading the files first.", at: 2_000, turn: "q0")
+        worker.tools = (0..<4).map { index in
+            ToolView(id: "c\(index)", name: "read", state: "completed", input: "{\"path\":\"Sources/File\(index).swift\"}",
+                     output: String(repeating: "line \(index) of output that wraps across the row. ", count: 6),
+                     durationMs: 12, truncated: false, path: "Sources/File\(index).swift")
+        }
+        let paragraphs = (0..<14).map { "Paragraph \($0). " + String(repeating: "The retry loop backs off and says why it gave up. ", count: 5) }
+        var messages = [TranscriptMessage(id: "q0", role: "user", text: "Start with the retry loop.", at: 1_000, turn: "q0"), worker,
+                        TranscriptMessage(id: "q1", role: "user", text: "Now explain it.", at: 3_000, turn: "q1"),
+                        TranscriptMessage(id: "a1", role: "assistant", text: paragraphs.joined(separator: "\n\n"), at: 4_000, turn: "q1")]
+        messages += (0..<6).map { index in
+            TranscriptMessage(id: "t\(index)", role: index % 2 == 0 ? "user" : "assistant",
+                              text: String(repeating: "Tail row \(index) with enough text to wrap. ", count: 6),
+                              at: 5_000 + Double(index), turn: "t\(index - index % 2)")
+        }
+        let fixture = Fixture(messages: messages, openWork: false); defer { fixture.close() }
+        await fixture.settle()
+        let card = try XCTUnwrap(fixture.blockRow)
+        let part = try XCTUnwrap(fixture.workPart)
+        // The reader scrolls the card up to the top of the viewport.
+        let clip = fixture.scroll.contentView
+        fixture.page.readerWillNavigate(upward: card.frame.minY - 6 < clip.bounds.minY)
+        clip.setBoundsOrigin(NSPoint(x: 0, y: card.frame.minY - 6))
+        fixture.scroll.reflectScrolledClipView(clip)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: fixture.scroll)
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: fixture.scroll)
+        await fixture.settle()
+        func surfaces(in view: NSView) -> [NativeMarkdownContainer] {
+            ((view as? NativeMarkdownContainer).map { [$0] } ?? []) + view.subviews.flatMap { surfaces(in: $0) }
+        }
+        let surfaces = surfaces(in: fixture.document).filter { $0.convert($0.bounds, to: clip).intersects(clip.bounds) }
+        XCTAssertFalse(surfaces.isEmpty, "the fixture must have a reply drawn by a native surface on screen below the card")
+        let line = card.frame.minY - clip.bounds.minY
+        let closed = card.frame.height
+        card.toggleDisclosure(part)
+        await fixture.settle()
+        XCTAssertGreaterThan(card.frame.height, closed + 40, "the card opened")
+        XCTAssertEqual(card.frame.minY - clip.bounds.minY, line, accuracy: 1,
+                       "the card grew upward: its header moved from \(line) to \(card.frame.minY - clip.bounds.minY) on the screen")
+    }
+
     @MainActor func testWorkStartsCollapsedAndStreamingNeverRevealsDetails() async throws {
         var messages = workingTurn(tools: 4)
         messages[1].state = "streaming"

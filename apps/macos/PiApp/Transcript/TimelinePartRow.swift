@@ -56,13 +56,25 @@ struct TimelinePartRow: View {
     }
     /// What a closed row says about the thought inside it: the newest line
     /// while it is still being written, and its first line once it settles.
+    ///
+    /// A streaming thought redraws this row on every delta, so the summary
+    /// reads only the line it shows — back from the end to the newline before
+    /// it, or on from the start to the newline after it. Trimming and
+    /// splitting the whole thought made every delta cost the thought so far.
     nonisolated static func thinkSummary(_ text: String, running: Bool) -> String {
-        let visible = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !visible.isEmpty else { return "" }
-        let line = running
-            ? (visible.components(separatedBy: "\n").last ?? visible)
-            : (visible.components(separatedBy: "\n").first ?? visible)
-        return line.replacingOccurrences(of: "**", with: "").trimmingCharacters(in: .whitespaces)
+        let scalars = text.unicodeScalars
+        let blank = CharacterSet.whitespacesAndNewlines
+        let visible: (Unicode.Scalar) -> Bool = { !blank.contains($0) }
+        let line: Substring.UnicodeScalarView
+        if running {
+            guard let last = scalars.lastIndex(where: visible) else { return "" }
+            let start = scalars[..<last].lastIndex(of: "\n").map { scalars.index(after: $0) } ?? scalars.startIndex
+            line = scalars[start...last]
+        } else {
+            guard let first = scalars.firstIndex(where: visible) else { return "" }
+            line = scalars[first..<(scalars[first...].firstIndex(of: "\n") ?? scalars.endIndex)]
+        }
+        return String(Substring(line)).replacingOccurrences(of: "**", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
     }
     var body: some View {
         if ["text","refusal"].contains(part.part.kind) {
@@ -175,7 +187,7 @@ struct RequestTimelineInfo: View {
             if let detail = message.detail { Text(detail).font(.system(size:11)).foregroundStyle(TranscriptPalette.faint) }
             // The partial answer already carries the Stopped chip.
 
-            if message.stopReason == "length" { Text("Output limit reached").font(.system(size:12)).foregroundStyle(TranscriptPalette.warning) }
+            if let notice = TranscriptActivity.earlyEnd(message.stopReason) { Text(notice).font(.system(size:12)).foregroundStyle(TranscriptPalette.warning) }
         }.padding(.bottom,6)
     }
 }

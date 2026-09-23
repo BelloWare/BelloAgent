@@ -162,6 +162,35 @@ final class TerminalPanelAuditTests: XCTestCase {
         }
     }
 
+    /// The shell used to inherit every descriptor the app had open — the
+    /// helper's stdin among them, so a helper stopped by closing its input
+    /// never saw it end while a terminal was open, and anything left running
+    /// from the terminal kept the helper alive past quit.
+    @MainActor func testTheShellInheritsNothingButItsTerminal() async throws {
+        let pipe = Pipe()
+        let readEnd = pipe.fileHandleForReading.fileDescriptor, writeEnd = pipe.fileHandleForWriting.fileDescriptor
+        let process = PseudoTerminal()
+        var output = Data()
+        process.onData = { output.append($0) }
+        // The shell's own glob lists its own descriptors, and adds one: the directory it is reading.
+        try process.start(executable: "/bin/sh", arguments: ["sh", "-c", "for fd in /dev/fd/*; do echo \"${fd#/dev/fd/}\"; done; printf READY; exec /bin/sleep 5"],
+                          environment: ["PATH": "/usr/bin:/bin", "TERM": "xterm-256color"], directory: NSTemporaryDirectory(), columns: 60, rows: 40)
+        defer { process.terminate() }
+        try await eventually("hear the shell list its descriptors") { String(decoding: output, as: UTF8.self).contains("READY") }
+        let listed = Set(String(decoding: output, as: UTF8.self).split(whereSeparator: \.isNewline)
+            .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) })
+        XCTAssertFalse(listed.contains(writeEnd), "the shell holds the app's end of a pipe: \(listed.sorted())")
+        XCTAssertEqual(listed, [0, 1, 2, 3], "only the terminal, and the directory being listed, are open in the shell")
+
+        // So the app closing its end is the end of the pipe, while the shell still runs.
+        try pipe.fileHandleForWriting.close()
+        var poller = pollfd(fd: readEnd, events: Int16(POLLIN), revents: 0)
+        XCTAssertEqual(poll(&poller, 1, 2_000), 1, "the reader sees the end at once")
+        var byte: UInt8 = 0
+        XCTAssertEqual(read(readEnd, &byte, 1), 0, "and it is an end, not data")
+        XCTAssertTrue(process.running, "while the shell is still running")
+    }
+
     /// One shell per project, and no shell left running for a project that is
     /// gone or for an app that is quitting.
     @MainActor func testTheRegistryEndsShellsForClosedProjectsAndOnShutdown() async throws {

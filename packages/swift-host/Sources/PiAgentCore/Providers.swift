@@ -172,7 +172,7 @@ public struct ProviderClient: ModelClient {
                         let value=try JSON.parse(Data(event.data.utf8))
                         let observed = profile.api == "openai-responses" && observation.consume(value,streaming:true,at:receivedAt)
                         await traces.reported(attempt,value:value,streaming:true)
-                        if ["response.failed", "error"].contains(value["type"].text ?? "") {
+                        if ProviderAccumulator.isFailure(value) {
                             await traces.terminal(attempt,at:receivedAt)
                             providerFailure=ProviderAccumulator.failure(value)
                         }
@@ -181,6 +181,12 @@ public struct ProviderClient: ModelClient {
                             continue
                         }
                         let deltas = try accumulator.consume(value)
+                        // The model starts generating when its first output
+                        // item opens, whatever the item: hidden reasoning is
+                        // part of the output it reports, so the decode span
+                        // (and time to first token) starts there, not at the
+                        // first visible token.
+                        if Self.opensOutputItem(value, api: profile.api) { await traces.content(attempt,text:false,at:receivedAt) }
                         for part in displayEvents.consume(value, at: receivedAt) { try await onDelta(.part(part)) }
                         for delta in deltas {
                             switch delta {
@@ -217,7 +223,7 @@ public struct ProviderClient: ModelClient {
                 for part in displayEvents.consume(value, at: lastBodyAt, json: true) { try await onDelta(.part(part)) }
                 let reply=try accumulator.result()
                 if let time=lastBodyAt {
-                    if !reply.message.thinking.isEmpty || !reply.calls.isEmpty { await traces.content(attempt,text:false,at:time) }
+                    if !reply.message.thinking.isEmpty || !reply.calls.isEmpty || !(reply.message.providerItems ?? []).isEmpty { await traces.content(attempt,text:false,at:time) }
                     if !reply.message.text.isEmpty { await traces.content(attempt,text:true,at:time);try await onDelta(.text(reply.message.text)) }
                     await traces.terminal(attempt,at:time)
                 }
@@ -241,6 +247,11 @@ public struct ProviderClient: ModelClient {
             if let e=error as? AgentError { throw Self.safeFailure(AgentError(e.code,e.message,failure:e.failure,attemptID:attempt), credentials: credentials) }
             throw AgentError("provider_transport", Self.transportGuidance(error, attempt: attempt),failure:.transientTransport,attemptID:attempt)
         }
+    }
+    /// A stream event that opens an output item of any kind: a reasoning
+    /// item, a message, a function call.
+    static func opensOutputItem(_ value: JSON, api: String) -> Bool {
+        value["type"].text == (api == "openai-responses" ? "response.output_item.added" : "content_block_start")
     }
     /// What to do about a gateway status, after the status itself: the
     /// provider's own detail when it sent one, then the likely cause in the
@@ -282,6 +293,13 @@ public struct ProviderAccumulator: Sendable {
     var root:JSON=[:], items:[Int:JSON]=[:], arguments:[Int:String]=[:], terminal=false
     var openBlocks=Set<Int>()
     public init(api:String) { self.api=api }
+    /// A failure frame: a typed `error`/`response.failed` event, or the bare
+    /// `{"error":…}` frame with no `type` that LiteLLM's proxy sends when the
+    /// upstream fails after the stream has started.
+    static func isFailure(_ value: JSON) -> Bool {
+        guard let type = value["type"].text else { return !value["error"].isNull }
+        return type == "error" || type == "response.failed"
+    }
     static func failure(_ value: JSON, fallback: String = "Provider reported an error without a message.") -> AgentError {
         let detail = value["response"]["error"].isNull ? value["error"] : value["response"]["error"]
         let message = [detail["message"].text, detail.text, value["message"].text].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
@@ -294,8 +312,8 @@ public struct ProviderAccumulator: Sendable {
         if api=="anthropic-messages",value["type"].text != "message" { throw Self.failure(value, fallback: "Messages JSON did not contain a message") }
     }
     public mutating func consume(_ value:JSON) throws -> [StreamDelta] {
+        if Self.isFailure(value) { throw Self.failure(value) }
         guard let type=value["type"].text else { return [] }
-        if type=="error" || type=="response.failed" { throw Self.failure(value) }
         if api=="openai-responses" {
             switch type {
             case "response.output_item.added","response.output_item.done":

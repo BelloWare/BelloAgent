@@ -51,7 +51,6 @@ struct DashboardBucket: Sendable, Identifiable {
     var streaming = DashboardPercentiles()
     var http = DashboardPercentiles()
     var gateway = GatewayTotals()
-    var historicalRate = HistoricalOutputRate()
 }
 
 struct DashboardRequest: Sendable, Identifiable {
@@ -114,7 +113,6 @@ struct DashboardModelSummary: Sendable, Identifiable, Equatable {
     var completed = 0
     var problems = 0
     var gateway = GatewayTotals()
-    var rate = HistoricalOutputRate()
     var ttftP50: Double?
     var ttftSamples = 0
     var httpP50: Double?
@@ -184,8 +182,6 @@ struct DashboardSnapshot: Sendable {
     var rowsAsOf = Date()
     var rowCount: Int?
     var gateway = GatewayTotals()
-    /// Output throughput of the window's completed, measured requests, duration-weighted.
-    var historicalRate = HistoricalOutputRate()
     var hasNext: Bool { offset + requests.count < (rowCount ?? selectedRequests) }
     mutating func replaceRows(_ page: DashboardRequestPage) {
         guard filter == page.filter else { return }
@@ -314,6 +310,12 @@ extension PayloadArchive {
     func distinctPurposes(_ filter: DashboardFilter) async throws -> [String] {
         try await dashboardReader().run { try $0.distinctPurposes(filter) }
     }
+    /// Statements one report snapshot read executes, and its result (tests only).
+    func dashboardStatements(_ filter: DashboardFilter) throws -> (snapshot: DashboardSnapshot, statements: Int) {
+        let db = try dashboardDatabase(), before = db.statements
+        let snapshot = try DashboardQueryEngine(db: db).dashboard(filter)
+        return (snapshot, db.statements - before)
+    }
 }
 
 /// Executes only inside a short read transaction on the report worker.
@@ -338,9 +340,11 @@ struct DashboardQueryEngine {
             default: break
             }
         }
-        let requestCount = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first?["n"]?.number ?? 0)
-        let summaryRow = try db.rows("SELECT \(PayloadArchive.gatewayAggregateSQL),\(PayloadArchive.historicalOutputRateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first ?? [:]
+        // The aggregate row already counts the selected requests; a separate
+        // COUNT(*) scanned the same rows again.
+        let summaryRow = try db.rows("SELECT \(PayloadArchive.gatewayAggregateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first ?? [:]
         let gateway = PayloadArchive.gatewayTotals(summaryRow)
+        let requestCount = gateway.requests
         let ttft = try percentile(db, column: "ttft_ms", predicate: selected)
         let streaming = try percentile(db, column: "stream_ms", predicate: selected)
         let http = try percentile(db, column: "http_ms", predicate: selected)
@@ -348,13 +352,12 @@ struct DashboardQueryEngine {
         var buckets = (0..<filter.bucketCount).map { DashboardBucket(id: $0, start: filter.from.addingTimeInterval(Double($0) * width), end: filter.from.addingTimeInterval(Double($0 + 1) * width)) }
         let bucketSQL = "CAST((wall-?)/? AS INTEGER)"
         let bucketArgs: [CaptureSQLValue] = [.real(filter.from.timeIntervalSince1970), .real(width)]
-        for row in try db.rows("SELECT \(bucketSQL) AS bucket,COUNT(*) AS n FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY bucket", bucketArgs + selected.values) {
-            if let i = row["bucket"]?.number.map(Int.init), buckets.indices.contains(i) { buckets[i].requests = Int(row["n"]?.number ?? 0) }
-        }
-        for row in try db.rows("SELECT \(bucketSQL) AS bucket,\(PayloadArchive.gatewayAggregateSQL),\(PayloadArchive.historicalOutputRateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY bucket", bucketArgs + selected.values) {
+        // One grouped read per bucket set: its aggregate rows carry each
+        // bucket's request count too.
+        for row in try db.rows("SELECT \(bucketSQL) AS bucket,\(PayloadArchive.gatewayAggregateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY bucket", bucketArgs + selected.values) {
             if let i = row["bucket"]?.number.map(Int.init), buckets.indices.contains(i) {
                 buckets[i].gateway = PayloadArchive.gatewayTotals(row)
-                buckets[i].historicalRate = PayloadArchive.historicalOutputRate(row)
+                buckets[i].requests = buckets[i].gateway.requests
             }
         }
         for column in ["ttft_ms", "stream_ms", "http_ms"] {
@@ -372,7 +375,7 @@ struct DashboardQueryEngine {
             }
         }
         let requests = try requestRows(selected, offset: offset)
-        return DashboardSnapshot(filter: filter, scopeCounts: counts, selectedRequests: requestCount, ttft: ttft, streaming: streaming, http: http, buckets: buckets, requests: requests, offset: offset, gateway: gateway, historicalRate: PayloadArchive.historicalOutputRate(summaryRow))
+        return DashboardSnapshot(filter: filter, scopeCounts: counts, selectedRequests: requestCount, ttft: ttft, streaming: streaming, http: http, buckets: buckets, requests: requests, offset: offset, gateway: gateway)
     }
 
     func requestPage(_ filter: DashboardFilter, offset: Int = 0) throws -> DashboardRequestPage {
@@ -400,12 +403,14 @@ struct DashboardQueryEngine {
 
     static let modelGroupLimit = 64
     /// Per-route aggregates inside the window: each requested alias split by
-    /// the model the gateway served, with its own duration-weighted output rate
-    /// and nearest-rank medians. Bounded to the busiest routes.
+    /// the model the gateway served, with its own settled decode rate
+    /// (`gateway.settledThroughput`) and nearest-rank medians. Bounded to the busiest routes.
+    /// A request whose served model the gateway resolved: never an alias echo.
+    static let resolvedModel = "identity_status='reported' AND model IS NOT NULL AND LENGTH(TRIM(model))>0 AND model<>alias"
     func modelSummaries(_ filter: DashboardFilter) throws -> [DashboardModelSummary] {
         try filter.validated()
         let selected = dashboardPredicate(filter, status: true)
-        let reported = "identity_status='reported' AND model IS NOT NULL AND LENGTH(TRIM(model))>0 AND model<>alias"
+        let reported = Self.resolvedModel
         let normalized = """
         WITH selected AS (
           SELECT *,CASE WHEN \(reported) THEN model ELSE NULL END AS resolved_model,
@@ -417,7 +422,7 @@ struct DashboardQueryEngine {
         let rows = try db.rows("""
         \(normalized)
         SELECT \(key),SUM(outcome='completed') AS completed,SUM(outcome IN ('failed','cancelled','truncated','interrupted')) AS problems,
-          \(PayloadArchive.gatewayAggregateSQL),\(PayloadArchive.historicalOutputRateSQL)
+          \(PayloadArchive.gatewayAggregateSQL)
         FROM selected GROUP BY \(key)
         ORDER BY requests DESC,alias COLLATE BINARY,api COLLATE BINARY,resolution_status COLLATE BINARY,resolved_model COLLATE BINARY LIMIT ?
         """, selected.values + [.integer(Int64(Self.modelGroupLimit))])
@@ -425,7 +430,7 @@ struct DashboardQueryEngine {
             guard let api = row["api"]?.string, let alias = row["alias"]?.string, let status = row["resolution_status"]?.string else { throw CaptureFailure.corrupt }
             var summary = DashboardModelSummary(api: api, alias: alias, model: row["resolved_model"]?.string, status: status)
             summary.requests = Int(row["requests"]?.number ?? 0); summary.completed = Int(row["completed"]?.number ?? 0); summary.problems = Int(row["problems"]?.number ?? 0)
-            summary.gateway = PayloadArchive.gatewayTotals(row); summary.rate = PayloadArchive.historicalOutputRate(row)
+            summary.gateway = PayloadArchive.gatewayTotals(row)
             return summary
         }
         for column in ["ttft_ms", "http_ms"] where !summaries.isEmpty {
@@ -504,7 +509,9 @@ struct DashboardQueryEngine {
         for (column, value) in [("workspace", filter.workspaceID), ("session", filter.sessionID), ("purpose", filter.purpose), ("api", filter.api), ("alias", filter.requestedAlias), ("model", filter.effectiveModel)] where column != excluded {
             if let value { clauses.append(column + "=?"); values.append(.text(value)) }
         }
-        if filter.unreportedModelOnly && excluded != "model" { clauses.append("model IS NULL") }
+        // The same "no resolved model" as the per-route grouping: unreported,
+        // conflicting or incomplete evidence, or an echo of the alias.
+        if filter.unreportedModelOnly && excluded != "model" { clauses.append("NOT (\(Self.resolvedModel))") }
         if status && filter.status != "all" { clauses.append("outcome=?"); values.append(.text(filter.status)) }
         return (clauses.joined(separator: " AND "), values)
     }

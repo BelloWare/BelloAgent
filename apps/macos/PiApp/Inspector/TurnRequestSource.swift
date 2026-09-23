@@ -51,10 +51,21 @@ struct TurnRequestRecord: Equatable, Identifiable, Sendable {
     func retained(_ kind: String) -> Bool {
         !liveOnly && MessageBodyReader.canReadRetained(metadata[kind]?.object?["state"]?.string ?? "")
     }
+    /// What the body viewer reloads for. A running request's descriptor
+    /// changes on every poll only because its byte counters grow; the viewer
+    /// offers the newer bytes instead of re-reading the whole body each time.
+    /// Its state, and every field once the request has finished, still count.
     func revision(_ kind: String) -> Int {
         var hasher = Hasher()
-        hasher.combine(metadata[kind]?.pretty); hasher.combine(metadata[kind + "Hash"]?.pretty)
+        hasher.combine(running)
+        if running { hasher.combine(metadata[kind]?.object?["state"]?.string) }
+        else { hasher.combine(metadata[kind]?.pretty); hasher.combine(metadata[kind + "Hash"]?.pretty) }
         return hasher.finalize()
+    }
+    /// Retained bytes the latest poll reported for a still-running body.
+    func growingBytes(_ kind: String) -> Int? {
+        guard running else { return nil }
+        return metadata[kind]?.object?["retainedBytes"]?.nonnegativeInteger
     }
 }
 
@@ -67,6 +78,8 @@ struct TurnRequestPage: Sendable {
     let sessionID: String
     let list: (TurnRequestScope) async throws -> TurnRequestPage
     let body: (TurnRequestRecord, String) -> CapturedBodySource
+    /// How often an open popup re-reads the list while its turn runs.
+    var pollInterval: Duration = .seconds(2)
 
     static func session(_ model: WorkspaceModel, sessionID: String) -> Self {
         let archive = model.traces

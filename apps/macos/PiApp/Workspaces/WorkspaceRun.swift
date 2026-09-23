@@ -47,13 +47,21 @@ extension WorkspaceModel {
             return
         }
         let attachments = view.attachments, skills = view.skills
-        let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString, previousState = view.state
+        let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString
         view.beginContextSubmission(turnID)
         view.loading = true; view.compactionNotice = nil
         view.sendFailure = nil
         Task {
-            defer { view.loading = false }
+            // A send that failed before any snapshot leaves the helper's busy
+            // mark to be worked out again here (a failed first message of a
+            // draft side had marked it busy for good).
+            defer { view.loading = false; updateHostActivity(workspaceID: item.workspaceID) }
             var dispatched = false
+            // The state this send put up before the helper answered, and the
+            // one it replaced. Only that write is ever undone, and only while
+            // it is still showing: a snapshot may have moved the chat on since.
+            var shown: (state: String, replaced: String)?
+            @MainActor func undoShownState() { if let shown, view.state == shown.state { view.state = shown.replaced } }
             do {
                 // Snapshot authorization before suspending, but preserve the
                 // user's draft even when the connection is already missing.
@@ -68,14 +76,17 @@ extension WorkspaceModel {
                 }
                 let host = try await open(item)
                 let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent", epoch: host.epoch, attachments: attachments, skills: skills)
-                if !isEphemeral(item.id) { try await store.put(intent, kind: "pending:\(item.id)", id: commandID) }
+                if !isEphemeral(item.id) { try await store.put(intent, kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
                 try requireConnection(lease)
                 dispatched = true
-                if !view.busy { view.state = "running" }
+                // A new message shows the run starting at once. A steer joins
+                // a run that is already showing, and may reach the helper
+                // after it ended: it never puts "running" up itself.
+                if !steer, !view.busy { shown = ("running", view.state); view.state = "running" }
                 _ = try await host.request(steer ? "turn.steer" : "turn.submit", sessionID: item.id,
                                           params: TurnOverrides.params(for: item, base: ["text": .string(text), "clientTurnId": .string(turnID), "attachments": .array(attachments.map(\.wire)), "skills": .array(skills.map(\.wire))]), commandID: commandID)
                 view.acknowledgeContextSubmission(turnID)
-                if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID) }
+                if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID); pendingIntentsChanged(item.id) }
                 if view.draft == text { view.draft = ""; view.attachments.removeAll { attachments.contains($0) }; view.skills.removeAll { skills.contains($0) }; view.directCommand = false; draftChanged(view) }
                 if let index = chats.firstIndex(where: { $0.id == item.id }), chats[index].titleWasEdited != true, chats[index].titleWasGenerated != true,
                    chats[index].title == "New chat" || (chats[index].parentSessionID != nil && chats[index].title.hasSuffix(" — side")) {
@@ -92,8 +103,15 @@ extension WorkspaceModel {
                 if case HostError.rejected(let code, _) = error, code == "not_running", steer {
                     view.sendFailure = "The run finished. Press Return to send this as a new message."
                 } else { view.sendFailure = error.localizedDescription }
-                if case HostError.rejected(let code, _) = error { try? await store.remove(kind: "pending:\(item.id)", id: commandID); view.state = code == "connection_unavailable" ? "interrupted" : previousState }
-                else { view.uncertain = dispatched; view.state = dispatched ? "interrupted" : previousState }
+                if case HostError.rejected(let code, _) = error {
+                    try? await store.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id)
+                    // The helper refused it, so nothing new is running. The
+                    // state it had when this was pressed may be long gone (a
+                    // steer that lost the race with the end of the run found
+                    // "running"); the helper's own snapshot says what it is.
+                    if code == "connection_unavailable" { view.state = "interrupted" } else { undoShownState(); refresh(item.id) }
+                } else if dispatched { view.uncertain = true; view.state = "interrupted" }
+                else { undoShownState() }
             }
         }
     }
@@ -112,22 +130,25 @@ extension WorkspaceModel {
             if method == "context.compact" && !isEphemeral(item.id) {
                 guard let store else { throw StoreError.unavailable }
                 try await store.put(CommandIntent(id: commandID, sessionID: item.id, turnID: "compaction:\(commandID)", text: "[Compact now]", state: "intent", epoch: host.epoch), kind: "pending:\(item.id)", id: commandID)
+                pendingIntentsChanged(item.id)
             }
             try requireConnection(lease)
             _ = try await host.request(method, sessionID: item.id, params: requestParams, commandID: commandID)
             if method == "queue.remove", let turnID = params["turnId"]?.string {
                 for intent in try await store?.list(CommandIntent.self, kind: "pending:\(item.id)") ?? [] where intent.turnID == turnID { try await store?.remove(kind: "pending:\(item.id)", id: intent.id) }
+                pendingIntentsChanged(item.id)
             }
             if method == "queue.update", let turnID = params["turnId"]?.string, let text = params["text"]?.string, !isEphemeral(item.id) {
                 // A recovered intent shows the text the host will actually deliver.
                 for var intent in try await store?.list(CommandIntent.self, kind: "pending:\(item.id)") ?? [] where intent.turnID == turnID { intent.text = text; try await store?.put(intent, kind: "pending:\(item.id)", id: intent.id) }
+                pendingIntentsChanged(item.id)
             }
             refresh(item.id)
         }
             catch {
                 // A rejected compaction never ran; a leftover intent would mark
                 // the chat "outcome uncertain" on its next visit.
-                if method == "context.compact", case HostError.rejected = error { try? await store?.remove(kind: "pending:\(item.id)", id: commandID) }
+                if method == "context.compact", case HostError.rejected = error { try? await store?.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
                 self.error = error.localizedDescription
             } }
     }
@@ -137,6 +158,9 @@ extension WorkspaceModel {
     /// false: they must not invent an interruption for a run they cannot see.
     func stop(sessionID: String? = nil, userInitiated: Bool = true) {
         guard let id = sessionID ?? selectedID, let item = record(id), let view = displays[id] else { return }
+        // Nothing is running and nothing is queued: there is nothing to stop.
+        // Asking anyway showed "Stopping" and left the chat "Paused".
+        guard view.hasWork else { return }
         guard let host = hosts[item.workspaceID], opened.contains(item.id) else {
             // The helper that was running this chat is gone (it crashed, was
             // unloaded, or its project was closed). Doing nothing would leave

@@ -258,6 +258,9 @@ public actor Resources {
     }
     public func readSkill(_ id: String, offset: Int) throws -> JSON { let s = try latest ?? resolve(); guard let skill = s.skills.first(where: { $0["id"].text == id }) else { throw AgentError("skill_unavailable", "Refresh the skill catalog") }; return try textPage(skill["body"].text ?? "", offset: offset) }
     public func freeze(_ selections: [JSON], text: String, tools: [String]) throws -> [FrozenSkill] {
+        // Most submissions select no skill: there is nothing to freeze, so do
+        // not read every instruction file and skill again to find that out.
+        if selections.isEmpty { return [] }
         let snapshot = try resolve(); let selected = selections
         // Only the native composer's structured user selection activates a skill.
         // Pasted slash text and model/repository content are not authorization.

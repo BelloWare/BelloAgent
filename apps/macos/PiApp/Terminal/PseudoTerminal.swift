@@ -41,10 +41,19 @@ import Darwin
         let path = strdup(executable)
         let cwd = strdup(directory)
         defer { argv.forEach { free($0) }; envp.forEach { free($0) }; free(path); free(cwd) }
+        // A forked child keeps every descriptor the app has open that is not
+        // marked close-on-exec, and Foundation's pipes are not: the shell and
+        // everything started from it held the helper's stdin, so a helper
+        // stopped by closing it never saw it end. The child keeps its terminal
+        // alone, closing every other number below this bound, which is read
+        // before the fork like everything else the child uses.
+        let descriptorLimit = getdtablesize()
         var masterFD: Int32 = -1
         let pid = forkpty(&masterFD, nil, nil, &size)
         if pid == 0 {
-            // Child: the shell's own signal dispositions, its directory, then the program.
+            // Child: nothing but the terminal, the shell's own signal dispositions, its directory, then the program.
+            var descriptor: Int32 = 3
+            while descriptor < descriptorLimit { _ = close(descriptor); descriptor += 1 }
             var signals = sigset_t()
             sigemptyset(&signals)
             sigprocmask(SIG_SETMASK, &signals, nil)

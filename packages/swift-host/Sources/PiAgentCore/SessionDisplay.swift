@@ -15,7 +15,13 @@ extension AgentSession {
     /// fields is how the next read decides it can send the tokens that
     /// arrived instead of the whole row again.
     struct StreamingRowState {
-        let id: String, text: String, thinking: String, cards: UInt64, truncated: Bool
+        let id: String
+        /// Which partial the texts belong to: a reset starts new texts, never
+        /// an extension of the ones a reader holds.
+        let generation: UInt64
+        let text: String, thinking: String, cards: UInt64, truncated: Bool
+        /// Each streamed call's arguments so far.
+        var inputs: [String: String] = [:]
         var timeline: ResponseTimeline? = nil
     }
     struct DisplayProjection {
@@ -25,6 +31,8 @@ extension AgentSession {
         /// `messages` is these rows followed by the streaming row, if any.
         let settled: [(id: String, version: UInt64)]
         let streaming: StreamingRowState?
+        /// The streaming row's encoded size as counted, never measured.
+        var streamingBytes: Int? = nil
     }
     var displayRevision: String { "\(displayEpoch):\(displayGeneration)" }
     func recordDisplayChange(_ messageID: String?, at: Double) {
@@ -50,17 +58,14 @@ extension AgentSession {
             guard required || next<=HistoryWindowPolicy.envelopeBytes - HistoryWindowPolicy.metadataAllowance else { return false }
             bytes=next; rows.append(row); return true
         }
-        var streaming: StreamingRowState?
+        var streaming: StreamingRowState?, streamingBytes: Int?
         if let partialID {
-            let cards=partialToolOrder.compactMap{partialTools[$0]}
-            let text = partialText, thinking = partialThinking
-            let truncated = false
-            var value = boundedDisplayRow(["id":JSON(partialID),"role":"assistant","turn":JSON(currentTurnID),"taskRootID":taskRootID.map { JSON($0) } ?? .null,"taskExecutionID":activeTaskPresentation.map { JSON($0.executionID) } ?? .null,"at":partialStartedAt.map { JSON($0) } ?? .null,"text":JSON(text),"thinking":JSON(thinking),"tools":.array(cards),"state":"streaming","toolCallCount":0,"truncated":JSON(truncated)])
-            let timeline = partialTimeline.segments.isEmpty ? nil : partialTimeline.projected()
-            if let timeline { value["responseTimeline"] = (try? JSON.parse(JSONEncoder().encode(timeline))) ?? .null }
+            // Built from running totals and per-segment caches: a token costs
+            // its own size here, not the reply's (SessionStreamingRow.swift).
+            let row = streamingRowProjection(partialID)
             displayRowVersion &+= 1
-            _=append(DisplayRow(value:value,bytes:(try? value.data().count) ?? 1_048_576,version:displayRowVersion), required: true)
-            streaming=StreamingRowState(id:partialID,text:value["text"].text ?? "",thinking:value["thinking"].text ?? "",cards:partialCardsVersion,truncated:value["truncated"].flag ?? false,timeline:timeline)
+            _=append(DisplayRow(value:boundedDisplayRow(row.value),bytes:row.bytes,version:displayRowVersion), required: true)
+            streaming=row.state; streamingBytes=row.bytes
         }
         // JSON array size is the encoded row sizes plus brackets and commas.
         // Walk backwards until the suffix is full rather than projecting rows
@@ -84,7 +89,7 @@ extension AgentSession {
             settled.append((message.id,row.version))
         }
         displayRows=displayRows.filter { retainedIDs.contains($0.key) }
-        let result=DisplayProjection(start:visible.count-retainedCount,messages:rows.reversed().map(\.value),settled:settled.reversed(),streaming:streaming)
+        let result=DisplayProjection(start:visible.count-retainedCount,messages:rows.reversed().map(\.value),settled:settled.reversed(),streaming:streaming,streamingBytes:streamingBytes)
         displayProjection=result
         return result
     }
@@ -95,9 +100,9 @@ extension AgentSession {
     /// content is new, the tokens appended to the row still arriving, and the
     /// row order when it moved. Nil when no such page was recorded, in which
     /// case the whole page is sent instead.
-    func messagePatch(_ projection: DisplayProjection) -> JSON? {
+    func messagePatch(_ projection: DisplayProjection, toolInputAppends: Bool = false) -> JSON? {
         guard let base=sentRevision else { return nil }
-        var rows: [JSON]=[], appends: [JSON]=[], parts: [JSON]=[]
+        var rows: [JSON]=[], appends: [JSON]=[], parts: [JSON]=[], inputs: [JSON]=[]
         for (index,entry) in projection.settled.enumerated() where sentVersions[entry.id] != entry.version {
             guard projection.messages.indices.contains(index) else { return nil }
             rows.append(projection.messages[index])
@@ -105,29 +110,12 @@ extension AgentSession {
         if let streaming=projection.streaming {
             let index=projection.settled.count
             guard projection.messages.indices.contains(index) else { return nil }
-            if let sent=sentStreaming, sent.id == streaming.id, sent.cards == streaming.cards, sent.truncated == streaming.truncated,
-               let text=appendedText(sent.text,streaming.text), let thinking=appendedText(sent.thinking,streaming.thinking) {
-                if let timeline = streaming.timeline {
-                    let prior = sent.timeline
-                    let old = Dictionary((prior?.segments ?? []).map { ($0.id,$0) }, uniquingKeysWith: { _,last in last })
-                    var changed: [ResponseTimeline.Segment] = [], appended: [JSON] = []
-                    for segment in timeline.segments where old[segment.id] != segment {
-                        if let prior = old[segment.id], prior.part == segment.part, prior.truncated == segment.truncated,
-                           let text = appendedText(prior.text, segment.text) {
-                            appended.append(["id":JSON(segment.id),"baseRevision":JSON(prior.revision),"revision":JSON(segment.revision),"state":JSON(segment.state),"text":JSON(text)])
-                        } else { changed.append(segment) }
-                    }
-                    if !changed.isEmpty || !appended.isEmpty || prior?.terminal != timeline.terminal || prior?.coverage != timeline.coverage || prior?.omittedEvents != timeline.omittedEvents {
-                        var part: JSON = ["id":JSON(streaming.id),"version":1,"coverage":JSON(timeline.coverage),"omittedEvents":JSON(timeline.omittedEvents),"terminal":timeline.terminal.map { JSON($0) } ?? .null,
-                                          "segments": (try? JSON.parse(JSONEncoder().encode(changed))) ?? [], "appends":.array(appended)]
-                        if prior?.segments.map(\.id) != timeline.segments.map(\.id) { part["order"] = .array(timeline.segments.map { JSON($0.id) }) }
-                        parts.append(part)
-                    }
-                }
-                if !text.isEmpty || !thinking.isEmpty { appends.append(["id":JSON(streaming.id),"text":JSON(text),"thinking":JSON(thinking)]) }
+            if let sent=sentStreaming, let update=streamingUpdate(from:sent,to:streaming,toolInputAppends:toolInputAppends) {
+                appends=update.appends; parts=update.parts; inputs=update.inputs
             } else { rows.append(projection.messages[index]) }
         }
         var patch: JSON=["base":JSON(base),"rows":.array(rows),"appends":.array(appends),"parts":.array(parts)]
+        if !inputs.isEmpty { patch["toolInputs"] = .array(inputs) }
         let order=projection.settled.map(\.id)+(projection.streaming.map { [$0.id] } ?? [])
         if order != sentOrder { patch["order"] = .array(order.map { JSON($0) }) }
         return patch
@@ -148,12 +136,13 @@ extension AgentSession {
             if toolStateOwners[id] == message.id, let live = toolStates[id] { states[id] = live; continue }
             guard let index = toolHistory.results[message.id]?[id], history.indices.contains(index) else { continue }
             let result = history[index], output = result.text
-            // Old journals retain isError and exact result text, but not an
-            // execution clock or a reliable failure-vs-cancellation enum. Keep
-            // those limits honest; an unknown/error outcome is never completed.
+            // The recorded outcome decides the card, as it did live: unknown
+            // after an interruption, cancelled when the call never ran. Old
+            // journals have no outcome or execution clock; they keep their
+            // isError reading, and an error is never shown as completed.
             let stats = result.toolStats ?? .null, fields = toolInputFields(call["arguments"]), keptOutput = output
             let inputTruncated = fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false
-            states[id] = merging(["id": JSON(id), "name": call["name"], "state": JSON(result.isError ? "failed" : "completed"),
+            states[id] = merging(["id": JSON(id), "name": call["name"], "state": JSON(reportsUnknownToolOutcomes ? Self.cardState(outcome: stats["outcome"].text, isError: result.isError) : result.isError ? "failed" : "completed"),
                           "output": JSON(keptOutput),
                           "durationMs": stats["durationMs"], "truncated": JSON(inputTruncated || keptOutput.utf8.count < output.utf8.count),
                           "path": stats["path"], "added": stats["added"], "removed": stats["removed"]], fields)
@@ -197,8 +186,17 @@ extension AgentSession {
                 if let id = message["id"].text, let at = pendingDisplayObservations.removeValue(forKey: id) { observedAt = min(observedAt ?? at, at) }
             }
         }
-        var value: JSON=["sessionId":JSON(id),"seq":JSON(sequence),"state":JSON(state),"runStatus":JSON(runStatus),"retry":retryInfo,"settingsPending":JSON(pendingConfiguration != nil),"preflightError":errorMessage.map { JSON($0) } ?? .null,"side":parentInfo,"ephemeral":JSON(ephemeral),"keeping":false,"keepRequested":JSON(keepRequested),"keepError":.null,"queue":.array(queue.map { var v=$0.previewValue;v["kind"]="follow-up";return v }+steering.map { var v=$0.previewValue;v["kind"]="steering";v["text"]=JSON("[Steering] "+(v["text"].text ?? ""));return v }),"steering":.array(steering.map(\.previewValue)),"queueCount":JSON(queue.count+steering.count),"queuePaused":JSON(queuePaused),"path":path.map { JSON($0) } ?? .null,"commands":.array(commands),"total":JSON(visible.count),"displayRevision":JSON(revision),"profileId":JSON(profile.id),"toolMode":JSON(readOnly ? "read-only" : "editing"),"context":contextInfo(),"turnMetrics":turnMetrics(),"assistantMessageCount":JSON(assistantMessageCount),"latestAssistantMessageId":latestAssistantMessageID.map { JSON($0) } ?? .null,"activity":activitySnapshot()]
-        value["taskPresentation"] = (try? JSON.parse(JSONEncoder().encode(taskPresentationSnapshot()))) ?? .null
+        var value: JSON=["sessionId":JSON(id),"seq":JSON(sequence),"state":JSON(state),"runStatus":JSON(runStatus),"retry":retryInfo,"settingsPending":JSON(pendingConfiguration != nil),"preflightError":errorMessage.map { JSON($0) } ?? .null,"side":parentInfo,"ephemeral":JSON(ephemeral),"keeping":false,"keepRequested":JSON(keepRequested),"keepError":.null,"queue":.array(queue.map { var v=$0.previewValue;v["kind"]="follow-up";return v }+steering.map { var v=$0.previewValue;v["kind"]="steering";v["text"]=JSON("[Steering] "+(v["text"].text ?? ""));return v }),"steering":.array(steering.map(\.previewValue)),"queueCount":JSON(queue.count+steering.count),"queuePaused":JSON(queuePaused),"path":path.map { JSON($0) } ?? .null,"total":JSON(visible.count),"displayRevision":JSON(revision),"profileId":JSON(profile.id),"toolMode":JSON(readOnly ? "read-only" : "editing"),"context":contextInfo(),"turnMetrics":turnMetrics(),"assistantMessageCount":JSON(assistantMessageCount),"latestAssistantMessageId":latestAssistantMessageID.map { JSON($0) } ?? .null,"activity":activitySnapshot()]
+        // Receipts and the task presentation travel only when they changed
+        // since the revision the reader sends back; a reader that sends none
+        // (any reader before 0.1.85) gets both every time, as before.
+        let commandsRevision = "\(displayEpoch):\(commandsGeneration)"
+        if params["commandsRevision"].text != commandsRevision { value["commands"] = .array(commands); value["commandsRevision"] = JSON(commandsRevision) }
+        let tasks = taskPresentationSnapshot(), tasksRevision = taskPresentationRevision(tasks)
+        if params["taskPresentationRevision"].text != tasksRevision {
+            value["taskPresentation"] = (try? JSON.parse(JSONEncoder().encode(tasks))) ?? .null
+            value["taskPresentationRevision"] = JSON(tasksRevision)
+        }
         if params["contextObservationRevision"].text != "\(displayEpoch):\(observationRevision)" {
             value["contextObservationRevision"]=JSON("\(displayEpoch):\(observationRevision)")
             value["requestObservation"]=publishedObservation
@@ -229,7 +227,7 @@ extension AgentSession {
             // A reader that says it can apply row updates, and asks from
             // exactly the page it was last sent, is sent only what changed.
             // Everything else gets the whole page, which is also the resync.
-            if params["messageDelta"].flag == true, params["displayRevision"].text == sentRevision, let patch=messagePatch(projection) {
+            if params["messageDelta"].flag == true, params["displayRevision"].text == sentRevision, let patch=messagePatch(projection, toolInputAppends: params["toolInputAppends"].flag == true) {
                 value["messageDelta"] = patch
             } else {
                 value["messages"] = .array(messages)
@@ -247,6 +245,14 @@ extension AgentSession {
         }
         else { value = value.removing(["context","turnMetrics"]) }
         return value
+    }
+    /// A revision of the task presentation's content: all of it except the
+    /// sequence and display revision of the snapshot that carries it, which
+    /// change with every event (the app compares lifecycles the same way).
+    func taskPresentationRevision(_ projection: TaskPresentationProjection) -> String {
+        var content = projection; content.sequence = 0; content.sourceRevision = ""
+        if content != presentedTasks { presentedTasks = content; presentedTasksGeneration &+= 1 }
+        return "\(displayEpoch):\(presentedTasksGeneration)"
     }
     public func turnMetrics() -> JSON { ["startedAt":begin.map { JSON($0) } ?? .null,"endedAt":end.map { JSON($0) } ?? .null,"durationMs":begin.map { JSON((end ?? nowMS())-$0) } ?? .null,"elapsedMs":begin.map { JSON((end ?? nowMS())-$0) } ?? .null,
                                           "modelMs":JSON(turnModelMs),"toolMs":JSON(turnToolMs),"sessionModelMs":cumulativeModelMs.map { JSON($0) } ?? .null,"sessionToolMs":cumulativeToolMs.map { JSON($0) } ?? .null] }

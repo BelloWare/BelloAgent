@@ -49,6 +49,14 @@ struct MonitorRateSeries {
     }
 }
 
+/// How many times a rate chart built its series and marks. A test seam: the
+/// pointer moving over the plot must not rebuild either.
+@MainActor enum MonitorChartRenderCount {
+    private(set) static var builds = 0
+    static func reset() { builds = 0 }
+    static func built() { builds &+= 1 }
+}
+
 @MainActor struct MonitorRateChart: View {
     let samples: [LiveRateSample]
     let usage: MenuBarSnapshot?
@@ -61,15 +69,14 @@ struct MonitorRateSeries {
     var showsMetricSelection = true
     var chartHeight: CGFloat = 124
     @Environment(\.colorScheme) private var colorScheme
-    @State private var hover: Date?
+    /// Held, not observed: only the rule and the caption watch the pointer,
+    /// so a mouse move never rebuilds the series or the marks.
+    @State private var hover = MonitorChartHover()
     private var domain: ClosedRange<Date> { zoom.domain(following: following) }
-    private var series: MonitorRateSeries { MonitorRateSeries(samples: samples, domain: domain, workspace: workspace) }
-    private var bucket: MenuBarBucket? {
-        guard let hover else { return nil }
-        return usage?.buckets.first { hover >= $0.start && hover < $0.end }
-    }
     var body: some View {
-        let series = series
+        let domain = domain
+        let series = MonitorRateSeries(samples: samples, domain: domain, workspace: workspace)
+        let _ = MonitorChartRenderCount.built()
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text("Output tok/s").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
@@ -91,14 +98,11 @@ struct MonitorRateSeries {
                     }
                 } else {
                     ForEach(usage?.buckets ?? []) { bucket in
-                        if let rate = bucket.historicalRate.tokensPerSecond {
-                            PointMark(x: .value("Time", bucket.start.addingTimeInterval(bucket.end.timeIntervalSince(bucket.start) / 2)), y: .value("tok/s", rate))
+                        if let rate = MonitorRateAverage.rate(bucket) {
+                            PointMark(x: .value("Time", MonitorRateAverage.middle(bucket)), y: .value("tok/s", rate))
                                 .foregroundStyle(Color.piBrandOrange).symbolSize(30)
                         }
                     }
-                }
-                if let hover {
-                    RuleMark(x: .value("Selected", hover)).foregroundStyle(Color.piInkSecondary.opacity(0.7)).lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
                 }
             }
             .chartXScale(domain: domain).chartYScale(domain: .automatic(includesZero: true))
@@ -127,11 +131,12 @@ struct MonitorRateSeries {
                                     .frame(width: max(1, b - a), height: frame.height)
                                     .offset(x: frame.minX + a, y: frame.minY).allowsHitTesting(false)
                             }
+                            MonitorHoverRule(hover: hover, domain: domain, plot: frame)
                             MonitorChartInteraction(plot: frame, domain: plotDomain(proxy, width: frame.width),
-                                hover: { hover = $0 },
+                                hover: { [hover] in hover.date = $0 },
                                 drag: { start, end, width, held in zoom.update(startX: start, x: end, width: width, domain: held) },
                                 finish: { horizontal, vertical in _ = zoom.finish(horizontal: horizontal, vertical: vertical) },
-                                reset: { zoom.reset(); hover = nil }, step: move)
+                                reset: { [hover] in zoom.reset(); hover.date = nil }, step: { [hover] in Self.move(hover, $0, domain: domain) })
                         }
                     }
                 }
@@ -142,18 +147,19 @@ struct MonitorRateSeries {
             // dynamic colors while the surrounding labels have already changed.
             .id("\(colorScheme):\(metric.rawValue):\(zoom.range?.lowerBound.timeIntervalSince1970 ?? -1):\(zoom.range?.upperBound.timeIntervalSince1970 ?? -1)")
             .overlay {
-                if metric == .live ? series.points.isEmpty : usage?.buckets.contains(where: { $0.historicalRate.tokensPerSecond != nil }) != true {
+                // Only what falls inside the plotted interval counts: retained
+                // buckets outside it are not "timed requests in this interval".
+                if metric == .live ? series.points.isEmpty : !(usage?.buckets ?? []).contains(where: { MonitorRateAverage.rate($0) != nil && domain.contains(MonitorRateAverage.middle($0)) }) {
                     Text(metric == .live ? "Awaiting live usage counters" : "No timed requests in this interval")
                         .font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                         .padding(8).background(Color.monitorCanvas.opacity(0.95), in: RoundedRectangle(cornerRadius: 7)).allowsHitTesting(false)
                 }
             }
-            .focusable().onMoveCommand { direction in move(direction == .left ? -1 : direction == .right ? 1 : 0) }
-            .onExitCommand { if zoom.brush != nil { zoom.cancel() } else { zoom.reset(); hover = nil } }
+            .focusable().onMoveCommand { direction in Self.move(hover, direction == .left ? -1 : direction == .right ? 1 : 0, domain: domain) }
+            .onExitCommand { if zoom.brush != nil { zoom.cancel() } else { zoom.reset(); hover.date = nil } }
             .accessibilityLabel(metric.rawValue + " chart. Drag horizontally to zoom, double-click or press Escape to reset. Arrow keys inspect samples; plus zooms the middle half.")
             .accessibilityIdentifier("monitor-rate-chart")
-            Text(caption(series)).font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
-                .frame(maxWidth: .infinity, minHeight: 14, alignment: .topLeading).fixedSize(horizontal: false, vertical: true)
+            MonitorChartCaption(hover: hover, series: series, buckets: usage?.buckets ?? [], metric: metric, domain: domain, brush: zoom.brush)
             HStack {
                 Text("Drag to zoom").font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
                 Spacer()
@@ -171,25 +177,67 @@ struct MonitorRateSeries {
                     }
                 }.scrollIndicators(.hidden).frame(height: 17)
             }
-        }.onChange(of: metric) { _, _ in hover = nil; zoom.cancel() }
+        }.onChange(of: metric) { _, _ in hover.date = nil; zoom.cancel() }
             .onDisappear { zoom.cancel() }
     }
     private func plotDomain(_ proxy: ChartProxy, width: CGFloat) -> ClosedRange<Date> {
         guard let from = proxy.value(atX: 0, as: Date.self), let until = proxy.value(atX: width, as: Date.self), from < until else { return domain }
         return from...until
     }
-    private func move(_ direction: Int) {
+    private static func move(_ hover: MonitorChartHover, _ direction: Int, domain: ClosedRange<Date>) {
         let step = domain.upperBound.timeIntervalSince(domain.lowerBound) / 24
-        let value = (hover ?? domain.upperBound).addingTimeInterval(Double(direction) * step)
-        hover = min(domain.upperBound.addingTimeInterval(-0.001), max(domain.lowerBound, value))
+        let value = (hover.date ?? domain.upperBound).addingTimeInterval(Double(direction) * step)
+        hover.date = min(domain.upperBound.addingTimeInterval(-0.001), max(domain.lowerBound, value))
     }
-    private func caption(_ series: MonitorRateSeries) -> String {
-        if let brush = zoom.brush {
+}
+
+/// Where the pointer is over a rate chart. Only the rule and the caption
+/// observe it; the chart that owns it holds it without observing it.
+@MainActor final class MonitorChartHover: ObservableObject {
+    @Published var date: Date?
+}
+
+/// The request-average series: the app's settled decode rate of the
+/// completed requests in each retained bucket, plotted at its middle.
+enum MonitorRateAverage {
+    static func rate(_ bucket: MenuBarBucket) -> Double? { bucket.gateway.settledThroughput.tokensPerSecond }
+    static func middle(_ bucket: MenuBarBucket) -> Date { bucket.start.addingTimeInterval(bucket.end.timeIntervalSince(bucket.start) / 2) }
+    static let explanation = "Provider output ÷ decode time (first token to completion) of the completed requests in each interval."
+}
+
+private struct MonitorHoverRule: View {
+    @ObservedObject var hover: MonitorChartHover
+    let domain: ClosedRange<Date>
+    let plot: CGRect
+    var body: some View {
+        if let date = hover.date, domain.contains(date), domain.upperBound > domain.lowerBound {
+            let x = plot.minX + plot.width * date.timeIntervalSince(domain.lowerBound) / domain.upperBound.timeIntervalSince(domain.lowerBound)
+            Path { path in path.move(to: CGPoint(x: x, y: plot.minY)); path.addLine(to: CGPoint(x: x, y: plot.maxY)) }
+                .stroke(Color.piInkSecondary.opacity(0.7), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+private struct MonitorChartCaption: View {
+    @ObservedObject var hover: MonitorChartHover
+    let series: MonitorRateSeries
+    let buckets: [MenuBarBucket]
+    let metric: MonitorRateMetric
+    let domain: ClosedRange<Date>
+    let brush: ClosedRange<Date>?
+    var body: some View {
+        Text(caption).font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
+            .frame(maxWidth: .infinity, minHeight: 14, alignment: .topLeading).fixedSize(horizontal: false, vertical: true)
+    }
+    private var caption: String {
+        if let brush {
             return "\(brush.lowerBound.formatted(date: .omitted, time: .standard)) – \(brush.upperBound.formatted(date: .omitted, time: .standard)) · release to zoom"
         }
-        if let hover {
-            if metric == .average, let bucket {
-                return "\(hover.formatted(date: .omitted, time: .shortened)) · \(menuBarRate(bucket.historicalRate.tokensPerSecond)) tok/s · \(bucket.historicalRate.samples) completed requests"
+        if let hover = hover.date {
+            if metric == .average, let bucket = buckets.first(where: { hover >= $0.start && hover < $0.end }) {
+                let rate = bucket.gateway.settledThroughput
+                return "\(hover.formatted(date: .omitted, time: .shortened)) · \(menuBarRate(rate.tokensPerSecond)) tok/s decode · \(rate.samples) measured requests"
             }
             if metric == .live, let point = series.points.min(by: { abs($0.date.timeIntervalSince(hover)) < abs($1.date.timeIntervalSince(hover)) }),
                abs(point.date.timeIntervalSince(hover)) <= max(1, domain.upperBound.timeIntervalSince(domain.lowerBound) / 120) {
@@ -198,8 +246,6 @@ struct MonitorRateSeries {
             }
             return "\(hover.formatted(date: .omitted, time: .standard)) · no reported observation"
         }
-        return metric == .live
-            ? "Reported intervals · gaps stay empty · history since launch"
-            : "Output ÷ request duration, including reasoning and first-token wait."
+        return metric == .live ? "Reported intervals · gaps stay empty · history since launch" : MonitorRateAverage.explanation
     }
 }

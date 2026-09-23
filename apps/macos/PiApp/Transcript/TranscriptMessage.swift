@@ -98,6 +98,23 @@ struct ToolResultRecord: Sendable, Equatable {
     var path: String? = nil
     var added: Int? = nil
     var removed: Int? = nil
+    /// What the helper recorded became of the call: "completed", "failed",
+    /// "not_executed" or "unknown". Journals from before it recorded one
+    /// leave it nil.
+    var outcome: String? = nil
+    /// The card this record reads as — the helper's own reading of a saved
+    /// result (`AgentSession.cardState`): the recorded outcome decides, and a
+    /// journal without one keeps its isError reading. A call stopped while it
+    /// ran is "unknown", never "failed"; one that never ran is "cancelled".
+    var cardState: String {
+        switch outcome {
+        case "completed"?: return "completed"
+        case "unknown"?: return "unknown"
+        case "not_executed"?: return "cancelled"
+        case "failed"?: return "failed"
+        default: return isError ? "failed" : "completed"
+        }
+    }
     /// The record as it sits in a journal's message row, or nil when the row
     /// is not a tool result or names no call.
     static func of(_ message: [String: WireValue]) -> (call: String, record: ToolResultRecord)? {
@@ -108,7 +125,7 @@ struct ToolResultRecord: Sendable, Equatable {
         func whole(_ value: WireValue?) -> Int? { value?.number.flatMap { Int(exactly: $0) } }
         return (call, ToolResultRecord(output: output, isError: message["isError"]?.bool ?? false,
                                        durationMs: stats["durationMs"]?.number, path: stats["path"]?.string,
-                                       added: whole(stats["added"]), removed: whole(stats["removed"])))
+                                       added: whole(stats["added"]), removed: whole(stats["removed"]), outcome: stats["outcome"]?.string))
     }
 }
 
@@ -118,22 +135,32 @@ extension TranscriptMessage {
     /// its outcome, its clock and its output in one place. A call with no
     /// recorded result keeps the "recorded" card it was projected with, and
     /// its result row — if the page holds one — stays where it is.
+    ///
+    /// `results` are keyed by the id of the result's own row. Providers reuse
+    /// call ids, so a result belongs to the latest reply before it on the page
+    /// that made its call — the owner the helper pairs it with — and fills that
+    /// one card. A result whose reply is on another page fills nothing.
     static func resolvingToolResults(_ rows: [TranscriptMessage], results: [String: ToolResultRecord]) -> [TranscriptMessage] {
         guard !results.isEmpty else { return rows }
-        return rows.map { row in
-            guard row.role == "assistant", let tools = row.tools, !tools.isEmpty else { return row }
-            var updated = row
-            updated.tools = tools.map { tool in
-                guard tool.state == "recorded", let result = results[tool.id] else { return tool }
+        var issuers: [String: Int] = [:], owned: [Int: [String: ToolResultRecord]] = [:]
+        for (index, row) in rows.enumerated() {
+            if row.role == "assistant" { for tool in row.tools ?? [] { issuers[tool.id] = index } }
+            else if let result = results[row.id], let call = row.toolCallID, let owner = issuers[call] { owned[owner, default: [:]][call] = result }
+        }
+        guard !owned.isEmpty else { return rows }
+        var resolved = rows
+        for (index, records) in owned {
+            resolved[index].tools = resolved[index].tools?.map { tool in
+                guard tool.state == "recorded", let result = records[tool.id] else { return tool }
                 var card = tool
-                card.state = result.isError ? "failed" : "completed"
+                card.state = result.cardState
                 card.output = result.output
                 card.durationMs = result.durationMs
                 card.path = result.path; card.added = result.added; card.removed = result.removed
                 return card
             }
-            return updated
         }
+        return resolved
     }
 }
 

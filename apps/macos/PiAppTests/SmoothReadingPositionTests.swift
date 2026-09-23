@@ -217,6 +217,11 @@ extension SmoothShellTests {
     /// exactly where they put them — including while a reply streams below.
     /// The one scroll the app makes for itself is the one that follows the
     /// newest row, and only while the reader is already on it.
+    ///
+    /// Where they are is the line of text on the pane, not the clip's offset:
+    /// the history above them is still being measured a row at a time while
+    /// this runs, and each row that lands at its exact height moves the clip by
+    /// that row's difference precisely so that nothing on screen moves.
     @MainActor func testScrollingNeverFightsTheReader() async throws {
         let shell = try shell(["Scrolled"], rows: 60)
         let session = try XCTUnwrap(shell.model.displays[shell.chats[0].id])
@@ -235,6 +240,15 @@ extension SmoothShellTests {
                           "the wheel did not move the reader off the newest row")
         XCTAssertGreaterThan(afterWheel, TranscriptPage.earlierThreshold,
                              "the fixture must stay clear of the earlier-page threshold for this to mean anything")
+        let line = try XCTUnwrap(shell.readingRow(), "the reader must be looking at a row")
+        /// The row the reader was on is still the one they are on, on the
+        /// same line of the pane, and the page has not taken them back.
+        func assertHeld(_ held: (id: String, contentY: CGFloat, screenY: CGFloat), _ what: String) {
+            let now = shell.readingRow()
+            XCTAssertEqual(now?.id, held.id, "\(what) moved the reader to another row")
+            XCTAssertEqual(now?.screenY ?? .infinity, held.screenY, accuracy: 1, "\(what) moved the line the reader is on")
+            XCTAssertFalse(shell.page?.followsBottom ?? true, "\(what) pinned the page to the newest row under the reader")
+        }
         session.state = "running"
         session.messages = settled + [TranscriptMessage(id: "stream:tail", role: "assistant", text: "streamed words arrive ",
                                                         state: "streaming", turn: shell.chats[0].id + "-m58")]
@@ -243,17 +257,18 @@ extension SmoothShellTests {
                                                      text: String(repeating: "streamed words arrive here ", count: step * 8),
                                                      state: "streaming", turn: shell.chats[0].id + "-m58")
             await shell.settle(0.35)
-            XCTAssertEqual(shell.offset, afterWheel, accuracy: 1, "a streamed delta scrolled the reader at step \(step)")
+            assertHeld(line, "a streamed delta at step \(step)")
         }
         // A second wheel move while the reply is still arriving.
         await shell.scrollAwayFromTheBottom(by: 300)
         let afterSecond = shell.offset
         XCTAssertLessThan(afterSecond, afterWheel - 100, "the second wheel move did not reach the page")
+        let secondLine = try XCTUnwrap(shell.readingRow())
         session.messages[60] = TranscriptMessage(id: "stream:tail", role: "assistant",
                                                  text: String(repeating: "streamed words arrive here ", count: 64),
                                                  state: "streaming", turn: shell.chats[0].id + "-m58")
         await shell.settle(0.5)
-        XCTAssertEqual(shell.offset, afterSecond, accuracy: 1, "a streamed delta undid the reader's second move")
+        assertHeld(secondLine, "a streamed delta after the reader's second move")
 
         // Back at the newest row — and only there — the page follows.
         shell.page?.jumpToLatest()
@@ -269,6 +284,50 @@ extension SmoothShellTests {
         session.state = "idle"
         session.messages = settled
         await shell.settle(0.4)
+    }
+
+    /// The mouse wheel itself, the event a real one sends. AppKit lands a
+    /// wheel without gesture phases a frame or more after `scrollWheel(with:)`
+    /// has returned, and whatever lays the page out in that gap — in the app a
+    /// slice measuring history or a streamed token, here a pass forced at once
+    /// — takes the reading anchor where the reader still is. Frame by frame
+    /// from the event: the reader leaves the end once, by the wheel, and is
+    /// never carried back toward it.
+    @MainActor func testAWheelIsNotUndoneByAPassThatRunsBeforeItLands() async throws {
+        let shell = try shell(["Late wheel"], rows: 60)
+        await shell.model.select(shell.chats[0].id)
+        await shell.settle(1.2)
+        let scroll = try XCTUnwrap(shell.scroll)
+        let document = try XCTUnwrap(shell.document)
+        let bottom = max(0, document.frame.height - scroll.contentView.bounds.height)
+        XCTAssertEqual(shell.offset, bottom, accuracy: TranscriptPage.followThreshold, "the chat must open at its newest row")
+        let wheel = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: 700, wheel2: 0, wheel3: 0)
+            .flatMap(NSEvent.init(cgEvent:)))
+        scroll.scrollWheel(with: wheel)
+        let landedAtOnce = shell.offset < bottom - 400
+        document.layoutNow()
+        var offsets: [CGFloat] = []
+        let deadline = Date().addingTimeInterval(0.6)
+        while Date() < deadline {
+            shell.draw()
+            offsets.append(shell.offset)
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(8))
+        }
+        let landed = shell.offset
+        print(String(format: "PERF smooth late wheel: AppKit %@ the wheel; the reader stands %.0f pt above the end after %d frames",
+                     landedAtOnce ? "applied" : "deferred", bottom - landed, offsets.count))
+        XCTAssertLessThan(landed, bottom - 400, "the wheel did not move the reader, or an anchor taken before it landed put them back")
+        XCTAssertFalse(shell.page?.followsBottom ?? true, "the end of the wheel pinned the page again")
+        // Once the wheel has taken them off the end, no frame carries them
+        // back toward it: holding their line while rows above re-measure moves
+        // the clip by a few points, never by the wheel's own distance.
+        if let left = offsets.firstIndex(where: { $0 < bottom - 400 }) {
+            for index in offsets.indices.dropFirst(left + 1) {
+                XCTAssertLessThan(offsets[index] - offsets[index - 1], 40,
+                                  "frame \(index) carried the reader \(Int(offsets[index] - offsets[index - 1])) pt back toward the end")
+            }
+        }
     }
 
     // MARK: 2b. What the transitions cost, frame by frame
@@ -296,7 +355,15 @@ extension SmoothShellTests {
             var costs: [Double] = [], geometries: Set<Int> = []
             change()
             let deadline = Date().addingTimeInterval(Double(milliseconds) / 1_000)
-            while Date() < deadline {
+            // The animation runs on the wall clock, so how many frames land
+            // inside it is what the machine can give: under load, two or
+            // three. The loop goes on past its end until it has driven five.
+            // Those frames draw the pane the animation landed on, so they add
+            // no height to the count of distinct ones, and their cost is still
+            // held to the frame budget.
+            var inside = 0
+            while Date() < deadline || costs.count <= 4 {
+                if Date() < deadline { inside += 1 }
                 let started = ProcessInfo.processInfo.systemUptime
                 shell.draw()
                 costs.append((ProcessInfo.processInfo.systemUptime - started) * 1_000)
@@ -307,8 +374,8 @@ extension SmoothShellTests {
             await shell.settle(0.5)
             let mean = costs.reduce(0, +) / Double(max(1, costs.count))
             let worst = costs.max() ?? 0
-            print(String(format: "PERF smooth transition %@: %d frames, mean %.2f ms, worst %.2f ms, %d distinct heights",
-                         what, costs.count, mean, worst, geometries.count))
+            print(String(format: "PERF smooth transition %@: %d frames (%d inside the animation), mean %.2f ms, worst %.2f ms, %d distinct heights",
+                         what, costs.count, inside, mean, worst, geometries.count))
             return (mean, worst, costs.count, geometries.count)
         }
 

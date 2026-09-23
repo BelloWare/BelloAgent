@@ -10,12 +10,19 @@ enum MetricFormat {
     // MARK: Tokens
 
     /// `517`, `12.2K`, `517K`, `1.2M`. One decimal below a hundred of the
-    /// unit, whole numbers above it, and the unit letter uppercase.
+    /// unit, whole numbers above it, and the unit letter uppercase. A value
+    /// whose rounding reaches a thousand of one unit is written in the next:
+    /// 999,500 is `1M`, never `1000K`.
     static func tokens(_ value: Double) -> String {
         guard let value = observed(value) else { return "—" }
-        if value < 1_000 { return whole(value) }
-        if value < 1_000_000 { return scaled(value / 1_000) + "K" }
-        return scaled(value / 1_000_000) + "M"
+        if value.rounded() < 1_000 { return whole(value) }
+        let units: [(scale: Double, letter: String)] = [(1_000, "K"), (1_000_000, "M"), (1_000_000_000, "B")]
+        for (index, unit) in units.enumerated() {
+            let amount = value / unit.scale
+            let shown = amount >= 100 ? amount.rounded() : (amount * 10).rounded() / 10
+            if shown < 1_000 || index == units.count - 1 { return scaled(amount) + unit.letter }
+        }
+        return "—"
     }
 
     /// `15,800` — the exact count a dialog shows, grouped in threes.
@@ -36,7 +43,10 @@ enum MetricFormat {
     /// A hit that missed even one token must never read `100`: when the
     /// requested precision would round there, the figure takes as many extra
     /// decimal places as it needs to stay honest (`99.96`, `99.999`). Only an
-    /// exact full hit returns `100`; no billed input at all returns nil.
+    /// exact full hit returns `100`; no billed input at all returns nil. The
+    /// same honesty holds at the other end: a hit too small for the requested
+    /// precision reads `<1` (`<0.1`, `<0.01`), never `0` — only no cached
+    /// token at all is a zero.
     /// - Parameters:
     ///   - read: prompt tokens served from cache.
     ///   - prompt: aggregate prompt-side tokens billed.
@@ -47,6 +57,9 @@ enum MetricFormat {
         if prompt - hit <= 0 { return "100" }
         let ratio = hit / prompt * 100
         var places = max(0, min(6, decimals))
+        if hit > 0, (ratio * pow(10.0, Double(places))).rounded() == 0 {
+            return "<" + trimmed(pow(10.0, -Double(places)), places: places)
+        }
         // Climb one decimal place at a time until the rendered figure is
         // strictly under a hundred; nine places is far past any real coverage.
         while places <= 9 {
@@ -60,10 +73,12 @@ enum MetricFormat {
 
     /// The context ring's reading, without a sign. The same honest rounding as
     /// a cache hit, and a context that holds something but very little reads
-    /// `<1` rather than `0`, so an occupied window never looks empty.
-    static func occupancyPercent(_ fraction: Double) -> String? {
+    /// `<1` rather than `0`, so an occupied window never looks empty. The
+    /// detail line asks for a decimal more and still agrees with the ring.
+    static func occupancyPercent(_ fraction: Double) -> String? { occupancyPercent(fraction, decimals: 0) }
+    static func occupancyPercent(_ fraction: Double, decimals: Int) -> String? {
         guard fraction.isFinite, fraction >= 0 else { return nil }
-        guard let text = cacheHitPercent(read: min(fraction, 1) * 1_000_000, prompt: 1_000_000) else { return nil }
+        guard let text = cacheHitPercent(read: min(fraction, 1) * 1_000_000, prompt: 1_000_000, decimals: decimals) else { return nil }
         return text == "0" && fraction > 0 ? "<1" : text
     }
 
@@ -75,7 +90,8 @@ enum MetricFormat {
         guard let value = DurationObservation.valid(milliseconds) else { return "—" }
         if value == 0 { return "0s" }
         if value < 1 { return preciseDecimal(value) + " ms" }
-        if value < 1_000 { return trimmed(value, places: 3) + " ms" }
+        // Milliseconds that round up to a second are written as the second.
+        if (value * 1_000).rounded() < 1_000_000 { return trimmed(value, places: 3) + " ms" }
         guard let rounded = Int(exactly: value.rounded()) else { return "—" }
         let seconds = Double(rounded % 60_000) / 1_000
         let tail = trimmed(seconds, places: 3) + "s"
@@ -116,7 +132,9 @@ enum MetricFormat {
     /// second up it reads in seconds, one decimal under ten.
     static func latency(_ milliseconds: Double) -> String {
         guard let milliseconds = DurationObservation.valid(milliseconds) else { return "—" }
-        if milliseconds < 1_000 { return whole(milliseconds.rounded()) + " ms" }
+        // Milliseconds that round up to a second are written as the second:
+        // 999.6 ms is "1s", never "1000 ms".
+        if milliseconds.rounded() < 1_000 { return whole(milliseconds.rounded()) + " ms" }
         let seconds = milliseconds / 1_000
         return (seconds < 10 ? trimmed((seconds * 10).rounded() / 10, places: 1) : whole(seconds.rounded())) + "s"
     }
@@ -159,8 +177,9 @@ enum MetricFormat {
 
 /// Provider output tokens divided by decode time — the first token to the
 /// completion of the same request — accumulated over the requests that
-/// reported both. A request missing either figure contributes nothing rather
-/// than a zero, and the sample counts keep that visible.
+/// reported both, across a span long enough to be a measurement. A request
+/// missing either figure, or whose reply arrived in one burst, contributes
+/// nothing rather than a zero, and the sample counts keep that visible.
 ///
 /// This is the only throughput the app shows. It is never computed from a
 /// request still in flight, and it never includes the wait before the first
@@ -181,11 +200,20 @@ struct SettledThroughput: Equatable, Sendable, Codable {
         self.samples = samples; self.requests = requests
     }
 
-    /// Fold one request in. Either figure missing, or a decode time of zero,
-    /// leaves the rate untouched: a rate needs both ends of the measurement.
+    /// The shortest decode span that is a measurement. A reply delivered in
+    /// one burst spans a few milliseconds from its first output to its
+    /// completion, and its tokens over that read as 100,000 tok/s. The helper
+    /// applies the same floor to the rate it reports
+    /// (`metrics.minimumDecodeSpanMs`), and so does the archive's SQL
+    /// (`GatewayAccounting.settledThroughputSQL`).
+    static let minimumDecodeMilliseconds: Double = 250
+
+    /// Fold one request in. Either figure missing, or a decode span shorter
+    /// than `minimumDecodeMilliseconds`, leaves the rate untouched: a rate
+    /// needs both ends of a measurement. The request is still counted.
     mutating func add(decodeMilliseconds: Double?, outputTokens: Double?) {
         requests += 1
-        guard let decode = DurationObservation.valid(decodeMilliseconds), decode > 0,
+        guard let decode = DurationObservation.valid(decodeMilliseconds), decode >= Self.minimumDecodeMilliseconds,
               let output = outputTokens, output.isFinite, output >= 0 else { return }
         self.decodeMilliseconds += decode
         self.outputTokens += output
@@ -198,8 +226,11 @@ struct SettledThroughput: Equatable, Sendable, Codable {
         samples += other.samples; requests += other.requests
     }
 
+    /// Nil unless the sums are a real measurement: a decode time that is
+    /// finite and positive, and an output that is not negative (or NaN). A
+    /// sum that overflowed must never read as 0 tok/s.
     var tokensPerSecond: Double? {
-        guard samples > 0, decodeMilliseconds > 0 else { return nil }
+        guard samples > 0, decodeMilliseconds.isFinite, decodeMilliseconds > 0, outputTokens >= 0 else { return nil }
         let rate = outputTokens / (decodeMilliseconds / 1_000)
         return rate.isFinite ? rate : nil
     }
@@ -208,7 +239,7 @@ struct SettledThroughput: Equatable, Sendable, Codable {
     /// What the dialog says when only some requests were measurable.
     var coverage: String? { samples < requests ? "\(samples)/\(requests) requests measured" : nil }
 
-    static let explanation = "Provider output tokens divided by decode time — first token to completion — over the requests that reported both. Not a live rate, and not round-trip latency."
+    static let explanation = "Provider output tokens divided by decode time — first token to completion — over the requests that reported both and took at least a quarter of a second to decode. Not a live rate, and not round-trip latency."
 }
 
 /// A first-token latency averaged over the requests that recorded it.

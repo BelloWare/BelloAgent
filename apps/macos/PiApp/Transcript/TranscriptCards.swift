@@ -23,11 +23,17 @@ enum TranscriptCardMetrics {
 
     /// The head/tail split for a capped list: how many rows are hidden,
     /// whether it caps at all, and how the visible rows divide.
+    /// A list one line over its cap is drawn whole: the line saying "1 more"
+    /// would take the room of the line it hides, and hide it for nothing.
     static func headTail(total: Int, maxLines: Int, expanded: Bool) -> (hidden: Int, capped: Bool, head: Int, tail: Int) {
         let hidden = total - maxLines
         let head = Int((Double(maxLines) / 2).rounded(.up))
-        return (hidden, hidden > 0 && !expanded, head, maxLines - head)
+        return (hidden, collapses(hidden: hidden) && !expanded, head, maxLines - head)
     }
+    /// Whether a list hides enough to be worth collapsing at all.
+    static func collapses(hidden: Int) -> Bool { hidden > 1 }
+    /// "… 12 more lines", in the singular for one.
+    static func moreLines(_ hidden: Int) -> String { "… \(hidden) more line\(hidden == 1 ? "" : "s")" }
 }
 
 extension String {
@@ -56,7 +62,7 @@ private struct CardMoreLines: View {
     let toggle: () -> Void
     var body: some View {
         Button(action: toggle) {
-            Text(expanded ? "Show fewer lines" : "… \(hidden) more lines")
+            Text(expanded ? "Show fewer lines" : TranscriptCardMetrics.moreLines(hidden))
                 .font(.system(size: 12, design: .monospaced))
                 .foregroundStyle(TranscriptPalette.faint)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -154,10 +160,10 @@ struct TranscriptDiffCard: View {
                         } else {
                             rowsView(rows)
                         }
-                        if cap.hidden > 0 { CardMoreLines(hidden: cap.hidden, expanded: true) { expanded = false } }
+                        if TranscriptCardMetrics.collapses(hidden: cap.hidden) { CardMoreLines(hidden: cap.hidden, expanded: true) { expanded = false } }
                     }
                     if request.hiddenRows > 0 {
-                        Text("… \(request.hiddenRows) more lines").font(.system(size: 12, design: .monospaced))
+                        Text(TranscriptCardMetrics.moreLines(request.hiddenRows)).font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(TranscriptPalette.faint).padding(.horizontal, 16).padding(.vertical, 2)
                     }
                     if !request.complete {
@@ -168,7 +174,7 @@ struct TranscriptDiffCard: View {
                     }
                 }
                 .textSelection(.enabled)
-                .opacity(outcome == .failed || outcome == .cancelled ? 0.72 : 1)
+                .opacity([.failed, .cancelled, .unknown].contains(outcome) ? 0.72 : 1)
                 if !request.tooLarge || added != nil || removed != nil { footer }
             }
         }
@@ -186,15 +192,18 @@ struct TranscriptDiffCard: View {
     private var banner: some View {
         HStack(spacing: 8) {
             Text(label).font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(outcome == .done ? TranscriptPalette.muted : outcome == .running ? TranscriptPalette.warning : TranscriptPalette.danger)
+                .foregroundStyle(outcome == .done ? TranscriptPalette.muted : [.running, .unknown].contains(outcome) ? TranscriptPalette.warning : TranscriptPalette.danger)
             Spacer(minLength: 0)
             if let path { Text(path).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.faint).lineLimit(1).truncationMode(.middle) }
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
     }
+    /// What became of the request. A call stopped while it ran may have
+    /// written already, so it is never "not applied": its outcome is unknown.
     private var label: String {
         (request.mode == "edit" ? "Requested edit" : "Requested content")
-            + (outcome == .done ? "" : outcome == .running ? " · in progress" : request.mode == "edit" ? " · not applied" : " · not written")
+            + (outcome == .done ? "" : outcome == .running ? " · in progress" : outcome == .unknown ? " · outcome unknown"
+               : request.mode == "edit" ? " · not applied" : " · not written")
             + (request.complete ? "" : " · arguments truncated")
     }
     /// The same `+N −M` the collapsed row carried, so the card closes on the
@@ -231,12 +240,37 @@ struct TranscriptDiffCard: View {
 /// A file read: the window that came back, numbered as the file numbers it,
 /// and how much of the result the card is showing.
 struct TranscriptReadCard: View {
-    let text: String
-    var path: String? = nil
-    var failed = false
+    /// The file's line number of the window's first line: the read's offset.
+    let firstLine: Int
+    let path: String?
+    let failed: Bool
     @State private var expanded = false
+    /// The window's lines, and the host's note when the read stopped short of
+    /// the file. Worked out once per result rather than on every redraw.
+    private let lines: [String]
+    private let note: String?
+
+    init(text: String, firstLine: Int = 1, path: String? = nil, failed: Bool = false) {
+        self.firstLine = max(1, firstLine); self.path = path; self.failed = failed
+        var lines = text.isEmpty ? [] : text.components(separatedBy: "\n")
+        // The host ends a bounded read with "[Truncated. N total lines; read
+        // another range.]". That is a note about the file, not its next line.
+        if let last = lines.last, last.hasPrefix("[Truncated."), last.hasSuffix("]") {
+            note = String(last.dropFirst().dropLast()); lines.removeLast()
+        } else { note = nil }
+        self.lines = lines
+    }
+    /// The line a read started at, from its arguments: the host's `offset`, a
+    /// 1-based line number, or the first line when the read named none.
+    nonisolated static func firstLine(of input: String) -> Int {
+        guard let offset = TranscriptActivity.parseInput(input)["offset"] as? NSNumber,
+              CFGetTypeID(offset) != CFBooleanGetTypeID() else { return 1 }
+        let value = offset.doubleValue
+        guard value.isFinite, value >= 1, value.rounded() == value, value <= 10_000_000 else { return 1 }
+        return Int(value)
+    }
     var body: some View {
-        let lines = text.isEmpty ? [] : text.components(separatedBy: "\n")
+        let lines = self.lines
         let cap = TranscriptCardMetrics.headTail(total: lines.count, maxLines: TranscriptCardMetrics.readLines, expanded: expanded)
         let shown = cap.capped ? cap.head + cap.tail : lines.count
         CardFrame {
@@ -251,12 +285,18 @@ struct TranscriptReadCard: View {
                 .padding(.horizontal, 16).padding(.vertical, 8)
                 Rectangle().fill(TranscriptPalette.hair).frame(height: 1)
                 if cap.capped {
-                    numbered(Array(lines.prefix(cap.head)), from: 1)
+                    numbered(Array(lines.prefix(cap.head)), from: firstLine)
                     CardMoreLines(hidden: cap.hidden, expanded: false) { expanded = true }
-                    numbered(Array(lines.suffix(cap.tail)), from: lines.count - cap.tail + 1)
+                    numbered(Array(lines.suffix(cap.tail)), from: firstLine + lines.count - cap.tail)
                 } else {
-                    numbered(lines, from: 1)
-                    if cap.hidden > 0 { CardMoreLines(hidden: cap.hidden, expanded: true) { expanded = false } }
+                    numbered(lines, from: firstLine)
+                    if TranscriptCardMetrics.collapses(hidden: cap.hidden) { CardMoreLines(hidden: cap.hidden, expanded: true) { expanded = false } }
+                }
+                if let note {
+                    Text(note).font(.system(size: 11.5)).foregroundStyle(TranscriptPalette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 16).padding(.vertical, 8)
+                        .accessibilityIdentifier("read-card-note")
                 }
             }
             .textSelection(.enabled)

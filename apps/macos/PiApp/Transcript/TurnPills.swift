@@ -30,10 +30,12 @@ struct TurnPillsPresentation: Equatable {
         if !any { return TranscriptActivity.tokens(of: accounting) }
         return total
     }
+    /// The cached share of the input of the requests that reported both
+    /// counters — the same population as the session pill and the report's
+    /// green bar, never every read over every input.
     var cacheHit: String? {
-        guard accounting.cachedSamples > 0, let read = accounting.cached,
-              accounting.inputSamples > 0, let input = accounting.input else { return nil }
-        return MetricFormat.cacheHitPercent(read: read, prompt: input, decimals: 1)
+        guard let split = accounting.split(input: true) else { return nil }
+        return MetricFormat.cacheHitPercent(read: split.part, prompt: split.total, decimals: 1)
     }
     /// `Usage 15.8K tok · $0.0025`
     var usageLabel: String? {
@@ -51,7 +53,7 @@ struct TurnPillsPresentation: Equatable {
     var usageRows: [PiStatRow] {
         var rows: [PiStatRow] = []
         if let model = accounting.model { rows.append(PiStatRow(name: "Model", value: model)) }
-        if let cacheHit { rows.append(PiStatRow(name: "Cache hit", value: cacheHit + "%", coverage: coverage(accounting.cachedSamples))) }
+        if let cacheHit { rows.append(PiStatRow(name: "Cache hit", value: cacheHit + "%", coverage: coverage(accounting.split(input: true)?.samples ?? 0))) }
         if let uncached = accounting.uncached {
             rows.append(PiStatRow(name: "Uncached input", value: MetricFormat.exactTokenCount(uncached), coverage: coverage(accounting.uncachedSamples)))
         }
@@ -220,10 +222,13 @@ struct TurnLineView: View {
 struct StableTurnSummaryView: View {
     let turn: TurnSummary
     let actions: TranscriptActions
+    /// The notice the report shows: a failed turn's error is left to the
+    /// run's failure card when that card is on the page.
+    static func shownNotice(_ turn: TurnSummary) -> String? { turn.noticeOnFailureCard ? nil : turn.notice }
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             TurnPillRow(turn: turn, actions: actions, showsInfo: true)
-            if let notice = turn.notice {
+            if let notice = Self.shownNotice(turn) {
                 Text(notice).font(.system(size: 12)).foregroundStyle(TranscriptPalette.warning).textSelection(.enabled)
             }
         }.padding(.top, 6).padding(.bottom, 10).fixedSize(horizontal: false, vertical: true)

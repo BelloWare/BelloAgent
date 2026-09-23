@@ -147,6 +147,74 @@ final class NativeCodeTextTests: XCTestCase {
         }
     }
 
+    /// A token appended to a coloured fence is coloured from the scanner's
+    /// last checkpoint on. Nothing before that checkpoint is visited again —
+    /// not to scan it, and not to work out where its characters sit — so an
+    /// append costs the same under forty lines of code as under three hundred.
+    /// Both fences stay under the colouring limit, so both are coloured.
+    @MainActor func testAnAppendColoursFromTheCheckpointWhateverCameBefore() throws {
+        let rounds = 40
+        var medians: [Int: Double] = [:]
+        for lines in [40, 320] {
+            var code = (0..<lines).map { "let value\($0) = compute(\($0)) // 中文 line \($0)" }.joined(separator: "\n") + "\n"
+            XCTAssertLessThan(code.utf8.count + rounds * 8, SyntaxHighlighter.limit, "both fences must stay coloured")
+            let view = TranscriptCodeTextView()
+            view.update(source: code, language: "swift", size: 12.5, environment: TranscriptRowEnvironment())
+            var samples: [Double] = []
+            for round in 0..<rounds {
+                code += round % 5 == 4 ? "x\(round)\n" : "x\(round) "
+                let start = ProcessInfo.processInfo.systemUptime
+                view.update(source: code, language: "swift", size: 12.5, environment: TranscriptRowEnvironment())
+                samples.append(ProcessInfo.processInfo.systemUptime - start)
+            }
+            XCTAssertEqual(view.appendCount, rounds)
+            // What the appends coloured is what colouring the whole code gives.
+            let full = TranscriptCodeTextView()
+            full.update(source: code, language: "swift", size: 12.5, environment: TranscriptRowEnvironment())
+            XCTAssertEqual(view.textStorage, full.textStorage, "\(lines) lines: incremental colours must equal a full scan")
+            medians[lines] = samples.sorted()[rounds / 2]
+            print(String(format: "PERF appending a token to a %d-line coloured fence (%d bytes): %.3f ms (median of %d)",
+                         lines, code.utf8.count, medians[lines]! * 1000, rounds))
+        }
+        let short = try XCTUnwrap(medians[40]), long = try XCTUnwrap(medians[320])
+        XCTAssertLessThan(long, short * 3 + 0.000_2,
+                          String(format: "an append cost %.3f ms under 320 lines against %.3f ms under 40", long * 1000, short * 1000))
+    }
+
+    /// Most lines of code end in a word. The word a line ends on only matters
+    /// to the next line when it is a declaration keyword ("func" then a name
+    /// on the next line), so every other line end is where colouring can
+    /// resume, and an append colours the line it extends, not every line since
+    /// the last one that happened to end in punctuation.
+    @MainActor func testALineEndingInAWordIsWhereColouringResumes() throws {
+        var code = (0..<200).map { "let value\($0) = compute(\($0)) + offset" }.joined(separator: "\n") + "\n"
+        XCTAssertLessThan(code.utf8.count + 400, SyntaxHighlighter.limit, "the fence stays coloured")
+        let scan = SyntaxHighlighter.scan(code, language: .swift)
+        XCTAssertGreaterThanOrEqual(scan.checkpoints.count, 200, "every line end outside a string, comment or pending declaration is a checkpoint")
+        // A declaration keyword at a line's end still reaches the next line.
+        let declaration = SyntaxHighlighter.scan("func\nname()\n", language: .swift)
+        XCTAssertFalse(declaration.checkpoints.contains(5), "the line after a bare declaration keyword is not a place to resume")
+        XCTAssertEqual(declaration.tokens.last, SyntaxHighlighter.Token(range: 5..<9, kind: .title))
+        let view = TranscriptCodeTextView()
+        view.update(source: code, language: "swift", size: 12.5, environment: TranscriptRowEnvironment())
+        var visits: [Int] = [], times: [Double] = []
+        for round in 0..<40 {
+            code += round % 5 == 4 ? "total\(round)\n" : "x\(round) "
+            let before = view.highlightedScalarVisits
+            let start = ProcessInfo.processInfo.systemUptime
+            view.update(source: code, language: "swift", size: 12.5, environment: TranscriptRowEnvironment())
+            times.append(ProcessInfo.processInfo.systemUptime - start)
+            visits.append(view.highlightedScalarVisits - before)
+        }
+        let full = TranscriptCodeTextView()
+        full.update(source: code, language: "swift", size: 12.5, environment: TranscriptRowEnvironment())
+        XCTAssertEqual(view.textStorage, full.textStorage, "colouring from the checkpoints equals colouring the whole code")
+        let worst = try XCTUnwrap(visits.max())
+        print(String(format: "PERF colouring an append to a %d-character fence whose lines end in words: at most %d characters scanned, %.3f ms (median of 40)",
+                     code.count, worst, times.sorted()[20] * 1000))
+        XCTAssertLessThan(worst, 120, "an append coloured \(worst) of the fence's \(code.count) characters")
+    }
+
     @MainActor func testCodeHighlightLimitDoesNotStripPrefixStyle() throws {
         let view = TranscriptCodeTextView()
         let prefix = "let meaning = 42\n" + String(repeating: "// stable line\n", count: 1000)

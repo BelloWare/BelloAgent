@@ -143,6 +143,76 @@ extension GitPanelAuditTests {
         XCTAssertTrue(controller.status.entries.isEmpty)
     }
 
+    /// A refresh nobody asked for used to put the diff pane in its loading
+    /// state and publish the status, the history and the diff again every
+    /// time, so a save in another editor flashed a spinner and redrew the
+    /// whole panel — up to fifteen hundred diff rows and all of the history —
+    /// even when nothing on screen had changed. The History tab shared the
+    /// flag, and flashed its spinner for a diff it does not show.
+    @MainActor func testAnAutomaticRefreshShowsNoSpinnerAndPublishesOnlyWhatChanged() async throws {
+        let root = try repository("git-watch-quiet"); defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        let file = root.appendingPathComponent("a.txt")
+        try "one\n".write(to: file, atomically: true, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
+        try "one\ntwo\n".write(to: file, atomically: true, encoding: .utf8)
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
+        try await eventually("read a.txt and the history") {
+            controller.selection?.path == "a.txt" && controller.diff.first?.added == 1 && !controller.diffLoading && !controller.loading && controller.commits.count == 1
+        }
+        try await Task.sleep(for: .milliseconds(1_200))
+
+        var spinner = false, statuses = 0, histories = 0, diffs = 0
+        let watches = [
+            controller.$diffLoading.sink { if $0 { spinner = true } },
+            controller.$status.dropFirst().sink { _ in statuses += 1 },
+            controller.$commits.dropFirst().sink { _ in histories += 1 },
+            controller.$diff.dropFirst().sink { _ in diffs += 1 },
+        ]
+        defer { watches.forEach { $0.cancel() } }
+
+        // The selected file is saved again with a line more: the watch reads
+        // it, and only its diff has changed.
+        let before = controller.automaticRefreshes
+        try "one\ntwo\nthree\n".write(to: file, atomically: true, encoding: .utf8)
+        try await eventually("see the new line", timeout: 6) { controller.diff.first?.added == 2 }
+        XCTAssertGreaterThan(controller.automaticRefreshes, before, "the watch did the reading")
+        try await Task.sleep(for: .milliseconds(1_500))
+        XCTAssertFalse(spinner, "a refresh nobody asked for never shows the diff's spinner")
+        XCTAssertEqual(statuses, 0, "the status did not change, so it is not published again")
+        XCTAssertEqual(histories, 0, "nor is the history")
+        XCTAssertEqual(diffs, 1, "the diff is published once, with the new line")
+
+        // A refresh that finds nothing new publishes nothing: not one pass over the panel's body.
+        var changes = 0
+        let everything = controller.objectWillChange.sink { changes += 1 }
+        await controller.refresh(automatic: true)
+        everything.cancel()
+        print("PERF an automatic refresh of an unchanged repository published \(changes) change(s) to the panel")
+        XCTAssertEqual(changes, 0, "an unchanged repository redraws nothing")
+
+        // On the History tab the hidden diff is not read at all, and no spinner
+        // moves for it; coming back to Changes brings it up to date.
+        controller.panel = .history
+        let commit = try XCTUnwrap(controller.commits.first)
+        controller.selectedCommit = commit
+        try await eventually("read the commit") { !controller.detailDiff.isEmpty && !controller.commitLoading }
+        spinner = false; diffs = 0
+        var commitSpinner = false
+        let commitWatch = controller.$commitLoading.sink { if $0 { commitSpinner = true } }
+        defer { commitWatch.cancel() }
+        try "one\ntwo\nthree\nfour\n".write(to: file, atomically: true, encoding: .utf8)
+        await controller.refresh(automatic: true)
+        XCTAssertEqual(controller.diff.first?.added, 2, "the diff nobody can see waits")
+        XCTAssertEqual(diffs, 0)
+        XCTAssertFalse(spinner, "the Changes diff is not read behind the History tab")
+        XCTAssertFalse(commitSpinner, "and the commit pane's spinner does not flash for it")
+        controller.panel = .changes
+        try await eventually("bring the diff up to date on the way back") { controller.diff.first?.added == 3 }
+        XCTAssertFalse(spinner)
+        XCTAssertEqual(controller.notice, "")
+    }
+
     /// Ten saves in a row are one refresh, not ten. Git's own writes during a
     /// stage are not a change at all.
     @MainActor func testABurstOfWritesCausesOneRefreshAndGitsOwnWritesCauseNone() async throws {
@@ -197,6 +267,48 @@ extension GitPanelAuditTests {
             XCTAssertNotNil(controller.repositoryRoot)
             XCTAssertEqual(controller.notice, "")
         }
+    }
+
+    /// A refresh replaced by a newer one used to hand its cancelled branch and
+    /// stash reads to the panel as empty lists: "Stash · 1" read "Stash" and
+    /// the branch menu emptied for a moment, every time the agent saved files
+    /// with Changes open.
+    @MainActor func testASupersededRefreshNeverBlanksTheBranchesOrTheStash() async throws {
+        let root = try repository("git-superseded"); defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        let seed = root.appendingPathComponent("seed.txt")
+        try "seed\n".write(to: seed, atomically: true, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
+        try git(["branch", "side"], in: root)
+        try "set aside\n".write(to: seed, atomically: true, encoding: .utf8)
+        try git(["stash", "push", "-q", "-m", "Set aside"], in: root)
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
+        try await eventually("read the branches and the stash") {
+            controller.stashes.count == 1 && controller.branches == ["main", "side"] && !controller.loading && controller.commits.count == 1
+        }
+
+        var stashes: [Int] = [], branches: [Int] = [], superseded = 0
+        let watches = [
+            controller.$stashes.sink { stashes.append($0.count) },
+            controller.$branches.sink { branches.append($0.count) },
+            // Each refresh is replaced the moment it has read the status, so
+            // the branch and stash reads after it are the ones cancelled.
+            controller.$status.dropFirst().sink { _ in
+                superseded += 1
+                if superseded <= 3 { controller.startRefresh() }
+            },
+        ]
+        defer { watches.forEach { $0.cancel() } }
+        try "new\n".write(to: root.appendingPathComponent("new.txt"), atomically: true, encoding: .utf8)
+        controller.startRefresh()
+        try await eventually("replace a refresh halfway") { superseded >= 1 }
+        try await eventually("finish the last refresh") { !controller.loading && controller.status.entries.map(\.path) == ["new.txt"] }
+        try await Task.sleep(for: .milliseconds(1_500))
+        XCTAssertFalse(stashes.contains(0), "the stash count never blanks: \(stashes)")
+        XCTAssertFalse(branches.contains(0), "nor the branch list: \(branches)")
+        XCTAssertEqual(controller.stashes.count, 1)
+        XCTAssertEqual(controller.branches, ["main", "side"])
+        XCTAssertEqual(controller.notice, "")
     }
 
     /// The project's folder is renamed under the panel. The stream is on an

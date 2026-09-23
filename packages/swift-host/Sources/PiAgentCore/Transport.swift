@@ -223,6 +223,9 @@ public actor TraceStore {
         var identity: RoutingIdentity?
         var operation: JSON = .null
         var gateway: GatewayTelemetry?
+        /// The context links still to be sent: after dispatch, or at finish
+        /// for a request that never went out.
+        var contextLinksPending = false
         var credentials = CaptureCredentials(headers: [:], configuredNames: [])
         var requestCaptureBytes = 0, credentialRedactions = 0, credentialOmitted = false
         var requestMemoryLimited = false, responseMemoryLimited = false
@@ -235,6 +238,9 @@ public actor TraceStore {
     }
     private var traces:[String:Trace]=[:], order:[String]=[], modes:[String:String]=[:], droppedMetadata=0
     public static let perBodyLimit=8*1024*1024, totalLimit=128*1024*1024
+    /// A decode span shorter than this is a reply delivered in one burst, not
+    /// a measured generation: it contributes no tokens-per-second rate.
+    public static let minimumDecodeSpanMs = 250.0
     private var retainedBytes = 0
     private let memoryLimit: Int
     private let sink: @Sendable (JSON) async -> Bool
@@ -254,8 +260,13 @@ public actor TraceStore {
         if t.credentials.contains(t.url.removingPercentEncoding ?? t.url) { t.url = CaptureCredentials.fingerprint(t.url) }
         t.identity=RoutingIdentity(profile:profile); t.gateway=GatewayTelemetry(profile:profile); t.requestedModel=profile.model; t.messageIDs=Array(Set(messageIDs)).sorted()
         traces[id]=t; retainedBytes += t.request.count; order.append(id); trim()
+        // The attempt is recorded before dispatch. Its context links (every
+        // message id the request carries, one acknowledged packet per 512)
+        // follow once the request is on its way: the recorder accepts them
+        // any time after `begin`, and a long chat's context must not add
+        // those round trips to every request's latency.
         if !(await sink(["type":"begin", "metadata":metadata(traces[id] ?? t).removing(["messageIds", "outputMessageIds"])])) { traces[id]?.persistenceError="Native request recorder was unavailable at dispatch" }
-        else { await deliverLinks(id, field: "messageIds", ids: t.messageIDs) }
+        else { t.contextLinksPending = true }
         if mode == "persist" { await deliverBytes(id, kind:"request", offset:0, bytes:captured.bytes) }
         return id
     }
@@ -352,6 +363,12 @@ public actor TraceStore {
     public func dispatched(_ id: String, at time: Double, wall: Double = Date().timeIntervalSince1970) async {
         traces[id]?.dispatch = time; traces[id]?.dispatchWallTimestamp = wall
         if let t = traces[id] { _ = await sink(["type":"metadata", "metadata":metadata(t).removing(["messageIds", "outputMessageIds"])]) }
+        await deliverContextLinks(id)
+    }
+    private func deliverContextLinks(_ id: String) async {
+        guard let t = traces[id], t.contextLinksPending else { return }
+        t.contextLinksPending = false
+        await deliverLinks(id, field: "messageIds", ids: t.messageIDs)
     }
     public func content(_ id:String, text:Bool, at time:Double) { guard let t=traces[id] else { return }; if t.firstContent==nil { t.firstContent=time }; if text && t.firstText==nil { t.firstText=time } }
     public func terminal(_ id:String, at time:Double) { if traces[id]?.completed == nil { traces[id]?.completed=time } }
@@ -373,6 +390,7 @@ public actor TraceStore {
         }
     }
     public func finish(_ id:String, outcome:String, modelOutcome:String) async {
+        await deliverContextLinks(id)
         await flushResponse(id)
         await flushEvents(id)
         traces[id]?.outcome=outcome; traces[id]?.modelOutcome=modelOutcome
@@ -442,9 +460,16 @@ public actor TraceStore {
             let seconds = requestMS / 1000
             if seconds > 0, (output / seconds).isFinite { outputRate = JSON(output / seconds) }
         }
+        // The settled decode rate: reported output (reasoning included) over
+        // first output item → model terminal, and only across a span long
+        // enough to be a measurement.
+        let decodeMS = span(t.firstContent, t.completed).double
+        var decodeRate: JSON = .null
+        if t.outcome == "completed", t.modelOutcome == "completed", let decodeMS, decodeMS >= Self.minimumDecodeSpanMs,
+           let output, output.isFinite, output >= 0, (output / (decodeMS / 1000)).isFinite { decodeRate = JSON(output / (decodeMS / 1000)) }
         return ["observedTTFTms":span(t.dispatch,t.firstContent), "firstTextMs":span(t.dispatch,t.firstText),
                 "streamDurationMs":span(t.firstContent,t.completed), "httpDurationMs":span(t.dispatch,t.eof),
-                "outputTokensPerSecond":outputRate,
+                "outputTokensPerSecond":outputRate, "decodeTokensPerSecond":decodeRate, "minimumDecodeSpanMs":JSON(Self.minimumDecodeSpanMs),
                 "inputIncludingCache":t.usage["inputIncludingCache"],"completeness":t.modelOutcome=="completed" ? "complete":"partial",
                 "rateSource":"Gateway-reported output tokens / request dispatch-to-model-terminal; not decode speed","liveTokenRate":.null]
     }

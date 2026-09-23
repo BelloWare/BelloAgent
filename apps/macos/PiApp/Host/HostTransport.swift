@@ -28,6 +28,14 @@ final class HostTransport: @unchecked Sendable {
         queue.async { [self] in
             guard process == nil else { return }
             let child = Process(), stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
+            // The app's ends are the app's alone. Foundation's pipes are
+            // inherited by default, and any program started without closing
+            // descriptors kept the helper's stdin open: a helper stopped by
+            // closing it waited for SIGTERM, and one such program outliving
+            // the app kept the helper, and its session locks, alive past quit.
+            for end in [stdin.fileHandleForWriting, stdout.fileHandleForReading, stderr.fileHandleForReading] {
+                _ = fcntl(end.fileDescriptor, F_SETFD, FD_CLOEXEC)
+            }
             child.executableURL = executable; child.arguments = arguments + (entry.map { [$0.path] } ?? [])
             child.currentDirectoryURL = cwd; child.environment = environment
             child.standardInput = stdin; child.standardOutput = stdout; child.standardError = stderr

@@ -1,0 +1,11 @@
+<h2>Bello Agent 0.1.85</h2>
+<ul>
+  <li>Scrolling while a reply streams stays where you put it: a mouse-wheel scroll is no longer pulled back to the newest row, cards open downward from the line you are reading, and folding a turn moves every row in the same frame.</li>
+  <li>Smoother streaming: a token costs what it adds, even in long replies, open lists, tables and large code blocks. A closing code fence never flashes as a stray line, and long lists stay formatted as they arrive.</li>
+  <li>A shell command that leaves a background process running returns promptly, and Stop always ends it. A call stopped mid-run reads “Stopped · outcome unknown”, and a skipped call never reads as run.</li>
+  <li>A steered task no longer freezes the conversation. Queued follow-ups start their own turn clock, and a retry notice clears when you stop.</li>
+  <li>One tokens-per-second figure everywhere: output tokens over decode time, including hidden reasoning. One-burst replies no longer show impossible rates.</li>
+  <li>The Git panel commits and discards renamed files under both names, keeps a failed action's message on screen, and refreshes without flashing.</li>
+  <li>Usage reports, Turn details and Session info stay steady while they refresh, stream or are hovered. Zooming inside a zoomed chart keeps its selection.</li>
+  <li>An unsent new chat keeps its draft, Generate Title works more than once, and MCP servers recover from rejected calls and dropped connections.</li>
+</ul>

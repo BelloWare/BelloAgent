@@ -271,6 +271,108 @@ final class PayloadArchiveTests: XCTestCase {
         try await archive.close()
     }
 
+    /// The request inspector polls the newest page every second and the turn
+    /// popup every two; each poll decoded every listed request's whole
+    /// metadata again, including the ids of every message in its context.
+    func testPollingAnUnchangedPageDecodesNoMetadataAndLeavesContextLinksOut() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: 1_073_741_824, bodyRetention: 86400, metricRetention: 604800)
+        var ids: [String] = []
+        for _ in 0..<40 {
+            let id = UUID().uuidString; ids.append(id)
+            var entry = metadata(id: id, mode: "off", outcome: "completed")
+            entry["messageIds"] = .array((0..<250).map { .string("context-message-\($0)") })
+            try await archive.begin(entry, workspace: "workspace"); try await archive.finish(entry)
+        }
+        _ = try await archive.list(sessionID: "session")
+        let before = await archive.decodedMetadata
+        let page = try await archive.list(sessionID: "session")
+        let decoded = await archive.decodedMetadata - before
+        print("PERF polling an unchanged page of \(page.count) attempts decoded \(decoded) metadata records")
+        XCTAssertEqual(page.count, 40)
+        XCTAssertEqual(decoded, 0, "Nothing changed, so nothing is decoded again")
+        XCTAssertNil(page.first?["messageIds"], "A listed request does not carry its whole context")
+        XCTAssertNotNil(page.first?["request"]?.object?["state"], "Body descriptors are still listed")
+        // A request that changes is decoded once, on the next poll.
+        try await archive.update(metadata(id: ids[0], mode: "off", outcome: "failed"))
+        let refreshed = try await archive.list(sessionID: "session")
+        let afterChange = await archive.decodedMetadata - before
+        XCTAssertEqual(afterChange, 1)
+        XCTAssertEqual(refreshed.first { $0["attemptId"]?.string == ids[0] }?["outcome"]?.string, "failed")
+        // Opening one request still shows everything it recorded.
+        let single = try await archive.metadata(attempt: ids[1])
+        XCTAssertEqual(single["messageIds"]?.array?.count, 250)
+        try await archive.close()
+    }
+
+    /// Each 32 KiB body packet read the attempt's whole row (metadata blob
+    /// included) twice, and each stored chunk synced three directories, two
+    /// of which change only when the session's first chunk creates a folder.
+    func testCapturingABodyLooksUpNoRowPerPacketAndSyncsOnlyTheChunksFolder() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: 1_073_741_824, bodyRetention: 86400, metricRetention: 604800)
+        let id = UUID().uuidString, page = 32_768, body = fixture(9 * 32_768)
+        var entry = metadata(id: id); entry["messageIds"] = .array((0..<2_000).map { .string("context-message-\($0)") })
+        try await archive.accept(["type": .string("begin"), "metadata": .object(entry)], workspace: "workspace")
+        func packet(_ index: Int) -> [String: WireValue] {
+            ["type": .string("bytes"), "attemptId": .string(id), "body": .string("request"), "offset": .number(Double(index * page)),
+             "bytes": .string(body.subdata(in: index * page..<(index + 1) * page).base64EncodedString())]
+        }
+        try await archive.accept(packet(0), workspace: "workspace")
+        let chunks = try await archive.statistics()["chunks"] ?? 0
+        let statements = try await archive.statementCount(), syncs = await archive.directorySyncs
+        for index in 1..<9 { try await archive.accept(packet(index), workspace: "workspace") }
+        let usedStatements = try await archive.statementCount() - statements, usedSyncs = await archive.directorySyncs - syncs
+        let stored = Int((try await archive.statistics()["chunks"] ?? 0) - chunks)
+        print("PERF capturing 8 packets of 32 KiB stored \(stored) chunks with \(usedStatements) statements and \(usedSyncs) directory syncs")
+        XCTAssertGreaterThan(stored, 8)
+        XCTAssertEqual(usedSyncs, stored, "One directory sync per new chunk file: its own folder")
+        XCTAssertLessThanOrEqual(usedStatements - 6 * stored, 8, "Beyond each chunk's own writes, a packet costs at most one statement")
+        // The request still reads back byte for byte.
+        try await archive.finish(metadata(id: id, outcome: "completed", observed: body.count))
+        let whole = try await archive.completeBody(attemptID: id, body: "request")
+        XCTAssertEqual(whole, body)
+        // A new attempt does not count every attempt in the archive.
+        let beforeBegin = try await archive.statementCount()
+        try await archive.begin(metadata(id: UUID().uuidString), workspace: "workspace")
+        let beginStatements = try await archive.statementCount() - beforeBegin
+        print("PERF beginning a request used \(beginStatements) statements")
+        XCTAssertLessThanOrEqual(beginStatements, 9)
+        try await archive.close()
+    }
+
+    /// A response still being recorded can be opened while chunks arrive. The
+    /// whole-body read verified a manifest prefix, then failed its final
+    /// check because more chunks had been published meanwhile.
+    func testRecordingBodyReadsItsVerifiedPrefixWhileChunksArrive() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: 1_073_741_824, bodyRetention: 86400, metricRetention: 604800)
+        let id = UUID().uuidString, bytes = fixture(160 * 1024), page = 32 * 1024
+        try await archive.begin(metadata(id: id), workspace: "workspace")
+        for offset in stride(from: 0, to: 96 * 1024, by: page) {
+            try await archive.append(attempt: id, kind: "response", offset: offset, bytes: bytes.subdata(in: offset..<offset + page))
+        }
+        let before = try await archive.metadata(attempt: id)
+        XCTAssertEqual(before["response"]?.object?["state"]?.string, "recording")
+        let length = Int(try XCTUnwrap(before["response"]?.object?["retainedBytes"]?.number))
+        XCTAssertGreaterThan(length, 0)
+        let arrivals = ArchiveMaintenanceCounter()
+        let read = try await archive.completeBody(attemptID: id, body: "response") { _, _ in
+            guard arrivals.read() == 0 else { return }
+            arrivals.increment()
+            for offset in stride(from: 96 * 1024, to: 160 * 1024, by: page) {
+                try? await archive.append(attempt: id, kind: "response", offset: offset, bytes: bytes.subdata(in: offset..<offset + page))
+            }
+        }
+        XCTAssertEqual(read, bytes.prefix(length))
+        let grown = try await archive.metadata(attempt: id)
+        XCTAssertGreaterThan(grown["response"]?.object?["retainedBytes"]?.number ?? 0, Double(length), "Chunks were published during the read")
+        try await archive.close()
+    }
+
     func testHTTPFinishedButUnconsumedResponseTailCannotBeMarkedComplete() async throws {
         let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
         let archive = PayloadArchive(root: folder)

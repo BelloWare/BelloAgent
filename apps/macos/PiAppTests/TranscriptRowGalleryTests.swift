@@ -35,8 +35,8 @@ final class TranscriptRowGalleryTests: XCTestCase {
         try capture("22-stopped-reply", messages: stopped(), into: gallery)
 
         TranscriptDisplay.use(.compact)
-        try capture("21-turn-fold", messages: rows(), into: gallery)
-        try capture("21b-turn-fold-open", messages: rows(), into: gallery) { session, items in
+        try capture("21-turn-fold", messages: finishedTurn(), into: gallery)
+        try capture("21b-turn-fold-open", messages: finishedTurn(), into: gallery) { session, items in
             for case .block(let block) in items where block.foldControl != nil {
                 session.disclosure.setOpen(true, .turnFold(block.foldControl!))
             }
@@ -94,6 +94,23 @@ final class TranscriptRowGalleryTests: XCTestCase {
         reply.modelMs = 4_100
         reply.responseTimeline = timeline
         return [TranscriptMessage(id: "u1", role: "user", text: "Why does the payment retry give up so early?", at: 1_000, turn: "u1"), reply]
+    }
+    /// The same work as a finished turn: the reply that made the calls, then
+    /// the reply that answered. A reply that makes a call never ends its turn —
+    /// the host runs the call and asks again — so only this shape folds.
+    private func finishedTurn() -> [TranscriptMessage] {
+        var rows = rows()
+        let words = rows[1].text
+        rows[1].responseTimeline?.segments.removeAll { $0.part.kind == "text" }
+        rows[1].text = ""
+        var timeline = ResponseTimeline()
+        timeline.consume(ResponsePartEvent(attemptID: "answer", ordinal: 0, itemID: "answer-0", outputIndex: 0, partIndex: 0,
+                                           kind: "text", update: "replace", text: words))
+        timeline.finish("completed")
+        var answer = TranscriptMessage(id: "a2", role: "assistant", text: words, state: "complete", at: 3_000, turn: "u1")
+        answer.modelMs = 1_300
+        answer.responseTimeline = timeline
+        return rows + [answer]
     }
     /// What Stop leaves behind: the partial answer, and the chip that says why
     /// it ends where it does.

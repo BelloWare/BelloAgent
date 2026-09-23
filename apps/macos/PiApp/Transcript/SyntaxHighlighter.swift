@@ -142,7 +142,11 @@ enum SyntaxHighlighter {
             }
             if !scalar.properties.isWhitespace { previousWord = "" }
             index += 1
-            if scalar == "\n", previousWord.isEmpty { checkpoints.append(index) }
+            // The word before a line's end is read again only to ask whether
+            // it declares the name that follows, so the line after any other
+            // word is as neutral a place to resume as one after punctuation:
+            // most code ends its lines in a word.
+            if scalar == "\n", !grammar.declarations.contains(previousWord) { checkpoints.append(index) }
         }
         return Scan(tokens: tokens, checkpoints: checkpoints)
     }

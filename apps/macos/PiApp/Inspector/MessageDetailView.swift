@@ -292,8 +292,27 @@ enum MessageBodyReader {
 
     /// A stable retained prefix must be copied completely or fail explicitly;
     /// an evicted/short page is never presented as a successful whole-body copy.
-    @MainActor static func assemble(limit: Int, progress: (Int, Int) -> Void = { _, _ in }, page: (Int) async throws -> (Data, Int)) async throws -> Data? {
+    /// `length` reads a body that is still being written up to the length it
+    /// had when the read began: its bytes are only ever appended, so the pages
+    /// may report a longer body, never a shorter one.
+    @MainActor static func assemble(limit: Int, length target: Int? = nil, progress: (Int, Int) -> Void = { _, _ in }, page: (Int) async throws -> (Data, Int)) async throws -> Data? {
         var bytes = Data(), expected: Int?
+        if let target {
+            guard target >= 0 else { throw HostError.failure("The capture changed while reading. Refresh and try again.") }
+            guard target <= limit else { return nil }
+            while bytes.count < target {
+                try Task.checkCancellation()
+                let (chunk, count) = try await page(bytes.count)
+                try Task.checkCancellation()
+                guard count >= target, expected.map({ count >= $0 }) ?? true else { throw HostError.failure("The capture changed while reading. Refresh and try again.") }
+                expected = count
+                let wanted = min(chunk.count, target - bytes.count)
+                guard wanted > 0 else { throw HostError.failure("The retained body is incomplete or changed while reading.") }
+                bytes.append(chunk.prefix(wanted))
+                progress(bytes.count, target)
+            }
+            return bytes
+        }
         repeat {
             try Task.checkCancellation()
             let (chunk, count) = try await page(bytes.count)

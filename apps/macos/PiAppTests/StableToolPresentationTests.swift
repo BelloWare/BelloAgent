@@ -236,6 +236,42 @@ final class StableToolPresentationTests: XCTestCase {
         XCTAssertEqual(restored.stopReason,"interrupted","The file reader preserves the same partial-attempt warning as live snapshots")
     }
 
+    /// Opening a card asked the host for the call's arguments whatever the
+    /// card already had. Only a card whose inline document the host cut has
+    /// more to show; opening any other asks nothing.
+    @MainActor func testOnlyACardTheHostCutAsksForItsArguments() throws {
+        let whole = ToolView(id:"call",name:"read",state:"completed",input:"{\"path\":\"README.md\"}",output:"",truncated:false)
+        var cut = whole; cut.id = "cut"; cut.name = "write"; cut.inputTruncated = true; cut.inputBytes = 90_000
+        var legacyLike = whole; legacyLike.id = "old"; legacyLike.inputTruncated = false
+        XCTAssertFalse(TranscriptToolInputs.needsFullInput(whole), "an older host or a journal says nothing: what is inline is all of it")
+        XCTAssertFalse(TranscriptToolInputs.needsFullInput(legacyLike))
+        XCTAssertTrue(TranscriptToolInputs.needsFullInput(cut))
+        var timeline = ResponseTimeline()
+        for (index, call) in ["call","cut","old"].enumerated() {
+            timeline.consume(ResponsePartEvent(attemptID:"attempt",ordinal:index,itemID:"item-\(index)",outputIndex:index,partIndex:0,
+                                               kind:"toolArguments",update:"replace",text:"{}",callID:call,name:"read"))
+        }
+        timeline.finish("completed")
+        var reply = TranscriptMessage(id:"a1",role:"assistant",text:"",tools:[whole,cut,legacyLike])
+        reply.responseTimeline = timeline
+        let items = TaskTranscriptPlan.items([TranscriptMessage(id:"u1",role:"user",text:"Go"),reply],lifecycle:nil,display:.normal)
+        let cards = items.filter { if case .block(let b) = $0 { return b.presentation == .work && b.message?.tools?.isEmpty == false }; return false }
+        XCTAssertEqual(cards.count, 3)
+        let opened = zip(["call","cut","old"], cards).map { call, card in TranscriptToolInputs.cutCard(.tool(ToolOccurrence.key("a1",call)), in: card) }
+        XCTAssertEqual(opened.map { $0.map { "\($0.messageID)/\($0.callID)" } }, [nil, "a1/cut", nil],
+                       "a card row asks for its call only when the host cut it, naming the reply that made it")
+        // A row that keys its cards by the call alone reads the same card.
+        XCTAssertEqual(TranscriptToolInputs.cutCard(.tool("cut"), in: .message(reply)).map { "\($0.messageID)/\($0.callID)" }, "a1/cut")
+        XCTAssertNil(TranscriptToolInputs.cutCard(.tool("call"), in: .message(reply)))
+        XCTAssertNil(TranscriptToolInputs.cutCard(.work("cut"), in: .message(reply)), "only a card's own disclosure asks")
+        let inputs = TranscriptToolInputs()
+        inputs.load = { _, _ in ToolInputDocument(input:"{}",truncated:false,bytes:2,streaming:false) }
+        inputs.request(messageID:"a1", tool: whole); inputs.request(messageID:"a1", tool: legacyLike)
+        XCTAssertEqual(inputs.requestCount, 0, "opening a whole card costs no round trip and no republish")
+        inputs.request(messageID:"a1", tool: cut)
+        XCTAssertEqual(inputs.requestCount, 1)
+    }
+
     @MainActor func testToolDocumentFetchesAreScopedAndRejectRetiredOwners() async throws {
         let inputs = TranscriptToolInputs()
         var pending: [CheckedContinuation<ToolInputDocument,Never>] = []

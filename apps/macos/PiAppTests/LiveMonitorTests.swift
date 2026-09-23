@@ -40,6 +40,46 @@ final class LiveMonitorTests: XCTestCase {
         surface.mouseUp(with: try event(.leftMouseUp, x: 105, y: 150))
         XCTAssertNil(zoom.range); XCTAssertEqual(commits, 1)
     }
+    /// Moving the pointer over the rate chart rebuilt its series from every
+    /// retained sample and re-laid every mark at each mouse move, because the
+    /// hover state lived in the view that builds them.
+    @MainActor func testPointerMovesOverTheRateChartDoNotRebuildItsSeries() async throws {
+        let key = LiveRateKey(workspace: "p", model: "a")
+        let first = Int(start.timeIntervalSince1970)
+        let samples = (0..<900).map { LiveRateSample(id: first + $0, end: first + $0 + 1, rates: [key: 12 + Double($0 % 7)], active: 1, reported: 1, gap: false) }
+        struct Host: View {
+            let samples: [LiveRateSample]
+            let domain: ClosedRange<Date>
+            @State private var zoom = MonitorChartZoom()
+            var body: some View {
+                MonitorRateChart(samples: samples, usage: nil, workspace: "p", following: domain, zoom: $zoom, metric: .live,
+                                 palette: MonitorModelPalette(), selectMetric: { _ in }, chartHeight: 160)
+                    .frame(width: 460).padding(10)
+            }
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 320), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let hosted = NSHostingView(rootView: Host(samples: samples, domain: start...start.addingTimeInterval(900)))
+        window.contentView = hosted; window.orderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        func surface() -> MonitorChartInteraction.Surface? {
+            func find(_ view: NSView) -> MonitorChartInteraction.Surface? { (view as? MonitorChartInteraction.Surface) ?? view.subviews.lazy.compactMap(find).first }
+            return find(hosted)
+        }
+        for _ in 0..<50 where surface().map({ $0.plot.width < 100 }) ?? true { try await Task.sleep(for: .milliseconds(10)); hosted.layoutSubtreeIfNeeded() }
+        let plot = try XCTUnwrap(surface()).plot
+        try await Task.sleep(for: .milliseconds(100)); hosted.layoutSubtreeIfNeeded()
+        MonitorChartRenderCount.reset()
+        for step in 0..<60 {
+            let target = try XCTUnwrap(surface())
+            let point = target.convert(CGPoint(x: plot.minX + plot.width * (0.2 + Double(step) / 100), y: plot.midY), to: nil)
+            target.mouseMoved(with: try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 0, pressure: 0)))
+            await Task.yield(); hosted.layoutSubtreeIfNeeded()
+        }
+        try await Task.sleep(for: .milliseconds(50)); hosted.layoutSubtreeIfNeeded()
+        print("PERF monitor chart: 60 pointer moves rebuilt its series \(MonitorChartRenderCount.builds) times")
+        XCTAssertEqual(MonitorChartRenderCount.builds, 0, "Hover redraws the rule and the caption, never the series or its marks")
+    }
     func testBrushFreezesLiveDomainClampsReverseDragAndRejectsClicksAndScrolls() throws {
         var zoom = MonitorChartZoom()
         let domain = start...start.addingTimeInterval(300)

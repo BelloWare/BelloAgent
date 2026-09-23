@@ -1,5 +1,7 @@
 import XCTest
 import Network
+import SwiftUI
+import AppKit
 @testable import PiApp
 
 final class TitleGenerationTests: XCTestCase {
@@ -238,6 +240,148 @@ final class TitleGenerationTests: XCTestCase {
         XCTAssertTrue(model.titleGenerationTasks.isEmpty); XCTAssertEqual(gateway.requests.count, 1)
         try await model.hosts[WorkspaceRecord.scratchID]?.shutdownAndWait()
         try await model.traces.close(); await model.store?.close()
+    }
+
+    /// Chat ▸ Generate Title asks again for a chat that already has a
+    /// generated title. The finished request kept its claim on the chat, so
+    /// the command showed "Asking the mini model for a title…" and then
+    /// nothing: no request, no error, the same title.
+    @MainActor func testGenerateTitleAgainAfterAGeneratedTitleAsksTheMiniModelOnceMore() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let gateway = try TitleGenerationGateway(); defer { gateway.stop() }
+        let base = try await gateway.start()
+        let project = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        var profile = ProfileRecord(); profile.id = "profile"; profile.baseUrl = base
+        profile.modelId = "conversation-model"; profile.miniModelId = "mini-fixture"
+        var configuration = VaultConfiguration(); configuration.automaticUpdateChecks = false
+        configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-title-key")]
+        configuration.workspaces = [.init(id: "project", path: project.path, trusted: true)]
+        configuration.resources[WorkspaceRecord.scratchID] = .object(["codexHome": .string(root.appendingPathComponent("isolated-codex").path)])
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"),
+                                   vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
+        defer { model.shutdown() }
+        try await model.reloadConfiguration()
+        let source = ChatRecord(id: "source", workspaceID: "project", title: "Improve the model selection please", path: nil, profileID: profile.id)
+        model.chats = [source]; model.selectedID = source.id
+        try await model.store?.put(source, kind: "chat", id: source.id)
+        let display = SessionDisplay(id: source.id)
+        display.messages = [TranscriptMessage(id: "u1", role: "user", text: "Improve the model selection please")]
+        model.displays[source.id] = display; model.selected = display
+        model.scheduleTitleGeneration(sourceID: source.id, input: "Improve the model selection please")
+        for _ in 0..<300 where !model.titleGenerationTasks.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(model.record(source.id)?.title, "Improve the model picker")
+        XCTAssertEqual(model.record(source.id)?.titleWasGenerated, true)
+        XCTAssertEqual(gateway.requests.count, 1)
+
+        model.regenerateTitle(source.id)
+        for _ in 0..<200 where gateway.requests.count < 2 || !model.titleGenerationTasks.isEmpty || display.notice.hasPrefix("Asking") {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertEqual(gateway.requests.count, 2, "Generate Title sends one more title request")
+        XCTAssertEqual(display.notice, "", "The request finished and its notice cleared")
+        XCTAssertEqual(model.record(source.id)?.title, "Improve the model picker")
+        XCTAssertEqual(model.record(source.id)?.titleWasGenerated, true)
+        XCTAssertNil(model.error)
+        // An automatic retitle still never follows a generated title.
+        model.scheduleTitleGeneration(sourceID: source.id, input: "Never resend a titled chat")
+        XCTAssertTrue(model.titleGenerationTasks.isEmpty)
+        try await model.hosts[WorkspaceRecord.scratchID]?.shutdownAndWait()
+        try await model.traces.close(); await model.store?.close()
+    }
+}
+
+extension TitleGenerationTests {
+    /// The Rename sheet asks the mini model for three titles. That request
+    /// belongs to the sheet: closing it must end the request. It used to run
+    /// in a task nothing owned, which went on polling for up to 45 seconds.
+    @MainActor func testClosingTheRenameSheetEndsItsSuggestionRequest() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("rename-suggestions-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gateway = try HoldingGateway(); defer { gateway.stop() }
+        let base = try await gateway.start()
+        let project = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        var profile = ProfileRecord(); profile.id = "profile"; profile.baseUrl = base
+        profile.modelId = "conversation-model"; profile.miniModelId = "mini-fixture"
+        var configuration = VaultConfiguration(); configuration.automaticUpdateChecks = false
+        configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-title-key")]
+        configuration.workspaces = [.init(id: "project", path: project.path, trusted: true)]
+        configuration.resources[WorkspaceRecord.scratchID] = .object(["codexHome": .string(root.appendingPathComponent("isolated-codex").path)])
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"),
+                                   vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
+        defer { model.shutdown() }
+        try await model.reloadConfiguration()
+        let source = ChatRecord(id: "source", workspaceID: "project", title: "Improve the model selection please", path: nil, profileID: profile.id)
+        model.chats = [source]; model.selectedID = source.id
+        try await model.store?.put(source, kind: "chat", id: source.id)
+        let display = SessionDisplay(id: source.id)
+        display.messages = [TranscriptMessage(id: "u1", role: "user", text: "Improve the model selection please")]
+        model.displays[source.id] = display; model.selected = display
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 440), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let hosted = NSHostingView(rootView: AnyView(RenameChatSheet(model: model, chatID: source.id)))
+        window.contentView = hosted; window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        func asking() -> Bool { model.chats.contains { $0.backgroundTask == "title-suggestions" } }
+        for _ in 0..<600 where gateway.held == 0 { hosted.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertEqual(gateway.held, 1, "The open sheet asked the mini model for suggestions")
+        XCTAssertTrue(asking())
+        // The sheet closes while the model is still thinking.
+        hosted.rootView = AnyView(EmptyView())
+        for _ in 0..<200 where asking() { hosted.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertFalse(asking(), "Closing the sheet ends its request instead of polling on")
+        try await model.hosts[WorkspaceRecord.scratchID]?.shutdownAndWait()
+        try await model.traces.close(); await model.store?.close()
+    }
+}
+
+/// Accepts a Responses request and never answers it, as a slow model would.
+/// Anything else is not found.
+private final class HoldingGateway: @unchecked Sendable {
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "BelloAgent.HoldingGatewayFixture")
+    private let lock = NSLock()
+    private var connections: [NWConnection] = []
+    private var holding = 0
+    var held: Int { lock.withLock { holding } }
+    init() throws {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
+        listener = try NWListener(using: parameters)
+    }
+    func start() async throws -> String {
+        listener.newConnectionHandler = { [weak self] connection in
+            guard let self else { connection.cancel(); return }
+            self.lock.withLock { self.connections.append(connection) }
+            connection.start(queue: self.queue); self.receive(connection, previous: Data())
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            listener.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                switch state {
+                case .ready: self.listener.stateUpdateHandler = nil; continuation.resume(returning: "http://127.0.0.1:\(self.listener.port!.rawValue)")
+                case .failed(let error): self.listener.stateUpdateHandler = nil; continuation.resume(throwing: error)
+                default: break
+                }
+            }
+            listener.start(queue: queue)
+        }
+    }
+    func stop() { listener.cancel(); lock.withLock { connections }.forEach { $0.cancel() } }
+    private func receive(_ connection: NWConnection, previous: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, complete, error in
+            guard let self else { connection.cancel(); return }
+            let bytes = previous + (data ?? Data())
+            guard error == nil, bytes.count <= 1_048_576 else { connection.cancel(); return }
+            if let split = bytes.range(of: Data("\r\n\r\n".utf8)), let head = String(data: bytes[..<split.lowerBound], encoding: .utf8) {
+                if head.hasPrefix("POST /v1/responses") { self.lock.withLock { self.holding += 1 }; return }
+                let reply = Data("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8)
+                connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
+            } else if !complete { self.receive(connection, previous: bytes) }
+            else { connection.cancel() }
+        }
     }
 }
 

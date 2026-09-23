@@ -13,6 +13,13 @@ struct SessionReadState: Codable, Sendable, Equatable, Identifiable {
     var revision: Int64 = 0
 }
 
+/// Replies not yet published as unread: see `WorkspaceModel.visibleReplyGrace`.
+struct HeldUnread {
+    var count: Int
+    var target: String
+    var release: Task<Void, Never>?
+}
+
 struct SidebarReadCounts {
     var unreadChats = 0
     var dockChats = 0
@@ -72,6 +79,43 @@ extension WorkspaceModel {
         updateDockBadge()
     }
 
+    var applicationIsActive: Bool { applicationIsActiveOverride ?? NSApp.isActive }
+    /// A reply that finishes in the chat the reader is looking at, while the
+    /// page follows its newest row, is read by the page's own check a frame or
+    /// two after it lands. Publishing it as unread first put a dot on that
+    /// chat's row, and a count on the Dock, for those frames every time a run
+    /// finished. The page gets this long to say it saw the reply; if it does
+    /// not (the window is behind another, a sheet is up), the reply becomes
+    /// unread then, as it would have.
+    static let visibleReplyGrace: Duration = .milliseconds(600)
+    private func readerFollowsNewestRow(of sessionID: String) -> Bool {
+        page == .chats && (sessionID == selectedID || sides[selectedID ?? ""]?.id == sessionID)
+            && displays[sessionID]?.scrollAnchor?.followsBottom == true && applicationIsActive
+    }
+    private func holdUnread(_ sessionID: String, added: Int, target: String) {
+        var held = heldUnread[sessionID] ?? HeldUnread(count: 0, target: target)
+        held.count += added; held.target = target
+        held.release?.cancel()
+        held.release = Task { [weak self] in
+            try? await Task.sleep(for: Self.visibleReplyGrace)
+            guard !Task.isCancelled else { return }
+            self?.publishHeldUnread(sessionID)
+        }
+        heldUnread[sessionID] = held
+    }
+    /// The page did not read it in time: the reply is unread after all.
+    private func publishHeldUnread(_ sessionID: String) {
+        guard let held = heldUnread.removeValue(forKey: sessionID) else { return }
+        held.release?.cancel()
+        guard record(sessionID) != nil, var next = unreadStates[sessionID] else { return }
+        next.unreadOutputs = min(100_000, next.unreadOutputs + held.count)
+        next.unreadTargetID = held.target
+        saveReadState(next)
+    }
+    private func dropHeldUnread(_ sessionID: String) {
+        heldUnread.removeValue(forKey: sessionID)?.release?.cancel()
+    }
+
     /// Called for every accepted status snapshot, even when no messages were
     /// requested. A first observation baselines imported/existing history.
     /// session.open observes this before any turn can be submitted.
@@ -88,8 +132,15 @@ extension WorkspaceModel {
         let count = Int(rawCount)
         var next = unreadStates[sessionID] ?? SessionReadState(id: sessionID, observedAssistantCount: count, latestAssistantID: latest)
         if count > next.observedAssistantCount, let latest, latest != next.latestAssistantID {
-            next.unreadOutputs = min(100_000, next.unreadOutputs + count - next.observedAssistantCount)
-            next.unreadTargetID = latest
+            let added = count - next.observedAssistantCount
+            if readerFollowsNewestRow(of: sessionID) {
+                holdUnread(sessionID, added: added, target: latest)
+            } else {
+                // A reply held earlier is older than this one: count it first.
+                if let held = heldUnread.removeValue(forKey: sessionID) { held.release?.cancel(); next.unreadOutputs += held.count }
+                next.unreadOutputs = min(100_000, next.unreadOutputs + added)
+                next.unreadTargetID = latest
+            }
         }
         // Branches do not decrement the host's durable counter. A lower value
         // means restored/replaced history, and must not manufacture unread work.
@@ -109,8 +160,18 @@ extension WorkspaceModel {
     func acknowledgeVisibleReply(sessionID: String, messageID: String) {
         guard page == .chats, sessionID == selectedID || sides[selectedID ?? ""]?.id == sessionID,
               let message = displays[sessionID]?.messages.first(where: { $0.id == messageID }), message.role == "assistant",
-              !message.isStreaming,
-              var next = unreadStates[sessionID], next.unreadOutputs > 0, next.unreadTargetID == messageID else { return }
+              !message.isStreaming else { return }
+        // The page saw this chat's newest reply in a key, visible window: the
+        // failure mark it carries has been seen with it.
+        clearFailureMark(sessionID: sessionID)
+        if heldUnread[sessionID]?.target == messageID {
+            // Read within the grace: it never shows as unread, and neither
+            // does anything older than it.
+            dropHeldUnread(sessionID)
+            if var next = unreadStates[sessionID], next.unreadOutputs > 0 { next.unreadOutputs = 0; next.unreadTargetID = nil; saveReadState(next) }
+            return
+        }
+        guard var next = unreadStates[sessionID], next.unreadOutputs > 0, next.unreadTargetID == messageID else { return }
         next.unreadOutputs = 0; next.unreadTargetID = nil
         saveReadState(next)
     }
@@ -128,6 +189,7 @@ extension WorkspaceModel {
     /// An explicit sidebar action can dismiss a reply abandoned by an edit.
     /// Automatic acknowledgements still require the exact visible target above.
     func markSessionRead(_ sessionID: String) {
+        dropHeldUnread(sessionID)
         guard record(sessionID) != nil, var next = unreadStates[sessionID], next.unreadOutputs > 0 || next.unreadFailure == true else { return }
         next.unreadOutputs = 0; next.unreadTargetID = nil; next.unreadFailure = nil
         saveReadState(next)
@@ -172,7 +234,11 @@ extension WorkspaceModel {
     }
 
     func forgetReadState(_ id: String) {
-        unreadStates[id] = nil; dirtyReadStates.remove(id)
+        dropHeldUnread(id)
+        guard unreadStates.removeValue(forKey: id) != nil else { dirtyReadStates.remove(id); return }
+        dirtyReadStates.remove(id)
+        // The Dock counted this chat; it must stop.
+        updateDockBadge()
     }
 
     @discardableResult func flushReadStates(timeout: TimeInterval = 5) async -> Bool {

@@ -179,6 +179,9 @@ private struct NativeHostedActionRow: View {
     func update(tools: [ToolView], openTools: Set<String>, fetched: [String: ToolInputDocument],
                 toggle: @escaping (String) -> Void, environment: TranscriptRowEnvironment) {
         relay.current = toggle
+        // A changed environment changes every card, including the closed ones
+        // that share one measurement. Read it before the cards take the new one.
+        let environmentChanged = rows.first.map { $0.item.environment != environment } ?? false
         var changed = rows.count != tools.count
         for (index, tool) in tools.enumerated() {
             let item = NativeWorkListItem(tool: tool, open: openTools.contains(tool.id),
@@ -192,11 +195,7 @@ private struct NativeHostedActionRow: View {
             rows.removeLast(rows.count - tools.count)
         }
         guard changed else { return }
-        // A changed environment changes every card, including the closed ones
-        // that share one measurement.
-        if let first = rows.first, first.item.environment != environment {
-            closedHeight = [:]; closedChecks = [:]; closedDisagreed = []
-        }
+        if environmentChanged { closedHeight = [:]; closedChecks = [:]; closedDisagreed = [] }
         layouts.removeAll(keepingCapacity: true)
         laidOutWidth = nil
         needsLayout = true

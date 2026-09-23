@@ -60,8 +60,9 @@ extension AgentSession {
         if messageID == partialID, let card = partialTools[callID] {
             // A streaming call has no document yet: its arguments are still
             // arriving as text. Say so rather than hand over unparseable JSON.
-            return ["id": JSON(callID), "messageId": JSON(messageID), "name": card["name"], "input": card["input"],
-                    "inputTruncated": card["inputTruncated"], "inputBytes": card["inputBytes"], "streaming": true]
+            let input = partialToolInputs[callID] ?? ""
+            return ["id": JSON(callID), "messageId": JSON(messageID), "name": card["name"], "input": JSON(input),
+                    "inputTruncated": card["inputTruncated"], "inputBytes": JSON(input.utf8.count), "streaming": true]
         }
         guard let message = history.first(where: { $0.id == messageID }) else { throw AgentError("message_missing", "Message is not retained") }
         guard let block = message.content.first(where: { $0["type"].text == "toolCall" && $0["id"].text == callID }) else {

@@ -299,13 +299,7 @@ struct MarkdownBlockView: View {
         case .list(let ordered, let start, let items):
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    HStack(alignment: .top, spacing: 8) {
-                        Text(ordered ? "\(start + index)." : "•").font(.system(size: style.baseSize)).foregroundStyle(style.textColor).frame(minWidth: 16, alignment: .trailing)
-                            .textSelection(.disabled)
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(Array(item.enumerated()), id: \.offset) { _, nested in MarkdownBlockView(block: nested, style: style, capsWidth: false).equatable() }
-                        }
-                    }
+                    MarkdownListItemView(marker: ordered ? "\(start + index)." : "•", item: item, style: style).equatable()
                 }
             }
             .padding(.leading, 4)
@@ -333,6 +327,26 @@ struct MarkdownBlockView: View {
             }
 
     }
+}
+
+/// One item of a list: its marker and its blocks. Its own view, compared by
+/// value, so a token on the item still arriving does not run the body of
+/// every item above it — the items a reply has finished keep the very same
+/// blocks from token to token, and comparing them is one pointer check.
+private struct MarkdownListItemView: View, Equatable {
+    let marker: String
+    let item: [MarkdownBlock]
+    let style: MarkdownStyle
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(marker).font(.system(size: style.baseSize)).foregroundStyle(style.textColor).frame(minWidth: 16, alignment: .trailing)
+                .textSelection(.disabled)
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(item.enumerated()), id: \.offset) { _, nested in MarkdownBlockView(block: nested, style: style, capsWidth: false).equatable() }
+            }
+        }
+    }
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.marker == b.marker && a.style == b.style && a.item == b.item }
 }
 
 /// The transcript's own disclosure line: the same chevron a turn's work header
@@ -391,7 +405,7 @@ struct CodeBlockView: View {
     var body: some View {
         let slices = CodeBlockSections.ranges(code, enabled: !streaming)
         let index = min(section, max(0, slices.count - 1))
-        let shown = slices.isEmpty ? code : String(decoding: Array(code.utf8)[slices[index]], as: UTF8.self)
+        let shown = slices.isEmpty ? code : CodeBlockSections.section(code, slices[index])
         VStack(alignment: .leading, spacing: 0) {
         ZStack(alignment: .topTrailing) {
             // Keep the chosen leaf for this block's mounted lifetime. Crossing
@@ -534,6 +548,11 @@ struct MessageRowView: View {
     var disclosure = TranscriptRowDisclosure.default
     var toggle: (TranscriptDisclosure.Part) -> Void = { _ in }
     @State private var hovering = false
+    /// The line under a reply that ended before its natural end: at the output
+    /// limit it says what to do next; otherwise it names the provider's reason.
+    nonisolated static func earlyEnd(_ stopReason: String?) -> String? {
+        stopReason == "length" ? "The reply reached the output limit. Ask the model to continue." : TranscriptActivity.earlyEnd(stopReason)
+    }
     @ViewBuilder var body: some View {
         if disclosure.foldedAway {
             // This row's turn has ended and its work is behind one line. The
@@ -585,16 +604,17 @@ struct MessageRowView: View {
             if message.truncated == true {
                 Text("This older saved fragment is incomplete; the original text was not retained.").font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted)
             }
-            if message.role == "assistant", message.stopReason == "length" {
+            if message.role == "assistant", let notice = Self.earlyEnd(message.stopReason) {
                 // The reply reached the output limit the request carried (the model's own
-                // ceiling, or the room a nearly full window left): a warning on the row,
-                // not a failed run. The output budget is never that limit.
+                // ceiling, or the room a nearly full window left), or the provider ended
+                // it early for a reason of its own: a warning on the row, not a failed
+                // run. The output budget is never that limit.
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle").font(.system(size: 11, weight: .medium))
-                    Text("The reply reached the output limit. Ask the model to continue.").font(.system(size: 12))
+                    Text(notice).font(.system(size: 12))
                 }
                 .foregroundStyle(TranscriptPalette.warning).padding(.top, 2)
-                .accessibilityIdentifier("reply-output-limit")
+                .accessibilityIdentifier(message.stopReason == "length" ? "reply-output-limit" : "reply-ended-early")
             }
             // Stopping keeps what had arrived. The row says so with one amber
             // chip beside the partial answer rather than a sentence under it:
@@ -769,11 +789,12 @@ struct ActionRowView: View {
     var fetched: ToolInputDocument? = nil
     var toggle: () -> Void = {}
     /// Where the call stands, as a row state: a call the reader stopped is
-    /// amber, not red — it did not fail, it was interrupted.
+    /// amber, not red — it did not fail, it was interrupted — whether it was
+    /// skipped before it began or stopped while it ran.
     nonisolated static func state(of tool: ToolView) -> TranscriptRowState {
         switch TranscriptActivity.outcome(of: tool) {
         case .running: return .running
-        case .cancelled: return .stopped
+        case .cancelled, .unknown: return .stopped
         case .failed: return .failed
         case .done: return .ok
         }
@@ -782,16 +803,21 @@ struct ActionRowView: View {
     /// "Ran", never "Failed running" — because the dot in the leading box and
     /// the colour of the summary already say how the call went, and a line
     /// that says it twice reads as an apology.
+    ///
+    /// Except where "Ran" would claim work that did not happen: a call that
+    /// was skipped never ran, so it is "Skipped running"; a call stopped while
+    /// it ran is "Stopped running", and its suffix says the outcome is unknown.
     nonisolated static func title(of tool: ToolView) -> String {
-        var settled = tool
-        settled.state = "completed"
-        return TranscriptActivity.describe(settled).verb
+        title(TranscriptActivity.actionParts(tool), outcome: TranscriptActivity.outcome(of: tool))
+    }
+    nonisolated private static func title(_ parts: TranscriptActivity.ActionParts, outcome: ActionOutcome) -> String {
+        outcome == .unknown || outcome == .cancelled ? TranscriptActivity.describe(parts, outcome: outcome).verb : parts.done
     }
     /// The collapsed line's summary: a failure's first line replaces the
     /// argument summary outright, because a row cannot say both.
-    nonisolated static func summary(of tool: ToolView) -> String {
-        let description = TranscriptActivity.describe(tool)
-        guard state(of: tool) == .failed, !tool.output.isEmpty else { return description.object }
+    nonisolated static func summary(of tool: ToolView) -> String { summary(of: tool, object: TranscriptActivity.actionParts(tool).object) }
+    nonisolated private static func summary(of tool: ToolView, object: String) -> String {
+        guard state(of: tool) == .failed, !tool.output.isEmpty else { return object }
         return TranscriptActivity.firstLine(tool.output)
     }
     /// The quiet trailing clock. A call that took less than a twentieth of a
@@ -801,17 +827,24 @@ struct ActionRowView: View {
         guard TranscriptActivity.outcome(of: tool) != .running, let ms = tool.durationMs, ms >= 50 else { return nil }
         return TranscriptActivity.formatDuration(ms)
     }
-    /// The change size, already on the collapsed row.
+    /// The change size, already on the collapsed row, and — for a call stopped
+    /// while it ran — that its outcome is unknown. It sits outside the
+    /// ellipsized summary, so a long command never clips it.
     nonisolated static func suffix(of tool: ToolView) -> String? {
-        guard tool.added != nil || tool.removed != nil else { return nil }
-        return "+\(tool.added ?? 0) −\(tool.removed ?? 0)"
+        let change = tool.added != nil || tool.removed != nil ? "+\(tool.added ?? 0) −\(tool.removed ?? 0)" : nil
+        guard TranscriptActivity.outcome(of: tool) == .unknown else { return change }
+        return [change, "· outcome unknown"].compactMap { $0 }.joined(separator: " ")
     }
     var body: some View {
-        let description = TranscriptActivity.describe(tool)
-        let rowState = Self.state(of: tool)
+        // The call's arguments are read once per drawing: while a write
+        // streams they are the whole file so far, and the title, the summary
+        // and the help each reading them again was three reads per delta.
+        let parts = TranscriptActivity.actionParts(tool)
         let outcome = TranscriptActivity.outcome(of: tool)
-        TranscriptWorkRow(icon: actionSymbol(description.kind), title: Self.title(of: tool),
-                          summary: Self.summary(of: tool), suffix: Self.suffix(of: tool),
+        let description = TranscriptActivity.describe(parts, outcome: outcome)
+        let rowState = Self.state(of: tool)
+        TranscriptWorkRow(icon: actionSymbol(description.kind), title: Self.title(parts, outcome: outcome),
+                          summary: Self.summary(of: tool, object: description.object), suffix: Self.suffix(of: tool),
                           state: rowState, open: open, toggle: toggle,
                           trailing: Self.elapsed(of: tool),
                           help: description.path ?? description.object) {
@@ -832,7 +865,8 @@ struct ActionRowView: View {
             TranscriptTerminalCard(command: TranscriptActivity.parseCommand(shown.input) ?? description.object,
                                    output: tool.output, failed: outcome == .failed)
         } else if description.kind == .read, !tool.output.isEmpty {
-            TranscriptReadCard(text: tool.output, path: description.path, failed: outcome == .failed)
+            TranscriptReadCard(text: tool.output, firstLine: TranscriptReadCard.firstLine(of: shown.input),
+                               path: description.path, failed: outcome == .failed)
         } else {
             let arguments = TranscriptActivity.argumentsText(shown)
             TranscriptIOCard(input: arguments.text.isEmpty
@@ -900,7 +934,7 @@ private struct ReasoningView: View {
     var open = false
     var toggle: () -> Void = {}
     var body: some View {
-        if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if TranscriptActivity.hasVisibleText(thinking) {
             TranscriptWorkRow(icon: "brain", title: "Think",
                               summary: TimelinePartRow.thinkSummary(thinking, running: streaming),
                               state: streaming ? .running : .ok, open: open, toggle: toggle,
@@ -1064,7 +1098,7 @@ struct BlockRowView: View {
                                         if block.presentation == .work {
                                             if reply.truncated == true { Text("Partial preview · Open Request details for retained content").font(.system(size:11)).foregroundStyle(TranscriptPalette.warning) }
                                             if let ms = reply.modelMs { Text("Model request: " + TranscriptActivity.formatDuration(ms)).font(.system(size:11)).foregroundStyle(TranscriptPalette.faint) }
-                                            if reply.stopReason == "length" { Text("Output limit reached; tool arguments may be incomplete.").font(.system(size:12)).foregroundStyle(TranscriptPalette.warning) }
+                                            if let notice = TranscriptActivity.earlyEnd(reply.stopReason, toolArguments: true) { Text(notice).font(.system(size:12)).foregroundStyle(TranscriptPalette.warning) }
                                             HStack {
                                                 Button("Request details") { actions.inspect(reply.id) }
                                                 Button("Copy reply") { actions.copyMessage(reply.id) }
@@ -1209,8 +1243,10 @@ extension ReasoningView: Equatable {
 /// code. Page switches are deliberate; streaming retains its existing leaf.
 enum CodeBlockSections {
     static func ranges(_ source: String, enabled: Bool = true) -> [Range<Int>] {
+        // A fence still arriving is one continuous leaf, asked about on every
+        // token: it has nothing to split, so nothing of it is copied.
+        guard enabled, source.utf8.count > 32_768 else { return [] }
         let bytes = Array(source.utf8)
-        guard enabled, bytes.count > 32_768 else { return [] }
         var ranges: [Range<Int>] = [], start = 0
         while start < bytes.count {
             var end = min(bytes.count, start + 8192)
@@ -1221,5 +1257,12 @@ enum CodeBlockSections {
             ranges.append(start..<end); start = end
         }
         return ranges
+    }
+    /// One section's code, taken from the source's own bytes rather than a
+    /// copy of all of them.
+    static func section(_ source: String, _ range: Range<Int>) -> String {
+        let utf8 = source.utf8
+        let lower = utf8.index(utf8.startIndex, offsetBy: range.lowerBound), upper = utf8.index(lower, offsetBy: range.count)
+        return String(decoding: utf8[lower..<upper], as: UTF8.self)
     }
 }

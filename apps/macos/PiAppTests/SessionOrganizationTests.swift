@@ -154,7 +154,8 @@ final class SessionOrganizationTests: XCTestCase {
     func testSidebarRateKeepsCompletedUsageAcrossActivityChangesAndNeverUsesStreamedBytes() {
         let completed = SessionTimingSample(id: "streamed", wall: Date(), ttftMilliseconds: 200,
                                             streamingMilliseconds: 2_403, outputTokens: 302, requestMilliseconds: 2_603)
-        let history = SessionTimingHistory(samples: [completed], historicalRate: HistoricalOutputRate(outputTokens: 1_000, generationMilliseconds: 10_000, samples: 2))
+        // A session average (100 tok/s) the latest-request slot must never fall back on.
+        let history = SessionTimingHistory(samples: [completed], historicalSettledThroughput: SettledThroughput(decodeMilliseconds: 10_000, outputTokens: 1_000, samples: 2, requests: 2))
         var row = ChatRowStats(totals: nil, timing: history)
         XCTAssertEqual(row.rateLabel, "Latest 126 tok/s")
         for version in [1.0, 2.0] {

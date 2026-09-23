@@ -141,9 +141,12 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
 
 @MainActor struct MenuBarUsageView: View {
     @ObservedObject var controller: MenuBarMetricsController
-    @State private var chartMetric = MenuBarChartMetric.requests
+    @State private var chartMetric: MenuBarChartMetric
     @State private var showingUsageDetails = false
     @State private var chartSelection: Date?
+    init(controller: MenuBarMetricsController, chartMetric: MenuBarChartMetric = .requests) {
+        self.controller = controller; _chartMetric = State(initialValue: chartMetric)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: PiSpacing.lg) {
             PiTabs(selection: $controller.period, items: [MenuBarPeriod.day, .week, .retained].map { ($0, $0.title) }).id("period")
@@ -190,9 +193,9 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
                                     .accessibilityLabel(bucket.start.formatted()).accessibilityValue(bucket.gateway.costLabel)
                             }
                         case .rate:
-                            if let rate = bucket.historicalRate.tokensPerSecond {
+                            if let rate = MenuBarRateText.rate(bucket) {
                                 PointMark(x: .value("Time", bucket.start), y: .value("tok/s", rate)).foregroundStyle(Color.piAccent).symbolSize(22)
-                                    .accessibilityLabel(bucket.start.formatted()).accessibilityValue("\(menuBarRate(rate)) output tokens per second over \(bucket.historicalRate.samples) requests")
+                                    .accessibilityLabel(bucket.start.formatted()).accessibilityValue(MenuBarRateText.point(bucket))
                             }
                         }
                         }
@@ -212,7 +215,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
                 }
                 Text(chartCaption(snapshot)).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
                 if let bucket = selectedBucket(snapshot) {
-                    Text("\(bucket.start.formatted(date: .abbreviated, time: .shortened)): \(bucket.requests) requests · \(menuBarTokens(bucket.gateway.tokens?.total)) tokens · \(gatewayUSD(bucket.gateway.costUSD)) · \(menuBarRate(bucket.historicalRate.tokensPerSecond)) completed-request tok/s")
+                    Text("\(bucket.start.formatted(date: .abbreviated, time: .shortened)): \(bucket.requests) requests · \(menuBarTokens(bucket.gateway.tokens?.total)) tokens · \(gatewayUSD(bucket.gateway.costUSD)) · \(MenuBarRateText.slice(bucket))")
                         .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -223,7 +226,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
         case .requests: "\(snapshot.counts.dispatched) dispatched requests · tool rounds and compactions included"
         case .tokens: "Input + output; cached input and reasoning are included once. \(snapshot.gateway.tokens?.samples ?? 0)/\(snapshot.gateway.requests) requests reported both."
         case .cost: "\(gatewayUSD(snapshot.gateway.costUSD)) reported · \(snapshot.gateway.costSamples)/\(snapshot.gateway.requests) requests reported cost"
-        case .rate: "\(menuBarRate(snapshot.historicalRate.tokensPerSecond)) tok/s over \(snapshot.historicalRate.samples) completed requests · output tokens ÷ dispatch-to-completion time"
+        case .rate: MenuBarRateText.caption(snapshot)
         }
     }
     private func selectedBucket(_ snapshot: MenuBarSnapshot) -> MenuBarBucket? {
@@ -316,7 +319,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
                     }.frame(height: 4).accessibilityHidden(true)
                     Text("\(gatewayUSD(item.gateway.costUSD))\(item.costShare.map { " · \($0.formatted(.percent.precision(.fractionLength(1)))) of reported cost" } ?? "") · \(item.gateway.costSamples)/\(item.gateway.requests) cost reported")
                         .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
-                    Text("\(menuBarRate(item.historicalRate.tokensPerSecond)) historical tok/s · \(item.historicalRate.samples) completed requests timed")
+                    Text(MenuBarRateText.model(item))
                         .font(PiFont.micro).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
                     }
                 } label: {
@@ -349,11 +352,37 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
                 Text("\(from.formatted(date: .abbreviated, time: .shortened)) – \(snapshot.until.formatted(date: .abbreviated, time: .shortened))")
             }
             Text("Input includes provider cache once. Reasoning tokens and cost are included in output, not added to totals. Total tokens require both input and output. Each observed HTTP attempt counts once; hidden gateway retries are unavailable.")
-            Text("Output tok/s uses completed output tokens divided by their combined dispatch-to-completion time, including first-token latency. Missing usage or timing is excluded.")
+            Text(MenuBarRateText.scope)
             Text("Retained metadata only · \(snapshot.gateway.expiredRecords) expired records and \(snapshot.counts.unobservedDispatch) unobserved dispatches excluded. Refreshes every 10 seconds while open.")
         }.font(PiFont.micro).foregroundStyle(Color.piInkTertiary).fixedSize(horizontal: false, vertical: true)
             .help(snapshot.observationHelp)
     }
+}
+
+/// Every output rate the usage panel quotes — its chart, the caption under
+/// it, the slice under the pointer, each model row and the scope note — is
+/// the settled decode rate the rest of the app shows: provider output tokens
+/// over first token → completion of the completed requests that reported
+/// both, the figure the live monitor's average chart plots. Never output over
+/// the whole dispatch-to-completion round trip, which counts the wait for the
+/// first token as if it were decoding.
+enum MenuBarRateText {
+    static let basis = "output tokens ÷ decode time (first token to completion)"
+    static func rate(_ bucket: MenuBarBucket) -> Double? { bucket.gateway.settledThroughput.tokensPerSecond }
+    static func point(_ bucket: MenuBarBucket) -> String {
+        let settled = bucket.gateway.settledThroughput
+        return "\(menuBarRate(settled.tokensPerSecond)) decode tokens per second over \(settled.samples) requests"
+    }
+    static func slice(_ bucket: MenuBarBucket) -> String { "\(menuBarRate(bucket.gateway.settledThroughput.tokensPerSecond)) decode tok/s" }
+    static func caption(_ snapshot: MenuBarSnapshot) -> String {
+        let settled = snapshot.gateway.settledThroughput
+        return "\(menuBarRate(settled.tokensPerSecond)) tok/s over \(settled.samples) completed requests · " + basis
+    }
+    static func model(_ item: MenuBarModelDistribution) -> String {
+        let settled = item.gateway.settledThroughput
+        return "\(menuBarRate(settled.tokensPerSecond)) decode tok/s · \(settled.samples) completed requests timed"
+    }
+    static let scope = "Output tok/s is the decode rate: completed requests' output tokens divided by their combined decode time, first token to completion. The wait for the first token is not counted; missing usage or timing is excluded."
 }
 
 func menuBarRate(_ value: Double?) -> String {

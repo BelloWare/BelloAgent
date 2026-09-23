@@ -14,12 +14,13 @@ extension AgentSession {
         for attempt in message.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(message.id) }
     }
     func updatePresentation(_ message: ChatMessage, persist: Bool) throws {
-        guard let index = history.firstIndex(where: { $0.id == message.id }), ["execution","requestLedger"].contains(history[index].kind ?? "") else { return }
+        // The row being updated is recent: search from the end of history.
+        guard let index = history.lastIndex(where: { $0.id == message.id }), ["execution","requestLedger"].contains(history[index].kind ?? "") else { return }
         if persist { try journal?.append(["type":"custom","customType":"pi-app.presentation.update.v1","data":["id":JSON(message.id)],"message":message.pi],flush:journalFlushesEachRecord) }
         let oldAttempts = Set(history[index].requestAttemptIDs ?? [])
         for attempt in message.requestAttemptIDs ?? [] where !oldAttempts.contains(attempt) { pendingRequestLinks[attempt, default: []].append(message.id) }
         history[index] = message
-        if let index = visible.firstIndex(where: { $0.id == message.id }) { visible[index] = message }
+        if let index = visible.lastIndex(where: { $0.id == message.id }) { visible[index] = message }
         invalidateDisplay(message.id)
     }
     func startResponseLedger(_ observation: RequestObservation) {
@@ -33,13 +34,15 @@ extension AgentSession {
         catch { partialTimeline.coverage = "partial" }
     }
     func saveResponseLedger(persist: Bool, terminal: String? = nil) {
-        guard let id = partialLedgerID, var row = history.first(where: { $0.id == id }) else { return }
+        guard let id = partialLedgerID, let index = history.lastIndex(where: { $0.id == id }) else { return }
+        var row = history[index]
         row.responseTimeline = partialTimeline
         if let terminal { row.responseTimeline?.finish(terminal); row.detail = "Request \(terminal)" }
         do { try updatePresentation(row,persist:persist) } catch { partialTimeline.coverage = "partial" }
     }
     func operationStatus(_ text: String, terminal: String? = nil, persist: Bool = true) {
-        guard let id = compactionPresentationID, var row = history.first(where: { $0.id == id }) else { return }
+        guard let id = compactionPresentationID, let index = history.lastIndex(where: { $0.id == id }) else { return }
+        var row = history[index]
         var timeline = row.responseTimeline ?? ResponseTimeline()
         presentationOrdinal += 1
         let event = ResponsePartEvent(attemptID:id,ordinal:presentationOrdinal,itemID:id,kind:"status",update:"begin",text:text,observedAt:nowMS(),evidence:"local")

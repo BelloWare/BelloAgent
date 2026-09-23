@@ -81,13 +81,29 @@ final class CompactTurnReportTests: XCTestCase {
             XCTAssertEqual(continuing.part, settled.part)
             XCTAssertEqual(continuing.remainder, settled.remainder)
             XCTAssertTrue(continuing.partial, "Coverage remains truthful in details without replacing the split")
+            XCTAssertEqual(continuing.totalLabel, settled.totalLabel + " (1/2)",
+                           "The headline says it covers one of the turn's two requests")
         }
-        // A later input total without a matching cache report must not change
-        // the denominator of the retained green/brown breakdown.
+        // A later request that reported its totals but not their breakdown is
+        // still part of the turn: the headline counts it — the report must not
+        // quote the first request's 3,800 as the whole turn's output — while
+        // the colours keep the split the matched request reported, so its
+        // denominator never mixes in the unmatched request.
         pending.accounting?.tokens = GatewayTokenTotals(input: 90000, output: 8000, total: 98000, inputSamples: 1, outputSamples: 1, samples: 1)
         let unmatched = TranscriptActivity.aggregate([answer, pending])
-        XCTAssertEqual(TurnTokenPartition(unmatched, input: true).fraction, 0.5)
-        XCTAssertEqual(TurnTokenPartition(unmatched, input: false).total, 3800)
+        let unmatchedInput = TurnTokenPartition(unmatched, input: true), unmatchedOutput = TurnTokenPartition(unmatched, input: false)
+        XCTAssertEqual(unmatchedInput.fraction, 0.5)
+        XCTAssertEqual(unmatchedInput.total, 102_000); XCTAssertEqual(unmatchedInput.totalLabel, "102,000")
+        XCTAssertEqual(unmatchedOutput.total, 11_800); XCTAssertEqual(unmatchedOutput.totalLabel, "11,800")
+        XCTAssertEqual(try XCTUnwrap(unmatchedOutput.fraction), 900.0 / 3_800, accuracy: 1e-12)
+        XCTAssertEqual(unmatchedOutput.part, 900); XCTAssertEqual(unmatchedOutput.remainder, 2_900)
+        XCTAssertEqual(unmatchedOutput.label(part: true), "Reasoning 900 · 23.68%",
+                       "The share is of the output the split covers, never of the larger headline")
+        XCTAssertTrue(unmatchedOutput.partial)
+        // Only a turn that is still running has requests that may be pending.
+        XCTAssertTrue(TurnTokenPartition(unmatched, input: false, running: true).help.contains("may still be pending"))
+        XCTAssertFalse(unmatchedOutput.help.contains("pending"), "A settled turn has nothing left to wait for: \(unmatchedOutput.help)")
+        XCTAssertTrue(unmatchedOutput.help.contains("1 of 2 requests"), unmatchedOutput.help)
         pending.accounting = reported
         let next = TranscriptActivity.aggregate([answer, pending])
         XCTAssertEqual(TurnTokenPartition(next, input: true).total, 24000)
@@ -144,6 +160,19 @@ final class CompactTurnReportTests: XCTestCase {
         XCTAssertEqual(TurnTokenPartition(accounting(), input: true).totalLabel, "12,000")
     }
 
+    /// A cost two of three requests reported is those two requests' cost: the
+    /// report's one cost figure says so rather than passing for the turn's.
+    func testACostOnlySomeRequestsReportedSaysHowManyItCovers() {
+        var value = turn()
+        XCTAssertEqual(TurnInfoPresentation.costLabel(value), "$0.000001", "Complete coverage says nothing")
+        value.accounting.requests = 3
+        XCTAssertEqual(TurnInfoPresentation.costLabel(value), "$0.000001 (2/3 reported)")
+        XCTAssertEqual(TurnInfoPresentation.inlineFigures(value).filter { $0.hasPrefix("Cost") }, ["Cost $0.000001 (2/3 reported)"],
+                       "The inline figures say the coverage once")
+        value.accounting.costSamples = 0; value.accounting.costUSD = nil
+        XCTAssertEqual(TurnInfoPresentation.costLabel(value), "Unreported")
+    }
+
     @MainActor func testReportIsCompactAndWrapsWithoutChangingHeightAsCountersArrive() throws {
         let value = turn()
         for width: CGFloat in [280, 640, 900] {
@@ -159,6 +188,59 @@ final class CompactTurnReportTests: XCTestCase {
             host.rootView = CompactTurnReport(turn: running, status: "Compacting context…").frame(width: width)
             XCTAssertEqual(host.fittingSize.height, empty, accuracy: 1, "Usage arriving must not move the chat")
         }
+    }
+
+    /// The live dock is a slot the conversation gives up once, when the run
+    /// starts. What changes while the run goes on — the status, the model the
+    /// router picked, the cost and tokens as requests report them, the clock —
+    /// is new text in that slot and never a new line, because a new line in
+    /// the dock is the whole conversation above it jumping by that line.
+    @MainActor func testTheLiveDockKeepsOneHeightWhileItsWordsChange() throws {
+        let mini = GatewayModelRoute(requested: "auto-router", responded: "gpt-5.4-mini", latestWall: 1)
+        let large = GatewayModelRoute(requested: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0-extended-thinking-router",
+                                      responded: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0", latestWall: 2)
+        func live(_ phase: String, tool: String? = nil, routes: [GatewayModelRoute] = [], cost: Double? = nil,
+                  usage: Bool = false, elapsed: Double = 900, model: Double = 0, tools: Double = 0) -> TurnSummary {
+            var value = turn(); value.live = true; value.outcome = nil; value.phase = phase
+            value.elapsedMs = elapsed; value.modelMs = model; value.toolMs = tools
+            value.current = tool.map { ToolView(id: "current", name: $0, state: "running", input: "", output: "", truncated: false) }
+            var a = TurnAccounting(requests: usage ? 3 : 1)
+            a.modelRoutes = routes
+            if let cost { a.costUSD = cost; a.costSamples = 1 }
+            if usage {
+                a.input = 123_456_789; a.inputSamples = 2; a.cached = 98_765_432; a.cachedSamples = 2
+                a.output = 9_876_543; a.outputSamples = 2; a.reasoning = 1_234_567; a.reasoningSamples = 2
+                a.inputSplit = GatewayTokenSplit(total: 123_456_789, part: 98_765_432, samples: 2)
+                a.outputSplit = GatewayTokenSplit(total: 9_876_543, part: 1_234_567, samples: 2)
+            }
+            value.accounting = a
+            return value
+        }
+        let states = [
+            live("preparing"),
+            live("model", routes: [mini]),
+            live("tools", tool: "bash", routes: [mini], cost: 0.0000012345, usage: true, elapsed: 9_000, model: 7_500, tools: 1_500),
+            live("tools", tool: "an_unusually_long_mcp_tool_name_for_the_status", routes: [mini, large], cost: 12.3456789, usage: true,
+                 elapsed: 3_700_000, model: 3_662_345, tools: 37_655),
+            live("compacting", routes: [large], cost: 0.25),
+            live("retrying", routes: [large, mini], cost: 0.000001),
+        ]
+        // One host per state, re-laid-out at each width: the state's own
+        // clock keeps its reading, and only the width the pane offers moves.
+        let hosts = states.map { state -> NSHostingView<AnyView> in
+            let host = NSHostingView(rootView: AnyView(LiveTurnBar(turn: state).frame(width: 600)))
+            host.safeAreaRegions = []
+            return host
+        }
+        var moved: [String] = []
+        for width in stride(from: CGFloat(240), through: 920, by: 20) {
+            let heights = zip(states, hosts).map { state, host -> CGFloat in
+                host.rootView = AnyView(LiveTurnBar(turn: state).frame(width: width))
+                return host.fittingSize.height
+            }
+            if let low = heights.min(), let high = heights.max(), high - low > 0.5 { moved.append("\(Int(width)) pt: \(heights.map { Int($0) })") }
+        }
+        XCTAssertTrue(moved.isEmpty, "The dock changed height as its words changed:\n" + moved.joined(separator: "\n"))
     }
 
     /// Opt-in visual evidence of the actual SwiftUI component, in both themes

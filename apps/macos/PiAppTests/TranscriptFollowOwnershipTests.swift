@@ -79,6 +79,21 @@ final class TranscriptFollowOwnershipTests: XCTestCase {
         XCTAssertEqual(ledger.readerTakeoverCount, 2)
     }
 
+    /// Once the reader has taken the position, where the page last asked to
+    /// be says nothing about where they go. A clamp the page claimed before
+    /// they took over must not make them coming back down onto the end look
+    /// like another clamp: that left the page showing the end and not
+    /// following it.
+    @MainActor func testTheReaderComingBackToTheEndAfterAClampIsTheReader() {
+        let ledger = TranscriptScrollLedger()
+        _ = ledger.delivered(900, floor: 1_000)
+        ledger.wrote(from: 900, to: 1_000)
+        XCTAssertEqual(ledger.delivered(1_000, floor: 1_000), .page, "the page's own follow")
+        XCTAssertEqual(ledger.delivered(800, floor: 800), .page, "the document shrank under it: the clamp")
+        XCTAssertEqual(ledger.delivered(500, floor: 800), .reader, "the reader goes up")
+        XCTAssertEqual(ledger.delivered(800, floor: 800), .reader, "the reader coming back down onto the end is the reader")
+    }
+
     // MARK: The page
 
     /// A gesture, the way AppKit reports one: it says a live scroll is
@@ -156,6 +171,153 @@ final class TranscriptFollowOwnershipTests: XCTestCase {
         try await readerMoves(pane, to: end)
         XCTAssertTrue(page.atBottom, "coming back to the bottom band re-pins the page")
         XCTAssertFalse(page.detached, "and the Back to bottom pill goes")
+    }
+
+    /// A mouse wheel has no gesture phases. AppKit says a live scroll has
+    /// begun from inside `scrollWheel(with:)`, but moves the clip view a frame
+    /// or more later, and a pass that lays the page out in between — a slice
+    /// measuring history, a streamed token, a block resolving — takes the
+    /// reading anchor where the reader still stands. When the movement lands
+    /// it is the reader's, and that anchor has to give way to it: restoring
+    /// it put them back on the newest row, where the end of the gesture found
+    /// them in the bottom band and pinned the page, and every delta after
+    /// that dragged them down again.
+    @MainActor func testAWheelThatLandsLateIsNotUndoneByAnAnchorTakenBeforeIt() async throws {
+        let pane = try await openedChat("follow-late-wheel"); defer { pane.close() }
+        let page = try XCTUnwrap(pane.page)
+        let scroll = try XCTUnwrap(pane.scroll as? TranscriptNativeScrollView)
+        let document = try XCTUnwrap(pane.document)
+        let clip = scroll.contentView
+        let bottom = max(0, document.frame.height - clip.bounds.height)
+        XCTAssertGreaterThan(bottom, 1_000, "the fixture must be several screens long")
+        XCTAssertTrue(page.atBottom)
+
+        // What the wheel event itself does, before AppKit has moved anything.
+        scroll.readerWillNavigate(upward: true)
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        // A pass in the gap.
+        document.layoutNow()
+        XCTAssertTrue(scroll.transcriptReading.hasAnchor, "the pass must have taken an anchor for this to mean anything")
+        // AppKit lands the wheel, then reports the live scroll and its end.
+        let landed = bottom - 700
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: landed))
+        scroll.reflectScrolledClipView(clip)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+        await pane.settle(turns: 3)
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        await pane.settle(turns: 4)
+        XCTAssertEqual(clip.bounds.minY, landed, accuracy: 1, "an anchor taken before the wheel landed put the reader back")
+        XCTAssertFalse(page.atBottom)
+        XCTAssertFalse(page.followsBottom, "the end of the gesture pinned a reader the wheel had taken off the end")
+
+        // A reply arriving below them leaves them where the wheel put them.
+        pane.session.messages.append(TranscriptMessage(id: "stream:late", role: "assistant", text: "A reply arriving under the reader.",
+                                                       state: "streaming", turn: TranscriptFrameBudgetTests.lastUserID(rows: 60)))
+        await pane.settle(turns: 6)
+        XCTAssertEqual(clip.bounds.minY, landed, accuracy: 1, "a reply arriving pulled the reader back to the newest row")
+    }
+
+    /// The same late landing reaching another observer of the clip before the
+    /// page's own — AppKit promises no order — and that observer holding the
+    /// reading position at once, as a block resolving in the viewport or the
+    /// document's own viewport pass does. It must not restore the anchor over
+    /// the reader.
+    @MainActor func testAnObserverThatHearsOfTheWheelFirstCannotRestoreOverIt() async throws {
+        let pane = try await openedChat("follow-late-wheel-order"); defer { pane.close() }
+        let page = try XCTUnwrap(pane.page)
+        let scroll = try XCTUnwrap(pane.scroll as? TranscriptNativeScrollView)
+        let document = try XCTUnwrap(pane.document)
+        let clip = scroll.contentView
+        let bottom = max(0, document.frame.height - clip.bounds.height)
+        scroll.readerWillNavigate(upward: true)
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        document.layoutNow()
+        XCTAssertTrue(scroll.transcriptReading.hasAnchor)
+        let landed = bottom - 700
+        clip.postsBoundsChangedNotifications = false
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: landed))
+        scroll.reflectScrolledClipView(clip)
+        scroll.transcriptReading.restore()
+        let afterRestore = clip.bounds.minY
+        clip.postsBoundsChangedNotifications = true
+        XCTAssertEqual(afterRestore, landed, accuracy: 1, "an anchor restored before the page heard of the wheel put the reader back")
+        XCTAssertFalse(page.followsBottom)
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: clip)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        await pane.settle(turns: 4)
+        XCTAssertEqual(clip.bounds.minY, landed, accuracy: 1)
+        XCTAssertFalse(page.atBottom)
+    }
+
+    /// A dragged scroller: AppKit says the live scroll began once, then moves
+    /// the clip for every step of the drag with nothing in between that the
+    /// page hears as the reader's input. A pass between two steps takes an
+    /// anchor where the first one left the reader; the draw after the second
+    /// must not restore it.
+    @MainActor func testEveryStepOfAScrollerDragStandsWhereItPutTheReader() async throws {
+        let pane = try await openedChat("follow-scroller-drag"); defer { pane.close() }
+        let page = try XCTUnwrap(pane.page)
+        let scroll = try XCTUnwrap(pane.scroll)
+        let document = try XCTUnwrap(pane.document)
+        let clip = scroll.contentView
+        let bottom = max(0, document.frame.height - clip.bounds.height)
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        for step in 1...6 {
+            let target = bottom - CGFloat(step) * 150
+            clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: target))
+            scroll.reflectScrolledClipView(clip)
+            NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+            pane.hosted.layoutSubtreeIfNeeded(); pane.window.displayIfNeeded()
+            XCTAssertEqual(clip.bounds.minY, target, accuracy: 1, "step \(step) of the drag was pulled back")
+            // A pass between this step and the next.
+            document.layoutNow()
+        }
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        await pane.settle(turns: 4)
+        XCTAssertEqual(clip.bounds.minY, bottom - 900, accuracy: 1)
+        XCTAssertFalse(page.followsBottom)
+    }
+
+    /// A trackpad, the events a real one sends: a gesture that begins,
+    /// changes and ends, then momentum that begins, continues and ends, each
+    /// through `scrollWheel(with:)` and each with a pass after it. The reader
+    /// goes where the gesture takes them and stays there.
+    @MainActor func testATrackpadGestureWithMomentumIsNeverPulledBack() async throws {
+        let pane = try await openedChat("follow-trackpad"); defer { pane.close() }
+        let page = try XCTUnwrap(pane.page)
+        let scroll = try XCTUnwrap(pane.scroll as? TranscriptNativeScrollView)
+        let document = try XCTUnwrap(pane.document)
+        let clip = scroll.contentView
+        let bottom = max(0, document.frame.height - clip.bounds.height)
+        func event(_ delta: Int32, phase: CGScrollPhase? = nil, momentum: CGMomentumScrollPhase = .none) throws -> NSEvent {
+            let cg = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0))
+            cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase?.rawValue ?? 0))
+            cg.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Int64(momentum.rawValue))
+            return try XCTUnwrap(NSEvent(cgEvent: cg))
+        }
+        let gesture: [NSEvent] = try [event(0, phase: .began)] + (0..<6).map { _ in try event(60, phase: .changed) }
+            + [event(0, phase: .ended), event(40, momentum: .begin)] + (0..<5).map { _ in try event(30, momentum: .continuous) }
+            + [event(0, momentum: .end)]
+        var lowest = clip.bounds.minY
+        var worstPullBack: CGFloat = 0
+        for wheel in gesture {
+            scroll.scrollWheel(with: wheel)
+            document.layoutNow()
+            pane.hosted.layoutSubtreeIfNeeded(); pane.window.displayIfNeeded()
+            worstPullBack = max(worstPullBack, clip.bounds.minY - lowest)
+            lowest = min(lowest, clip.bounds.minY)
+            // A trackpad reports at the display's rate.
+            try? await Task.sleep(for: .milliseconds(12))
+        }
+        await pane.settle(turns: 6)
+        worstPullBack = max(worstPullBack, clip.bounds.minY - lowest)
+        print(String(format: "PERF trackpad gesture: %d events carried the reader %.0f pt off the end, pulled back at worst %.1f pt",
+                     gesture.count, bottom - clip.bounds.minY, worstPullBack))
+        XCTAssertLessThan(clip.bounds.minY, bottom - TranscriptPage.followThreshold - 40, "the gesture did not take the reader off the end")
+        XCTAssertLessThan(worstPullBack, 1, "a pass during the gesture carried the reader \(worstPullBack) pt back toward the end")
+        XCTAssertFalse(page.followsBottom)
+        XCTAssertFalse(scroll.readerIsScrolling, "the gesture's end must be heard")
     }
 
     /// The page's own scrolls are the ones it wrote down, so none of them

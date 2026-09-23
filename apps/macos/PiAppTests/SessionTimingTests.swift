@@ -59,7 +59,7 @@ final class SessionTimingTests: XCTestCase {
     func testLatestAndWeightedSessionAverageRemainScopedAndDistinct() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await configured(root)
-        var first = metadata(wall: 999_990, ttft: 900, duration: 1_000, output: 100)
+        var first = metadata(wall: 999_990, ttft: 500, duration: 1_000, output: 100)
         first["usage"] = .object(["output": .number(100), "reasoning": .number(80)])
         try await Self.save(archive, first)
         for _ in 0..<3 { try await archive.update(first) }
@@ -73,23 +73,31 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(history.samples.count, 2)
         XCTAssertEqual(history.latest?.id, latest)
         XCTAssertEqual(history.latest?.ttftMilliseconds, 2_000)
-        XCTAssertEqual(history.latest?.outputTokensPerSecond, 20)
+        // The latest request's own figures, from its own record: its output
+        // (not another session's or project's, reasoning not added again) and
+        // its whole three-second round trip, which stays on it as latency.
+        XCTAssertEqual(history.latest?.outputTokens, 60)
+        XCTAssertEqual(history.latest?.requestMilliseconds, 3_000)
+        XCTAssertEqual(history.latest?.streamingMilliseconds, 1_000)
         // The charts and the pills read the settled rate: provider output over
         // the decode span, not over the whole dispatch-to-completion request.
         XCTAssertEqual(history.latest?.settledTokensPerSecond, 60)
-        XCTAssertEqual(history.points(for: .rate).map(\.value), [1_000, 60])
-        XCTAssertEqual(history.settledThroughput, SettledThroughput(decodeMilliseconds: 1_100, outputTokens: 160, samples: 2, requests: 2))
-        XCTAssertEqual(try XCTUnwrap(history.settledThroughput.tokensPerSecond), 160 / 1.1, accuracy: 1e-9)
-        XCTAssertEqual(history.historicalRate, HistoricalOutputRate(outputTokens: 160, generationMilliseconds: 4_000, samples: 2))
-        XCTAssertEqual(history.historicalRate.tokensPerSecond, 40, "Use total output / total duration, without counting reasoning or repeated updates again")
+        XCTAssertEqual(history.points(for: .rate).map(\.value), [200, 60])
+        XCTAssertEqual(history.settledThroughput, SettledThroughput(decodeMilliseconds: 1_500, outputTokens: 160, samples: 2, requests: 2))
+        XCTAssertEqual(try XCTUnwrap(history.settledThroughput.tokensPerSecond), 160 / 1.5, accuracy: 1e-9)
+        XCTAssertEqual(history.historicalSettledThroughput, SettledThroughput(decodeMilliseconds: 1_500, outputTokens: 160, samples: 2, requests: 2))
+        XCTAssertEqual(try XCTUnwrap(history.historicalSettledThroughput?.tokensPerSecond), 160 / 1.5, accuracy: 1e-9,
+                       "Use total output / total decode time, without counting reasoning or repeated updates again")
         XCTAssertEqual(history.completedRequests, 2)
         let sessionUsage = try await archive.sessionMetrics(sessionID: "session", workspaceID: "project", until: until)
-        XCTAssertEqual(sessionUsage.historicalRate, history.historicalRate, "Footer and usage window must use the same retained-session weighted rate")
+        XCTAssertEqual(sessionUsage.gateway.settledThroughput.tokensPerSecond, history.historicalSettledThroughput?.tokensPerSecond,
+                       "Footer and usage window must use the same retained-session weighted rate")
+        XCTAssertEqual(sessionUsage.gateway.settledThroughput.samples, history.historicalSettledThroughput?.samples)
         try await archive.close()
         let restored = try await configured(root)
         let persisted = try await restored.sessionTimingHistory(sessionID: "session", workspaceID: "project", until: until)
         XCTAssertEqual(persisted.samples, history.samples, "Helper eviction/restart cannot erase completed requests")
-        XCTAssertEqual(persisted.historicalRate, history.historicalRate)
+        XCTAssertEqual(persisted.completedRequests, history.completedRequests)
         XCTAssertEqual(persisted.historicalSettledThroughput, history.historicalSettledThroughput)
         XCTAssertEqual(persisted.ledgerSamples?.map(\.id), history.ledgerSamples?.map(\.id))
         XCTAssertEqual(persisted.ledgerSamples?.map(\.outcome), ["completed", "completed", "interrupted", "failed"],
@@ -106,10 +114,13 @@ final class SessionTimingTests: XCTestCase {
         let missing = try await Self.save(archive, metadata(wall: 999_993, ttft: 200, duration: 1_000, output: nil))
         let history = try await archive.sessionTimingHistory(sessionID: "session", workspaceID: "project", until: until)
         XCTAssertEqual(history.latest?.id, missing); XCTAssertEqual(history.latest?.ttftMilliseconds, 200)
-        XCTAssertNil(history.latest?.outputTokensPerSecond)
+        XCTAssertNil(history.latest?.outputTokens, "Missing usage stays missing: never a zero, never the previous request's figure")
+        XCTAssertEqual(history.latest?.streamingMilliseconds, 800, "Its timing alone was valid; the rate still needs its tokens")
         XCTAssertNil(history.latest?.settledTokensPerSecond, "A request that reported no output tokens contributes nothing to the settled rate")
-        XCTAssertEqual(history.historicalRate.tokensPerSecond, 20)
-        XCTAssertEqual(history.historicalRate.samples, 2)
+        // 0 + 40 tokens over the 1,000 + 900 ms two requests decoded for: the
+        // one with no usage and the one with no timing add nothing, not zeros.
+        XCTAssertEqual(try XCTUnwrap(history.historicalSettledThroughput?.tokensPerSecond), 40 / 1.9, accuracy: 1e-9)
+        XCTAssertEqual(history.historicalSettledThroughput?.samples, 2)
         XCTAssertEqual(history.completedRequests, 4, "Missing usage/timing stays visible in average coverage")
         XCTAssertEqual(history.points(for: .ttft).map(\.value), [0, 100, 200])
         XCTAssertEqual(history.points(for: .rate).map(\.value).count, 2)
@@ -124,7 +135,7 @@ final class SessionTimingTests: XCTestCase {
         try await archive.close()
     }
 
-    func testRequestDurationMigrationCountsHiddenReasoningWithoutFirstContentAndExpiresCleanly() async throws {
+    func testRequestDurationMigrationKeepsSilentCompletionsDurationsAndExpiresCleanly() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await configured(root)
         var hidden = metadata(wall: 999_993, ttft: nil, duration: 2_403, output: 302)
@@ -154,17 +165,28 @@ final class SessionTimingTests: XCTestCase {
         let silent = try XCTUnwrap(history.samples.first { $0.id == hiddenID })
         XCTAssertNil(silent.ttftMilliseconds); XCTAssertNil(silent.streamingMilliseconds)
         XCTAssertEqual(silent.requestMilliseconds, 2_403)
-        XCTAssertEqual(try XCTUnwrap(silent.outputTokensPerSecond), 302.0 / 2.403, accuracy: 1e-9, "Reasoning is already inside gateway output; no visible text estimate participates")
-        XCTAssertEqual(history.samples.first { $0.id == zeroID }?.outputTokensPerSecond, 0)
-        XCTAssertNil(history.samples.first { $0.id == zeroDurationID }?.outputTokensPerSecond)
+        XCTAssertEqual(silent.outputTokens, 302, "Reasoning is already inside gateway output; no visible text estimate participates")
+        let zero = try XCTUnwrap(history.samples.first { $0.id == zeroID })
+        XCTAssertEqual(zero.outputTokens, 0, "A reported zero stays a zero, distinct from missing usage")
+        XCTAssertEqual(zero.requestMilliseconds, 1_000)
+        let zeroDuration = try XCTUnwrap(history.samples.first { $0.id == zeroDurationID })
+        XCTAssertEqual(zeroDuration.requestMilliseconds, 0, "A zero-length request keeps its observation")
+        XCTAssertNil(zeroDuration.settledTokensPerSecond, "and divides by nothing: no rate, never an infinite one")
         XCTAssertNil(history.samples.first { $0.id == missingEndID }?.requestMilliseconds)
         XCTAssertEqual(history.latest?.id, missingUsageID)
         XCTAssertEqual(SessionRatePresentation(history: history).label, "Usage unavailable")
-        let expected = HistoricalOutputRate(outputTokens: 302, generationMilliseconds: 3_403, samples: 2)
-        XCTAssertEqual(history.historicalRate, expected)
+        // The migration re-projected every retained request's duration from
+        // its metadata; the expired one and the one never dispatched are gone.
+        XCTAssertEqual(history.samples.map(\.id), [hiddenID, zeroID, zeroDurationID, missingEndID, missingUsageID])
+        XCTAssertEqual(history.samples.map(\.requestMilliseconds), [2_403, 1_000, 0, nil, 1_000])
+        XCTAssertEqual(history.completedRequests, 5)
+        // None of them stamped a first token, so none has a decode span: the
+        // footer, the menu and the session window all quote no rate for them.
         let menu = try await migrated.menuBarMetrics(period: .retained, until: until)
         let session = try await migrated.sessionMetrics(sessionID: "session", workspaceID: "project", until: until)
-        XCTAssertEqual(menu.historicalRate, expected); XCTAssertEqual(session.historicalRate, expected)
+        XCTAssertEqual(history.historicalSettledThroughput?.samples, 0)
+        XCTAssertEqual(menu.gateway.settledThroughput.samples, 0); XCTAssertEqual(session.gateway.settledThroughput.samples, 0)
+        XCTAssertEqual(menu.gateway.requests, 5); XCTAssertEqual(session.gateway.requests, 5, "The menu and the session window count the same retained requests")
         let info = SessionInfoTiming(history: SessionTimingHistory(samples: [silent]), work: [:])
         // A silent completion has no first-content stamp and therefore no
         // decode span: Session info keeps its duration and reports no settled
@@ -187,8 +209,9 @@ final class SessionTimingTests: XCTestCase {
         let history = try await archive.sessionTimingHistory(sessionID: "session", workspaceID: "project", until: until)
         XCTAssertEqual(history.samples.count, 128); XCTAssertTrue(history.hasOlderRequests)
         XCTAssertEqual(history.samples.first?.outputTokens, 4); XCTAssertEqual(history.samples.last?.outputTokens, 131)
-        XCTAssertEqual(history.historicalRate.tokensPerSecond, 65.5, "The average includes retained requests older than the chart's 128-sample limit")
-        XCTAssertEqual(history.historicalRate.samples, 132)
+        XCTAssertEqual(try XCTUnwrap(history.historicalSettledThroughput?.tokensPerSecond), 65.5 / 0.8, accuracy: 1e-9,
+                       "The average includes retained requests older than the chart's 128-sample limit")
+        XCTAssertEqual(history.settledThroughput.samples, 128, "while the listed requests stop at it")
         XCTAssertEqual(history.completedRequests, 132)
         XCTAssertEqual(history.historicalSettledThroughput?.samples, 132)
         XCTAssertEqual(SessionRatePresentation(history: history).average, 65.5 / 0.8)
@@ -198,7 +221,7 @@ final class SessionTimingTests: XCTestCase {
         }
         let injected = try await archive.sessionTimingHistory(sessionID: "session' OR 1=1 --", workspaceID: "project", until: until)
         XCTAssertTrue(injected.samples.isEmpty)
-        XCTAssertNil(injected.historicalRate.tokensPerSecond)
+        XCTAssertEqual(injected.historicalSettledThroughput?.samples, 0); XCTAssertNil(injected.historicalSettledThroughput?.tokensPerSecond)
         XCTAssertEqual(injected.completedRequests, 0)
         try await archive.close()
         let db = try CaptureDatabase(url: root.appendingPathComponent("requests.sqlite"))
@@ -218,24 +241,64 @@ final class SessionTimingTests: XCTestCase {
         try await archive.purge(attemptID: retained)
         let history = try await archive.sessionTimingHistory(sessionID: "session", workspaceID: "project", until: until)
         XCTAssertEqual(history.samples.map(\.id), [retained])
-        XCTAssertEqual(history.historicalRate, HistoricalOutputRate(outputTokens: 25, generationMilliseconds: 1_000, samples: 1))
+        XCTAssertEqual(history.historicalSettledThroughput, SettledThroughput(decodeMilliseconds: 800, outputTokens: 25, samples: 1, requests: 1))
         XCTAssertEqual(history.completedRequests, 1)
         try await archive.close()
     }
 
+    /// Each sample keeps only valid observations, and its one rate — the
+    /// settled decode rate — exists only when both of its ends are valid.
     func testInvalidAndBufferedTimingValuesRemainHonest() {
-        XCTAssertEqual(sample("buffered", ttft: 2_000, duration: 2_000, output: 100).outputTokensPerSecond, 50)
-        XCTAssertNil(sample("zero-duration", ttft: 0, duration: 0).outputTokensPerSecond)
-        XCTAssertEqual(sample("negative-stream", ttft: 2_000, duration: 1_000).outputTokensPerSecond, 100, "Invalid first-content observations do not erase a separately valid request duration")
-        XCTAssertNil(sample("negative-tokens", output: -1).outputTokensPerSecond)
-        XCTAssertEqual(sample("missing-ttft", ttft: nil).outputTokensPerSecond, 100)
-        XCTAssertNil(sample("missing-duration", duration: nil).outputTokensPerSecond)
-        XCTAssertNil(sample("negative-duration", duration: -1).outputTokensPerSecond)
-        XCTAssertNil(sample("nan", output: .nan).outputTokensPerSecond)
-        XCTAssertNil(sample("infinite", duration: .infinity).outputTokensPerSecond)
+        // The control: 100 tokens decoded over the 800 ms after the first one.
+        XCTAssertEqual(sample("valid").settledTokensPerSecond, 125)
+        XCTAssertEqual(sample("zero-output", output: 0).settledTokensPerSecond, 0, "A reported zero is a rate of zero, not a missing one")
+        // A buffered response arrives whole with its first content: no decode
+        // span to divide by, so no rate — never an infinite one — while its
+        // two-second round trip stays on the sample as latency.
+        let buffered = sample("buffered", ttft: 2_000, duration: 2_000, output: 100)
+        XCTAssertEqual(buffered.streamingMilliseconds, 0); XCTAssertEqual(buffered.requestMilliseconds, 2_000)
+        XCTAssertNil(buffered.settledTokensPerSecond)
+        let zeroDuration = sample("zero-duration", ttft: 0, duration: 0)
+        XCTAssertEqual(zeroDuration.requestMilliseconds, 0); XCTAssertEqual(zeroDuration.streamingMilliseconds, 0)
+        XCTAssertNil(zeroDuration.settledTokensPerSecond)
+        // First content stamped after completion is invalid and dropped.
+        let negativeStream = sample("negative-stream", ttft: 2_000, duration: 1_000)
+        XCTAssertNil(negativeStream.streamingMilliseconds); XCTAssertNil(negativeStream.settledTokensPerSecond)
+        XCTAssertEqual(negativeStream.requestMilliseconds, 1_000, "Invalid first-content observations do not erase a separately valid request duration")
+        let negativeTokens = sample("negative-tokens", output: -1)
+        XCTAssertNil(negativeTokens.outputTokens); XCTAssertNil(negativeTokens.settledTokensPerSecond)
+        XCTAssertEqual(negativeTokens.streamingMilliseconds, 800, "Invalid usage does not erase valid timing")
+        let missingTTFT = sample("missing-ttft", ttft: nil)
+        XCTAssertEqual(missingTTFT.requestMilliseconds, 1_000); XCTAssertEqual(missingTTFT.outputTokens, 100)
+        XCTAssertNil(missingTTFT.settledTokensPerSecond, "Without a first token there is no decode span: the round trip is never passed off as decode speed")
+        let missingDuration = sample("missing-duration", duration: nil)
+        XCTAssertNil(missingDuration.requestMilliseconds); XCTAssertNil(missingDuration.streamingMilliseconds)
+        XCTAssertNil(missingDuration.settledTokensPerSecond)
+        let negativeDuration = sample("negative-duration", duration: -1)
+        XCTAssertNil(negativeDuration.requestMilliseconds); XCTAssertNil(negativeDuration.streamingMilliseconds)
+        XCTAssertNil(negativeDuration.settledTokensPerSecond)
+        let nan = sample("nan", output: .nan)
+        XCTAssertNil(nan.outputTokens); XCTAssertNil(nan.settledTokensPerSecond)
+        let infinite = sample("infinite", duration: .infinity)
+        XCTAssertNil(infinite.requestMilliseconds); XCTAssertNil(infinite.streamingMilliseconds)
+        XCTAssertNil(infinite.settledTokensPerSecond)
+        // A span too long to be a duration, and a finite division that
+        // overflows, both leave no rate rather than an infinity.
         let overflow = SessionTimingSample(id: "overflow", wall: until, ttftMilliseconds: .greatestFiniteMagnitude,
                                            streamingMilliseconds: .greatestFiniteMagnitude, outputTokens: 1)
-        XCTAssertNil(overflow.outputTokensPerSecond)
+        XCTAssertNil(overflow.settledTokensPerSecond)
+        let overflowingRate = SessionTimingSample(id: "overflowing-rate", wall: until, ttftMilliseconds: 1,
+                                                  streamingMilliseconds: 500, outputTokens: .greatestFiniteMagnitude)
+        XCTAssertEqual(overflowingRate.streamingMilliseconds, 500); XCTAssertEqual(overflowingRate.outputTokens, Double.greatestFiniteMagnitude)
+        XCTAssertNil(overflowingRate.settledTokensPerSecond)
+        // A reply delivered in one burst: 100 tokens over 5 ms is not 20,000
+        // tok/s, it is no measurement. The request keeps its figures.
+        let burst = sample("one-burst", ttft: 200, duration: 205, output: 100)
+        XCTAssertEqual(burst.streamingMilliseconds, 5); XCTAssertEqual(burst.outputTokens, 100)
+        XCTAssertNil(burst.settledTokensPerSecond)
+        let floor = SettledThroughput.minimumDecodeMilliseconds
+        XCTAssertEqual(try XCTUnwrap(sample("at-the-floor", ttft: 200, duration: 200 + floor, output: 100).settledTokensPerSecond), 100 / (floor / 1_000),
+                       accuracy: 1e-9, "A span of exactly the floor is a measurement")
     }
 
     @MainActor func testLoadedSessionTimingRefreshesAfterCompletionWithoutFocusingIt() async throws {
@@ -251,14 +314,15 @@ final class SessionTimingTests: XCTestCase {
         let previous = metadata(wall: now - 3, ttft: 100, duration: 1_000, output: 80)
         try await Self.save(model.traces, previous)
         await model.refreshAccounting(display, workspaceID: "project")
-        XCTAssertEqual(display.footer.timing.latest?.outputTokensPerSecond, 80)
-        XCTAssertEqual(display.footer.timing.historicalRate.tokensPerSecond, 80)
+        // 80 tokens decoded over the 900 ms after the first one.
+        XCTAssertEqual(try XCTUnwrap(display.footer.timing.latest?.settledTokensPerSecond), 80 / 0.9, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(display.footer.timing.historicalSettledThroughput?.tokensPerSecond), 80 / 0.9, accuracy: 1e-9)
         let id = UUID().uuidString
         let pending = metadata(id: id, wall: now - 1, outcome: "running", ttft: nil, duration: nil, output: nil)
         try await Self.save(model.traces, pending)
         await model.refreshAccounting(display, workspaceID: "project")
         XCTAssertEqual(display.footer.timing.latest?.id, previous["attemptId"]?.string)
-        XCTAssertEqual(display.footer.timing.historicalRate.samples, 1, "Pending work must not change the completed average")
+        XCTAssertEqual(display.footer.timing.historicalSettledThroughput?.samples, 1, "Pending work must not change the completed average")
         let completed = metadata(id: id, wall: now - 1, ttft: 300, duration: 2_000, output: 50)
         try await model.traces.finish(completed)
         await model.captureDidPersist(["type": .string("finish"), "metadata": .object(completed)], workspaceID: "project")
@@ -266,8 +330,10 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertTrue(model.accountingTasks.isEmpty)
         XCTAssertEqual(display.footer.timing.latest?.id, id)
         XCTAssertEqual(display.footer.timing.latest?.ttftMilliseconds, 300)
-        XCTAssertEqual(display.footer.timing.latest?.outputTokensPerSecond, 25)
-        XCTAssertEqual(try XCTUnwrap(display.footer.timing.historicalRate.tokensPerSecond), 130.0 / 3, accuracy: 1e-10)
+        // The completed request's own rate: 50 tokens over its 1.7 s decode.
+        XCTAssertEqual(try XCTUnwrap(display.footer.timing.latest?.settledTokensPerSecond), 50 / 1.7, accuracy: 1e-9)
+        // 80 + 50 tokens over the 900 + 1,700 ms the two requests decoded for.
+        XCTAssertEqual(try XCTUnwrap(display.footer.timing.historicalSettledThroughput?.tokensPerSecond), 130.0 / 2.6, accuracy: 1e-9)
         XCTAssertEqual(display.footer.timing.completedRequests, 2)
         XCTAssertEqual(model.selectedID, "other-chat")
         let reloaded = SessionDisplay(id: "session")
@@ -347,7 +413,11 @@ final class SessionTimingTests: XCTestCase {
             window.setContentSize(NSSize(width: CGFloat(width), height: 100))
             let rendered = try await renderedText(window, filename: "session-footer-running-\(width).jpg")
             XCTAssertEqual(hosted.bounds.width, CGFloat(width), accuracy: 0.5)
-            XCTAssertTrue(rendered.contains("19s"), "The elapsed clock must stay visible at \(width)pt. OCR: \(rendered)")
+            // The clock started 19 s before the first capture and keeps
+            // running: a capture on a loaded machine can land a second or
+            // two later. What matters is that a clock reading is on screen.
+            XCTAssertNotNil(rendered.range(of: #"\b(19|2[0-9])s\b"#, options: .regularExpression),
+                            "The elapsed clock must stay visible at \(width)pt. OCR: \(rendered)")
             XCTAssertTrue(rendered.contains("bash"), "The current action must stay visible at \(width)pt. OCR: \(rendered)")
             XCTAssertTrue(rendered.contains("15.8k tok") && rendered.contains("cache hit 50%") && rendered.contains("$0.0025"),
                           "The usage pill keeps tokens, cache hit and cost at \(width)pt. OCR: \(rendered)")
@@ -379,6 +449,89 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(SessionRunLine.elapsed(["startedAt": .number(1_981_000), "elapsedMs": .number(25_000)], atUptimeMs: now), "25s",
                        "A stale snapshot is a floor, never a clock running backwards")
     }
+
+    /// One request has one speed. This one waited two seconds for its first
+    /// token and then decoded 100 tokens in one second: it decoded at
+    /// 100 tok/s, and its three-second round trip is latency, not speed.
+    /// The history popover's latest tile, its chart and the caption of the
+    /// request under the pointer, the sidebar slot and the menu bar all quote
+    /// that request — so all of them must quote the same figure.
+    @MainActor func testEveryCaptionOfOneRequestQuotesTheSameSettledRate() async throws {
+        let request = SessionTimingSample(id: "r1", wall: Date(timeIntervalSince1970: 1_790_000_000), ttftMilliseconds: 2_000,
+                                          streamingMilliseconds: 1_000, outputTokens: 100, requestMilliseconds: 3_000)
+        let history = SessionTimingHistory(samples: [request])
+        XCTAssertEqual(SessionTimingMetric.rate.value(in: request), 100)
+        XCTAssertEqual(history.points(for: .rate).map(\.value), [100])
+        XCTAssertEqual(SessionRatePresentation(history: history).label, "Latest 100 tok/s")
+
+        // The popover itself, in a window, read back as the reader sees it.
+        let hosted = NSHostingView(rootView: SessionTimingHistoryView(history: history, sessionTitle: "One request", close: {})
+            .background(Color.piSurface))
+        let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 430, height: 560), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.contentView = hosted; window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        let rendered = try await Self.recognizedText(in: window)
+        XCTAssertNotNil(rendered.range(of: #"ttft\W+100 tok/s"#, options: .regularExpression),
+                        "The request caption quotes the request's decode rate, not output over the whole round trip. OCR: \(rendered)")
+        XCTAssertFalse(rendered.contains("33 tok/s"), "No caption divides by the wait for the first token. OCR: \(rendered)")
+
+        // The menu bar's row for the chat that ran it.
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        model.workspaces = [WorkspaceRecord(id: "p", path: root.path, trusted: true)]
+        model.chats = [ChatRecord(id: "rates", workspaceID: "p", title: "Rates", path: nil, profileID: "profile")]
+        let view = SessionDisplay(id: "rates"); view.state = "running"; view.runStatus = "running"
+        view.activity = ["phase": .string("model"), "modelActive": .bool(true)]
+        view.footer.timing = history
+        model.displays[view.id] = view
+        XCTAssertEqual(try XCTUnwrap(model.menuBarActivity().runningRows.first).latestRate, 100,
+                       "The menu bar quotes the same settled rate as the sidebar and Session info")
+    }
+
+    /// The menu bar's usage panel quoted output over dispatch-to-completion
+    /// time: for the request above — two seconds waiting for its first token,
+    /// one second decoding 100 tokens — 33 tok/s, where the rest of the app
+    /// says 100. Its chart, the caption under it, the slice under the
+    /// pointer, each model row and its scope note quote the decode rate now.
+    @MainActor func testTheUsagePanelQuotesTheDecodeRateOfTheSameRequest() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 1_000_000) })
+        try await archive.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 10_000_000)
+        try await Self.save(archive, metadata(wall: 999_990, ttft: 2_000, duration: 3_000, output: 100))
+        let usage = try await archive.menuBarMetrics(period: .day, until: until)
+        try await archive.close()
+        XCTAssertEqual(usage.gateway.settledThroughput, SettledThroughput(decodeMilliseconds: 1_000, outputTokens: 100, samples: 1, requests: 1),
+                       "The panel's source: one completed request, 100 tokens over its 1 s decode")
+        let slice = try XCTUnwrap(usage.buckets.first { $0.requests > 0 })
+        let route = try XCTUnwrap(usage.models.first)
+        XCTAssertEqual(try XCTUnwrap(MenuBarRateText.rate(slice)), 100, accuracy: 1e-9, "The rate chart plots the decode rate")
+        let decode = menuBarRate(100), roundTrip = menuBarRate(100.0 / 3)
+        XCTAssertEqual(MenuBarRateText.caption(usage), "\(decode) tok/s over 1 completed requests · output tokens ÷ decode time (first token to completion)")
+        XCTAssertEqual(MenuBarRateText.slice(slice), "\(decode) decode tok/s")
+        XCTAssertEqual(MenuBarRateText.point(slice), "\(decode) decode tokens per second over 1 requests")
+        XCTAssertEqual(MenuBarRateText.model(route), "\(decode) decode tok/s · 1 completed requests timed")
+        for text in [MenuBarRateText.caption(usage), MenuBarRateText.slice(slice), MenuBarRateText.point(slice), MenuBarRateText.model(route), MenuBarRateText.scope] {
+            XCTAssertFalse(text.contains(roundTrip) || text.contains("dispatch-to-completion") || text.contains("first-token latency"), text)
+        }
+
+        // On screen: the panel showing its rate chart, read off its pixels.
+        let panel = MenuBarMetricsController(load: { _, _, _ in usage }, interval: .seconds(60))
+        panel.setVisible(true); defer { panel.setVisible(false) }
+        for _ in 0..<500 where panel.snapshot == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(panel.snapshot, usage)
+        let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: MenuBarPanelLayout.width, height: 720), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
+        window.contentView = NSHostingView(rootView: MenuBarUsageView(controller: panel, chartMetric: .rate).padding(18)
+            .frame(width: MenuBarPanelLayout.width, height: 720, alignment: .topLeading).background(Color.piSurface))
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil; window.close() }
+        let rendered = try await Self.recognizedText(in: window, filename: "menu-usage-rate.jpg")
+        XCTAssertNotNil(rendered.range(of: #"100[.,]000 tok/s"#, options: .regularExpression), "The rate caption quotes the decode rate. OCR: \(rendered)")
+        XCTAssertNil(rendered.range(of: #"33[.,]333"#, options: .regularExpression), "No figure divides by the wait for the first token. OCR: \(rendered)")
+    }
+
 
     @MainActor func testSidebarRateSlotKeepsItsGeometryForAwaitingReportedAndUnavailableUsage() {
         let variants = [SessionTimingHistory(),
@@ -442,6 +595,11 @@ final class SessionTimingTests: XCTestCase {
     }
 
     @MainActor private func renderedText(_ window: NSWindow, filename: String) async throws -> String {
+        try await Self.recognizedText(in: window, filename: filename)
+    }
+    /// The words a window shows, read off its pixels: what the reader sees,
+    /// lowercased. `PI_APP_USAGE_CAPTURE_ROOT` keeps the capture as evidence.
+    @MainActor static func recognizedText(in window: NSWindow, filename: String? = nil) async throws -> String {
         try await Task.sleep(for: .milliseconds(300))
         window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         typealias ListImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
@@ -449,7 +607,7 @@ final class SessionTimingTests: XCTestCase {
         let create = unsafeBitCast(symbol, to: ListImage.self)
         let image = try XCTUnwrap(create(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber),
                                         CGWindowImageOption.boundsIgnoreFraming.rawValue)?.takeRetainedValue())
-        if let path = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") {
+        if let path = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT"), let filename {
             let folder = URL(fileURLWithPath: path, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let jpeg = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.82]))
@@ -469,10 +627,12 @@ final class SessionTimingTests: XCTestCase {
                                 ttftMilliseconds: index == 7 ? nil : Double(250 + (index * 113) % 1300), streamingMilliseconds: 1_200,
                                 outputTokens: index == 9 ? nil : Double(60 + (index * 11) % 70), requestMilliseconds: Double(1450 + (index * 113) % 1300))
         }
-        let observed = samples.filter { $0.outputTokensPerSecond != nil }
-        let average = HistoricalOutputRate(outputTokens: observed.compactMap(\.outputTokens).reduce(0, +),
-                                           generationMilliseconds: observed.reduce(0) { $0 + ($1.requestMilliseconds ?? 0) }, samples: observed.count)
-        let history = SessionTimingHistory(samples: samples, historicalRate: average, completedRequests: samples.count)
+        // The session figure the popover quotes: the settled rate over the
+        // requests that reported both a decode span and their output.
+        var settled = SettledThroughput()
+        for sample in samples { settled.add(decodeMilliseconds: sample.streamingMilliseconds, outputTokens: sample.outputTokens) }
+        XCTAssertEqual(settled.samples, samples.filter { $0.settledTokensPerSecond != nil }.count)
+        let history = SessionTimingHistory(samples: samples, completedRequests: samples.count, historicalSettledThroughput: settled)
         let hosted = NSHostingView(rootView: SessionTimingHistoryView(history: history, sessionTitle: "Gateway timing review", close: {}))
         let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 430, height: 570), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)

@@ -81,7 +81,7 @@ struct SessionStatsPresentation: Equatable {
         let tokens = gateway.tokens ?? GatewayTokenTotals()
         var rows: [PiStatRow] = []
         func coverage(_ samples: Int) -> String? { samples < gateway.requests ? "\(samples)/\(gateway.requests) requests reported" : nil }
-        if let cacheHit { rows.append(PiStatRow(name: "Cache hit", value: cacheHit + "%", coverage: coverage(gateway.cacheReadSamples))) }
+        if let cacheHit { rows.append(PiStatRow(name: "Cache hit", value: cacheHit + "%", coverage: coverage(gateway.cacheHitSamples))) }
         if let uncached = gateway.uncachedInputTokens {
             rows.append(PiStatRow(name: "Uncached input", value: MetricFormat.exactTokenCount(uncached), coverage: coverage(gateway.uncachedInputSampleCount)))
         }

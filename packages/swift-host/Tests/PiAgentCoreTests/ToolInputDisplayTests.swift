@@ -196,8 +196,9 @@ final class ToolInputDisplayTests: XCTestCase {
         addTeardownBlock { await reopened.close() }
         let view = card(await reopened.snapshot(), callID: "call-write")
         // Reload pairs an unresolved call with an explicit unknown outcome,
-        // so the reopened row is a failed card built from the durable result.
-        XCTAssertEqual(view["state"].text, "failed")
+        // so the reopened row is an outcome-unknown card built from the
+        // durable result (before 0.1.85 it read as a plain failure).
+        XCTAssertEqual(view["state"].text, "unknown")
         let parsed = try JSON.parse(Data((view["input"].text ?? "").utf8))
         XCTAssertEqual(parsed["path"].text, "/tmp/reload.txt")
         XCTAssertEqual(view["inputTruncated"].flag, false)
