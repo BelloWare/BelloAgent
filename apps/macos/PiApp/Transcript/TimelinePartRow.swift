@@ -183,7 +183,7 @@ struct RequestTimelineInfo: View {
     let actions: TranscriptActions
     var body: some View {
         VStack(alignment:.leading,spacing:4) {
-            if let accounting = message.accounting { MessageAccountingView(accounting:accounting,onInspect:{ actions.inspect(message.id) }) }
+            if let accounting = message.accounting, accounting.requests > 0 { MessageAccountingView(accounting:accounting,onInspect:{ actions.inspect(message.id) }) }
             if let detail = message.detail { Text(detail).font(.system(size:11)).foregroundStyle(TranscriptPalette.faint) }
             // The partial answer already carries the Stopped chip.
 

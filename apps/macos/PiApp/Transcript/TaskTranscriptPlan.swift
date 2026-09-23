@@ -197,7 +197,7 @@ enum TaskTranscriptPlan {
                         body.message = prose; body.id = message.id; body.live = message.isStreaming
                         result.append(.block(body))
                     }
-                    if message.accounting != nil || message.stopReason != nil {
+                    if (message.accounting?.requests ?? 0) > 0 || message.stopReason != nil {
                         var info = message; info.text = ""; info.thinking = nil; info.tools = nil
                         info.kind = "requestInfo"; info.detail = "Legacy response · exact part order unavailable"
                         result.append(.message(info))

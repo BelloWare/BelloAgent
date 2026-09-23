@@ -59,7 +59,7 @@ final class EditRecoveryTests: XCTestCase {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let state = root.appendingPathComponent("state"), profile = try fixtureProfile(), resources = Resources(cwd: root, home: root), traces = TraceStore()
         let client = ScriptClient([answer(String(repeating:"Completed first task evidence. ",count:80)), answer("second answer"), answer("summary of first"), answer("replacement answer")])
-        let session = try AgentSession(id: "edit", profile: profile, apiKey: "k", cwd: root, directory: state, readOnly: true, resources: resources, client: client, tools: RecordingTools(), traces: traces, autoCompaction: false)
+        let session = try AgentSession(id: "edit", profile: profile, apiKey: "k", cwd: root, directory: state, readOnly: true, resources: resources, client: client, tools: RecordingTools(), traces: traces, autoCompaction: false, compactionPolicy: { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }())
         for turn in ["first", "second"] {
             _ = try await session.submit(Submission(commandID: turn, turnID: turn, text: turn), steer: false)
             try await eventually { !(await session.isRunning) }

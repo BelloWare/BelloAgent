@@ -105,24 +105,21 @@ struct CompactTurnReport: View {
     var showsInfo = true
 
     private var models: [String] {
-        let names = turn.accounting.reportedModels
+        let names = turn.accounting.answeredModels
         return names.isEmpty ? model.map { [$0] } ?? [] : names
     }
-    private var modelLabel: String {
-        if let route = turn.accounting.latestModelRoute {
-            return route.label + (turn.accounting.modelRoutes.count > 1 ? " +\(turn.accounting.modelRoutes.count - 1)" : "")
-        }
-        guard let name = turn.accounting.model ?? models.last else { return turn.isRunning ? "Model pending" : "Model unreported" }
-        return name + (models.count > 1 ? " +\(models.count - 1)" : "")
-    }
+    private var modelLabel: String { TurnInfoPresentation.modelLabel(turn, fallback: model) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             TurnReportHeaderLayout { state; identityAndActions }
             TurnReportMetrics(turn: turn)
-            if turn.isRunning || turn.partial {
-                Text(turn.partial ? "Partial history · retained request usage" : "Reported so far · updates as requests finish")
-                    .font(.system(size: 9.5)).foregroundStyle(TranscriptPalette.faint)
+            if let notice = TurnInfoPresentation.coverageNotice(turn) {
+                // Live, one line whatever it says: a dock that reflowed as
+                // requests finished would move the conversation above it.
+                Text(notice).font(.system(size: 9.5)).foregroundStyle(TranscriptPalette.faint)
+                    .lineLimit(turn.isRunning ? 1 : 3).truncationMode(.tail).fixedSize(horizontal: false, vertical: !turn.isRunning)
+                    .help(notice).accessibilityIdentifier("turn-coverage-notice")
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
@@ -150,6 +147,7 @@ struct CompactTurnReport: View {
             Text(modelLabel).font(.system(size: 10.5)).foregroundStyle(TranscriptPalette.muted)
                 .lineLimit(1).truncationMode(.middle)
                 .help(turn.accounting.modelRoutes.isEmpty ? models.joined(separator: "\n") : turn.accounting.modelRoutes.map(\.detail).joined(separator: "\n"))
+                .accessibilityIdentifier("turn-report-model")
             Text(TurnInfoPresentation.costLabel(turn)).font(.system(size: 11, weight: .medium))
                 .foregroundStyle(TranscriptPalette.text).monospacedDigit().fixedSize()
                 .help("Gateway-reported cost" + (turn.isRunning ? " so far" : ""))

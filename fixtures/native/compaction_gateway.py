@@ -47,25 +47,28 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             summary = not body.get('tools')
             incomplete = False
             if summary:
-                assert len(body['input']) == 2
-                assert texts[-1].startswith('Summarize the preceding historical data for compaction')
-                assert 0 < body['max_output_tokens'] <= (32768 if sid == 'compaction-budget' else 512)
-                assert body['instructions'] == ''
-                records = [json.loads(line) for line in texts[0].splitlines()]
-                assert all('sourceMessageId' in r or 'intermediateSummary' in r or 'sourceFragment' in r for r in records)
-                if sid == 'compaction-budget':
+                # Pi's summary request: its system prompt, one message of
+                # <conversation> text, and pi's summarization prompt last.
+                assert len(body['input']) == 1 and len(texts) == 1
+                assert body['instructions'].startswith('You are a context summarization assistant.')
+                prompt = texts[0]
+                assert prompt.startswith('<conversation>\n') and '\n</conversation>\n\n' in prompt
+                assert 0 < body['max_output_tokens'] <= (6400 if sid.startswith('compaction-budget') else 512)
+                if sid.startswith('compaction-budget'):
                     assert body['reasoning']['effort'] == 'high'
-                    assert body['max_output_tokens'] > 4096
+                    assert body['max_output_tokens'] == 6400
                     assert len(json.dumps(body['input'], separators=(',', ':')).encode()) / 3 + body['max_output_tokens'] < 16000
-                    incomplete = not any('sourceFragment' in r or 'intermediateSummary' in r for r in records)
+                    incomplete = sid == 'compaction-budget-exhausted'
                     text = 'Observed evidence retained. Continue the original objective.'
-                elif any(r.get('priorCheckpoint') for r in records):
-                    text = 'COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE. Both results recorded. Do not rerun the mutation.'
+                elif '<previous-summary>' in prompt:
+                    assert 'The messages above are NEW conversation messages' in prompt
+                    assert '[Tool result]: READ_STAGE_COMPLETE part 3' in prompt
+                    text = 'COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE PART_3_READ. Do not rerun the mutation.'
                 else:
-                    assert 'arguments' in joined and 'observedOutcome' in joined
-                    assert 'READ_STAGE_COMPLETE' in joined and 'COUNTER_APPENDED_ONCE' in joined
-                    assert 'history_read' in joined
-                    text = 'COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE. ' + 'evidence ' * 200
+                    assert '[Assistant tool calls]: write(' in prompt and 'read(part=1)' in prompt
+                    assert 'READ_STAGE_COMPLETE' in prompt and 'COUNTER_APPENDED_ONCE' in prompt
+                    assert '[history_read: history:' in prompt
+                    text = 'COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE. Do not rerun the mutation.'
                 output = message(text)
             elif sid == 'compaction-sibling':
                 assert joined == 'sibling independent'
@@ -77,9 +80,11 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     if len(json.dumps(body['input'], ensure_ascii=False, separators=(',', ':')).encode()) > 1500:
                         status = 400
                         output = None
-                    else:
+                    elif 'PART_3_READ' in joined:
                         assert 'COUNTER_APPENDED_ONCE' in joined and 'READ_STAGE_COMPLETE' in joined
                         output = message('Golden complete without repeated effects')
+                    else:
+                        output = [call('read-c', 'read', {'part': 3})]
                 elif any('COUNTER_APPENDED_ONCE' in r for r in results):
                     assert len(results) == 1, 'oversized raw results were blindly dispatched'
                     output = [call('read-a', 'read', {'part': 1}), call('read-b', 'read', {'part': 2})]
@@ -98,7 +103,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         except Exception as error:
             status = 422
             payload = {'error': {'message': 'Fixture contract: ' + str(error)}}
-        streaming = self.headers.get('x-session-id') == 'compaction-budget' and status == 200
+        streaming = self.headers.get('x-session-id', '').startswith('compaction-budget') and status == 200
         if streaming:
             terminal = 'response.incomplete' if payload['status'] == 'incomplete' else 'response.completed'
             response = ('event: ' + terminal + '\ndata: ' + json.dumps({'type': terminal, 'response': payload}, separators=(',', ':')) + '\n\n').encode()

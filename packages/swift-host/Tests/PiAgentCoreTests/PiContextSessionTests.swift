@@ -72,8 +72,11 @@ final class PiContextSessionTests: XCTestCase {
                                                    "input_tokens_details": ["cached_tokens": JSON((total - 10) / 2)]], api: "openai-responses")
         return value
     }
+    /// These cases measure when pi compacts. Their few short messages sit
+    /// inside pi's 20,000-token tail, so a one-token tail gives it work.
     private func session(_ root: URL, _ client: ScriptClient, resume: String? = nil) throws -> AgentSession {
-        try AgentSession(id: "pi-context", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
-                         resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: resume)
+        var policy = CompactionPolicy(); policy.keepRecentTokens = 1
+        return try AgentSession(id: "pi-context", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
+                                resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: resume, compactionPolicy: policy)
     }
 }

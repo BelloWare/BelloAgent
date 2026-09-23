@@ -127,7 +127,10 @@ final class AccountingScaleTests: XCTestCase {
         var comparableSession = page.session; comparableSession.lastActivity = nil
         XCTAssertEqual(comparableSession, expectedSession)
         XCTAssertTrue(page.messages.values.allSatisfy { $0.lastActivity != nil })
-        XCTAssertEqual(page.messages.mapValues { var totals = $0; totals.lastActivity = nil; return totals }, expectedMessages)
+        // The same pass counts each message's requests without usage, by why:
+        // this fixture reports no tokens, so that is every one of them.
+        XCTAssertTrue(page.messages.values.allSatisfy { $0.missingUsage?.total == $0.requests })
+        XCTAssertEqual(page.messages.mapValues { var totals = $0; totals.lastActivity = nil; totals.missingUsage = nil; return totals }, expectedMessages)
         XCTAssertEqual(page.session.requests, 81_000, "Prepared requests and foreign session/workspace rows are excluded")
         XCTAssertEqual(page.session.costSamples, 63_000)
         XCTAssertEqual(page.session.costUSD, 7_875)

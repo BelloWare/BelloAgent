@@ -150,7 +150,24 @@ public struct ChatMessage: Codable, Sendable {
         if let taskExecutionID { value["taskExecutionID"] = JSON(taskExecutionID) }
         if let modelMs { value["modelMs"] = JSON(modelMs) }
         if role == "user", let skills = displaySkills { value["skills"] = skills }
+        if role == "assistant", let reply = replyRecord { value["reply"] = reply }
         return value
+    }
+    /// What this reply's own request reported, for a turn report whose request
+    /// log has no row for it: the attempt, the alias it named, the model names
+    /// the gateway reported with their sources, and the usage in pi's shape.
+    /// The same fields sit in the journal row, so a reopened chat reads the same.
+    var replyRecord: JSON? {
+        var record: [String: JSON] = [:]
+        if let attempt = requestAttemptIDs?.first { record["attempt"] = JSON(attempt) }
+        if let alias = providerIdentity?["requestedAlias"].text { record["requested"] = JSON(alias) }
+        let models: [JSON] = (providerIdentity?["evidence"].list ?? []).compactMap { item in
+            guard item["kind"].text == "model", let name = item["value"].text, let source = item["source"].text else { return nil }
+            return ["name": JSON(name), "source": JSON(source)]
+        }
+        if !models.isEmpty { record["models"] = .array(Array(models.prefix(8))) }
+        if let usage { record["usage"] = usage }
+        return record.isEmpty ? nil : .object(record)
     }
     /// The skills a user message was sent with, as its row shows them: the
     /// explicit selections the model received ahead of the text. Every field

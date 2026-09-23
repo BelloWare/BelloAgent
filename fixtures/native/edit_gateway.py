@@ -42,7 +42,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             assert not pending
             joined = '\n'.join(texts)
             if not body.get('tools'):
-                assert texts[-1].startswith('Summarize the preceding historical data for compaction')
+                assert body['instructions'].startswith('You are a context summarization assistant.') and texts[0].startswith('<conversation>\n')
                 output = message('UNSAFE_SUMMARY ORIGINAL_TARGET FUTURE_SECOND')
             elif 'EDITED_REPLACEMENT' in joined:
                 assert 'SAFE_FIRST' in joined and 'SKILL_CURRENT_SELECTION' in joined

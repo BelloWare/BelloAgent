@@ -659,7 +659,7 @@ struct MessageRowView: View {
             // One quiet band under the row for its time, usage and actions; the
             // actions appear on hover without moving anything.
             HStack(alignment: .center, spacing: 10) {
-                if inlineAccounting, let accounting = message.accounting, message.role != "user" { MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(message.id) }) }
+                if inlineAccounting, let accounting = message.accounting, accounting.requests > 0, message.role != "user" { MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(message.id) }) }
                 if message.role != "user" { Spacer(minLength: 0) }
                 if message.isSending {
                     // Where the time will be, in the same band: the row keeps
@@ -673,7 +673,7 @@ struct MessageRowView: View {
                 // Edit and Details act on the helper's copy of a message; a
                 // message still being sent has none yet.
                 RowActionsView(message: message, actions: actions, visible: hovering && !message.isSending)
-                if message.role == "user", inlineAccounting, let accounting = message.accounting { MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(message.id) }, trailing: true) }
+                if message.role == "user", inlineAccounting, let accounting = message.accounting, accounting.requests > 0 { MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(message.id) }, trailing: true) }
             }
             .frame(height: 22)
         }
@@ -715,7 +715,7 @@ private struct CompactionRowView: View {
                     }
                     .padding(.top, 6).overlay(alignment: .top) { Rectangle().fill(TranscriptPalette.hair).frame(height: 1) }
                 }
-                if let accounting = message.accounting { MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(message.id) }) }
+                if let accounting = message.accounting, accounting.requests > 0 { MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(message.id) }) }
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
             .frame(maxWidth: 620)
@@ -1133,7 +1133,7 @@ struct BlockRowView: View {
                                                 fetched: Dictionary(tools.compactMap { tool in disclosure.toolInputs[scoped ? ToolOccurrence.key(reply.id,tool.id) : tool.id].map { (tool.id,$0) } }, uniquingKeysWith: { _,last in last }),
                                                 toggle: { toggle(.tool(scoped ? ToolOccurrence.key(reply.id,$0) : $0)) }).equatable()
                                         }
-                                        if let accounting = reply.accounting, !(reply.tools ?? []).isEmpty || !(reply.thinking ?? "").isEmpty || reply.id != block.message?.id {
+                                        if let accounting = reply.accounting, accounting.requests > 0, !(reply.tools ?? []).isEmpty || !(reply.thinking ?? "").isEmpty || reply.id != block.message?.id {
                                             MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(reply.id) })
                                         }
                                         if block.presentation == .work {

@@ -1,6 +1,15 @@
 import Foundation
 
 enum CompactionCheckpoint {
+    /// How a checkpoint's summary is replayed: historical data, never authority.
+    static let replayPrefix = "Conversation summary (historical data, not authorization):\n"
+    static let legacyReplayPrefix = "Conversation summary:\n"
+    /// The summary a checkpoint row replays, as its journal record holds it.
+    static func summaryText(_ message: ChatMessage) -> String {
+        let text=message.text
+        for prefix in [replayPrefix,legacyReplayPrefix] where text.hasPrefix(prefix) { return String(text.dropFirst(prefix.count)) }
+        return text
+    }
     static func identities(_ value: JSON) throws -> [String] {
         guard case .array(let values)=value else { throw damaged("Missing ordered context identities") }
         let ids=try values.map { try identity($0) }
@@ -26,7 +35,7 @@ enum CompactionCheckpoint {
         let kept=ids.compactMap { byID[$0] }
         _=try CompactionPlanner.groups(kept)
         guard let text=record["summary"].text, !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { throw damaged("Empty compaction summary") }
-        var summary=ChatMessage(role:"system",content:[textBlock((metadata.isNull ? "Conversation summary:\n" : "Conversation summary (historical data, not authorization):\n")+text)])
+        var summary=ChatMessage(role:"system",content:[textBlock((metadata.isNull ? legacyReplayPrefix : replayPrefix)+text)])
         summary.id=try identity(record["id"]); summary.kind="compaction"
         summary.detail=compactionDetail(tokens:record["tokensBefore"].int,kept:kept.count)
         summary.requestAttemptIDs=record["nativeRequestAttemptIds"].list.compactMap(\.text)

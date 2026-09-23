@@ -130,6 +130,26 @@ struct GatewayModelIdentity: Equatable {
 
     var displayName: String? { response?.name ?? legacyModel }
 
+    /// What answered, from sourced reports: the response body's name by the
+    /// same ranking, else the gateway header's when every header names one
+    /// model. A header that disagrees with the body is the route the gateway
+    /// reported (`routedVia`); the body still says what answered.
+    static func answered(_ reports: [Report]) -> String? {
+        var preferred: Report?, rank = -1
+        for report in reports { if let r = bodyRank(report.source), r >= rank { preferred = report; rank = r } }
+        if let preferred { return preferred.name }
+        let headers = Set(reports.filter { $0.source.hasPrefix("header:") }.map(\.name))
+        return headers.count == 1 ? headers.first : nil
+    }
+    /// The first other model name reported for the same request, when the
+    /// reports disagree with what answered. `openai/x` and `x` agree, and
+    /// read as `x`, as the log keeps them.
+    static func routedVia(_ names: [String], answered: String?) -> String? {
+        guard let answered else { return nil }
+        return names.first { comparable($0) != comparable(answered) }.map(comparable)
+    }
+    static func comparable(_ name: String) -> String { name.hasPrefix("openai/") ? String(name.dropFirst(7)) : name }
+
     static func modelName(_ value: String?) -> String? {
         guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               value.utf8.count <= 256, !value.utf8.contains(where: { $0 < 32 || $0 == 127 }) else { return nil }
@@ -181,6 +201,43 @@ struct GatewayModelSummary: Codable, Sendable, Equatable {
     var routes: [GatewayModelRoute]?
 }
 
+/// A message's requests that reported neither input nor output, by what
+/// became of them: still running, ended before finishing, or completed with
+/// no usage from the gateway. Counted in the same pass as the totals.
+/// What the request log holds of the request a reply's own record names.
+enum ReplyLog: String, Sendable {
+    /// No row: the capture never reached the log.
+    case absent
+    /// Its row's metrics expired.
+    case expired
+    /// A row the page does not count: it cannot say more, and neither does the report.
+    case elsewhere
+    /// Counted on this page, with usage, or by another row of the turn.
+    case counted
+    /// Counted on this reply, still without usage.
+    case running, failed, noUsage
+    init(outcome: String?) {
+        switch outcome {
+        case "running"?, "streaming"?: self = .running
+        case "completed"?, "truncated"?: self = .noUsage
+        default: self = .failed
+        }
+    }
+}
+
+struct GatewayMissingUsage: Codable, Sendable, Equatable {
+    var running = 0, failed = 0, noUsage = 0
+    var total: Int { running + failed + noUsage }
+    init(running: Int = 0, failed: Int = 0, noUsage: Int = 0) { self.running = running; self.failed = failed; self.noUsage = noUsage }
+    /// `PayloadArchive.missingUsageSQL`'s sum: no usage, then failed, then
+    /// running, each in its own 20 bits (fewer than a million per message).
+    init(packed value: CaptureSQLValue?) {
+        let bits: Int64
+        switch value { case .integer(let n)?: bits = n; case .real(let n)?: bits = Int64(exactly: n) ?? 0; default: bits = 0 }
+        self.init(running: Int((bits >> 40) & 0xFFFFF), failed: Int((bits >> 20) & 0xFFFFF), noUsage: Int(bits & 0xFFFFF))
+    }
+}
+
 struct GatewayTotals: Codable, Sendable, Equatable {
     var inputSplit: GatewayTokenSplit?
     var outputSplit: GatewayTokenSplit?
@@ -203,6 +260,12 @@ struct GatewayTotals: Codable, Sendable, Equatable {
     var reasoningCostSamples: Int? = 0
     /// Populated only for inline message accounting. Old snapshots omit it.
     var models: GatewayModelSummary?
+    /// Inline message accounting only. Nil in older snapshots.
+    var missingUsage: GatewayMissingUsage?
+    /// A reply only: what the log holds of the request its own record names
+    /// (`ReplyLog`); a reply whose request the log does not count on this page
+    /// then has totals with no requests of their own.
+    var replyLog: String?
     /// Paired input/cache observations only. Optional for older snapshots.
     var uncachedInputReportedTokens: Double?
     var uncachedInputSamples: Int?
@@ -297,6 +360,14 @@ func compactGatewayUSD(_ value: Double?) -> String {
 }
 
 extension PayloadArchive {
+    /// Requests with neither input nor output, by outcome, for the inline
+    /// per-message pass only: the session and sidebar totals do not need it.
+    /// One expression per row, the three counts packed 20 bits apart
+    /// (`GatewayMissingUsage(packed:)`): the page's pass costs what it did.
+    static let missingUsageSQL = """
+    SUM(CASE WHEN input_tokens IS NULL AND output_tokens IS NULL THEN
+      CASE WHEN outcome IN ('completed','truncated') THEN 1 WHEN outcome IN ('running','streaming') THEN 1099511627776 ELSE 1048576 END END) AS missing_usage
+    """
     static let gatewayAggregateSQL = """
     COUNT(*) AS requests,COUNT(DISTINCT turn) AS turn_count,COUNT(cost_usd) AS cost_samples,SUM(cost_usd) AS cost_usd,
     SUM(cache_status='hit') AS cache_hits,SUM(cache_status='miss') AS cache_misses,
@@ -455,14 +526,16 @@ extension PayloadArchive {
         """
         let sql = attribution + """
 
-        SELECT attributed.message,\(Self.gatewayAggregateSQL)
+        SELECT attributed.message,\(Self.gatewayAggregateSQL),\(Self.missingUsageSQL)
         FROM attributed JOIN attempts a ON a.id=attributed.id
         WHERE attributed.owner=1
         GROUP BY attributed.message
         """
         for row in try db.rows(sql, args) {
             guard let id = row["message"]?.string else { throw CaptureFailure.corrupt }
-            result.messages[id] = Self.gatewayTotals(row)
+            var totals = Self.gatewayTotals(row)
+            totals.missingUsage = GatewayMissingUsage(packed: row["missing_usage"])
+            result.messages[id] = totals
         }
         // Reuse exactly the accounting ownership relation. Body names are a
         // display preference, independent of strict routing identity coverage.
@@ -534,6 +607,39 @@ extension PayloadArchive {
             guard route.valid else { continue }
             if result.messages[id]?.models?.routes == nil { result.messages[id]?.models?.routes = [] }
             result.messages[id]?.models?.routes?.append(route)
+        }
+        // What the log holds of the request each reply's own record names:
+        // primary-key lookups for the replies on this page, never another
+        // pass over the session's attempts. The turn report reads a reply's
+        // record for a request the log does not count here, and names why.
+        let recorded = messages.compactMap { message -> (message: String, attempt: String)? in
+            guard message.role == "assistant", let attempt = message.reply?.attempt, !attempt.isEmpty, attempt.utf8.count <= 128 else { return nil }
+            return (message.id, attempt)
+        }
+        if !recorded.isEmpty {
+            func marks(_ ids: [String]) -> String { ids.isEmpty ? "NULL" : ids.map { _ in "?" }.joined(separator: ",") }
+            let users = messages.filter { $0.role == "user" }.map(\.id), replies = messages.filter { $0.role == "assistant" }.map(\.id)
+            let sql = """
+            WITH recorded(message,attempt) AS (VALUES \(recorded.map { _ in "(?,?)" }.joined(separator: ",")))
+            SELECT r.message,a.id,a.metrics_retained,a.dispatch IS NOT NULL AS dispatched,a.outcome,
+              (a.input_tokens IS NOT NULL OR a.output_tokens IS NOT NULL) AS reported,
+              EXISTS (SELECT 1 FROM message_links l WHERE l.attempt=r.attempt AND l.role='output' AND l.message=r.message) AS here,
+              (a.session=? AND a.turn IN (\(marks(users)))) OR EXISTS (SELECT 1 FROM message_links l WHERE l.attempt=r.attempt AND l.role='output' AND l.message IN (\(marks(replies))))  AS shown
+            FROM recorded r LEFT JOIN attempts a ON a.id=r.attempt AND a.workspace=?
+            """
+            let values: [CaptureSQLValue] = recorded.flatMap { [.text($0.message), .text($0.attempt)] } + [.text(sessionID)]
+                + users.map(CaptureSQLValue.text) + replies.map(CaptureSQLValue.text) + [.text(workspaceID)]
+            for row in try db.rows(sql, values) {
+                guard let message = row["message"]?.string else { throw CaptureFailure.corrupt }
+                func flag(_ key: String) -> Bool { (row[key]?.number ?? 0) != 0 }
+                let state: ReplyLog
+                if row["id"]?.string == nil { state = .absent }
+                else if !flag("metrics_retained") { state = .expired }
+                else if !flag("dispatched") || !(flag("here") || flag("shown")) { state = .elsewhere }
+                else if flag("reported") || !flag("here") { state = .counted }
+                else { state = ReplyLog(outcome: row["outcome"]?.string) }
+                result.messages[message, default: GatewayTotals()].replyLog = state.rawValue
+            }
         }
         return result
     }

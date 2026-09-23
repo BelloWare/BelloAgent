@@ -17,13 +17,13 @@ private actor GoldenCompactionTools: ToolExecuting {
             var data=(try? Data(contentsOf:path)) ?? Data();data.append(Data("once\n".utf8));try data.write(to:path)
             return resultText("COUNTER_APPENDED_ONCE")
         }
-        guard call.name=="read", [1,2].contains(call.arguments["part"].int ?? 0) else { throw AgentError("fixture_contract","Invalid read arguments") }
-        return resultText("READ_STAGE_COMPLETE part \(call.arguments["part"].int!) "+String(repeating:"observed ",count:1800))
+        guard call.name=="read", let part=call.arguments["part"].int, [1,2,3].contains(part) else { throw AgentError("fixture_contract","Invalid read arguments") }
+        return resultText("READ_STAGE_COMPLETE part \(part) "+String(repeating:"observed ",count:part==3 ? 300:1800))
     }
 }
 
 final class CompactionGatewayTests: XCTestCase {
-    func testStreamingOutputExhaustionRecountsRetainsEveryAttemptAndPreservesEffort() async throws {
+    func testStreamingChainedSummaryAndOutputExhaustionRetainEveryAttemptAndEffort() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         var repo=URL(fileURLWithPath:#filePath);for _ in 0..<5 { repo.deleteLastPathComponent() }
         let server=Process();server.executableURL=URL(fileURLWithPath:"/usr/bin/python3");server.arguments=[repo.appendingPathComponent("fixtures/native/compaction_gateway.py").path,root.path]
@@ -33,26 +33,29 @@ final class CompactionGatewayTests: XCTestCase {
         let port=try XCTUnwrap(JSON.parse(Data(contentsOf:ready))["port"].int)
         var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["contextWindow"]=16000;raw["modelOutputLimit"]=32768;raw["thinkingLevel"]="high"
         var user=ChatMessage(role:"user",content:[textBlock("Preserve the objective.")]);user.id="root";user.taskRootID="root"
-        var evidence=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"observed ",count:3000))]);evidence.taskRootID="root"
-        let traces=TraceStore(),s=try AgentSession(id:"compaction-budget",profile:Profile(raw),apiKey:"synthetic-compaction-key",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:ProviderClient(traces:traces),tools:RecordingTools(),traces:traces,seed:[user,evidence])
+        // Two answers of 6,750 tokens each: more than one 16,000-token request can summarize.
+        let seed=[user]+(0..<2).map { _ in var evidence=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"observed ",count:3000))]);evidence.taskRootID="root";return evidence }
+        let traces=TraceStore()
+        func attempts(_ id: String) async throws -> [JSON] { try await traces.command("debug.list",session:id,params:[:])["attempts"].list }
+        func records() throws -> [JSON] { try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) } }
+        func captured(_ id: String, _ attempt: JSON) async throws {
+            let request=try await traces.command("debug.body",session:id,params:["attemptId":attempt["attemptId"],"body":"request"])
+            let response=try await traces.command("debug.body",session:id,params:["attemptId":attempt["attemptId"],"body":"response"])
+            XCTAssertTrue(try records().contains { $0["request"]==request["bytes"] && $0["response"]==response["bytes"] })
+            XCTAssertFalse(attempt["operation"]["lastAttempt"].isNull)
+        }
+
+        let s=try AgentSession(id:"compaction-budget",profile:Profile(raw),apiKey:"synthetic-compaction-key",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:ProviderClient(traces:traces),tools:RecordingTools(),traces:traces,seed:seed)
         try await s.compact();try await eventually { !(await s.isRunning) }
-        let state=await s.snapshot(),context=await s.context
+        let state=await s.snapshot(),context=await s.context,chained=try await attempts("compaction-budget")
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
         XCTAssertEqual(context.first?.kind,"compaction");XCTAssertEqual(context.filter { $0.role=="user" }.map(\.id),["root"])
-        let attempts=try await traces.command("debug.list",session:"compaction-budget",params:[:])["attempts"].list
-        let records=try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) }
-        XCTAssertEqual(attempts.count,4);XCTAssertTrue(records.allSatisfy { $0["status"].int==200 })
+        XCTAssertGreaterThan(chained.count,1,"Each chunk updates the summary so far, at pi's 6,400-token cap")
+        XCTAssertTrue(try records().allSatisfy { $0["status"].int==200 })
         var output=0
-        for attempt in attempts {
-            let request=try await traces.command("debug.body",session:"compaction-budget",params:["attemptId":attempt["attemptId"],"body":"request"])
-            let response=try await traces.command("debug.body",session:"compaction-budget",params:["attemptId":attempt["attemptId"],"body":"response"])
-            XCTAssertTrue(records.contains { $0["request"]==request["bytes"] && $0["response"]==response["bytes"] })
-            XCTAssertFalse(attempt["operation"]["lastAttempt"].isNull)
-            output += attempt["usage"]["output"].int ?? 0
-        }
+        for attempt in chained { try await captured("compaction-budget",attempt); output += attempt["usage"]["output"].int ?? 0 }
         let total=await s.cumulativeUsage
-        XCTAssertGreaterThan(output,4096);XCTAssertEqual(total.output,output)
-        XCTAssertEqual(state["compaction"]["attemptOutcomes"].list.filter { $0["reason"].text=="max_output_tokens" }.count,1)
+        XCTAssertEqual(total.output,output);XCTAssertEqual(state["compaction"]["attemptOutcomes"].list.count,chained.count)
         XCTAssertTrue(state["requestObservation"].isNull,"Summary usage must not replace normal-request context usage")
         let operations = await s.history.filter { $0.kind == "execution" && $0.operationID != nil }
         XCTAssertEqual(operations.count,1)
@@ -65,6 +68,17 @@ final class CompactionGatewayTests: XCTestCase {
         let retained = try await s.messageRead(id:operation.id,field:"text",offset:0)
         XCTAssertTrue(retained["text"].text?.contains("Timeline evidence") == true)
         await s.close()
+
+        // Pi: a summary stopped at its cap is incomplete and never a checkpoint.
+        let exhausted=try AgentSession(id:"compaction-budget-exhausted",profile:Profile(raw),apiKey:"synthetic-compaction-key",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:ProviderClient(traces:traces),tools:RecordingTools(),traces:traces,seed:seed)
+        try await exhausted.compact();try await eventually { !(await exhausted.isRunning) }
+        let failed=await exhausted.snapshot(),unchanged=await exhausted.context,stopped=try await attempts("compaction-budget-exhausted")
+        XCTAssertEqual(failed["compaction"]["errorCode"].text,"compaction_output_exhausted")
+        XCTAssertEqual(unchanged.map(\.id),seed.map(\.id));XCTAssertEqual(stopped.count,1)
+        for attempt in stopped { try await captured("compaction-budget-exhausted",attempt) }
+        XCTAssertEqual(failed["compaction"]["lastAttempt"]["reason"].text,"max_output_tokens")
+        let spent=await exhausted.cumulativeUsage;XCTAssertEqual(spent.output,6400)
+        await exhausted.close()
     }
     func testOneTaskCompactsRecoversAgainstIndependentGatewayAndReopensWithoutRepeatingTools() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
@@ -88,16 +102,18 @@ final class CompactionGatewayTests: XCTestCase {
         XCTAssertEqual(snapshot["queueCount"].int,0)
         XCTAssertTrue(snapshot["taskPresentation"]["active"].isNull)
         XCTAssertEqual(snapshot["taskPresentation"]["recent"].list.count,1,"Automatic compaction/recovery never create another task")
-        XCTAssertEqual(snapshot["taskPresentation"]["recent"].list.first?["issuedCalls"].int,3)
+        XCTAssertEqual(snapshot["taskPresentation"]["recent"].list.first?["issuedCalls"].int,4)
         XCTAssertEqual(snapshot["taskPresentation"]["recent"].list.first?["outcome"].text,"completed")
         XCTAssertEqual(try String(contentsOf:root.appendingPathComponent("counter.txt"),encoding:.utf8),"once\n")
-        let called=await tools.calls;XCTAssertEqual(called,["write","read","read"])
+        let called=await tools.calls;XCTAssertEqual(called,["write","read","read","read"])
         let journal=try String(contentsOf:URL(fileURLWithPath:path),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) }
         XCTAssertEqual(journal.filter { $0["type"].text=="compaction" }.count,2)
         XCTAssertEqual(journal.filter { $0["customType"].text=="pi-app.context-recovery.v1" }.count,1)
         let attempts=try await traces.command("debug.list",session:"compaction-golden",params:[:])["attempts"].list
         let records=try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) }.filter { $0["session"].text=="compaction-golden" }
-        XCTAssertEqual(attempts.count,6);XCTAssertEqual(records.filter { $0["status"].int==400 }.count,1);XCTAssertFalse(records.contains { $0["status"].int==422 })
+        // Two turns, the threshold summary, the third read, its rejected
+        // request, the recovery summary and the final answer.
+        XCTAssertEqual(attempts.count,7);XCTAssertEqual(records.filter { $0["status"].int==400 }.count,1);XCTAssertFalse(records.contains { $0["status"].int==422 })
         for attempt in attempts {
             let request=try await traces.command("debug.body",session:"compaction-golden",params:["attemptId":attempt["attemptId"],"body":"request"])
             let response=try await traces.command("debug.body",session:"compaction-golden",params:["attemptId":attempt["attemptId"],"body":"response"])

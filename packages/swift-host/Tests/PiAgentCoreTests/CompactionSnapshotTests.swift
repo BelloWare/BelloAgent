@@ -14,10 +14,12 @@ private actor CompactionOutcomeClient: ModelClient {
 }
 
 final class CompactionSnapshotTests: XCTestCase {
+    /// A one-token tail, so two short turns have history to summarize.
+    static let smallTail: CompactionPolicy = { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }()
     func testFailedAndCancelledCompactionDoNotPublishSuccess() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = CompactionOutcomeClient()
-        let session = try AgentSession(id: "outcomes", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)
+        let session = try AgentSession(id: "outcomes", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false, compactionPolicy: CompactionSnapshotTests.smallTail)
         addTeardownBlock { await session.close() }
         for index in 0..<2 {
             _ = try await session.submit(Submission(commandID: "turn-\(index)", turnID: "turn-\(index)", text: "Question \(index)"), steer: false)
@@ -42,7 +44,7 @@ final class CompactionSnapshotTests: XCTestCase {
 
     func testFailedRetryLeavesPreviousSuccessfulSummaryIdentityUnchanged() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let session = try AgentSession(id: "retry", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([answer(String(repeating:"Completed first task evidence. ",count:80)), answer("Second"), answer("Summary"), answer("Third")]), tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)
+        let session = try AgentSession(id: "retry", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([answer(String(repeating:"Completed first task evidence. ",count:80)), answer("Second"), answer("Summary"), answer("Third")]), tools: RecordingTools(), traces: TraceStore(), autoCompaction: false, compactionPolicy: CompactionSnapshotTests.smallTail)
         addTeardownBlock { await session.close() }
         for index in 0..<2 {
             _ = try await session.submit(Submission(commandID: "turn-\(index)", turnID: "turn-\(index)", text: "Question \(index)"), steer: false)

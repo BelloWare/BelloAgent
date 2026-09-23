@@ -261,7 +261,8 @@ final class GatewayAccountingTests: XCTestCase {
         XCTAssertEqual(accounting.session, report.gateway)
         var messageTotals = accounting.messages["assistant-1"]
         XCTAssertEqual(messageTotals?.models?.unreportedRequests, 1)
-        messageTotals?.models = nil
+        XCTAssertEqual(messageTotals?.missingUsage, GatewayMissingUsage(), "The one request reported its usage")
+        messageTotals?.models = nil; messageTotals?.missingUsage = nil
         XCTAssertEqual(messageTotals, report.gateway)
         clock.advance(101)
         let expired = try await reopened.gatewayAccounting(sessionID: "session", workspaceID: "workspace", messages: [])

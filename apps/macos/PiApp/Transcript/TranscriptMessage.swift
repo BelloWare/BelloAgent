@@ -47,6 +47,10 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// User rows: the skills the message was sent with, in the order the
     /// model received them ahead of its text. Nil when it used none.
     var skills: [TranscriptSkillUse]? = nil
+    /// Assistant rows: what the helper recorded of the request the row came
+    /// from. The turn report reads it for a request the request log has no
+    /// row for. Nil from helpers before 0.1.88 and for rows it has no record of.
+    var reply: ReplyRecord? = nil
     static func project(id: String, message: [String: WireValue]) -> TranscriptMessage {
         let stopReason = message["nativeStopReason"]?.string ?? message["stopReason"]?.string
         let content = message["content"], blocks = content?.array ?? []
@@ -88,7 +92,54 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
             result.responseTimeline = ResponseTimeline.canonical(parts,sourceID:id)
         }
         if role == "user" { result.skills = TranscriptSkillUse.recorded(message["nativeUserInput"]?.object?["skills"]) }
+        if role == "assistant" { result.reply = ReplyRecord.journaled(message) }
         return result
+    }
+}
+
+/// One reply's request as the helper recorded it, in the shape its display
+/// rows carry: the attempt, the alias the request named, every model name
+/// the gateway reported with where it came from, and the usage in pi's
+/// shape, whose `input` leaves out cache reads and writes.
+struct ReplyRecord: Codable, Sendable, Equatable {
+    struct Report: Codable, Sendable, Equatable { var name: String; var source: String }
+    struct Usage: Codable, Sendable, Equatable {
+        var input: Double? = nil, output: Double? = nil, cacheRead: Double? = nil, cacheWrite: Double? = nil, totalTokens: Double? = nil
+    }
+    var attempt: String? = nil
+    var requested: String? = nil
+    var models: [Report]? = nil
+    var usage: Usage? = nil
+
+    /// What answered: the response body's name, as the request log reads it.
+    var model: String? { GatewayModelIdentity.answered((models ?? []).map { GatewayModelIdentity.Report(name: $0.name, source: $0.source) }) }
+    /// A header's name when it disagrees with the body's.
+    var routedVia: String? { GatewayModelIdentity.routedVia((models ?? []).filter { $0.source.hasPrefix("header:") }.map(\.name), answered: model) }
+    /// Input as the gateway counts it, cache reads and writes included.
+    var input: Double? {
+        guard let usage, let input = TranscriptActivity.reported(usage.input) else { return nil }
+        return input + (TranscriptActivity.reported(usage.cacheRead) ?? 0) + (TranscriptActivity.reported(usage.cacheWrite) ?? 0)
+    }
+    var cached: Double? { usage.flatMap { TranscriptActivity.reported($0.cacheRead) } }
+    var output: Double? { usage.flatMap { TranscriptActivity.reported($0.output) } }
+
+    /// The same record read from a journal row: `usage`, the routing
+    /// identity's model evidence and the request's attempt id.
+    static func journaled(_ row: [String: WireValue]) -> ReplyRecord? {
+        let identity = row["nativeProviderIdentity"]?.object ?? [:]
+        var record = ReplyRecord(attempt: row["nativeRequestAttemptIds"]?.array?.first?.string,
+                                 requested: GatewayModelIdentity.modelName(identity["requestedAlias"]?.string))
+        let reports = (identity["evidence"]?.array ?? []).compactMap { value -> Report? in
+            guard let item = value.object, item["kind"]?.string == "model", let name = GatewayModelIdentity.modelName(item["value"]?.string),
+                  let source = item["source"]?.string else { return nil }
+            return Report(name: name, source: source)
+        }
+        if !reports.isEmpty { record.models = Array(reports.prefix(8)) }
+        if let usage = row["usage"]?.object, !usage.isEmpty {
+            record.usage = Usage(input: usage["input"]?.number, output: usage["output"]?.number, cacheRead: usage["cacheRead"]?.number,
+                                 cacheWrite: usage["cacheWrite"]?.number, totalTokens: usage["totalTokens"]?.number)
+        }
+        return record == ReplyRecord() ? nil : record
     }
 }
 
@@ -234,7 +285,26 @@ extension TranscriptMessage {
             guard let skills = list.array else { throw Unexpected.shape }
             row.skills = try skills.map(skill)
         }
+        row.reply = try reply(fields["reply"])
         return row
+    }
+    private static func reply(_ value: WireValue?) throws -> ReplyRecord? {
+        guard let value, value != .null else { return nil }
+        guard let fields = value.object else { throw Unexpected.shape }
+        var record = ReplyRecord(attempt: try optionalString(fields["attempt"]), requested: try optionalString(fields["requested"]))
+        if let list = fields["models"], list != .null {
+            guard let items = list.array else { throw Unexpected.shape }
+            record.models = try items.map {
+                guard let report = $0.object else { throw Unexpected.shape }
+                return ReplyRecord.Report(name: try string(report["name"]), source: try string(report["source"]))
+            }
+        }
+        if let usage = fields["usage"], usage != .null {
+            guard let u = usage.object else { throw Unexpected.shape }
+            record.usage = ReplyRecord.Usage(input: try optionalDouble(u["input"]), output: try optionalDouble(u["output"]), cacheRead: try optionalDouble(u["cacheRead"]),
+                                             cacheWrite: try optionalDouble(u["cacheWrite"]), totalTokens: try optionalDouble(u["totalTokens"]))
+        }
+        return record
     }
     private static func skill(_ value: WireValue) throws -> TranscriptSkillUse {
         guard let fields = value.object else { throw Unexpected.shape }

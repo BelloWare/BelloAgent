@@ -182,7 +182,8 @@ struct TurnLineView: View {
             .accessibilityLabel("Turn: \(TurnLineView.counts(turn))")
     }
 
-    nonisolated static func copyText(_ turn: TurnSummary, model: String? = nil) -> String {
+    /// `requests`: the turn's request list, when Turn Info has loaded it.
+    nonisolated static func copyText(_ turn: TurnSummary, model: String? = nil, requests: [TurnRequestLine] = []) -> String {
         var lines = [turn.partial ? "Turn (partial loaded history)" : "Turn", counts(turn)]
         if let outcome = turn.outcome { lines.append("Outcome: " + outcome) }
         else if !turn.isRunning { lines.append("Task outcome unavailable; retained figures may be incomplete.") }
@@ -196,14 +197,23 @@ struct TurnLineView: View {
         }
         let usage = TranscriptActivity.usageBreakdown(turn.accounting)
         if !usage.isEmpty { lines.append("Gateway-reported usage: " + usage) }
+        if let coverage = TurnInfoPresentation.coverageNotice(turn) { lines.append(coverage) }
         let names = turn.accounting.reportedModels
         if !names.isEmpty { lines.append("Models: " + names.joined(separator: ", ")) }
         else if let model { lines.append("Model: " + model) }
         if !turn.accounting.requestedModels.isEmpty { lines.append("Requested models: " + turn.accounting.requestedModels.joined(separator: ", ")) }
         for route in turn.accounting.modelRoutes { lines.append(route.detail) }
         if turn.isRunning { lines.append("Still running; figures are incomplete.") }
+        if !requests.isEmpty {
+            lines.append("\nRequests:")
+            for (index, line) in requests.enumerated() {
+                lines.append("\(index + 1). " + TurnInfoPresentation.routeLabel(line) + " · " + TurnInfoPresentation.lineFigures(line) + " · " + TurnInfoPresentation.lineSource(line))
+            }
+            let subtotals = TurnInfoPresentation.subtotals(requests)
+            if subtotals.count > 1 { for subtotal in subtotals { lines.append("  " + TurnInfoPresentation.subtotalLabel(subtotal)) } }
+        }
         for (index, request) in turn.requests.enumerated() {
-            guard let accounting = request.accounting else { continue }
+            guard let accounting = request.accounting, accounting.requests > 0 else { continue }
             let figures = TranscriptActivity.accountingPresentation(accounting)
             lines.append("\nRequest \(index + 1) · message \(request.id)\n" + figures.summary + "\n" + figures.detail)
         }

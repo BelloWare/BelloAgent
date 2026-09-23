@@ -75,11 +75,13 @@ final class TurnCapacityTests: XCTestCase {
 
     func testSmallerModelPreflightAndCompactionUseItsOwnCapacity() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        // The first reply reports what its 11,000-character input really cost.
-        var first = answer("old answer"); first.usage = ["input": 4_000, "inputIncludingCache": 4_000, "output": 5]
-        let client = ScriptClient([first, answer("short summary"), answer("new answer")])
+        // The first reply reports what its 12,000-character input really cost.
+        // By pi's estimate that request alone, beside the summary cap, cannot
+        // stay in the smaller window, so pi's cut moves past it.
+        var first = answer("old answer"); first.usage = ["input": 4_400, "inputIncludingCache": 4_400, "output": 5]
+        let client = ScriptClient([first, answer("summary of the first half"), answer("short summary"), answer("new answer")])
         let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore())
-        _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 11000)), steer: false)
+        _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 12000)), steer: false)
         try await eventually { !(await session.isRunning) }
         let preview = try await session.prepareContext(["text":"continue","model":"small-model","thinkingLevel":"default","contextWindow":5000,"maxOutputTokens":1000])
         XCTAssertEqual(preview["count"]["fits"], false, "The actual built input, rather than the retired fixed tool allowance, must cross the smaller model's input budget")
@@ -87,29 +89,35 @@ final class TurnCapacityTests: XCTestCase {
         try await eventually { !(await session.isRunning) }
         let purposes = await client.purposes, profiles = await client.profiles, snapshot = await session.snapshot()
         XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
-        XCTAssertEqual(purposes, ["turn", "compaction", "turn"], "The previous reply's reported tokens are measured against the selected model's smaller window")
-        XCTAssertEqual(profiles.map(\.contextWindow), [100000, 5000, 5000])
-        XCTAssertEqual(profiles.map(\.maxOutput), [4096, 1000, 1000])
-        XCTAssertEqual(profiles.map(\.model), ["fixture-model", "small-model", "small-model"])
+        XCTAssertEqual(purposes, ["turn", "compaction", "compaction", "turn"], "The previous reply's reported tokens are measured against the selected model's smaller window")
+        XCTAssertEqual(profiles.map(\.contextWindow), [100000, 5000, 5000, 5000])
+        XCTAssertEqual(profiles.map(\.maxOutput), [4096, 1000, 1000, 1000])
+        XCTAssertEqual(profiles.map(\.model), ["fixture-model", "small-model", "small-model", "small-model"])
         await session.close()
     }
 
     func testCompactionBoundsOversizedSourceBeforeDispatchToSmallerModel() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         var first = answer("old answer"); first.usage = ["input": 4_600, "inputIncludingCache": 4_600, "output": 5]
-        let client = ScriptClient([first, answer("Bounded summary of previous work"), answer("continued")])
+        let client = ScriptClient([first, answer("Summary of the first half"), answer("Bounded summary of previous work"), answer("continued")])
         let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore())
         _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 18000)), steer: false)
         try await eventually { !(await session.isRunning) }
         _ = try await session.submit(Submission(commandID: "small", turnID: "small", text: "continue", model: "small-model", contextWindow: 5000, maxOutputTokens: 1000), steer: false)
         try await eventually { !(await session.isRunning) }
         let count = await client.count, snapshot = await session.snapshot()
-        XCTAssertEqual(count, 3)
+        XCTAssertEqual(count, 4)
         XCTAssertEqual(snapshot["state"].text, "idle",snapshot["preflightError"].encoded())
-        let requests=await client.requests, profiles=await client.profiles
-        let summaryBody=try ProviderClient.requestBody(profile:profiles[1],messages:requests[1],instructions:"",tools:[],sessionID:"compact")
-        XCTAssertTrue(try RequestContextCounter().count(messages:requests[1],profile:profiles[1],request:summaryBody,reportedUsage:false).fits)
-        XCTAssertTrue(requests[1][0].text.contains("EXCERPT"),"Oversized retained source is explicitly excerpted and recallable")
+        let requests=await client.requests, profiles=await client.profiles, instructions=await client.instructions
+        // The 18,000-character request cannot fit one 5,000-token summary
+        // request: it is summarized in two chained chunks that each fit.
+        for index in [1,2] {
+            let body=try ProviderClient.requestBody(profile:profiles[index],messages:requests[index],instructions:instructions[index],tools:[],sessionID:"compact")
+            XCTAssertTrue(try RequestContextCounter().count(messages:requests[index],profile:profiles[index],request:body,reportedUsage:false).fits)
+        }
+        XCTAssertTrue(requests[2][0].text.contains("[continued]: x"))
+        XCTAssertTrue(requests[2][0].text.contains("<previous-summary>\nSummary of the first half\n</previous-summary>"))
+        XCTAssertEqual(requests[3].first?.text.hasSuffix("Bounded summary of previous work"),true)
         await session.close()
     }
 

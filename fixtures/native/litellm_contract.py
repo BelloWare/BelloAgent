@@ -206,10 +206,12 @@ def validate_request(method, path, headers, body, *, api_key, model=None,
     require(set(calls) == set(results), "request contains a tool call without its completed result")
     if native_items == "portable":
         require(not opaque, "portable history leaked opaque provider items")
-    is_compaction = bool(user_texts and user_texts[-1].startswith("Summarize the preceding historical data for compaction"))
+    # Pi's summary request: its summarization system prompt and one message
+    # holding the conversation as text, then pi's prompt; no tools.
+    is_compaction = instructions.startswith("You are a context summarization assistant.")
     if is_compaction:
-        require(not tools and len(history) == 2 and len(user_texts) == 2 and not instructions, "compaction must place its instruction after source history, with no tools")
-        require('"sourceMessageId"' in user_texts[0] or '"intermediateSummary"' in user_texts[0] or '"sourceFragment"' in user_texts[0], "compaction omitted structured source history")
+        require(not tools and len(history) == 1 and len(user_texts) == 1, "a summary request is one message of conversation text, with no tools")
+        require(user_texts[0].startswith("<conversation>\n") and "\n</conversation>\n\n" in user_texts[0], "compaction omitted pi's conversation text")
     return {"api": "openai-responses" if responses else "anthropic-messages", "instructions": instructions,
             "latest_text": user_texts[-1] if user_texts else "", "user_texts": user_texts,
             "calls": calls, "results": results, "opaque": opaque, "tool_names": set(schemas),

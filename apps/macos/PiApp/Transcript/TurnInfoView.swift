@@ -36,6 +36,113 @@ enum TurnInfoPresentation {
         case nil: return turn.isRunning ? "In progress" : "Outcome unavailable"
         }
     }
+    /// The report's model: the latest route, with how many models answered
+    /// when the router sent the turn's requests to more than one.
+    /// A request with no model reported adds no "+1": the notice counts it.
+    static func modelLabel(_ turn: TurnSummary, fallback: String? = nil) -> String {
+        let a = turn.accounting, answered = a.answeredModels, requested = a.requestedModels
+        let count = answered.count > 1 ? " · \(answered.count) models" : ""
+        // The latest route that named what answered: a later request that
+        // reported no model does not hide the one that did.
+        if let route = a.modelRoutes.filter({ $0.responded != nil }).max(by: { $0.latestWall < $1.latestWall }) ?? a.latestModelRoute {
+            return route.label + (count.isEmpty && requested.count > 1 ? " +\(requested.count - 1)" : count)
+        }
+        let names = answered.isEmpty ? fallback.map { [$0] } ?? [] : answered
+        guard let name = a.model ?? names.last else { return turn.isRunning ? "Model pending" : "Model unreported" }
+        return name + (count.isEmpty && names.count > 1 ? " +\(names.count - 1)" : count)
+    }
+    /// One quiet line: which requests the figures cover, why the others have
+    /// none, and how many came from the replies' own record rather than the
+    /// request log. Nil when every request reported and the log had them all.
+    static func coverageNotice(_ turn: TurnSummary) -> String? {
+        let a = turn.accounting, n = a.requests, missing = a.missing
+        var parts: [String] = []
+        let reported = missing.known ? n - missing.total : max(a.inputSamples, a.outputSamples)
+        if n > 0, reported < n {
+            var text = "input and output from \(max(0, reported)) of \(n) requests; \(n - max(0, reported)) did not report usage"
+            if missing.known {
+                let reasons = [(missing.running, "still running", "still running"),
+                               (missing.failed, "failed before it finished", "failed before they finished"),
+                               (missing.noUsage, "came back with no usage from the gateway", "came back with no usage from the gateway"),
+                               (missing.notCaptured, "was not captured", "were not captured"),
+                               (missing.expired, "has expired from the request log", "have expired from the request log")]
+                    .compactMap { count, one, many in count > 0 ? "\(count) " + (count == 1 ? one : many) : nil }
+                if !reasons.isEmpty { text += " (" + reasons.joined(separator: ", ") + ")" }
+            }
+            parts.append(text)
+        }
+        let record = a.recordRequests
+        if record > 0 { parts.append((record == n ? "all" : "\(record) of \(n)") + " from the chat’s own record") }
+        let coverage = parts.isEmpty ? nil : parts.joined(separator: " · ")
+        if turn.isRunning { return "Reported so far · " + (coverage ?? "updates as requests finish") }
+        if turn.partial { return "Partial history · retained request usage" + (coverage.map { " · " + $0 } ?? "") }
+        return coverage.map { $0.prefix(1).uppercased() + $0.dropFirst() }
+    }
+    /// Every request of one turn, for Turn Info: the log's records it loaded
+    /// for this turn, a reply's own figures where the log has none for that
+    /// request, and the replies' records for requests the log never had.
+    static func requestLines(_ turn: TurnSummary, records: [TurnRequestRecord]) -> [TurnRequestLine] {
+        let replies = Dictionary(turn.requests.compactMap { message in message.reply?.attempt.map { ($0, message) } }, uniquingKeysWith: { first, _ in first })
+        var lines = records.map { record -> TurnRequestLine in
+            var line = TurnRequestLine(record: record)
+            if !line.reportedUsage, let message = replies[record.id] {
+                let own = TurnRequestLine(reply: message)
+                // An expired record keeps no time of its own; the reply's is close.
+                line.wall = line.wall ?? own.wall
+                if own.reportedUsage {
+                    line.input = own.input; line.cached = own.cached; line.output = own.output; line.model = line.model ?? own.model
+                    line.source = .record; line.logMissing = line.missing == .expired ? .expired : nil; line.missing = nil
+                }
+            }
+            return line
+        }
+        let listed = Set(records.map(\.id)), running = records.contains(where: \.running)
+        lines += turn.accounting.recordLines.filter { !listed.contains($0.id) && !(running && $0.missing == .running) }
+        // Stable: requests with no known time keep the order they were listed in.
+        return lines.enumerated().sorted { ($0.element.wall ?? .infinity, $0.offset) < ($1.element.wall ?? .infinity, $1.offset) }.map(\.element)
+    }
+    static func subtotals(_ lines: [TurnRequestLine]) -> [TurnModelSubtotal] {
+        var order: [String?] = [], totals: [String?: TurnModelSubtotal] = [:]
+        for line in lines {
+            if totals[line.model] == nil { order.append(line.model); totals[line.model] = TurnModelSubtotal(model: line.model) }
+            totals[line.model]?.add(line)
+        }
+        return order.compactMap { totals[$0] }
+    }
+    /// A request's route: what it asked for → what answered, and the other
+    /// name the gateway gave when its reports disagree.
+    static func routeLabel(_ line: TurnRequestLine) -> String {
+        line.route.label + (line.routedVia.map { " (gateway header: \($0))" } ?? "")
+    }
+    static func lineFigures(_ line: TurnRequestLine) -> String {
+        var parts: [String] = []
+        if let input = line.input { parts.append("in " + TranscriptActivity.grouped(input) + (line.cached.map { $0 > 0 ? " (\(TranscriptActivity.grouped($0)) cached)" : "" } ?? "")) }
+        if let output = line.output { parts.append("out " + TranscriptActivity.grouped(output)) }
+        if let cost = line.cost { parts.append(compactGatewayUSD(cost)) }
+        if !parts.isEmpty { return parts.joined(separator: " · ") }
+        switch line.missing {
+        case .running?: return "running"
+        case .failed?: return "failed before finishing"
+        case .noUsage?: return "no usage from the gateway"
+        case .expired?: return "metrics expired"
+        case .notCaptured?: return "not captured"
+        default: return "usage unreported"
+        }
+    }
+    static func lineSource(_ line: TurnRequestLine) -> String {
+        guard line.source == .record else { return line.live ? "live log" : "request log" }
+        switch line.logMissing {
+        case .expired?: return "chat record · log expired"
+        case .notCaptured?: return "chat record · not in log"
+        default: return "chat record"
+        }
+    }
+    static func subtotalLabel(_ subtotal: TurnModelSubtotal) -> String {
+        var parts = [(subtotal.model ?? "Model unreported"), "\(subtotal.requests) request\(subtotal.requests == 1 ? "" : "s")"]
+        if let input = subtotal.input { parts.append("in " + TranscriptActivity.grouped(input) + (subtotal.inputSamples < subtotal.requests ? " (\(subtotal.inputSamples)/\(subtotal.requests))" : "")) }
+        if let output = subtotal.output { parts.append("out " + TranscriptActivity.grouped(output) + (subtotal.outputSamples < subtotal.requests ? " (\(subtotal.outputSamples)/\(subtotal.requests))" : "")) }
+        return parts.joined(separator: " · ")
+    }
     static func tokenLabel(_ turn: TurnSummary) -> String {
         TranscriptActivity.tokens(of:turn.accounting).map(TranscriptActivity.formatTokenCount) ?? (turn.isRunning ? "Pending" : "Unreported")
     }
@@ -208,6 +315,9 @@ struct TurnInfoView: View {
     @State private var tab = "response"
     @State private var query = ""
     @State private var headersOpen = false
+    @State private var requestsOpen = true
+    /// Built when this turn's records load, never in `body`.
+    @State private var requestLines: [TurnRequestLine] = []
     @State private var copySource: CapturedBodyCopySource?
     @State private var onScreen = true
     @State private var copyNotice = ""
@@ -248,6 +358,7 @@ struct TurnInfoView: View {
             if let notice = turn.notice, !notice.isEmpty {
                 Text(notice).font(PiFont.caption).foregroundStyle(Color.piWarning).textSelection(.enabled)
             }
+            if !requestLines.isEmpty { requestList }
             if let record = controller.selected, let source {
                 requestPicker(record)
                 HStack(spacing: 12) {
@@ -317,8 +428,39 @@ struct TurnInfoView: View {
             }
         }
         .onDisappear { controller.cancel() }
+        .onAppear { requestLines = TurnInfoPresentation.requestLines(turn, records: controller.records) }
+        .onChange(of: controller.records) { _, records in requestLines = TurnInfoPresentation.requestLines(turn, records: records) }
+        .onChange(of: turn) { _, turn in requestLines = TurnInfoPresentation.requestLines(turn, records: controller.records) }
         .onChange(of: controller.selectedID) { _, _ in copySource = nil; copyNotice = "" }
         .onChange(of: tab) { _, _ in copySource = nil; copyNotice = "" }
+    }
+
+    /// Each request the turn made: what it asked for → what answered, its
+    /// figures and where they came from; then each model's share when more
+    /// than one answered. Seven lines or more scroll in a fixed height.
+    private var requestList: some View {
+        let lines = requestLines, subtotals = TurnInfoPresentation.subtotals(lines), models = Set(lines.compactMap(\.model)).count
+        let rows = VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                HStack(spacing: 8) {
+                    Text("\(index + 1)").foregroundStyle(Color.piInkTertiary).frame(width: 18, alignment: .trailing)
+                    Text(TurnInfoPresentation.routeLabel(line)).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Text(TurnInfoPresentation.lineFigures(line)).monospacedDigit().foregroundStyle(Color.piInkSecondary).lineLimit(1)
+                    Text(TurnInfoPresentation.lineSource(line)).foregroundStyle(Color.piInkTertiary).lineLimit(1)
+                }
+            }
+            if subtotals.count > 1 {
+                ForEach(subtotals) { subtotal in
+                    Text(TurnInfoPresentation.subtotalLabel(subtotal)).monospacedDigit().foregroundStyle(Color.piInkSecondary).lineLimit(1)
+                }.padding(.leading, 26).padding(.top, 2)
+            }
+        }.font(PiFont.micro).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+        return DisclosureGroup(isExpanded: $requestsOpen) {
+            if lines.count + (subtotals.count > 1 ? subtotals.count : 0) > 6 { ScrollView { rows }.frame(height: 124) } else { rows }
+        } label: {
+            Text("Requests · \(lines.count)" + (models > 1 ? " · \(models) models" : "")).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+        }.accessibilityIdentifier("turn-request-list")
     }
 
     @ViewBuilder private var overview: some View {
@@ -375,7 +517,7 @@ struct TurnInfoView: View {
         }.font(PiFont.micro).foregroundStyle(Color.piInkSecondary)
     }
     private func copyTurn() {
-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(TurnLineView.copyText(TurnInfoPresentation.live(turn, at: .now)), forType: .string)
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(TurnLineView.copyText(TurnInfoPresentation.live(turn, at: .now), requests: requestLines), forType: .string)
     }
     private func copyBody() {
         guard let copySource else { return }

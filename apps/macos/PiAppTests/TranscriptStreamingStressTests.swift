@@ -139,7 +139,8 @@ final class TranscriptStreamingStressTests: XCTestCase {
             var reply = TranscriptMessage(id: "ha\(index)", role: "assistant",
                                           text: String(repeating: "Answer \(index) with enough prose to wrap over a few lines in a narrow pane. ", count: 4),
                                           at: Double(1_005 + index * 10), turn: "hu\(index)")
-            reply.accounting = GatewayTotals()
+            // A request the log counted, so the reply has its accounting line.
+            reply.accounting = GatewayTotals(requests: 1)
             messages.append(reply)
         }
         return messages

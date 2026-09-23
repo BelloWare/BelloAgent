@@ -99,6 +99,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         if model == 'slow':
             time.sleep(2)
         text = 'Hello 中文🙂'
+        users = [part.get('text', '') for item in body.get('input', []) if item.get('type') == 'message' and item.get('role') == 'user' for part in item.get('content', []) if part.get('type') == 'input_text']
+        if users and users[-1].startswith('long question'):
+            text += ' ' + 'padding ' * 10500  # past pi's 20,000-token recent tail
         if self.path.endswith('/responses'):
             tool = model in ('tool', 'limited-tool') and bool(body.get('tools')) and not any(item.get('type') == 'function_call_output' for item in body['input'])
             if tool:
@@ -291,6 +294,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             path = prompt.removeprefix('fixture: read ')
             CONTRACT.require(path == 'README.md' and 'read' in semantic['tool_names'], 'requested fixture read path or read schema is missing')
             text, kind = '', 'tool-call'
+        elif prompt.startswith('fixture: long echo '):
+            # Past pi's 20,000-token recent tail, so compaction has earlier work to summarize.
+            text, kind = 'Echo from validated request: ' + prompt.removeprefix('fixture: long echo ') + ' ' + 'padding ' * 10500, 'text'
         elif prompt.startswith('fixture: echo '):
             text, kind = 'Echo from validated request: ' + prompt.removeprefix('fixture: echo '), 'text'
         elif prompt.startswith('fixture: cache '):
@@ -754,7 +760,7 @@ class NativeIntegration(unittest.TestCase):
                 self.submit(session, 'fixture: read README.md')
                 first = self.settled(session); self.assertEqual(first['state'],'idle')
                 self.assertIn('Validated read: fixture file contents',json.dumps(first['messages']))
-                self.submit(session,'fixture: echo continuation 中文🙂'); self.assertEqual(self.settled(session)['state'],'idle')
+                self.submit(session,'fixture: long echo continuation 中文🙂'); self.assertEqual(self.settled(session)['state'],'idle')
                 self.peer.command('context.compact',session=session)
                 compacted = self.settled(session); self.assertEqual(compacted['state'],'idle',compacted.get('preflightError'))
                 self.assertIn('Fixture continuation summary',json.dumps(compacted['messages']))
@@ -954,7 +960,7 @@ class NativeIntegration(unittest.TestCase):
             self.peer.command('debug.mode', {'mode':'persist'}, session)
             self.submit(session); first = self.settled(session); self.assertEqual(first['state'], 'idle')
             self.assertIn('fixture file contents', json.dumps(first['messages']))
-            self.submit(session, 'another question'); self.assertEqual(self.settled(session)['state'], 'idle')
+            self.submit(session, 'long question'); self.assertEqual(self.settled(session)['state'], 'idle')
             self.peer.command('context.compact', session=session); self.assertEqual(self.settled(session)['state'], 'idle')
             attempts = self.peer.command('debug.list', session=session)['attempts']
             self.assertTrue(any(a['purpose']=='compaction' for a in attempts))

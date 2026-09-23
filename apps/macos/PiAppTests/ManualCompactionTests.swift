@@ -30,12 +30,16 @@ final class ManualCompactionTests: XCTestCase {
             let view = SessionDisplay(id:id); model.chats.append(chat); model.displays[id] = view
             model.selectedID = id; model.selected = view; model.focusedSessionID = id
             let host = try await model.open(chat)
-            view.draft = "Keep my original objective."; model.send(sessionID:id)
-            for _ in 0..<1500 {
-                if !view.loading && !view.busy && view.taskPresentation?.recent.isEmpty == false { break }
-                try await Task.sleep(for:.milliseconds(10))
+            // Two answers past pi's 20,000-token recent tail: the second is
+            // kept, the first task is what compaction summarizes.
+            for (turn, text) in ["Keep my original objective.", "Continue with the evidence."].enumerated() {
+                view.draft = text; model.send(sessionID:id)
+                for _ in 0..<1500 {
+                    if !view.loading && !view.busy && view.taskPresentation?.recent.count == turn + 1 { break }
+                    try await Task.sleep(for:.milliseconds(10))
+                }
+                XCTAssertNil(view.sendFailure); XCTAssertNil(view.failureMessage)
             }
-            XCTAssertNil(view.sendFailure); XCTAssertNil(view.failureMessage)
             let index = try XCTUnwrap(model.chats.firstIndex { $0.id == id })
             model.chats[index].model = id == "default" ? nil : "chosen-" + id
             model.chats[index].thinkingLevel = id == "default" ? nil : "high"
@@ -58,11 +62,11 @@ final class ManualCompactionTests: XCTestCase {
             var attempts: [[String:WireValue]] = []
             for _ in 0..<500 {
                 attempts = try await model.traces.list(sessionID:id)
-                if attempts.count == 2 { break }
+                if attempts.count == 3 { break }
                 try await Task.sleep(for:.milliseconds(10))
             }
             let records = try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSONDecoder().decode([String:WireValue].self,from:Data($0.utf8)) }.filter { $0["session"]?.string == id }
-            XCTAssertEqual(attempts.count,2); XCTAssertEqual(records.count,2)
+            XCTAssertEqual(attempts.count,3); XCTAssertEqual(records.count,3)
             XCTAssertTrue(records.allSatisfy { $0["status"]?.number == 200 })
             for attempt in attempts {
                 let attemptID = try XCTUnwrap(attempt["attemptId"]?.string)

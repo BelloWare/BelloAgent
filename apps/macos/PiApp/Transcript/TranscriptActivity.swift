@@ -71,6 +71,21 @@ struct TurnAccounting: Equatable, Sendable {
     var throughput = SettledThroughput()
     /// First-token latency over the same requests, for the turn-time dialog.
     var latency = SettledLatency()
+    /// Requests the log does not count here, from the replies' own records.
+    /// Turn Info lists every request, and reads the log's for that one turn.
+    var recordLines: [TurnRequestLine] = []
+    /// Requests that reported neither input nor output, by why: the log's
+    /// counts and the records'. Nil reasons when an older snapshot has none.
+    var missing = TurnMissingUsage()
+    /// Requests whose figures come from the replies' own records because the
+    /// log, once read, had none for them.
+    var recordRequests: Int { recordLines.filter { $0.reportedUsage && [.notCaptured, .expired].contains($0.logMissing) }.count }
+    /// Distinct models that answered: the log's, then the records'.
+    var answeredModels: [String] {
+        var names: [String] = []
+        for name in reportedModels + recordLines.compactMap(\.model) where !names.contains(name) { names.append(name) }
+        return names
+    }
 
     /// A parent and its subset from the same requests — input and its cached
     /// part, or output and its reasoning part: the paired split the gateway
@@ -83,6 +98,93 @@ struct TurnAccounting: Equatable, Sendable {
               let total = input ? self.input : output, let part = input ? cached : reasoning else { return nil }
         let pair = GatewayTokenSplit(total: total, part: part, samples: requests)
         return pair.valid ? pair : nil
+    }
+}
+
+/// One request of a turn, from the request log or, for a request the log has
+/// no row for, from the reply's own record.
+struct TurnRequestLine: Equatable, Sendable, Identifiable {
+    enum Source: Equatable, Sendable { case log, record }
+    /// Why a request has no usage.
+    enum Missing: Equatable, Sendable { case running, failed, noUsage, notCaptured, expired }
+    var id: String
+    /// Seconds since 1970, when known.
+    var wall: Double?
+    var requested: String?
+    var model: String?
+    var routedVia: String? = nil
+    var input: Double? = nil, cached: Double? = nil, output: Double? = nil, reasoning: Double? = nil, cost: Double? = nil
+    var source: Source
+    var missing: Missing? = nil
+    /// Why the log has no row for a request whose figures came from its
+    /// reply's record; nil while the log has not been read for the reply.
+    var logMissing: Missing? = nil
+    /// From the helper's in-memory log: the durable log has no row yet.
+    var live = false
+    var reportedUsage: Bool { input != nil || output != nil }
+    var route: GatewayModelRoute { GatewayModelRoute(requested: requested, responded: model, latestWall: wall ?? 0) }
+
+    /// A request as the log recorded it: the retained record, or the
+    /// helper's own while the log has none (`live`).
+    init(record: TurnRequestRecord) {
+        let metadata = record.metadata, identity = GatewayModelIdentity(metadata: metadata), gateway = GatewayObservation(metadata: metadata)
+        id = record.id; wall = record.wall > 0 ? record.wall : nil
+        requested = GatewayModelIdentity.modelName(metadata["requestedModel"]?.string); model = identity.displayName
+        routedVia = GatewayModelIdentity.routedVia(PayloadArchive.reportedModels(metadata).compactMap(GatewayModelIdentity.modelName), answered: model)
+        input = gateway.inputTokens; cached = gateway.cacheReadTokens; output = gateway.outputTokens; reasoning = gateway.reasoningTokens; cost = gateway.costUSD
+        source = .log; live = record.liveOnly
+        if !reportedUsage {
+            missing = metadata["metricsExpired"]?.bool == true ? .expired : record.running ? .running
+                : ["completed", "truncated"].contains(metadata["outcome"]?.string ?? "") ? .noUsage : .failed
+        }
+    }
+    /// A reply the log has no row for, as its own record describes it.
+    init(reply message: TranscriptMessage) {
+        let record = message.reply
+        id = record?.attempt ?? message.id; wall = message.at.map { $0 / 1000 }
+        requested = record?.requested; model = record?.model; routedVia = record?.routedVia
+        input = record?.input; cached = record?.cached; output = record?.output
+        source = .record
+        switch message.accounting?.replyLog.flatMap(ReplyLog.init(rawValue:)) {
+        case .absent?: logMissing = .notCaptured
+        case .expired?: logMissing = .expired
+        default: logMissing = message.isStreaming ? .running : nil
+        }
+        // A record without usage cannot say whether the gateway sent none or
+        // the reply predates the record keeping it, so neither is claimed.
+        if !reportedUsage { missing = message.isStreaming ? .running : message.stopReason == "interrupted" ? .failed : logMissing }
+    }
+}
+
+/// A turn's requests without usage, by why.
+struct TurnMissingUsage: Equatable, Sendable {
+    var running = 0, failed = 0, noUsage = 0, notCaptured = 0, expired = 0, unknown = 0
+    /// False when an older snapshot could not say why its requests lack usage.
+    var known = true
+    var total: Int { running + failed + noUsage + notCaptured + expired + unknown }
+    mutating func add(_ reason: TurnRequestLine.Missing?) {
+        switch reason {
+        case .running?: running += 1
+        case .failed?: failed += 1
+        case .noUsage?: noUsage += 1
+        case .notCaptured?: notCaptured += 1
+        case .expired?: expired += 1
+        case nil: unknown += 1
+        }
+    }
+}
+
+/// One model's share of a turn that several models answered.
+struct TurnModelSubtotal: Equatable, Sendable, Identifiable {
+    var model: String?
+    var requests = 0
+    var input: Double? = nil, inputSamples = 0
+    var output: Double? = nil, outputSamples = 0
+    var id: String { model ?? "" }
+    mutating func add(_ line: TurnRequestLine) {
+        requests += 1
+        if let value = line.input { input = (input ?? 0) + value; inputSamples += 1 }
+        if let value = line.output { output = (output ?? 0) + value; outputSamples += 1 }
     }
 }
 
@@ -736,7 +838,7 @@ enum TranscriptActivity {
 
     // MARK: Accounting
 
-    private static func reported(_ value: Double?) -> Double? {
+    static func reported(_ value: Double?) -> Double? {
         guard let value, value.isFinite, value >= 0 else { return nil }
         return value
     }
@@ -757,8 +859,47 @@ enum TranscriptActivity {
             sum[keyPath: field] = (sum[keyPath: field] ?? 0) + value
             sum[keyPath: samples] += count
         }
-        for message in messages {
+        func addRoute(_ route: GatewayModelRoute) {
+            if let index = sum.modelRoutes.firstIndex(where: { $0.requested == route.requested && $0.responded == route.responded }) {
+                if route.latestWall > sum.modelRoutes[index].latestWall { sum.modelRoutes[index] = route }
+            } else { sum.modelRoutes.append(route) }
+        }
+        func addFigures(_ line: TurnRequestLine) {
+            if let input = line.input {
+                add(\.input, \.inputSamples, input, 1)
+                if let cached = line.cached, cached <= input {
+                    let split = GatewayTokenSplit(total: input, part: cached, samples: 1)
+                    sum.inputSplit = sum.inputSplit.map { $0.adding(split) } ?? split
+                    add(\.cached, \.cachedSamples, cached, 1); add(\.uncached, \.uncachedSamples, input - cached, 1)
+                }
+            }
+            if let output = line.output { add(\.output, \.outputSamples, output, 1) }
+            if let input = line.input, let output = line.output { add(\.total, \.totalSamples, input + output, 1) }
+        }
+        var modelPosition = -1, filled = GatewayMissingUsage()
+        for (position, message) in messages.enumerated() {
+            if let line = recordLine(message) {
+                sum.requests += 1
+                sum.recordLines.append(line)
+                addFigures(line)
+                if !line.reportedUsage { sum.missing.add(line.missing) }
+                if let name = line.model {
+                    sum.model = name; sum.modelMessageID = message.id; modelPosition = position
+                    if !sum.modelNames.contains(name) { sum.modelNames.append(name) }
+                }
+                if line.route.valid { addRoute(line.route) }
+            } else if let record = message.reply, record.input != nil || record.output != nil,
+                      let state = message.accounting?.replyLog.flatMap(ReplyLog.init(rawValue:)), [.running, .failed, .noUsage].contains(state) {
+                // The log counts this reply's request, with no usage yet (its
+                // final metadata still on the way): the record's figures stand
+                // in for that one request, which is not counted again.
+                addFigures(TurnRequestLine(reply: message))
+                switch state { case .running: filled.running += 1; case .failed: filled.failed += 1; default: filled.noUsage += 1 }
+            }
             guard let a = message.accounting else { continue }
+            if let missing = a.missingUsage {
+                sum.missing.running += missing.running; sum.missing.failed += missing.failed; sum.missing.noUsage += missing.noUsage
+            } else if a.requests > 0 { sum.missing.known = false }
             sum.requests += a.requests
             if let split = GatewayTokenSplit.reported(a, input: true) { sum.inputSplit = sum.inputSplit.map { $0.adding(split) } ?? split }
             if let split = GatewayTokenSplit.reported(a, input: false) { sum.outputSplit = sum.outputSplit.map { $0.adding(split) } ?? split }
@@ -776,15 +917,28 @@ enum TranscriptActivity {
             // Already summed per reply by the archive; adding the sums keeps
             // the turn's rate one division of totals, not an average of rates.
             sum.throughput.add(a.settledThroughput); sum.latency.add(a.settledLatency)
-            if let name = a.models?.names.first { sum.model = name; sum.modelMessageID = message.id }
+            if let name = a.models?.names.first, position >= modelPosition { sum.model = name; sum.modelMessageID = message.id; modelPosition = position }
             for name in a.models?.names ?? [] where !sum.modelNames.contains(name) { sum.modelNames.append(name) }
-            for route in a.models?.routes ?? [] where route.valid {
-                if let index = sum.modelRoutes.firstIndex(where: { $0.requested == route.requested && $0.responded == route.responded }) {
-                    if route.latestWall > sum.modelRoutes[index].latestWall { sum.modelRoutes[index] = route }
-                } else { sum.modelRoutes.append(route) }
-            }
+            for route in a.models?.routes ?? [] where route.valid { addRoute(route) }
         }
+        sum.missing.running = max(0, sum.missing.running - filled.running)
+        sum.missing.failed = max(0, sum.missing.failed - filled.failed)
+        sum.missing.noUsage = max(0, sum.missing.noUsage - filled.noUsage)
         return sum
+    }
+    /// A reply the request log has no row for still made a request: its own
+    /// record supplies the figures and the model, and says why the log has
+    /// none. Nil for a reply the log counts, and for any other row.
+    static func recordLine(_ message: TranscriptMessage) -> TurnRequestLine? {
+        // Without a record there is no attempt to tell whether the log counts
+        // this reply's request elsewhere, so it is left to the log.
+        guard message.role == "assistant", message.kind == nil, message.isStreaming || message.reply != nil else { return nil }
+        let own = message.accounting.map { $0.requests > 0 } ?? false
+        if !message.isStreaming, let state = message.accounting?.replyLog.flatMap(ReplyLog.init(rawValue:)) {
+            // The log answered for the record's request.
+            guard [.absent, .expired, .elsewhere].contains(state) else { return nil }
+        } else if own { return nil }   // An older snapshot, or a streaming row the log counts.
+        return TurnRequestLine(reply: message)
     }
     /// The tokens of a summary, preferring the reported total, else input plus output.
     static func tokens(of a: TurnAccounting) -> Double? {

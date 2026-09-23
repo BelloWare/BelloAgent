@@ -1,0 +1,8 @@
+<h2>Bello Agent 0.1.88</h2>
+<ul>
+  <li>Turn info shows a turn's input and output even when the request log no longer holds them, using what each reply reported when it finished.</li>
+  <li>Turns handled by the auto router show the model that answered and add "· 2 models" when requests went to different models. Turn info lists each request's model, with a subtotal per model.</li>
+  <li>When some requests in a turn didn't report usage, Turn info still shows everything it has and says what's missing, for example "input and output from 3 of 4 requests; 1 came back with no usage from the gateway". A running turn shows "Reported so far".</li>
+  <li>Compaction works the way pi does. It summarizes only what's new since the last compaction, updates the previous summary, and keeps your most recent messages word for word.</li>
+  <li>Long chats are summarized in parts, so there's no size limit and "Bounded summary source exceeds the operation limit" is gone. "Compact now" on a chat that's still small says there's nothing to compact yet.</li>
+</ul>

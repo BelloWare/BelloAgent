@@ -968,38 +968,46 @@ the abandoned tail. A compaction summary retained by the branch stays visible
 even if its journal record followed the edited user message. Content-page
 revisions combine visible and journal counts.
 
-**Compaction checkpoints (0.1.64).** `CompactionPlanner` validates complete
-assistant/tool groups with occurrence-scoped call IDs. The current task root and
-delivered steering are protected inputs; old ambiguous legacy inputs are also
-protected. The planner can summarize the newest complete group when keeping it
-would exceed capacity. `CompactionSourceBuilder` preserves requested tool
-arguments and observed outcomes, labels omitted evidence and emits scoped
-`history_read` references. Historical text never grants skills or approvals.
+**Compaction checkpoints (0.1.64, now pi's approach).** Compaction
+follows pi 0.85.1 (`compaction.ts`, `utils.ts`). `CompactionPlanner` validates
+complete assistant/tool groups with occurrence-scoped call IDs, then reads what
+pi's `prepareCompaction` reads: the previous checkpoint's summary and only the
+messages since it. `findCutPoint` keeps about 20,000 recent tokens by pi's
+`estimateTokens`, cutting at a group start so a tool result stays with its
+call; a cut inside a turn splits it, and the turn's prefix gets pi's
+turn-prefix summary. A window too small for pi's tail keeps at most half of
+what triggers compaction; a context the gateway rejected keeps at most half of
+itself; a kept tail that cannot fit beside the summary caps moves into the
+summary. When nothing lies before the tail, compaction reports pi's "Nothing to
+compact (session too small)" and sends no request. The current task root and
+delivered steering (and old ambiguous legacy inputs) are protected: summarized
+in place for context, and also replayed verbatim after the summary, so the
+summary, which is historical data, never replaces the user's instructions.
 
-`SessionSummarizer` uses the same selected connection/model, tools disabled, and
-at most eight physical requests including chunks, merges and transient retries.
-The output allowance is the model ceiling, respecting an explicit task/cost cap
-and actual input headroom; without a catalog ceiling it uses the configured budget.
-Each dispatched summary profile reserves the full transmitted cap plus the
-existing safety margin. The session's reasoning effort is unchanged. Source
-records come first and the compaction instruction is the last input message,
-with no requested character/token length. This preserves a stable source prefix;
-actual prompt-cache hits remain gateway observations, not a client guarantee.
-These owner instructions supersede the original 4,096 cap and the addendum's
-proposed 16,384/32,768 defaults, low effort, and visible-summary target.
-Source/intermediate data is bounded to 2 MiB; each actual summary body gets an
-independent capacity check. Explicit summary-input rejection shrinks packing
-within the same budget. Non-shrinking merges, incomplete output and a candidate
-that does not reduce the actual next request fail without adoption.
-Typed terminal metadata distinguishes explicit output exhaustion, other/unknown
-incompleteness, refusal, empty text and unexpected tool calls. A headroom-clipped
-exhaustion may reduce its source once to make more of the model allowance fit;
-a full-cap exhaustion cannot be escalated above that ceiling. All attempts share
-the same eight-request budget and retain their usage, diagnostics and captures.
+`CompactionSourceBuilder` serializes pi's `[User]`/`[Assistant]`/`[Assistant
+thinking]`/`[Assistant tool calls]`/`[Tool result]` text with each tool result
+cut to 2,000 characters. Ours only: an outcome other than completed is named,
+and a cut result carries its scoped `history_read` reference. Each request is
+pi's: its summarization system prompt, one message of `<conversation>` text,
+`<previous-summary>` with pi's update prompt when a summary exists, and pi's
+file lists appended to the result. The cap is pi's `min(0.8 × reserve, the
+model's output limit)`, 0.5 × for a turn prefix, reserved whole on every
+request; the session's model and reasoning effort are unchanged and no tools
+are sent. There is no source-size limit: a source too long for one request is
+summarized in consecutive chunks, each chunk's summary becoming the next
+chunk's previous summary (pi's own update), with a part longer than a request
+cut and continued. Each chunk may use eight physical requests, including
+transient retries and a smaller repack after the gateway rejects its size.
+Typed terminal metadata distinguishes output exhaustion (pi: never a
+checkpoint), other/unknown incompleteness, refusal, empty text and unexpected
+tool calls; none is retried or adopted, and all attempts keep their usage,
+diagnostics and captures. A candidate that does not reduce the actual next
+request fails without adoption.
 
 Version-2 `compaction` records retain ordered source/protected/kept IDs, exact
-summary dependencies, task root, before/after count provenance, operation and
-attempt IDs, output allowance and recovery linkage. An explicit synchronized
+summary dependencies (including the previous checkpoint), pi's `details`
+file lists, task root, before/after count provenance, operation and attempt
+IDs, output allowance and recovery linkage. An explicit synchronized
 append flushes preceding tool writes. Memory adopts the checkpoint synchronously
 before any trace-link await. Failed synchronization poisons the writer; reopening
 validates either a complete old or new projection and never replays work.

@@ -18,6 +18,18 @@ message picks the reply:
                       does while it computes usage and cost
   "wire filter"       some text, then an incomplete reply (content_filter)
   "wire early REASON" some text, then an incomplete reply with REASON
+  "wire route [N]"    an auto router: three requests over two models, the
+                      way LiteLLM reports them (the body echoes the alias in
+                      model and names the deployment in router_model_name;
+                      the x-litellm-model-name header agrees). Two bash
+                      rounds, then a reply: route-alpha, route-beta,
+                      route-alpha. The second call sleeps N seconds (0)
+  "wire mismatch"     the header names openai/header-model, the body
+                      body-model
+  "wire nousage"      a completed reply with no usage
+  "wire partial"      four requests: a bash call; a stream cut mid-reply
+                      (retried after a second); the retried bash call with
+                      no usage; then a reply
   anything else       a short reply in one burst
 
 A round that answers a tool result replies with one short sentence. The
@@ -43,6 +55,17 @@ def write_arguments():
     """The write call's arguments: multi-byte text and escapes, byte-exact."""
     lines = [f"line {index:03d} · 中文🙂 café \"quoted\" \\ tab\tend" for index in range(120)]
     return json.dumps({"path": "wire-notes.txt", "content": "\n".join(lines) + "\n"}, ensure_ascii=False)
+
+
+ATTEMPTS = {}
+ATTEMPTS_LOCK = threading.Lock()
+
+
+def attempt(key):
+    """How many times this exact request shape has been seen, from 1."""
+    with ATTEMPTS_LOCK:
+        ATTEMPTS[key] = ATTEMPTS.get(key, 0) + 1
+        return ATTEMPTS[key]
 
 
 class Gateway(http.server.BaseHTTPRequestHandler):
@@ -76,11 +99,21 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 prompt = content if isinstance(content, str) else "".join(
                     part.get("text", "") for part in content or [] if isinstance(part, dict))
         tool_result = bool(items) and items[-1].get("type") == "function_call_output"
+        rounds = sum(1 for item in items if item.get("type") == "function_call_output")
         words = prompt.lower().split()
         request_id = uuid.uuid4().hex
+        scenario = words[words.index("wire") + 1] if "wire" in words and words.index("wire") + 1 < len(words) else ""
+        routed = header_model = None
+        if scenario == "route":
+            routed = ["route-alpha", "route-beta", "route-alpha"][min(rounds, 2)]
+            header_model = "openai/" + routed
+        elif scenario == "mismatch":
+            routed, header_model = "body-model", "openai/header-model"
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Connection", "close")
+        if header_model:
+            self.send_header("x-litellm-model-name", header_model)
         self.end_headers()
         self.close_connection = True
 
@@ -95,10 +128,33 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 return default
 
         response = {"id": "resp_" + request_id, "object": "response", "model": body.get("model"), "status": "in_progress", "output": []}
+        if routed:
+            response["router_model_name"] = routed
         usage = {"input_tokens": 12, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": 8}
-        scenario = words[words.index("wire") + 1] if "wire" in words and words.index("wire") + 1 < len(words) else ""
+        if scenario in ("route", "partial"):
+            usage = {"input_tokens": 100 * (rounds + 1), "input_tokens_details": {"cached_tokens": 10 * rounds}, "output_tokens": 10 * (rounds + 1)}
         try:
             emit({"type": "response.created", "response": response})
+            if scenario in ("route", "partial") and rounds < 2:
+                if scenario == "partial" and rounds == 1 and attempt(prompt + "/cut") == 1:
+                    # Some text, then the connection closes: no terminal event.
+                    item_id = "msg_" + request_id
+                    emit({"type": "response.output_item.added", "output_index": 0,
+                          "item": {"id": item_id, "type": "message", "role": "assistant", "status": "in_progress", "content": []}})
+                    emit({"type": "response.output_text.delta", "output_index": 0, "item_id": item_id, "content_index": 0, "delta": "Cut short"})
+                    return
+                seconds = number(0) if scenario == "route" and rounds == 1 else 0
+                command = (f"sleep {seconds}; " if seconds else "") + f"echo {scenario}-{rounds + 1}"
+                call = {"type": "function_call", "id": "fc_" + request_id, "call_id": "call_" + request_id,
+                        "name": "bash", "arguments": json.dumps({"command": command}), "status": "completed"}
+                emit({"type": "response.output_item.added", "output_index": 0, "item": {**call, "arguments": "", "status": "in_progress"}})
+                emit({"type": "response.function_call_arguments.delta", "output_index": 0, "item_id": call["id"], "delta": call["arguments"]})
+                emit({"type": "response.output_item.done", "output_index": 0, "item": call})
+                done = {**response, "status": "completed", "output": [call]}
+                if not (scenario == "partial" and rounds == 1):
+                    done["usage"] = usage
+                emit({"type": "response.completed", "response": done})
+                return
             if not tool_result and scenario in ("bash", "write"):
                 if scenario == "bash":
                     name, arguments = "bash", json.dumps({"command": f"sleep {number(30)}; echo wire-bash-done"})
@@ -143,7 +199,9 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 emit({"type": "response.completed", "response": {**response, "status": "completed", "output": [reasoning, message], "usage": held}})
                 return
             item_id = "msg_" + request_id
-            if tool_result:
+            if scenario in ("route", "partial"):
+                text = f"{scenario.capitalize()} reply after {rounds} rounds."
+            elif tool_result:
                 text = "Tool round finished."
             elif scenario == "stream":
                 text = "".join(f"token-{index:03d} " for index in range(number(40)))
@@ -169,7 +227,10 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 emit({"type": "response.incomplete", "response": {**response, "status": "incomplete",
                       "incomplete_details": {"reason": reason}, "output": [message], "usage": usage}})
             else:
-                emit({"type": "response.completed", "response": {**response, "status": "completed", "output": [message], "usage": usage}})
+                done = {**response, "status": "completed", "output": [message]}
+                if scenario != "nousage":
+                    done["usage"] = usage
+                emit({"type": "response.completed", "response": done})
         except (BrokenPipeError, ConnectionResetError):
             pass
 

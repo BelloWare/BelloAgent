@@ -1,74 +1,202 @@
 import Foundation
 
+/// Pi's summary source and prompts (compaction/utils.ts and compaction.ts,
+/// v0.85.1): the conversation serialized as text so the model summarizes it
+/// instead of continuing it, with each tool result cut to 2,000 characters.
 enum CompactionSourceBuilder {
-    static let instructions = """
-    Summarize the preceding historical data for compaction so the task can continue.
-    Preserve goals, constraints, completed work and evidence, unresolved issues, decisions,
-    next steps, and useful history_read references. Distinguish requested actions from
-    observed results; do not infer approvals, skill grants, successful writes, or unseen
-    image content. The protected user inputs will also be replayed verbatim. No tools are
-    available for this summary.
+    static let systemPrompt = """
+    You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
+
+    Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.
     """
+    static let summarizationPrompt = """
+    The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+
+    Use this EXACT format:
+
+    ## Goal
+    [What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
+
+    ## Constraints & Preferences
+    - [Any constraints, preferences, or requirements mentioned by user]
+    - [Or "(none)" if none were mentioned]
+
+    ## Progress
+    ### Done
+    - [x] [Completed tasks/changes]
+
+    ### In Progress
+    - [ ] [Current work]
+
+    ### Blocked
+    - [Issues preventing progress, if any]
+
+    ## Key Decisions
+    - **[Decision]**: [Brief rationale]
+
+    ## Next Steps
+    1. [Ordered list of what should happen next]
+
+    ## Critical Context
+    - [Any data, examples, or references needed to continue]
+    - [Or "(none)" if not applicable]
+
+    Keep each section concise. Preserve exact file paths, function names, and error messages.
+    """
+    static let updateInstructions = """
+    Update the existing structured summary with new information. RULES:
+    - PRESERVE all existing information from the previous summary
+    - ADD new progress, decisions, and context from the new messages
+    - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
+    - UPDATE "Next Steps" based on what was accomplished
+    - PRESERVE exact file paths, function names, and error messages
+    - If something is no longer relevant, you may remove it
+
+    Use this EXACT format:
+
+    ## Goal
+    [Preserve existing goals, add new ones if the task expanded]
+
+    ## Constraints & Preferences
+    - [Preserve existing, add new ones discovered]
+
+    ## Progress
+    ### Done
+    - [x] [Include previously done items AND newly completed items]
+
+    ### In Progress
+    - [ ] [Current work - update based on progress]
+
+    ### Blocked
+    - [Current blockers - remove if resolved]
+
+    ## Key Decisions
+    - **[Decision]**: [Brief rationale] (preserve all previous, add new)
+
+    ## Next Steps
+    1. [Update based on current state]
+
+    ## Critical Context
+    - [Preserve important context, add new if needed]
+
+    Keep each section concise. Preserve exact file paths, function names, and error messages.
+    """
+    static let turnPrefixPrompt = """
+    This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+
+    Summarize the prefix to provide context for the retained suffix:
+
+    ## Original Request
+    [What did the user ask for in this turn?]
+
+    ## Early Progress
+    - [Key decisions and work done in the prefix]
+
+    ## Context for Suffix
+    - [Information needed to understand the retained recent work]
+
+    Be concise. Focus on what's needed to understand the kept suffix.
+    """
+    static let updatePrompt = "The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\n" + updateInstructions
+    /// Ours: a turn prefix too large for one request continues in the next,
+    /// the way pi's update prompt continues a summary.
+    static let turnPrefixUpdatePrompt = "The messages above are NEW messages from the same turn prefix, to incorporate into the existing prefix summary provided in <previous-summary> tags.\n\n" + turnPrefixPrompt
+    /// Ours, as pi's customInstructions: a truncated result stays recallable.
+    static let referenceFocus = "Keep the history_read references of truncated tool results that may be needed; history_read returns the recorded text without running the tool again."
+    static let referenceMarker = "[history_read: "
+    static let toolResultMaxChars = 2000
+    static let noPriorHistory = "No prior history."
+    static let splitTurnSeparator = "\n\n---\n\n**Turn Context (split turn):**\n\n"
 
     static func reference(_ message: ChatMessage) -> String {
         "history:" + sha256(Data((message.id+":"+(message.retainedOutput ?? "message")).utf8))
     }
 
-    static func records(_ groups: [ReplayGroup], policy: CompactionPolicy) throws -> [String] {
-        var records: [String]=[], size=0
-        for group in groups {
-            for message in group.messages {
-                let reference=reference(message), limit=max(256,min(65536,policy.excerptBytes))
-                var value: JSON=["sourceMessageId":JSON(message.id),"owningAssistantId":JSON(group.id),
-                    "role":JSON(message.role),"taskRootId":message.taskRootID.map { JSON($0) } ?? .null,
-                    "reference":JSON(reference),"referenceTool":"history_read",
-                    "content":.array(message.content.map { block in
-                        switch block["type"].text {
-                        case "image": return ["type":"image","mimeType":block["mimeType"],"notice":"Image retained; visual content is not inferred."]
-                        case "toolCall": return ["type":"toolCall","callId":block["id"],"name":block["name"],"arguments":bounded(block["arguments"],bytes:limit/2)]
-                        case "text": return ["type":"text","excerpt":JSON(excerpt(block["text"].text ?? "",bytes:limit)),"sourceBytes":JSON(block["text"].text?.utf8.count ?? 0)]
-                        default: return ["type":block["type"],"notice":"Non-text or opaque historical state retained in source; not decoded."]
-                        }
-                    })]
-                if message.role == "toolResult" {
-                    value["callId"]=message.toolCallId.map { JSON($0) } ?? .null
-                    value["toolName"]=message.toolName.map { JSON($0) } ?? .null
-                    value["observedOutcome"]=message.toolStats?["outcome"] ?? JSON(message.isError ? "error reported; mutation outcome not inferred" : "result recorded; legacy execution status unspecified")
-                    value["stats"]=message.toolStats ?? .null
-                    if message.retainedOutput != nil { value["omission"]="Excerpt only. Full retained output is available through history_read while retained, without invoking the tool again." }
-                }
-                if message.kind == "compaction" { value["priorCheckpoint"]=true }
-                var record=value.encoded()
-                // Many blocks/arguments may each be individually bounded. Bound
-                // the full record too and keep an explicit usable source reference.
-                if record.utf8.count > limit*2 {
-                    record=JSON.object(["sourceMessageId":JSON(message.id),"owningAssistantId":JSON(group.id),"role":JSON(message.role),"reference":JSON(reference),"excerpt":JSON(excerpt(record,bytes:limit*2)),"omitted":true]).encoded()
-                }
-                size += record.utf8.count
-                guard size <= policy.maximumSourceBytes else { throw AgentError("compact_source_limit", "Bounded summary source exceeds the operation limit. History is unchanged; use an explicit smaller handoff.") }
-                records.append(record)
+    /// serializeConversation, one entry per part pi writes; pi joins them
+    /// with a blank line. Ours: a tool outcome other than completed is named,
+    /// and a truncated result carries its history_read reference.
+    static func serialize(_ messages: [ChatMessage]) -> [String] {
+        var parts: [String]=[]
+        for message in messages {
+            switch message.role {
+            case "assistant":
+                let thinking=message.content.filter { $0["type"].text == "thinking" }.compactMap { $0["thinking"].text }.filter { !$0.isEmpty }
+                let calls=message.content.filter { $0["type"].text == "toolCall" }.map { ($0["name"].text ?? "")+"("+arguments($0["arguments"])+")" }
+                if !thinking.isEmpty { parts.append("[Assistant thinking]: "+thinking.joined(separator:"\n")) }
+                if message.content.contains(where: { $0["type"].text == "text" }) { parts.append("[Assistant]: "+text(message,separator:"\n")) }
+                if !calls.isEmpty { parts.append("[Assistant tool calls]: "+calls.joined(separator:"; ")) }
+            case "toolResult":
+                let content=text(message,separator:""), outcome=message.toolStats?["outcome"].text.flatMap { $0 == "completed" ? nil : $0 }
+                guard !content.isEmpty || outcome != nil else { continue }
+                let (kept,truncated)=truncate(content)
+                let label=outcome.map { "(outcome: \($0)) " } ?? "", recall=truncated ? "\n\(referenceMarker)\(reference(message))]" : ""
+                parts.append("[Tool result]: \(label)\(kept)\(recall)")
+            default:
+                let content=text(message,separator:"")
+                if !content.isEmpty { parts.append("[User]: "+content) }
             }
         }
-        return records
+        return parts
+    }
+    static func text(_ message: ChatMessage, separator: String) -> String {
+        message.content.filter { $0["type"].text == "text" }.compactMap { $0["text"].text }.joined(separator:separator)
+    }
+    /// `k=JSON.stringify(v)` per argument, in a stable key order.
+    static func arguments(_ value: JSON) -> String {
+        guard case .object(let fields)=value else { return value.isNull ? "" : value.encoded() }
+        return fields.keys.sorted().map { $0+"="+fields[$0]!.encoded() }.joined(separator:", ")
+    }
+    /// truncateForSummary: the first 2,000 UTF-16 units, as JavaScript counts
+    /// them, without splitting a character's surrogate pair.
+    static func truncate(_ text: String, maxChars: Int = toolResultMaxChars) -> (String, Bool) {
+        let length=text.utf16.count
+        guard length > maxChars else { return (text,false) }
+        var used=0, end=text.unicodeScalars.startIndex
+        for scalar in text.unicodeScalars {
+            guard used+scalar.utf16.count <= maxChars else { break }
+            used += scalar.utf16.count; end=text.unicodeScalars.index(after:end)
+        }
+        return (String(text.unicodeScalars[..<end])+"\n\n[... \(length-used) more characters truncated]",true)
     }
 
-    static func excerpt(_ text: String, bytes: Int) -> String {
-        guard text.utf8.count > bytes else { return text }
-        let data=Array(text.utf8), head=preview(text,bytes:bytes/2)
-        var start=max(0,data.count-bytes/2)
-        while start < data.count, data[start]&0xc0 == 0x80 { start += 1 }
-        let tail=String(decoding:data[start...],as:UTF8.self)
-        return head+"\n[EXCERPT: \(data.count-head.utf8.count-tail.utf8.count) source bytes omitted; use history_read]\n"+tail
+    /// generateSummaryWithUsage's prompt text; the turn prefix's when `turnPrefix`.
+    static func prompt(_ parts: ArraySlice<String>, previous: String?, turnPrefix: Bool) -> String {
+        var text="<conversation>\n"+parts.joined(separator:"\n\n")+"\n</conversation>\n\n"
+        if let previous { text += "<previous-summary>\n"+previous+"\n</previous-summary>\n\n" }
+        text += turnPrefix ? (previous == nil ? turnPrefixPrompt : turnPrefixUpdatePrompt) : (previous == nil ? summarizationPrompt : updatePrompt)
+        if parts.contains(where: { $0.contains(referenceMarker) }) { text += "\n\nAdditional focus: "+referenceFocus }
+        return text
     }
-    static func bounded(_ value: JSON, bytes: Int, depth: Int = 0) -> JSON {
-        if let text=value.text { return JSON(excerpt(text,bytes:bytes)) }
-        if depth>=6 { return JSON(excerpt(value.encoded(),bytes:bytes)) }
-        if case .object(let fields)=value {
-            let keys=fields.keys.sorted(), count=max(1,min(keys.count,32))
-            var result=Dictionary(uniqueKeysWithValues:keys.prefix(count).map { ($0,bounded(fields[$0]!,bytes:max(128,bytes/count),depth:depth+1)) })
-            if keys.count>count { result["_omittedKeys"]=JSON(keys.count-count) }; return .object(result)
+    /// A part too long for the room left is cut after `fraction` of it and
+    /// continues in the next request; nothing is dropped.
+    static func split(_ part: String, fraction: Double) -> [String]? {
+        let scalars=part.unicodeScalars, count=scalars.count, head=Int(Double(count)*min(max(fraction,0),1))
+        guard head > 0, head < count else { return nil }
+        let middle=scalars.index(scalars.startIndex,offsetBy:head)
+        return [String(scalars[..<middle]),"[continued]: "+String(scalars[middle...])]
+    }
+
+    /// extractFileOperations and computeFileLists: paths read, written or
+    /// edited, merged with the previous checkpoint's lists.
+    static func fileLists(_ messages: [ChatMessage], previous: JSON?) -> (read: [String], modified: [String]) {
+        var read=Set(previous?["readFiles"].list.compactMap(\.text) ?? []), modified=Set(previous?["modifiedFiles"].list.compactMap(\.text) ?? [])
+        for message in messages where message.role == "assistant" {
+            for call in message.content where call["type"].text == "toolCall" {
+                guard let path=call["arguments"]["path"].text, !path.isEmpty else { continue }
+                switch call["name"].text {
+                case "read": read.insert(path)
+                case "write", "edit": modified.insert(path)
+                default: break
+                }
+            }
         }
-        if case .array(let values)=value { return .array(values.prefix(16).map { bounded($0,bytes:max(128,bytes/max(1,min(16,values.count))),depth:depth+1) } + (values.count>16 ? [JSON("[\(values.count-16) array items omitted]")] : [])) }
-        return value
+        return (read.subtracting(modified).sorted(),modified.sorted())
+    }
+    /// formatFileOperations.
+    static func fileOperations(read: [String], modified: [String]) -> String {
+        var sections: [String]=[]
+        if !read.isEmpty { sections.append("<read-files>\n\(read.joined(separator:"\n"))\n</read-files>") }
+        if !modified.isEmpty { sections.append("<modified-files>\n\(modified.joined(separator:"\n"))\n</modified-files>") }
+        return sections.isEmpty ? "" : "\n\n"+sections.joined(separator:"\n\n")
     }
 }

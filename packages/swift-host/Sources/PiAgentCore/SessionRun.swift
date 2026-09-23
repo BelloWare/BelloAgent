@@ -154,7 +154,7 @@ extension AgentSession {
                             modelMs += modelRequestsMs
                         } catch let error as AgentError {
                             modelMs += modelRequestsMs
-                            guard error.failure?.contextRejection == true, autoCompaction, !titleTask, !recovered, canCompact, !Task.isCancelled else { throw error }
+                            guard error.failure?.contextRejection == true, autoCompaction, !titleTask, !recovered, canCompact(recovering:true), !Task.isCancelled else { throw error }
                             // Recovery surrounds only this failed model operation.
                             // The completed tool batch is never entered a second time.
                             if let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty {
@@ -242,9 +242,9 @@ extension AgentSession {
                     // _checkCompaction) and compacts without a retry. A queued follow-up
                     // continues the run instead and is checked before its request. The reply
                     // is complete either way: a failed compaction keeps the context and says so.
-                    if queue.isEmpty, canCompact, let position=context.lastIndex(where: { $0.id == replyID }),
+                    if queue.isEmpty, let position=context.lastIndex(where: { $0.id == replyID }),
                        let tokens=PiContext.thresholdTokens(after:position,in:context),
-                       PiContext.shouldCompact(tokens,contextWindow:turnProfile.contextWindow,settings:compactionSettings) {
+                       PiContext.shouldCompact(tokens,contextWindow:turnProfile.contextWindow,settings:compactionSettings), canCompact {
                         do { try await compactContext(reason:"threshold") }
                         catch where !(error is CancellationError) && !Task.isCancelled {}
                     }

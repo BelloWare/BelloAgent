@@ -25,17 +25,18 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             assert body['stream'] is True and body['store'] is False
             summary = not body.get('tools')
             if summary:
-                expected = ('connection-default', 'low', 4096) if sid == 'default' else ('chosen-' + sid, 'high', 16000)
+                # Pi's cap: min(0.8 × the 16,384-token reserve, the model's output limit).
+                expected = ('connection-default', 'low', 4096) if sid == 'default' else ('chosen-' + sid, 'high', 13107)
                 assert body['model'] == expected[0], 'Compaction lost selected model: ' + body['model']
                 assert body['reasoning']['effort'] == expected[1], 'Compaction lost effort'
                 assert body['max_output_tokens'] == expected[2], 'Compaction lost model output ceiling'
-                assert body['instructions'] == ''
-                assert body['input'][-1]['content'][0]['text'].startswith('Summarize the preceding historical data for compaction')
+                assert body['instructions'].startswith('You are a context summarization assistant.')
+                assert len(body['input']) == 1 and body['input'][0]['content'][0]['text'].startswith('<conversation>\n')
                 text = 'Preserve the original objective. Verified evidence was retained.'
             else:
                 assert body['model'] == 'previous-model'
                 assert body['reasoning']['effort'] == 'low'
-                text = 'Verified evidence retained for this task. ' * 600
+                text = 'Verified evidence retained for this task. ' * 2000  # past pi's 20,000-token recent tail
             payload = {'id': 'response-' + sid, 'object': 'response', 'status': 'completed', 'model': body['model'],
                        'output': [{'type': 'message', 'id': 'msg-' + sid, 'role': 'assistant', 'status': 'completed',
                                    'content': [{'type': 'output_text', 'text': text}]}],

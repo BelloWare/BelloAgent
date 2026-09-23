@@ -61,7 +61,7 @@ final class HistoricalEditTests: XCTestCase {
         let childPath = try await parent.fork(to: "child")["path"].text!
         let parentPath = await parent.path!; await parent.close(); try FileManager.default.removeItem(atPath: parentPath)
         let childClient = ScriptClient([answer("child future reply"), answer("child summary"), answer("child replacement reply")])
-        let child = try AgentSession(id: "child", profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: true, resources: resources, client: childClient, tools: RecordingTools(), traces: traces, resumePath: childPath, autoCompaction: false)
+        let child = try AgentSession(id: "child", profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: true, resources: resources, client: childClient, tools: RecordingTools(), traces: traces, resumePath: childPath, autoCompaction: false, compactionPolicy: { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }())
         _ = try await child.submit(Submission(commandID: "third", turnID: "third", text: "child future input"), steer: false); try await eventually { !(await child.isRunning) }
         try await child.compact(); try await eventually { !(await child.isRunning) }
         let compacted = await child.context; XCTAssertFalse(compacted.contains { $0.id == "second" })
