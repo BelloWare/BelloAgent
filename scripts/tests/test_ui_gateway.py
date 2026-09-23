@@ -45,13 +45,16 @@ class UIGatewayTests(unittest.TestCase):
         key = "synthetic-loopback-only-key"
         headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json", "Accept": "text/event-stream",
                    "x-session-id": "synthetic-session", "x-turn-id": "synthetic-turn"}
+        if responses:
+            headers.update({"session_id": "synthetic-session", "x-client-request-id": "synthetic-session"})
         schema = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
         arguments = {"command": "echo synthetic", "timeout": 60}
         if responses:
             body = {"model": "ui-fixture", "stream": True, "max_output_tokens": 300_000, "metadata": {"session_id": "synthetic-session"},
-                    "instructions": "Synthetic instructions", "store": False, "parallel_tool_calls": False,
-                    "tools": [{"type": "function", "name": "read", "description": "Read fixture", "strict": False, "parameters": schema}],
-                    "input": [{"type": "function_call", "call_id": "known-bash", "name": "bash", "arguments": json.dumps(arguments)},
+                    "prompt_cache_key": "synthetic-session", "store": False,
+                    "tools": [{"type": "function", "name": "read", "description": "Read fixture", "parameters": schema}],
+                    "input": [{"role": "developer", "content": "Synthetic instructions"},
+                              {"type": "function_call", "call_id": "known-bash", "name": "bash", "arguments": json.dumps(arguments)},
                               {"type": "function_call_output", "call_id": "known-bash", "output": "SYNTHETIC-TOOL-OUTPUT"},
                               {"role": "user", "content": [{"type": "input_text", "text": prompt}]}]}
         else:
@@ -105,14 +108,56 @@ class UIGatewayTests(unittest.TestCase):
             self.assertEqual(delta["content_index"], 0)
         completed = events[-1]["response"]
         self.assertEqual("".join(e["delta"] for e in deltas), completed["output"][0]["content"][0]["text"])
+    def summary_request(self, limit=13_107):
+        path, headers, _ = self.request()
+        conversation = "<conversation>\n[User]: bulk 400 slow large read fixture\n</conversation>\n\nSummarize the conversation above."
+        # Pi's summary request: its system prompt leads the input, then one
+        # message of conversation text; no prompt cache key, so none of pi's
+        # session affinity headers either.
+        headers = {name: value for name, value in headers.items() if name not in ("session_id", "x-client-request-id")}
+        body = {"model": "ui-fixture", "stream": True, "store": False, "max_output_tokens": limit,
+                "metadata": {"session_id": headers["x-session-id"]},
+                "input": [{"role": "system", "content": "You are a context summarization assistant. Summarize faithfully."},
+                          {"role": "user", "content": [{"type": "input_text", "text": conversation}]}]}
+        return path, headers, body
+
+    def test_summary_request_streams_a_summary_within_its_own_cap(self):
+        os.environ["PI_APP_UI_FIXTURE_SUMMARY_DELAY"] = "0"
+        path, headers, body = self.summary_request()
+        status, _, received = self.send(path, headers, body)
+        self.assertEqual(status, 200)
+        events = [json.loads(line[6:]) for line in received.splitlines() if line.startswith(b"data: ")]
+        deltas = [e["delta"] for e in events if e["type"] == "response.output_text.delta"]
+        self.assertGreater(len(deltas), 10, "the summary arrives a delta at a time")
+        text = events[-1]["response"]["output"][0]["content"][0]["text"]
+        self.assertEqual("".join(deltas), text)
+        self.assertTrue(text.startswith("## Goal"), "keywords in the summarized conversation are not answered")
+        path, headers, body = self.summary_request(limit=300_001)
+        status, _, _ = self.send(path, headers, body)
+        self.assertEqual(status, 400, "a summary's cap stays within the model's ceiling")
+
+    def test_bulk_reply_and_lenient_limit(self):
+        path, headers, body = self.request(prompt="bulk 64 history")
+        body["max_output_tokens"] = 60_000
+        status, _, _ = self.send(path, headers, body)
+        self.assertEqual(status, 400, "a conversation request carries the catalog ceiling unless the scene asks otherwise")
+        os.environ["PI_APP_UI_FIXTURE_LENIENT_LIMIT"] = "1"
+        os.environ["PI_APP_UI_FIXTURE_REAL_USAGE"] = "1"
+        status, raw, received = self.send(path, headers, body)
+        self.assertEqual(status, 200)
+        events = [json.loads(line[6:]) for line in received.splitlines() if line.startswith(b"data: ")]
+        completed = events[-1]["response"]
+        self.assertGreaterEqual(len(completed["output"][0]["content"][0]["text"]), 64 * 1024)
+        self.assertEqual(completed["usage"]["input_tokens"], len(raw) // 4)
+
     def connection_probe(self, model="ui-fixture", limit=256):
         path, headers, _ = self.request()
         headers["x-session-id"] = "connection-test-synthetic"
+        headers.update({"session_id": headers["x-session-id"], "x-client-request-id": headers["x-session-id"]})
         body = {"model": model, "stream": True, "store": False, "max_output_tokens": limit, "disable_fallbacks": True,
-                "metadata": {"session_id": headers["x-session-id"]},
-                "instructions": "This is a connection test. Reply briefly with OK.",
-                "input": [{"type": "message", "role": "user", "content": [
-                    {"type": "input_text", "text": "Reply with OK to confirm this connection."}]}]}
+                "metadata": {"session_id": headers["x-session-id"]}, "prompt_cache_key": headers["x-session-id"],
+                "input": [{"role": "system", "content": "This is a connection test. Reply briefly with OK."},
+                          {"role": "user", "content": [{"type": "input_text", "text": "Reply with OK to confirm this connection."}]}]}
         return path, headers, body
 
     def test_connection_ping_uses_selected_model_and_captures_small_tool_free_request(self):
@@ -146,9 +191,9 @@ class UIGatewayTests(unittest.TestCase):
                 elif malformed == "zero":
                     body["max_output_tokens"] = 0
                 elif malformed == "instructions":
-                    body["instructions"] += " Workspace AGENTS content"
+                    body["input"][0]["content"] += " Workspace AGENTS content"
                 elif malformed == "history":
-                    body["input"].append({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "private file"}]})
+                    body["input"].append({"role": "user", "content": [{"type": "input_text", "text": "private file"}]})
                 elif malformed == "tools":
                     body["tools"] = [{"type": "function", "name": "read"}]
                 elif malformed == "metadata":

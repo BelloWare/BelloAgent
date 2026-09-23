@@ -52,6 +52,19 @@ public actor AgentSession {
     var presentedTasks: TaskPresentationProjection?
     var presentedTasksGeneration: UInt64 = 0
     var runTask: Task<Void,Never>?, state="idle", runStatus="idle", errorMessage: String?, queuePaused=false
+    /// The code of the error that ended the last run, when it failed: the app
+    /// draws a `cost_limit` stop as a notice with a way to raise the limit.
+    var errorCode: String?
+    /// The chat's cost limit in US dollars, nil for none; what it has spent,
+    /// as the gateway reported it; and the attempts already counted, so an
+    /// attempt is never added twice. See SessionCost.swift.
+    var costLimitUSD: Double?
+    var spend = SessionSpend()
+    var countedAttempts = BoundedIdentitySet(limit: 512)
+    /// Whether this journal records every attempt's cost from its start: a
+    /// new chat does, and so does one with a cost record. A chat written
+    /// before cost records existed takes its earlier spend from the app once.
+    var spendTracked = true
     /// While a transient gateway failure is being retried: attempt, total and the reason.
     var retryInfo: JSON = .null
     var partialTimeline = ResponseTimeline()
@@ -86,7 +99,10 @@ public actor AgentSession {
     /// The call whose tool was actually entered, set just before the invoke.
     /// A call stopped while it still waited for the workspace editing gate
     /// never ran, and is recorded as not executed rather than unknown.
-    var toolInvocationBegan: String?
+    /// Pi's customInstructions for the manual compaction being run.
+    var compactionFocus: String?
+    /// Calls of the running tool batch whose tool has been entered.
+    var toolInvocationsBegan: Set<String> = []
     var cumulativeUsage = CumulativeUsage()
     var currentTurnID="", appliedRevision: String?
     /// Where the time went: model requests versus tool execution, for the
@@ -111,6 +127,12 @@ public actor AgentSession {
     var compactionPhysicalAttempts = 0
     var compactionProgressAt = 0.0
     let compactionPolicy: CompactionPolicy
+    /// Pi's settings.retry for model and summary requests.
+    var retrySettings = PiProviderRules.RetrySettings()
+    /// Replies pi's overflow recovery took out of the agent's context: the
+    /// requests of this runtime leave them out until the context is next
+    /// rebuilt (a compaction, a branch or a reopen), as pi's agent state does.
+    var requestExclusions = Set<String>()
     var contextCounter = RequestContextCounter()
     var currentContextCount: RequestContextCount?
     /// The idle count the snapshot carries, kept until the context or the turn profile changes.
@@ -178,7 +200,11 @@ public actor AgentSession {
         guard within(url,canonical(directory.path)) else { throw AgentError("session_scope", "Writable sessions must be in the app-managed directory") }
         let opened=try SessionJournal(url:url,id:id,cwd:cwd,binding:profile.binding,create:resumePath == nil,beforeAppend:beforeJournalAppend,beforeSynchronize:beforeJournalSynchronize); journal=opened
         var stateRecord: JSON?
+        // A journal this runtime creates counts every attempt from its first;
+        // a reopened one does when it holds a cost record (below).
+        spendTracked = resumePath == nil
         for item in opened.loaded {
+            if item["customType"].text == SessionSpend.recordType { spend.add(record: item["data"]); spendTracked = true; continue }
             if item["type"].text == "message" {
                 let message=try ChatMessage(id:required(item["id"],"message id"),pi:item["message"]); history.append(message); if !["execution","requestLedger"].contains(message.kind ?? "") { context.append(message) }; visible.append(message)
                 if message.role=="assistant" { assistantMessageCount += 1; latestAssistantMessageID=message.id }
@@ -277,7 +303,7 @@ public actor AgentSession {
             }
             if saved["active"].flag == true { errorMessage="The previous run was interrupted. No model or tool request was replayed. Inspect tool effects before continuing." }
             else if saved["runStatus"].text == "failed" {
-                runStatus="failed"; errorMessage=saved["errorMessage"].text ?? "Run failed."
+                runStatus="failed"; errorMessage=saved["errorMessage"].text ?? "Run failed."; errorCode=saved["errorCode"].text
             }
         }
         // Never repeat a tool after a crash. Pair unresolved calls with explicit

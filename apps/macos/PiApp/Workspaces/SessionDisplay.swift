@@ -24,6 +24,9 @@ import Combine
     @Published var timing = SessionTimingHistory() { didSet { if timing != oldValue { activityChanges.send() } } }
     @Published var gateway = GatewayTotals() { didSet { if gateway != oldValue { activityChanges.send() } } }
     @Published var gatewayNotice = ""
+    /// The chat's spend against its cost limit: the limit the app runs it
+    /// under and what its helper counted (`SessionCostReading`).
+    @Published var cost = SessionCostReading()
 }
 @MainActor final class ComposerDraft: ObservableObject { @Published var text = "" }
 
@@ -117,13 +120,53 @@ import Combine
         for row in sendingRows where !messages.reversed().contains(where: { $0.id == row.id }) { rows.append(row) }
         if let retryNotice { rows.append(TranscriptMessage(id: "notice:retry:" + id, role: "system", text: retryNotice, kind: "notice")) }
         if let failureMessage {
-            rows.append(TranscriptMessage(id: "failure:run:" + id, role: "system", text: failureMessage, kind: "failure",
-                                          detail: queuePaused && !queue.isEmpty ? "Queued follow-ups are paused. Resume when you’re ready." : nil))
+            let paused = queuePaused && !queue.isEmpty
+            var row = TranscriptMessage(id: "failure:run:" + id, role: "system", text: failureMessage, kind: "failure",
+                                        detail: paused ? "Queued follow-ups are paused. Resume when you’re ready." : nil)
+            if failureCode == Self.costLimitCode {
+                // The run stopped at the chat's cost limit: the notice offers to
+                // raise it, and once it is above the spend, to continue.
+                row.failureCode = costLimitHeld ? Self.costLimitCode : Self.costLimitRaised
+                row.detail = costLimitHeld
+                    ? [paused ? "Queued follow-ups stay paused." : nil, footer.cost.unreportedNote.map { $0 + ", so the spend may be higher." }].compactMap { $0 }.joined(separator: " ").nilIfEmpty
+                    : (footer.cost.limit.usd == nil ? "This chat has no limit now." : "The limit is now \(footer.cost.limit.label).")
+                        + " Continue picks up where the run stopped" + (paused ? "; queued follow-ups go on after it." : ".")
+            }
+            rows.append(row)
         } else if let sendFailure {
-            rows.append(TranscriptMessage(id: "failure:send:" + id, role: "system", text: sendFailure, kind: "failure"))
+            var row = TranscriptMessage(id: "failure:send:" + id, role: "system", text: sendFailure, kind: "failure")
+            if sendFailureCode == Self.costLimitCode {
+                row.failureCode = Self.costLimitCode
+                row.detail = "Your message is back in the composer. Raise the limit, then send it again."
+            }
+            rows.append(row)
         }
         return rows
     }
+    /// The helper's code for a run stopped, or a message refused, at the
+    /// chat's cost limit; and the notice's state once the limit is raised.
+    nonisolated static let costLimitCode = "cost_limit", costLimitRaised = "cost_limit_raised"
+    /// Whether the chat's reported spend is still at its limit, as the stop
+    /// notice last read it: it offers Raise limit… until it is not.
+    private(set) var costLimitHeld = true
+    /// Takes the chat's cost reading: the footer's figures, and the stop
+    /// notice's state.
+    func applyCostReading(_ reading: SessionCostReading) {
+        if footer.cost != reading { footer.cost = reading }
+        let held = reading.reached || reading.spentUSD == nil
+        guard held != costLimitHeld else { return }
+        costLimitHeld = held
+        if failureCode == Self.costLimitCode { publishTranscript() }
+    }
+    /// The owner changed the limit this chat runs under. A message refused
+    /// at the old one is a draft to send again, so its notice goes: sent
+    /// under a limit still too low, the helper refuses it with the new figures.
+    func costLimitChanged() {
+        if sendFailureCode == Self.costLimitCode { sendFailure = nil }
+    }
+    /// The last limit sent to the helper for this chat, so a snapshot that
+    /// shows another one (a change the helper missed) is answered once.
+    var costLimitSent: CostLimit?
     func publishTranscript() {
         guard transcriptBatchDepth == 0 else { return }
         let rows = presentedMessages
@@ -136,7 +179,9 @@ import Combine
     private(set) var retryAttempt: Int? { didSet { if retryAttempt != oldValue { activityChanges.send() } } }
     private(set) var retryLimit: Int? { didSet { if retryLimit != oldValue { activityChanges.send() } } }
     /// A submission the host or app refused; cleared by the next send.
-    @Published var sendFailure: String? { didSet { if sendFailure != oldValue { publishTranscript() } } }
+    @Published var sendFailure: String? { didSet { if sendFailure == nil { sendFailureCode = nil }; if sendFailure != oldValue { publishTranscript() } } }
+    /// The helper's code for the refusal shown; `cost_limit` draws the cost-limit notice.
+    var sendFailureCode: String? { didSet { if sendFailureCode != oldValue { publishTranscript() } } }
     func observeRetry(_ snapshot: [String: WireValue]) {
         let retry = snapshot["retry"]?.object
         retryAttempt = nil; retryLimit = nil
@@ -173,6 +218,8 @@ import Combine
     /// Bumped when the pane should move keyboard focus into the composer.
     @Published var composerFocusRequest = 0
     @Published var failureMessage: String? { didSet { if failureMessage != oldValue { publishTranscript() } } }
+    /// The helper's code for the run failure shown; `cost_limit` draws the stop notice.
+    @Published var failureCode: String? { didSet { if failureCode != oldValue { publishTranscript() } } }
     @Published var queuePaused = false { didSet { if queuePaused != oldValue { publishTranscript() } } }
     /// The chat's journal ends in a record cut off mid-write: its complete
     /// records are shown read-only and Recover Copy is offered instead of the composer.
@@ -189,7 +236,16 @@ import Combine
         if queuePaused != paused { queuePaused = paused }
         let detail = snapshot["preflightError"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines)
         let failure = nextState == "error" ? (detail?.isEmpty == false ? detail : "Run failed.") : nil
-        if failureMessage != failure { failureMessage = failure }
+        let code = failure == nil ? nil : snapshot["errorCode"]?.string
+        // Both change before the notice is drawn again, so it never shows one failure's words with another's actions.
+        if failureMessage != failure || failureCode != code {
+            beginTranscriptBatch(); defer { endTranscriptBatch() }
+            // The helper just said the chat is at its limit: the notice reads
+            // so until a reading of the spend says otherwise.
+            if code == Self.costLimitCode, failureCode != code { costLimitHeld = true }
+            if failureCode != code { failureCode = code }
+            if failureMessage != failure { failureMessage = failure }
+        }
     }
     /// A run whose helper disappeared leaves half-streamed rows behind that
     /// nothing will ever finish. They must stop presenting themselves as a live

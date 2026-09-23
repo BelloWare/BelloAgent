@@ -144,6 +144,15 @@ struct ProfileSettings: View {
                         PiRow(label: "Metric retention") { PiStepper(label: "\(controller.preferences.dashboard.metricRetentionDays) days", value: $controller.preferences.dashboard.metricRetentionDays, range: 1...3650) }
                         PiRow(label: "Dashboard window", last: true) { PiStepper(label: "\(controller.preferences.dashboard.windowHours) hours", value: $controller.preferences.dashboard.windowHours, range: 1...8760) }
                     }
+                    PiSettingsGroup(title: "Spending", footer: CostLimitText.explanation + " A chat can have its own limit: open its token usage figure under the composer, or Session info.") {
+                        PiRow(label: "Cost limit per chat", detail: controller.preferences.defaultChatCostLimit.usd == nil
+                              ? "No chat is stopped for what it costs, unless it has a limit of its own."
+                              : "Every chat without its own limit stops at \(controller.preferences.defaultChatCostLimit.label) of reported spend.", last: true) {
+                            CostLimitChoices(selection: controller.preferences.defaultChatCostLimit,
+                                             choose: { controller.preferences.chatCostLimit = $0 ?? .standard },
+                                             identifier: "settings-cost-limit")
+                        }
+                    }
                     PiSettingsGroup(title: "Transcript", footer: "Compact is how a finished turn reads by default: its tool calls and thoughts fold behind one line above the answer, and one click on that line shows the whole turn again. Nothing is discarded either way, and a turn still running always reads in full.") {
                         PiRow(label: "Finished turns", detail: TranscriptDisplayMode.compact.detail, last: true) {
                             PiDropdown(selection: $controller.preferences.transcriptDisplay,

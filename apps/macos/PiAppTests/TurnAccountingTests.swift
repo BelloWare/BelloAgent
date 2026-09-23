@@ -25,10 +25,16 @@ import SwiftUI
         guard let a = finishedTurn?.accounting else { return false }
         return a.requests == count && a.recordLines.isEmpty && a.missing.running == 0 && a.inputSamples == usage
     }
-    /// What Turn Info lists for the turn: the records it loads for that turn alone.
+    /// What the Session Inspector lists for the turn: the request log's rows,
+    /// the helper's own log and the replies' records, merged as its index
+    /// merges them.
     func requestLines(_ turn: TurnSummary) async throws -> [TurnRequestLine] {
-        let page = try await TurnRequestSource.session(model, sessionID: chat.id).list(TurnRequestScope(turn))
-        return TurnInfoPresentation.requestLines(turn, records: page.records)
+        let read = try await model.traces.inspectorRows(sessionID: chat.id, workspaceID: chat.workspaceID)
+        let page = try? await model.debugRequest("debug.list", sessionID: chat.id, params: ["offset": .number(0)])
+        let live = (page?["attempts"]?.array ?? []).compactMap { $0.object.flatMap(InspectorRequestRow.live) }
+        let id = try XCTUnwrap(turn.requests.compactMap(\.turn).first ?? turn.taskRootID)
+        let index = InspectorIndex(archived: read.rows, live: live, records: [id: turn.accounting.recordLines], olderRequests: read.older)
+        return (index.turn(id)?.requests ?? []).map(TurnRequestLine.init(row:))
     }
 }
 
@@ -83,7 +89,7 @@ final class TurnAccountingTests: XCTestCase {
         XCTAssertEqual(turn.accounting.recordLines.map(\.model), ["route-alpha", "route-beta", "route-alpha"])
         XCTAssertEqual(TurnInfoPresentation.coverageNotice(turn), "All from the chat’s own record")
         let listed = try await chat.requestLines(turn)
-        XCTAssertEqual(listed.map(\.source), [.record, .record, .record], "Turn Info: the log's rows expired, the replies' records stand in")
+        XCTAssertEqual(listed.map(\.source), [.record, .record, .record], "The Inspector: the log's rows expired, the replies' records stand in")
         XCTAssertEqual(listed.map(TurnInfoPresentation.lineSource), Array(repeating: "chat record · log expired", count: 3))
         XCTAssertEqual(listed.map(\.input), [100, 200, 300])
         XCTAssertTrue(text.contains("own record"), "The report says where the figures came from. OCR: \(text)")
@@ -93,8 +99,8 @@ final class TurnAccountingTests: XCTestCase {
     // MARK: H2 — an auto router sends one turn to several models
 
     /// Three requests over two models: the header names the latest and says
-    /// two models answered; Turn Info lists each request's route and figures
-    /// and each model's share.
+    /// two models answered; the Inspector's Turn page lists each request's
+    /// route and figures and each model's share.
     @MainActor func testAnAutoRouterTurnSaysHowManyModelsAnsweredAndListsEachRequest() async throws {
         let chat = try await WireChat()
         addTeardownBlock { @MainActor in await chat.close() }
@@ -114,19 +120,20 @@ final class TurnAccountingTests: XCTestCase {
         XCTAssertEqual(lines.map(TurnInfoPresentation.routeLabel), ["wire-fixture → route-alpha", "wire-fixture → route-beta", "wire-fixture → route-alpha"])
         XCTAssertEqual(TurnInfoPresentation.subtotals(lines).map(TurnInfoPresentation.subtotalLabel),
                        ["route-alpha · 2 requests · in 400 · out 40", "route-beta · 1 request · in 200 · out 20"])
-        // Turn Info itself, rendered.
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 640), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        var actions = TranscriptActions(); let model = chat.model, id = chat.id
-        actions.turnRequestSource = { TurnRequestSource.session(model, sessionID: id) }
-        window.contentView = NSHostingView(rootView: TurnInfoView(turn: turn, actions: actions))
-        window.makeKeyAndOrderFront(nil)
-        defer { window.contentView = nil; window.close() }
-        try await Task.sleep(for: .seconds(1))   // Turn Info loads this turn's records when it opens.
-        let info = try await SessionTimingTests.recognizedText(in: window, filename: "turn-info-router.jpg").replacingOccurrences(of: "•", with: "·")
-        XCTAssertTrue(info.contains("requests · 3 · 2 models"), "OCR reads lower case: \(info)")
+        // The Session Inspector's Turn page, rendered.
+        chat.model.openInspector(session: chat.id, focus: WorkspaceModel.inspectorFocus(for: turn))
+        let controller = try XCTUnwrap(SessionInspectorWindows.shared.controller(sessionID: chat.id))
+        defer { controller.close() }
+        let turnID = try XCTUnwrap(turn.requests.compactMap(\.turn).first ?? turn.taskRootID)
+        try await chat.waitUntil("the Inspector's Turn page", seconds: 20) {
+            controller.inspector.page == .turn(turnID) && controller.inspector.index.turn(turnID)?.requests.count == 3
+        }
+        let info = try await SessionTimingTests.recognizedText(in: try XCTUnwrap(controller.window), filename: "inspector-turn-router.jpg")
+            .replacingOccurrences(of: "•", with: "·")
+        XCTAssertTrue(info.contains("3 in this turn"), "OCR: \(info)")
+        XCTAssertTrue(info.contains("2 models"), "OCR: \(info)")
         XCTAssertTrue(info.contains("route-beta · 1 request"), "Per-model subtotals. OCR: \(info)")
-        XCTAssertTrue(info.contains("in 200"), "Each request's figures. OCR: \(info)")
+        XCTAssertTrue(info.contains("in 200"), "Each model's figures. OCR: \(info)")
         // END post-fix
     }
 
@@ -226,7 +233,7 @@ final class TurnAccountingTests: XCTestCase {
         XCTAssertEqual(turn.accounting.recordLines.map(TurnInfoPresentation.lineSource), Array(repeating: "chat record · not in log", count: 3))
         let listed = try await chat.requestLines(turn)
         XCTAssertEqual(listed.map(TurnInfoPresentation.lineSource), Array(repeating: "live log", count: 3),
-                       "Turn Info lists the helper's own log of the requests the durable log never got")
+                       "The Inspector lists the helper's own log of the requests the durable log never got")
         // END post-fix
     }
     // BEGIN post-fix
@@ -317,25 +324,24 @@ final class TurnAccountingTests: XCTestCase {
         XCTAssertEqual(TurnInfoPresentation.modelLabel(turn), "auto → m1")
     }
 
-    /// Turn Info's list, built from the records it loads for the one turn:
-    /// a request the log kept, one whose metrics expired (its reply's record
-    /// stands in), one only the helper's memory holds, and one the log never
-    /// had, from its reply's record.
-    func testTurnInfoListsEveryRequestFromTheRecordsItLoads() {
-        func record(_ id: String, wall: Double, expired: Bool = false, live: Bool = false) -> TurnRequestRecord {
-            var metadata: [String: WireValue] = ["attemptId": .string(id), "wallTimestamp": .number(wall), "requestedModel": .string("auto"), "outcome": .string("completed")]
-            if expired { metadata["metricsExpired"] = .bool(true) }
-            else {
-                metadata["usage"] = .object(["inputIncludingCache": .number(50), "output": .number(5)])
-                metadata["identity"] = .object(["status": .string("reported"), "evidence": .array([.object(["value": .string("m1"), "source": .string("body.router_model_name"), "kind": .string("model")])])])
-            }
-            return TurnRequestRecord(metadata: metadata, liveOnly: live)
+    /// The Inspector's turn table, from what its index merges for the one
+    /// turn: a request the log kept, one whose metrics expired (its reply's
+    /// record stands in), one only the helper's own log holds, and one the
+    /// log never had, from its reply's record.
+    func testTheInspectorListsEveryRequestOfATurnFromEachSource() throws {
+        func logRow(_ id: String, wall: Double, expired: Bool = false) -> InspectorRequestRow {
+            InspectorRequestRow(id: id, wall: wall, turn: "u", purpose: "turn", api: "openai-responses", alias: "auto", model: expired ? nil : "m1",
+                                outcome: "completed", metricsRetained: !expired, input: expired ? nil : 50, output: expired ? nil : 5)
         }
+        let live = try XCTUnwrap(InspectorRequestRow.live([
+            "attemptId": .string("a3"), "turnId": .string("u"), "wallTimestamp": .number(3), "requestedModel": .string("auto"), "outcome": .string("completed"),
+            "usage": .object(["inputIncludingCache": .number(50), "output": .number(5)]),
+            "identity": .object(["status": .string("reported"), "evidence": .array([.object(["value": .string("m1"), "source": .string("body.router_model_name"), "kind": .string("model")])])])]))
         let rows = [reply("r2", attempt: "a2", at: 2, accounting: logged(requests: 0, replyLog: .expired)),
                     reply("r4", attempt: "a4", at: 4, model: "m2", accounting: logged(requests: 0, replyLog: .absent))]
-        let turn = TurnSummary(replies: 4, tools: 0, startedAt: nil, endedAt: nil, elapsedMs: nil, modelMs: 0, toolMs: 0, live: false, files: 0,
-                               partial: false, accounting: TranscriptActivity.aggregate(rows), requests: rows, outcome: "completed")
-        let lines = TurnInfoPresentation.requestLines(turn, records: [record("a1", wall: 1), record("a2", wall: 2, expired: true), record("a3", wall: 3, live: true)])
+        let index = InspectorIndex(archived: [logRow("a1", wall: 1), logRow("a2", wall: 2, expired: true)], live: [live],
+                                   records: ["u": TranscriptActivity.aggregate(rows).recordLines])
+        let lines = try XCTUnwrap(index.turn("u")).requests.map(TurnRequestLine.init(row:))
         XCTAssertEqual(lines.map(\.id), ["a1", "a2", "a3", "a4"])
         XCTAssertEqual(lines.map(TurnInfoPresentation.lineSource), ["request log", "chat record · log expired", "live log", "chat record · not in log"])
         XCTAssertEqual(lines.map(\.input), [50, 100, 50, 100]); XCTAssertEqual(lines.map(\.model), ["m1", "m1", "m1", "m2"])

@@ -11,43 +11,37 @@ extension AgentSession {
             activeTaskPresentation?.activeInputID = currentTurnID.isEmpty ? root : currentTurnID
             activeTaskPresentation?.anchorSourceID = visible.last?.id ?? root
         }
-        state="running"; runStatus=state; errorMessage=nil; begin=nowMS(); end=nil; turnModelMs=0; turnToolMs=0
+        state="running"; runStatus=state; errorMessage=nil; errorCode=nil; begin=nowMS(); end=nil; turnModelMs=0; turnToolMs=0
         runTask=Task { await run(compactOnly:compactOnly) }; event("state")
     }
     func flushRequestLinks() async {
         let pending = pendingRequestLinks; pendingRequestLinks = [:]
         for (attempt, ids) in pending { await traces.outputs(attempt, messageIDs: ids) }
     }
-    /// A model request gets five retries after its initial failure before it is
-    /// reported. Only transient gateway conditions are retried: transport
-    /// failures, a stream that ended before its terminal event, HTTP
-    /// 408/425/429/5xx and provider errors that describe
-    /// overload, rate limits or temporary unavailability. Anything about the
-    /// request itself (a bad model, an oversized body, an auth failure) fails
-    /// at once, and a cancellation is never retried.
-    public static let modelAttempts = 6
-    static let retryDelays: [Double] = [1.0, 3.0, 5.0, 8.0, 10.0]
+    /// Pi 0.85.1's retry (agent-session.ts _isRetryableError and _prepareRetry):
+    /// a failure whose text pi's isRetryableAssistantError reads as transient
+    /// (overload, rate limits, 5xx, transport and cut streams), never a
+    /// context overflow, is retried up to settings.retry.maxRetries times (3),
+    /// after 2, 4 and 8 seconds. Anything else, and a cancellation, fails at once.
     static func isRetryable(_ error: AgentError) -> Bool {
-        if let failure=error.failure, [.inputContextExceeded,.inputPlusOutputContextExceeded,.outputLimitInvalid,.requestBodyTooLarge,.authentication].contains(failure) { return false }
-        switch error.code {
-        // A stream cut before its terminal event ran no tool; its partial
-        // reply is kept as an interrupted row before the request is resent.
-        case "provider_transport", "stream_backpressure", "incomplete_stream": return true
-        case "provider_http":
-            guard let status = httpStatus(in: error.message) else { return true }
-            return status == 408 || status == 425 || status == 429 || status >= 500
-        case "provider_failed":
-            let text = error.message.lowercased()
-            if ["not_found", "not found", "invalid", "unsupported", "authentication", "unauthorized", "permission", "quota", "context_length", "context length", "too large", "billing"].contains(where: { text.contains($0) }) { return false }
-            return ["overloaded", "rate limit", "rate_limit", "server_error", "server error", "internal error", "timeout", "timed out", "temporar", "unavailable", "capacity", "try again", "(529", "(503", "(502"].contains { text.contains($0) }
-        default: return false
-        }
+        !isContextOverflow(error) && PiProviderRules.isRetryableText(error.piMessage)
+    }
+    /// Case 1 of pi's isContextOverflow: the provider's text names an overflow.
+    /// Ours: the gateway's structured overflow codes count too.
+    static func isContextOverflow(_ error: AgentError) -> Bool {
+        error.failure?.contextRejection == true || PiProviderRules.isOverflowText(error.piMessage)
     }
     static func httpStatus(in message: String) -> Int? {
         guard let range = message.range(of: #"HTTP (\d{3})"#, options: .regularExpression) else { return nil }
         return Int(message[range].dropFirst(5))
     }
-    func completeWithRetries(profile: Profile, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], turnID: String, purpose: String, operation: JSON = .null, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void, reset: () throws -> Void) async throws -> ModelReply {
+    /// `refresh` runs after a retry's back-off. Pi retries by continuing its
+    /// agent loop, which first delivers queued steering; when it does, the
+    /// retried request is the one it returns.
+    func completeWithRetries(profile: Profile, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], turnID: String, purpose: String, operation: JSON = .null, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void, reset: () throws -> Void,
+                             refresh: () async throws -> (profile: Profile, messages: [ChatMessage], instructions: String, tools: [ToolDefinition])? = { nil }) async throws -> ModelReply {
+        var profile = profile, messages = messages, instructions = instructions, tools = tools
+        let attempts = retrySettings.enabled ? 1 + max(0, retrySettings.maxRetries) : 1
         var attempt = 0
         modelRequestsMs = 0; modelReplyMs = 0
         // The retry notice describes this request only. It goes whichever way
@@ -57,6 +51,9 @@ extension AgentSession {
         defer { retryInfo = .null }
         while true {
             attempt += 1
+            // Every attempt, the first and each retry, is a model request:
+            // none goes once the chat's reported spend reaches its limit.
+            try enforceCostLimit()
             let generation=beginObservationGeneration(profile:profile)
             // Each attempt's own duration; the back-off below is not model time.
             let started=nowMS(); var measured=false
@@ -67,19 +64,20 @@ extension AgentSession {
                 return reply
             } catch let error as AgentError {
                 modelRequestsMs += nowMS()-started; measured = true
-                guard attempt < Self.modelAttempts, Self.isRetryable(error), !Task.isCancelled else {
-                    throw attempt > 1 ? AgentError(error.code, "Failed after \(attempt) attempts. " + error.message,failure:error.failure,attemptID:error.attemptID) : error
+                guard attempt < attempts, Self.isRetryable(error), !Task.isCancelled else {
+                    throw attempt > 1 ? AgentError(error.code, "Failed after \(attempt) attempts. " + error.message,failure:error.failure,attemptID:error.attemptID,providerMessage:error.providerMessage) : error
                 }
                 try reset()
-                retryInfo = ["attempt": JSON(attempt + 1), "of": JSON(Self.modelAttempts), "reason": JSON(error.message)]
+                retryInfo = ["attempt": JSON(attempt + 1), "of": JSON(attempts), "reason": JSON(error.message)]
                 runStatus = "retrying"; event("retry", retryInfo)
-                let delay = Self.retryDelays[min(attempt - 1, Self.retryDelays.count - 1)]
-                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                try await Task.sleep(nanoseconds: UInt64(retrySettings.delayMs(attempt: attempt) * 1_000_000))
                 runStatus = "running"; event("state")
+                if let next = try await refresh() { (profile, messages, instructions, tools) = next }
             }
         }
     }
     func observeOperation(_ observation: RequestObservation, generation: UInt64, operation: JSON) async {
+        countAttempt(observation)
         startResponseLedger(observation)
         monitor(observation)
         observe(observation,generation:generation)
@@ -91,26 +89,41 @@ extension AgentSession {
             if compactOnly { try await compactContext();if let activeSubmission { commandState(activeSubmission,"completed") } }
             else {
                 // Pi checks a new prompt against the context before the prompt joins it.
-                let priorContext=context
-                if steering.isEmpty, !retrying { _ = try await startFollowUp() }
+                let priorContext=requestContext
+                if steering.isEmpty, !retrying {
+                    // A follow-up that cannot be answered stays queued, paused.
+                    if !queue.isEmpty { try enforceCostLimit() }
+                    _ = try await startFollowUp()
+                }
                 let retryFirstRequest=retrying
                 retrying=false
+                // Pi's _overflowRecoveryAttempted: one compact-and-retry until a
+                // user message arrives or a reply completes.
+                var overflowRecoveryAttempted=false
+                // The context before this round's steering or follow-up joined it:
+                // pi checks the threshold before pending messages are injected.
+                var undelivered: [ChatMessage]?
                 var rounds=0
                 while true {
+                    // Pi's agent loop has no limit on model requests per run.
                     try Task.checkCancellation(); rounds += 1
-                    guard rounds <= 256 else { throw AgentError("turn_limit", "Run stopped after 256 model requests; continue explicitly") }
                     // Retry repeats the failed model request before pending steering
                     // reaches its next complete model/tool boundary.
                     let resumingFailedRequest=retryFirstRequest && rounds == 1
+                    // Each round makes a model request. At the chat's cost
+                    // limit it stops here, before pending steering is delivered.
+                    try enforceCostLimit()
+                    let beforeDelivery=undelivered ?? requestContext; undelivered=nil
                     let drained=resumingFailedRequest ? false : try await drainSteering()
+                    if drained { overflowRecoveryAttempted=false }
                     var resourceSnapshot: ResourceSnapshot
                     if let appliedSnapshot { resourceSnapshot=appliedSnapshot }
                     else { resourceSnapshot=try await resources.resolve(); appliedSnapshot=resourceSnapshot }
                     appliedRevision=resourceSnapshot.revision
                     var definitions=await sessionDefinitions()
                     var instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
-                    var request=try ProviderClient.requestBody(profile:turnProfile,messages:context,instructions:instructions,tools:definitions,sessionID:id)
-                    var count=try countContext(context,request:request)
+                    var request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id)
+                    var count=try countContext(requestContext,request:request)
                     currentContextCount=count
                     // Pi 0.85.1 checks the threshold before a new prompt joins the context
                     // (Case 3 of _checkCompaction, on the reply before it) and before each
@@ -120,15 +133,17 @@ extension AgentSession {
                     // window is always sent, with its cap clipped to the room that is left.
                     // Pi never refuses a request on its estimate: a request the gateway
                     // rejects as too long is compacted and retried once below.
-                    let thresholdTokens=resumingFailedRequest ? nil : rounds == 1 ? PiContext.promptThresholdTokens(priorContext) : count.tokens
+                    let thresholdTokens=resumingFailedRequest ? nil : rounds == 1 ? PiContext.promptThresholdTokens(priorContext) : PiContext.contextUsage(beforeDelivery)?.tokens
                     if let thresholdTokens, PiContext.shouldCompact(thresholdTokens,contextWindow:turnProfile.contextWindow,settings:compactionSettings), canCompact {
-                        try await compactContext(reason:"threshold")
-                        if !drained && !resumingFailedRequest { _ = try await drainSteering() }
+                        // Pi reports a failed threshold compaction and sends the request anyway.
+                        do { try await compactContext(reason:"threshold") }
+                        catch where !(error is CancellationError) && !Task.isCancelled {}
+                        if !drained && !resumingFailedRequest, try await drainSteering() { overflowRecoveryAttempted=false }
                         resourceSnapshot=appliedSnapshot ?? resourceSnapshot
                         definitions=await sessionDefinitions()
                         instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
-                        request=try ProviderClient.requestBody(profile:turnProfile,messages:context,instructions:instructions,tools:definitions,sessionID:id)
-                        count=try countContext(context,request:request); currentContextCount=count
+                        request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id)
+                        count=try countContext(requestContext,request:request); currentContextCount=count
                     }
                     var modelMs=0.0
                     let operationID=UUID().uuidString
@@ -139,7 +154,7 @@ extension AgentSession {
                         partialID=UUID().uuidString; partialStartedAt=Date().timeIntervalSince1970 * 1000; activeTaskPresentation?.operationID=operationID
                         partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus="running"; modelActive=true; event("message_start")
                         do {
-                            completed=try await completeWithRetries(profile:dispatchProfile,messages:context,instructions:instructions,tools:definitions,turnID:currentTurnID,purpose:titleTask ? "title" : "turn",operation:["logicalRequestId":JSON(operationID),"recovered":JSON(recovered),"recovery":recovered ? contextRecovery : .null],onDelta:{ [weak self] delta in await self?.delta(delta) },reset:{
+                            completed=try await completeWithRetries(profile:dispatchProfile,messages:requestContext,instructions:instructions,tools:definitions,turnID:currentTurnID,purpose:titleTask ? "title" : "turn",operation:["logicalRequestId":JSON(operationID),"recovered":JSON(recovered),"recovery":recovered ? contextRecovery : .null],onDelta:{ [weak self] delta in await self?.delta(delta) },reset:{
                                 if let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty {
                                     var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]])
                                     partial.responseTimeline=partialTimeline; partial.responseTimeline?.finish("interrupted")
@@ -150,11 +165,23 @@ extension AgentSession {
                                 partialID=UUID().uuidString; partialStartedAt=Date().timeIntervalSince1970 * 1000
                                 partialText=""; partialThinking=""; resetPartialRow()
                                 if let partialID { recordDisplayChange(partialID, at: displayClock()) }
+                            },refresh:{
+                                // Pi retries by continuing its loop, which first delivers queued steering.
+                                guard try await drainSteering() else { return nil }
+                                overflowRecoveryAttempted=false
+                                resourceSnapshot=appliedSnapshot ?? resourceSnapshot
+                                definitions=await sessionDefinitions()
+                                instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
+                                request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id)
+                                count=try countContext(requestContext,request:request); currentContextCount=count
+                                return (try turnProfile.dispatching(count),requestContext,instructions,definitions)
                             })
                             modelMs += modelRequestsMs
                         } catch let error as AgentError {
                             modelMs += modelRequestsMs
-                            guard error.failure?.contextRejection == true, autoCompaction, !titleTask, !recovered, canCompact(recovering:true), !Task.isCancelled else { throw error }
+                            // Case 1 of pi's _checkCompaction: compact and retry once.
+                            guard Self.isContextOverflow(error), autoCompaction, !titleTask, !overflowRecoveryAttempted, canCompact(recovering:true), !Task.isCancelled else { throw error }
+                            overflowRecoveryAttempted=true
                             // Recovery surrounds only this failed model operation.
                             // The completed tool batch is never entered a second time.
                             if let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty {
@@ -164,17 +191,31 @@ extension AgentSession {
                                 try append(partial)
                             }
                             partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); modelActive=false
-                            let recovery: JSON=["logicalRequestId":JSON(operationID),"consumed":true,"failedAttemptId":error.attemptID.map { JSON($0) } ?? .null,"failedFingerprint":count.requestFingerprint.map { JSON($0) } ?? .null,"failure":JSON(error.failure!.rawValue)]
+                            let failure=error.failure.flatMap { $0.contextRejection ? $0.rawValue : nil } ?? "contextOverflow"
+                            let recovery: JSON=["logicalRequestId":JSON(operationID),"consumed":true,"failedAttemptId":error.attemptID.map { JSON($0) } ?? .null,"failedFingerprint":count.requestFingerprint.map { JSON($0) } ?? .null,"failure":JSON(failure)]
                             try journal?.append(["type":"custom","customType":"pi-app.context-recovery.v1","data":recovery],flush:true)
                             contextRecovery=recovery; recovered=true
-                            try await compactContext(reason:"context-rejection")
+                            // A recovery that cannot compact leaves the overflow as the run's failure, as in pi.
+                            let overflow=error
+                            do { try await compactContext(reason:"context-rejection") }
+                            // A stop at the chat's cost limit is the run's failure, not the overflow.
+                            catch let stopped as AgentError where stopped.code == Self.costLimitCode { throw stopped }
+                            catch let failed where !(failed is CancellationError) && !Task.isCancelled { throw overflow }
                             try Task.checkCancellation()
-                            // Pending steering keeps its normal next-boundary admission.
-                            request=try ProviderClient.requestBody(profile:turnProfile,messages:context,instructions:instructions,tools:definitions,sessionID:id)
-                            count=try countContext(context,request:request); currentContextCount=count
+                            // Pi continues its loop after the compaction, delivering queued steering first.
+                            if try await drainSteering() { overflowRecoveryAttempted=false }
+                            resourceSnapshot=appliedSnapshot ?? resourceSnapshot
+                            definitions=await sessionDefinitions()
+                            instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
+                            request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id)
+                            count=try countContext(requestContext,request:request); currentContextCount=count
                         }
                     }
                     guard let reply=completed else { throw AgentError("provider_failed","No model response") }
+                    // Pi's mapStopReason: incomplete for any reason but max_output_tokens is an error.
+                    if reply.truncated, let reason=reply.terminal?.incompleteReason, reason != "max_output_tokens" {
+                        let text=PiErrorText.incomplete(reason); throw AgentError("provider_incomplete",text,providerMessage:text)
+                    }
                     turnModelMs += modelMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, modelMs)
                     modelActive=false
                     if partialTimeline.segments.isEmpty, let timeline=reply.message.responseTimeline { partialTimeline=timeline }
@@ -195,68 +236,84 @@ extension AgentSession {
                     // The reply keeps its usage in pi's shape: the next count rests on it.
                     assistant.usage=PiContext.usage(reply.usage,api:turnProfile.api)
                     try append(assistant); cumulativeUsage.observe(reply.usage)
+                    if !outputLimited { overflowRecoveryAttempted=false }
                     let replyID=assistant.id
                     event("message_end")
                     await flushRequestLinks()
                     guard !titleTask || reply.calls.isEmpty else { throw AgentError("title_tool_call", "Title generation returned a tool call. No tool ran and no extra model request was made.") }
-                    for (i,call) in reply.calls.enumerated() {
+                    if let stoppedEarly {
+                        for call in reply.calls {
+                            let reason = outputLimited ? "Tool call \"\(call.name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments." : "Not executed: the provider ended the reply early (\(stoppedEarly)), so its arguments may be incomplete. Re-issue a complete tool call if it is still needed."
+                            try recordTool(call,result:resultText(reason,error:true),started:nil,state:"failed")
+                        }
+                    } else if !reply.calls.isEmpty {
                         if Task.isCancelled {
-                            for pending in reply.calls.dropFirst(i) { try recordTool(pending,result:resultText("Not executed: cancelled before invocation",error:true),started:nil,state:"cancelled") }
+                            for pending in reply.calls { try recordTool(pending,result:resultText("Not executed: cancelled before invocation",error:true),started:nil,state:"cancelled") }
                             throw CancellationError()
                         }
-                        if let stoppedEarly {
-                            let reason = outputLimited ? "Not executed: model hit its output limit and arguments may be truncated. Re-issue a complete tool call." : "Not executed: the provider ended the reply early (\(stoppedEarly)), so its arguments may be incomplete. Re-issue a complete tool call if it is still needed."
-                            try recordTool(call,result:resultText(reason,error:true),started:nil,state:"failed"); continue
-                        }
-                        let start=nowMS(); runStatus="waitingTool"; toolInvocationBegan=nil
-                        setToolStateOwner(call.id)
-                        let fields=toolInputFields(call.arguments)
-                        setToolState(call.id,merging(["id":JSON(call.id),"name":JSON(call.name),"state":"running","output":"","durationMs":.null,"truncated":JSON(fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false)],fields))
-                        recordDisplayChange(toolStateOwners[call.id], at: displayClock())
-                        event("tool_execution_queued")
-                        do { let result=try await invokeTool(call); try recordTool(call,result:result,started:start,state:result["isError"].flag == true ? "failed" : "completed") }
-                        catch {
-                            let cancelled=Task.isCancelled || error is CancellationError
-                            // A call stopped before its tool was entered (still
-                            // waiting for the workspace editing gate) never ran.
-                            let began=toolInvocationBegan == call.id
-                            let text=cancelled ? (began ? "Tool interrupted. Effects may already have occurred; inspect before retrying. No automatic replay." : "Not executed: cancelled before invocation") : (error as? AgentError)?.message ?? "Tool failed; inspect its effects before retrying."
-                            // Only an editing tool that had begun, and failed other
-                            // than by rejecting the call outright, may have left
-                            // effects: its outcome is unknown, never just failed.
-                            try recordTool(call,result:resultText(text,error:true),started:began ? start : nil,state:cancelled ? "cancelled" : "failed",uncertain:began && Self.isEditing(call) && !Self.isRejection(error))
-                            if cancelled { for pending in reply.calls.dropFirst(i+1) { try recordTool(pending,result:resultText("Not executed: cancelled",error:true),started:nil,state:"cancelled") }; throw CancellationError() }
-                        }
+                        try await runToolBatch(reply.calls)
                     }
                     await flushRequestLinks()
                     boundary=context; runStatus="running"; try persistState(active:true); event("turn_end")
                     // Pi 0.85.1: steering is consumed after a COMPLETE tool batch.
                     // Follow-ups are consulted only when the agent would stop.
                     if !steering.isEmpty { continue }
-                    if !reply.truncated && !reply.calls.isEmpty { continue }
+                    // Pi continues after any tool batch, also one it failed because the
+                    // reply stopped at its output limit, so the model can re-issue the calls.
+                    if !reply.calls.isEmpty { continue }
                     // A reply that stopped at the output budget ends the turn like any
                     // other: the row says so, and queued follow-ups go on.
                     if outputLimited { event("output_limit") }
-                    // Pi 0.85.1 ends a run with the same check on its last reply (Case 3 of
-                    // _checkCompaction) and compacts without a retry. A queued follow-up
-                    // continues the run instead and is checked before its request. The reply
-                    // is complete either way: a failed compaction keeps the context and says so.
-                    if queue.isEmpty, let position=context.lastIndex(where: { $0.id == replyID }),
-                       let tokens=PiContext.thresholdTokens(after:position,in:context),
-                       PiContext.shouldCompact(tokens,contextWindow:turnProfile.contextWindow,settings:compactionSettings), canCompact {
-                        do { try await compactContext(reason:"threshold") }
-                        catch where !(error is CancellationError) && !Task.isCancelled {}
+                    // Pi 0.85.1 ends a run with _checkCompaction on its last reply. A
+                    // queued follow-up continues the run instead and is checked before its
+                    // request. A failed compaction keeps the context and says so.
+                    if queue.isEmpty, let position=context.lastIndex(where: { $0.id == replyID }) {
+                        let stop=outputLimited ? "length" : "stop", usage=context[position].usage, window=turnProfile.contextWindow
+                        let overflowed=PiProviderRules.isUsageOverflow(stopReason:stop,usage:usage,contextWindow:window)
+                        let recoverable=PiProviderRules.isRecoverableLength(stopReason:stop,usage:usage,desiredMaxOutput:turnProfile.modelOutputLimit ?? 0)
+                        if autoCompaction, overflowed || recoverable {
+                            if stop == "stop" {
+                                // Case 2: a completed reply that overflowed the window compacts without a retry.
+                                if canCompact {
+                                    do { try await compactContext(reason:"overflow") }
+                                    catch where !(error is CancellationError) && !Task.isCancelled {}
+                                }
+                            } else if !overflowRecoveryAttempted, !titleTask, canCompact(recovering:true) {
+                                // Case 1: a reply cut below the model's own output limit (or by a
+                                // full window) leaves the context, which is compacted, and the
+                                // request is made again once.
+                                overflowRecoveryAttempted=true
+                                let recovery: JSON=["logicalRequestId":JSON(operationID),"consumed":true,"failedAttemptId":currentAttemptIDs.last.map { JSON($0) } ?? .null,
+                                                    "failedFingerprint":count.requestFingerprint.map { JSON($0) } ?? .null,"failure":"length"]
+                                try journal?.append(["type":"custom","customType":"pi-app.context-recovery.v1","data":recovery],flush:true)
+                                contextRecovery=recovery; excludeFromRequests(replyID)
+                                var compacted=false
+                                do { try await compactContext(reason:"context-rejection"); compacted=true }
+                                catch where !(error is CancellationError) && !Task.isCancelled {}
+                                // Pi takes the reply out of the rebuilt context again and continues.
+                                excludeFromRequests(replyID)
+                                if compacted { continue }
+                            }
+                        } else if let tokens=PiContext.thresholdTokens(after:position,in:context),
+                                  PiContext.shouldCompact(tokens,contextWindow:window,settings:compactionSettings), canCompact {
+                            // Case 3: the threshold, without a retry.
+                            do { try await compactContext(reason:"threshold") }
+                            catch where !(error is CancellationError) && !Task.isCancelled {}
+                        }
                     }
                     try finishPresentedTask(outputLimited ? "output-limited" : "completed")
                     if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
-                    if try await startFollowUp() { continue }
+                    undelivered=requestContext
+                    if !queue.isEmpty { try enforceCostLimit() }
+                    if try await startFollowUp() { overflowRecoveryAttempted=false; continue }
                     break
                 }
             }
-            state="idle"; runStatus="idle"; errorMessage=nil
+            state="idle"; runStatus="idle"; errorMessage=nil; errorCode=nil
         } catch {
             queuePaused=true; runStatus=Task.isCancelled || error is CancellationError ? "cancelled" : "failed"; state=runStatus == "cancelled" ? "paused" : "error"
             errorMessage=(error as? AgentError)?.message ?? (runStatus == "cancelled" ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
+            errorCode=runStatus == "failed" ? (error as? AgentError)?.code : nil
             if let activeSubmission { commandState(activeSubmission,runStatus) }
             if let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty {
                 var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]]); partial.responseTimeline=partialTimeline; partial.responseTimeline?.finish("interrupted")
@@ -267,7 +324,7 @@ extension AgentSession {
                 // the same row ID in snapshots taken during that suspension.
                 do { try append(partial); self.partialID=nil } catch { }
             }
-            do { try finishPresentedTask(runStatus == "cancelled" ? "cancelled" : "failed", detail:errorMessage) }
+            do { try finishPresentedTask(runStatus == "cancelled" ? "cancelled" : "failed", detail:errorMessage, code:errorCode) }
             catch { activeTaskPresentation=nil; errorMessage="Task outcome could not be saved. Inspect the retained conversation and tool effects before retrying." }
             event("error",["message":JSON(errorMessage ?? "Interrupted")])
         }
@@ -276,7 +333,7 @@ extension AgentSession {
         modelActive=false; partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); end=nowMS(); runTask=nil
         retrySubmission = runStatus == "idle" ? nil : activeSubmission; activeSubmission=nil
         if let pending=pendingConfiguration { apply(profile:pending.profile, apiKey:pending.apiKey) }
-        do { try persistState(active:false) } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; state="error"; runStatus="failed"; queuePaused=true }
+        do { try persistState(active:false) } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; errorCode=nil; state="error"; runStatus="failed"; queuePaused=true }
         event("agent_settled")
         // submit() may accept another message while the last request links
         // are being flushed above. It sees a runTask and queues instead of

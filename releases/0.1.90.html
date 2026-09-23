@@ -1,0 +1,10 @@
+<h2>Bello Agent 0.1.90</h2>
+<ul>
+  <li>Compacting a chat no longer freezes the app. Menus are built only when you open them, the sidebar's spinner costs the app nothing per frame, and a terminal always reports when its shell exits.</li>
+  <li>A cost limit per chat, $25 by default. Change it or turn it off in Settings, or give any chat its own limit. When a chat reaches it, the run stops before its next request with a "Raise limit…" button, and the cost reads "$spent of $limit". A chat's earlier spend counts, so a chat already past $25 stops at its next request until you raise its limit.</li>
+  <li>A Session Inspector for every chat, in one window. See the overview and charts, every turn and request, and for each request the conversation, what is new since the previous request, the response, and the raw JSON and headers. The chat's receipts and turn cards stay as they were, and open the inspector where you click.</li>
+  <li>Requests, replies, retries, turns and compaction now follow pi 0.85.1: the summary's output cap, the system prompt and images, tool results and definitions, stream handling, error classification, and retries at 2, 4 and 8 seconds. There is no limit on requests per turn; the cost limit is the backstop.</li>
+  <li>A reply's tool calls run together, as in pi, while edits keep their order. The read tool returns image files as images.</li>
+  <li><code>/compact</code> takes a focus, as in pi (<code>/compact the API design</code>), and stops a running turn first.</li>
+  <li>A reply the provider ends early for a reason other than its length limit, such as a content filter, now fails the run with pi's message.</li>
+</ul>

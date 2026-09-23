@@ -7,18 +7,18 @@ import Darwin
 /// The terminal driven as a reader drives it: a real shell on a real pty in a
 /// real window, streaming output, scrolled back, resized, pasted into, and
 /// closed. Plus what it costs per megabyte and per frame.
-final class TerminalPanelAuditTests: XCTestCase {
+class TerminalPanelTestCase: XCTestCase {
 
     // MARK: Fixtures
 
-    @MainActor private func window(_ view: NSView, width: CGFloat = 800, height: CGFloat = 300) -> NSWindow {
+    @MainActor fileprivate func window(_ view: NSView, width: CGFloat = 800, height: CGFloat = 300) -> NSWindow {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = view
         window.makeKeyAndOrderFront(nil)
         return window
     }
-    @MainActor private func eventually(_ what: String, timeout: TimeInterval = 20, _ condition: () -> Bool,
+    @MainActor fileprivate func eventually(_ what: String, timeout: TimeInterval = 20, _ condition: () -> Bool,
                                        file: StaticString = #filePath, line: UInt = #line) async throws {
         let deadline = ProcessInfo.processInfo.systemUptime + timeout
         while ProcessInfo.processInfo.systemUptime < deadline {
@@ -27,29 +27,38 @@ final class TerminalPanelAuditTests: XCTestCase {
         }
         XCTFail("Never \(what)", file: file, line: line)
     }
-    @MainActor private func scroll(_ view: TerminalView, lines: Int32, file: StaticString = #filePath, line: UInt = #line) {
+    @MainActor fileprivate func scroll(_ view: TerminalView, lines: Int32, file: StaticString = #filePath, line: UInt = #line) {
         guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: lines, wheel2: 0, wheel3: 0)
             .flatMap({ NSEvent(cgEvent: $0) }) else { return XCTFail("Could not make a scroll event", file: file, line: line) }
         view.scrollWheel(with: event)
     }
-    @MainActor private func key(_ view: TerminalView, code: UInt16, characters: String, modifiers: NSEvent.ModifierFlags = [],
+    @MainActor fileprivate func key(_ view: TerminalView, code: UInt16, characters: String, modifiers: NSEvent.ModifierFlags = [],
                                 file: StaticString = #filePath, line: UInt = #line) {
         guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: view.window?.windowNumber ?? 0,
                                            context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)
         else { return XCTFail("Could not make a key event", file: file, line: line) }
         view.keyDown(with: event)
     }
-    private func milliseconds(_ work: () -> Void) -> Double {
+    fileprivate func milliseconds(_ work: () -> Void) -> Double {
         let start = ProcessInfo.processInfo.systemUptime
         work()
         return (ProcessInfo.processInfo.systemUptime - start) * 1000
     }
-    private func workspace(_ id: String) -> WorkspaceRecord {
+    fileprivate func workspace(_ id: String) -> WorkspaceRecord {
         WorkspaceRecord(id: id, path: NSTemporaryDirectory(), trusted: true)
     }
 
     // MARK: Reading while output arrives
 
+    // MARK: The pty
+
+    // MARK: A real shell in a real window
+
+    // MARK: Cost
+
+}
+
+final class TerminalPanelAuditTests: TerminalPanelTestCase {
     /// Scrolling back and then getting more output used to drag the text out
     /// from under the reader: the offset was measured from the bottom, which
     /// moves. What is on screen must stay on screen.
@@ -100,8 +109,6 @@ final class TerminalPanelAuditTests: XCTestCase {
         XCTAssertEqual(view.scrolledBackLines, 0)
     }
 
-    // MARK: The pty
-
     /// The reader keeps typing after the shell has exited. Nothing may be
     /// written to the descriptor the terminal used, which by then belongs to
     /// whatever file the app opened next.
@@ -138,28 +145,6 @@ final class TerminalPanelAuditTests: XCTestCase {
             XCTAssertEqual(size, 0, "input after the shell exited was written into \(url.lastPathComponent)")
         }
         XCTAssertFalse(process.running)
-    }
-
-    /// A shell killed from outside, and a shell that exits on its own: both
-    /// report their exit once, leave nothing unreaped, and stop the panel.
-    @MainActor func testAShellKilledFromOutsideAndOneThatExitsBothReportOnce() async throws {
-        for (label, arguments) in [("killed", ["sh", "-c", "printf READY; exec /bin/sleep 20"]), ("exited", ["sh", "-c", "printf READY; exit 7"])] {
-            let process = PseudoTerminal()
-            var output = Data(), exits: [Int32] = []
-            process.onData = { output.append($0) }
-            process.onExit = { exits.append($0) }
-            try process.start(executable: "/bin/sh", arguments: arguments, environment: ["PATH": "/usr/bin:/bin", "TERM": "xterm-256color"],
-                              directory: NSTemporaryDirectory(), columns: 60, rows: 12)
-            try await eventually("hear from the \(label) shell") { String(decoding: output, as: UTF8.self).contains("READY") }
-            if label == "killed" { kill(process.processID, SIGKILL) }
-            try await eventually("see the \(label) shell end", timeout: 10) { !exits.isEmpty }
-            try await Task.sleep(for: .milliseconds(200))
-            XCTAssertEqual(exits.count, 1, "\(label): the exit is reported exactly once")
-            XCTAssertFalse(process.running, "\(label): the terminal knows it is over")
-            if label == "exited" { XCTAssertEqual(exits.first, 7) } else { XCTAssertEqual(exits.first, 128 + SIGKILL) }
-            process.write(Data("ignored\n".utf8))
-            process.terminate()
-        }
     }
 
     /// The shell used to inherit every descriptor the app had open — the
@@ -213,6 +198,108 @@ final class TerminalPanelAuditTests: XCTestCase {
         try await eventually("end every shell on the way out", timeout: 10) { !two.process.running }
     }
 
+    /// The panel in a window, switched from one project to another: the new
+    /// project's shell has the keyboard, not nothing at all.
+    @MainActor func testSwitchingProjectsMovesTheTerminalAndTheKeyboardWithIt() async throws {
+        TerminalRegistry.shared.shutdown()
+        let first = workspace("panel-one-" + UUID().uuidString), second = workspace("panel-two-" + UUID().uuidString)
+        let model = WorkspaceModel(stateRoot: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("panel-" + UUID().uuidString),
+                                   vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let holder = WorkspaceHolder(workspace: first)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: TerminalPanelProbe(model: model, holder: holder))
+        window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close(); TerminalRegistry.shared.shutdown() }
+
+        let one = TerminalRegistry.shared.session(for: first)
+        try await eventually("give the first project's shell the keyboard") { window.firstResponder === one.view }
+        XCTAssertTrue(one.view.window === window, "the terminal is in the window")
+
+        holder.workspace = second
+        let two = TerminalRegistry.shared.session(for: second)
+        XCTAssertTrue(one !== two)
+        try await eventually("move the panel to the other project") { two.view.window === window }
+        try await eventually("hand the keyboard to the other project's shell") { window.firstResponder === two.view }
+        try await eventually("take the first project's terminal out of the panel") { one.view.superview == nil }
+        XCTAssertNil(one.view.window, "and the first project's terminal has left the window")
+        XCTAssertEqual(two.view.superview?.subviews.count, 1, "one terminal in the panel, not one per project ever shown")
+        XCTAssertEqual(TerminalRegistry.shared.openWorkspaceIDs, [first.id, second.id], "both shells are still there")
+    }
+
+    /// What the emulator costs per megabyte of output and what the scrollback
+    /// of several terminals costs in memory. Printed for the release record.
+    func testEmulatorThroughputAndScrollbackFootprint() {
+        let terminal = TerminalEmulator(columns: 120, rows: 40, scrollbackLimit: 10_000)
+        var stream = ""
+        for index in 0..<20_000 { stream += "\u{1b}[32mrow \(index)\u{1b}[0m " + String(repeating: "abcdefgh ", count: 10) + "\r\n" }
+        let bytes = Double(stream.utf8.count)
+        let data = Data(stream.utf8)
+        let cost = milliseconds { terminal.feed(data) }
+        print(String(format: "PERF terminal emulator: %.1f ms for %.2f MB (%.1f ms per MB)", cost, bytes / 1_048_576, cost / (bytes / 1_048_576)))
+        XCTAssertGreaterThan(terminal.scrollback.count, 9_600)
+        XCTAssertLessThanOrEqual(terminal.scrollback.count, 10_000)
+
+        let cell = MemoryLayout<TerminalCell>.stride
+        var cells = 0, textBytes = 0, runs = 0, exactLines = 0
+        for line in terminal.scrollback {
+            cells += line.cellCount; textBytes += line.text.utf8.count; runs += line.styles.count
+            if line.exact != nil { exactLines += 1 }
+        }
+        let asCells = Double(cells * cell) / 1_048_576
+        let stored = Double(textBytes + runs * MemoryLayout<TerminalHistoryLine.StyleRun>.stride
+                            + terminal.scrollback.count * MemoryLayout<TerminalHistoryLine>.stride) / 1_048_576
+        print(String(format: "PERF terminal scrollback: %d cells — %.1f MB as cells, %.1f MB as text plus style runs (%.1f× smaller), %.1f MB for four terminals",
+                     cells, asCells, stored, asCells / max(stored, 0.001), stored * 4))
+        XCTAssertEqual(exactLines, 0, "ordinary output needs no per-cell text")
+        XCTAssertLessThanOrEqual(cells, TerminalEmulator.scrollbackCellLimit, "the history is capped in cells as well as in lines")
+        XCTAssertLessThan(stored * 4, asCells, "the history costs a fraction of one cell per column")
+
+        // A very wide window would otherwise hold ten thousand very long lines.
+        let wide = TerminalEmulator(columns: 2_000, rows: 10, scrollbackLimit: 10_000)
+        let long = String(repeating: "w", count: 1_999) + "\r\n"
+        for _ in 0..<4_000 { wide.feed(long) }
+        var wideCells = 0
+        for line in wide.scrollback { wideCells += line.cellCount }
+        print(String(format: "PERF terminal scrollback of a 2000-column window: %d lines, %d cells (%.1f MB as cells)", wide.scrollback.count, wideCells, Double(wideCells * cell) / 1_048_576))
+        XCTAssertLessThanOrEqual(wideCells, TerminalEmulator.scrollbackCellLimit, "the widest window still has a memory ceiling")
+        XCTAssertGreaterThan(wide.scrollback.count, 500, "and still keeps a usable history")
+        XCTAssertEqual(wide.scrollback.count + wide.trimmedLines, 4_000 - 9, "every line that left the screen is kept or counted")
+    }
+
+    /// What four projects' terminals, each with ten thousand lines of history,
+    /// actually cost the process.
+    func testFourTerminalsOfHistoryCostTheProcessLittle() {
+        func footprint() -> Double {
+            var usage = rusage_info_current()
+            let result = withUnsafeMutablePointer(to: &usage) { pointer in
+                pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(getpid(), RUSAGE_INFO_CURRENT, $0) }
+            }
+            return result == 0 ? Double(usage.ri_phys_footprint) / 1_048_576 : 0
+        }
+        var terminals: [TerminalEmulator] = []
+        let line = "\u{1b}[36m" + String(repeating: "output ", count: 14) + "\u{1b}[0m\r\n"
+        _ = footprint()
+        let before = footprint()
+        for _ in 0..<4 {
+            let terminal = TerminalEmulator(columns: 120, rows: 40, scrollbackLimit: 10_000)
+            for _ in 0..<10_400 { terminal.feed(line) }
+            XCTAssertGreaterThan(terminal.scrollback.count, 9_600)
+            terminals.append(terminal)
+        }
+        let after = footprint()
+        print(String(format: "PERF four terminals with ten thousand lines of history each: process grew %.1f MB (%.1f MB each)", after - before, (after - before) / 4))
+        XCTAssertEqual(terminals.count, 4)
+        XCTAssertLessThan(after - before, 60, "four histories must not be a hundred megabytes")
+    }
+}
+
+/// The terminal tests that cannot share the machine: two use the general
+/// pasteboard, which every test host shares, three hold a draw or a bell to a
+/// wall-clock cost in Debug too, and one waits for a killed shell's exit,
+/// which in ten parallel clones was not reported within ten seconds. They
+/// run in the serial lane (`scripts/test-lanes.py`).
+final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
     /// `cat` on a binary file: thousands of BEL bytes must not ring thousands
     /// of times, each of them on the main thread.
     @MainActor func testABinaryFileFullOfBellsRingsOnceNotTenThousandTimes() async throws {
@@ -226,8 +313,6 @@ final class TerminalPanelAuditTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(session.bellsRung, 1, "but the first one is heard")
         XCTAssertLessThan(cost, 200, "and the main thread is not spent ringing")
     }
-
-    // MARK: A real shell in a real window
 
     /// The whole panel: a shell in a window, a long-output command, a resize
     /// while it streams, the alternate screen, and copying a selection.
@@ -342,77 +427,6 @@ final class TerminalPanelAuditTests: XCTestCase {
         XCTAssertEqual(taken(), "\u{1b}[200~one\rtwo\u{1b}[201~")
     }
 
-    /// The panel in a window, switched from one project to another: the new
-    /// project's shell has the keyboard, not nothing at all.
-    @MainActor func testSwitchingProjectsMovesTheTerminalAndTheKeyboardWithIt() async throws {
-        TerminalRegistry.shared.shutdown()
-        let first = workspace("panel-one-" + UUID().uuidString), second = workspace("panel-two-" + UUID().uuidString)
-        let model = WorkspaceModel(stateRoot: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("panel-" + UUID().uuidString),
-                                   vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        let holder = WorkspaceHolder(workspace: first)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: TerminalPanelProbe(model: model, holder: holder))
-        window.makeKeyAndOrderFront(nil)
-        defer { window.contentView = nil; window.close(); TerminalRegistry.shared.shutdown() }
-
-        let one = TerminalRegistry.shared.session(for: first)
-        try await eventually("give the first project's shell the keyboard") { window.firstResponder === one.view }
-        XCTAssertTrue(one.view.window === window, "the terminal is in the window")
-
-        holder.workspace = second
-        let two = TerminalRegistry.shared.session(for: second)
-        XCTAssertTrue(one !== two)
-        try await eventually("move the panel to the other project") { two.view.window === window }
-        try await eventually("hand the keyboard to the other project's shell") { window.firstResponder === two.view }
-        try await eventually("take the first project's terminal out of the panel") { one.view.superview == nil }
-        XCTAssertNil(one.view.window, "and the first project's terminal has left the window")
-        XCTAssertEqual(two.view.superview?.subviews.count, 1, "one terminal in the panel, not one per project ever shown")
-        XCTAssertEqual(TerminalRegistry.shared.openWorkspaceIDs, [first.id, second.id], "both shells are still there")
-    }
-
-    // MARK: Cost
-
-    /// What the emulator costs per megabyte of output and what the scrollback
-    /// of several terminals costs in memory. Printed for the release record.
-    func testEmulatorThroughputAndScrollbackFootprint() {
-        let terminal = TerminalEmulator(columns: 120, rows: 40, scrollbackLimit: 10_000)
-        var stream = ""
-        for index in 0..<20_000 { stream += "\u{1b}[32mrow \(index)\u{1b}[0m " + String(repeating: "abcdefgh ", count: 10) + "\r\n" }
-        let bytes = Double(stream.utf8.count)
-        let data = Data(stream.utf8)
-        let cost = milliseconds { terminal.feed(data) }
-        print(String(format: "PERF terminal emulator: %.1f ms for %.2f MB (%.1f ms per MB)", cost, bytes / 1_048_576, cost / (bytes / 1_048_576)))
-        XCTAssertGreaterThan(terminal.scrollback.count, 9_600)
-        XCTAssertLessThanOrEqual(terminal.scrollback.count, 10_000)
-
-        let cell = MemoryLayout<TerminalCell>.stride
-        var cells = 0, textBytes = 0, runs = 0, exactLines = 0
-        for line in terminal.scrollback {
-            cells += line.cellCount; textBytes += line.text.utf8.count; runs += line.styles.count
-            if line.exact != nil { exactLines += 1 }
-        }
-        let asCells = Double(cells * cell) / 1_048_576
-        let stored = Double(textBytes + runs * MemoryLayout<TerminalHistoryLine.StyleRun>.stride
-                            + terminal.scrollback.count * MemoryLayout<TerminalHistoryLine>.stride) / 1_048_576
-        print(String(format: "PERF terminal scrollback: %d cells — %.1f MB as cells, %.1f MB as text plus style runs (%.1f× smaller), %.1f MB for four terminals",
-                     cells, asCells, stored, asCells / max(stored, 0.001), stored * 4))
-        XCTAssertEqual(exactLines, 0, "ordinary output needs no per-cell text")
-        XCTAssertLessThanOrEqual(cells, TerminalEmulator.scrollbackCellLimit, "the history is capped in cells as well as in lines")
-        XCTAssertLessThan(stored * 4, asCells, "the history costs a fraction of one cell per column")
-
-        // A very wide window would otherwise hold ten thousand very long lines.
-        let wide = TerminalEmulator(columns: 2_000, rows: 10, scrollbackLimit: 10_000)
-        let long = String(repeating: "w", count: 1_999) + "\r\n"
-        for _ in 0..<4_000 { wide.feed(long) }
-        var wideCells = 0
-        for line in wide.scrollback { wideCells += line.cellCount }
-        print(String(format: "PERF terminal scrollback of a 2000-column window: %d lines, %d cells (%.1f MB as cells)", wide.scrollback.count, wideCells, Double(wideCells * cell) / 1_048_576))
-        XCTAssertLessThanOrEqual(wideCells, TerminalEmulator.scrollbackCellLimit, "the widest window still has a memory ceiling")
-        XCTAssertGreaterThan(wide.scrollback.count, 500, "and still keeps a usable history")
-        XCTAssertEqual(wide.scrollback.count + wide.trimmedLines, 4_000 - 9, "every line that left the screen is kept or counted")
-    }
-
     /// Reading the history back: selection, copy and drawing all go through
     /// cells the emulator builds on demand now.
     @MainActor func testScrolledBackHistoryStillSelectsCopiesAndDraws() throws {
@@ -443,32 +457,6 @@ final class TerminalPanelAuditTests: XCTestCase {
         XCTAssertLessThan(draw, 40, "building the visible history's cells is not a frame's worth of work")
     }
 
-    /// What four projects' terminals, each with ten thousand lines of history,
-    /// actually cost the process.
-    func testFourTerminalsOfHistoryCostTheProcessLittle() {
-        func footprint() -> Double {
-            var usage = rusage_info_current()
-            let result = withUnsafeMutablePointer(to: &usage) { pointer in
-                pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(getpid(), RUSAGE_INFO_CURRENT, $0) }
-            }
-            return result == 0 ? Double(usage.ri_phys_footprint) / 1_048_576 : 0
-        }
-        var terminals: [TerminalEmulator] = []
-        let line = "\u{1b}[36m" + String(repeating: "output ", count: 14) + "\u{1b}[0m\r\n"
-        _ = footprint()
-        let before = footprint()
-        for _ in 0..<4 {
-            let terminal = TerminalEmulator(columns: 120, rows: 40, scrollbackLimit: 10_000)
-            for _ in 0..<10_400 { terminal.feed(line) }
-            XCTAssertGreaterThan(terminal.scrollback.count, 9_600)
-            terminals.append(terminal)
-        }
-        let after = footprint()
-        print(String(format: "PERF four terminals with ten thousand lines of history each: process grew %.1f MB (%.1f MB each)", after - before, (after - before) / 4))
-        XCTAssertEqual(terminals.count, 4)
-        XCTAssertLessThan(after - before, 60, "four histories must not be a hundred megabytes")
-    }
-
     /// What one frame costs while output streams, in the real view.
     @MainActor func testDrawCostPerFrameWhileStreaming() {
         let emulator = TerminalEmulator(columns: 120, rows: 40, scrollbackLimit: 10_000)
@@ -489,6 +477,28 @@ final class TerminalPanelAuditTests: XCTestCase {
         }
         print(String(format: "PERF terminal draw: %.1f ms per frame of %d rows while streaming", total / Double(frames), emulator.rows))
         XCTAssertLessThan(total / Double(frames), 40, "a streaming frame must stay well inside a refresh")
+    }
+
+    /// A shell killed from outside, and a shell that exits on its own: both
+    /// report their exit once, leave nothing unreaped, and stop the panel.
+    @MainActor func testAShellKilledFromOutsideAndOneThatExitsBothReportOnce() async throws {
+        for (label, arguments) in [("killed", ["sh", "-c", "printf READY; exec /bin/sleep 20"]), ("exited", ["sh", "-c", "printf READY; exit 7"])] {
+            let process = PseudoTerminal()
+            var output = Data(), exits: [Int32] = []
+            process.onData = { output.append($0) }
+            process.onExit = { exits.append($0) }
+            try process.start(executable: "/bin/sh", arguments: arguments, environment: ["PATH": "/usr/bin:/bin", "TERM": "xterm-256color"],
+                              directory: NSTemporaryDirectory(), columns: 60, rows: 12)
+            try await eventually("hear from the \(label) shell") { String(decoding: output, as: UTF8.self).contains("READY") }
+            if label == "killed" { kill(process.processID, SIGKILL) }
+            try await eventually("see the \(label) shell end", timeout: 10) { !exits.isEmpty }
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertEqual(exits.count, 1, "\(label): the exit is reported exactly once")
+            XCTAssertFalse(process.running, "\(label): the terminal knows it is over")
+            if label == "exited" { XCTAssertEqual(exits.first, 7) } else { XCTAssertEqual(exits.first, 128 + SIGKILL) }
+            process.write(Data("ignored\n".utf8))
+            process.terminate()
+        }
     }
 }
 

@@ -52,6 +52,34 @@ final class CompactionPiTests: XCTestCase {
         return state
     }
 
+    /// Pi's compact(customInstructions) ends the summary prompt with
+    /// "Additional focus: …".
+    func testManualCompactionCarriesTheFocusAsPisAdditionalFocus() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=PiSummaryClient(), s=try session(root,client,seed:tasks("t",8,chars:12_000))
+        try await s.compact(focus:"the retry budget"); try await eventually { !(await s.isRunning) }
+        let prompts=await client.prompts
+        XCTAssertEqual(prompts.count,1)
+        XCTAssertTrue(prompts.first?.hasSuffix("\n\nAdditional focus: the retry budget") == true, prompts.first.map { String($0.suffix(200)) } ?? "no prompt")
+        await s.close()
+    }
+
+    /// Pi's compact() aborts the running turn, then compacts.
+    func testManualCompactionStopsARunningTurnFirst() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        var raw=try fixtureProfile().raw; raw["contextWindow"]=100_000
+        let client=ScriptClient([answer("never finished"),answer("SUMMARY")],holdFirst:true)
+        let s=try AgentSession(id:"stop-then-compact",profile:Profile(raw),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,
+                               resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),seed:tasks("t",8,chars:12_000))
+        _ = try await s.submit(Submission(commandID:"run",turnID:"run",text:"keep going"),steer:false)
+        try await eventually { await client.count == 1 }
+        try await s.compact(); try await eventually { !(await s.isRunning) }
+        let purposes=await client.purposes, context=await s.context
+        XCTAssertEqual(purposes,["turn","compaction"],"The running turn stopped, then the compaction ran")
+        XCTAssertEqual(context.first?.kind,"compaction")
+        await s.close()
+    }
+
     func testHistoryFarBeyondTheOldTwoMiBSourceCapCompacts() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         // One task of 400 reads, 24,000 characters each: 9.6 MB of history.
@@ -73,7 +101,7 @@ final class CompactionPiTests: XCTestCase {
             lengths += prompt.components(separatedBy:"[Tool result]: R").dropFirst().map { $0.drop { $0 != " " }.dropFirst().prefix { $0 == "x" }.count }
         }
         XCTAssertEqual(lengths,(0..<397).map { 2000-2-String($0).count })
-        XCTAssertEqual(context.dropFirst().map(\.id),["task"]+(397..<400).flatMap { ["call-r\($0)","result-r\($0)"] })
+        XCTAssertEqual(context.dropFirst().map(\.id),(397..<400).flatMap { ["call-r\($0)","result-r\($0)"] },"The task's request is summarized in the turn prefix")
         XCTAssertTrue(context.first?.text.contains("<read-files>\nsrc/f0.swift\nsrc/f1.swift") == true,"Pi's file lists close the summary")
         await s.close()
     }
@@ -94,9 +122,8 @@ final class CompactionPiTests: XCTestCase {
         for n in 3..<8 { XCTAssertTrue(prompt.contains("[User]: A\(n) u"),"A\(n) was kept by the first compaction and is summarized now") }
         XCTAssertTrue(prompt.contains("[User]: B2 u")); XCTAssertFalse(prompt.contains("[User]: B3 u"))
         XCTAssertEqual(context.first?.text.hasSuffix("SUMMARY \(first+1)"),true)
-        // Appended rows start no task, so A7 is still the current task: its
-        // request is replayed verbatim ahead of the kept tail.
-        XCTAssertEqual(Array(context.dropFirst().map(\.id).prefix(2)),["A7","B3"])
+        // Pi replays no input verbatim: the kept tail starts at B3.
+        XCTAssertEqual(Array(context.dropFirst().map(\.id).prefix(2)),["B3","B3-reply"])
         await s.close()
     }
 
@@ -110,9 +137,9 @@ final class CompactionPiTests: XCTestCase {
         _=try await compact(s)
         let bodies=await client.bodies, context=await s.context
         let body=try XCTUnwrap(bodies.first)
-        XCTAssertTrue(body["instructions"].text?.hasPrefix("You are a context summarization assistant.") == true)
-        XCTAssertEqual(body["input"].list.count,1)
-        let prompt=try XCTUnwrap(body["input"].list.first?["content"].list.first?["text"].text)
+        XCTAssertTrue(RequestContextCounter.systemPrompt(body)?.hasPrefix("You are a context summarization assistant.") == true)
+        XCTAssertEqual(body["input"].list.count,2)
+        let prompt=try XCTUnwrap(body["input"].list.last?["content"].list.first?["text"].text)
         let expected="<conversation>\n[User]: \(long)\n\n[Assistant tool calls]: read(path=\"a.txt\")\n\n[Tool result]: 🙂" + String(repeating:"y",count:1_997) +
             "\n\n[... 6 more characters truncated]\n[history_read: \(CompactionSourceBuilder.reference(calls[1]))]\n\n[Assistant]: Read it.\n</conversation>\n\nThe messages above are a conversation to summarize."
         XCTAssertTrue(prompt.hasPrefix(expected),prompt)
@@ -136,14 +163,14 @@ final class CompactionPiTests: XCTestCase {
         await s.close()
     }
 
-    func testSplitTurnGetsPiTurnPrefixSummaryAndKeepsItsRequestVerbatim() async throws {
+    func testSplitTurnGetsPiTurnPrefixSummaryOfItsRequest() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         // One turn: ten reads of 4,000 tokens each.
         let seed=[user("task","Inspect the reads.")]+(0..<10).flatMap { read("r\($0)",path:"f\($0)",output:String(repeating:"o",count:16_000),root:"task") }
         let client=PiSummaryClient(), s=try session(root,client,seed:seed,modelOutputLimit:100_000)
         _=try await compact(s)
         let context=await s.context, bodies=await client.bodies, prompts=await client.prompts
-        XCTAssertEqual(context.dropFirst().map(\.id),["task"]+(6..<10).flatMap { ["call-r\($0)","result-r\($0)"] },"Four reads are the tail; the request stays verbatim")
+        XCTAssertEqual(context.dropFirst().map(\.id),(6..<10).flatMap { ["call-r\($0)","result-r\($0)"] },"Four reads are the tail; the request is in the prefix summary")
         XCTAssertEqual(bodies.count,1,"No history precedes the turn")
         XCTAssertEqual(bodies.first?["max_output_tokens"].int,8_192,"0.5 × pi's reserve for a turn prefix")
         XCTAssertTrue(prompts.first?.contains("Be concise. Focus on what's needed to understand the kept suffix.\n\nAdditional focus: Keep the history_read references") == true)
@@ -179,7 +206,7 @@ final class CompactionPiTests: XCTestCase {
         XCTAssertEqual(policy.summaryTokens(for:try profile(window:200_000,limit:100_000)),13_107)
         XCTAssertEqual(policy.summaryTokens(for:try profile(window:200_000,limit:100_000),turnPrefix:true),8_192)
         XCTAssertEqual(policy.summaryTokens(for:try profile(window:200_000,limit:8_000)),8_000)
-        XCTAssertEqual(policy.summaryTokens(for:try profile(window:200_000,limit:nil)),4_096,"Without a declared ceiling, the configured budget")
+        XCTAssertEqual(policy.summaryTokens(for:try profile(window:200_000,limit:nil)),13_107,"Without a declared ceiling nothing bounds it: min(13,107, ∞)")
         XCTAssertEqual(policy.summaryTokens(for:try profile(window:20_000,limit:100_000)),8_000,"A small window's reserve is half of it")
         XCTAssertEqual(policy.keepRecentTokens(contextWindow:200_000),20_000)
         XCTAssertEqual(policy.keepRecentTokens(contextWindow:32_768),8_192)

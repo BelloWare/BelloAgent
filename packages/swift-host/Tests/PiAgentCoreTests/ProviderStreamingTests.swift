@@ -19,14 +19,17 @@ final class ProviderStreamingTests: XCTestCase {
         message.providerIdentity=["status":"reported","effectiveModel":"fixture-actual"]
         message.providerBinding=try ProviderClient.replayBinding(profile)
         let body=try ProviderClient.requestBody(profile:profile,messages:[message,result],instructions:"test",tools:[],sessionID:"s")
-        XCTAssertEqual(body["input"].list[0],opaque);XCTAssertEqual(body["input"].list[2]["call_id"].text,"call_1")
+        // Pi's system prompt first, then the reply's reasoning item as received and its call.
+        XCTAssertEqual(body["input"].list[0]["role"].text,"developer")
+        XCTAssertEqual(body["input"].list[1],opaque);XCTAssertEqual(body["input"].list[2]["call_id"].text,"call_1");XCTAssertEqual(body["input"].list[3]["call_id"].text,"call_1")
         XCTAssertEqual(body["include"], ["reasoning.encrypted_content"])
     }
     func testResponsesMalformedArgumentsAndAbsentTerminal() throws {
         var accumulator=ProviderAccumulator(api:"openai-responses")
         XCTAssertThrowsError(try accumulator.result())
         _ = try accumulator.consume(["type":"response.completed","response":["status":"completed","output":[["type":"function_call","call_id":"c","name":"read","arguments":"{" ]]]])
-        XCTAssertThrowsError(try accumulator.result())
+        // Pi's parseStreamingJson never fails: the tool is given what parses and says what is wrong.
+        XCTAssertEqual(try accumulator.result().calls.first?.arguments,[:])
     }
     func testMessagesStreamingSignaturesAndCumulativeUsage() throws {
         var a=ProviderAccumulator(api:"anthropic-messages")

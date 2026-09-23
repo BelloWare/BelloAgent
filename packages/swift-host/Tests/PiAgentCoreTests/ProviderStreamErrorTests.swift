@@ -23,7 +23,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(body))); self.end_headers()
         self.wfile.write(body); self.wfile.flush()
 server = http.server.HTTPServer(('127.0.0.1', 0), Gateway)
-(root / 'ready.json').write_text(json.dumps({'port': server.server_address[1]}))
+(root / 'ready.tmp').write_text(json.dumps({'port': server.server_address[1]})); (root / 'ready.tmp').replace(root / 'ready.json')
 server.serve_forever()
 """#
 

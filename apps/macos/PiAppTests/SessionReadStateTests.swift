@@ -1,8 +1,8 @@
 import XCTest
 @testable import PiApp
 
-final class SessionReadStateTests: XCTestCase {
-    @MainActor private func makeModel(root: URL? = nil) async throws -> (WorkspaceModel, URL, SessionDisplay) {
+class SessionReadStateTestCase: XCTestCase {
+    @MainActor fileprivate func makeModel(root: URL? = nil) async throws -> (WorkspaceModel, URL, SessionDisplay) {
         let base = testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()
         let root = root ?? URL(fileURLWithPath: base).appendingPathComponent("read-state-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -14,14 +14,18 @@ final class SessionReadStateTests: XCTestCase {
         model.displays[chat.id] = view; model.selectedID = chat.id; model.selected = view; model.focusedSessionID = chat.id
         return (model, root, view)
     }
-    private func snapshot(_ count: Int, _ id: String?) -> [String: WireValue] {
+    fileprivate func snapshot(_ count: Int, _ id: String?) -> [String: WireValue] {
         ["assistantMessageCount": .number(Double(count)), "latestAssistantMessageId": id.map(WireValue.string) ?? .null]
     }
-    @MainActor private func close(_ model: WorkspaceModel, root: URL, remove: Bool = true) async throws {
+    @MainActor fileprivate func close(_ model: WorkspaceModel, root: URL, remove: Bool = true) async throws {
         model.shutdown(); await model.flushReadStates(); try await model.traces.close(); await model.store?.close()
         if remove { try FileManager.default.removeItem(at: root) }
     }
 
+
+}
+
+final class SessionReadStateTests: SessionReadStateTestCase {
     @MainActor func testRepliesBecomeUnreadOnlyAfterTheRunReportsBack() async throws {
         let (model, root, view) = try await makeModel()
         model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(4, "baseline"))
@@ -153,7 +157,6 @@ final class SessionReadStateTests: XCTestCase {
         }
     }
 
-
     @MainActor func testExplicitMarkReadClearsAbandonedReplyButFutureOutputRemainsUnread() async throws {
         let (model, root, _) = try await makeModel()
         model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(0, nil))
@@ -162,21 +165,6 @@ final class SessionReadStateTests: XCTestCase {
         XCTAssertEqual(model.unreadCount, 0)
         model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(2, "replacement-answer"))
         XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1)
-        try await close(model, root: root)
-    }
-
-    @MainActor func testFlushDeadlineNeverHangsQuitAndNormalFlushPersistsLatestRevision() async throws {
-        let (model, root, _) = try await makeModel()
-        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(0, nil))
-        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(1, "new-answer"))
-        let start = ProcessInfo.processInfo.systemUptime
-        let timedOut = await model.flushReadStates(timeout: 0)
-        XCTAssertFalse(timedOut); XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.1)
-        model.markSessionRead("chat")
-        let flushed = await model.flushReadStates()
-        XCTAssertTrue(flushed)
-        let saved = try await model.store?.get(SessionReadState.self, kind: "session-read", id: "chat")
-        XCTAssertEqual(saved?.observedAssistantCount, 1); XCTAssertEqual(saved?.unreadOutputs, 0)
         try await close(model, root: root)
     }
 
@@ -211,58 +199,25 @@ final class SessionReadStateTests: XCTestCase {
     }
 }
 
-extension SessionReadStateTests {
-    /// A failed run marks the chat, but the Dock badge counts only replies in chats that are neither failed nor archived.
-    @MainActor func testArchivedChatsHideUnreadEverywhereWithoutDiscardingReadState() async throws {
-        let base = testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()
-        let root = URL(fileURLWithPath: base).appendingPathComponent("read-state-failure-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        registerWorkspaceFixtureTeardown(model, root: root)
-        var chat = ChatRecord(id: "chat", workspaceID: "workspace", title: "Saved chat", path: nil, profileID: "profile")
-        let other = ChatRecord(id: "other", workspaceID: "workspace", title: "Other chat", path: nil, profileID: "profile")
-        model.chats = [chat, other]; try await model.store?.put(chat, kind: "chat", id: chat.id); try await model.store?.put(other, kind: "chat", id: other.id)
-        let view = SessionDisplay(id: chat.id), otherView = SessionDisplay(id: other.id)
-        model.displays = [chat.id: view, other.id: otherView]; model.selectedID = other.id; model.selected = otherView; model.focusedSessionID = other.id
-        // The chat is not in front; its run fails without producing a reply.
-        model.markRunFailed(sessionID: "chat")
-        XCTAssertTrue(model.unreadFailure(sessionID: "chat")); XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0)
-        model.updateDockBadge(); XCTAssertNil(NSApp.dockTile.badgeLabel, "A failure is a sidebar mark, not a badge")
-        // A reply that did arrive before the failure stays unread but the badge still ignores the chat.
-        var failed = ["assistantMessageCount": WireValue.number(1), "latestAssistantMessageId": .string("a1"), "state": .string("error"), "runStatus": .string("failed")]
-        model.observeAssistantOutputs(sessionID: "chat", snapshot: ["assistantMessageCount": .number(0), "latestAssistantMessageId": .null])
-        model.observeAssistantOutputs(sessionID: "chat", snapshot: failed)
-        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1)
-        model.updateDockBadge(); XCTAssertNil(NSApp.dockTile.badgeLabel)
-        // Opening the chat clears the failure mark; the reply then counts as an ordinary unread reply.
-        await model.select("chat")
-        XCTAssertFalse(model.unreadFailure(sessionID: "chat"))
-        model.updateDockBadge(); XCTAssertEqual(NSApp.dockTile.badgeLabel, "1")
-        // Archiving takes the chat out of the badge and the bounce, and it refuses to run.
-        chat.archivedAt = Date(); model.chats[0] = chat; try await model.store?.put(chat, kind: "chat", id: chat.id)
-        model.updateDockBadge(); XCTAssertNil(NSApp.dockTile.badgeLabel)
-        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0)
-        XCTAssertEqual(model.unreadCount, 0)
-        XCTAssertFalse(model.unreadFailure(sessionID: "chat"))
-        XCTAssertFalse(model.projectHasUnread("workspace"))
-        XCTAssertFalse(model.menuBarActivity().rows.contains { $0.id == "chat" })
-        XCTAssertEqual(model.unreadStates["chat"]?.unreadOutputs, 1, "Archive hides marks without pretending the output was read")
-        chat.archivedAt = nil; model.chats[0] = chat
-        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1, "Restoring keeps the original unread state")
-        chat.archivedAt = Date(); model.chats[0] = chat
-        view.draft = "hello"
-        model.send(sessionID: "chat")
-        XCTAssertEqual(view.notice, WorkspaceModel.archivedNotice); XCTAssertFalse(view.loading); XCTAssertTrue(model.hosts.isEmpty)
-        model.action("queue.resume", sessionID: "chat")
-        XCTAssertEqual(view.notice, WorkspaceModel.archivedNotice)
-        failed["assistantMessageCount"] = .number(2); failed["latestAssistantMessageId"] = .string("a2")
+/// Reading state that needs the machine to itself: a reply read in the
+/// active app's key window, and a flush held to a tenth of a second. They
+/// run in the serial lane (`scripts/test-lanes.py`).
+final class SessionReadFocusTests: SessionReadStateTestCase, SerialTestLane {
+    @MainActor func testFlushDeadlineNeverHangsQuitAndNormalFlushPersistsLatestRevision() async throws {
+        let (model, root, _) = try await makeModel()
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(0, nil))
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(1, "new-answer"))
+        let start = ProcessInfo.processInfo.systemUptime
+        let timedOut = await model.flushReadStates(timeout: 0)
+        XCTAssertFalse(timedOut); XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.1)
         model.markSessionRead("chat")
-        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0); XCTAssertFalse(model.unreadFailure(sessionID: "chat"))
-        await model.flushReadStates()
+        let flushed = await model.flushReadStates()
+        XCTAssertTrue(flushed)
+        let saved = try await model.store?.get(SessionReadState.self, kind: "session-read", id: "chat")
+        XCTAssertEqual(saved?.observedAssistantCount, 1); XCTAssertEqual(saved?.unreadOutputs, 0)
+        try await close(model, root: root)
     }
-}
 
-extension SessionReadStateTests {
     /// The chat the reader is looking at, at the bottom of its page, reads its
     /// own new reply a frame or two after the reply lands. It must never be
     /// marked unread first: that put a dot on its sidebar row, and a count on
@@ -320,6 +275,60 @@ extension SessionReadStateTests {
         XCTAssertEqual(model.unreadStates[chat.id]?.observedAssistantCount, 8)
         XCTAssertEqual(model.unreadOutputCount(sessionID: chat.id), 0)
     }
+}
+
+extension SessionReadStateTests {
+    /// A failed run marks the chat, but the Dock badge counts only replies in chats that are neither failed nor archived.
+    @MainActor func testArchivedChatsHideUnreadEverywhereWithoutDiscardingReadState() async throws {
+        let base = testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()
+        let root = URL(fileURLWithPath: base).appendingPathComponent("read-state-failure-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        var chat = ChatRecord(id: "chat", workspaceID: "workspace", title: "Saved chat", path: nil, profileID: "profile")
+        let other = ChatRecord(id: "other", workspaceID: "workspace", title: "Other chat", path: nil, profileID: "profile")
+        model.chats = [chat, other]; try await model.store?.put(chat, kind: "chat", id: chat.id); try await model.store?.put(other, kind: "chat", id: other.id)
+        let view = SessionDisplay(id: chat.id), otherView = SessionDisplay(id: other.id)
+        model.displays = [chat.id: view, other.id: otherView]; model.selectedID = other.id; model.selected = otherView; model.focusedSessionID = other.id
+        // The chat is not in front; its run fails without producing a reply.
+        model.markRunFailed(sessionID: "chat")
+        XCTAssertTrue(model.unreadFailure(sessionID: "chat")); XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0)
+        model.updateDockBadge(); XCTAssertNil(NSApp.dockTile.badgeLabel, "A failure is a sidebar mark, not a badge")
+        // A reply that did arrive before the failure stays unread but the badge still ignores the chat.
+        var failed = ["assistantMessageCount": WireValue.number(1), "latestAssistantMessageId": .string("a1"), "state": .string("error"), "runStatus": .string("failed")]
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: ["assistantMessageCount": .number(0), "latestAssistantMessageId": .null])
+        model.observeAssistantOutputs(sessionID: "chat", snapshot: failed)
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1)
+        model.updateDockBadge(); XCTAssertNil(NSApp.dockTile.badgeLabel)
+        // Opening the chat clears the failure mark; the reply then counts as an ordinary unread reply.
+        await model.select("chat")
+        XCTAssertFalse(model.unreadFailure(sessionID: "chat"))
+        model.updateDockBadge(); XCTAssertEqual(NSApp.dockTile.badgeLabel, "1")
+        // Archiving takes the chat out of the badge and the bounce, and it refuses to run.
+        chat.archivedAt = Date(); model.chats[0] = chat; try await model.store?.put(chat, kind: "chat", id: chat.id)
+        model.updateDockBadge(); XCTAssertNil(NSApp.dockTile.badgeLabel)
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0)
+        XCTAssertEqual(model.unreadCount, 0)
+        XCTAssertFalse(model.unreadFailure(sessionID: "chat"))
+        XCTAssertFalse(model.projectHasUnread("workspace"))
+        XCTAssertFalse(model.menuBarActivity().rows.contains { $0.id == "chat" })
+        XCTAssertEqual(model.unreadStates["chat"]?.unreadOutputs, 1, "Archive hides marks without pretending the output was read")
+        chat.archivedAt = nil; model.chats[0] = chat
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1, "Restoring keeps the original unread state")
+        chat.archivedAt = Date(); model.chats[0] = chat
+        view.draft = "hello"
+        model.send(sessionID: "chat")
+        XCTAssertEqual(view.notice, WorkspaceModel.archivedNotice); XCTAssertFalse(view.loading); XCTAssertTrue(model.hosts.isEmpty)
+        model.action("queue.resume", sessionID: "chat")
+        XCTAssertEqual(view.notice, WorkspaceModel.archivedNotice)
+        failed["assistantMessageCount"] = .number(2); failed["latestAssistantMessageId"] = .string("a2")
+        model.markSessionRead("chat")
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0); XCTAssertFalse(model.unreadFailure(sessionID: "chat"))
+        await model.flushReadStates()
+    }
+}
+
+extension SessionReadStateTests {
 
     /// The same, frame by frame, without depending on this desktop letting the
     /// test app come to the front: the reader follows the newest row of the

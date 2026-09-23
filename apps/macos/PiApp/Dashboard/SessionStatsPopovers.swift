@@ -1,13 +1,13 @@
 import SwiftUI
 import Charts
 
-// The popovers behind the two session pills under the composer. Each page
-// observes its session's store and nothing else; each chart takes its series
-// by value and its pointer selection by reference without observing it, so a
-// hover redraws a rule, a band and a caption — never the marks, never the page.
+// The session charts the Inspector's Overview draws. Each chart takes its
+// series by value and its pointer selection by reference without observing
+// it, so a hover redraws a rule, a band and a caption — never the marks,
+// never the page. A click on an item opens its request.
 
-/// How many times the popovers built their pages and their charts' marks,
-/// and how often the parts that follow the pointer drew. A test seam: a hover
+/// How many times the Overview built its page and its charts' marks, and
+/// how often the parts that follow the pointer drew. A test seam: a hover
 /// must move only the last two.
 @MainActor enum SessionStatsRenderCount {
     private(set) static var panels = 0
@@ -66,45 +66,8 @@ extension Color {
     }
 }
 
-// MARK: - The page both popovers share
-
-/// A popover page: its title and the ledger action on a fixed header, then
-/// the figures and charts in a page that scrolls when the screen is short.
-private struct SessionStatsPage<Content: View>: View {
-    let symbol: String
-    let title: String
-    let identifier: String
-    let openLedger: () -> Void
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 7) {
-                Image(systemName: symbol).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.piInkTertiary)
-                Text(title).font(PiFont.heading).foregroundStyle(Color.piInk)
-                Spacer(minLength: PiSpacing.sm)
-                Button("Per-request ledger…", action: openLedger)
-                    .buttonStyle(.piSecondaryCompact)
-                    .help("Open Session info at this session's per-request ledger")
-                    .accessibilityIdentifier(identifier + "-ledger")
-            }
-            .padding(.horizontal, PiSpacing.lg).padding(.top, 14).padding(.bottom, 10)
-            Rectangle().fill(Color.piHairline).frame(height: 1)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) { content }
-                    .padding(.horizontal, PiSpacing.lg).padding(.top, 14).padding(.bottom, PiSpacing.lg)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .scrollIndicators(.automatic)
-        }
-        .foregroundStyle(Color.piInk)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(identifier)
-    }
-}
-
 /// A row of figures; the numbers the pill promised, larger.
-private struct SessionStatsFigures: View {
+struct SessionStatsFigures: View {
     let figures: [SessionStatsFigure]
     var large = false
     var body: some View {
@@ -118,7 +81,7 @@ private struct SessionStatsFigures: View {
 }
 
 /// Before the history arrives: a quiet line where the charts will be.
-private struct SessionStatsLoadingNote: View {
+struct SessionStatsLoadingNote: View {
     let loading: Bool
     let failure: String?
     var body: some View {
@@ -131,7 +94,7 @@ private struct SessionStatsLoadingNote: View {
     }
 }
 
-private struct SessionStatsNotes: View {
+struct SessionStatsNotes: View {
     let notes: [String]
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -164,43 +127,7 @@ private struct SessionStatsCaption<Item: SessionStatsCaptioned>: View {
 
 // MARK: - Session statistics
 
-/// Behind "turns · steps · tok/s": how much work the session did, how fast,
-/// and where its time went.
-struct SessionTimePopover: View {
-    @ObservedObject var store: SessionStatsStore
-    let openLedger: () -> Void
-
-    var body: some View {
-        let _ = SessionStatsRenderCount.panelBuilt()
-        let charts = store.time
-        SessionStatsPage(symbol: "gauge.with.dots.needle.67percent", title: "Session statistics",
-                         identifier: "session-stats-time-dialog", openLedger: openLedger) {
-            VStack(alignment: .leading, spacing: 14) {
-                SessionStatsFigures(figures: charts.hero, large: true)
-                SessionStatsFigures(figures: charts.details)
-            }.piStaggered(0)
-            if let split = charts.split {
-                SessionTimeSplitView(split: split).equatable().sessionStatsSection().piStaggered(1)
-            }
-            if charts.historyLoaded {
-                if let timeline = charts.timeline {
-                    SessionTimelineChart(timeline: timeline, selection: store.timelineSelection).equatable().sessionStatsSection().piStaggered(2)
-                }
-                if let speed = charts.speed {
-                    SessionSpeedChart(speed: speed, selection: store.speedSelection).equatable().sessionStatsSection().piStaggered(3)
-                }
-                if !charts.models.isEmpty {
-                    SessionModelTimeTable(rows: charts.models).equatable().sessionStatsSection().piStaggered(3)
-                }
-            } else {
-                SessionStatsLoadingNote(loading: store.loading, failure: store.failure)
-            }
-            SessionStatsNotes(notes: charts.notes).sessionStatsSection()
-        }
-    }
-}
-
-private struct SessionTimeSplitView: View, Equatable {
+struct SessionTimeSplitView: View, Equatable {
     let split: SessionTimeSplit
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -224,9 +151,11 @@ private struct SessionTimeSplitView: View, Equatable {
 }
 
 /// One thin bar per request, oldest at the top.
-private struct SessionTimelineChart: View, Equatable {
+struct SessionTimelineChart: View, Equatable {
     let timeline: SessionRequestTimeline
     let selection: PiChartSelection
+    /// Opens the request under the pointer; nil where nothing opens.
+    var open: ((String) -> Void)? = nil
     nonisolated static func == (a: Self, b: Self) -> Bool { a.timeline == b.timeline && a.selection === b.selection }
 
     /// Rows get thinner as they get more numerous, and the chart taller up to a point.
@@ -321,6 +250,7 @@ private struct SessionTimelineChart: View, Equatable {
                                 case .ended: selection.select(nil)
                                 }
                             }
+                            .onTapGesture { if let index = selection.index, rows.indices.contains(index) { open?(rows[index].id) } }
                         SessionTimelineBand(selection: selection, plot: plot, count: count)
                     }
                 }
@@ -372,9 +302,11 @@ private struct SessionStatsKey: View {
 }
 
 /// Each measured request's decode rate against the session's average.
-private struct SessionSpeedChart: View, Equatable {
+struct SessionSpeedChart: View, Equatable {
     let speed: SessionSpeedSeries
     let selection: PiChartSelection
+    /// Opens the request under the pointer; nil where nothing opens.
+    var open: ((String) -> Void)? = nil
     nonisolated static func == (a: Self, b: Self) -> Bool { a.speed == b.speed && a.selection === b.selection }
 
     var body: some View {
@@ -421,6 +353,7 @@ private struct SessionSpeedChart: View, Equatable {
                                 case .ended: selection.select(nil)
                                 }
                             }
+                            .onTapGesture { if let index = selection.index, points.indices.contains(index) { open?(points[index].id) } }
                         SessionPointMarker(selection: selection, points: points, proxy: proxy, plot: plot)
                     }
                 }
@@ -469,7 +402,7 @@ private struct SessionPointMarker<Point: SessionStatsPlotted>: View {
     }
 }
 
-private struct SessionModelTimeTable: View, Equatable {
+struct SessionModelTimeTable: View, Equatable {
     let rows: [SessionModelTimeRow]
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -513,47 +446,8 @@ private struct SessionModelTimeTable: View, Equatable {
 
 // MARK: - Token usage
 
-/// Behind "tokens · cache · cost": what the session consumed, how the cache
-/// served it, and what it cost.
-struct SessionTokenPopover: View {
-    @ObservedObject var store: SessionStatsStore
-    let openLedger: () -> Void
-
-    var body: some View {
-        let _ = SessionStatsRenderCount.panelBuilt()
-        let charts = store.tokens
-        SessionStatsPage(symbol: "cylinder.split.1x2", title: "Token usage",
-                         identifier: "session-stats-usage-dialog", openLedger: openLedger) {
-            VStack(alignment: .leading, spacing: 8) {
-                SessionStatsFigures(figures: charts.hero, large: true)
-                if let coverage = charts.coverage {
-                    Text(coverage).font(PiFont.micro).foregroundStyle(Color.piWarning).fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("session-stats-usage-coverage")
-                }
-            }.piStaggered(0)
-            if charts.historyLoaded {
-                if let composition = charts.composition {
-                    SessionCompositionView(composition: composition).equatable().sessionStatsSection().piStaggered(1)
-                }
-                if let bars = charts.perRequest {
-                    SessionTokenBarsChart(bars: bars, selection: store.tokenSelection).equatable().sessionStatsSection().piStaggered(2)
-                }
-                if let cost = charts.cost {
-                    SessionCostChart(cost: cost, selection: store.costSelection).equatable().sessionStatsSection().piStaggered(3)
-                }
-                if !charts.models.isEmpty {
-                    SessionModelTokenTable(rows: charts.models).equatable().sessionStatsSection().piStaggered(3)
-                }
-            } else {
-                SessionStatsLoadingNote(loading: store.loading, failure: store.failure)
-            }
-            SessionStatsNotes(notes: charts.notes).sessionStatsSection()
-        }
-    }
-}
-
 /// The first and last request a chart spans, under its two ends.
-private struct SessionRequestEnds: View {
+struct SessionRequestEnds: View {
     let first: Int
     let last: Int
     var body: some View {
@@ -575,12 +469,12 @@ private struct SessionStatsSection: ViewModifier {
         }
     }
 }
-private extension View {
-    /// A section of a popover page, set off from the one above by a hairline.
+extension View {
+    /// A section of a page, set off from the one above by a hairline.
     func sessionStatsSection() -> some View { modifier(SessionStatsSection()) }
 }
 
-private struct SessionCompositionView: View, Equatable {
+struct SessionCompositionView: View, Equatable {
     let composition: SessionTokenComposition
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -601,9 +495,11 @@ private struct SessionCompositionView: View, Equatable {
 }
 
 /// Each request's input — cached, then not — and its output, stacked.
-private struct SessionTokenBarsChart: View, Equatable {
+struct SessionTokenBarsChart: View, Equatable {
     let bars: SessionTokenBars
     let selection: PiChartSelection
+    /// Opens the request under the pointer; nil where nothing opens.
+    var open: ((String) -> Void)? = nil
     nonisolated static func == (a: Self, b: Self) -> Bool { a.bars == b.bars && a.selection === b.selection }
 
     var body: some View {
@@ -663,6 +559,7 @@ private struct SessionTokenBarsChart: View, Equatable {
                                 case .ended: selection.select(nil)
                                 }
                             }
+                            .onTapGesture { if let index = selection.index, items.indices.contains(index) { open?(items[index].id) } }
                         SessionColumnMarker(selection: selection, count: items.count, proxy: proxy, plot: plot)
                     }
                 }
@@ -711,9 +608,11 @@ private struct SessionColumnMarker: View {
 }
 
 /// What the session has cost so far, request by request.
-private struct SessionCostChart: View, Equatable {
+struct SessionCostChart: View, Equatable {
     let cost: SessionCostSeries
     let selection: PiChartSelection
+    /// Opens the request under the pointer; nil where nothing opens.
+    var open: ((String) -> Void)? = nil
     nonisolated static func == (a: Self, b: Self) -> Bool { a.cost == b.cost && a.selection === b.selection }
 
     var body: some View {
@@ -766,6 +665,7 @@ private struct SessionCostChart: View, Equatable {
                                 case .ended: selection.select(nil)
                                 }
                             }
+                            .onTapGesture { if let index = selection.index, points.indices.contains(index) { open?(points[index].id) } }
                         SessionPointMarker(selection: selection, points: points, proxy: proxy, plot: plot)
                     }
                 }
@@ -783,7 +683,7 @@ private struct SessionCostChart: View, Equatable {
     }
 }
 
-private struct SessionModelTokenTable: View, Equatable {
+struct SessionModelTokenTable: View, Equatable {
     let rows: [SessionModelTokenRow]
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {

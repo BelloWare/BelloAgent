@@ -64,9 +64,9 @@ final class CompactionBudgetTests: XCTestCase {
         XCTAssertEqual(requests.map { $0["max_output_tokens"].int },[13107],"min(0.8 × 16,384, the model's 100,000)")
         XCTAssertEqual(requests.map { $0["reasoning"]["effort"].text },["high"])
         let request=try XCTUnwrap(requests.first),input=request["input"].list
-        XCTAssertEqual(request["instructions"].text,CompactionSourceBuilder.systemPrompt)
-        XCTAssertEqual(input.count,1)
-        XCTAssertEqual(input.first?["content"].list.first?["text"].text,"<conversation>\n[User]: Inspect the logs.\n\n[Assistant]: "+String(repeating:"Observed evidence. ",count:800)+"\n</conversation>\n\n"+CompactionSourceBuilder.summarizationPrompt)
+        XCTAssertEqual(RequestContextCounter.systemPrompt(request),CompactionSourceBuilder.systemPrompt)
+        XCTAssertEqual(input.count,2,"Pi's system prompt, then the one summary message")
+        XCTAssertEqual(input.last?["content"].list.first?["text"].text,"<conversation>\n[User]: Inspect the logs.\n\n[Assistant]: "+String(repeating:"Observed evidence. ",count:800)+"\n</conversation>\n\n"+CompactionSourceBuilder.summarizationPrompt)
         XCTAssertEqual(profile.raw["thinkingLevel"].text,"high");XCTAssertEqual(profile.maxOutput,4096)
         XCTAssertEqual(snapshot["state"].text,"idle",snapshot["preflightError"].encoded())
         XCTAssertEqual(snapshot["compaction"]["httpAttempts"].int,1,"Usage at the cap alone is not evidence of incomplete output")
@@ -89,7 +89,7 @@ final class CompactionBudgetTests: XCTestCase {
 
     func testRefusalEmptyToolAndUnknownIncompleteHaveDistinctErrorsWithoutRetry() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
-        for (mode,code):(BudgetProbe.Mode,String) in [(.refusal,"compaction_refused"),(.empty,"compaction_empty_summary"),(.tool,"compaction_unexpected_tool_call"),(.filter,"compaction_incomplete"),(.unknown,"compaction_incomplete")] {
+        for (mode,code):(BudgetProbe.Mode,String) in [(.refusal,"compaction_refused"),(.empty,"compaction_empty_summary"),(.tool,"compaction_unexpected_tool_call"),(.filter,"provider_incomplete"),(.unknown,"provider_incomplete")] {
             let (s,c,seed)=try setup(root,mode:mode)
             try await s.compact();try await eventually { !(await s.isRunning) }
             let state=await s.snapshot(),context=await s.context,calls=await c.requests
@@ -104,7 +104,7 @@ final class CompactionBudgetTests: XCTestCase {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let (s,c,_)=try setup(root,mode:.completedAtCap,window:80000)
         let result=try await oversized(s),requests=await c.requests
-        let texts=requests.map { $0["input"].list.first?["content"].list.first?["text"].text ?? "" }
+        let texts=requests.map { $0["input"].list.last?["content"].list.first?["text"].text ?? "" }
         XCTAssertEqual(result,"Observed work; preserve the objective.")
         XCTAssertEqual(requests.count,2)
         XCTAssertTrue(requests.allSatisfy { $0["max_output_tokens"].int==13107 && $0["reasoning"]["effort"].text=="high" })
@@ -136,30 +136,35 @@ final class CompactionBudgetTests: XCTestCase {
         XCTAssertEqual(usage.output,30,"Only the completed first chunk reported output");await s.close()
     }
 
-    func testExplicitCeilingsCompatibilityAndDefaultEffortRemainHonest() throws {
+    func testCeilingsCompatibilityAndDefaultEffortFollowPi() throws {
         var raw=try fixtureProfile().raw;raw["modelOutputLimit"]=100000;raw["outputCap"]=24000;raw["thinkingLevel"]="max"
-        var policy=CompactionPolicy()
-        XCTAssertEqual(policy.outputAllowance(for:try Profile(raw)),24000)
-        policy.summaryOutputTokens=12000
-        XCTAssertEqual(policy.outputAllowance(for:try Profile(raw)),12000)
-        XCTAssertEqual(policy.summaryTokens(for:try Profile(raw)),12000)
+        let policy=CompactionPolicy()
+        XCTAssertEqual(policy.summaryTokens(for:try Profile(raw)),13107,"Pi's cap is the reserve's share; the chat's output cap is not the model's")
+        raw["modelOutputLimit"]=12000
+        XCTAssertEqual(policy.summaryTokens(for:try Profile(raw)),12000,"within the model's own ceiling")
         XCTAssertEqual(try policy.summaryProfile(Profile(raw),cap:12000).raw["thinkingLevel"].text,"max")
         raw["thinkingLevel"]="default"
         let p=try policy.summaryProfile(Profile(raw),cap:12000)
         let request=try ProviderClient.requestBody(profile:p,messages:[],instructions:"",tools:[],sessionID:"policy")
         XCTAssertTrue(request["reasoning"].isNull)
         raw["compat"]=["supportsMaxOutputTokens":false]
-        XCTAssertThrowsError(try policy.summaryProfile(Profile(raw),cap:12000))
+        let uncapped=try ProviderClient.requestBody(profile:policy.summaryProfile(Profile(raw),cap:12000),messages:[],instructions:"",tools:[],sessionID:"policy",promptCaching:false)
+        XCTAssertTrue(uncapped["max_output_tokens"].isNull,"Pi sends no cap to a gateway that takes none")
     }
 
-    func testJSONAndSSETerminalReasonAndRefusalArePreserved() throws {
+    func testJSONAndSSETerminalReasonAndRefusalFollowPi() throws {
         for streaming in [false,true] {
-            let response:JSON=["status":"incomplete","incomplete_details":["reason":"content_filter"],"output":[["type":"message","content":[["type":"refusal","refusal":"Not available"]]]]]
+            // Pi: an incomplete response for another reason than max_output_tokens is an error.
+            let filtered:JSON=["status":"incomplete","incomplete_details":["reason":"content_filter"],"output":[["type":"message","content":[["type":"refusal","refusal":"Not available"]]]]]
             var parser=ProviderAccumulator(api:"openai-responses")
-            if streaming { _=try parser.consume(["type":"response.incomplete","response":response]) } else { try parser.acceptJSON(response) }
-            let reply=try parser.result()
-            XCTAssertEqual(reply.terminal?.status,"incomplete");XCTAssertEqual(reply.terminal?.incompleteReason,"content_filter")
-            XCTAssertEqual(reply.terminal?.refusal,true);XCTAssertEqual(reply.terminal?.outputExhausted,false)
+            if streaming { _=try parser.consume(["type":"response.incomplete","response":filtered]) } else { try parser.acceptJSON(filtered) }
+            XCTAssertThrowsError(try parser.result()) { XCTAssertEqual(($0 as? AgentError)?.message,"Response incomplete: content_filter") }
+            // A refusal is text, and the terminal outcome says it was one.
+            let refused:JSON=["status":"completed","output":[["type":"message","content":[["type":"refusal","refusal":"Not available"]]]]]
+            var reader=ProviderAccumulator(api:"openai-responses")
+            if streaming { _=try reader.consume(["type":"response.completed","response":refused]) } else { try reader.acceptJSON(refused) }
+            let reply=try reader.result()
+            XCTAssertEqual(reply.message.text,"Not available");XCTAssertEqual(reply.terminal?.refusal,true);XCTAssertEqual(reply.terminal?.outputExhausted,false)
         }
     }
 }

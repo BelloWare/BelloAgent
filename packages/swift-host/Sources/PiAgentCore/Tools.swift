@@ -194,7 +194,7 @@ public actor NativeTools: ToolExecuting {
     public func definitions(readOnly: Bool) -> [ToolDefinition] {
         let s: JSON = ["type":"string"], n: JSON = ["type":"integer","minimum":1]
         var result = [
-            ToolDefinition("read", "Read UTF-8 text. Offset is a 1-based line number; use limit for paging. Large output is truncated explicitly.", objectSchema(["path":s,"offset":n,"limit":n],required:["path"])),
+            ToolDefinition("read", "Read a file. Supports UTF-8 text and images (jpg, png, gif, webp, bmp); images are sent as attachments. For text, offset is a 1-based line number; use limit for paging. Large output is truncated explicitly.", objectSchema(["path":s,"offset":n,"limit":n],required:["path"])),
             ToolDefinition("ls", "List a directory, including hidden entries. Results are sorted and bounded.", objectSchema(["path":s,"limit":n],required:[])),
             ToolDefinition("find", "Find paths matching a shell-style glob, relative to path (default workspace). No shell execution.", objectSchema(["pattern":s,"path":s,"limit":n],required:["pattern"])),
             ToolDefinition("grep", "Search UTF-8 files for a literal string or regular expression. Results include path and line number.", objectSchema(["pattern":s,"path":s,"literal":["type":"boolean"],"ignoreCase":["type":"boolean"],"limit":n],required:["pattern"]))
@@ -212,9 +212,10 @@ public actor NativeTools: ToolExecuting {
     public func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON { try await invoke(call,readOnly:readOnly,onUpdate:{_ in}) }
     public func invoke(_ call: ToolCall, readOnly: Bool, onUpdate: @escaping @Sendable (JSON) async -> Void) async throws -> JSON {
         try Task.checkCancellation()
+        // Pi's text for a call to a tool the request did not offer (agent-loop prepareToolCall).
+        guard let definition = definitions(readOnly:readOnly).first(where:{$0.name == call.name}) else { throw AgentError("tool_unavailable", "Tool \(call.name) not found") }
         let p=call.arguments
         guard p.isObject else { throw AgentError("tool_arguments", "Tool arguments must be an object") }
-        guard let definition = definitions(readOnly:readOnly).first(where:{$0.name == call.name}) else { throw AgentError("tool_unavailable", "Tool is unavailable in this session") }
         let keys=Set(definition.schema["properties"].map.keys)
         guard Set(p.map.keys).isSubset(of:keys), definition.schema["required"].list.allSatisfy({ p.map.keys.contains($0.text ?? "") }) else { throw AgentError("tool_arguments", "Missing or unsupported tool arguments") }
         if ["read", "ls", "find", "grep"].contains(call.name) {
@@ -273,7 +274,18 @@ private struct FileToolContext: Sendable {
         case "read":
             let file=try path(p["path"],existing:true), data=try readBounded(file,maximum:16 * 1024 * 1024)
             try cancellation.checkCancellation()
-            guard let text=String(data:data,encoding:.utf8) else { throw AgentError("binary_file", "read accepts UTF-8 text; binary/image contents are not decoded as text") }
+            // Pi's read tool: an image file comes back as an image, processed as
+            // pi processes it, with pi's note and hints.
+            if let mimeType=PiImage.sniff(data) {
+                switch PiImage.process(data, mimeType:mimeType) {
+                case .success(let image):
+                    let note=(["Read image file [\(image.mimeType)]"]+image.hints).joined(separator:"\n")
+                    return ["content":.array([textBlock(note),["type":"image","data":JSON(image.data),"mimeType":JSON(image.mimeType)]]),"isError":false]
+                case .failure(let failure):
+                    return resultText("Read image file [\(mimeType)]\n"+failure.message)
+                }
+            }
+            guard let text=String(data:data,encoding:.utf8) else { throw AgentError("binary_file", "read accepts UTF-8 text and images (jpg, png, gif, webp, bmp); other binary contents are not decoded") }
             let offset=try boundedInt(p["offset"],fallback:1,maximum:10_000_000), count=try boundedInt(p["limit"],fallback:2000,maximum:10_000)
             guard offset > 0, count > 0 else { throw AgentError("tool_arguments", "Line offset and limit must be positive") }
             let lines=text.components(separatedBy:"\n"), selected=lines.dropFirst(offset-1).prefix(count).joined(separator:"\n"), bounded=preview(selected,bytes:32768)
@@ -343,7 +355,14 @@ func loadImages(_ attachments: [JSON]) throws -> [JSON] {
         else if String(decoding:b.prefix(4),as:UTF8.self) == "RIFF", String(decoding:b.suffix(4),as:UTF8.self) == "WEBP" { mime="image/webp" }
         else { throw AgentError("invalid_attachment", "Unsupported image signature") }
         guard item["mimeType"].text == mime else { throw AgentError("invalid_attachment", "MIME type and image signature differ") }
-        result.append(["type":"image","mimeType":JSON(mime),"data":JSON(data.base64EncodedString())])
+        // Pi's processImage: within 2,000 × 2,000 pixels and 4.5 MB of base64,
+        // with its hints after the image, or its message in the image's place.
+        switch PiImage.process(data, mimeType: mime) {
+        case .success(let image):
+            result.append(["type":"image","mimeType":JSON(image.mimeType),"data":JSON(image.data)])
+            if !image.hints.isEmpty { result.append(textBlock(image.hints.joined(separator:"\n"))) }
+        case .failure(let failure): result.append(textBlock(failure.message))
+        }
     }
     return result
 }

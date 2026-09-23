@@ -140,8 +140,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 assert body['stream'] is True and body['store'] is False
                 assert body.get('tools', []) == []
                 assert body['metadata'] == {'session_id': 'failure-integration'}
-                assert body['instructions'] == 'Failure transport test'
-                assert body['input'] == [{'type':'message','role':'user','content':[{'type':'input_text','text':'Test this response failure'}]}]
+                assert 'instructions' not in body
+                assert body['input'] == [{'role':'developer','content':'Failure transport test'},{'role':'user','content':[{'type':'input_text','text':'Test this response failure'}]}]
                 detail = {'code':'rate_limit_exceeded', 'message':'Rate limit reached. Retry later. Credential echoes: synthetic-error-key / synthetic-route-key.'}
                 streaming = body['model'] == 'sse-failure'
                 value = {'type':'response.failed','response':{'id':'failed-response','model':body['model'],'status':'failed','error':detail}} if streaming else {'error':detail}
@@ -164,8 +164,9 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             assert body.get('tools', []) == []
             assert 'reasoning' not in body and 'include' not in body
             assert body['metadata'] == {'session_id': 'connection-test-fixture'}
-            assert body['instructions'] == 'This is a connection test. Reply briefly with OK.'
-            assert body['input'] == [{'type':'message','role':'user','content':[{'type':'input_text','text':'Reply with OK to confirm this connection.'}]}]
+            # Pi's system prompt leads the input: a system message to a model without reasoning.
+            assert 'instructions' not in body
+            assert body['input'] == [{'role':'system','content':'This is a connection test. Reply briefly with OK.'},{'role':'user','content':[{'type':'input_text','text':'Reply with OK to confirm this connection.'}]}]
         except (AssertionError, KeyError, ValueError):
             self.send_response(422); self.end_headers(); self.wfile.write(b'{"error":"invalid probe"}'); return
         response = json.dumps({'id':'response-probe','object':'response','status':'completed','model':body['model'],

@@ -103,7 +103,10 @@ struct PiChoiceList<Tag: Hashable>: View {
                     return .handled
                 }
                 .onKeyPress(.return) {
-                    if let highlightedChoice { commit(highlightedChoice) }
+                    // SwiftUI runs key handlers inside its update of the list:
+                    // saving the choice from here published the caller's model
+                    // during that update. The choice is saved on the next turn.
+                    if let highlightedChoice { DispatchQueue.main.async { commit(highlightedChoice) } }
                     return .handled
                 }
                 .onChange(of: highlightedChoice) { _, value in

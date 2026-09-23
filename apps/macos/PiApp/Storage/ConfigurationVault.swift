@@ -111,6 +111,13 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
         get { transcriptView.flatMap(TranscriptDisplayMode.init(rawValue:)) ?? .fallback }
         set { transcriptView = newValue.rawValue }
     }
+    /// The cost limit every chat without its own runs under; absent in older
+    /// vaults, whose chats get the standard $25.
+    var chatCostLimit: CostLimit?
+    var defaultChatCostLimit: CostLimit {
+        get { chatCostLimit ?? .standard }
+        set { chatCostLimit = newValue }
+    }
     // Existing keys remain for reading legacy encrypted captures only. New
     // vaults and new plaintext captures need no payload key. Helpers never
     // receive this object or a legacy key.
@@ -141,6 +148,7 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
               [dashboard.purpose, dashboard.api, dashboard.requestedAlias, dashboard.effectiveModel].allSatisfy({ ($0?.utf8.count ?? 0) <= 256 }),
               dashboard.windowPreset.map({ DashboardWindowPreset(rawValue: $0) != nil }) ?? true,
               transcriptView.map({ TranscriptDisplayMode(rawValue: $0) != nil }) ?? true,
+              chatCostLimit?.isValid ?? true,
               DashboardWindowPreset.customBoundsValid(from: dashboard.customFrom, until: dashboard.customUntil, required: dashboard.windowPreset == DashboardWindowPreset.custom.rawValue) else {
             throw VaultError.invalid("Configuration limits or identifiers are invalid.")
         }

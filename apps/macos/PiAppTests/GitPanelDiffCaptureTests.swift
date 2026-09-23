@@ -4,7 +4,7 @@ import AppKit
 @testable import PiApp
 
 
-extension GitPanelAuditTests {
+final class GitPanelDiffCaptureTests: GitPanelTestCase {
     /// A picture of the diff pane, unified and side by side, light and dark,
     /// so the card chrome around lazily built rows can be looked at.
     @MainActor func testCaptureTheDiffPaneWhenRequested() throws {

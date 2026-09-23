@@ -83,7 +83,7 @@ struct WorkspaceSidebar: View {
             HStack(spacing: 2) {
                 PiIconButton(symbol: "chart.xyaxis.line", label: model.page == .report ? "Back to Chats" : "Usage Report (⇧⌘R)", tone: model.page == .report ? .accent : .neutral, filled: model.page == .report) { model.toggleReport() }
                     .accessibilityIdentifier("requestDashboard")
-                PiIconButton(symbol: "ladybug", label: "Request Inspector · what this chat sent and received") { if let id = model.selectedID { model.inspect(id) } }.disabled(model.selectedID == nil)
+                PiIconButton(symbol: "ladybug", label: "Session Inspector · what this chat sent and received") { if let id = model.selectedID { model.inspect(id) } }.disabled(model.selectedID == nil)
                     .accessibilityIdentifier("requestInspector")
                 PiIconButton(symbol: "book.closed", label: "Skills, instructions and MCP servers for this project") { model.inspectResources(model.selectedID) }.disabled(model.selectedWorkspaceID == nil)
                     .accessibilityIdentifier("projectResources")

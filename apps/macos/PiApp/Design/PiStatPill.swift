@@ -78,15 +78,23 @@ struct PiStatPillFace: View {
     var ring: Double?? = nil
     let label: String
     var highlighted = false
+    /// A last figure that needs attention, such as a chat's spend near its
+    /// cost limit, in warning ink after the rest of the reading.
+    var warningTail: String? = nil
 
+    private var reading: Text {
+        guard let warningTail else { return Text(label) }
+        let tail = Text(warningTail).foregroundColor(.piWarning)
+        return label.isEmpty ? tail : Text(label) + Text(" · ") + tail
+    }
     var body: some View {
         HStack(spacing: 5) {
             Group {
                 if let ring { ContextRing(fraction: ring, size: 14) }
                 else { Image(systemName: symbol).font(.system(size: 11, weight: .medium)).foregroundStyle(Color.piInkTertiary) }
             }.frame(width: 16, height: 16)
-            Text(label).font(PiFont.caption).monospacedDigit().lineLimit(1).fixedSize()
-                .contentTransition(.numericText()).piAnimation(PiMotion.base, value: label)
+            reading.font(PiFont.caption).monospacedDigit().lineLimit(1).fixedSize()
+                .contentTransition(.numericText()).piAnimation(PiMotion.base, value: label + (warningTail ?? ""))
         }
         .foregroundStyle(Color.piInkSecondary)
         .padding(.horizontal, 7).padding(.vertical, 3)

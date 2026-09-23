@@ -119,10 +119,10 @@ enum WorkspacePage: String, Sendable { case chats, report }
     var dirtyProjectSidebarStates: Set<String> = []
     @Published var workspaceChangesInFlight: Set<String> = []
     @Published var installPreparing = false
-    @Published var showMessageViewer = false
     @Published var showConversationContent = false
     var contentSessionID: String?
-    @Published var showInspector = false
+    /// Test seam: where the Session Inspector was last asked to open.
+    var lastInspectorFocus: InspectorFocus?
     /// Which page the main window shows; the chat pane stays mounted underneath the report.
     @Published var page: WorkspacePage = .chats {
         didSet {
@@ -141,18 +141,12 @@ enum WorkspacePage: String, Sendable { case chats, report }
     func closeReport() { page = .chats }
     func toggleReport() { page = page == .report ? .chats : .report }
     var conversationCommandsEnabled: Bool { page == .chats && (focusedSessionID ?? selectedID).flatMap(record) != nil }
-    var inspectorMessageID: String?
-    @Published var showMessageDetail = false
-    var messageDetailID: String?
-    var messageDetailSessionID: String?
     @Published var showResources = false
     @Published var showWorkspaceManager = false
     @Published var resourceCatalog: [SkillDescriptor] = []
     @Published var resourceCatalogWorkspaceID: String?
     @Published var resourceCatalogSessionID: String?
     @Published var resourceTargetSessionID: String?
-    @Published var inspectorSessionID: String?
-    @Published var messageViewerSessionID: String?
     @Published var sides: [String: SideRecord] = [:] { didSet { sidebarIndex.invalidate(); readBadgeCache = nil; noteActivityChanged(); sidesChanged(from: oldValue) } }
     @Published var resourceLoading = false
     @Published var resourceNotice = ""
@@ -215,6 +209,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
             activityObservers[ObjectIdentifier(view)] = view.activityChanges.merge(with: view.footer.activityChanges)
                 .sink { [weak self] _ in self?.noteActivityChanged(id) }
             noteActivityChanged(id)
+            // A new display reads the chat's cost limit before its helper says anything.
+            view.applyCostReading(costReading(for: id))
         }
         noteActivityChanged()
     }

@@ -207,7 +207,7 @@ final class DisplayObservationTests: XCTestCase {
     func testCompactionSummaryIsObservedWhenItsNewMessageArrives() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let clock = DisplayClock()
-        let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([answer(String(repeating:"Completed first task evidence. ",count:80)), answer("Second answer"), answer("Continuation summary")]), tools: RecordingTools(), traces: TraceStore(), autoCompaction: false, compactionPolicy: { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }(), displayClock: { clock.now() })
+        let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([answer(String(repeating:"Completed first task evidence. ",count:80)), answer("Second answer"), answer("Continuation summary")]), tools: RecordingTools(), traces: TraceStore(), autoCompaction: false, compactionPolicy: { var policy = CompactionPolicy(); policy.keepRecentTokens = 7; return policy }(), displayClock: { clock.now() })
         addTeardownBlock { await session.close() }
         for index in 0..<2 {
             _ = try await session.submit(Submission(commandID: "turn-\(index)", turnID: "turn-\(index)", text: "Question \(index)"), steer: false)

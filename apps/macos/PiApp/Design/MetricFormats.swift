@@ -89,7 +89,8 @@ enum MetricFormat {
     static func detailedDuration(_ milliseconds: Double) -> String {
         guard let value = DurationObservation.valid(milliseconds) else { return "—" }
         if value == 0 { return "0s" }
-        if value < 1 { return preciseDecimal(value) + " ms" }
+        // Below a millisecond, three decimals: a quick call never reads as zero.
+        if value < 1 { return value < 0.001 ? "<0.001 ms" : trimmed(value, places: 3) + " ms" }
         // Milliseconds that round up to a second are written as the second.
         if (value * 1_000).rounded() < 1_000_000 { return trimmed(value, places: 3) + " ms" }
         guard let rounded = Int(exactly: value.rounded()) else { return "—" }

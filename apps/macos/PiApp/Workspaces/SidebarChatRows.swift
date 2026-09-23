@@ -21,6 +21,8 @@ struct UnreadDot: View {
 /// context-size estimate.
 struct ChatRowStats: Equatable {
     var state = "idle"
+    /// The last run stopped at the chat's cost limit: a stop, not a failure.
+    var costLimited = false
     var busy = false
     var loading = false
     var costUSD: Double?
@@ -158,6 +160,7 @@ private struct LiveChatRow: View {
     private var stats: ChatRowStats {
         var value = ChatRowStats(totals: footer.gateway, timing: footer.timing)
         value.updateActivity(state: session.state, loading: session.loading, activity: session.activity)
+        value.costLimited = session.failureCode == SessionDisplay.costLimitCode
         // A message that just landed is more recent than the last retained request.
         if let at = session.messages.last(where: { $0.at != nil })?.at { value.lastActivity = max(value.lastActivity ?? 0, at / 1_000) }
         return value
@@ -202,7 +205,9 @@ struct ChatRowBody: View, Equatable {
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             ZStack {
-                if stats.busy || stats.loading { ProgressView().controlSize(.mini) }
+                // Not a ProgressView: that is an AppKit view resizing itself
+                // inside the sidebar's lazy list (PiSpinner).
+                if stats.busy || stats.loading { PiSpinner(size: 11) }
                 else { Image(systemName: symbol).font(.system(size: 12, weight: .medium)).foregroundStyle(selected ? Color.piAccent : Color.piInkSecondary) }
             }.frame(width: 16, height: 16)
             VStack(alignment: .leading, spacing: 2) {
@@ -318,7 +323,7 @@ struct ChatRowMetrics: View {
         if (stats.busy || stats.loading) && !stats.generating {
             Text(PiSessionState.label(stats.state, loading: stats.loading)).foregroundStyle(Color.piWarning).fontWeight(.medium)
         } else if ["error", "interrupted", "paused"].contains(stats.state) {
-            Text(PiSessionState.label(stats.state)).foregroundStyle(stats.state == "paused" ? Color.piInfo : Color.piDanger).fontWeight(.medium)
+            Text(PiSessionState.label(stats.state, costLimited: stats.costLimited)).foregroundStyle(stats.state == "paused" ? Color.piInfo : stats.costLimited ? Color.piWarning : Color.piDanger).fontWeight(.medium)
         }
         if let cost = stats.costLabel { Text(cost) }
     }

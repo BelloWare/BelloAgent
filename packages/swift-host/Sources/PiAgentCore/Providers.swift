@@ -11,7 +11,8 @@ public struct ProviderClient: ModelClient {
     static func safeFailure(_ error: AgentError, credentials: CaptureCredentials) -> AgentError {
         let safe = credentials.requestBody(Data(error.message.utf8))
         let message = safe.omitted ? "Provider error details exceeded the display safety limit." : String(decoding: safe.bytes, as: UTF8.self)
-        return AgentError(error.code, preview(message) + (message.utf8.count > 16_384 ? "\n[Error details truncated; inspect the retained request for more.]" : ""),failure:error.failure,attemptID:error.attemptID)
+        let piText = error.providerMessage.map { String(decoding: credentials.requestBody(Data($0.utf8)).bytes, as: UTF8.self) }
+        return AgentError(error.code, preview(message) + (message.utf8.count > 16_384 ? "\n[Error details truncated; inspect the retained request for more.]" : ""),failure:error.failure,attemptID:error.attemptID,providerMessage:piText)
     }
     /// Profile custom headers can never replace transport, authentication or
     /// session/turn correlation headers.
@@ -26,58 +27,52 @@ public struct ProviderClient: ModelClient {
         }
         return safe.isEmpty ? "unknown" : String(safe)
     }
-    public static func requestBody(profile p:Profile, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String) throws -> JSON {
+    /// Pi's buildParams (openai-responses.ts). `promptCaching` is false for a
+    /// compaction summary, which pi sends with cacheRetention "none".
+    public static func requestBody(profile p:Profile, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, promptCaching:Bool = true) throws -> JSON {
         let history=messages.filter(\.replayEligible)
         var body:JSON=["model":JSON(p.model),"stream":true]
-        let sampling=p.raw["samplingParams"].map
-        for key in ["temperature","top_p"] { if let value=sampling[key] { body[key]=value } }
         if p.api=="openai-responses" {
-            body["store"]=false;body["instructions"]=JSON(instructions)
-            // LiteLLM correlates Responses requests through body metadata as well as
+            body["store"]=false
+            // Ours: LiteLLM correlates Responses requests through body metadata as well as
             // the x-session-id header; both carry the same native session identity.
             body["metadata"]=["session_id":JSON(Self.correlationValue(sessionID))]
-            // LiteLLM would otherwise answer a failing route from a fallback model;
+            // Ours: LiteLLM would otherwise answer a failing route from a fallback model;
             // the app wants the requested model or a visible error.
             if p.raw["compat"]["allowFallbacks"].flag != true { body["disable_fallbacks"]=true }
-            // The cap on the wire is the model's own ceiling (or a bounded task's
-            // explicit cap), never the output budget: a reply runs as far as the
-            // model can take it.
-            if let cap=p.wireOutputLimit { body["max_output_tokens"]=JSON(cap) }
-            var input:[JSON]=[]
-            for message in history {
-                if message.role=="assistant", let items=try replayItems(message,profile:p) { input += items; continue }
-                if message.role=="toolResult" {
-                    guard let call=message.toolCallId else { throw AgentError("invalid_context","Tool result has no call identity") }
-                    input.append(["type":"function_call_output","call_id":JSON(call),"output":JSON(message.text)]); continue
-                }
-                let content=message.content.compactMap { block -> JSON? in
-                    if block["type"].text=="text" { return ["type":message.role=="assistant" ? "output_text":"input_text","text":block["text"]] }
-                    if block["type"].text=="image",let data=block["data"].text,let mime=block["mimeType"].text { return ["type":"input_image","image_url":JSON("data:\(mime);base64,\(data)")] }
-                    return nil
-                }
-                if !content.isEmpty { input.append(["type":"message","role":JSON(message.role=="assistant" ? "assistant":"user"),"content":.array(content)]) }
-                if message.role == "assistant" {
-                    for call in message.content where call["type"].text == "toolCall" {
-                        input.append(["type":"function_call","call_id":call["id"],"name":call["name"],"arguments":JSON(call["arguments"].encoded())])
+            // Pi routes a session's requests to one prompt cache by its id.
+            if promptCaching { body["prompt_cache_key"]=JSON(Self.promptCacheKey(sessionID)) }
+            // The cap on the wire is the model's own ceiling clipped to the room
+            // the input leaves (or a bounded task's explicit cap), never the
+            // output budget. Responses rejects a cap below 16, so pi sends at least 16.
+            if let cap=p.wireOutputLimit { body["max_output_tokens"]=JSON(max(cap,Self.minimumOutputTokens)) }
+            body["input"] = .array(try responsesInput(history,instructions:instructions,profile:p))
+            if !tools.isEmpty {
+                // Pi sends `strict` only to a gateway declaring strict-mode support.
+                body["tools"] = .array(tools.map { tool in
+                    var value:JSON=["type":"function","name":JSON(tool.name),"description":JSON(tool.description),"parameters":tool.schema]
+                    if p.raw["compat"]["supportsStrictMode"].flag == true { value["strict"]=false };return value
+                })
+            }
+            if p.raw["reasoning"].flag==true {
+                let map=p.raw["thinkingLevelMap"], level=p.raw["thinkingLevel"].text ?? "default"
+                // Ours: the model-default level leaves effort unspecified.
+                if level == "default" { body["include"]=["reasoning.encrypted_content"] }
+                else {
+                    let effective=level == "off" ? "off" : PiProviderRules.clampThinkingLevel(level,map:map)
+                    if effective != "off" {
+                        body["reasoning"]=["effort":JSON(map[effective].text ?? effective),"summary":"auto"]
+                        body["include"]=["reasoning.encrypted_content"]
+                    } else if !(map.map["off"].map { $0.isNull } ?? false) {
+                        body["reasoning"]=["effort":JSON(map["off"].text ?? "none")]
                     }
                 }
             }
-            body["input"] = .array(input)
-            if !tools.isEmpty {
-                body["tools"] = .array(tools.map { tool in
-                    var value:JSON=["type":"function","name":JSON(tool.name),"description":JSON(tool.description),"parameters":tool.schema]
-                    if p.raw["compat"]["supportsStrictMode"].flag != false { value["strict"]=false };return value
-                })
-                body["parallel_tool_calls"]=false
-            }
-            if p.raw["reasoning"].flag==true {
-                body["include"]=["reasoning.encrypted_content"]
-                if let level=p.raw["thinkingLevel"].text,level != "default" {
-                    let effort=p.raw["thinkingLevelMap"][level].text ?? (level=="off" ? "none":level)
-                    body["reasoning"]=["effort":JSON(effort),"summary":"auto"]
-                }
-            }
+            // Last, so a model's sampling parameters override the named fields.
+            for (key,value) in p.raw["samplingParams"].map { body[key]=value }
         } else {
+            let sampling=p.raw["samplingParams"].map
+            for key in ["temperature","top_p"] { if let value=sampling[key] { body[key]=value } }
             let messagesCap=p.outputCap ?? p.modelOutputLimit ?? p.maxOutput
             body["max_tokens"]=JSON(messagesCap);body["system"]=JSON(instructions)
             body["messages"] = .array(try history.compactMap { message -> JSON? in
@@ -115,15 +110,23 @@ public struct ProviderClient: ModelClient {
     }
     public func complete(profile:Profile, apiKey:String, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, turnID:String, purpose:String, onObservation:@escaping @Sendable (RequestObservation) async -> Void, onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
         try Task.checkCancellation()
-        let body=try Self.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID)
+        // Pi sends a compaction summary with cacheRetention "none": no prompt
+        // cache key and no session affinity headers.
+        let caching=purpose != "compaction"
+        let body=try Self.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,promptCaching:caching)
         let bytes=try body.data()
         guard bytes.count<=32*1024*1024 else { throw AgentError("request_limit","Serialized request exceeds 32 MiB") }
         var request=URLRequest(url:profile.endpoint);request.httpMethod="POST";request.httpBody=bytes
         request.setValue("application/json",forHTTPHeaderField:"Content-Type");request.setValue("text/event-stream",forHTTPHeaderField:"Accept")
-        // Every gateway request names its native session and turn (a compaction or
+        // Ours: every gateway request names its native session and turn (a compaction or
         // auxiliary request carries that purpose's identity) for LiteLLM correlation.
         request.setValue(Self.correlationValue(sessionID),forHTTPHeaderField:"x-session-id")
         request.setValue(Self.correlationValue(turnID),forHTTPHeaderField:"x-turn-id")
+        // Pi's session affinity for an OpenAI-format gateway: session_id and x-client-request-id.
+        if caching {
+            request.setValue(Self.correlationValue(sessionID),forHTTPHeaderField:"session_id")
+            request.setValue(Self.correlationValue(sessionID),forHTTPHeaderField:"x-client-request-id")
+        }
         // LiteLLM authenticates both API routes with the configured proxy key.
         // The Messages route also accepts x-api-key for its native protocol.
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -174,7 +177,7 @@ public struct ProviderClient: ModelClient {
                         await traces.reported(attempt,value:value,streaming:true)
                         if ProviderAccumulator.isFailure(value) {
                             await traces.terminal(attempt,at:receivedAt)
-                            providerFailure=ProviderAccumulator.failure(value)
+                            providerFailure=ProviderAccumulator.failure(value).carrying(PiErrorText.stream(value))
                         }
                         if providerFailure != nil {
                             if observed { observation.monitoring = await traces.monitoring(attempt); await onObservation(observation) }
@@ -216,7 +219,8 @@ public struct ProviderClient: ModelClient {
             }
             guard (200..<300).contains(status) else {
                 let detail = (try? JSON.parse(nonSSE)).map { ProviderAccumulator.failure($0).message }
-                throw AgentError("provider_http", "Provider returned HTTP \(status). " + Self.guidance(status: status, detail: detail, attempt: attempt),failure:ProviderFailure.classify((try? JSON.parse(nonSSE)) ?? .null,status:status))
+                throw AgentError("provider_http", "Provider returned HTTP \(status). " + Self.guidance(status: status, detail: detail, attempt: attempt),failure:ProviderFailure.classify((try? JSON.parse(nonSSE)) ?? .null,status:status),
+                                 providerMessage:PiErrorText.http(status:status,body:nonSSE))
             }
             if let providerFailure { throw providerFailure }
             if jsonBody {
@@ -248,8 +252,9 @@ public struct ProviderClient: ModelClient {
             await traces.finish(attempt,outcome:cancelled ? "cancelled":"failed",modelOutcome:providerFailure != nil ? "failed":"interrupted")
             observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
             if cancelled { throw CancellationError() }
-            if let e=error as? AgentError { throw Self.safeFailure(AgentError(e.code,e.message,failure:e.failure,attemptID:attempt), credentials: credentials) }
-            throw AgentError("provider_transport", Self.transportGuidance(error, attempt: attempt),failure:.transientTransport,attemptID:attempt)
+            if let e=error as? AgentError { throw Self.safeFailure(AgentError(e.code,e.message,failure:e.failure,attemptID:attempt,providerMessage:e.providerMessage), credentials: credentials) }
+            throw AgentError("provider_transport", Self.transportGuidance(error, attempt: attempt),failure:.transientTransport,attemptID:attempt,
+                             providerMessage:PiErrorText.transport(error,afterResponse:status != 0))
         }
     }
     /// A stream event that opens an output item of any kind: a reasoning
@@ -298,7 +303,7 @@ public struct ProviderClient: ModelClient {
 
 public struct ProviderAccumulator: Sendable {
     let api:String
-    var root:JSON=[:], items:[Int:JSON]=[:], arguments:[Int:String]=[:], terminal=false
+    var root:JSON=[:], items:[Int:JSON]=[:], arguments:[Int:String]=[:], thinking:[Int:String]=[:], terminal=false
     var openBlocks=Set<Int>()
     public init(api:String) { self.api=api }
     /// A failure frame: a typed `error`/`response.failed` event, or the bare
@@ -328,13 +333,21 @@ public struct ProviderAccumulator: Sendable {
                 guard let index=value["output_index"].int else { throw AgentError("invalid_stream","Missing output item index") };items[index]=value["item"]
                 if value["item"]["type"].text=="function_call" { return [.tool(value["item"]["call_id"].text ?? "",value["item"]["name"].text ?? "","")] }
             case "response.output_text.delta","response.refusal.delta": return [.text(value["delta"].text ?? "")]
-            case "response.reasoning_summary_text.delta","response.reasoning_text.delta":return [.thinking(value["delta"].text ?? "")]
+            case "response.reasoning_summary_text.delta","response.reasoning_text.delta":
+                // Pi's streamed reasoning, the item's text when its done event carries none.
+                if let index=value["output_index"].int { thinking[index,default:""] += value["delta"].text ?? "" }
+                return [.thinking(value["delta"].text ?? "")]
+            case "response.reasoning_summary_part.done":
+                if let index=value["output_index"].int { thinking[index,default:""] += "\n\n" }
             case "response.function_call_arguments.delta":
                 let index=value["output_index"].int ?? items.first(where:{$0.value["id"]==value["item_id"]})?.key
                 guard let index,let item=items[index] else { throw AgentError("invalid_stream","Tool argument delta preceded its item") }
                 let delta=value["delta"].text ?? "";arguments[index,default:""] += delta
                 guard (arguments[index]?.utf8.count ?? 0) <= 2*1024*1024 else { throw AgentError("tool_argument_limit","Tool arguments exceed 2 MiB") }
                 return [.tool(item["call_id"].text ?? "",item["name"].text ?? "",delta)]
+            case "response.function_call_arguments.done":
+                // Pi replaces the streamed arguments with the complete ones.
+                if let index=value["output_index"].int, let complete=value["arguments"].text { arguments[index]=complete }
             case "response.completed","response.incomplete": try acceptJSON(value["response"])
             default:break
             }
@@ -374,37 +387,50 @@ public struct ProviderAccumulator: Sendable {
         return []
     }
     public func result() throws -> ModelReply {
-        guard terminal else { throw AgentError("incomplete_stream","The stream ended without its terminal event. No tool arguments were executed.") }
+        guard terminal else { throw AgentError("incomplete_stream","The stream ended without its terminal event. No tool arguments were executed.",providerMessage:ProviderClient.piIncompleteStream) }
         var message=ChatMessage(role:"assistant",content:[]),calls:[ToolCall]=[]
         let rawContent=api=="openai-responses" ? root["output"]:root["content"]
-        guard case .array(let raw)=rawContent else { throw AgentError("invalid_stream","Missing terminal output array") }
+        guard case .array(let listed)=rawContent else { throw AgentError("invalid_stream","Missing terminal output array") }
+        // Pi builds the reply from the streamed items; a terminal response that
+        // lists no output leaves them as they arrived, by output index.
+        let indexed: [(Int,JSON)]=api=="openai-responses" && listed.isEmpty && !items.isEmpty ? items.keys.sorted().compactMap { key in items[key].map { (key,$0) } } : Array(listed.enumerated())
+        let raw=indexed.map(\.1)
         message.providerItems=raw
         let truncated=api=="openai-responses" ? root["status"].text=="incomplete":root["stop_reason"].text=="max_tokens"
-        for item in raw {
+        // Pi's mapStopReason: only max_output_tokens is a length stop; any other
+        // incomplete response is an error.
+        if api=="openai-responses", truncated, root["incomplete_details"]["reason"].text != "max_output_tokens" {
+            let text=PiErrorText.incomplete(root["incomplete_details"]["reason"].text)
+            throw AgentError("provider_incomplete",text,providerMessage:text)
+        }
+        for (index,item) in indexed {
             switch item["type"].text {
             case "message":
-                for part in item["content"].list {
-                    if let text=part["text"].text { message.content.append(textBlock(text)) }
-                    else if let refusal=part["refusal"].text { message.content.append(textBlock(refusal)) }
-                }
+                // One text block per message item, its parts joined, a refusal as text.
+                message.content.append(textBlock(item["content"].list.map { $0["type"].text == "output_text" ? ($0["text"].text ?? "") : ($0["refusal"].text ?? "") }.joined()))
             case "text":message.content.append(textBlock(item["text"].text ?? ""))
             case "reasoning":
-                let text=item["summary"].list.compactMap{$0["text"].text}.joined(separator:"\n")
+                // The summary parts joined by blank lines, else the reasoning
+                // text, else what streamed.
+                let summary=item["summary"].list.compactMap{$0["text"].text}.joined(separator:"\n\n")
+                let content=item["content"].list.compactMap{$0["text"].text}.joined(separator:"\n\n")
+                let text = !summary.isEmpty ? summary : !content.isEmpty ? content : (thinking[index] ?? "")
                 if !text.isEmpty { message.content.append(["type":"thinking","thinking":JSON(text)]) }
             case "thinking":message.content.append(["type":"thinking","thinking":item["thinking"]])
             case "function_call","tool_use":
                 let id=try required(item[api=="openai-responses" ? "call_id":"id"],"tool call id",maximum:512),name=try required(item["name"],"tool name",maximum:256)
                 let args:JSON
                 if api=="openai-responses" {
-                    if truncated { args=(try? JSON.parse(Data((item["arguments"].text ?? "{}").utf8))) ?? [:] }
-                    else { guard let text=item["arguments"].text else { throw AgentError("invalid_tool_arguments","Missing serialized function arguments") }; args=try JSON.parse(Data(text.utf8)) }
+                    // Pi's parseStreamingJson never fails: arguments a tool cannot
+                    // use come back to the model as that tool's error.
+                    let text=item["arguments"].text.flatMap { $0.isEmpty ? nil : $0 } ?? arguments[index]
+                    args=PiProviderRules.parseArguments(text)
                 } else { args=item["input"] }
-                guard truncated || args.isObject else { throw AgentError("invalid_tool_arguments","Tool arguments must be a complete JSON object") }
                 calls.append(ToolCall(id:id,name:name,arguments:args));message.content.append(["type":"toolCall","id":JSON(id),"name":JSON(name),"arguments":args])
             default:break // Opaque and future content remains retained in providerItems.
             }
         }
-        guard Set(calls.map(\.id)).count==calls.count,calls.count<=64 else { throw AgentError("invalid_tool_calls","Duplicate tool identities or excessive tool calls") }
+        guard Set(calls.map(\.id)).count==calls.count else { throw AgentError("invalid_tool_calls","Duplicate tool identities") }
         let usage = UsageObservation.normalized(root["usage"], api: api)
         let refusal=raw.contains { item in item["type"].text == "refusal" || item["content"].list.contains { $0["type"].text == "refusal" || !$0["refusal"].isNull } }
         let outcome=ModelTerminalOutcome(status:api == "openai-responses" ? root["status"].text : (truncated ? "incomplete":"completed"),

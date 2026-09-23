@@ -33,7 +33,9 @@ final class CompactionTaskRegressionTests: XCTestCase {
         await session.close()
     }
 
-    func testOneUserTaskCanCompactWithoutDiscardingItsObjective() async throws {
+    /// Pi's split turn: the one task's request goes into the turn-prefix
+    /// summary ("Original Request"), with no history before it.
+    func testOneUserTaskCompactsIntoPiTurnPrefixSummary() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=ScriptClient([evidenceCall(String(repeating:"Completed work with evidence. ",count:300)), answer("Done."), answer("Completed work; preserve the user's objective.")])
         let session=try AgentSession(id:"single-task",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false,compactionPolicy:{ var policy=CompactionPolicy();policy.keepRecentTokens=1;return policy }())
@@ -44,8 +46,10 @@ final class CompactionTaskRegressionTests: XCTestCase {
         let state=await session.snapshot(), context=await session.context
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
         XCTAssertEqual(context.first?.kind,"compaction")
-        XCTAssertTrue(context.contains { $0.id=="task" && $0.text=="Keep my original objective exactly." })
-        let calls=await client.count; XCTAssertEqual(calls,3)
+        XCTAssertFalse(context.contains { $0.id=="task" })
+        XCTAssertTrue(context.first?.text.contains("No prior history.\n\n---\n\n**Turn Context (split turn):**\n\nCompleted work; preserve the user's objective.") == true)
+        let calls=await client.count, requests=await client.requests; XCTAssertEqual(calls,3)
+        XCTAssertTrue(requests.last?.first?.text.contains("[User]: Keep my original objective exactly.") == true)
         await session.close()
     }
 }

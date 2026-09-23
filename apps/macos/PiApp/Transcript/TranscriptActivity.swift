@@ -124,20 +124,6 @@ struct TurnRequestLine: Equatable, Sendable, Identifiable {
     var reportedUsage: Bool { input != nil || output != nil }
     var route: GatewayModelRoute { GatewayModelRoute(requested: requested, responded: model, latestWall: wall ?? 0) }
 
-    /// A request as the log recorded it: the retained record, or the
-    /// helper's own while the log has none (`live`).
-    init(record: TurnRequestRecord) {
-        let metadata = record.metadata, identity = GatewayModelIdentity(metadata: metadata), gateway = GatewayObservation(metadata: metadata)
-        id = record.id; wall = record.wall > 0 ? record.wall : nil
-        requested = GatewayModelIdentity.modelName(metadata["requestedModel"]?.string); model = identity.displayName
-        routedVia = GatewayModelIdentity.routedVia(PayloadArchive.reportedModels(metadata).compactMap(GatewayModelIdentity.modelName), answered: model)
-        input = gateway.inputTokens; cached = gateway.cacheReadTokens; output = gateway.outputTokens; reasoning = gateway.reasoningTokens; cost = gateway.costUSD
-        source = .log; live = record.liveOnly
-        if !reportedUsage {
-            missing = metadata["metricsExpired"]?.bool == true ? .expired : record.running ? .running
-                : ["completed", "truncated"].contains(metadata["outcome"]?.string ?? "") ? .noUsage : .failed
-        }
-    }
     /// A reply the log has no row for, as its own record describes it.
     init(reply message: TranscriptMessage) {
         let record = message.reply
@@ -218,6 +204,8 @@ struct TurnSummary: Equatable, Sendable {
     var taskRootID: String? = nil
     var phase: String? = nil
     var outcome: String? = nil
+    /// A failed run's error code; `cost_limit` reads as a stop, not a failure.
+    var errorCode: String? = nil
     /// Only a currently running task may compare this with this boot's uptime.
     /// startedAt/endedAt above remain optional Unix-ms calendar observations.
     var liveStartedUptimeMs: Double? = nil

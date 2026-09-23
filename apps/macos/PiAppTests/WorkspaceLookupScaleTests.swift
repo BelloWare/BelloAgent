@@ -5,7 +5,7 @@ import XCTest
 /// sidebar does it twice per row per redraw, the Dock badge does it per unread
 /// chat, the menu bar does it per row, and a streamed snapshot does it five
 /// times per delta. A linear scan made all of those O(chats²).
-final class WorkspaceLookupScaleTests: XCTestCase {
+final class WorkspaceLookupScaleTests: XCTestCase, SerialTestLane {
     private func scratch() throws -> URL {
         let root = URL(fileURLWithPath: scratchBase())
             .appendingPathComponent("lookup-scale-" + UUID().uuidString)

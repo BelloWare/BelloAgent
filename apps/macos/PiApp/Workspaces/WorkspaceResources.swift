@@ -262,9 +262,15 @@ extension WorkspaceModel {
                 view.draft = ""; view.directCommand = false; draftChanged(view)
                 forkSession(view.id); return true
             }
+            if command.name == "compact" {
+                // Pi's /compact [instructions]: the running turn stops first and
+                // the text after the command is the summary's focus.
+                let focus = command.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+                view.draft = ""; view.directCommand = false; draftChanged(view)
+                action("context.compact", params: focus.isEmpty ? [:] : ["focus": .string(focus)], sessionID: view.id); return true
+            }
             guard command.arguments.isEmpty, !steer else { error = "This built-in command takes no arguments and cannot steer a running turn."; return true }
             if command.name == "debug" { inspect(view.id) }
-            if command.name == "compact" { action("context.compact", sessionID: view.id) }
             view.draft = ""; view.directCommand = false; draftChanged(view); return true
         }
         guard let workspaceID = record(view.id)?.workspaceID, view.skillCatalog.authorizes,

@@ -219,18 +219,22 @@ final class WireContractTests: XCTestCase {
 
     // MARK: H14 — a reply the provider ended early
 
-    /// A reply cut by the provider's content filter used to read "Output
-    /// limit reached"; with the helper passing the provider's reason through,
-    /// it read nothing at all. It says why, on a line under itself, as the
-    /// output limit does.
-    @MainActor func testAReplyTheContentFilterStoppedSaysSoUnderItself() async throws {
+    /// Pi's mapStopReason: a reply the provider ended for any reason but the
+    /// output budget is an error. The run fails with pi's text, and the words
+    /// that arrived stay on screen without being replayed. A row an earlier
+    /// helper recorded with the content filter's reason still says why on a
+    /// line under itself, as the output limit does.
+    @MainActor func testAReplyTheContentFilterStoppedFailsTheRunAsPiDoes() async throws {
         let chat = try await WireChat()
         addTeardownBlock { @MainActor in await chat.close() }
-        try await chat.sendAndWait("wire filter") { rows in rows.contains { $0.stopReason == "content_filter" } }
-        let row = try XCTUnwrap(chat.replyRows.last { $0.stopReason != nil })
-        XCTAssertEqual(row.stopReason, "content_filter", "The helper names the provider's reason; only the output budget is “length”")
-        XCTAssertEqual(row.text, "Partial answer before the provider stopped.")
+        chat.send("wire filter")
+        try await chat.waitUntil("“wire filter” failed") { !chat.session.loading && !chat.session.busy && chat.session.state == "error" }
+        XCTAssertEqual(chat.session.failureMessage, "Response incomplete: content_filter")
+        let partial = try XCTUnwrap(chat.replyRows.last)
+        XCTAssertEqual(partial.text, "Partial answer before the provider stopped.")
+        XCTAssertNotEqual(partial.stopReason, "length", "Only the output budget is the output limit")
         // The row as drawn: the notice is one more line under the reply.
+        var row = partial; row.stopReason = "content_filter"
         func height(_ message: TranscriptMessage) -> CGFloat {
             let host = NSHostingView(rootView: MessageRowView(message: message, actions: TranscriptActions(), inlineAccounting: false).frame(width: 640))
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400), styleMask: [.titled], backing: .buffered, defer: false)

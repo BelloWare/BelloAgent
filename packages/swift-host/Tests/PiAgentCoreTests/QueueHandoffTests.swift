@@ -38,10 +38,10 @@ final class QueueHandoffTests: XCTestCase {
         let session = try AgentSession(id:"handoff",profile:fixtureProfile(),apiKey:"fixture",cwd:root,
             directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),
             client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false,
-            compactionPolicy:{ var policy=CompactionPolicy();policy.keepRecentTokens=1;return policy }())
+            compactionPolicy:{ var policy=CompactionPolicy();policy.keepRecentTokens=2_255;return policy }())
         addTeardownBlock { await session.close() }
         // An earlier exchange for pi's cut to summarize; the objective and its
-        // answer are the kept tail.
+        // answer (5 and 2,250 tokens) are the kept tail, so no turn is split.
         var earlier=ChatMessage(role:"user",content:[textBlock("Earlier request")]);earlier.id="earlier";earlier.taskRootID="earlier"
         var earlierAnswer=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"Earlier evidence. ",count:200))]);earlierAnswer.taskRootID="earlier"
         try await session.append(earlier);try await session.append(earlierAnswer)

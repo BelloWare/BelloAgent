@@ -26,14 +26,24 @@ enum TranscriptPaging {
     }
     static func window(_ messages: [TranscriptMessage], keepingEarlier: Bool) -> [TranscriptMessage] {
         var result: [TranscriptMessage] = [], bytes = 0
+        let caps = residentCaps
         for row in (keepingEarlier ? messages : Array(messages.reversed())) {
             let size = size(row)
-            guard result.count < HistoryWindowPolicy.residentRows,
-                  result.isEmpty || bytes + size <= HistoryWindowPolicy.residentBytes else { break }
+            guard result.count < caps.rows,
+                  result.isEmpty || bytes + size <= caps.bytes else { break }
             result.append(row); bytes += size
         }
         return keepingEarlier ? result : result.reversed()
     }
+    /// The resident window's two caps: `HistoryWindowPolicy`'s, which the app
+    /// never changes. A test seam: a fixture lowers them so that a short chat
+    /// passes both, rather than paging through a thousand long rows to do it.
+    static var residentCaps: (rows: Int, bytes: Int) {
+        get { capsLock.lock(); defer { capsLock.unlock() }; return caps }
+        set { capsLock.lock(); caps = newValue; capsLock.unlock() }
+    }
+    private static let capsLock = NSLock()
+    nonisolated(unsafe) private static var caps = (rows: HistoryWindowPolicy.residentRows, bytes: HistoryWindowPolicy.residentBytes)
     /// Rows of an earlier page that are not already shown, in page order.
     static func prefix(earlier: [TranscriptMessage], shown: [TranscriptMessage]) -> [TranscriptMessage] {
         let known = Set(shown.map(\.id))

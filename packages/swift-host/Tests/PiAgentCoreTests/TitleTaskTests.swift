@@ -15,7 +15,7 @@ final class TitleTaskTests: XCTestCase {
         XCTAssertEqual(body["max_output_tokens"].int, 512)
         XCTAssertTrue(body["tools"].list.isEmpty); XCTAssertTrue(body["reasoning"].isNull)
         XCTAssertFalse(body.encoded().contains("PRIVATE PROJECT INSTRUCTION"))
-        XCTAssertTrue(body["instructions"].text?.contains("Generate a short session title") == true)
+        XCTAssertTrue(RequestContextCounter.systemPrompt(body)?.contains("Generate a short session title") == true)
         let status = try await host.command("session.status", sessionID: "title-job", params: [:])
         XCTAssertEqual(status["toolMode"].text, "read-only")
         XCTAssertNotNil(status["path"].text, "The title task owns a real journal")

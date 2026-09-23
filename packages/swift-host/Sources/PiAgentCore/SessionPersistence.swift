@@ -20,20 +20,23 @@ extension AgentSession {
             let prepared=try SessionJournal(url:temporary,id:newID,cwd:cwd,binding:profile.binding,create:true)
             for record in source {
                 let kind=record["customType"].text ?? ""
-                if ["pi-app.native.v1", "pi-app.native.state.v1", "pi-app.side-origin.v1", "pi-app.fork-origin.v1", "pi-app.context-recovery.v1"].contains(kind) { continue }
+                // A fork is a chat of its own: it starts with no spend of its own.
+                if ["pi-app.native.v1", "pi-app.native.state.v1", "pi-app.side-origin.v1", "pi-app.fork-origin.v1", "pi-app.context-recovery.v1", SessionSpend.recordType].contains(kind) { continue }
                 // Branch records can contain a queued edit. Preserve the branch
                 // and all message bytes, but never authorize its command twice.
                 try prepared.append(record.removing(["id","parentId","timestamp","nativeState"]),id:try identity(record["id"]))
             }
             try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(boundary.map { JSON($0.id) }),"visibleIDs":.array(EditReplayPlan.forkTimeline(visible:visible.map(\.id),boundary:boundary.map(\.id)).map { JSON($0) })]])
             try prepared.append(["type":"custom","customType":"pi-app.fork-origin.v1","data":origin])
+            var fresh = SessionSpend().record; fresh["source"] = "fork"
+            try prepared.append(["type":"custom","customType":JSON(SessionSpend.recordType),"data":fresh])
             try prepared.append(["type":"custom","customType":"pi-app.native.state.v1","data":["active":false,"queue":[],"steering":[],"commands":[],"queuePaused":false,"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode)]])
             try prepared.publish(to:destination)
         } catch { try? FileManager.default.removeItem(at:temporary); try? FileManager.default.removeItem(atPath:temporary.path+".lock"); throw error }
         return ["accepted":true,"sessionId":JSON(newID),"path":JSON(destination.path),"origin":origin]
     }
     func savedState(active: Bool? = nil) throws -> JSON {
-        let value: JSON = ["active":JSON(active ?? (runTask != nil)),"queue":.array(queue.map(\.savedValue)),"steering":.array(steering.map(\.savedValue)),"commands":.array(Array(commands.suffix(128))),"queuePaused":JSON(queuePaused),"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode),"runStatus":JSON(runStatus),"errorMessage":errorMessage.map { JSON($0) } ?? .null,"timing":["modelMs":cumulativeModelMs.map { JSON($0) } ?? .null,"toolMs":cumulativeToolMs.map { JSON($0) } ?? .null]]
+        let value: JSON = ["active":JSON(active ?? (runTask != nil)),"queue":.array(queue.map(\.savedValue)),"steering":.array(steering.map(\.savedValue)),"commands":.array(Array(commands.suffix(128))),"queuePaused":JSON(queuePaused),"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode),"runStatus":JSON(runStatus),"errorMessage":errorMessage.map { JSON($0) } ?? .null,"errorCode":errorCode.map { JSON($0) } ?? .null,"timing":["modelMs":cumulativeModelMs.map { JSON($0) } ?? .null,"toolMs":cumulativeToolMs.map { JSON($0) } ?? .null]]
         guard (try value.data()).count <= 8*1024*1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
         var saved = value
         if let activeTaskPresentation { saved["taskPresentation"] = try JSON.parse(JSONEncoder().encode(activeTaskPresentation)) }
@@ -91,6 +94,8 @@ extension AgentSession {
             for message in history { try prepared.append(["type":"message","message":message.pi],id:message.id) }
             try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(context.map { JSON($0.id) })]])
             try prepared.append(["type":"custom","customType":"pi-app.side-origin.v1","data":parentInfo])
+            // What the side spent before it was kept goes with it.
+            try prepared.append(carriedSpendRecord())
             try prepared.append(["type":"custom","customType":"pi-app.native.state.v1","data":try savedState()])
             try prepared.publish(to:destination); journal=prepared; ephemeral=false; keepRequested=false
         } catch { try? FileManager.default.removeItem(at:temporary); try? FileManager.default.removeItem(atPath:temporary.path+".lock"); throw error }

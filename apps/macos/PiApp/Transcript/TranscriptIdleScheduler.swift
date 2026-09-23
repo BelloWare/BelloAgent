@@ -7,7 +7,10 @@ import AppKit
 @MainActor final class TranscriptIdleScheduler {
     static let shared = TranscriptIdleScheduler()
     static let budget: TimeInterval = 0.0015
-    static let interval: TimeInterval = 1.0 / 60
+    /// The pause after a unit of work: one unit per frame. A test seam: a
+    /// fixture that waits for the work to finish may drop the pause. The
+    /// units, their order and what each one does stay the app's.
+    static var interval: TimeInterval = 1.0 / 60
     /// Two kinds of optional work, which stand aside for different things.
     ///
     /// `preparation` gets the rows the reader is about to reach ready. It runs

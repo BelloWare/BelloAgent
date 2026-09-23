@@ -3,9 +3,45 @@ import SwiftUI
 import Vision
 @testable import PiApp
 
-final class ModelCatalogEndpointTests: XCTestCase {
-    private let endpoint = ModelCatalogEndpoint()
+class ModelCatalogEndpointTestCase: XCTestCase {
+    fileprivate let endpoint = ModelCatalogEndpoint()
 
+    /// The test host does not expose SwiftUI virtual nodes through in-process
+    /// accessibility getters. Read the actual own-window pixels instead, so
+    /// stale/unrendered picker content cannot pass through a cache assertion.
+    @MainActor fileprivate static func renderedText(_ window: NSWindow, filename: String) async throws -> String {
+        try await Task.sleep(for: .milliseconds(300))
+        window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        XCTAssertTrue(window.isVisible)
+        typealias ListImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        let symbol = try XCTUnwrap(dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage"))
+        let create = unsafeBitCast(symbol, to: ListImage.self)
+        let image = try XCTUnwrap(create(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber),
+                                        CGWindowImageOption.boundsIgnoreFraming.rawValue)?.takeRetainedValue())
+        if let path = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") {
+            let folder = URL(fileURLWithPath: path, isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let jpeg = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.82]))
+            try jpeg.write(to: folder.appendingPathComponent(filename), options: .atomic)
+        }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate; request.recognitionLanguages = ["en-US"]
+        request.usesLanguageCorrection = false
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+            .joined(separator: " ").lowercased()
+    }
+
+    @MainActor fileprivate func waitForPickerCatalog(_ condition: () -> Bool) async throws {
+        for _ in 0..<100 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail("The visible session picker did not load its saved model catalog")
+    }
+}
+
+final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
     func testShippingBundleContainsTheCuratedAliasesLimitsAndReasoningEfforts() throws {
         // Read the application resource rather than the repository fixture: this
         // fails if the release stops copying the curated catalog into the app.
@@ -191,17 +227,6 @@ final class ModelCatalogEndpointTests: XCTestCase {
             do { _ = try await ModelCatalogEndpoint(limits: .init(timeout: 2, bodyBytes: 128)).fetch(url: URL(string: base)!, key: ""); XCTFail("Oversized body must fail") }
             catch { XCTAssertEqual(error as? ModelCatalogEndpoint.Failure, .oversized) }
         }
-    }
-
-    func testCatalogTimeoutAndInvalidCredentialAreBounded() async throws {
-        let gateway = try ModelListGateway { _ in nil }; defer { gateway.stop() }
-        let base = try await gateway.start(), url = URL(string: base)!, began = Date()
-        do { _ = try await ModelCatalogEndpoint(limits: .init(timeout: 1)).fetch(url: url, key: ""); XCTFail("Expected timeout") }
-        catch { XCTAssertEqual(error as? ModelCatalogEndpoint.Failure, .timedOut) }
-        XCTAssertLessThan(Date().timeIntervalSince(began), 5)
-        do { _ = try await endpoint.fetch(url: url, key: "key\r\nInjected: value"); XCTFail("Expected credential validation") }
-        catch { XCTAssertEqual(error as? ModelCatalogEndpoint.Failure, .credential) }
-        XCTAssertEqual(gateway.requests.count, 1)
     }
 
     @MainActor func testExternalCatalogNeverResolvesOrReceivesGatewayCredential() async throws {
@@ -536,39 +561,20 @@ final class ModelCatalogEndpointTests: XCTestCase {
         XCTAssertTrue(endpoint.requests.allSatisfy { !$0.contains("/v1/models") })
         await model.store?.close()
     }
+}
 
-    /// The test host does not expose SwiftUI virtual nodes through in-process
-    /// accessibility getters. Read the actual own-window pixels instead, so
-    /// stale/unrendered picker content cannot pass through a cache assertion.
-    @MainActor private static func renderedText(_ window: NSWindow, filename: String) async throws -> String {
-        try await Task.sleep(for: .milliseconds(300))
-        window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-        XCTAssertTrue(window.isVisible)
-        typealias ListImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
-        let symbol = try XCTUnwrap(dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage"))
-        let create = unsafeBitCast(symbol, to: ListImage.self)
-        let image = try XCTUnwrap(create(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber),
-                                        CGWindowImageOption.boundsIgnoreFraming.rawValue)?.takeRetainedValue())
-        if let path = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") {
-            let folder = URL(fileURLWithPath: path, isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let jpeg = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.82]))
-            try jpeg.write(to: folder.appendingPathComponent(filename), options: .atomic)
-        }
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate; request.recognitionLanguages = ["en-US"]
-        request.usesLanguageCorrection = false
-        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
-            .joined(separator: " ").lowercased()
-    }
-
-    @MainActor private func waitForPickerCatalog(_ condition: () -> Bool) async throws {
-        for _ in 0..<100 {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        XCTFail("The visible session picker did not load its saved model catalog")
+/// A stalled catalog endpoint times out within its bound: wall-clock time,
+/// so it runs in the serial lane (`scripts/test-lanes.py`).
+final class ModelCatalogTimeoutTests: ModelCatalogEndpointTestCase, SerialTestLane {
+    func testCatalogTimeoutAndInvalidCredentialAreBounded() async throws {
+        let gateway = try ModelListGateway { _ in nil }; defer { gateway.stop() }
+        let base = try await gateway.start(), url = URL(string: base)!, began = Date()
+        do { _ = try await ModelCatalogEndpoint(limits: .init(timeout: 1)).fetch(url: url, key: ""); XCTFail("Expected timeout") }
+        catch { XCTAssertEqual(error as? ModelCatalogEndpoint.Failure, .timedOut) }
+        XCTAssertLessThan(Date().timeIntervalSince(began), 5)
+        do { _ = try await endpoint.fetch(url: url, key: "key\r\nInjected: value"); XCTFail("Expected credential validation") }
+        catch { XCTAssertEqual(error as? ModelCatalogEndpoint.Failure, .credential) }
+        XCTAssertEqual(gateway.requests.count, 1)
     }
 }
 

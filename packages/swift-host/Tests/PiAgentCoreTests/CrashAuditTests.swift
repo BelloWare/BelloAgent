@@ -78,9 +78,9 @@ final class CrashAuditTests: XCTestCase {
         let totals = await session.inspectContext()["cumulative"]
         XCTAssertEqual(totals["inputStatus"].text, "overflow"); XCTAssertTrue(totals["output"].isNull)
         let records = try String(contentsOf: root.appendingPathComponent("records.jsonl"), encoding: .utf8).split(separator: "\n").map { try JSON.parse(Data($0.utf8)) }
-        XCTAssertEqual(records.count, 5, "Two turn requests, one tool follow-up, one compaction and one sibling; no retries")
+        XCTAssertEqual(records.count, 6, "Two turn requests, one tool follow-up, pi's history and turn-prefix summaries and one sibling; no retries")
         let attempts = try await traces.command("debug.list", session: "huge-usage", params: [:])["attempts"].list
-        XCTAssertEqual(attempts.count, 4)
+        XCTAssertEqual(attempts.count, 5)
         for attempt in attempts {
             let capture = try await traces.command("debug.body", session: "huge-usage", params: ["attemptId": attempt["attemptId"], "body": "response"])
             XCTAssertTrue(records.contains { $0["response"] == capture["bytes"] }, "Exact bytes survive invalid normalized accounting")

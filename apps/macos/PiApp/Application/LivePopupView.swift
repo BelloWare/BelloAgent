@@ -29,6 +29,7 @@ extension EnvironmentValues {
     @State private var liveScroll: String?
     @State private var usageScroll: String?
     @Environment(\.menuBarHeight) private var height
+    @Environment(\.openSettings) private var openSettings
     private let openApp: () -> Void, openReport: () -> Void, quit: () -> Void
     private let openSession: (String) -> Void
     init(load: @escaping MenuBarMetricsLoader, scopedLoad: MenuBarScopedMetricsLoader? = nil, projects: @escaping () -> [MonitorProject] = { [] }, activeSessions: @escaping @MainActor () -> Int = { 0 }, activity: (@MainActor () -> MenuBarActivitySnapshot)? = nil, activityChanges: (@MainActor () -> AnyPublisher<Void, Never>)? = nil, live: LiveActivityStore? = nil, monitorController: MenuBarMetricsController? = nil, usageController: MenuBarMetricsController? = nil, initialTab: MenuBarTab = .live, openApp: @escaping () -> Void, openReport: @escaping () -> Void, openSession: @escaping (String) -> Void = { _ in }, quit: @escaping () -> Void = { NSApplication.shared.terminate(nil) }) {
@@ -45,14 +46,19 @@ extension EnvironmentValues {
                 if tab == .live { MonitorFreshness(live: live) }
                 else { Text("Usage").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
                 Spacer(minLength: 4)
-                Menu {
-                    Button(tab == .live ? "Detailed usage" : "Live monitor") { tab = tab == .live ? .usage : .live }
-                    Button("Refresh usage") { if tab == .live { monitor.refresh() } else { controller.refresh() } }
-                    SettingsLink { Text("Settings…") }
-                    Divider()
-                    Button("Quit Bello Agent", action: quit)
-                } label: { Image(systemName: "gearshape").font(.system(size: 17)).foregroundStyle(Color.piInkSecondary) }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).frame(width: 26).accessibilityLabel("Monitor options")
+                // Built when it opens: this panel refreshes every second while
+                // it is shown, and a live pop-up button was rebuilt with it.
+                PiMenuControl(label: "Monitor options", identifier: "monitorOptions") { [tab, monitor, controller, quit, openSettings] in
+                    PiMenuEntry.button(tab == .live ? "Detailed usage" : "Live monitor") { self.tab = tab == .live ? .usage : .live }
+                    PiMenuEntry.button("Refresh usage") { if tab == .live { monitor.refresh() } else { controller.refresh() } }
+                    PiMenuEntry.button("Settings…") { NSApp.activate(ignoringOtherApps: true); openSettings() }
+                    PiMenuEntry.divider
+                    PiMenuEntry.button("Quit Bello Agent") { quit() }
+                } face: { hovering in
+                    Image(systemName: "gearshape").font(.system(size: 17)).foregroundStyle(hovering ? Color.piInk : Color.piInkSecondary)
+                        .frame(width: 26, height: 26).background(hovering ? Color.piFillStrong : Color.clear, in: Circle())
+                }
+                .frame(width: 26, height: 26)
             }.padding(.horizontal, 18).padding(.vertical, 13)
             Divider()
             ZStack {

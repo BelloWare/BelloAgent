@@ -56,7 +56,7 @@ public actor NativeHostService {
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
             hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true; unknownToolOutcomes = frame["unknownToolOutcomes"].flag == true
-            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":"1.0.0","piBehaviorReference":"0.85.1","limits":["frameBytes":1048576,"captureBytes":134217728],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover"]]); return
+            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":"1.0.0","piBehaviorReference":"0.85.1","limits":["frameBytes":1048576,"captureBytes":134217728],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit"]]); return
         }
         let id=frame["commandId"].text ?? ""
         guard hello, frame["v"].int == 1, frame["kind"].text == "command", frame["hostEpoch"].text == epoch, !id.isEmpty, id.utf8.count <= 128, let method=frame["method"].text, frame["params"].isNull || frame["params"].isObject else { reply(id,.failure(AgentError("invalid_command", "Invalid command or stale host epoch"))); return }
@@ -207,9 +207,15 @@ public actor NativeHostService {
         if method == "session.open" {
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
             let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
+            // The chat's cost limit, and the spend the app counted for a chat
+            // whose journal predates cost records (adopted at most once).
+            let costLimit=try AgentSession.costLimit(params["costLimit"]), costSeed=try AgentSession.costSeed(params["costSeed"])
             try await runtimeGate.acquire()
             do {
-                if let existing=sessions[id] { await runtimeGate.release(); return await existing.snapshot() }
+                if let existing=sessions[id] {
+                    if let costLimit { await existing.setCostLimit(costLimit) }
+                    await runtimeGate.release(); return await existing.snapshot()
+                }
                 let original=try Profile(params["profile"]), (profile,key)=try ProfileFiles.credentials(profile:original,supplied:params["apiKey"].text)
                 let mode=params["toolMode"].text ?? "editing"; guard ["editing","read-only"].contains(mode) else { throw AgentError("tool_mode", "Unknown tool mode") }
                 let titleTask = params["backgroundTask"].text == "session-title"
@@ -225,6 +231,8 @@ public actor NativeHostService {
                 }.value
                 sessions[id]=session; profiles[id]=(profile,key); touch(id)
                 if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
+                if let costLimit { await session.setCostLimit(costLimit) }
+                if let costSeed { await session.adoptSpendSeed(costSeed) }
                 await runtimeGate.release(); return await session.snapshot()
             } catch { await runtimeGate.release(); throw error }
         }
@@ -263,13 +271,15 @@ public actor NativeHostService {
         if method == "session.event-page" || method == "session.events" { return await session.eventPage(since:params["since"].int) }
         if method == "session.fork" {
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
-            let forkID=try identity(params["forkSessionId"])
+            let forkID=try identity(params["forkSessionId"]), costLimit=try AgentSession.costLimit(params["costLimit"])
             try await runtimeGate.acquire()
             do {
                 guard sessions[forkID] == nil, let (profile,key)=profiles[id] else { throw AgentError("session_conflict", "Fork identity is already in use") }
                 let result=try await session.fork(to:forkID)
                 let fork=try await AgentSession(id:forkID,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:session.readOnly,resources:resources,client:ProviderClient(traces:traces),tools:session.isConnectionTest ? DisabledTools() : nativeTools,traces:traces,editingGate:editingGate,resumePath:result["path"].text,unknownToolOutcomes:unknownToolOutcomes,changed:notification())
                 sessions[forkID]=fork; profiles[forkID]=(profile,key); touch(forkID)
+                // A fork is a chat of its own, with its own limit.
+                if let costLimit { await fork.setCostLimit(costLimit) }
                 _=try await traces.command("debug.mode",session:forkID,params:["mode":JSON(await traces.mode(id))])
                 await runtimeGate.release(); return result
             } catch { await runtimeGate.release(); throw error }
@@ -277,13 +287,15 @@ public actor NativeHostService {
         if method == "side.open" {
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
             guard sideParents[id] == nil else { throw AgentError("nested_side", "Nested side chats are not supported") }
-            let sideID=try identity(params["sideSessionId"])
+            let sideID=try identity(params["sideSessionId"]), costLimit=try AgentSession.costLimit(params["costLimit"])
             try await runtimeGate.acquire()
             do {
                 if let existing=sideParents.first(where:{$0.value==id})?.key, let side=sessions[existing] { await runtimeGate.release(); return ["accepted":true,"sessionId":JSON(existing),"side":await side.snapshot()["side"],"ephemeral":true] }
                 guard sessions[sideID] == nil, let (profile,key)=profiles[id] else { throw AgentError("side_conflict", "Side identity is already in use") }
                 let seed=await session.sideSeed()
                 let side=try AgentSession(id:sideID,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:true,resources:resources,client:ProviderClient(traces:traces),tools:nativeTools,traces:traces,editingGate:editingGate,seed:seed.messages,parent:seed.info,unknownToolOutcomes:unknownToolOutcomes,changed:notification())
+                // A side is a session of its own: its own spend and limit.
+                if let costLimit { await side.setCostLimit(costLimit) }
                 let saved=try await side.preserveSide()
                 sessions[sideID]=side; profiles[sideID]=(profile,key); touch(sideID)
                 _=try await traces.command("debug.mode",session:sideID,params:["mode":JSON(await traces.mode(id))])
@@ -317,14 +329,23 @@ public actor NativeHostService {
         if method == "queue.resume" { try await session.resumeQueue(); return ["accepted":true] }
         if method == "turn.retry" { try await session.retryRun(overrides: params); return ["accepted":true] }
         if method == "queue.configure" { try await session.configureQueue(params); return ["accepted":true] }
-        if method == "context.compact" { try await session.compact(commandID:commandID,overrides:params); return ["accepted":true] }
+        if method == "context.compact" { try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true] }
         if method == "mcp.invoke" { var args=params; args["action"]="invoke"; return try await mcp.perform(args,readOnly:session.readOnly) }
         if method == "session.configure" {
+            // The chat's cost limit applies at once, also to a running session:
+            // its next model request is checked against it. A configure that
+            // carries only the limit leaves the connection as it is.
+            let costLimit=try AgentSession.costLimit(params["costLimit"])
+            if costLimit != nil, params["profile"].isNull {
+                if let costLimit { await session.setCostLimit(costLimit) }
+                return ["accepted":true,"applied":true]
+            }
             // A saved connection reaches its open sessions without a close: an idle
             // one switches now, a running one when its run ends.
             let original=try Profile(params["profile"]), (profile,key)=try ProfileFiles.credentials(profile:original,supplied:params["apiKey"].text)
             let applied=try await session.configure(profile:profile,apiKey:key)
             profiles[id]=(profile,key)
+            if let costLimit { await session.setCostLimit(costLimit) }
             return ["accepted":true,"applied":JSON(applied)]
         }
         if method == "session.close" {

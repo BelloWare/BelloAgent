@@ -16,22 +16,22 @@ import XCTest
 /// many rows a change rebuilds, how many times the workspace publishes, how
 /// many objects survive — because that is what regresses and what a stopwatch
 /// on a shared machine cannot see.
-final class AppShellPerformanceTests: XCTestCase {
+class AppShellTestCase: XCTestCase {
     /// Chats in the launch fixture; the owner's workspace is this size.
-    private static let launchChats = 400
+    fileprivate static let launchChats = 400
     /// Chats in the sidebar fixture, spread over three projects.
-    private static let sidebarChats = 540
+    fileprivate static let sidebarChats = 540
 
     // MARK: Measurement helpers
 
-    @MainActor private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
+    @MainActor fileprivate func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
         (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants(type, in: $0) }
     }
 
     /// The process footprint Activity Monitor shows, from `proc_pid_rusage`.
     /// Sizes are only ever printed: what a leak test asserts is whether an
     /// object is still alive, never how many bytes it took.
-    private func footprintBytes() -> UInt64 {
+    fileprivate func footprintBytes() -> UInt64 {
         var info = rusage_info_current()
         let status = withUnsafeMutablePointer(to: &info) { pointer in
             pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
@@ -41,11 +41,11 @@ final class AppShellPerformanceTests: XCTestCase {
         return status == 0 ? info.ri_phys_footprint : 0
     }
 
-    private func megabytes(_ bytes: UInt64) -> String { String(format: "%.1f MB", Double(bytes) / 1_048_576) }
+    fileprivate func megabytes(_ bytes: UInt64) -> String { String(format: "%.1f MB", Double(bytes) / 1_048_576) }
 
     /// Mean and worst of a repeated main-thread operation, printed as one PERF line.
     @MainActor @discardableResult
-    private func time(_ label: String, repeats: Int = 12, _ body: (Int) -> Void) -> Double {
+    fileprivate func time(_ label: String, repeats: Int = 12, _ body: (Int) -> Void) -> Double {
         body(0)
         var worst = 0.0, total = 0.0
         for index in 0..<repeats {
@@ -62,7 +62,7 @@ final class AppShellPerformanceTests: XCTestCase {
     /// A per-chat request history the size the archive would hand back; the
     /// archive caps it at `SessionTimingHistory.limit`, and so must anything
     /// that keeps one per visited chat.
-    private static func timingHistory(samples: Int) -> SessionTimingHistory {
+    fileprivate static func timingHistory(samples: Int) -> SessionTimingHistory {
         let kept = min(samples, SessionTimingHistory.limit)
         var values: [SessionTimingSample] = []
         values.reserveCapacity(kept)
@@ -82,7 +82,7 @@ final class AppShellPerformanceTests: XCTestCase {
 
     // MARK: Fixtures
 
-    @MainActor private func scratch(_ name: String) throws -> URL {
+    @MainActor fileprivate func scratch(_ name: String) throws -> URL {
         let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("\(name)-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -91,7 +91,7 @@ final class AppShellPerformanceTests: XCTestCase {
 
     /// A vault holding trusted projects and one Responses connection, so the
     /// restored sidebar draws real project groups with draggable rows.
-    private func seededVault(projects: [WorkspaceRecord]) throws -> ConfigurationVault {
+    fileprivate func seededVault(projects: [WorkspaceRecord]) throws -> ConfigurationVault {
         var configuration = VaultConfiguration()
         configuration.workspaces = projects
         return ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration)))
@@ -99,7 +99,7 @@ final class AppShellPerformanceTests: XCTestCase {
 
     /// Chats written into a real desktop database, as a previous launch left
     /// them: the store the next launch has to read before it can paint.
-    @MainActor private func seedChats(at root: URL, projects: [WorkspaceRecord], perProject: Int) async throws {
+    @MainActor fileprivate func seedChats(at root: URL, projects: [WorkspaceRecord], perProject: Int) async throws {
         let store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         try await store.open()
         for project in projects {
@@ -114,7 +114,7 @@ final class AppShellPerformanceTests: XCTestCase {
     }
 
     /// The window the app puts on screen: `WorkspaceView` over the model.
-    @MainActor private func window(_ model: WorkspaceModel) -> (NSWindow, NSView) {
+    @MainActor fileprivate func window(_ model: WorkspaceModel) -> (NSWindow, NSView) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1_280, height: 860),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -123,14 +123,14 @@ final class AppShellPerformanceTests: XCTestCase {
         return (window, window.contentView!)
     }
 
-    @MainActor private func draw(_ hosted: NSView, _ window: NSWindow) {
+    @MainActor fileprivate func draw(_ hosted: NSView, _ window: NSWindow) {
         hosted.needsLayout = true
         hosted.layoutSubtreeIfNeeded()
         window.displayIfNeeded()
     }
 
     /// Drives layout until the condition holds, returning the elapsed seconds.
-    @MainActor private func settle(_ hosted: NSView, _ window: NSWindow, limit: TimeInterval = 30,
+    @MainActor fileprivate func settle(_ hosted: NSView, _ window: NSWindow, limit: TimeInterval = 30,
                                    until condition: () -> Bool) async -> Double? {
         let start = ProcessInfo.processInfo.systemUptime
         while ProcessInfo.processInfo.systemUptime - start < limit {
@@ -145,120 +145,23 @@ final class AppShellPerformanceTests: XCTestCase {
     /// One turn of the main run loop: AppKit tears views down and drains its
     /// autorelease pool there, and a test that only yields to Swift concurrency
     /// never reaches it.
-    @MainActor private func runLoopTurn() async {
+    @MainActor fileprivate func runLoopTurn() async {
         await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
     }
 
     /// Every draggable chat row installs one AppKit press surface, so counting
     /// them is how a test knows the sidebar has really drawn its rows.
-    @MainActor private func sidebarRowCount(in hosted: NSView) -> Int {
+    @MainActor fileprivate func sidebarRowCount(in hosted: NSView) -> Int {
         descendants(TopicSessionDragSurfaceView.self, in: hosted).count
     }
 
     // MARK: 1. Launch to the first painted sidebar row
 
-    @MainActor func testLaunchToFirstSidebarPaintWithFourHundredChats() async throws {
-        let root = try scratch("shell-launch")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let state = root.appendingPathComponent("state", isDirectory: true)
-        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
-        let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
-        try await seedChats(at: state, projects: [project], perProject: Self.launchChats)
-
-        let model = WorkspaceModel(stateRoot: state, vault: try seededVault(projects: [project]))
-        registerWorkspaceFixtureTeardown(model, root: root)
-        let launchedAt = ProcessInfo.processInfo.systemUptime
-        let (window, hosted) = self.window(model)
-        defer { window.contentView = nil; window.close() }
-        let restore = Task { @MainActor in await model.restore() }
-        let painted = await settle(hosted, window) { self.sidebarRowCount(in: hosted) > 0 }
-        let toFirstRow = try XCTUnwrap(painted.map { _ in ProcessInfo.processInfo.systemUptime - launchedAt })
-        await restore.value
-        let restored = ProcessInfo.processInfo.systemUptime - launchedAt
-        draw(hosted, window)
-
-        print(String(format: "PERF shell launch (%d chats): first sidebar row painted at %.1f ms, restore() complete at %.1f ms, %d rows",
-                     Self.launchChats, toFirstRow * 1_000, restored * 1_000, sidebarRowCount(in: hosted)))
-        XCTAssertEqual(model.chats.count, Self.launchChats)
-        XCTAssertGreaterThan(sidebarRowCount(in: hosted), 0, "the sidebar painted no chat rows at all")
-        XCTAssertLessThan(toFirstRow, 3.0, "launch took \(Int(toFirstRow * 1_000)) ms to paint its first sidebar row")
-    }
-
     // MARK: 2. A chat switch, end to end
-
-    @MainActor func testChatSwitchBetweenTwoLongChats() async throws {
-        let root = try scratch("shell-switch")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
-        let model = WorkspaceModel(stateRoot: root, vault: try seededVault(projects: [project]))
-        registerWorkspaceFixtureTeardown(model, root: root)
-        var profile = ProfileRecord(); profile.id = "fixture"; profile.modelId = "fixture-model"; profile.baseUrl = "https://fixture.invalid/v1"
-        model.profiles = [profile]; model.workspaces = [project]
-        model.selectedWorkspaceID = project.id; model.profileChoice = profile.id
-        model.chats = (0..<40).map { ChatRecord(id: "chat-\($0)", workspaceID: project.id, title: "Chat \($0)", path: nil, profileID: profile.id) }
-        // Two long chats, already loaded, as two chats the reader moves between.
-        // Long in rows, plain in content: what the shell pays for is the row
-        // count and the pane swap. A 300-row Markdown page's own layout is the
-        // transcript's measurement, not this one.
-        for id in ["chat-0", "chat-1"] {
-            let display = SessionDisplay(id: id)
-            display.messages = (0..<300).map {
-                TranscriptMessage(id: "\(id)-m\($0)", role: $0.isMultiple(of: 2) ? "user" : "assistant",
-                                  text: "Step \($0): the handler retries twice and logs the reason.", turn: "\(id)-m\($0 - $0 % 2)")
-            }
-            display.draft = "An unsent draft for \(id)."
-            display.selectionMetadataLoaded = true
-            model.displays[id] = display
-        }
-        model.opened = ["chat-0", "chat-1"]
-        await model.select("chat-0")
-
-        // The model's own half of a switch, with nothing mounted: store reads,
-        // read state, the display swap and the retained-billing query. The
-        // transcript's own layout is measured by the transcript's own tests.
-        var modelOnly = 0.0
-        for round in 0..<5 {
-            let start = ProcessInfo.processInfo.systemUptime
-            await model.select(round.isMultiple(of: 2) ? "chat-1" : "chat-0")
-            if round > 0 { modelOnly += (ProcessInfo.processInfo.systemUptime - start) / 4 }
-        }
-        print(String(format: "PERF shell chat switch, model only (two 300-row chats): %.1f ms", modelOnly * 1_000))
-        XCTAssertLessThan(modelOnly, 0.5, "model.select alone took \(Int(modelOnly * 1_000)) ms")
-
-        let (window, hosted) = self.window(model)
-        defer { window.contentView = nil; window.close() }
-        _ = await settle(hosted, window) { self.descendants(ComposerTextView.self, in: hosted).count == 1 }
-
-        var selectMean = 0.0, paintMean = 0.0
-        let rounds = 6
-        for round in 0..<rounds {
-            let target = round.isMultiple(of: 2) ? "chat-1" : "chat-0"
-            let start = ProcessInfo.processInfo.systemUptime
-            await model.select(target)
-            let selected = ProcessInfo.processInfo.systemUptime
-            // The pane's own chrome: the composer for the new chat, laid out.
-            _ = await settle(hosted, window) {
-                self.descendants(ComposerTextView.self, in: hosted).first?.string.contains(target) == true
-            }
-            let painted = ProcessInfo.processInfo.systemUptime
-            if round > 0 {
-                selectMean += (selected - start) / Double(rounds - 1)
-                paintMean += (painted - start) / Double(rounds - 1)
-            }
-        }
-        // In the window these include whatever SwiftUI and the transcript do
-        // between `select`'s suspensions, which is why the model-only figure
-        // above is quoted separately.
-        print(String(format: "PERF shell chat switch, whole window (two 300-row chats): model.select %.1f ms, composer painted with the new chat's draft %.1f ms",
-                     selectMean * 1_000, paintMean * 1_000))
-        // A ceiling a loaded machine still clears, not the target: the Release
-        // number is what the target is read from.
-        XCTAssertLessThan(paintMean, 5.0, "a chat switch took \(Int(paintMean * 1_000)) ms to show the new chat's composer")
-    }
 
     // MARK: 3. A sidebar change at scale, in the real shell
 
-    @MainActor private func sidebarFixture(_ root: URL) throws -> WorkspaceModel {
+    @MainActor fileprivate func sidebarFixture(_ root: URL) throws -> WorkspaceModel {
         let projects = (0..<3).map { WorkspaceRecord(id: "project\($0)", path: root.appendingPathComponent("p\($0)").path, trusted: true) }
         let model = WorkspaceModel(stateRoot: root, vault: try seededVault(projects: projects))
         var profile = ProfileRecord(); profile.id = "fixture"; profile.modelId = "fixture-model"; profile.baseUrl = "https://fixture.invalid/v1"
@@ -287,6 +190,46 @@ final class AppShellPerformanceTests: XCTestCase {
         return model
     }
 
+    // MARK: 4. What a streamed delta costs the shell
+
+    // MARK: 5. Opening the settings sheet
+
+    // MARK: 6. The report page over a year of retained requests
+
+    /// A year of dispatched requests, written straight into the typed
+    /// projection so the measurement is of the report, not of a year of
+    /// unrelated capture begin/finish operations.
+    fileprivate func seedAYearOfRequests(_ root: URL, count: Int, until: Date) throws {
+        let db = try CaptureDatabase(url: root.appendingPathComponent("requests.sqlite"))
+        let start = until.timeIntervalSince1970 - 365 * 86_400
+        let step = 365 * 86_400 / Double(max(1, count))
+        try db.transaction {
+            try db.execute("""
+            WITH RECURSIVE sequence(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM sequence WHERE n<\(count - 1))
+            INSERT INTO attempts(id,session,workspace,turn,purpose,api,alias,model,outcome,wall,updated,metadata,
+              metrics_retained,dispatch,ttft_ms,stream_ms,http_ms,identity_status,
+              cost_usd,cost_status,cache_status,cache_read_tokens,cache_write_tokens)
+            SELECT printf('00000000-0000-0000-0000-%012d',n),
+              'project0-chat'||(n%180),'project0','turn-'||(n%100),'turn',
+              'openai-responses','fixture-router','fixture-model','completed',
+              \(start)+n*\(step), \(start)+n*\(step), X'7b7d',
+              1,100,10+(n%90),20+(n%140),30+(n%400),'reported',
+              0.0125,'reported',CASE n%3 WHEN 0 THEN 'hit' WHEN 1 THEN 'miss' ELSE 'unreported' END,
+              8,2
+            FROM sequence
+            """)
+        }
+    }
+
+    // MARK: 6b. The composer must not keep the chats it has shown
+
+    // MARK: 6c. Work with nothing behind it
+
+    // MARK: 7. Memory over a long session
+
+}
+
+final class AppShellPerformanceTests: AppShellTestCase {
     @MainActor func testOneSidebarChangeInTheRealShellAtFiveHundredChats() async throws {
         let root = try scratch("shell-sidebar")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -426,8 +369,6 @@ final class AppShellPerformanceTests: XCTestCase {
         print("PERF native archive baseline: ackMs=\(acknowledged) completeMs=\((ProcessInfo.processInfo.systemUptime-began)*1_000) publications=\(publications) inputDrawP95Ms=\(p95) maxMs=\(sorted.last ?? 0) inputs=\(inputs)")
     }
 
-    // MARK: 4. What a streamed delta costs the shell
-
     @MainActor func testAStreamedDeltaDoesNotRepublishTheShell() async throws {
         let root = try scratch("shell-delta")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -455,71 +396,6 @@ final class AppShellPerformanceTests: XCTestCase {
         print("PERF shell streamed delta: \(publications) workspace publications, \(rebuilds) sidebar rows rebuilt per delta")
         XCTAssertEqual(publications, 0, "a streamed delta must not republish the whole workspace")
         XCTAssertLessThanOrEqual(rebuilds, 2, "a delta on one chat rebuilt \(rebuilds) sidebar rows")
-    }
-
-    // MARK: 5. Opening the settings sheet
-
-    @MainActor func testOpeningTheSettingsSheet() async throws {
-        let root = try scratch("shell-settings")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let model = try sidebarFixture(root)
-        registerWorkspaceFixtureTeardown(model, root: root)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 780),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.makeKeyAndOrderFront(nil)
-        defer { window.contentView = nil; window.close() }
-        /// Opening the sheet: building it and laying it out, as a click on the
-        /// gear does. The groups below the fold are lazy, so this is the
-        /// connection form the sheet opens on and the sheet's own chrome.
-        func open() -> Double {
-            let start = ProcessInfo.processInfo.systemUptime
-            let hosted = NSHostingView(rootView: ProfileSettings(model: model).frame(width: 760, height: 780))
-            window.contentView = hosted
-            hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-            let elapsed = ProcessInfo.processInfo.systemUptime - start
-            window.contentView = nil
-            return elapsed
-        }
-        // The chrome on its own, so the form's share of the cost is visible.
-        let chromeStart = ProcessInfo.processInfo.systemUptime
-        let chrome = NSHostingView(rootView: PiSheet("Settings", subtitle: "Measured empty", symbol: "gearshape",
-                                                     content: { Color.clear }).frame(width: 760, height: 780))
-        window.contentView = chrome
-        chrome.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-        let chromeCost = ProcessInfo.processInfo.systemUptime - chromeStart
-        window.contentView = nil
-        let first = open(), again = open()
-        print(String(format: "PERF shell settings sheet: first open %.1f ms, reopened %.1f ms, sheet chrome alone %.1f ms",
-                     first * 1_000, again * 1_000, chromeCost * 1_000))
-        XCTAssertLessThan(first, 2.0, "the settings sheet took \(Int(first * 1_000)) ms to appear")
-    }
-
-    // MARK: 6. The report page over a year of retained requests
-
-    /// A year of dispatched requests, written straight into the typed
-    /// projection so the measurement is of the report, not of a year of
-    /// unrelated capture begin/finish operations.
-    private func seedAYearOfRequests(_ root: URL, count: Int, until: Date) throws {
-        let db = try CaptureDatabase(url: root.appendingPathComponent("requests.sqlite"))
-        let start = until.timeIntervalSince1970 - 365 * 86_400
-        let step = 365 * 86_400 / Double(max(1, count))
-        try db.transaction {
-            try db.execute("""
-            WITH RECURSIVE sequence(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM sequence WHERE n<\(count - 1))
-            INSERT INTO attempts(id,session,workspace,turn,purpose,api,alias,model,outcome,wall,updated,metadata,
-              metrics_retained,dispatch,ttft_ms,stream_ms,http_ms,identity_status,
-              cost_usd,cost_status,cache_status,cache_read_tokens,cache_write_tokens)
-            SELECT printf('00000000-0000-0000-0000-%012d',n),
-              'project0-chat'||(n%180),'project0','turn-'||(n%100),'turn',
-              'openai-responses','fixture-router','fixture-model','completed',
-              \(start)+n*\(step), \(start)+n*\(step), X'7b7d',
-              1,100,10+(n%90),20+(n%140),30+(n%400),'reported',
-              0.0125,'reported',CASE n%3 WHEN 0 THEN 'hit' WHEN 1 THEN 'miss' ELSE 'unreported' END,
-              8,2
-            FROM sequence
-            """)
-        }
     }
 
     @MainActor func testOpeningTheReportPageOverAYearOfRequests() async throws {
@@ -557,8 +433,6 @@ final class AppShellPerformanceTests: XCTestCase {
         model.closeReport()
         draw(hosted, window)
     }
-
-    // MARK: 6b. The composer must not keep the chats it has shown
 
     /// `NativeComposer` handed its `ComposerTextView` closures that captured
     /// the SwiftUI coordinator strongly, and the coordinator holds the view
@@ -602,8 +476,6 @@ final class AppShellPerformanceTests: XCTestCase {
         print("PERF shell composer retention: \(live.count) of 20 visited pages still alive")
         XCTAssertLessThanOrEqual(live.count, 8, "the composer kept \(live.count) chats alive: \(live)")
     }
-
-    // MARK: 6c. Work with nothing behind it
 
     /// The status-bar panel counted every chat's phase, queue and unread state
     /// once a second while it was open. It now counts when it opens and when
@@ -724,8 +596,6 @@ final class AppShellPerformanceTests: XCTestCase {
         XCTAssertEqual(parsed?.arguments.count, prose.trimmingCharacters(in: .whitespacesAndNewlines).count)
     }
 
-    // MARK: 7. Memory over a long session
-
     @MainActor func testMemoryAfterVisitingFiftyChatsAndAnHourOfStreaming() async throws {
         let root = try scratch("shell-memory")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -810,6 +680,144 @@ final class AppShellPerformanceTests: XCTestCase {
         XCTAssertLessThanOrEqual(live49.footer.timing.samples.count, SessionTimingHistory.limit,
                                  "an hour of streaming grew the per-chat timing history without bound")
         XCTAssertLessThanOrEqual(model.displays.count, 8)
+    }
+}
+
+/// The shell's wall-clock ceilings, held in Debug too: launch to the first
+/// painted sidebar row, a chat switch, and the settings sheet. They run in
+/// the serial lane (`scripts/test-lanes.py`), alone on the machine.
+final class AppShellTimingTests: AppShellTestCase, SerialTestLane {
+    @MainActor func testLaunchToFirstSidebarPaintWithFourHundredChats() async throws {
+        let root = try scratch("shell-launch")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
+        try await seedChats(at: state, projects: [project], perProject: Self.launchChats)
+
+        let model = WorkspaceModel(stateRoot: state, vault: try seededVault(projects: [project]))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let launchedAt = ProcessInfo.processInfo.systemUptime
+        let (window, hosted) = self.window(model)
+        defer { window.contentView = nil; window.close() }
+        let restore = Task { @MainActor in await model.restore() }
+        let painted = await settle(hosted, window) { self.sidebarRowCount(in: hosted) > 0 }
+        let toFirstRow = try XCTUnwrap(painted.map { _ in ProcessInfo.processInfo.systemUptime - launchedAt })
+        await restore.value
+        let restored = ProcessInfo.processInfo.systemUptime - launchedAt
+        draw(hosted, window)
+
+        print(String(format: "PERF shell launch (%d chats): first sidebar row painted at %.1f ms, restore() complete at %.1f ms, %d rows",
+                     Self.launchChats, toFirstRow * 1_000, restored * 1_000, sidebarRowCount(in: hosted)))
+        XCTAssertEqual(model.chats.count, Self.launchChats)
+        XCTAssertGreaterThan(sidebarRowCount(in: hosted), 0, "the sidebar painted no chat rows at all")
+        XCTAssertLessThan(toFirstRow, 3.0, "launch took \(Int(toFirstRow * 1_000)) ms to paint its first sidebar row")
+    }
+
+    @MainActor func testChatSwitchBetweenTwoLongChats() async throws {
+        let root = try scratch("shell-switch")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
+        let model = WorkspaceModel(stateRoot: root, vault: try seededVault(projects: [project]))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        var profile = ProfileRecord(); profile.id = "fixture"; profile.modelId = "fixture-model"; profile.baseUrl = "https://fixture.invalid/v1"
+        model.profiles = [profile]; model.workspaces = [project]
+        model.selectedWorkspaceID = project.id; model.profileChoice = profile.id
+        model.chats = (0..<40).map { ChatRecord(id: "chat-\($0)", workspaceID: project.id, title: "Chat \($0)", path: nil, profileID: profile.id) }
+        // Two long chats, already loaded, as two chats the reader moves between.
+        // Long in rows, plain in content: what the shell pays for is the row
+        // count and the pane swap. A 300-row Markdown page's own layout is the
+        // transcript's measurement, not this one.
+        for id in ["chat-0", "chat-1"] {
+            let display = SessionDisplay(id: id)
+            display.messages = (0..<300).map {
+                TranscriptMessage(id: "\(id)-m\($0)", role: $0.isMultiple(of: 2) ? "user" : "assistant",
+                                  text: "Step \($0): the handler retries twice and logs the reason.", turn: "\(id)-m\($0 - $0 % 2)")
+            }
+            display.draft = "An unsent draft for \(id)."
+            display.selectionMetadataLoaded = true
+            model.displays[id] = display
+        }
+        model.opened = ["chat-0", "chat-1"]
+        await model.select("chat-0")
+
+        // The model's own half of a switch, with nothing mounted: store reads,
+        // read state, the display swap and the retained-billing query. The
+        // transcript's own layout is measured by the transcript's own tests.
+        var modelOnly = 0.0
+        for round in 0..<5 {
+            let start = ProcessInfo.processInfo.systemUptime
+            await model.select(round.isMultiple(of: 2) ? "chat-1" : "chat-0")
+            if round > 0 { modelOnly += (ProcessInfo.processInfo.systemUptime - start) / 4 }
+        }
+        print(String(format: "PERF shell chat switch, model only (two 300-row chats): %.1f ms", modelOnly * 1_000))
+        XCTAssertLessThan(modelOnly, 0.5, "model.select alone took \(Int(modelOnly * 1_000)) ms")
+
+        let (window, hosted) = self.window(model)
+        defer { window.contentView = nil; window.close() }
+        _ = await settle(hosted, window) { self.descendants(ComposerTextView.self, in: hosted).count == 1 }
+
+        var selectMean = 0.0, paintMean = 0.0
+        let rounds = 6
+        for round in 0..<rounds {
+            let target = round.isMultiple(of: 2) ? "chat-1" : "chat-0"
+            let start = ProcessInfo.processInfo.systemUptime
+            await model.select(target)
+            let selected = ProcessInfo.processInfo.systemUptime
+            // The pane's own chrome: the composer for the new chat, laid out.
+            _ = await settle(hosted, window) {
+                self.descendants(ComposerTextView.self, in: hosted).first?.string.contains(target) == true
+            }
+            let painted = ProcessInfo.processInfo.systemUptime
+            if round > 0 {
+                selectMean += (selected - start) / Double(rounds - 1)
+                paintMean += (painted - start) / Double(rounds - 1)
+            }
+        }
+        // In the window these include whatever SwiftUI and the transcript do
+        // between `select`'s suspensions, which is why the model-only figure
+        // above is quoted separately.
+        print(String(format: "PERF shell chat switch, whole window (two 300-row chats): model.select %.1f ms, composer painted with the new chat's draft %.1f ms",
+                     selectMean * 1_000, paintMean * 1_000))
+        // A ceiling a loaded machine still clears, not the target: the Release
+        // number is what the target is read from.
+        XCTAssertLessThan(paintMean, 5.0, "a chat switch took \(Int(paintMean * 1_000)) ms to show the new chat's composer")
+    }
+
+    @MainActor func testOpeningTheSettingsSheet() async throws {
+        let root = try scratch("shell-settings")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = try sidebarFixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 780),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        /// Opening the sheet: building it and laying it out, as a click on the
+        /// gear does. The groups below the fold are lazy, so this is the
+        /// connection form the sheet opens on and the sheet's own chrome.
+        func open() -> Double {
+            let start = ProcessInfo.processInfo.systemUptime
+            let hosted = NSHostingView(rootView: ProfileSettings(model: model).frame(width: 760, height: 780))
+            window.contentView = hosted
+            hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            let elapsed = ProcessInfo.processInfo.systemUptime - start
+            window.contentView = nil
+            return elapsed
+        }
+        // The chrome on its own, so the form's share of the cost is visible.
+        let chromeStart = ProcessInfo.processInfo.systemUptime
+        let chrome = NSHostingView(rootView: PiSheet("Settings", subtitle: "Measured empty", symbol: "gearshape",
+                                                     content: { Color.clear }).frame(width: 760, height: 780))
+        window.contentView = chrome
+        chrome.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let chromeCost = ProcessInfo.processInfo.systemUptime - chromeStart
+        window.contentView = nil
+        let first = open(), again = open()
+        print(String(format: "PERF shell settings sheet: first open %.1f ms, reopened %.1f ms, sheet chrome alone %.1f ms",
+                     first * 1_000, again * 1_000, chromeCost * 1_000))
+        XCTAssertLessThan(first, 2.0, "the settings sheet took \(Int(first * 1_000)) ms to appear")
     }
 }
 

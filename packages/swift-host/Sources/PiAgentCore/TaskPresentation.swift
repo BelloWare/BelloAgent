@@ -28,6 +28,8 @@ public struct TaskPresentationRecord: Codable, Equatable, Sendable {
     public var toolMs: Double = 0
     public var currentTool: String?
     public var detail: String?
+    /// The failed run's error code: `cost_limit` for a stop at the chat's cost limit.
+    public var errorCode: String?
     public static func identity(_ root: String, _ execution: String) -> String { "\(root.utf8.count):" + root + execution }
     public var key: String { Self.identity(rootID, executionID) }
     public var terminal: Bool { outcome != nil }

@@ -45,8 +45,8 @@ struct ConversationPane: View {
                                                             // The retry carries this chat's current model, effort and budgets, as a send would.
                                                             retry: { model.action("turn.retry", params: model.record(session.id).map { TurnOverrides.params(for: $0) } ?? [:], sessionID: session.id) },
                                                             quoteReply: quoteReplyAction,
-                                                            turnRequestSource: { [weak model] in
-                                                                model.map { TurnRequestSource.session($0, sessionID: session.id) }
+                                                            inspectTurn: { [weak model] turn in
+                                                                model?.openInspector(session: session.id, focus: WorkspaceModel.inspectorFocus(for: turn))
                                                             },
                                                             skillPressed: { [weak model, weak session] messageID, use, anchor in
                                                                 guard let model, let session else { return }
@@ -55,7 +55,8 @@ struct ConversationPane: View {
                                                             skillHovered: { [weak session] _, use, anchor, inside in
                                                                 guard let session else { return }
                                                                 SkillPopovers.shared.hoverSent(inside, use: use, anchor: anchor, session: session)
-                                                            }),
+                                                            },
+                                                            costLimit: { [weak model] action, anchor in model?.costLimitNotice(action, sessionID: session.id, anchor: anchor) }),
                                  onAnchorChanged: { anchor in session.scrollAnchor = anchor; model.anchorChanged(session) },
                                  onReadReply: { sessionID, messageID in model.acknowledgeVisibleReply(sessionID: sessionID, messageID: messageID) },
                                  onLoadEarlier: { sessionID in model.loadEarlier(sessionID: sessionID) },
@@ -136,7 +137,7 @@ struct ConversationPane: View {
             // was opened from. In half a window that is two of everything; it
             // keeps the two figures that are its own.
             MetricsFooter(model: model, session: session, contextWindow: chat.contextWindow ?? profile?.contextWindow,
-                          outputReserve: chat.maxOutputTokens ?? profile?.maxOutputTokens, compact: side != nil) { [model, id = session.id] in model.inspect(id) }
+                          outputReserve: chat.maxOutputTokens ?? profile?.maxOutputTokens, compact: side != nil) { [model, id = session.id] in model.openInspector(session: id, focus: .overview) }
         }
         // The follow-up panel and the terminal slide in and out from the
         // bottom of the pane. Both take their room from below the
@@ -295,45 +296,58 @@ struct ConversationPane: View {
 
 /// The chat's actions, reachable from the composer bar (and the side header): the
 /// conversation itself has no header bar.
+///
+/// The menu is built when it opens, from the chat as it is then. As a SwiftUI
+/// `Menu` it observed the whole workspace and the session, and every snapshot
+/// of a running turn rebuilt its twenty-odd items and re-sized its pop-up
+/// button (see PiMenu.swift).
 struct ConversationActionsMenu: View {
-    @ObservedObject var model: WorkspaceModel
-    @ObservedObject var session: SessionDisplay
+    let model: WorkspaceModel
+    let session: SessionDisplay
     let chat: ChatRecord
     var body: some View {
-        Menu {
-            if !chat.isBackgroundTask {
-                Button("Rename Chat…") { model.renameSession(chat.id) }
-                if !chat.imported, !chat.isArchived { Button("Generate Title") { model.regenerateTitle(chat.id) }.disabled(!model.titleSuggestionsAvailable(for: model.profiles.first { $0.id == chat.profileID } ?? ProfileRecord())) }
-            }
-            if !model.isEphemeral(session.id) {
-                SessionOrganizationActions(model: model, chat: chat)
-                Divider()
-            }
-            if model.side(session.id) == nil && !chat.isBackgroundTask {
-                Button("Open Side") { model.openSide(parentID: session.id) }.disabled(!model.canOpenSide(session.id))
-                Button("Portable Context Handoff…", action: model.portableHandoff)
-                if chat.toolMode == "read-only" && chat.connectionTest != true && chat.workspaceID != WorkspaceRecord.scratchID { Button("Enable Editing Tools…") { model.enableEditing(session.id) }.disabled(session.hasWork) }
-                Divider()
-            }
-            if !chat.isBackgroundTask { Button("Compact Now") { model.action("context.compact", sessionID: session.id) } }
-            if session.before != nil || session.hostBefore != nil { Button("Earlier Messages") { model.loadEarlier(sessionID: session.id) } }
-            Button("Latest Messages") { model.latest(sessionID: session.id) }
-            Divider()
-            SessionReferenceActions(model: model, sessionID: session.id)
-            Divider()
-            Button("View Retained Message…") { model.viewMessages(session.id) }
-            Button("Search and Copy Conversation…") { model.inspectConversation(session.id) }
-            Button("Inspect Requests") { model.inspect(session.id) }
-            if model.side(session.id) == nil {
-                Divider()
-                Button("Delete Chat…") { model.deleteChat(chat.id) }
-            }
-        } label: {
-            Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.piInkSecondary)
-                .frame(width: 28, height: 28).background(Color.piFill, in: Circle()).contentShape(Circle())
+        PiMenuControl(label: "Chat actions", identifier: "conversationActions", help: "Chat actions") { [model, session, chat] in
+            ConversationActionsMenu.entries(model: model, session: session, chat: model.record(chat.id) ?? chat)
+        } face: { hovering in
+            Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold)).foregroundStyle(hovering ? Color.piInk : Color.piInkSecondary)
+                .frame(width: 28, height: 28).background(hovering ? Color.piFillStrong : Color.piFill, in: Circle()).contentShape(Circle())
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().piPointer().help("Chat actions")
-        .accessibilityIdentifier("conversationActions")
+        .frame(width: 28, height: 28)
+    }
+
+    @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel, session: SessionDisplay, chat: ChatRecord) -> [PiMenuEntry] {
+        if !chat.isBackgroundTask {
+            PiMenuEntry.button("Rename Chat…") { model.renameSession(chat.id) }
+            if !chat.imported, !chat.isArchived {
+                PiMenuEntry.button("Generate Title", enabled: model.titleSuggestionsAvailable(for: model.profiles.first { $0.id == chat.profileID } ?? ProfileRecord())) {
+                    model.regenerateTitle(chat.id)
+                }
+            }
+        }
+        if !model.isEphemeral(session.id) {
+            SessionOrganizationActions.entries(model: model, chat: chat)
+            PiMenuEntry.divider
+        }
+        if model.side(session.id) == nil && !chat.isBackgroundTask {
+            PiMenuEntry.button("Open Side", enabled: model.canOpenSide(session.id)) { model.openSide(parentID: session.id) }
+            PiMenuEntry.button("Portable Context Handoff…") { model.portableHandoff() }
+            if chat.toolMode == "read-only" && chat.connectionTest != true && chat.workspaceID != WorkspaceRecord.scratchID {
+                PiMenuEntry.button("Enable Editing Tools…", enabled: !session.hasWork) { model.enableEditing(session.id) }
+            }
+            PiMenuEntry.divider
+        }
+        if !chat.isBackgroundTask { PiMenuEntry.button("Compact Now", identifier: "compactNow") { model.action("context.compact", sessionID: session.id) } }
+        if session.before != nil || session.hostBefore != nil { PiMenuEntry.button("Earlier Messages") { model.loadEarlier(sessionID: session.id) } }
+        PiMenuEntry.button("Latest Messages") { model.latest(sessionID: session.id) }
+        PiMenuEntry.divider
+        SessionReferenceActions.entries(model: model, sessionID: session.id)
+        PiMenuEntry.divider
+        PiMenuEntry.button("Search and Copy Conversation…") { model.inspectConversation(session.id) }
+        PiMenuEntry.button("Session Inspector…", identifier: "sessionInspector") { model.inspect(session.id) }
+        if model.side(session.id) == nil {
+            PiMenuEntry.divider
+            PiMenuEntry.button("Delete Chat…") { model.deleteChat(chat.id) }
+        }
     }
 }
 

@@ -97,7 +97,7 @@ enum PiTone {
 enum PiSessionState {
     /// The label for a run state. `loading` is a chat whose helper session is
     /// still being opened, which the helper does not have a state for.
-    static func label(_ state: String, loading: Bool = false) -> String {
+    static func label(_ state: String, loading: Bool = false, costLimited: Bool = false) -> String {
         if loading { return "Opening" }
         switch state {
         case "queued": return "Waiting"
@@ -107,7 +107,7 @@ enum PiSessionState {
         case "compacting": return "Compacting"
         case "paused": return "Paused"
         case "interrupted": return "Interrupted"
-        case "error", "failed": return "Failed"
+        case "error", "failed": return costLimited ? "Stopped · cost limit" : "Failed"
         case "idle": return "Ready"
         default: return state.isEmpty ? "" : state.prefix(1).uppercased() + state.dropFirst()
         }

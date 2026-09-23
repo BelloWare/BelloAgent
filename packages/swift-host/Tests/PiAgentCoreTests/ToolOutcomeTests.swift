@@ -94,9 +94,9 @@ final class ToolOutcomeTests: XCTestCase {
         }
     }
 
-    /// A tool result that holds only an image reaches the model as a short
-    /// description of the image, never as its base64 encoding.
-    func testAnImageOnlyResultReachesTheModelAsAPlaceholder() async throws {
+    /// A tool result that holds only an image keeps it, as pi does: a model
+    /// without image input gets pi's placeholder, never the base64 encoding.
+    func testAnImageOnlyResultReachesTheModelAsPiSendsIt() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let image = Data(repeating: 0xAB, count: 3000).base64EncodedString()
         let client = ScriptClient([toolReply(["screenshot"]), answer("seen")])
@@ -105,8 +105,12 @@ final class ToolOutcomeTests: XCTestCase {
         try await eventually { !(await session.isRunning) }
         let sent = await client.requests
         let result = try XCTUnwrap(sent.last?.first { $0.role == "toolResult" })
-        XCTAssertEqual(result.text, "[image/png result, 3000 bytes]")
-        XCTAssertFalse(result.text.contains(String(image.prefix(64))))
+        XCTAssertEqual(result.text, "")
+        XCTAssertEqual(result.content.filter { $0["type"].text == "image" }.count, 1, "An image pi cannot process stays as the tool returned it")
+        let body = try ProviderClient.requestBody(profile: fixtureProfile(), messages: sent.last ?? [], instructions: "", tools: [], sessionID: "s")
+        let output = try XCTUnwrap(body["input"].list.first { $0["type"].text == "function_call_output" }?["output"])
+        XCTAssertEqual(output, "(tool image omitted: model does not support images)")
+        XCTAssertFalse(body.encoded().contains(String(image.prefix(64))))
         await session.close()
     }
 }

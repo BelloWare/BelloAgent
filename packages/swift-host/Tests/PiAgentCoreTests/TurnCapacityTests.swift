@@ -92,7 +92,8 @@ final class TurnCapacityTests: XCTestCase {
         // In pi's units (characters over four) the source fits one summary request.
         XCTAssertEqual(purposes, ["turn", "compaction", "turn"], "The previous reply's reported tokens are measured against the selected model's smaller window")
         XCTAssertEqual(profiles.map(\.contextWindow), [100000, 5000, 5000])
-        XCTAssertEqual(profiles.map(\.maxOutput), [4096, 1000, 1000])
+        // Pi's turn-prefix cap is 0.5 × the small window's 2,500-token reserve, not the chat's 1,000-token budget.
+        XCTAssertEqual(profiles.map(\.maxOutput), [4096, 1250, 1000])
         XCTAssertEqual(profiles.map(\.model), ["fixture-model", "small-model", "small-model"])
         await session.close()
     }

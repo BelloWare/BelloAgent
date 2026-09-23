@@ -23,8 +23,10 @@ extension WorkspaceModel {
         return (object["model"]?.string, object["thinkingLevel"]?.string)
     }
 
+    /// A message's Details: the Session Inspector at the request it came from,
+    /// or at its turn.
     func showMessageDetail(_ sessionID: String, messageID: String) {
-        messageDetailSessionID = sessionID; messageDetailID = messageID; showMessageDetail = true
+        openInspector(session: sessionID, focus: .message(messageID))
     }
 
     /// Entering an edit is read-only; active work can finish while the user
@@ -195,6 +197,8 @@ extension WorkspaceModel {
                 else if case HostError.rejected(let code, _) = error {
                     // Refused: no branch was made.
                     if view.pendingBranch?.turnID == turnID { view.pendingBranch = nil }
+                    // At the chat's cost limit the conversation says so, with a way to raise it.
+                    if code == SessionDisplay.costLimitCode { view.sendFailureCode = code; view.sendFailure = error.localizedDescription }
                     try? await store.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id)
                     if code == "connection_unavailable" { view.state = "interrupted" } else { undoShownState() }
                 }

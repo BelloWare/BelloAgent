@@ -673,6 +673,8 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     /// Saved side conversations keep their parent relationship across restarts.
     /// Independent forks and ordinary chats have no parent.
     var parentSessionID: String?
+    /// This chat's own cost limit; nil runs it under the Settings default.
+    var costLimit: CostLimit?
     var isPinned: Bool { pinnedAt != nil }
     var isArchived: Bool { archivedAt != nil }
     mutating func migrateOutputBudget(profile: ProfileRecord) {

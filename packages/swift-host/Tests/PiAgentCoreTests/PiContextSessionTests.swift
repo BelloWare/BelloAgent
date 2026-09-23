@@ -27,7 +27,8 @@ final class PiContextSessionTests: XCTestCase {
 
     func testCompactionFollowsTheReplyThatCrossesTheThresholdAndTheMeterWaitsForTheNextReply() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let client = ScriptClient([reply("at the threshold", total: 83_616), reply("over it", total: 83_617), answer("Summary: done."), reply("after", total: 3_000)])
+        // The one-token tail splits the second turn: pi summarizes the history, then the turn's prefix.
+        let client = ScriptClient([reply("at the threshold", total: 83_616), reply("over it", total: 83_617), answer("Summary: done."), answer("Prefix: two."), reply("after", total: 3_000)])
         let s = try session(root, client)
         _ = try await s.submit(Submission(commandID: "a", turnID: "a", text: "one"), steer: false)
         try await eventually { !(await s.isRunning) }
@@ -36,7 +37,7 @@ final class PiContextSessionTests: XCTestCase {
         _ = try await s.submit(Submission(commandID: "b", turnID: "b", text: "two"), steer: false)
         try await eventually { !(await s.isRunning) }
         let second = await client.purposes
-        XCTAssertEqual(second, ["turn", "turn", "compaction"], "pi compacts right after the reply that crossed it")
+        XCTAssertEqual(second, ["turn", "turn", "compaction", "compaction"], "pi compacts right after the reply that crossed it")
         let compacted = await s.snapshot(["includeMessages": false])
         XCTAssertEqual(compacted["state"].text, "idle", compacted["preflightError"].encoded())
         XCTAssertEqual(compacted["context"]["state"], "post-compaction"); XCTAssertEqual(compacted["context"]["tokens"], .null)
@@ -45,7 +46,7 @@ final class PiContextSessionTests: XCTestCase {
         _ = try await s.submit(Submission(commandID: "c", turnID: "c", text: "three"), steer: false)
         try await eventually { !(await s.isRunning) }
         let third = await client.purposes
-        XCTAssertEqual(third, ["turn", "turn", "compaction", "turn"], "a reply from before the compaction triggers nothing more")
+        XCTAssertEqual(third, ["turn", "turn", "compaction", "compaction", "turn"], "a reply from before the compaction triggers nothing more")
         let measured = await s.snapshot(["includeMessages": false])["context"]
         XCTAssertEqual(measured["tokens"], 3_000); XCTAssertNil(measured["state"].text)
         await s.close()

@@ -336,13 +336,13 @@ struct CatalogModelPicker: View {
                     Task { await refresh.selectSource(model: model, sourceID: candidate.id, profileID: profile.id) }
                 }.accessibilityIdentifier("repair-model-catalog")
             } else {
-                Menu("Choose a saved catalog") {
-                    ForEach(choices) { candidate in
-                        Button("\(candidate.name) · \(Self.sourceLabel(candidate))") {
+                PiMenuButton(title: "Choose a saved catalog", icon: "list.bullet.rectangle", identifier: "repair-model-catalog") { [refresh, model] in
+                    for candidate in choices {
+                        PiMenuEntry.button("\(candidate.name) · \(Self.sourceLabel(candidate))") {
                             Task { await refresh.selectSource(model: model, sourceID: candidate.id, profileID: profile.id) }
                         }
                     }
-                }.accessibilityIdentifier("repair-model-catalog")
+                }
             }
         }
         .fixedSize(horizontal: false, vertical: true)

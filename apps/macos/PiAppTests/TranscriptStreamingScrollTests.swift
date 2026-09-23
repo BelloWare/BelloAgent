@@ -347,6 +347,38 @@ final class TranscriptStreamingScrollTests: XCTestCase {
                              "preparation stopped while a reply was arriving, which is when the reader most needs it")
     }
 
+
+    // MARK: 3 — A wheel gesture owns its frames
+
+    @MainActor func testTheStreamingRowIsNotLaidOutDuringAWheelGesture() async throws {
+        let rows = Int(testEnvironment("PI_PERF_ROWS") ?? "") ?? 120
+        let tokens = Self.tokens(of: Self.reply)
+        let run = try await stream(rows: rows, tokens: tokens, scrollStep: 10, gestureFrames: 12)
+        print("PERF streaming through 12-frame wheel gestures into a \(rows)-row chat: \(run.line)")
+        print("PERF streaming through gestures: \(run.paths); \(run.layoutsInsideGesture) frames inside a gesture laid the arriving row out")
+        // A gesture owns its frames. The one exception is the hold cap: a
+        // gesture that runs longer than a quarter of a second lets the reply
+        // through once rather than leaving it looking stuck.
+        let gestures = tokens.count / 12 + 1
+        XCTAssertLessThanOrEqual(run.layoutsInsideGesture, gestures,
+                                 "\(run.layoutsInsideGesture) frames inside \(gestures) wheel gestures laid the arriving row out")
+        XCTAssertEqual(run.movedUnexpectedly, [], "the page moved by something other than the scroll during a gesture")
+        XCTAssertLessThan(run.mean, releaseBudget(0.004),
+                          String(format: "a frame inside a wheel gesture took %.2f ms", run.mean * 1000))
+        XCTAssertLessThan(run.overFraction, releaseBudget(0.10),
+                          String(format: "%d of %d frames (%.1f%%) inside a wheel gesture went over a 120 Hz frame",
+                                 run.over, run.frames.count, run.overFraction * 100))
+        XCTAssertLessThan(run.worst, releaseBudget(0.020),
+                          String(format: "the worst frame inside a wheel gesture took %.1f ms", run.worst * 1000))
+    }
+}
+
+/// Tokens arriving faster than the display, shown once a frame: the page
+/// publishes on its own beat, which is wall-clock time, so the check runs in
+/// the serial lane (`scripts/test-lanes.py`).
+final class TranscriptStreamingCadenceTests: XCTestCase, SerialTestLane {
+    private typealias Pane = TranscriptFrameBudgetTests.Pane
+
     // MARK: 4 — Tokens arrive faster than the display, and are shown once a frame
 
     /// The helper delivers tokens as fast as the model produces them. The page
@@ -369,7 +401,7 @@ final class TranscriptStreamingScrollTests: XCTestCase {
         session.messages.append(TranscriptMessage(id: "stream:c", role: "assistant", text: "#", state: "streaming", turn: last))
         await pane.settle(turns: 6)
 
-        let tokens = Array(Self.tokens(of: Self.reply).prefix(60))
+        let tokens = Array(TranscriptStreamingScrollTests.tokens(of: TranscriptStreamingScrollTests.reply).prefix(60))
         let reconciledBefore = document.contentReconciliationCount, laidOutBefore = document.layoutPassCount
         var text = "#"
         // A burst: sixty tokens with no run-loop turn between them, which is
@@ -413,29 +445,5 @@ final class TranscriptStreamingScrollTests: XCTestCase {
                                  "\(delivered) tokens over \(String(format: "%.2f", elapsed)) s were published \(published) times, more than the display's beat allows")
         session.messages[session.messages.count - 1].state = "completed"
         await pane.settle(turns: 8)
-    }
-
-    // MARK: 3 — A wheel gesture owns its frames
-
-    @MainActor func testTheStreamingRowIsNotLaidOutDuringAWheelGesture() async throws {
-        let rows = Int(testEnvironment("PI_PERF_ROWS") ?? "") ?? 120
-        let tokens = Self.tokens(of: Self.reply)
-        let run = try await stream(rows: rows, tokens: tokens, scrollStep: 10, gestureFrames: 12)
-        print("PERF streaming through 12-frame wheel gestures into a \(rows)-row chat: \(run.line)")
-        print("PERF streaming through gestures: \(run.paths); \(run.layoutsInsideGesture) frames inside a gesture laid the arriving row out")
-        // A gesture owns its frames. The one exception is the hold cap: a
-        // gesture that runs longer than a quarter of a second lets the reply
-        // through once rather than leaving it looking stuck.
-        let gestures = tokens.count / 12 + 1
-        XCTAssertLessThanOrEqual(run.layoutsInsideGesture, gestures,
-                                 "\(run.layoutsInsideGesture) frames inside \(gestures) wheel gestures laid the arriving row out")
-        XCTAssertEqual(run.movedUnexpectedly, [], "the page moved by something other than the scroll during a gesture")
-        XCTAssertLessThan(run.mean, releaseBudget(0.004),
-                          String(format: "a frame inside a wheel gesture took %.2f ms", run.mean * 1000))
-        XCTAssertLessThan(run.overFraction, releaseBudget(0.10),
-                          String(format: "%d of %d frames (%.1f%%) inside a wheel gesture went over a 120 Hz frame",
-                                 run.over, run.frames.count, run.overFraction * 100))
-        XCTAssertLessThan(run.worst, releaseBudget(0.020),
-                          String(format: "the worst frame inside a wheel gesture took %.1f ms", run.worst * 1000))
     }
 }

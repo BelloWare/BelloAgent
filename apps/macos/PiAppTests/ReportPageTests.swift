@@ -778,20 +778,21 @@ extension ReportPageTests {
         XCTAssertTrue(visible); XCTAssertEqual(model.page, .chats); XCTAssertEqual(model.selectedID, chat.id)
         XCTAssertEqual(model.displays[chat.id]?.scrollAnchor?.id, "m-visible")
         XCTAssertEqual(model.displays[chat.id]?.viewportRequest, before + 1)
-        XCTAssertFalse(model.showMessageDetail)
+        XCTAssertNil(model.lastInspectorFocus)
 
         // A message that left the visible transcript (edited away or unloaded) opens its details with an explanation.
         model.openReport()
         let hidden = await model.revealMessage(sessionID: chat.id, messageID: "m-edited-away")
         XCTAssertTrue(hidden); XCTAssertEqual(model.page, .chats)
-        XCTAssertTrue(model.showMessageDetail); XCTAssertEqual(model.messageDetailID, "m-edited-away"); XCTAssertEqual(model.messageDetailSessionID, chat.id)
+        XCTAssertEqual(model.lastInspectorFocus, .message("m-edited-away"), "It opens the Session Inspector at that message's request")
+        XCTAssertNotNil(SessionInspectorWindows.shared.controller(sessionID: chat.id))
         XCTAssertEqual(model.displays[chat.id]?.messages.map(\.id), ["m-visible"],
                        "A missing retained message must not clear the visible conversation")
 
         // Opening a chat without a message just navigates.
-        model.showMessageDetail = false; model.openReport()
+        SessionInspectorWindows.shared.closeAll(owner: model); model.lastInspectorFocus = nil; model.openReport()
         let opened = await model.revealMessage(sessionID: chat.id, messageID: nil)
-        XCTAssertTrue(opened); XCTAssertEqual(model.page, .chats); XCTAssertFalse(model.showMessageDetail)
+        XCTAssertTrue(opened); XCTAssertEqual(model.page, .chats); XCTAssertNil(model.lastInspectorFocus)
     }
 
     @MainActor func testNewChatRequiresAWorkspaceAndGroupingStateFollowsTheController() async throws {

@@ -67,7 +67,7 @@ import SwiftUI
             XCTAssertEqual(TurnInfoPresentation.rows(turn).first { $0.name == "Duration" }?.value, "Unavailable")
             XCTAssertFalse(TurnLineView.copyText(turn).contains("Still running"))
             turn.phase = "compacting"; turn.taskKey = "utility:runtime"
-            XCTAssertFalse(TurnRequestScope(turn).activeCompaction)
+            XCTAssertFalse(turn.isRunning, "A compacting phase on a finished turn is not a running compaction")
         }
     }
 

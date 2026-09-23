@@ -16,7 +16,11 @@ struct ContextPreview: Sendable {
         self.revision = UUID().uuidString; self.createdAt = Date()
         self.body = body; self.metadata = metadata; self.sources = sources
     }
-    var inputs: [JSON] { body["input"].isNull ? body["messages"].list : body["input"].list }
+    /// The request's messages; pi's system prompt, the first input item, is shown as the instructions.
+    var inputs: [JSON] {
+        if body["input"].isNull { return body["messages"].list }
+        return RequestContextCounter.systemPrompt(body) == nil ? body["input"].list : Array(body["input"].list.dropFirst())
+    }
     func summary(offset: Int = 0) throws -> JSON {
         let fixed: [JSON] = [
             ["id":"instructions", "title":"Instructions", "kind":"instructions"],
@@ -43,7 +47,7 @@ struct ContextPreview: Sendable {
     func read(section: String, offset: Int) throws -> JSON {
         let value: JSON
         switch section {
-        case "instructions": value = body["instructions"].isNull ? body["system"] : body["instructions"]
+        case "instructions": value = RequestContextCounter.systemPrompt(body).map { JSON($0) } ?? (body["instructions"].isNull ? body["system"] : body["instructions"])
         case "tools": value = body["tools"].isNull ? [] : body["tools"]
         case "sources": value = .array(sources)
         case "request": value = body

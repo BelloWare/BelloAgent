@@ -3,7 +3,7 @@ import SwiftUI
 import AppKit
 @testable import PiApp
 
-extension GitPanelAuditTests {
+final class GitChangelistReadTests: GitPanelTestCase {
     // MARK: Reads the panel leaves behind
 
     /// Clicking down a list of changed files used to leave one `git diff`
@@ -37,60 +37,6 @@ extension GitPanelAuditTests {
         controller.stop()
         try await eventually("leave no git behind", timeout: 10) { self.gitChildren().isEmpty }
         XCTAssertTrue(gitChildren().allSatisfy { $0.state.first != "Z" }, "and no unreaped child")
-    }
-
-    /// What a diff can contain: CRLF, bytes that are not UTF-8 at all, a line
-    /// thousands of characters long, and a file with no newline at the end.
-    @MainActor func testDiffsSurviveCRLFForeignBytesAndVeryLongLines() async throws {
-        let root = try repository("git-bytes"); defer { try? FileManager.default.removeItem(at: root) }
-        try start(root)
-        try Data("first\r\nsecond\r\nthird\r\n".utf8).write(to: root.appendingPathComponent("crlf.txt"))
-        try Data([0x68, 0x69, 0x0a, 0xff, 0xfe, 0x80, 0x0a, 0x62, 0x79, 0x65, 0x0a]).write(to: root.appendingPathComponent("latin.txt"))
-        try Data((String(repeating: "L", count: 20_000) + "\n").utf8).write(to: root.appendingPathComponent("long.txt"))
-        try Data("no trailing newline".utf8).write(to: root.appendingPathComponent("tail.txt"))
-        try git(["add", "-A"], in: root); try git(["commit", "-q", "-m", "Seed odd bytes"], in: root)
-        try Data("first\r\nsecond changed\r\nthird\r\n".utf8).write(to: root.appendingPathComponent("crlf.txt"))
-        try Data([0x68, 0x69, 0x0a, 0xff, 0xfe, 0x81, 0x0a, 0x62, 0x79, 0x65, 0x0a]).write(to: root.appendingPathComponent("latin.txt"))
-        try Data((String(repeating: "L", count: 19_000) + String(repeating: "M", count: 1_000) + "\n").utf8).write(to: root.appendingPathComponent("long.txt"))
-        try Data("no trailing newline at all".utf8).write(to: root.appendingPathComponent("tail.txt"))
-
-        let service = GitService()
-        let discovered = await service.repositoryRoot(of: root.path)
-        let top = try XCTUnwrap(discovered)
-        let crlf = try await service.diffFiles(in: top, paths: ["crlf.txt"], staged: false)
-        let lines = try XCTUnwrap(crlf.first?.hunks.first?.lines)
-        XCTAssertEqual(lines.count, 4, "a file with Windows endings is four rows, not one: \(lines.map(\.text))")
-        XCTAssertEqual(lines.map(\.kind), [.context, .removed, .added, .context])
-        XCTAssertEqual(lines.map(\.text), ["first", "second", "second changed", "third"])
-        XCTAssertEqual(lines.map(\.oldNumber), [1, 2, nil, 3])
-        XCTAssertEqual(lines.map(\.newNumber), [1, nil, 2, 3])
-
-        let latin = try await service.diffFiles(in: top, paths: ["latin.txt"], staged: false)
-        XCTAssertFalse(latin.isEmpty, "bytes that are not UTF-8 still produce a readable diff")
-        XCTAssertEqual(latin.first?.path, "latin.txt")
-
-        let long = try await service.diffFiles(in: top, paths: ["long.txt"], staged: false)
-        let longest = long.first?.hunks.first?.lines.map(\.text.count).max() ?? 0
-        XCTAssertGreaterThan(longest, 19_000, "a very long line arrives whole")
-        XCTAssertEqual(long.first?.added, 1)
-
-        let tail = try await service.diffFiles(in: top, paths: ["tail.txt"], staged: false)
-        XCTAssertTrue(tail.first?.hunks.first?.lines.contains { $0.kind == .note } == true, "the missing final newline is noted")
-
-        // And all four render in one pane without stalling.
-        let files = crlf + latin + long + tail
-        let holder = DiffHolder()
-        let view = DiffView(files: files, title: "Four awkward files", subtitle: nil, identity: "bytes",
-                            split: Binding(get: { true }, set: { _ in }), expanded: Binding(get: { holder.expanded }, set: { holder.expanded = $0 }))
-        var window: NSWindow!
-        let cost = milliseconds {
-            window = host(view, width: 520, height: 600)
-            window.contentView?.layoutSubtreeIfNeeded()
-            window.contentView?.displayIfNeeded()
-        }
-        defer { window.contentView = nil; window.close() }
-        print(String(format: "PERF diff pane with CRLF, foreign bytes and a 20000-character line: %.0f ms", cost))
-        XCTAssertLessThan(cost, 3_000)
     }
 
     /// Searching history by message, by hash and by author, across branches,

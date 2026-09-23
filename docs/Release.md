@@ -15,10 +15,12 @@ build or dependency directory. Versioned release directories stay immutable.
 
 The release gate is one command, run alone on the machine:
 `PI_BUILD_ROOT=… scripts/verify-release.sh`. It builds the helper bundle and
-the Debug app, runs the whole native suite by itself (its frame and latency
-budgets measure wall time), then runs the screenshot gallery with the helper,
-wire and script tests alongside it. Every check runs even after a failure, so
-one pass reports them all; logs go to `$PI_BUILD_ROOT/verify-logs`.
+the Debug app, runs the whole native suite in its two lanes (the serial lane
+alone, then the parallel lane in `PI_TEST_WORKERS` clones of the test host,
+8 by default; see "Test lanes" in [Swift-Test-Handoff.md](Swift-Test-Handoff.md)),
+then runs the screenshot gallery with the helper, wire and script tests
+alongside it. Every check runs even after a failure, so one pass reports them
+all; logs go to `$PI_BUILD_ROOT/verify-logs`.
 
 App staging builds only the Swift helper: there is no package manager step,
 no downloaded runtime and no transcript asset build since 0.1.38. Swift builds
@@ -32,7 +34,20 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.89/build 93 is publicly released** at
+**Bello Agent 0.1.90/build 94 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.90](https://github.com/BelloWare/BelloAgent/tree/v0.1.90) and website commit
+`6b6fef3897b452150875080030dbf7f89ff8e9b5`. The signed/notarized DMG is **10,565,738 bytes (10.08 MiB)**;
+SHA-256 `702fec6de8d9a806a41fd921c6515829923eef3341867042b6d0fdc2e618a815`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-09-24 00:09:53 UTC**. Compaction no longer freezes the app, each chat has a cost limit ( by default) and a
+Session Inspector, and the helper follows pi 0.85.1 for requests, replies, retries, turns and
+compaction, with parallel tool calls. The release gate ran in 9 min 50 s: **1,544 native tests
+passed** (0 failures) in a serial and an eight-clone parallel lane, with the gallery (94
+screenshots), 409 helper tests, 29 wire tests and 55 script tests. See the
+[0.1.90 validation record](validation/Bello-Agent-0.1.90-2026-09-24.md).
+
+**Bello Agent 0.1.89/build 93 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.89](https://github.com/BelloWare/BelloAgent/tree/v0.1.89) and website commit
 `b06f498300129eb4d743ec0e445d5e79cba58b54`. The signed/notarized DMG is **10,387,171 bytes (9.91 MiB)**;

@@ -3,12 +3,11 @@ import SwiftUI
 import Combine
 @testable import PiApp
 
-/// The conversation page driven the way the owner drives it: a long turn
-/// arriving one tool call at a time while the reader sits higher up, cards
-/// opened and closed, the pane resized, the appearance switched, and two long
-/// chats swapped back and forth. Every check is on what the reader sees — row
-/// frames, the content each row actually holds, and where the page is parked.
-final class TranscriptStreamingStressTests: XCTestCase {
+/// What the transcript's stress classes share: the page in a real window,
+/// the long chats they open, and the checks on what the reader sees. It has
+/// no tests of its own; the classes that do are split by what they drive, so
+/// the parallel lane can spread them over its clones.
+class TranscriptStressTestCase: XCTestCase {
 
     // MARK: The page in a real window
 
@@ -115,12 +114,17 @@ final class TranscriptStreamingStressTests: XCTestCase {
         }
         /// A long chat comes up with its viewport exact and measures the rest
         /// in idle slices. This waits for the last of them, as a reader who
-        /// leaves the chat open does.
-        func settleUntilExact(seconds: Double = 60) async {
+        /// leaves the chat open does, with the slices run back to back
+        /// (`unpacedIdleWork`); `paced` keeps the app's one slice per frame,
+        /// for the fixture whose subject is how the slices measure.
+        func settleUntilExact(seconds: Double = 60, paced: Bool = false) async {
             let deadline = ProcessInfo.processInfo.systemUptime + seconds
-            while document.approximateRowCount > 0, ProcessInfo.processInfo.systemUptime < deadline {
-                await settle(turns: 1)
+            func wait() async {
+                while document.approximateRowCount > 0, ProcessInfo.processInfo.systemUptime < deadline {
+                    await settle(turns: 1)
+                }
             }
+            if paced { await wait() } else { await unpacedIdleWork { await wait() } }
             await settle()
         }
         func close() { window.contentView = nil; window.close() }
@@ -212,6 +216,14 @@ final class TranscriptStreamingStressTests: XCTestCase {
             XCTAssertTrue(row.hasMeasurement(width: expected), "\(what): row \(row.itemID) has no measurement at \(expected)", file: file, line: line)
         }
     }
+}
+
+/// The conversation page driven the way the owner drives it: a long turn
+/// arriving one tool call at a time while the reader sits higher up, cards
+/// opened and closed, the pane resized, the appearance switched, and two long
+/// chats swapped back and forth. Every check is on what the reader sees — row
+/// frames, the content each row actually holds, and where the page is parked.
+final class TranscriptStreamingStressTests: TranscriptStressTestCase {
 
     // MARK: 1 — A long turn arriving while the reader is higher up
 
@@ -502,7 +514,8 @@ final class TranscriptStreamingStressTests: XCTestCase {
         TranscriptLayoutClock.reset()
         defer { TranscriptLayoutClock.recording = false }
         let started = ProcessInfo.processInfo.systemUptime
-        await stage.settleUntilExact(seconds: 180)
+        // Paced: how the slices measure the history is the subject.
+        await stage.settleUntilExact(seconds: 180, paced: true)
         let elapsed = ProcessInfo.processInfo.systemUptime - started
         let passes = stage.document.layoutPassCount - passesAtOpen
         print(String(format: "PERF idle history: %d rows, %d standing at an estimate when the chat opened, exact after %d more layout passes (%.0f ms of layout, %.0f ms measuring) in %.1f s",
@@ -899,7 +912,12 @@ final class TranscriptStreamingStressTests: XCTestCase {
         await stage.settle()
         try assertStillOpen("after switching chats and back")
     }
+}
 
+/// The pane's width changing under a long history: every row re-measured at
+/// the new width, the reader's row held on its line, and nothing drawn at a
+/// width it was not measured at.
+final class TranscriptWidthChangeTests: TranscriptStressTestCase {
     // MARK: 3 — Width changes
 
     @MainActor func testEveryRowRemeasuresAtTheNewWidthInOnePass() async throws {
@@ -949,24 +967,6 @@ final class TranscriptStreamingStressTests: XCTestCase {
             XCTAssertEqual(stage.document.approximateRowCount, 0, "every row of the page is exact at width \(width)")
             await assertFitsWhileScrollingThrough(stage, "reading the chat at width \(width)")
         }
-    }
-
-    @MainActor func testResizingALongHistoryStaysWithinAFrameOfWork() async throws {
-        let session = SessionDisplay(id: "width-cost")
-        session.messages = Self.history(turns: 60)
-        let stage = Stage(session); defer { stage.close() }
-        await stage.settleUntilExact()
-        var worst = 0.0, total = 0.0
-        let widths: [CGFloat] = [800, 780, 760, 740, 720, 700, 680, 660, 640, 620]
-        for width in widths {
-            let started = ProcessInfo.processInfo.systemUptime
-            stage.resize(width: width)
-            let cost = ProcessInfo.processInfo.systemUptime - started
-            worst = max(worst, cost); total += cost
-        }
-        print(String(format: "PERF one resize step over %d rows: %.1f ms mean, %.1f ms worst",
-                     stage.rows.count, total * 1000 / Double(widths.count), worst * 1000))
-        assertStacked(stage, "after the resize sweep")
     }
 
     /// Dragging a pane's edge over a long history. Nothing the reader can see
@@ -1135,62 +1135,26 @@ final class TranscriptStreamingStressTests: XCTestCase {
         stage.beginDrag()
         stage.resize(width: 700)
         XCTAssertGreaterThan(stage.document.approximateRowCount, 0, "the drag leaves rows below the reader standing")
-        // No end-of-drag ever arrives; the page catches up on its own.
+        // No end-of-drag ever arrives; the page catches up on its own. The
+        // slices it measures with once it does are run back to back: what is
+        // asserted is the page they leave.
         let deadline = ProcessInfo.processInfo.systemUptime + 15
-        while ProcessInfo.processInfo.systemUptime < deadline {
-            stage.draw()
-            if stage.document.approximateRowCount == 0 { break }
-            try await Task.sleep(for: .milliseconds(50))
+        try await unpacedIdleWork {
+            while ProcessInfo.processInfo.systemUptime < deadline {
+                stage.draw()
+                if stage.document.approximateRowCount == 0 { break }
+                try await Task.sleep(for: .milliseconds(50))
+            }
         }
         XCTAssertEqual(stage.document.approximateRowCount, 0, "the page measures itself when the drag stops moving")
         assertMeasuredAtDrawnWidth(stage, "after the unfinished drag settled")
         assertStacked(stage, "after the unfinished drag settled")
     }
+}
 
-    @MainActor func testDragStepCostOverFiveHundredRows() async throws {
-        let session = SessionDisplay(id: "drag-cost")
-        session.messages = Self.history(turns: 250)
-        let stage = Stage(session); defer { stage.close() }
-        await stage.settleUntilExact()
-        stage.readerScroll(to: 400)
-        await stage.settle()
-        stage.beginDrag()
-        var worst = 0.0, total = 0.0
-        let widths: [CGFloat] = [800, 780, 760, 740, 720, 700, 680, 660, 640, 620]
-        for width in widths {
-            let started = ProcessInfo.processInfo.systemUptime
-            stage.resize(width: width)
-            let cost = ProcessInfo.processInfo.systemUptime - started
-            worst = max(worst, cost); total += cost
-        }
-        print(String(format: "PERF one drag step over %d rows: %.1f ms mean, %.1f ms worst",
-                     stage.rows.count, total * 1000 / Double(widths.count), worst * 1000))
-        // What a drag step must not do is work proportional to the page: it
-        // measures the rows above and inside the reader's viewport and leaves
-        // the rest standing. That shape is what a Debug run can hold the page
-        // to; the frame budget is a claim about the shipped build, and an
-        // absolute number in Debug on a machine running five builds measures
-        // the machine.
-        let perStep = total / Double(widths.count)
-        let oneRow = stage.rows.first.map { row -> Double in
-            let started = ProcessInfo.processInfo.systemUptime
-            _ = row.measure(width: 601)
-            return ProcessInfo.processInfo.systemUptime - started
-        } ?? 0.001
-        // The shape, in every configuration: a step measures the rows above
-        // and inside the reader's viewport and leaves the rest standing, so
-        // it costs a small multiple of one row's own layout rather than the
-        // five hundred of them a full pass would. No absolute floor here —
-        // that is what `releaseBudget` below is for.
-        XCTAssertLessThan(perStep, oneRow * 120,
-                          String(format: "a drag step over %d rows cost %.1f ms, against %.2f ms for one row's own layout",
-                                 stage.rows.count, perStep * 1000, oneRow * 1000))
-        XCTAssertLessThan(perStep, releaseBudget(0.016), "a frame of a drag must cost less than a frame")
-        stage.endDrag()
-        await stage.settle()
-        assertStacked(stage, "after the drag sweep")
-    }
-
+/// Long chats switched and paged, markdown and code as it arrives, the live
+/// bar, and edit cards: the rest of the page driven the way the owner drives it.
+final class TranscriptPageStressTests: TranscriptStressTestCase {
     // MARK: 4 — Chat switching, earlier pages, the row cap
 
     /// What opening a long chat costs. The page comes up with the rows the
@@ -1212,7 +1176,8 @@ final class TranscriptStreamingStressTests: XCTestCase {
         XCTAssertLessThan(measuredToOpen, 40, "opening the chat measured \(measuredToOpen) of \(stage.rows.count) rows before the reader saw anything")
         XCTAssertGreaterThan(stage.document.approximateRowCount, stage.rows.count / 2, "the rest of the page must stand at an estimate")
         XCTAssertGreaterThan(stage.document.frame.height, stage.scroll.contentView.bounds.height * 4, "an estimated page still has a height to scroll")
-        await stage.settleUntilExact()
+        // Paced: the time to exact geometry is one of the figures reported.
+        await stage.settleUntilExact(paced: true)
         let exact = ProcessInfo.processInfo.systemUptime - started
         print(String(format: "PERF open a chat of %d rows: %.0f ms to the viewport (%d rows measured), %.0f ms to exact geometry",
                      stage.rows.count, opened * 1000, measuredToOpen, exact * 1000))
@@ -2295,6 +2260,56 @@ final class TranscriptStreamingStressTests: XCTestCase {
         XCTAssertLessThan(row.frame.height - closed, 900,
                           "a five-hundred-line diff stays a preview: the card caps its middle")
         assertStacked(stage, "with a journal edit open")
+    }
+}
+
+/// The stress tests that cannot share the machine: a drag step held to a
+/// multiple of one row's own layout, timed in Debug too, and a read receipt
+/// that only fires in the active app's key window. The serial lane
+/// (`scripts/test-lanes.py`) runs them alone.
+final class TranscriptStreamingSerialTests: TranscriptStressTestCase, SerialTestLane {
+    @MainActor func testDragStepCostOverFiveHundredRows() async throws {
+        let session = SessionDisplay(id: "drag-cost")
+        session.messages = Self.history(turns: 250)
+        let stage = Stage(session); defer { stage.close() }
+        await stage.settleUntilExact()
+        stage.readerScroll(to: 400)
+        await stage.settle()
+        stage.beginDrag()
+        var worst = 0.0, total = 0.0
+        let widths: [CGFloat] = [800, 780, 760, 740, 720, 700, 680, 660, 640, 620]
+        for width in widths {
+            let started = ProcessInfo.processInfo.systemUptime
+            stage.resize(width: width)
+            let cost = ProcessInfo.processInfo.systemUptime - started
+            worst = max(worst, cost); total += cost
+        }
+        print(String(format: "PERF one drag step over %d rows: %.1f ms mean, %.1f ms worst",
+                     stage.rows.count, total * 1000 / Double(widths.count), worst * 1000))
+        // What a drag step must not do is work proportional to the page: it
+        // measures the rows above and inside the reader's viewport and leaves
+        // the rest standing. That shape is what a Debug run can hold the page
+        // to; the frame budget is a claim about the shipped build, and an
+        // absolute number in Debug on a machine running five builds measures
+        // the machine.
+        let perStep = total / Double(widths.count)
+        let oneRow = stage.rows.first.map { row -> Double in
+            let started = ProcessInfo.processInfo.systemUptime
+            _ = row.measure(width: 601)
+            return ProcessInfo.processInfo.systemUptime - started
+        } ?? 0.001
+        // The shape, in every configuration: a step measures the rows above
+        // and inside the reader's viewport and leaves the rest standing, so
+        // it costs a small multiple of one row's own layout rather than the
+        // five hundred of them a full pass would. No absolute floor here —
+        // that is what `releaseBudget` below is for.
+        XCTAssertLessThan(perStep, oneRow * 120,
+                          String(format: "a drag step over %d rows cost %.1f ms, against %.2f ms for one row's own layout",
+                                 stage.rows.count, perStep * 1000, oneRow * 1000))
+        XCTAssertLessThan(perStep, releaseBudget(0.016), "a frame of a drag must cost less than a frame")
+        stage.endDrag()
+        await stage.settle()
+        assertStacked(stage, "after the drag sweep")
     }
 
     // MARK: 6 — Read receipts

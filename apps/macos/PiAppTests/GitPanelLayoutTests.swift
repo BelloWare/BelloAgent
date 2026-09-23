@@ -3,7 +3,7 @@ import SwiftUI
 import AppKit
 @testable import PiApp
 
-extension GitPanelAuditTests {
+final class GitPanelLayoutTests: GitPanelTestCase {
     // MARK: Layout
 
     /// Nothing about drawing a diff may walk its lines: pairing a side-by-side
@@ -109,43 +109,4 @@ extension GitPanelAuditTests {
         XCTAssertNotNil(window.contentView)
     }
 
-    /// A 20,000-line patch, unified and side by side, wide and narrow.
-    @MainActor func testALongPatchDrawsAtEveryWidthInBothLayouts() throws {
-        let lines = (0..<20_000).map { index -> String in
-            switch index % 4 {
-            case 0: return "-removed \(index) " + String(repeating: "x", count: 400)
-            case 1: return "+added \(index)\twith\ttabs"
-            case 2: return " context \(index) 中文 🌍"
-            default: return " plain \(index)"
-            }
-        }
-        let patch = "diff --git a/long.txt b/long.txt\n--- a/long.txt\n+++ b/long.txt\n@@ -1,20000 +1,20000 @@\n" + lines.joined(separator: "\n") + "\n"
-        let files = GitDiffParser.parse(patch)
-        XCTAssertEqual(files.count, 1)
-        for (label, width) in [("wide", CGFloat(1_180)), ("narrow", CGFloat(420))] {
-            for split in [false, true] {
-                let holder = DiffHolder()
-                let view = DiffView(files: files, title: "long.txt", subtitle: "Working tree versus index", identity: "audit",
-                                    split: Binding(get: { split }, set: { _ in }), expanded: Binding(get: { holder.expanded }, set: { holder.expanded = $0 }))
-                var window: NSWindow!
-                let building = milliseconds { window = host(view, width: width, height: 700) }
-                let cost = milliseconds {
-                    window.contentView?.layoutSubtreeIfNeeded()
-                    window.contentView?.displayIfNeeded()
-                }
-                // And with the gate opened: every row of the patch on screen.
-                holder.expanded = "audit"
-                let whole = milliseconds {
-                    window.contentView?.needsLayout = true
-                    window.contentView?.layoutSubtreeIfNeeded()
-                    window.contentView?.displayIfNeeded()
-                }
-                let closing = milliseconds { window.contentView = nil; window.close() }
-                print(String(format: "PERF 20000-line patch, %@ %@: build %.0f ms, layout %.0f ms, whole diff %.0f ms, close %.0f ms",
-                             label, split ? "split" : "unified", building, cost, whole, closing))
-                XCTAssertLessThan(building + cost, 4_000, "opening a long patch must not stall the panel")
-                XCTAssertLessThan(whole, 4_000, "and neither must asking for the whole of it")
-            }
-        }
-    }
 }

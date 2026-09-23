@@ -3,7 +3,7 @@ import SwiftUI
 import AppKit
 @testable import PiApp
 
-extension GitPanelAuditTests {
+final class GitDiscardQuestionTests: GitPanelTestCase {
 
     /// Discarding asks on a sheet. A modal loop would stop git, the terminal
     /// and every other window until the reader answered.

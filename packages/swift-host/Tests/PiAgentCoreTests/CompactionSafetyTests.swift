@@ -62,11 +62,11 @@ final class CompactionSafetyTests: XCTestCase {
     static let smallTail: CompactionPolicy = { var policy=CompactionPolicy(); policy.keepRecentTokens=1; return policy }()
     func testSummaryCapFollowsPiPastTheOld4096() async throws {
         var raw=try fixtureProfile().raw;raw["modelOutputLimit"]=32768;raw["contextWindow"]=128000
-        XCTAssertEqual(CompactionPolicy().outputAllowance(for:try Profile(raw)),32768)
+        XCTAssertEqual(CompactionPolicy().summaryTokens(for:try Profile(raw)),13107)
         raw["contextWindow"]=200000
-        XCTAssertEqual(CompactionPolicy().outputAllowance(for:try Profile(raw)),32768)
+        XCTAssertEqual(CompactionPolicy().summaryTokens(for:try Profile(raw)),13107)
         raw["modelOutputLimit"] = .null;raw["maxOutputTokens"]=16000
-        XCTAssertEqual(CompactionPolicy().outputAllowance(for:try Profile(raw)),16000)
+        XCTAssertEqual(CompactionPolicy().summaryTokens(for:try Profile(raw)),13107,"Pi's cap is the reserve's share, never the chat's output budget")
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         raw["modelOutputLimit"]=32768;raw["maxOutputTokens"]=4096
         let client=SummaryProbe(),s=try AgentSession(id:"large-summary",profile:Profile(raw),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),seed:seed(count:8,bytes:12000))
@@ -149,24 +149,26 @@ final class CompactionSafetyTests: XCTestCase {
         let source=try CompactionPlanner.source(context:original+[steering,assistant,result],taskRoot:"root")
         let cut=CompactionPlanner.cut(source.body,keepRecentTokens:100), plan=CompactionPlanner.plan(source,cut:cut)
         XCTAssertEqual(cut,source.body.count,"The newest group alone passes the tail, so it is summarized")
-        XCTAssertEqual(plan.protected.map(\.text),[original[0].text,steering.text]);XCTAssertTrue(plan.kept.isEmpty)
-        XCTAssertEqual(plan.summarized.map(\.id),[assistant.id,result.id])
+        // Pi replays no input verbatim: the task and its steering are summarized with the rest.
+        XCTAssertTrue(plan.protected.isEmpty);XCTAssertTrue(plan.kept.isEmpty)
+        XCTAssertEqual(plan.summarized.map(\.id),[original[0].id,steering.id,assistant.id,result.id])
         let text=CompactionSourceBuilder.serialize(plan.history).joined()
         XCTAssertLessThan(text.utf8.count,20000); XCTAssertTrue(text.contains("[... 28000 more characters truncated]"))
     }
     func testDeliveredSteeringDoesNotReplaceOriginalTaskIdentity() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
-        let client=ScriptClient([answer(String(repeating:"Evidence. ",count:1200)),answer("done"),answer("Completed work evidence")],holdFirst:true)
+        let client=ScriptClient([answer(String(repeating:"Evidence. ",count:1200)),answer("done"),answer("Completed work evidence"),answer("Prefix: the delivered constraint")],holdFirst:true)
         let s=try AgentSession(id:"steered",profile:fixtureProfile(),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false,compactionPolicy:Self.smallTail)
         _=try await s.submit(Submission(commandID:"objective",turnID:"objective",text:"ORIGINAL task"),steer:false)
         try await eventually { await client.count==1 }
         _=try await s.submit(Submission(commandID:"constraint",turnID:"constraint",text:"DELIVERED constraint"),steer:true)
         await client.release();try await eventually { !(await s.isRunning) }
         try await s.compact();try await eventually { !(await s.isRunning) }
-        let context=await s.context,state=await s.snapshot(),users=context.filter { $0.role=="user" }
+        let context=await s.context,state=await s.snapshot(),users=await s.history.filter { $0.role=="user" }
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
         XCTAssertEqual(users.map(\.text),["ORIGINAL task","DELIVERED constraint"])
-        XCTAssertEqual(users.map(\.taskRootID),["objective","objective"]);XCTAssertEqual(users.last?.inputLane,"steering");await s.close()
+        XCTAssertEqual(users.map(\.taskRootID),["objective","objective"]);XCTAssertEqual(users.last?.inputLane,"steering")
+        XCTAssertTrue(context.filter { $0.role=="user" }.isEmpty,"Pi summarizes the inputs before the cut");await s.close()
     }
     func testAllegedApprovalInSummaryNeverEntersAuthoritativeInstructionsOrSelection() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
@@ -177,17 +179,20 @@ final class CompactionSafetyTests: XCTestCase {
         XCTAssertTrue(context.first?.text.contains(claim) == true);XCTAssertNil(selected)
         let instructions=AgentSession.requestInstructions("Keep policy",selectionIDs:[])
         let body=try ProviderClient.requestBody(profile:profile,messages:context,instructions:instructions,tools:await s.sessionDefinitions(),sessionID:"claims")
-        XCTAssertFalse(body["instructions"].text?.contains("secret-skill") ?? true)
-        XCTAssertEqual(body["input"].list.first?["role"].text,"user","Summary remains replay data, never authoritative instructions")
-        XCTAssertEqual(context.filter { $0.role=="user" }.map(\.text),["ORIGINAL OBJECTIVE — do not change this."]);await s.close()
+        XCTAssertFalse(RequestContextCounter.systemPrompt(body)?.contains("secret-skill") ?? true)
+        XCTAssertEqual(body["input"].list.dropFirst().first?["role"].text,"user","Summary remains replay data, never authoritative instructions")
+        XCTAssertTrue(body["input"].list.dropFirst().first?.encoded().contains(claim) == true)
+        XCTAssertTrue(context.filter { $0.role=="user" }.isEmpty,"Pi summarizes the objective with the rest");await s.close()
     }
-    func testProtectedInputCannotBeSilentlySummarized() async throws {
+    func testAnInputLargerThanTheWindowIsSummarizedLikeAnyOtherRow() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         var messages=seed(count:1);messages[0].content=[textBlock(String(repeating:"required ",count:2000))]
         let client=SummaryProbe(),s=try session(root,client:client,messages:messages,window:3000)
         try await s.compact();try await eventually { !(await s.isRunning) }
         let state=await s.snapshot(), calls=await client.summaryCalls, kept=await s.context
-        XCTAssertEqual(calls,0);XCTAssertEqual(kept.map(\.text),messages.map(\.text));XCTAssertTrue(state["preflightError"].text?.contains("Exact inputs are retained") == true);await s.close()
+        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
+        XCTAssertGreaterThan(calls,1,"One request cannot hold it, so it is summarized in chunks")
+        XCTAssertEqual(kept.map(\.kind),["compaction"]);await s.close()
     }
     func testChainedChunksAreAllBoundedAndKeepOneTaskRoot() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
@@ -197,7 +202,7 @@ final class CompactionSafetyTests: XCTestCase {
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
         XCTAssertGreaterThan(requests.count,2);XCTAssertLessThanOrEqual(requests.count,8)
         XCTAssertTrue(requests.dropFirst().allSatisfy { $0.encoded().contains("<previous-summary>") },"Each later chunk updates the summary so far")
-        XCTAssertEqual(context.filter { $0.role=="user" }.map(\.id),["root"])
+        XCTAssertTrue(context.filter { $0.role=="user" }.isEmpty)
         XCTAssertLessThan(state["compaction"]["after"]["tokens"].int!,state["compaction"]["before"]["tokens"].int!)
         XCTAssertEqual(state["contextState"]["reason"].text,"compaction-committed")
         XCTAssertTrue(state["contextState"]["currentRequest"].isNull)
@@ -206,7 +211,7 @@ final class CompactionSafetyTests: XCTestCase {
     }
     func testInvalidSummariesNeverAdoptAndBudgetIsSharedWithRetries() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
-        for mode:SummaryProbe.Mode in [.empty,.truncated,.tool,.transient,.overflow,.grow] {
+        for mode:SummaryProbe.Mode in [.empty,.truncated,.tool,.transient,.overflow] {
             let client=SummaryProbe(mode);var policy=CompactionPolicy();policy.maximumAttempts=2
             let messages=seed(count:3,bytes:6000),s=try session(root,client:client,messages:messages,window:6000,policy:policy)
             let before=await s.snapshot(["includeMetrics":false])
@@ -285,12 +290,14 @@ final class CompactionSafetyTests: XCTestCase {
     func testTruncatedToolCallDoesNotExecuteOrRegenerate() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         var partial=toolReply(["write"]);partial.truncated=true
-        let client=ScriptClient([partial]),tools=CountingCompactionTools()
+        let client=ScriptClient([partial,answer("Re-issued nothing")]),tools=CountingCompactionTools()
         let s=try AgentSession(id:"length",profile:fixtureProfile(),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore())
         _=try await s.submit(Submission(commandID:"root",turnID:"root",text:"Write safely"),steer:false);try await eventually { !(await s.isRunning) }
         let calls=await client.count,mutations=await tools.count,context=await s.context,state=await s.snapshot()
-        XCTAssertEqual(calls,1);XCTAssertEqual(mutations,0);XCTAssertEqual(state["state"].text,"idle")
-        XCTAssertTrue(context.contains { $0.stopReason=="length" });XCTAssertTrue(context.last?.text.contains("Not executed") == true);await s.close()
+        // Pi fails the calls and asks again, so the model can re-issue them.
+        XCTAssertEqual(calls,2);XCTAssertEqual(mutations,0);XCTAssertEqual(state["state"].text,"idle")
+        XCTAssertTrue(context.contains { $0.stopReason=="length" })
+        XCTAssertTrue(context.contains { $0.role=="toolResult" && $0.text.hasPrefix("Tool call \"write\" was not executed") });await s.close()
     }
     func testStopImmediatelyAfterDurableCommitKeepsCheckpointWithoutContinuation() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }

@@ -27,6 +27,18 @@ import Darwin
     var onData: ((Data) -> Void)?
     var onExit: ((Int32) -> Void)?
     var onNotice: ((String) -> Void)?
+    /// Reaps the child if it can be reaped now: `waitpid` with `WNOHANG`,
+    /// retried on `EINTR`. Zero means "not yet". A seam, so a test can make
+    /// the kernel's answer late.
+    var reap: (pid_t, UnsafeMutablePointer<Int32>) -> pid_t = PseudoTerminal.reapNow
+    nonisolated static func reapNow(_ pid: pid_t, _ status: UnsafeMutablePointer<Int32>) -> pid_t {
+        var reaped: pid_t
+        repeat { reaped = waitpid(pid, status, WNOHANG) } while reaped < 0 && errno == EINTR
+        return reaped
+    }
+    /// How long to wait before asking again when the exit event arrived
+    /// before the child could be reaped, in seconds.
+    static let reapBackoff: [Double] = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4]
     var bufferedOutputBytes: Int { pending.count }
     var bufferedInputBytes: Int { inputLifetime.retainedBytes }
 
@@ -122,11 +134,30 @@ import Darwin
         watcher.resume()
         exitWatcher = watcher
     }
-    private func finished(_ pid: pid_t, attempt: UUID) {
+    private func finished(_ pid: pid_t, attempt: UUID, retry: Int = 0) {
         guard running, generation == attempt else { return }
-        var status: Int32 = 0, reaped: pid_t
-        repeat { reaped = waitpid(pid, &status, WNOHANG) } while reaped < 0 && errno == EINTR
-        guard reaped != 0 else { return }
+        var status: Int32 = 0
+        let reaped = reap(pid, &status)
+        guard reaped != 0 else {
+            // The exit event can arrive before the kernel lets the child be
+            // reaped, and it arrives once: returning here left the terminal —
+            // and anything waiting on it — running for ever. Ask again, a few
+            // times, on the main actor; then wait for the child to become
+            // reapable off the main thread without reaping it (WNOWAIT), so
+            // it is still reaped here, with the state that says it is gone.
+            if retry < Self.reapBackoff.count {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.reapBackoff[retry]) { MainActor.assumeIsolated {
+                    self.finished(pid, attempt: attempt, retry: retry + 1)
+                } }
+            } else {
+                DispatchQueue.global(qos: .utility).async { @Sendable [self] in
+                    var info = siginfo_t()
+                    while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) < 0 && errno == EINTR {}
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self.finished(pid, attempt: attempt) } }
+                }
+            }
+            return
+        }
         let code: Int32 = (status & 0x7f) == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f)
         running = false
         inputLifetime.cancel()

@@ -8,7 +8,7 @@ import AppKit
 /// that reaches an edge loads what lies beyond it on its own; an edit the
 /// reader makes moves the chat onto a new branch, and the page goes there
 /// with them. Every check is on what the reader sees, pass after pass.
-final class HistoryEdgeTests: XCTestCase {
+class HistoryEdgeTestCase: XCTestCase {
 
     // MARK: What one pass shows
 
@@ -65,11 +65,167 @@ final class HistoryEdgeTests: XCTestCase {
         let moved: [String] = strays.map { stray in (after.names[stray.0] ?? stray.0) + " moved \(Int(stray.1 - scroll)) pt" }
         return (scroll, moved.joined(separator: ", ") + " on its own while the page scrolled \(Int(scroll)) pt")
     }
+
+    /// A long chat read from its journal, with no helper: every earlier page
+    /// comes from the file, as it does for a chat the helper has let go of.
+    @MainActor final class PagedChat {
+        let model: WorkspaceModel
+        let chat: ChatRecord
+        let view: SessionDisplay
+        let window: NSWindow
+        let hosted: NSHostingView<ConversationPane>
+        let path: String
+        let root: URL
+
+        /// `questionsOnly`: every row a one-line question, each its own turn,
+        /// so a page of three turns is three short rows.
+        init(turns: Int, height: CGFloat = 760, questionsOnly: Bool = false) async throws {
+            root = scratchRoot("history-edges")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let file = root.appendingPathComponent("history.jsonl"), encoder = JSONEncoder()
+            var bytes = try encoder.encode(["type": WireValue.string("session"), "version": .number(3), "id": .string("a")]); bytes.append(10)
+            for index in 0..<(questionsOnly ? turns : turns * 2) {
+                let user = questionsOnly || index % 2 == 0
+                let text = questionsOnly ? "Question \(index)?" : user ? "Question \(index / 2)?"
+                    : "## Answer \(index / 2)\n\n" + String(repeating: "A paragraph long enough to wrap across the page, with **bold** and `code`. ", count: 5)
+                        + "\n\n- one point\n- another point\n\nAnd a closing line for answer \(index / 2)."
+                bytes.append(try encoder.encode(["type": WireValue.string("message"), "id": .string("m\(index)"),
+                    "parentId": index == 0 ? .null : .string("m\(index - 1)"),
+                    "message": .object(["role": .string(user ? "user" : "assistant"), "content": .string(text)])]))
+                bytes.append(10)
+            }
+            try bytes.write(to: file)
+            path = file.path
+            model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+            try await model.reloadConfiguration()
+            chat = ChatRecord(id: "a", workspaceID: "project", title: "A", path: file.path, profileID: "profile")
+            model.chats = [chat]
+            await model.select("a")
+            view = try XCTUnwrap(model.selected)
+            window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: height), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            hosted = NSHostingView(rootView: ConversationPane(model: model, session: view, chat: chat, paneWidth: 900))
+            window.contentView = hosted; window.makeKeyAndOrderFront(nil)
+        }
+        var page: TranscriptPage? { ConversationPaneTests.views(TranscriptSurfaceMarker.self, in: hosted).first?.page }
+        var scroll: TranscriptNativeScrollView? { ConversationPaneTests.views(TranscriptNativeScrollView.self, in: hosted).first }
+        func draw() { hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
+        func settle(_ turns: Int = 8) async { for _ in 0..<turns { draw(); await Task.yield(); try? await Task.sleep(for: .milliseconds(10)) }; draw() }
+        /// Settles until `condition` stops holding: a bound on the time, not on
+        /// the number of passes, so a loaded machine is waited for, not failed.
+        func settle(while condition: () -> Bool, seconds: Double = 30) async {
+            let deadline = Date().addingTimeInterval(seconds)
+            while condition(), Date() < deadline { await settle(1) }
+        }
+        func ready() async throws {
+            await settle(while: { view.historyState != .ready })
+            XCTAssertEqual(view.historyState, .ready, "The chat never finished opening")
+            await settle(10)
+        }
+        /// The reader scrolls to the top of what the page holds.
+        func readerScrollsToTop() throws {
+            let page = try XCTUnwrap(page), scroll = try XCTUnwrap(scroll)
+            page.readerWillNavigate(upward: true)
+            scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: 0))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+            NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        }
+        func close() { window.contentView = nil; window.close() }
+    }
+
+    /// Checks one pass of a chat whose rows are only ever added in front:
+    /// the transcript's frame never moves (nothing is shown above or below
+    /// it), and the rows on screen stay exactly where the reader left them.
+    @MainActor fileprivate func watch(_ chat: PagedChat, from start: Pass, previous: inout Pass, pass index: Int, into problems: inout [String],
+                                  spinnerAllowed: Bool = false) {
+        guard let now = Self.pass(chat.hosted) else { problems.append("pass \(index): no transcript on screen"); return }
+        // The way back to the latest message is the reader's, not an edge's:
+        // it shows whenever they are away from the bottom.
+        let edges = Self.edges(chat.hosted).filter { $0.kind != "latest" && !(spinnerAllowed && $0.kind == "loading") }
+        if !edges.isEmpty { problems.append("pass \(index): an edge shows: \(Self.describe(edges))") }
+        if abs(now.surface.maxY - now.pane.maxY) > 0.5 {
+            problems.append("pass \(index): the transcript starts \(Int(now.pane.maxY - now.surface.maxY)) pt below the pane's top: something is drawn above it")
+        }
+        if abs(now.surface.minY - start.surface.minY) > 0.5 || abs(now.surface.height - start.surface.height) > 0.5 {
+            problems.append("pass \(index): the transcript's frame changed from \(start.surface) to \(now.surface)")
+        }
+        let moved = Self.rowsMovedTogether(previous, now)
+        if let problem = moved.problem { problems.append("pass \(index): \(problem)") }
+        else if abs(moved.delta) > 3 { problems.append("pass \(index): the rows on screen moved \(Int(moved.delta)) pt with nobody scrolling") }
+        previous = now
+    }
+    /// The edge controls on screen right now.
+    @MainActor static func edges(_ hosted: NSView) -> [TranscriptEdgeMarkerView] {
+        ConversationPaneTests.views(TranscriptEdgeMarkerView.self, in: hosted).filter { $0.window != nil && !$0.isHiddenOrHasHiddenAncestor }
+    }
+    @MainActor static func describe(_ edges: [TranscriptEdgeMarkerView]) -> String {
+        edges.map { "\($0.edge) \($0.kind)" + ($0.text.isEmpty ? "" : " “\($0.text)”") }.joined(separator: ", ")
+    }
+}
+
+final class HistoryEdgeTests: HistoryEdgeTestCase {
+
+}
+
+/// A slow earlier page shows nothing for its first moments and then only the
+/// spinner: moments measured on the wall clock, so this runs in the serial
+/// lane (`scripts/test-lanes.py`).
+final class HistoryEdgeTimingTests: HistoryEdgeTestCase, SerialTestLane {
+    /// A page that is slow to arrive shows no more than it needs to: for the
+    /// first moments nothing at all, and then only the small spinner at the
+    /// edge. The transcript's frame never moves, and when the page lands the
+    /// reader's row is where it was.
+    @MainActor func testASlowEarlierPageShowsNothingThenOnlyTheSpinner() async throws {
+        let chat = try await PagedChat(turns: 60)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        defer { chat.close() }
+        try await chat.ready()
+        let gate = AsyncGate(), reader = chat.model.history, path = chat.path
+        chat.model.historyWindowLoader = { _, cursor, newer, around in
+            await gate.wait()
+            return try ConversationHistoryPage(try await reader.window(path: path, cursor: cursor, newer: newer, around: around))
+        }
+        let start = try XCTUnwrap(Self.pass(chat.hosted))
+        var previous = start, problems: [String] = [], passes = 0
+        let first = chat.view.messages.first?.id
+        try chat.readerScrollsToTop()
+        chat.draw(); previous = try XCTUnwrap(Self.pass(chat.hosted))
+        let began = Date()
+        var spinner = false
+        while Date().timeIntervalSince(began) < 0.9 {
+            await chat.settle(1); passes += 1
+            let elapsed = Date().timeIntervalSince(began)
+            // Nothing at all for the first moments; the spinner after them.
+            watch(chat, from: start, previous: &previous, pass: passes, into: &problems, spinnerAllowed: elapsed >= 0.28)
+            if elapsed >= 0.5 {
+                let shown = Self.edges(chat.hosted)
+                if shown.contains(where: { $0.edge == "earlier" && $0.kind == "loading" }) { spinner = true }
+                else { problems.append("pass \(passes): \(Int(elapsed * 1000)) ms into a slow read and no spinner: \(Self.describe(shown))") }
+            }
+        }
+        XCTAssertTrue(spinner, "A slow read shows the spinner at the top")
+        XCTAssertTrue(chat.view.olderPage.loading, "The earlier page is still on its way")
+        await gate.open()
+        while chat.view.olderPage.loading || chat.view.messages.first?.id == first {
+            await chat.settle(1); passes += 1
+            watch(chat, from: start, previous: &previous, pass: passes, into: &problems, spinnerAllowed: true)
+            if Date().timeIntervalSince(began) > 10 { XCTFail("The earlier page never landed"); break }
+        }
+        // The spinner leaves with the read (it fades); then nothing is left.
+        for _ in 0..<30 { await chat.settle(1); passes += 1; watch(chat, from: start, previous: &previous, pass: passes, into: &problems, spinnerAllowed: true) }
+        for _ in 0..<10 { await chat.settle(1); passes += 1; watch(chat, from: start, previous: &previous, pass: passes, into: &problems) }
+        XCTAssertTrue(problems.isEmpty, "\(problems.count) of \(passes) passes went wrong:\n" + problems.prefix(12).joined(separator: "\n"))
+    }
 }
 
 // MARK: - Editing and resending
 
-extension HistoryEdgeTests {
+/// Editing a question and sending it, watched on every pass while the helper
+/// answers: what one pass sees depends on how the helper's replies interleave
+/// with the frames, and one of them failed in ten parallel clones where it
+/// passes alone. They run in the serial lane (`scripts/test-lanes.py`).
+final class HistoryEditTests: HistoryEdgeTestCase, SerialTestLane {
     /// Editing an earlier question and sending it moves the chat onto a new
     /// branch. That is what the reader asked for: the page follows the new
     /// reply as it streams, and no edge ever says the branch changed, that
@@ -184,89 +340,7 @@ extension HistoryEdgeTests {
 // MARK: - Reaching the top of a long chat
 
 extension HistoryEdgeTests {
-    /// A long chat read from its journal, with no helper: every earlier page
-    /// comes from the file, as it does for a chat the helper has let go of.
-    @MainActor final class PagedChat {
-        let model: WorkspaceModel
-        let chat: ChatRecord
-        let view: SessionDisplay
-        let window: NSWindow
-        let hosted: NSHostingView<ConversationPane>
-        let path: String
-        let root: URL
 
-        /// `questionsOnly`: every row a one-line question, each its own turn,
-        /// so a page of three turns is three short rows.
-        init(turns: Int, height: CGFloat = 760, questionsOnly: Bool = false) async throws {
-            root = scratchRoot("history-edges")
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            let file = root.appendingPathComponent("history.jsonl"), encoder = JSONEncoder()
-            var bytes = try encoder.encode(["type": WireValue.string("session"), "version": .number(3), "id": .string("a")]); bytes.append(10)
-            for index in 0..<(questionsOnly ? turns : turns * 2) {
-                let user = questionsOnly || index % 2 == 0
-                let text = questionsOnly ? "Question \(index)?" : user ? "Question \(index / 2)?"
-                    : "## Answer \(index / 2)\n\n" + String(repeating: "A paragraph long enough to wrap across the page, with **bold** and `code`. ", count: 5)
-                        + "\n\n- one point\n- another point\n\nAnd a closing line for answer \(index / 2)."
-                bytes.append(try encoder.encode(["type": WireValue.string("message"), "id": .string("m\(index)"),
-                    "parentId": index == 0 ? .null : .string("m\(index - 1)"),
-                    "message": .object(["role": .string(user ? "user" : "assistant"), "content": .string(text)])]))
-                bytes.append(10)
-            }
-            try bytes.write(to: file)
-            path = file.path
-            model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
-            try await model.reloadConfiguration()
-            chat = ChatRecord(id: "a", workspaceID: "project", title: "A", path: file.path, profileID: "profile")
-            model.chats = [chat]
-            await model.select("a")
-            view = try XCTUnwrap(model.selected)
-            window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: height), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-            window.isReleasedWhenClosed = false
-            hosted = NSHostingView(rootView: ConversationPane(model: model, session: view, chat: chat, paneWidth: 900))
-            window.contentView = hosted; window.makeKeyAndOrderFront(nil)
-        }
-        var page: TranscriptPage? { ConversationPaneTests.views(TranscriptSurfaceMarker.self, in: hosted).first?.page }
-        var scroll: TranscriptNativeScrollView? { ConversationPaneTests.views(TranscriptNativeScrollView.self, in: hosted).first }
-        func draw() { hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
-        func settle(_ turns: Int = 8) async { for _ in 0..<turns { draw(); await Task.yield(); try? await Task.sleep(for: .milliseconds(10)) }; draw() }
-        func ready() async throws {
-            for _ in 0..<400 where view.historyState != .ready { await settle(1) }
-            XCTAssertEqual(view.historyState, .ready, "The chat never finished opening")
-            await settle(10)
-        }
-        /// The reader scrolls to the top of what the page holds.
-        func readerScrollsToTop() throws {
-            let page = try XCTUnwrap(page), scroll = try XCTUnwrap(scroll)
-            page.readerWillNavigate(upward: true)
-            scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: 0))
-            scroll.reflectScrolledClipView(scroll.contentView)
-            NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
-            NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
-        }
-        func close() { window.contentView = nil; window.close() }
-    }
-
-    /// Checks one pass of a chat whose rows are only ever added in front:
-    /// the transcript's frame never moves (nothing is shown above or below
-    /// it), and the rows on screen stay exactly where the reader left them.
-    @MainActor private func watch(_ chat: PagedChat, from start: Pass, previous: inout Pass, pass index: Int, into problems: inout [String],
-                                  spinnerAllowed: Bool = false) {
-        guard let now = Self.pass(chat.hosted) else { problems.append("pass \(index): no transcript on screen"); return }
-        // The way back to the latest message is the reader's, not an edge's:
-        // it shows whenever they are away from the bottom.
-        let edges = Self.edges(chat.hosted).filter { $0.kind != "latest" && !(spinnerAllowed && $0.kind == "loading") }
-        if !edges.isEmpty { problems.append("pass \(index): an edge shows: \(Self.describe(edges))") }
-        if abs(now.surface.maxY - now.pane.maxY) > 0.5 {
-            problems.append("pass \(index): the transcript starts \(Int(now.pane.maxY - now.surface.maxY)) pt below the pane's top: something is drawn above it")
-        }
-        if abs(now.surface.minY - start.surface.minY) > 0.5 || abs(now.surface.height - start.surface.height) > 0.5 {
-            problems.append("pass \(index): the transcript's frame changed from \(start.surface) to \(now.surface)")
-        }
-        let moved = Self.rowsMovedTogether(previous, now)
-        if let problem = moved.problem { problems.append("pass \(index): \(problem)") }
-        else if abs(moved.delta) > 3 { problems.append("pass \(index): the rows on screen moved \(Int(moved.delta)) pt with nobody scrolling") }
-        previous = now
-    }
 
     /// Scrolling to the top of a long chat reads the page before it, and
     /// the next, and the next. Each lands in front of what the reader is
@@ -300,51 +374,6 @@ extension HistoryEdgeTests {
         XCTAssertTrue(problems.isEmpty, "\(problems.count) of \(passes) passes went wrong:\n" + problems.prefix(12).joined(separator: "\n"))
     }
 
-    /// A page that is slow to arrive shows no more than it needs to: for the
-    /// first moments nothing at all, and then only the small spinner at the
-    /// edge. The transcript's frame never moves, and when the page lands the
-    /// reader's row is where it was.
-    @MainActor func testASlowEarlierPageShowsNothingThenOnlyTheSpinner() async throws {
-        let chat = try await PagedChat(turns: 60)
-        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
-        defer { chat.close() }
-        try await chat.ready()
-        let gate = AsyncGate(), reader = chat.model.history, path = chat.path
-        chat.model.historyWindowLoader = { _, cursor, newer, around in
-            await gate.wait()
-            return try ConversationHistoryPage(try await reader.window(path: path, cursor: cursor, newer: newer, around: around))
-        }
-        let start = try XCTUnwrap(Self.pass(chat.hosted))
-        var previous = start, problems: [String] = [], passes = 0
-        let first = chat.view.messages.first?.id
-        try chat.readerScrollsToTop()
-        chat.draw(); previous = try XCTUnwrap(Self.pass(chat.hosted))
-        let began = Date()
-        var spinner = false
-        while Date().timeIntervalSince(began) < 0.9 {
-            await chat.settle(1); passes += 1
-            let elapsed = Date().timeIntervalSince(began)
-            // Nothing at all for the first moments; the spinner after them.
-            watch(chat, from: start, previous: &previous, pass: passes, into: &problems, spinnerAllowed: elapsed >= 0.28)
-            if elapsed >= 0.5 {
-                let shown = Self.edges(chat.hosted)
-                if shown.contains(where: { $0.edge == "earlier" && $0.kind == "loading" }) { spinner = true }
-                else { problems.append("pass \(passes): \(Int(elapsed * 1000)) ms into a slow read and no spinner: \(Self.describe(shown))") }
-            }
-        }
-        XCTAssertTrue(spinner, "A slow read shows the spinner at the top")
-        XCTAssertTrue(chat.view.olderPage.loading, "The earlier page is still on its way")
-        await gate.open()
-        while chat.view.olderPage.loading || chat.view.messages.first?.id == first {
-            await chat.settle(1); passes += 1
-            watch(chat, from: start, previous: &previous, pass: passes, into: &problems, spinnerAllowed: true)
-            if Date().timeIntervalSince(began) > 10 { XCTFail("The earlier page never landed"); break }
-        }
-        // The spinner leaves with the read (it fades); then nothing is left.
-        for _ in 0..<30 { await chat.settle(1); passes += 1; watch(chat, from: start, previous: &previous, pass: passes, into: &problems, spinnerAllowed: true) }
-        for _ in 0..<10 { await chat.settle(1); passes += 1; watch(chat, from: start, previous: &previous, pass: passes, into: &problems) }
-        XCTAssertTrue(problems.isEmpty, "\(problems.count) of \(passes) passes went wrong:\n" + problems.prefix(12).joined(separator: "\n"))
-    }
 }
 
 // MARK: - Reads that end, and end only themselves
@@ -451,13 +480,6 @@ extension HistoryEdgeTests {
 // MARK: - What the edges show
 
 extension HistoryEdgeTests {
-    /// The edge controls on screen right now.
-    @MainActor static func edges(_ hosted: NSView) -> [TranscriptEdgeMarkerView] {
-        ConversationPaneTests.views(TranscriptEdgeMarkerView.self, in: hosted).filter { $0.window != nil && !$0.isHiddenOrHasHiddenAncestor }
-    }
-    @MainActor static func describe(_ edges: [TranscriptEdgeMarkerView]) -> String {
-        edges.map { "\($0.edge) \($0.kind)" + ($0.text.isEmpty ? "" : " “\($0.text)”") }.joined(separator: ", ")
-    }
 
     /// An edge says something only when it has to: a read that failed, a
     /// page lost, rows that wait for the reader, or a read that is slow.
@@ -492,7 +514,8 @@ extension HistoryEdgeTests {
         let first = chat.view.messages.first?.id
         try chat.readerScrollsToTop()
         var failed: TranscriptEdgeMarkerView?
-        for _ in 0..<300 where failed == nil {
+        let deadline = Date().addingTimeInterval(30)
+        while failed == nil, Date() < deadline {
             await chat.settle(1)
             failed = Self.edges(chat.hosted).first { $0.edge == "earlier" && $0.kind == "failed" }
         }
@@ -504,7 +527,7 @@ extension HistoryEdgeTests {
         // Retry reads the page again, and this time it arrives.
         chat.model.historyWindowLoader = nil
         marker.action?()
-        for _ in 0..<300 where chat.view.messages.first?.id == first || chat.view.olderPage.loading { await chat.settle(1) }
+        await chat.settle(while: { chat.view.messages.first?.id == first || chat.view.olderPage.loading })
         await chat.settle(20)
         XCTAssertNotEqual(chat.view.messages.first?.id, first, "Retry read the earlier page")
         XCTAssertNil(chat.view.olderPage.error)
@@ -527,7 +550,7 @@ extension HistoryEdgeTests {
         XCTAssertEqual(waiting.text, "Load earlier messages")
         let first = chat.view.messages.first?.id
         waiting.action?()
-        for _ in 0..<300 where chat.view.messages.first?.id == first || chat.view.olderPage.loading { await chat.settle(1) }
+        await chat.settle(while: { chat.view.messages.first?.id == first || chat.view.olderPage.loading })
         // Long enough for a control that goes to finish fading out.
         await chat.settle(30)
         XCTAssertNotEqual(chat.view.messages.first?.id, first, "Pressing it read the earlier rows")
@@ -559,14 +582,14 @@ extension HistoryEdgeTests {
         // Load newer adds the rows after the window, and it is still an older window.
         let last = chat.view.messages.last?.id
         newer.action?()
-        for _ in 0..<300 where chat.view.messages.last?.id == last || chat.view.newerPage.loading { await chat.settle(1) }
+        await chat.settle(while: { chat.view.messages.last?.id == last || chat.view.newerPage.loading })
         await chat.settle(10)
         XCTAssertNotEqual(chat.view.messages.last?.id, last, "Load newer read the rows after the window")
         edges = Self.edges(chat.hosted)
         XCTAssertNotNil(edges.first { $0.edge == "newer" && $0.kind == "waiting" }, "Still an older window: \(Self.describe(edges))")
         // Latest goes to the end of the conversation, and the edges have nothing left to say.
         try XCTUnwrap(edges.first { $0.kind == "latest" }).action?()
-        for _ in 0..<300 where chat.view.browsingHistory || chat.view.historyState != .ready { await chat.settle(1) }
+        await chat.settle(while: { chat.view.browsingHistory || chat.view.historyState != .ready })
         await chat.settle(20)
         XCTAssertEqual(chat.view.messages.last?.id, "m119")
         XCTAssertFalse(chat.view.newerPage.available)
@@ -595,7 +618,7 @@ extension HistoryEdgeTests {
         XCTAssertGreaterThanOrEqual(notice.minY, circle.maxY, "The notice stands above the circle, not over it")
         XCTAssertEqual(try XCTUnwrap(Self.pass(chat.hosted)).surface, start.surface, "Nothing about it moves the transcript")
         changed.action?()
-        for _ in 0..<300 where chat.view.browsingHistory || chat.view.historyState != .ready { await chat.settle(1) }
+        await chat.settle(while: { chat.view.browsingHistory || chat.view.historyState != .ready })
         await chat.settle(10)
         XCTAssertNil(chat.view.newerPage.error, "Reload read the conversation again")
         XCTAssertFalse(chat.view.browsingHistory)
@@ -642,12 +665,14 @@ extension HistoryEdgeTests {
     @MainActor private func exchange(_ model: WorkspaceModel, _ view: SessionDisplay, _ host: HostSupervisor, _ sent: SentFrames, _ result: [String: WireValue]) async throws {
         let count = sent.frames.count
         model.refresh(view.id)
-        for _ in 0..<2_000 where sent.frames.count == count { try await Task.sleep(for: .milliseconds(1)) }
+        let sentBy = Date().addingTimeInterval(30)
+        while sent.frames.count == count, Date() < sentBy { try await Task.sleep(for: .milliseconds(1)) }
         let frame = try XCTUnwrap(sent.frames.last)
         let connection = try XCTUnwrap(host.connectionID), epoch = try XCTUnwrap(host.epoch)
         host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(epoch),
             "commandId": try XCTUnwrap(frame["commandId"]), "ok": .bool(true), "result": .object(result)]), connectionID: connection)
-        for _ in 0..<2_000 where view.snapshotInFlight { try await Task.sleep(for: .milliseconds(1)) }
+        let settledBy = Date().addingTimeInterval(30)
+        while view.snapshotInFlight, Date() < settledBy { try await Task.sleep(for: .milliseconds(1)) }
     }
 
     /// The reader's edit of the second question lands: the page takes the

@@ -27,6 +27,9 @@ message picks the reply:
   "wire mismatch"     the header names openai/header-model, the body
                       body-model
   "wire nousage"      a completed reply with no usage
+  "wire paid"         a short reply whose usage reports cost 0.004 USD
+  "wire paid-tool"    a bash call (echo) then a reply, each reporting cost
+                      0.004 USD
   "wire partial"      four requests: a bash call; a stream cut mid-reply
                       (retried after a second); the retried bash call with
                       no usage; then a reply
@@ -94,7 +97,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         items = body.get("input", [])
         prompt = ""
         for item in items:
-            if item.get("type") == "message" and item.get("role") == "user":
+            # Pi sends a user message without an item type.
+            if item.get("type", "message") == "message" and item.get("role") == "user":
                 content = item.get("content")
                 prompt = content if isinstance(content, str) else "".join(
                     part.get("text", "") for part in content or [] if isinstance(part, dict))
@@ -133,6 +137,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         usage = {"input_tokens": 12, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": 8}
         if scenario in ("route", "partial"):
             usage = {"input_tokens": 100 * (rounds + 1), "input_tokens_details": {"cached_tokens": 10 * rounds}, "output_tokens": 10 * (rounds + 1)}
+        if scenario in ("paid", "paid-tool"):
+            usage["cost"] = 0.004
         try:
             emit({"type": "response.created", "response": response})
             if scenario in ("route", "partial") and rounds < 2:
@@ -155,8 +161,10 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     done["usage"] = usage
                 emit({"type": "response.completed", "response": done})
                 return
-            if not tool_result and scenario in ("bash", "write"):
-                if scenario == "bash":
+            if not tool_result and scenario in ("bash", "write", "paid-tool"):
+                if scenario == "paid-tool":
+                    name, arguments = "bash", json.dumps({"command": "echo wire-paid-tool"})
+                elif scenario == "bash":
                     name, arguments = "bash", json.dumps({"command": f"sleep {number(30)}; echo wire-bash-done"})
                 else:
                     name, arguments = "write", write_arguments()

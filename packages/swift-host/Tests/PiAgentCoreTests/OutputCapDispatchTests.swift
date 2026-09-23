@@ -71,7 +71,7 @@ final class OutputCapDispatchTests: XCTestCase {
         await session.close()
     }
 
-    func testInputBeyondTheWindowIsStillSentWithTheOneTokenCapPiSends() async throws {
+    func testInputBeyondTheWindowIsStillSentWithTheSixteenTokenCapPiSends() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         var raw = try fixtureProfile().raw; raw["contextWindow"] = 4_000; raw["maxOutputTokens"] = 1_000; raw["modelOutputLimit"] = 5_000
         let client = ScriptClient([answer("the gateway decides")])
@@ -82,7 +82,7 @@ final class OutputCapDispatchTests: XCTestCase {
         XCTAssertEqual(requests, 1, "pi never refuses a request on its estimate; the gateway decides")
         XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
         let profiles = await client.profiles
-        XCTAssertEqual(try XCTUnwrap(profiles.first).wireOutputLimit, 1, "clampMaxTokensToContext never goes below one token")
+        XCTAssertEqual(try XCTUnwrap(profiles.first).wireOutputLimit, 16, "clampMaxTokensToContext leaves one token, and buildParams sends at least 16")
         await session.close()
     }
 

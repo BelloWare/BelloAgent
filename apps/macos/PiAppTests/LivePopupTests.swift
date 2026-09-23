@@ -3,7 +3,45 @@ import SwiftUI
 import Combine
 @testable import PiApp
 
-final class LivePopupTests: XCTestCase {
+class LivePopupTestCase: XCTestCase {
+    fileprivate let session = LiveSessionKey(workspace: "project", session: "session")
+    fileprivate let date = Date(timeIntervalSince1970: 1_800_000_000)
+    fileprivate func event(_ seq: Int, attempt: String = "a", generation: Int = 1, phase: String = "interim", output: Double? = nil, at: Double = 1_000, purpose: String = "turn", model: String = "resolved", status: String = "reported") -> WireValue {
+        var usage: [String: WireValue] = ["input": .number(100), "cacheRead": .number(60), "reasoning": .number(5)]
+        if let output { usage["output"] = .number(output) }
+        let telemetry: [String: WireValue] = [
+            "dispatch": phase == "preparing" ? .null : .number(100),
+            "firstContent": .number(600), "modelComplete": phase == "final" ? .number(at) : .null,
+            "identity": .object(["status": .string("reported"), "effectiveModel": .string(model)]),
+            "gateway": .object(["version": .number(1), "cost": .object(["status": .string("reported"), "usd": .number(0.001)])])
+        ]
+        return .object([
+            "kind": .string("request"), "seq": .number(Double(seq)), "generation": .number(Double(generation)),
+            "attemptID": .string(attempt), "phase": .string(phase), "purpose": .string(purpose),
+            "requestedModel": .string("auto-router"), "receivedAt": .number(at), "usage": .object(usage),
+            "status": .object(["input": .string("reported"), "output": .string(output == nil ? "unreported" : status), "cacheRead": .string("reported"), "reasoning": .string("reported")]),
+            "fieldPhase": .object(["output": .string(phase)]), "telemetry": .object(telemetry)
+        ])
+    }
+    fileprivate func page(_ events: [WireValue], epoch: String = "epoch", gap: Bool = false) -> [String: WireValue] {
+        ["epoch": .string(epoch), "cursor": .number(events.last?.object?["seq"]?.number ?? 0), "events": .array(events), "gap": .bool(gap)]
+    }
+    fileprivate func feed(_ value: inout LiveActivityAccumulator, _ events: [WireValue], at: Double = 1, epoch: String = "epoch") {
+        value.ingest(page(events, epoch: epoch), session: session, at: at, wall: date.addingTimeInterval(at))
+    }
+
+    @MainActor fileprivate func capture(_ window: NSWindow, to url: URL) throws {
+        typealias Capture = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        let address = try XCTUnwrap(dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage"))
+        let capture = unsafeBitCast(address, to: Capture.self)
+        let image = try XCTUnwrap(capture(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber), CGWindowImageOption.boundsIgnoreFraming.rawValue)?.takeRetainedValue())
+        let data = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.80]))
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url)
+    }
+}
+
+final class LivePopupTests: LivePopupTestCase {
     @MainActor func testAnalyticsAndStatusPopupKeepIndependentVisibility() {
         let live = LiveActivityStore(observeSleep: false)
         defer { live.shutdown() }
@@ -25,31 +63,7 @@ final class LivePopupTests: XCTestCase {
         live.setVisible(false, owner: "report-chart")
         XCTAssertFalse(live.visible)
     }
-    private let session = LiveSessionKey(workspace: "project", session: "session")
-    private let date = Date(timeIntervalSince1970: 1_800_000_000)
-    private func event(_ seq: Int, attempt: String = "a", generation: Int = 1, phase: String = "interim", output: Double? = nil, at: Double = 1_000, purpose: String = "turn", model: String = "resolved", status: String = "reported") -> WireValue {
-        var usage: [String: WireValue] = ["input": .number(100), "cacheRead": .number(60), "reasoning": .number(5)]
-        if let output { usage["output"] = .number(output) }
-        let telemetry: [String: WireValue] = [
-            "dispatch": phase == "preparing" ? .null : .number(100),
-            "firstContent": .number(600), "modelComplete": phase == "final" ? .number(at) : .null,
-            "identity": .object(["status": .string("reported"), "effectiveModel": .string(model)]),
-            "gateway": .object(["version": .number(1), "cost": .object(["status": .string("reported"), "usd": .number(0.001)])])
-        ]
-        return .object([
-            "kind": .string("request"), "seq": .number(Double(seq)), "generation": .number(Double(generation)),
-            "attemptID": .string(attempt), "phase": .string(phase), "purpose": .string(purpose),
-            "requestedModel": .string("auto-router"), "receivedAt": .number(at), "usage": .object(usage),
-            "status": .object(["input": .string("reported"), "output": .string(output == nil ? "unreported" : status), "cacheRead": .string("reported"), "reasoning": .string("reported")]),
-            "fieldPhase": .object(["output": .string(phase)]), "telemetry": .object(telemetry)
-        ])
-    }
-    private func page(_ events: [WireValue], epoch: String = "epoch", gap: Bool = false) -> [String: WireValue] {
-        ["epoch": .string(epoch), "cursor": .number(events.last?.object?["seq"]?.number ?? 0), "events": .array(events), "gap": .bool(gap)]
-    }
-    private func feed(_ value: inout LiveActivityAccumulator, _ events: [WireValue], at: Double = 1, epoch: String = "epoch") {
-        value.ingest(page(events, epoch: epoch), session: session, at: at, wall: date.addingTimeInterval(at))
-    }
+
     func testTerminalOnlyUsageNeverInventsLiveTPSAndCountsOnce() throws {
         var store = LiveActivityAccumulator()
         feed(&store, [event(1, phase: "preparing")]); XCTAssertTrue(store.active.isEmpty)
@@ -69,6 +83,7 @@ final class LivePopupTests: XCTestCase {
         feed(&store, [event(4, output: 900, at: 2_500)], at: 3)
         XCTAssertTrue(store.active.isEmpty); XCTAssertEqual(store.completions.first?.request.output, 400)
     }
+
     func testIntervalsUseActualSpacingExpireAndRebaselineCorrections() throws {
         var store = LiveActivityAccumulator()
         feed(&store, [event(1, output: 10, at: 1_000)])
@@ -86,6 +101,7 @@ final class LivePopupTests: XCTestCase {
         feed(&store, [event(7, output: 35, at: 6_000, status: "conflict")], at: 6)
         XCTAssertNil(store.active.values.first?.output); XCTAssertNil(store.active.values.first?.intervalRate)
     }
+
     func testRequestsAndSessionsAndUtilitiesHaveSeparateScopes() throws {
         var store = LiveActivityAccumulator()
         store.phase("model", session: session, at: 1, wall: date)
@@ -99,6 +115,7 @@ final class LivePopupTests: XCTestCase {
         XCTAssertEqual(result.total(\.cost).value, 0.004)
         XCTAssertTrue(result.requests.allSatisfy { $0.intervalRate == nil })
     }
+
     func testMissingFinalOutputIsNotPromotedToFinalAndBadTimingCannotCrash() {
         var store = LiveActivityAccumulator()
         feed(&store, [event(1, output: 100)])
@@ -115,6 +132,7 @@ final class LivePopupTests: XCTestCase {
         feed(&store, [.object(["seq": .number(Double.greatestFiniteMagnitude)])])
         XCTAssertEqual(store.completions.count, 2)
     }
+
     func testEpochsGapsAndAliasEchoCannotClaimCurrentRoute() throws {
         var store = LiveActivityAccumulator()
         feed(&store, [event(1, output: 20, model: "auto-router")])
@@ -130,6 +148,7 @@ final class LivePopupTests: XCTestCase {
         feed(&store, [event(2, output: 90, at: 15_000)], at: 15, epoch: "next")
         XCTAssertNil(store.active.values.first?.intervalRate, "No interval crosses sleep or runtime replacement")
     }
+
     func testUnchangedSuccessfulPollClearsDisconnectWithoutReplayingACompletion() {
         var store = LiveActivityAccumulator()
         store.phase("model", session: session, at: 1, wall: date)
@@ -180,6 +199,7 @@ final class LivePopupTests: XCTestCase {
         feed(&store, events, at: 9)
         XCTAssertEqual(store.snapshot(at: 9, wall: date.addingTimeInterval(9)).freshnessLabel, "Observed just now")
     }
+
     func testHistoryBudgetsKeepAggregateCoverageWhenDetailsOverflow() throws {
         func footprint() -> UInt64 {
             var usage = rusage_info_current()
@@ -200,6 +220,7 @@ final class LivePopupTests: XCTestCase {
         let after = footprint()
         print("PERF popup bounded history footprintDeltaBytes=\(Int64(after) - Int64(before)) completions=\(store.completions.count) buckets=\(store.buckets.count)")
     }
+
     @MainActor func testHiddenStoreHasNoPublicationsAndRepeatedVisibilityDoesNotLeakLoops() async throws {
         let store = LiveActivityStore(observeSleep: false)
         defer { store.shutdown() }
@@ -213,11 +234,13 @@ final class LivePopupTests: XCTestCase {
         store.setVisible(true)
         XCTAssertEqual(store.snapshot.activeRequests, 1)
     }
+
     @MainActor func testPanelBudgetIncludesFooterOnShortDisplays() {
         XCTAssertEqual(MenuBarPanelLayout.height(available: 600), 576)
         XCTAssertEqual(MenuBarPanelLayout.height(available: 1_200), 720)
         XCTAssertLessThan(MenuBarPanelLayout.height(available: 380), 380)
     }
+
     func testRowIdentityAndLocationStayStableThroughHoverAndCompletion() {
         func row(_ id: String, _ phase: String) -> MenuBarActivityRow {
             MenuBarActivityRow(id: id, title: id, workspace: "p", phase: phase, model: "router", resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: 0)
@@ -311,6 +334,13 @@ final class LivePopupTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(1100))
         XCTAssertEqual(model.liveActivity.publications, publications); XCTAssertEqual(reads, hiddenReads)
     }
+}
+
+/// The monitor drawn in both appearances and zoomed with a native brush. The
+/// monitor reads again once its last read is old enough on the wall clock,
+/// so in ten parallel clones a slow pass saw a second read before the brush
+/// committed. It runs in the serial lane (`scripts/test-lanes.py`).
+final class LiveMonitorDesignTests: LivePopupTestCase, SerialTestLane {
     @MainActor func testMonitorDesignLightDarkAndNativeZoomWithReportedFixture() async throws {
         var seconds = 1.0
         let date = date
@@ -358,7 +388,10 @@ final class LivePopupTests: XCTestCase {
         // The XCTest desktop may be occluded by the lock screen. Explicitly
         // publish the isolated fixture; production uses the visibility reader.
         live.setVisible(true); monitor.setVisible(true)
-        for _ in 0..<100 where monitor.snapshot == nil { await Task.yield() }
+        // A bound on the time rather than on the turns: under load the read
+        // lands later, and later is not wrong.
+        let loadedBy = Date().addingTimeInterval(10)
+        while monitor.snapshot == nil, Date() < loadedBy { await Task.yield(); try await Task.sleep(for: .milliseconds(5)) }
         try await Task.sleep(for: .milliseconds(150))
         XCTAssertEqual(queries.count, 1); XCTAssertEqual(live.snapshot.currentRates(workspace: nil).reported, 3)
         func surfaces(_ view: NSView) -> [MonitorChartInteraction.Surface] {
@@ -391,7 +424,8 @@ final class LivePopupTests: XCTestCase {
         surface.mouseDragged(with: try pointer(.leftMouseDragged, fraction: 0.75))
         XCTAssertEqual(queries.count, 1)
         surface.mouseUp(with: try pointer(.leftMouseUp, fraction: 0.75))
-        for _ in 0..<100 where queries.count < 2 { await Task.yield() }
+        let committedBy = Date().addingTimeInterval(10)
+        while queries.count < 2, Date() < committedBy { await Task.yield(); try await Task.sleep(for: .milliseconds(5)) }
         XCTAssertEqual(queries.count, 2, "Native brush commits one scoped read")
         XCTAssertEqual(try XCTUnwrap(monitor.selectedRange).upperBound.timeIntervalSince(try XCTUnwrap(monitor.selectedRange).lowerBound), 450, accuracy: 0.1)
         try await Task.sleep(for: .milliseconds(200))
@@ -402,15 +436,5 @@ final class LivePopupTests: XCTestCase {
         if let folder = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") {
             try capture(window, to: URL(fileURLWithPath: folder).appendingPathComponent("bello-monitor-zoomed.jpg"))
         }
-    }
-
-    @MainActor private func capture(_ window: NSWindow, to url: URL) throws {
-        typealias Capture = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
-        let address = try XCTUnwrap(dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage"))
-        let capture = unsafeBitCast(address, to: Capture.self)
-        let image = try XCTUnwrap(capture(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber), CGWindowImageOption.boundsIgnoreFraming.rawValue)?.takeRetainedValue())
-        let data = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.80]))
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: url)
     }
 }

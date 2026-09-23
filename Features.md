@@ -300,14 +300,73 @@ view of retained frames in captured order, with formatted JSON data and original
 non-JSON data, sentinels and unfinished frames remain visible. Load the complete
 retained response without manual body pagination.
 Raw text/hex and original-byte exports remain available; JSON presentation does
-not rewrite stored bytes or turn a partial capture into a complete one. Apply
-the same behavior in the inspector and message-linked request details.
+not rewrite stored bytes or turn a partial capture into a complete one. The
+Session Inspector's Raw tab applies the same behavior.
+
+**Session Inspector (0.1.90).** One window per chat explains every request the
+chat made, in the order it made them. Its navigator lists an Overview, the Next
+request and the chat's turns; a turn opens to its requests, numbered, each with
+its kind (first request, tool round, retry, compaction, title), model, tokens
+and outcome. Requests outside any turn sit under Other requests.
+
+- **Overview:** the session's cost, tokens, cache, speed and first-token time;
+  the charts behind them, where a click on a bar opens its request; the models
+  that answered; every request; and how the figures are counted. A chat's
+  spend reads against its cost limit here ("$4.12 of $25.00", in warning ink
+  from 80% of the limit, with any requests that reported no cost), and the
+  chat's limit is changed here.
+- **Turn:** the prompt, the outcome, the turn's usage as its report counts it,
+  and every request of the turn, including requests only a reply's own record
+  knows, with each model's subtotal when several answered.
+- **Request:** "Request N of M" with its figures and three tabs. Conversation
+  is what was sent: instructions, tools and settings, then each input item with
+  its size and first lines, the whole text one click away; a banner says what is
+  new since the request before ("New since request 1: +2 items, 3.1K chars ·
+  83% of input cached") or that the history was rewritten, and the new items are
+  marked. Response is what came back: status, finish reason, usage and output
+  items; a response still streaming shows what has arrived, with Load latest.
+  Raw is the retained bytes, headers, metadata, message links and events, with
+  search, copy, the capture mode and exports.
+- **Next request:** what the chat would send now, compared with its latest
+  request, with the context meter's figures.
+
+⌘[ and ⌘] step through the requests; ⌘F searches the raw bytes.
+
+Every detail link opens the Inspector:
+
+- a turn card's ⓘ opens that turn;
+- a reply's model name, Details, Request details and partial chip open the
+  request that produced it;
+- the composer pills, the usage button and the capture badge open the Overview;
+- the context ring opens the Next request;
+- the sidebar's inspect button, ⌥⌘I and the chat menu's Session Inspector… open
+  the latest request;
+- a usage report row opens its request, even when its chat was deleted.
+
+The chat itself is unchanged: its reply receipts, turn cards and live bar stay.
+
+The Inspector replaces the Turn Info popover, the message details and request
+inspector sheets, the pills' chart popovers, the footer's details panel, the
+sidebar's rate popover, the context sheet, the retained-message viewer and the
+Session info window.
+
+The Inspector must never slow the chat down:
+
+- nothing is read while its window is minimised, covered or closed;
+- the navigator reads the request log's typed columns only, and reads them again
+  only when the log changed;
+- a body is read only for the tab on screen, and parsed off the main thread
+  with cancellation, so a read for a page the reader has left never lands;
+- each item shows a bounded preview (2,000 characters, 24 lines), and its whole
+  text opens on demand;
+- the request before is parsed once, for its digests.
 
 A message may relate to several LLM requests and compaction calls. Message/turn-to-attempt links are durable. Missing, partial, truncated, credential-omitted, expired and purged captures remain labeled. A request appears inline on its user turn until an assistant answer exists, then on one assistant row. Tool rows do not duplicate it. User Details retains all linked request information. Session/report totals sum each request once. Hide visible user/assistant speaker-name labels while retaining accessible roles.
 
 The assistant output status line shows one model name from the response body,
-preferring LiteLLM's `router_model_name` over `model`. Clicking it opens the
-separate body and header reports with their sources and routing status. Omit
+preferring LiteLLM's `router_model_name` over `model`. Clicking it opens that
+request in the Session Inspector, whose Model evidence keeps the separate body
+and header reports with their sources and routing status. Omit
 inline model-conflict warnings; conflicting evidence remains inspectable and
 continues to govern routing verification. A literal body alias is a reported
 name, not proof of the upstream model. Older captures may retain a verified

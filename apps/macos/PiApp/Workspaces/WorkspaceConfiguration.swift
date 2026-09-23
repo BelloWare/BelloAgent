@@ -60,8 +60,10 @@ extension WorkspaceModel {
     /// so the sidebar's first frame already names the projects instead of
     /// listing every chat under a "Retained chats" placeholder.
     func applyConfiguration(_ saved: VaultConfiguration) {
+        let costLimit = configuration.defaultChatCostLimit
         configuration = saved; configurationLoaded = true
         profiles = saved.profiles.map(\.profile); workspaces = saved.workspaces
+        if saved.defaultChatCostLimit != costLimit { defaultCostLimitChanged() }
     }
     /// Hands the planner the reader's transcript choice and republishes every
     /// open chat, because a turn's fold is part of the plan rather than of a
@@ -205,6 +207,7 @@ extension WorkspaceModel {
                 saved.runtime = preferences.runtime; saved.capture = preferences.capture
                 saved.dashboard = preferences.dashboard; saved.automaticUpdateChecks = preferences.automaticUpdateChecks
                 saved.completionSoundEnabled = preferences.completionSoundEnabled; saved.transcriptView = preferences.transcriptView
+                saved.chatCostLimit = preferences.chatCostLimit
             }
         }
         // Configuration is durable before the helper hears about it. An idle
@@ -306,6 +309,7 @@ extension WorkspaceModel {
             $0.runtime = preferences.runtime; $0.capture = preferences.capture
             $0.dashboard = preferences.dashboard; $0.automaticUpdateChecks = preferences.automaticUpdateChecks
             $0.completionSoundEnabled = preferences.completionSoundEnabled; $0.transcriptView = preferences.transcriptView
+            $0.chatCostLimit = preferences.chatCostLimit
         }
     }
     func saveMCPConfiguration(_ config: WireValue, expectedRevision: Int64) async throws {

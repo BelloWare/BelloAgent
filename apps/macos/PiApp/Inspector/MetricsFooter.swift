@@ -2,7 +2,9 @@ import SwiftUI
 
 /// What the composer sits on: the session's three readings as pills, and —
 /// only while a run is going — the elapsed clock and the action under way.
-/// Every figure is settled; nothing here ticks with a stream.
+/// Every figure is settled; nothing here ticks with a stream. The details
+/// behind the figures are in the Session Inspector, which the pills and the
+/// capture badge open.
 struct MetricsFooter: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var session: SessionDisplay
@@ -14,9 +16,8 @@ struct MetricsFooter: View {
     /// compact form keeps what belongs to this conversation alone: how much
     /// context it holds and what it has cost.
     let compact: Bool
+    /// Opens the Session Inspector's Overview.
     let inspect: () -> Void
-    @State private var expanded = false
-    @State private var showContext = false
     init(model: WorkspaceModel, session: SessionDisplay, contextWindow: Int? = nil, outputReserve: Int? = nil,
          compact: Bool = false, inspect: @escaping () -> Void) {
         self.model = model; self.session = session; self.footer = session.footer; self.selectedContextWindow = contextWindow
@@ -42,14 +43,10 @@ struct MetricsFooter: View {
             }
             .font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
             .padding(.horizontal, PiSpacing.lg).padding(.top, 2).padding(.bottom, 6)
-            if expanded && !compact { details.transition(AnyTransition.move(edge: .bottom).combined(with: .opacity)) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .clipped()
         .accessibilityElement(children: .contain)
-        .sheet(isPresented: $showContext) { [weak model, weak session] in
-            if let model, let session { ContextInspector(model: model, session: session) }
-        }
         .task(id: model.automaticContextActivation(session)) { [weak model, id = session.id] in model?.scheduleAutomaticContext(id) }
         .onDisappear { [weak model, id = session.id] in model?.cancelAutomaticContext(id) }
         .help(SettledThroughput.explanation + " " + ContextMeterPresentation.methodExplanation)
@@ -64,22 +61,18 @@ struct MetricsFooter: View {
         }.accessibilityIdentifier("compactMetricsFooter")
     }
     /// What the composer sits on: how much work this conversation did and how
-    /// fast, what it consumed, and how full the window is. The figures the
-    /// footer used to spell out live here, each behind its own small dialog.
+    /// fast, what it consumed, and how full the window is. Each pill opens the
+    /// Session Inspector where its figure is explained.
     private func pills(compact: Bool) -> some View {
         SessionStatsPills(model: model, session: session, footer: footer,
                           selectedContextWindow: selectedContextWindow, compact: compact,
-                          exploreContext: { showContext = true }, openLedger: openLedger)
-    }
-    private func openLedger() {
-        guard let chat = model.record(session.id) else { return }
-        SessionUsageWindows.shared.show(model: model, chat: chat, footer: footer, initialBreakdown: .requests)
+                          open: { [weak model, id = session.id] focus in model?.openInspector(session: id, focus: focus) })
     }
     // A notice is the one line here that tells the reader what to do next
     // ("Run cancelled. Pending messages are paused; resume below"). Capped at
     // 300 points it was cut mid-word on every pane width, so the instruction
     // never arrived. It now takes whatever the bar has left, and the whole
-    // text is selectable in Session info and in the help.
+    // text is in the help.
     private var noticeLine: some View {
         HStack(spacing: 5) {
             Image(systemName: "info.circle").font(.system(size: 10.5))
@@ -88,19 +81,20 @@ struct MetricsFooter: View {
             .accessibilityLabel(session.notice)
     }
     private func bar(full: Bool) -> some View {
-        let disclosure = $expanded
-        return HStack(spacing: PiSpacing.md) {
+        HStack(spacing: PiSpacing.md) {
             pills(compact: false).frame(maxWidth: .infinity, alignment: .leading)
             // The clock and the action get their room first; the pills wrap
             // into whatever is left rather than pushing them off the bar.
             if full { runLine.fixedSize().layoutPriority(2) }
             if full && !session.notice.isEmpty { noticeLine.layoutPriority(2) }
-            Button(action: inspect) {
-                PiBadge(text: full ? (session.captureAvailable ? "" : "Next: ") + captureTitle : "", tone: captureTone, icon: session.captureAvailable ? "record.circle.fill" : "record.circle")
-            }.buttonStyle(.plain).piPointer().help("Capture: " + captureTitle + ". Bounded HTTP-body capture; the inspector shows coverage and retained traces")
-            PiIconButton(symbol: "chevron.up", label: expanded ? "Hide details" : "Show details", size: 22) {
-                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { disclosure.wrappedValue.toggle() }
-            }.rotationEffect(.degrees(expanded ? 180 : 0))
+            // An AppKit press target over the badge, as over the pills beside it.
+            PiBadge(text: full ? (session.captureAvailable ? "" : "Next: ") + captureTitle : "", tone: captureTone, icon: session.captureAvailable ? "record.circle.fill" : "record.circle")
+                .accessibilityHidden(true)
+                .overlay {
+                    PiPopoverTrigger(label: "Capture: " + captureTitle + ". Open the Session Inspector", identifier: "capture-badge",
+                                     help: "Capture: " + captureTitle + ". Open the Session Inspector: every request, its bodies and the capture settings",
+                                     onHover: { _ in }, onPress: { [inspect] _ in inspect() })
+                }
         }
     }
     /// While a run is going: the elapsed clock and the action under way, and
@@ -110,66 +104,8 @@ struct MetricsFooter: View {
     @ViewBuilder private var runLine: some View {
         if session.busy { SessionRunLine(session: session, footer: footer) }
     }
-    private var workSplit: WorkSplit? { WorkSplit(timing: footer.turnTiming) }
     private var captureTitle: String { session.captureMode == "off" ? "Capture off" : session.captureMode == "persist" ? "Persist locally" : "Session memory" }
     private var captureTone: PiTone { session.captureMode == "memory" ? .info : .neutral }
-
-    private var details: some View {
-        VStack(alignment: .leading, spacing: PiSpacing.sm) {
-            HStack(spacing: PiSpacing.lg) {
-                detailColumn("Context", contextLabel)
-                detailColumn("Model", (footer.metrics["requestedModel"]?.string).map { "\($0) → \(reportedModel)" } ?? "No request yet")
-                detailColumn("Timing", "First text \(milliseconds(metrics["firstTextMs"])) · " + reserveLabel)
-            }
-            HStack(spacing: PiSpacing.lg) {
-                detailColumn("Cost", footer.gateway.costLabel)
-                detailColumn("Response cache", footer.gateway.cacheLabel + (footer.gateway.expiredRecords > 0 ? " · \(footer.gateway.expiredRecords) expired records excluded" : ""))
-                DraftEstimate(draft: session.composerDraft, skills: session.skills)
-            }
-            Text("Gateway-reported usage · " + footer.gateway.tokenCacheLabel).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-            Text(reasoningUsageSummary(footer.gateway)).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if !footer.gatewayNotice.isEmpty { PiNote(footer.gatewayNotice) }
-            Text(SettledThroughput.explanation + " Draft and skill estimates are chars/4, exclude wrappers and images, and are not the context count.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
-        }
-        .padding(PiSpacing.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.piSurfaceSunken, in: RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous).stroke(Color.piHairline, lineWidth: 1))
-        .padding(.horizontal, PiSpacing.lg).padding(.bottom, PiSpacing.sm)
-    }
-    private func detailColumn(_ title: String, _ value: String) -> some View {
-        Button(action: inspect) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textCase(.uppercase).tracking(0.4)
-                Text(value).font(PiFont.caption).foregroundStyle(Color.piInk).lineLimit(2).multilineTextAlignment(.leading)
-            }.frame(maxWidth: .infinity, alignment: .leading)
-        }.buttonStyle(.plain).piPointer()
-    }
-
-    private var reportedModel: String {
-        let identity = footer.metrics["identity"]?.object ?? [:]
-        if let model = identity["effectiveModel"]?.string { return model }
-        let names = identity["reportedModels"]?.array?.compactMap(\.string) ?? []
-        if identity["status"]?.string == "conflict", let primary = dashboardPrimaryModel(names) { return primary + " · \(names.count) names" }
-        return identity["status"]?.string ?? "unreported"
-    }
-    private var metrics: [String: WireValue] { footer.metrics["metrics"]?.object ?? [:] }
-    private var reserveLabel: String {
-        let reserve = displayedContext["outputBudget"]?.number ?? (session.hasWork ? displayedContext["outputReserve"]?.number : selectedOutputReserve.map(Double.init) ?? displayedContext["outputReserve"]?.number)
-        let margin = displayedContext["safetyMargin"]?.number.map { " + \(grouped($0)) safety" } ?? ""
-        let budget = reserve.map { "output budget \(grouped($0))" + margin } ?? "output budget unavailable"
-        let elapsed: String = footer.turnTiming["elapsedMs"]?.number.map { " · turn " + workDuration($0) } ?? ""
-        let split: String = workSplit?.turn.map { " (" + $0 + ")" } ?? ""
-        return budget + elapsed + split
-    }
-    private var displayedContext: [String: WireValue] { model.displayedContext(session) }
-    private var contextMeter: ContextMeterPresentation {
-        ContextMeterPresentation(context:displayedContext,capacity:session.hasWork ? nil : selectedContextWindow.map(Double.init))
-    }
-    private var contextLabel: String { contextMeter.detailLabel }
-    private func grouped(_ value: Double) -> String { TranscriptActivity.grouped(value) }
-    private func milliseconds(_ value: WireValue?) -> String { value?.number.map { String(format: "%.0f ms", $0) } ?? "n/a" }
 }
 
 /// Session and last-turn wall-clock split between model inference and tool
@@ -383,28 +319,4 @@ func reasoningUsageSummary(_ totals: GatewayTotals) -> String {
     let tokenSamples = totals.tokens?.reasoningSamples ?? 0
     let costSamples = totals.reasoningCostSamples ?? 0
     return "Reasoning \(menuBarTokens(totals.tokens?.reasoning)) tokens (\(tokenSamples)/\(totals.requests) reported) · \(gatewayUSD(totals.reasoningCostUSD)) (\(costSamples)/\(totals.requests) reported) · included in output"
-}
-
-private struct DraftEstimate: View {
-    @ObservedObject var draft: ComposerDraft
-    let skills: [SkillChip]
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Draft").font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textCase(.uppercase).tracking(0.4)
-            Text("≈\(max(0, (draft.text as NSString).length / 4))" + skillEstimate + " tokens (chars/4)").font(PiFont.caption).foregroundStyle(Color.piInk)
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-    private var skillEstimate: String {
-        guard !skills.isEmpty else { return "" }
-        guard skills.allSatisfy({ $0.sourceCharacters != nil }) else { return " · selected skills unavailable" }
-        var characters = 0
-        for skill in skills {
-            guard let count = skill.sourceCharacters, count >= 0 else { return " · selected skills unavailable" }
-            let (subtotal, overflow) = characters.addingReportingOverflow(count)
-            let (total, argumentsOverflow) = subtotal.addingReportingOverflow((skill.arguments as NSString).length)
-            guard !overflow, !argumentsOverflow else { return " · selected skills unavailable" }
-            characters = total
-        }
-        return " + skills ≈\(characters / 4)"
-    }
 }

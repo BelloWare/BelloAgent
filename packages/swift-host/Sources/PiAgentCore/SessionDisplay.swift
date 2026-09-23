@@ -186,10 +186,12 @@ extension AgentSession {
                 if let id = message["id"].text, let at = pendingDisplayObservations.removeValue(forKey: id) { observedAt = min(observedAt ?? at, at) }
             }
         }
-        var value: JSON=["sessionId":JSON(id),"seq":JSON(sequence),"state":JSON(state),"runStatus":JSON(runStatus),"retry":retryInfo,"settingsPending":JSON(pendingConfiguration != nil),"preflightError":errorMessage.map { JSON($0) } ?? .null,"side":parentInfo,"ephemeral":JSON(ephemeral),"keeping":false,"keepRequested":JSON(keepRequested),"keepError":.null,"queue":.array(queue.map { var v=$0.previewValue;v["kind"]="follow-up";return v }+steering.map { var v=$0.previewValue;v["kind"]="steering";v["text"]=JSON("[Steering] "+(v["text"].text ?? ""));return v }),"steering":.array(steering.map(\.previewValue)),"queueCount":JSON(queue.count+steering.count),"queuePaused":JSON(queuePaused),"path":path.map { JSON($0) } ?? .null,"total":JSON(visible.count),"displayRevision":JSON(revision),"profileId":JSON(profile.id),"toolMode":JSON(readOnly ? "read-only" : "editing"),"context":contextInfo(),"turnMetrics":turnMetrics(),"assistantMessageCount":JSON(assistantMessageCount),"latestAssistantMessageId":latestAssistantMessageID.map { JSON($0) } ?? .null,"activity":activitySnapshot()]
+        var value: JSON=["sessionId":JSON(id),"seq":JSON(sequence),"state":JSON(state),"runStatus":JSON(runStatus),"retry":retryInfo,"settingsPending":JSON(pendingConfiguration != nil),"preflightError":errorMessage.map { JSON($0) } ?? .null,"cost":costSnapshot,"side":parentInfo,"ephemeral":JSON(ephemeral),"keeping":false,"keepRequested":JSON(keepRequested),"keepError":.null,"queue":.array(queue.map { var v=$0.previewValue;v["kind"]="follow-up";return v }+steering.map { var v=$0.previewValue;v["kind"]="steering";v["text"]=JSON("[Steering] "+(v["text"].text ?? ""));return v }),"steering":.array(steering.map(\.previewValue)),"queueCount":JSON(queue.count+steering.count),"queuePaused":JSON(queuePaused),"path":path.map { JSON($0) } ?? .null,"total":JSON(visible.count),"displayRevision":JSON(revision),"profileId":JSON(profile.id),"toolMode":JSON(readOnly ? "read-only" : "editing"),"context":contextInfo(),"turnMetrics":turnMetrics(),"assistantMessageCount":JSON(assistantMessageCount),"latestAssistantMessageId":latestAssistantMessageID.map { JSON($0) } ?? .null,"activity":activitySnapshot()]
         // Receipts and the task presentation travel only when they changed
         // since the revision the reader sends back; a reader that sends none
         // (any reader before 0.1.85) gets both every time, as before.
+        // What a failed run failed with; `cost_limit` is a stop at the chat's cost limit.
+        if let errorCode, errorMessage != nil { value["errorCode"] = JSON(errorCode) }
         let commandsRevision = "\(displayEpoch):\(commandsGeneration)"
         if params["commandsRevision"].text != commandsRevision { value["commands"] = .array(commands); value["commandsRevision"] = JSON(commandsRevision) }
         let tasks = taskPresentationSnapshot(), tasksRevision = taskPresentationRevision(tasks)
@@ -243,7 +245,7 @@ extension AgentSession {
             let trace = await traceSnapshot()
             value["captureMode"] = JSON(trace.mode); value["latestAttempt"] = trace.latest
         }
-        else { value = value.removing(["context","turnMetrics"]) }
+        else { value = value.removing(["context","turnMetrics","cost"]) }
         return value
     }
     /// A revision of the task presentation's content: all of it except the

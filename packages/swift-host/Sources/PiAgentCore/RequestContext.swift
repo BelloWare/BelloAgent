@@ -200,7 +200,8 @@ struct RequestContextCount: Sendable {
     let outputBudget: Int
     let modelOutputLimit: Int?
     /// The output limit the request carries: a bounded task's explicit cap as
-    /// is, the model ceiling clipped to the room the input leaves, or nothing.
+    /// is, the model ceiling clipped to the room the input leaves, or nothing;
+    /// never below the 16 tokens Responses accepts, as pi sends it.
     let outputCap: Int?
     let reserveTokens: Int
     var method: String { Self.method }
@@ -279,7 +280,7 @@ struct RequestContextCounter: Sendable {
             requestMethod: requestMethod, lastUsageID: anchor?.id, countedModel: identity?["status"].text == "reported" ? identity?["effectiveModel"].text : nil,
             requestedModel: profile.model, requestFingerprint: try request.map { try Self.fingerprint($0, profile: profile) },
             warnings: warnings, contextWindow: profile.contextWindow, outputBudget: profile.maxOutput, modelOutputLimit: profile.modelOutputLimit,
-            outputCap: profile.wireOutputLimit.map { profile.outputCap != nil ? $0 : min($0, room) }, reserveTokens: reserveTokens)
+            outputCap: profile.wireOutputLimit.map { max(ProviderClient.minimumOutputTokens, profile.outputCap != nil ? $0 : min($0, room)) }, reserveTokens: reserveTokens)
     }
     private static func configuration(_ profile: Profile) -> JSON {
         // Header/credential-dependent routing is part of the hash, never of the
@@ -290,9 +291,14 @@ struct RequestContextCounter: Sendable {
         sha256(try JSON.object(["request":request,"configuration":configuration(profile)]).data())
     }
     static func modelName(_ name: String) -> String { name.hasPrefix("openai/") ? String(name.dropFirst(7)) : name }
+    /// The system prompt pi sends as the first input item.
+    static func systemPrompt(_ request: JSON) -> String? {
+        guard let first = request["input"].list.first, ["developer", "system"].contains(first["role"].text ?? "") else { return nil }
+        return first["content"].text
+    }
     /// estimateTextTokens(systemPrompt) + estimateToolsTokens(tools).
     static func prefixTokens(_ request: JSON) -> Int {
-        var system = request["instructions"].text ?? request["system"].text ?? ""
+        var system = systemPrompt(request) ?? request["instructions"].text ?? request["system"].text ?? ""
         if system.isEmpty { system = request["system"].list.compactMap { $0["text"].text }.joined() }
         if system.isEmpty {
             system = request["messages"].list.filter { ["system", "developer"].contains($0["role"].text ?? "") }.compactMap { $0["content"].text }.joined()

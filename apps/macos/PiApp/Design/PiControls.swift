@@ -63,25 +63,33 @@ struct PiDropdown<Tag: Hashable>: View {
     }
 }
 
-/// Pill-shaped menu button with a custom label.
-struct PiMenuButton<Items: View>: View {
+/// Pill-shaped menu button with a custom label. Its menu is built when it
+/// opens (PiMenu.swift), so a long list of branches or stashes costs nothing
+/// until someone asks for it.
+struct PiMenuButton: View {
     let title: String
     var icon: String? = nil
-    @ViewBuilder var items: Items
+    var identifier: String? = nil
+    var help: String = ""
+    let entries: @MainActor () -> [PiMenuEntry]
+    init(title: String, icon: String? = nil, identifier: String? = nil, help: String = "",
+         @PiMenuBuilder entries: @escaping @MainActor () -> [PiMenuEntry]) {
+        self.title = title; self.icon = icon; self.identifier = identifier; self.help = help; self.entries = entries
+    }
     var body: some View {
-        Menu { items } label: {
+        PiMenuControl(label: title, identifier: identifier, help: help, entries: entries) { hovering in
             HStack(spacing: 6) {
                 if let icon { Image(systemName: icon).font(.system(size: 11, weight: .semibold)) }
-                Text(title).font(.system(size: 13, weight: .medium))
+                Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
             }
             .foregroundStyle(Color.piInk)
             .padding(.horizontal, 12).padding(.vertical, 7)
-            .background(Color.piSurface, in: Capsule())
+            .background(hovering ? Color.piFill : Color.piSurface, in: Capsule())
             .overlay(Capsule().stroke(Color.piHairlineStrong, lineWidth: 1))
             .contentShape(Capsule())
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().piPointer()
+        .fixedSize()
     }
 }
 

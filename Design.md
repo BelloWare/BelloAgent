@@ -1,5 +1,120 @@
 # Bello Agent — Native Swift implementation and continuation design
 
+## The Session Inspector (0.1.90)
+
+One window per chat answers one question: what did this chat send, and what
+came back? It takes the place of the Turn Info popover, the message details and
+request inspector sheets, the pills' chart popovers, the footer's details
+panel, the sidebar's rate popover, the context sheet, the retained-message
+viewer and the Session info window. The chat itself is unchanged: its reply
+receipts, turn cards and live bar stay, and only where their links lead moved.
+Every link goes through `WorkspaceModel.openInspector(session:focus:)`
+(Workspaces/WorkspaceInspector.swift):
+
+- a turn card's ⓘ (`TurnInfoButton`) opens `.turn`;
+- a reply's model link, Details, Request details and partial chip open
+  `.message`, which resolves to the reply's attempt, else to the log's output
+  links, else to its turn;
+- the pills, the usage button and the capture badge open `.overview`;
+- the context ring opens `.nextRequest`;
+- 🐞, ⌥⌘I and the chat menu's Session Inspector… open `.latestRequest`;
+- a report row opens `.request`, even for a deleted chat.
+
+**Window.** `SessionInspectorWindowController` (Inspector/Session) hosts
+`SessionInspectorView` in the app's chrome (`PiWindowBar`).
+
+- There is one window per project window and chat (`SessionInspectorWindows`,
+  which holds its owner weakly), 1120 × 820 by default and at least 700 × 520.
+  It reopens where it was left.
+- The navigator is 262 pt wide, and 214 pt below 900 pt of window width. It
+  lists the Overview, the Next request, then the turns.
+- A turn's disclosure lists its requests, numbered, each with its kind (first
+  request, tool round, retry, compaction, title), model, token flow ("18.2K →
+  1.1K") and a status mark. A request without a turn is listed under Other
+  requests.
+- ⌘[ and ⌘] step across turns; ⌘F opens Raw and its search.
+
+**Pages.**
+
+- **Overview:**
+  - the headline figures, then the quieter ones; under a cost limit the cost
+    reads its spend with "of $25.00 limit" under it, in warning ink from 80% of
+    the limit as the usage pill turns, and names requests that reported no
+    cost;
+  - the chat's cost limit editor (`CostLimitLiveEditor`, the one the stop
+    notice's Raise limit… opens), which moved here from Session info and the
+    usage pill's popover;
+  - the session charts from SessionStatsPopovers.swift, whose items open their
+    request on a click (a hover still redraws only the rule, band and caption);
+  - the per-route models table, the request ledger, and "How these figures are
+    counted".
+- **Turn:**
+  - the outcome, start and duration;
+  - the prompt (Show all pages in the whole text);
+  - `TurnReportMetrics`, or the index's own token bars when the turn is not
+    loaded in the chat;
+  - the turn's requests as `TurnRequestLine`s, with per-model subtotals.
+- **Request:** "Request N of M" with badges for its kind, HTTP status and
+  outcome, a figure strip, and More and Model evidence disclosures, then three
+  tabs:
+  - **Conversation** is `RequestDocument`: the instructions/system, tools and
+    settings sections, then the input items (user, assistant, tool call, tool
+    result, reasoning, image), each with a one-line preview, its size and first
+    lines. `RequestDelta` compares canonical-JSON digests of the items with the
+    request before (for a turn request, the previous turn request on the same
+    API; for compaction and titles, the previous one of that purpose). It drives
+    the banner ("New since request 1: +2 items, 3.1K chars · 83% of input
+    cached"; "History rewritten since request 4: …"), marks the new items, opens
+    up to eight of them, and folds the shared prefix into one line.
+  - **Response** is `ResponseDocument`: a JSON body, a Responses stream through
+    `CombinedResponse`, or a Messages stream rebuilt. It shows the status,
+    finish reason and output tokens, the usage, and the output items. A
+    response still streaming is shown as partial; metadata polls report growth,
+    which Load latest reads.
+  - **Raw** is the existing `CapturedBodyView`, with search and headers, plus
+    the metadata, message links and events. Its menu holds the capture mode,
+    the exports and Clear This Chat's Captures….
+- **Next request:** the helper's prepared context, parsed like a request and
+  compared with the latest request, with the context meter's figures.
+
+**Reads.** A freeze was reported in 0.1.89, so every read is bounded:
+
+- Nothing is read while the window is minimised, fully covered or closed.
+- The navigator reads the request log's typed columns
+  (`PayloadArchive.inspectorRows`, 5,000 rows at most, on the report reader's
+  connection) and never decodes a metadata blob.
+- It polls a signature (row count, last update, metadata size, running rows)
+  every 8 s, or every 2 s while the chat runs, and reads the rows again only
+  when the signature changed or the footer's figures moved.
+- It asks the helper's own log (`debug.list`) only while the chat runs, or
+  when replies name requests the durable log never got.
+- The index, ledger, charts and turn summaries are built off the main actor.
+- A body is read only for the page and tab on screen, through
+  `CapturedBodySource` (the archive, else the helper while it is up). It is
+  assembled and parsed on `CapturedBodyWorker` with cancellation, and a read
+  for a page the reader has left never lands.
+- Documents keep previews only: 2,000 characters and 24 lines wrapped at 100
+  columns, prepared off the main thread. An item's whole text opens in a paged
+  viewer on demand.
+- `InspectorDocumentCache` keeps 24 documents, up to 192 MB, keyed by attempt,
+  kind and retained-bytes revision. It also keeps the digests of 512
+  predecessors, so the request before is parsed once.
+- The item list is an `NSOutlineView` (`InspectorItemsOutline`) with fixed row
+  heights and children built when a row opens. More than 300 items are listed
+  in pages of 200, since an outline asks about every top row when it loads.
+  Rows draw their words with Core Text and hold no subviews. A new document
+  reaches the outline on the turn after SwiftUI's update, and the outline stays
+  mounted while a body loads.
+- InspectorPerformanceTests (serial lane) parses a 30 MB body with no
+  main-thread step over 16 ms in a Release build, as shipped. A Debug build is
+  held to 100 ms, which still proves the parse (seconds long) is off the main
+  thread. The test also checks that a hidden window reads nothing.
+
+**Look.** Pi components throughout, in both themes (`PiCard`, `PiBadge`,
+`PiFigure`, `PiTabs`, the app's buttons). AppKit parts take the same
+tokens from `PiAppKitColors`, and the outline draws its own disclosure and hover
+fill. Its right-click menu and the Raw tab's menu are built when they open.
+
 ## Compact turn reports (0.1.80)
 
 Completed and ongoing turns share a small report: status, requested → responded

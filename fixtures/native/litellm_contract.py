@@ -68,6 +68,12 @@ def validate_correlation(headers, body, responses, *, session_id=None, turn_id=N
     if responses:
         metadata = body.get("metadata")
         require(isinstance(metadata, dict) and metadata.get("session_id") == session, "Responses metadata.session_id must equal x-session-id")
+        # Pi 0.85.1 routes a session to one prompt cache (prompt_cache_key, at most
+        # 64 characters) with session_id and x-client-request-id headers, except
+        # for a compaction summary, which it sends with cacheRetention "none".
+        cached = "prompt_cache_key" in body
+        require(not cached or body["prompt_cache_key"] == session[:64], "prompt_cache_key must be the session identity")
+        require(cached == (headers.get("session_id") == session) == (headers.get("x-client-request-id") == session), "pi's session affinity headers must travel with its prompt cache key")
     else:
         require("metadata" not in body, "Messages requests must not carry Responses correlation metadata")
     return session, turn
@@ -109,9 +115,16 @@ def validate_request(method, path, headers, body, *, api_key, model=None,
     # the app's output budget is a local reserve that never reaches the wire.
     require(limit_name not in body or (type(body.get(limit_name)) is int and body[limit_name] > 0), "output token limit must be positive when present")
     require(max_output_tokens is None or body.get(limit_name) == max_output_tokens, "output token limit differs from the model ceiling")
-    instructions = body.get("instructions" if responses else "system")
+    if responses:
+        # Pi puts the system prompt first in the input: a developer message to a
+        # reasoning model, a system message otherwise.
+        first = (body.get("input") or [None])[0]
+        require(isinstance(first, dict) and first.get("role") in ("developer", "system") and set(first) == {"role", "content"} and isinstance(first.get("content"), str), "pi's system prompt must be the first input item")
+        instructions = first["content"]
+    else:
+        instructions = body.get("system")
     require(isinstance(instructions, str), "native instructions must use the correct API field")
-    require(not set(body).intersection({"messages", "system", "max_tokens"} if responses else {"input", "instructions", "max_output_tokens", "store", "parallel_tool_calls"}), "request mixes the two provider formats")
+    require(not set(body).intersection({"messages", "system", "max_tokens", "instructions", "parallel_tool_calls"} if responses else {"input", "instructions", "max_output_tokens", "store", "parallel_tool_calls"}), "request mixes the two provider formats")
     if responses:
         require(body.get("store") is False, "Responses requests must explicitly disable provider storage")
     tools = body.get("tools", [])
@@ -122,18 +135,17 @@ def validate_request(method, path, headers, body, *, api_key, model=None,
         require(tool["name"] not in schemas, "tool names must be unique")
         require(isinstance(tool.get("description"), str) and tool["description"], "tool description is missing")
         if responses:
-            require(tool.get("type") == "function" and tool.get("strict") is False, "Responses tool must use non-strict function format")
+            # Pi sends `strict` only to a gateway that declares strict-mode support.
+            require(tool.get("type") == "function" and "strict" not in tool, "Responses tool must use pi's function format")
             require("input_schema" not in tool, "Messages schema leaked into Responses")
         else:
             require("parameters" not in tool and "strict" not in tool, "Responses schema leaked into Messages")
         schema = tool.get("parameters" if responses else "input_schema")
         validate_schema(schema, tool["name"])
         schemas[tool["name"]] = schema
-    if responses and tools:
-        require(body.get("parallel_tool_calls") is False, "Responses tool execution must stay serial")
     if expected_tool_names is not None:
         require(set(schemas) == set(expected_tool_names), "request tool set differs from the expected capabilities")
-    history = body.get("input" if responses else "messages")
+    history = body.get("input")[1:] if responses else body.get("messages")
     require(isinstance(history, list) and history, "request history must be nonempty")
     calls, results, opaque, user_texts = {}, {}, [], []
     historical_schemas = dict(historical_tool_schemas or {})
@@ -175,6 +187,7 @@ def validate_request(method, path, headers, body, *, api_key, model=None,
             require(kind == "message", "unsupported Responses history item")
             role, content = item.get("role"), item.get("content")
             require(role in ("user", "assistant"), "history role is invalid")
+            require(not responses or role != "user" or "type" not in item, "pi sends a user message without an item type")
             require(isinstance(content, list) and content, "history content must be nonempty blocks")
             texts = []
             for block in content:

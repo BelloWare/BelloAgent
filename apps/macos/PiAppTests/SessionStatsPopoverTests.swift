@@ -3,8 +3,9 @@ import SwiftUI
 import AppKit
 @testable import PiApp
 
-/// The statistics popovers in real windows: opened from the pills of a real
-/// conversation pane, measured against the screen, and hovered.
+/// The statistics pills of a real conversation pane and the Session
+/// Inspector's Overview they open, over a real archive; and the popover
+/// presenter the skill pills use.
 final class SessionStatsPopoverTests: XCTestCase {
 
     // MARK: Helpers
@@ -53,14 +54,6 @@ final class SessionStatsPopoverTests: XCTestCase {
         let options = CGWindowImageOption.bestResolution.rawValue | CGWindowImageOption.boundsIgnoreFraming.rawValue
         guard let image = create(bounds, array, options)?.takeRetainedValue() else { throw XCTSkip("Window capture returned no image") }
         let png = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
-        try png.write(to: url, options: .atomic)
-    }
-
-    /// A hosted view drawn into a bitmap by AppKit itself, off the screen.
-    @MainActor static func render(_ view: NSView, to url: URL) throws {
-        let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         try png.write(to: url, options: .atomic)
     }
 
@@ -120,221 +113,113 @@ final class SessionStatsPopoverTests: XCTestCase {
                                                                        messages: [], includeTiming: true)
         pane.session.footer.gateway = accounting.session
     }
-    @MainActor static func trigger(_ identifier: String, in pane: ConversationPaneTests.Pane) -> PiPopoverTriggerButton? {
-        ConversationPaneTests.views(PiPopoverTriggerButton.self, in: pane.hosted).first { $0.accessibilityIdentifier() == identifier }
-    }
-    /// A press where the reader would press: the window must deliver a click
-    /// at the pill's centre to its press target, which then takes it.
-    @MainActor static func click(_ button: PiPopoverTriggerButton, in window: NSWindow, file: StaticString = #filePath, line: UInt = #line) {
-        let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
-        XCTAssertTrue(window.contentView?.superview?.hitTest(center) === button,
-                      "A click at the pill's centre lands on its press target", file: file, line: line)
-        button.performClick(nil)
-    }
-    @MainActor static func popoverWindow(_ presenter: PiPopoverPresenter) -> NSWindow? {
-        presenter.popover?.contentViewController?.view.window
-    }
     @MainActor static func escape(_ window: NSWindow) throws {
         let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                                    windowNumber: window.windowNumber, context: nil, characters: "\u{1b}",
                                                    charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
         window.sendEvent(event)
     }
-    /// The popover is on the screen whole, and what it cannot show at once
-    /// scrolls inside it rather than being cut off.
-    @MainActor static func assertFitsOnScreen(_ presenter: PiPopoverPresenter, anchoredIn window: NSWindow, _ what: String,
-                                              file: StaticString = #filePath, line: UInt = #line) throws {
-        let popover = try XCTUnwrap(popoverWindow(presenter), "\(what): no popover window", file: file, line: line)
-        let visible = try XCTUnwrap(window.screen ?? NSScreen.main).visibleFrame
-        XCTAssertTrue(visible.insetBy(dx: -1, dy: -1).contains(popover.frame),
-                      "\(what): the popover \(popover.frame) leaves the screen's visible frame \(visible)", file: file, line: line)
-        let content = try XCTUnwrap(popover.contentView)
-        let host = try XCTUnwrap(presenter.popover?.contentViewController?.view)
-        XCTAssertLessThanOrEqual(host.frame.height, PiPopoverPanel.maximumHeight + 0.5, "\(what): taller than the popover's ceiling", file: file, line: line)
-        let scroll = try XCTUnwrap(ConversationPaneTests.views(NSScrollView.self, in: content).max { $0.frame.height < $1.frame.height },
-                                   "\(what): the page is not in a scroll view", file: file, line: line)
-        let scrollFrame = scroll.convert(scroll.bounds, to: nil), hostFrame = host.convert(host.bounds, to: nil)
-        XCTAssertTrue(hostFrame.insetBy(dx: -0.5, dy: -0.5).contains(scrollFrame), "\(what): the scrolling page overhangs the popover", file: file, line: line)
-        let document = try XCTUnwrap(scroll.documentView)
-        XCTAssertLessThanOrEqual(document.frame.width, scroll.contentView.bounds.width + 0.5, "\(what): the page is wider than the popover", file: file, line: line)
-        XCTAssertGreaterThan(scroll.contentView.bounds.height, 120, "\(what): too little of the page shows", file: file, line: line)
+    /// A pill pressed where the reader presses: the window delivers a click at
+    /// its centre to its AppKit press target, which then takes it.
+    @MainActor static func press(_ identifier: String, in pane: ConversationPaneTests.Pane, file: StaticString = #filePath, line: UInt = #line) throws {
+        let pill = try XCTUnwrap(ConversationPaneTests.views(PiPopoverTriggerButton.self, in: pane.hosted).first { $0.accessibilityIdentifier() == identifier },
+                                 "The \(identifier) pill is there", file: file, line: line)
+        let center = pill.convert(NSPoint(x: pill.bounds.midX, y: pill.bounds.midY), to: nil)
+        XCTAssertTrue(pane.window.contentView?.superview?.hitTest(center) === pill, "A click at the \(identifier) pill's centre lands on its press target", file: file, line: line)
+        pill.performClick(nil)
+    }
+    @MainActor static func inspector(of pane: ConversationPaneTests.Pane) -> SessionInspectorModel? {
+        SessionInspectorWindows.shared.controller(sessionID: pane.chat.id)?.inspector
     }
 
-    /// Both pills of a real pane, pressed where the reader presses: each opens
-    /// its popover with its charts built from the archive, one at a time, and
-    /// Escape closes it.
-    @MainActor func testEachPillOpensItsChartsOneAtATimeAndEscapeClosesThem() async throws {
-        let pane = try await Self.seededPane(); defer { pane.close() }
-        let store = SessionStatsStore.shared(archive: pane.model.traces, sessionID: pane.session.id)
-        let time = try XCTUnwrap(Self.trigger("session-stats-time", in: pane), "The turns · steps · tok/s pill is there")
-        let usage = try XCTUnwrap(Self.trigger("session-stats-usage", in: pane), "The tokens · cache · cost pill is there")
-        XCTAssertEqual(store.reads, 0, "Nothing is read until a popover opens")
-        SessionStatsRenderCount.reset()
-
-        Self.click(time, in: pane.window)
-        try await Self.waitFor("The session statistics popover did not open", pane: pane) { store.timePresenter.isShown }
-        XCTAssertTrue(store.time.historyLoaded, "The popover opens whole: its charts were ready when it appeared")
-        try await Self.waitFor("The session statistics popover did not draw its charts", pane: pane) {
-            store.timePresenter.popover?.isShown == true && SessionStatsRenderCount.marks > 0
+    /// The pills of a real pane, pressed: the two session pills open the
+    /// chat's Session Inspector at its Overview, whose charts are built from
+    /// the archive; the context ring opens the next request. One window.
+    @MainActor func testThePillsOpenTheInspectorAtItsOverviewAndTheNextRequest() async throws {
+        SessionInspectorWindows.shared.closeAll()
+        let pane = try await Self.seededPane(); defer { SessionInspectorWindows.shared.closeAll(); pane.close() }
+        try Self.press("session-stats-time", in: pane)
+        XCTAssertEqual(pane.model.lastInspectorFocus, .overview)
+        let inspector = try XCTUnwrap(Self.inspector(of: pane), "The chat's Session Inspector opened")
+        XCTAssertEqual(inspector.page, .overview)
+        try await Self.waitFor("The Overview did not build its charts from the archive", pane: pane) {
+            inspector.indexLoaded && inspector.timeCharts.timeline?.rows.count == 12 && inspector.tokenCharts.perRequest != nil
         }
-        await pane.settle(6)
-        XCTAssertEqual(store.time.timeline?.rows.count, 12, "One row per request the archive holds")
-        XCTAssertEqual(Array(store.time.hero.map(\.value).prefix(2)), ["\(pane.session.footer.gateway.turnCount ?? 0)", "12"])
-        XCTAssertNotNil(store.time.speed); XCTAssertEqual(store.time.models.count, 2, "Two models, so the by-model rows")
-        XCTAssertGreaterThanOrEqual(SessionStatsRenderCount.marks, 2, "The timeline and the speed chart drew their marks")
-        XCTAssertEqual(store.reads, 1)
-        try Self.assertFitsOnScreen(store.timePresenter, anchoredIn: pane.window, "Session statistics")
+        XCTAssertEqual(inspector.index.requests.count, 12, "One row per request the archive holds")
+        XCTAssertEqual(Array(inspector.timeCharts.hero.map(\.value).prefix(2)), ["\(pane.session.footer.gateway.turnCount ?? 0)", "12"])
+        XCTAssertNotNil(inspector.timeCharts.speed); XCTAssertEqual(inspector.timeCharts.models.count, 2, "Two models, so the by-model rows")
+        XCTAssertNotNil(inspector.tokenCharts.composition); XCTAssertNotNil(inspector.tokenCharts.cost)
+        XCTAssertEqual(inspector.indexReads, 1)
 
-        // The other pill: the first popover gives way to it.
-        Self.click(usage, in: pane.window)
-        try await Self.waitFor("The token usage popover did not open", pane: pane) { store.tokenPresenter.popover?.isShown == true && store.tokens.historyLoaded }
-        await pane.settle(6)
-        XCTAssertFalse(store.timePresenter.isShown, "One popover at a time")
-        XCTAssertNotNil(store.tokens.composition); XCTAssertNotNil(store.tokens.perRequest); XCTAssertNotNil(store.tokens.cost)
-        XCTAssertEqual(store.reads, 1, "The same session's history serves both popovers")
-        try Self.assertFitsOnScreen(store.tokenPresenter, anchoredIn: pane.window, "Token usage")
+        try Self.press("session-stats-usage", in: pane)
+        XCTAssertEqual(SessionInspectorWindows.shared.count, 1, "The usage pill brings the same window forward")
+        XCTAssertTrue(Self.inspector(of: pane) === inspector)
+        XCTAssertEqual(inspector.page, .overview)
 
-        // Escape closes it.
-        try Self.escape(try XCTUnwrap(Self.popoverWindow(store.tokenPresenter)))
-        try await Self.waitFor("Escape did not close the token usage popover", pane: pane) { !store.tokenPresenter.isShown }
-
-        // So does a click anywhere else: here, in the conversation above the composer.
-        Self.click(usage, in: pane.window)
-        try await Self.waitFor("The token usage popover did not reopen", pane: pane) { store.tokenPresenter.isShown }
-        // Posted to the application's queue: AppKit's transient popovers watch
-        // the events the run loop takes from it.
-        let elsewhere = NSPoint(x: pane.window.frame.width / 2, y: pane.window.frame.height - 120)
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: elsewhere, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                                         windowNumber: pane.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1,
-                                                         pressure: type == .leftMouseDown ? 1 : 0))
-            NSApp.postEvent(event, atStart: false)
-        }
-        try await Self.waitFor("A click outside did not close the token usage popover", pane: pane) { !store.tokenPresenter.isShown }
-
-        // A press on an open pill closes it rather than reopening it.
-        Self.click(time, in: pane.window)
-        try await Self.waitFor("The session statistics popover did not reopen", pane: pane) { store.timePresenter.isShown }
-        XCTAssertEqual(store.reads, 1, "Reopening on the same figures reads nothing")
-        Self.click(time, in: pane.window)
-        await pane.settle(4)
-        XCTAssertFalse(store.timePresenter.isShown, "The pill closes its own popover")
+        try Self.press("session-stats-context", in: pane)
+        XCTAssertEqual(pane.model.lastInspectorFocus, .nextRequest)
+        XCTAssertEqual(inspector.page, .nextRequest, "The context ring opens what the next request will send")
+        XCTAssertEqual(SessionInspectorWindows.shared.count, 1)
     }
 
-    /// At the window's smallest size, high on the screen where the room above
-    /// the pills is shortest, and low where it is longest: the popover stays on
-    /// the screen and scrolls inside itself.
-    @MainActor func testThePopoversFitOnScreenAtTheSmallestWindow() async throws {
-        let pane = try await Self.seededPane(requests: 40, width: 620, height: 600); defer { pane.close() }
-        let store = SessionStatsStore.shared(archive: pane.model.traces, sessionID: pane.session.id)
-        let visible = try XCTUnwrap(pane.window.screen ?? NSScreen.main).visibleFrame
-        for (place, origin) in [("high", NSPoint(x: visible.minX + 60, y: visible.maxY - pane.window.frame.height)),
-                                ("low", NSPoint(x: visible.minX + 60, y: visible.minY))] {
-            pane.window.setFrameOrigin(origin)
-            await pane.settle(6)
-            for (name, identifier, presenter) in [("Session statistics", "session-stats-time", store.timePresenter),
-                                                  ("Token usage", "session-stats-usage", store.tokenPresenter)] {
-                let pill = try XCTUnwrap(Self.trigger(identifier, in: pane))
-                Self.click(pill, in: pane.window)
-                try await Self.waitFor("\(name) did not open with the window \(place) on the screen", pane: pane) {
-                    presenter.popover?.isShown == true && store.time.historyLoaded
-                }
-                await pane.settle(8)
-                try Self.assertFitsOnScreen(presenter, anchoredIn: pane.window, "\(name), window \(place)")
-                let height = Self.popoverWindow(presenter)?.frame.height ?? 0
-                print(String(format: "PERF %@ at a 620x600 window %@ on the screen: popover %.0f pt tall", name, place, height))
-                presenter.close()
-                await pane.settle(3)
-            }
-        }
-    }
-
-    /// A turn that ends while a popover is open moves the footer's figures;
-    /// the popover reads the history again and draws the new request.
-    @MainActor func testAnOpenPopoverFollowsARequestThatSettles() async throws {
-        let pane = try await Self.seededPane(); defer { pane.close() }
-        let store = SessionStatsStore.shared(archive: pane.model.traces, sessionID: pane.session.id)
-        let time = try XCTUnwrap(Self.trigger("session-stats-time", in: pane))
-        Self.click(time, in: pane.window)
-        try await Self.waitFor("The popover did not open", pane: pane) { store.time.timeline?.rows.count == 12 }
-        XCTAssertEqual(store.reads, 1)
+    /// A turn that ends while the Overview is open moves the footer's
+    /// figures: the Overview reads the log again, once, and draws the new request.
+    @MainActor func testTheOverviewFollowsARequestThatSettles() async throws {
+        SessionInspectorWindows.shared.closeAll()
+        let pane = try await Self.seededPane(); defer { SessionInspectorWindows.shared.closeAll(); pane.close() }
+        pane.model.openInspector(session: pane.chat.id)
+        let inspector = try XCTUnwrap(Self.inspector(of: pane))
+        try await Self.waitFor("The Overview did not open", pane: pane) { inspector.timeCharts.timeline?.rows.count == 12 }
+        XCTAssertEqual(inspector.indexReads, 1)
         let next = SessionStatsFixture.request(13, turn: "t4", model: "gpt-5.4-mini", ttft: 450, stream: 2_000, input: 40_000, cached: 36_000, output: 420)
         try await Self.record(next, in: pane)
         try await Self.refreshFooter(pane)
-        try await Self.waitFor("The open popover did not follow the settled request", pane: pane) { store.time.timeline?.rows.count == 13 }
-        XCTAssertEqual(store.reads, 2, "One more read, for the new request")
-        XCTAssertEqual(store.time.hero[1].value, "13")
-        XCTAssertTrue(store.timePresenter.isShown, "The popover stays open while it refreshes")
-        store.timePresenter.close()
+        try await Self.waitFor("The open Overview did not follow the settled request", pane: pane) { inspector.timeCharts.timeline?.rows.count == 13 }
+        XCTAssertEqual(inspector.indexReads, 2, "One more read, for the new request")
+        XCTAssertEqual(inspector.timeCharts.hero[1].value, "13")
+        XCTAssertEqual(inspector.index.requests.count, 13)
     }
 
-    /// A narrow pane lays its footer out again when a run starts and when it
-    /// ends: the run line takes its own row. An open popover must survive
-    /// that and still follow the run, which is exactly when it refreshes.
-    @MainActor func testAnOpenPopoverSurvivesTheFooterReflowingAroundARun() async throws {
-        for width in [900.0, 520.0] {
-            let pane = try await Self.seededPane(width: width); defer { pane.close() }
-            let store = SessionStatsStore.shared(archive: pane.model.traces, sessionID: pane.session.id)
-            let time = try XCTUnwrap(Self.trigger("session-stats-time", in: pane))
-            Self.click(time, in: pane.window)
-            try await Self.waitFor("The popover did not open at \(width) points", pane: pane) { store.time.timeline?.rows.count == 12 }
-            let before = Set(ConversationPaneTests.views(PiPopoverTriggerButton.self, in: pane.hosted).map(ObjectIdentifier.init))
-            pane.session.state = "running"
-            await pane.settle(12)
-            XCTAssertTrue(store.timePresenter.isShown, "At \(width) points the popover stays open when the run starts")
-            let next = SessionStatsFixture.request(13, turn: "t4", ttft: 450, stream: 2_000, input: 40_000, cached: 36_000, output: 420)
-            try await Self.record(next, in: pane)
-            pane.session.state = "idle"
-            try await Self.refreshFooter(pane)
-            try await Self.waitFor("At \(width) points the popover did not follow the run's last request", pane: pane) { store.time.timeline?.rows.count == 13 }
-            await pane.settle(12)
-            let after = Set(ConversationPaneTests.views(PiPopoverTriggerButton.self, in: pane.hosted).map(ObjectIdentifier.init))
-            print("PERF footer reflow at \(Int(width)) points: pill press targets \(before == after ? "kept" : "rebuilt") across the run")
-            XCTAssertTrue(store.timePresenter.isShown, "At \(width) points the popover stays open when the run ends")
-            if let popover = Self.popoverWindow(store.timePresenter) {
-                XCTAssertTrue((pane.window.screen ?? NSScreen.main)?.visibleFrame.insetBy(dx: -1, dy: -1).contains(popover.frame) ?? false)
-            }
-            store.timePresenter.close()
-        }
-    }
-
-    /// Moving the pointer over every chart of both popovers redraws the rule,
+    /// Moving the pointer over every chart of the Overview redraws the rule,
     /// the band and the caption under the pointer — never a chart's marks and
     /// never the page around them.
-    @MainActor func testHoveringTheChartsRedrawsOnlyWhatFollowsThePointer() async throws {
-        let pane = try await Self.seededPane(); defer { pane.close() }
-        let store = SessionStatsStore.shared(archive: pane.model.traces, sessionID: pane.session.id)
-        for (name, identifier, presenter, selections) in [
-            ("Session statistics", "session-stats-time", store.timePresenter, [store.timelineSelection, store.speedSelection]),
-            ("Token usage", "session-stats-usage", store.tokenPresenter, [store.tokenSelection, store.costSelection]),
-        ] {
-            let pill = try XCTUnwrap(Self.trigger(identifier, in: pane))
-            SessionStatsRenderCount.reset()
-            let opened = ProcessInfo.processInfo.systemUptime
-            Self.click(pill, in: pane.window)
-            try await Self.waitFor("\(name) did not draw its charts", pane: pane) { presenter.popover?.isShown == true && store.time.historyLoaded && SessionStatsRenderCount.marks >= 2 }
-            let openMs = (ProcessInfo.processInfo.systemUptime - opened) * 1_000
-            await pane.settle(8)
-            let open = (panels: SessionStatsRenderCount.panels, marks: SessionStatsRenderCount.marks)
-            SessionStatsRenderCount.reset()
-            // What a pointer moving across the charts writes, one item at a
-            // time. (A test host is not the active app, so SwiftUI's
-            // continuous hover does not answer synthetic mouse moves.)
-            var steps = 0
-            for selection in selections {
-                for index in [0, 1, 2, 4, 7, 9, 3, nil] { selection.select(index); steps += 1; await pane.settle(1) }
-            }
-            await pane.settle(4)
-            print(String(format: "PERF %@: opened in %.0f ms (%d page builds, %d chart mark builds); %d hover steps redrew %d pointer marks and %d captions, rebuilt %d pages and %d chart marks",
-                         name, openMs, open.panels, open.marks, steps, SessionStatsRenderCount.pointers, SessionStatsRenderCount.captions,
-                         SessionStatsRenderCount.panels, SessionStatsRenderCount.marks))
-            XCTAssertEqual(SessionStatsRenderCount.marks, 0, "\(name): hover never rebuilds a chart's marks")
-            XCTAssertEqual(SessionStatsRenderCount.panels, 0, "\(name): nor the page around the charts")
-            XCTAssertGreaterThanOrEqual(SessionStatsRenderCount.pointers, selections.count, "\(name): the rule or band follows the pointer")
-            XCTAssertGreaterThanOrEqual(SessionStatsRenderCount.captions, selections.count, "\(name): and so does the caption")
-            presenter.close()
-            await pane.settle(3)
+    @MainActor func testHoveringTheOverviewChartsRedrawsOnlyWhatFollowsThePointer() async throws {
+        SessionInspectorWindows.shared.closeAll()
+        let pane = try await Self.seededPane(); defer { SessionInspectorWindows.shared.closeAll(); pane.close() }
+        SessionStatsRenderCount.reset()
+        let opened = ProcessInfo.processInfo.systemUptime
+        pane.model.openInspector(session: pane.chat.id)
+        let inspector = try XCTUnwrap(Self.inspector(of: pane))
+        try await Self.waitFor("The Overview did not draw its charts", pane: pane) {
+            inspector.timeCharts.timeline?.rows.count == 12 && inspector.tokenCharts.perRequest != nil && SessionStatsRenderCount.marks >= 2
         }
+        let openMs = (ProcessInfo.processInfo.systemUptime - opened) * 1_000
+        // Let the page finish what opening started (the prompts, the models
+        // table): it is still when three looks in a row find no new build.
+        var last = -1, still = 0, looks = 0
+        while still < 3, looks < 60 {
+            await pane.settle(2); try await Task.sleep(for: .milliseconds(100)); looks += 1
+            if SessionStatsRenderCount.panels == last { still += 1 } else { still = 0; last = SessionStatsRenderCount.panels }
+        }
+        let open = (panels: SessionStatsRenderCount.panels, marks: SessionStatsRenderCount.marks)
+        SessionStatsRenderCount.reset()
+        // What a pointer moving across the charts writes, one item at a time.
+        // (A test host is not the active app, so SwiftUI's continuous hover
+        // does not answer synthetic mouse moves.)
+        let selections = [inspector.timelineSelection, inspector.speedSelection, inspector.tokenSelection, inspector.costSelection]
+        var steps = 0
+        for selection in selections {
+            for index in [0, 1, 2, 4, 7, 9, 3, nil] { selection.select(index); steps += 1; await pane.settle(1) }
+        }
+        await pane.settle(4)
+        print(String(format: "PERF Overview: opened in %.0f ms (%d page builds, %d chart mark builds); %d hover steps redrew %d pointer marks and %d captions, rebuilt %d pages and %d chart marks",
+                     openMs, open.panels, open.marks, steps, SessionStatsRenderCount.pointers, SessionStatsRenderCount.captions,
+                     SessionStatsRenderCount.panels, SessionStatsRenderCount.marks))
+        XCTAssertEqual(SessionStatsRenderCount.marks, 0, "Hover never rebuilds a chart's marks")
+        XCTAssertEqual(SessionStatsRenderCount.panels, 0, "nor the page around the charts")
+        // The charts on screen answer; a lazy grid has not built the ones below the fold.
+        XCTAssertGreaterThanOrEqual(SessionStatsRenderCount.pointers, 2, "The rule or band follows the pointer")
+        XCTAssertGreaterThanOrEqual(SessionStatsRenderCount.captions, 2, "and so does the caption")
     }
 
     /// The popover grows open under the app's motion policy and appears in
@@ -393,111 +278,46 @@ final class SessionStatsPopoverTests: XCTestCase {
         XCTAssertFalse(presenter.isShown, "and nothing opens afterwards")
     }
 
-    // MARK: The store
+    // MARK: Reads
 
-    /// The archive as the store sees it: every read counted, and failing on request.
-    actor Reads {
-        private(set) var count = 0
-        var history: SessionStatsHistory
-        var failing = false
-        init(_ history: SessionStatsHistory) { self.history = history }
-        func next() throws -> SessionStatsHistory {
-            count += 1
-            if failing { throw CaptureFailure.unavailable }
-            return history
+    /// A burst of footer updates while the Inspector is open reads the log
+    /// once more, not once per update; while it is hidden, none.
+    @MainActor func testABurstOfFooterUpdatesIsOneMoreReadAndNoneWhileHidden() async throws {
+        let root = scratchRoot("inspector-footer-burst"); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root)
+        try await archive.configure(quota: 8_388_608, bodyRetention: 1_000_000, metricRetention: 400_000_000)
+        for sample in SessionStatsFixture.session(requests: 12).requests {
+            let value = Self.metadata(for: sample, session: "stats")
+            try await archive.begin(value, workspace: "project"); try await archive.finish(value)
         }
-        func fail() { failing = true }
-    }
-    private let scope = SessionUsageScope(sessionID: "stats", workspaceID: "project")
-
-    /// Nothing is read until a popover opens; reopening on figures that have
-    /// not moved reads nothing and shows what was built; a closed popover does
-    /// not follow the footer; new helper clocks rebuild without a read.
-    @MainActor func testTheStoreReadsOnlyWhenAPopoverOpensAndKeepsWhatItBuilt() async throws {
-        let history = SessionStatsFixture.session()
-        let reads = Reads(history)
-        let store = SessionStatsStore(load: { _ in try await reads.next() })
-        let inputs = SessionStatsFixture.inputs(history)
-        var count = await reads.count
-        XCTAssertEqual(count, 0)
-        store.open(scope: scope, inputs: inputs)
-        XCTAssertFalse(store.time.historyLoaded, "The figures go up at once, the charts follow the read")
-        XCTAssertEqual(store.time.hero, SessionTimeCharts(inputs: inputs, history: nil).hero)
-        try await Self.waitFor("The history was not read") { store.time.historyLoaded && store.tokens.historyLoaded && !store.loading }
-        count = await reads.count
-        XCTAssertEqual(count, 1)
-        let built = store.builds
-
-        store.open(scope: scope, inputs: inputs)
-        try await Task.sleep(for: .milliseconds(250))
-        count = await reads.count
-        XCTAssertEqual(count, 1, "Reopening on unchanged figures reads nothing")
-        XCTAssertEqual(store.builds, built, "and builds nothing")
-
-        var moved = inputs
-        moved.gateway.requests += 1
-        store.footerChanged(moved)
-        try await Task.sleep(for: .milliseconds(250))
-        count = await reads.count
-        XCTAssertEqual(count, 1, "A closed popover does not follow the footer")
-
-        store.open(scope: scope, inputs: moved)
-        try await Self.waitFor("Opening on moved figures did not read again") { store.time.hero[1].value == "19" }
-        count = await reads.count
-        XCTAssertEqual(count, 2)
-
-        var clocks = moved
-        clocks.work = WorkSplit(timing: ["sessionModelMs": .number(99_000), "sessionToolMs": .number(1_000)])
-        store.open(scope: scope, inputs: clocks)
-        try await Self.waitFor("New helper clocks did not rebuild the figures") { store.time.details[1].value == workDuration(99_000) }
-        count = await reads.count
-        XCTAssertEqual(count, 2, "The helper's clocks are not in the archive: nothing is read for them")
-    }
-
-    /// A burst of footer updates while a popover is open reads once more
-    /// after the read in flight, not once per update.
-    @MainActor func testABurstOfFooterUpdatesWhileOpenIsOneMoreRead() async throws {
-        let history = SessionStatsFixture.session()
-        let reads = Reads(history)
-        let store = SessionStatsStore(load: { _ in try await reads.next() })
-        let inputs = SessionStatsFixture.inputs(history)
-        store.open(scope: scope, inputs: inputs)
-        try await Self.waitFor("The history was not read") { store.time.historyLoaded && !store.loading }
-        let (window, anchor) = Self.anchoredWindow(); defer { window.orderOut(nil); window.contentView = nil; window.close() }
-        store.timePresenter.show(from: anchor, width: PiPopoverPanel.width, maximumHeight: PiPopoverPanel.maximumHeight, animates: false) {
-            AnyView(SessionTimePopover(store: store, openLedger: {}))
-        }
-        defer { store.timePresenter.close() }
-        XCTAssertTrue(store.isShowing)
+        let inspector = SessionInspectorModel(scope: SessionUsageScope(sessionID: "stats", workspaceID: "project"), title: "Burst",
+                                              archive: archive, workspace: nil, usageLoader: { _, _, _ in throw CancellationError() },
+                                              cache: InspectorDocumentCache())
+        let footer = SessionMetrics()
+        inspector.observe(footer: footer, display: nil)
+        inspector.setVisible(true)
+        defer { inspector.setVisible(false) }
+        try await Self.waitFor("The index was not read") { inspector.indexReads == 1 && inspector.index.requests.count == 12 }
         for step in 1...5 {
-            var moved = inputs
-            moved.gateway.requests += step
-            store.footerChanged(moved)
+            footer.gateway = GatewayTotals(requests: 12 + step)
             try await Task.sleep(for: .milliseconds(10))
         }
-        try await Self.waitFor("The burst was not read") { store.time.hero[1].value == "23" && !store.loading }
-        try await Task.sleep(for: .milliseconds(400))
-        let count = await reads.count
-        XCTAssertEqual(count, 3, "The open read, the burst's first, and one more for what came during it")
+        try await Self.waitFor("The burst was not read") { inspector.indexReads == 2 }
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(inspector.indexReads, 2, "The open read and one more for the whole burst")
+
+        inspector.setVisible(false)
+        for step in 1...5 {
+            footer.gateway = GatewayTotals(requests: 20 + step)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(inspector.indexReads, 2, "A hidden Inspector reads nothing, whatever the footer does")
+        try await archive.close()
     }
 
-    /// A read that fails leaves the figures up and says what went wrong in
-    /// the place of the charts.
-    @MainActor func testAFailedReadKeepsTheFiguresAndSaysSo() async throws {
-        let history = SessionStatsFixture.session()
-        let reads = Reads(history)
-        await reads.fail()
-        let store = SessionStatsStore(load: { _ in try await reads.next() })
-        store.open(scope: scope, inputs: SessionStatsFixture.inputs(history))
-        try await Self.waitFor("The failure was not reported") { store.failure != nil }
-        XCTAssertFalse(store.loading)
-        XCTAssertFalse(store.time.historyLoaded)
-        XCTAssertEqual(store.time.hero.map(\.id), ["turns", "steps", "speed"], "The footer's figures stay")
-        XCTAssertTrue(store.failure?.hasPrefix("This session's requests could not be read") == true, store.failure ?? "")
-    }
-
-    /// A session of two thousand requests: both popovers' series are built
-    /// in one pass, bounded to what a popover can show, and cheaply.
+    /// A session of two thousand requests: the Overview's series are built
+    /// in one pass, bounded to what a chart can show, and cheaply.
     @MainActor func testTheChartsOfALongSessionAreBoundedAndBuildOnce() async throws {
         let history = SessionStatsFixture.session(requests: 2_000)
         let inputs = SessionStatsFixture.inputs(history)
@@ -505,7 +325,7 @@ final class SessionStatsPopoverTests: XCTestCase {
         let time = SessionTimeCharts(inputs: inputs, history: history)
         let tokens = SessionTokenCharts(inputs: inputs, history: history)
         let elapsed = ProcessInfo.processInfo.systemUptime - started
-        print(String(format: "PERF building both popovers' series for %d requests: %.1f ms", history.requests.count, elapsed * 1_000))
+        print(String(format: "PERF building the Overview's series for %d requests: %.1f ms", history.requests.count, elapsed * 1_000))
         XCTAssertEqual(time.timeline?.rows.count, SessionRequestTimeline.maximumRows)
         XCTAssertLessThanOrEqual(time.speed?.points.count ?? .max, SessionSpeedSeries.maximumPoints)
         XCTAssertLessThanOrEqual(tokens.perRequest?.bars.count ?? .max, SessionTokenBars.maximumBars)
@@ -514,7 +334,7 @@ final class SessionStatsPopoverTests: XCTestCase {
     }
 
     /// Opt-in (PI_PERF_STATS=1): reading 1,000 retained requests of one
-    /// session from a real archive, as a popover does when it opens.
+    /// session from a real archive.
     @MainActor func testMeasureReadingALongSessionsHistory() async throws {
         guard testEnvironment("PI_PERF_STATS") == "1" else { throw XCTSkip("Set PI_PERF_STATS=1 to measure the history read") }
         let root = scratchRoot("session-stats-read")
@@ -532,53 +352,7 @@ final class SessionStatsPopoverTests: XCTestCase {
             times.append((ProcessInfo.processInfo.systemUptime - started) * 1_000)
             XCTAssertEqual(history.requests.count, 1_000)
         }
-        print(String(format: "PERF reading 1,000 retained requests for the popovers: best %.1f ms, median %.1f ms", times.min() ?? 0, times.sorted()[2]))
+        print(String(format: "PERF reading 1,000 retained requests for the charts: best %.1f ms, median %.1f ms", times.min() ?? 0, times.sorted()[2]))
         try await archive.close()
-    }
-
-    // MARK: Preview
-
-    /// Opt-in: the two popovers over a synthetic session in both appearances,
-    /// as PNGs in PI_APP_STATS_PREVIEW. Nothing here reads the vault or a gateway.
-    @MainActor func testRenderStatsPopoverPreviews() async throws {
-        guard let path = testEnvironment("PI_APP_STATS_PREVIEW") else { throw XCTSkip("Set PI_APP_STATS_PREVIEW to render the popover previews") }
-        let folder = URL(fileURLWithPath: path, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { NSApp.appearance = nil }
-        let scenes: [(String, SessionStatsHistory)] = [
-            ("session", SessionStatsFixture.session()),
-            ("long", SessionStatsFixture.session(requests: 64)),
-            ("one", SessionStatsHistory(requests: [SessionStatsFixture.request(1, reasoning: 80)])),
-        ]
-        for (appearanceName, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-            NSApp.appearance = NSAppearance(named: appearance)
-            for (scene, history) in scenes {
-                for kind in ["time", "tokens"] {
-                    let store = SessionStatsStore(load: { _ in history })
-                    store.open(scope: SessionUsageScope(sessionID: "preview", workspaceID: "preview"), inputs: SessionStatsFixture.inputs(history))
-                    try await Self.waitFor("The preview history did not load") { store.time.historyLoaded && store.tokens.historyLoaded }
-                    let (window, anchor) = Self.anchoredWindow(height: 820)
-                    defer { window.orderOut(nil); window.contentView = nil; window.close() }
-                    let presenter = kind == "time" ? store.timePresenter : store.tokenPresenter
-                    presenter.show(from: anchor, width: PiPopoverPanel.width, maximumHeight: PiPopoverPanel.maximumHeight, animates: false) {
-                        kind == "time" ? AnyView(SessionTimePopover(store: store, openLedger: {})) : AnyView(SessionTokenPopover(store: store, openLedger: {}))
-                    }
-                    try await Task.sleep(for: .milliseconds(700))
-                    try Self.capture(window, to: folder.appendingPathComponent("\(kind)-\(scene)-\(appearanceName).png"))
-                    presenter.close()
-                    // The whole page, unscrolled, for review.
-                    let page = NSHostingView(rootView: (kind == "time" ? AnyView(SessionTimePopover(store: store, openLedger: {}))
-                                                        : AnyView(SessionTokenPopover(store: store, openLedger: {})))
-                        .frame(width: PiPopoverPanel.width).fixedSize(horizontal: false, vertical: true).background(Color.piSurface))
-                    let size = page.fittingSize
-                    let sheet = NSWindow(contentRect: NSRect(x: -4_000, y: 60, width: size.width, height: min(size.height, 2_400)), styleMask: [.borderless], backing: .buffered, defer: false)
-                    sheet.isReleasedWhenClosed = false; sheet.contentView = page; sheet.orderFront(nil)
-                    defer { sheet.orderOut(nil); sheet.contentView = nil; sheet.close() }
-                    try await Task.sleep(for: .milliseconds(500))
-                    page.layoutSubtreeIfNeeded(); sheet.displayIfNeeded()
-                    try Self.render(page, to: folder.appendingPathComponent("\(kind)-\(scene)-\(appearanceName)-page.png"))
-                }
-            }
-        }
     }
 }

@@ -57,41 +57,59 @@ struct ProjectSidebarHeader: View, Equatable {
                     PiIconButton(symbol: "plus", label: "New chat in " + state.name, size: 22) { model.newChat(in: state.projectID, topicID: nil) }
                         .disabled(!state.available || !state.trusted).accessibilityIdentifier("newProjectChat-" + state.projectID)
                 }
-                Menu { ProjectSidebarActions(model: model, state: state) } label: { Image(systemName: "ellipsis").frame(width: 18, height: 22).contentShape(Rectangle()) }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().piPointer()
-                    .accessibilityLabel("Project actions for " + state.name).accessibilityIdentifier("projectActions-" + state.projectID)
+                // Built when it opens: a live pop-up button here was rebuilt,
+                // and re-sized, on every pass of the sidebar's lazy list (PiMenu.swift).
+                PiMenuControl(label: "Project actions for " + state.name, identifier: "projectActions-" + state.projectID) { [model, state, reduceMotion] in
+                    ProjectSidebarActions.entries(model: model, state: state, reduceMotion: reduceMotion)
+                } face: { hovering in SidebarMenuFace(hovering: hovering) }
+                    .frame(width: SidebarMenuFace.size.width, height: SidebarMenuFace.size.height)
             }
         }
         .padding(.horizontal, 7).padding(.vertical, 3)
         .background(state.dropTargeted ? Color.piAccentSoft : .clear, in: RoundedRectangle(cornerRadius: PiRadius.sm))
         .overlay(RoundedRectangle(cornerRadius: PiRadius.sm).stroke(state.dropTargeted ? Color.piAccent : .clear, lineWidth: 1))
-        .contextMenu { ProjectSidebarActions(model: model, state: state) }
+        .contextMenu { PiMenuContent { [model, state, reduceMotion] in ProjectSidebarActions.entries(model: model, state: state, reduceMotion: reduceMotion) } }
+    }
+}
+
+/// The "…" of a project or topic header, drawn as the pop-up button drew it
+/// (the header's ink, 20 points wide), with a soft fill under the pointer
+/// like every other control in the sidebar.
+struct SidebarMenuFace: View {
+    static let size = CGSize(width: 20, height: 22)
+    let hovering: Bool
+    var body: some View {
+        Image(systemName: "ellipsis").font(.system(size: 13))
+            .foregroundStyle(Color.piInk)
+            .frame(width: Self.size.width, height: Self.size.height)
+            .background(hovering ? Color.piFillStrong : Color.clear, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .contentShape(Rectangle())
     }
 }
 
 /// What the header's menu and the project's right-click menu both offer.
-struct ProjectSidebarActions: View {
-    let model: WorkspaceModel
-    let state: ProjectHeaderState
-    @Environment(\.piReduceMotion) private var reduceMotion
-    @ViewBuilder var body: some View {
+enum ProjectSidebarActions {
+    @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel, state: ProjectHeaderState, reduceMotion: Bool) -> [PiMenuEntry] {
         if !state.scratch {
-            Button("New Chat", systemImage: "square.and.pencil") { model.newChat(in: state.projectID, topicID: nil) }.disabled(!state.available || !state.trusted)
-            Button("New Topic…", systemImage: "folder.badge.plus") { model.presentNewTopic(in: state.projectID) }
-                .accessibilityIdentifier("newTopic-" + state.projectID)
+            PiMenuEntry.button("New Chat", systemImage: "square.and.pencil", enabled: state.available && state.trusted) {
+                model.newChat(in: state.projectID, topicID: nil)
+            }
+            PiMenuEntry.button("New Topic…", systemImage: "folder.badge.plus", identifier: "newTopic-" + state.projectID) {
+                model.presentNewTopic(in: state.projectID)
+            }
             // The header drops its own button for this in a narrow sidebar.
-            Button("Changes and History…", systemImage: "arrow.triangle.branch") { model.showChanges(in: state.projectID) }
-                .disabled(!state.available).accessibilityIdentifier("projectChangesAction-" + state.projectID)
+            PiMenuEntry.button("Changes and History…", systemImage: "arrow.triangle.branch", enabled: state.available,
+                               identifier: "projectChangesAction-" + state.projectID) { model.showChanges(in: state.projectID) }
         }
-        Button(state.expanded ? "Collapse Project" : "Expand Project") {
+        PiMenuEntry.button(state.expanded ? "Collapse Project" : "Expand Project", enabled: !state.filtering) {
             withAnimation(reduceMotion ? nil : PiMotion.glide) { model.setProjectExpanded(state.projectID, expanded: !state.expanded) }
-        }.disabled(state.filtering)
-        Button(state.archived ? "Show Active Chats" : "Show Archived Chats", systemImage: "archivebox") {
+        }
+        PiMenuEntry.button(state.archived ? "Show Active Chats" : "Show Archived Chats", systemImage: "archivebox") {
             withAnimation(reduceMotion ? nil : PiMotion.glide) { model.setProjectArchiveFilter(state.projectID, archived: !state.archived) }
         }
         if !state.scratch {
-            Divider()
-            Button(state.available ? "Manage Project…" : "Configure Projects…", systemImage: "folder.badge.gearshape") {
+            PiMenuEntry.divider
+            PiMenuEntry.button(state.available ? "Manage Project…" : "Configure Projects…", systemImage: "folder.badge.gearshape") {
                 if state.available { model.selectedWorkspaceID = state.projectID }
                 model.showWorkspaceManager = true
             }
@@ -118,7 +136,7 @@ struct TopicSidebarHeader: View, Equatable {
     let state: TopicHeaderState
     /// Opens the group's own "Remove this topic?" question, which lives with
     /// the rows it is about rather than in a sheet over the window.
-    let confirmRemove: () -> Void
+    let confirmRemove: @MainActor () -> Void
     @Environment(\.piReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -140,22 +158,23 @@ struct TopicSidebarHeader: View, Equatable {
             .accessibilityIdentifier("topicDisclosure-" + state.topicID)
             PiIconButton(symbol: "plus", label: "New chat in topic " + state.title, size: 22) { model.newChat(in: state.projectID, topicID: state.topicID) }
                 .disabled(!state.trusted).accessibilityIdentifier("newTopicChat-" + state.topicID)
-            Menu { actions } label: { Image(systemName: "ellipsis").frame(width: 18, height: 22).contentShape(Rectangle()) }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().piPointer()
-                .accessibilityLabel("Topic actions for " + state.title).accessibilityIdentifier("topicActions-" + state.topicID)
+            PiMenuControl(label: "Topic actions for " + state.title, identifier: "topicActions-" + state.topicID) { [model, state, confirmRemove] in
+                TopicSidebarHeader.entries(model: model, state: state, confirmRemove: confirmRemove)
+            } face: { hovering in SidebarMenuFace(hovering: hovering) }
+                .frame(width: SidebarMenuFace.size.width, height: SidebarMenuFace.size.height)
         }
         .padding(.leading, 21).padding(.trailing, 7).padding(.vertical, 2)
         .background(state.dropTargeted ? Color.piAccentSoft : .clear, in: RoundedRectangle(cornerRadius: PiRadius.sm))
         .overlay(RoundedRectangle(cornerRadius: PiRadius.sm).stroke(state.dropTargeted ? Color.piAccent : .clear, lineWidth: 1))
-        .contextMenu { actions }
+        .contextMenu { PiMenuContent { [model, state, confirmRemove] in TopicSidebarHeader.entries(model: model, state: state, confirmRemove: confirmRemove) } }
         .help("Drop chats here to group them in “" + state.title + "”. Saved side chats move with their parent.")
     }
-    @ViewBuilder private var actions: some View {
-        Button("New Chat", systemImage: "square.and.pencil") { model.newChat(in: state.projectID, topicID: state.topicID) }.disabled(!state.trusted)
-        Button("New Topic…", systemImage: "folder.badge.plus") { model.presentNewTopic(in: state.projectID) }
-        Divider()
-        Button("Rename Topic…", systemImage: "pencil") { model.presentRenameTopic(state.topicID) }
-        Button("Remove Topic…", systemImage: "folder.badge.minus", role: .destructive, action: confirmRemove)
-            .help("Keep all chats and move them back to the project")
+    @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel, state: TopicHeaderState, confirmRemove: @escaping @MainActor () -> Void) -> [PiMenuEntry] {
+        PiMenuEntry.button("New Chat", systemImage: "square.and.pencil", enabled: state.trusted) { model.newChat(in: state.projectID, topicID: state.topicID) }
+        PiMenuEntry.button("New Topic…", systemImage: "folder.badge.plus") { model.presentNewTopic(in: state.projectID) }
+        PiMenuEntry.divider
+        PiMenuEntry.button("Rename Topic…", systemImage: "pencil") { model.presentRenameTopic(state.topicID) }
+        PiMenuEntry.button("Remove Topic…", systemImage: "folder.badge.minus", destructive: true, help: "Keep all chats and move them back to the project",
+                           action: confirmRemove)
     }
 }

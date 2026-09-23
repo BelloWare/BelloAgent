@@ -6,7 +6,7 @@ import AppKit
 /// Skills rendered inline: the composer's tokens that lead the text, the
 /// pills at the start of a sent message's bubble, the card a resting pointer
 /// brings up and the popover a press opens.
-final class InlineSkillPillTests: XCTestCase {
+class InlineSkillPillTestCase: XCTestCase {
 
     // MARK: Fixtures
 
@@ -84,13 +84,45 @@ final class InlineSkillPillTests: XCTestCase {
 
     // MARK: The wire: the skills a message was sent with reach the app
 
-    private static let sorted: JSONEncoder = {
+    fileprivate static let sorted: JSONEncoder = {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]; return encoder
     }()
-    private func wire(_ object: Any) throws -> WireValue {
+    fileprivate func wire(_ object: Any) throws -> WireValue {
         try JSONDecoder().decode(WireValue.self, from: JSONSerialization.data(withJSONObject: object))
     }
 
+    // MARK: The token model
+
+    // MARK: What a pill says
+
+    // MARK: In a real window: the composer
+
+    // MARK: In a real window: the transcript
+
+    // MARK: In a real window: hover and press
+
+    // MARK: Looks (opt-in captures for review)
+
+    /// The window and every panel of ours over it (the hover card is a child panel, not a popover).
+    @MainActor func captureWithPanels(_ window: NSWindow, to url: URL) throws {
+        typealias ArrayImage = @convention(c) (CGRect, CFArray, UInt32) -> Unmanaged<CGImage>?
+        guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImageFromArray") else { throw XCTSkip("Window capture unavailable") }
+        let create = unsafeBitCast(symbol, to: ArrayImage.self)
+        let screen = NSScreen.screens.first?.frame ?? .zero
+        let panels = NSApp.windows.filter { $0.isVisible && $0 != window && ($0 is PiHoverCardPanel || String(describing: type(of: $0)).contains("Popover")) }
+        var frame = window.frame
+        for panel in panels { frame = frame.union(panel.frame) }
+        var ids = (panels + [window]).map { UnsafeRawPointer(bitPattern: UInt($0.windowNumber)) }
+        let array = try XCTUnwrap(ids.withUnsafeMutableBufferPointer { CFArrayCreate(nil, $0.baseAddress, $0.count, nil) })
+        let bounds = CGRect(x: frame.minX, y: screen.height - frame.maxY, width: frame.width, height: frame.height)
+        let options = CGWindowImageOption.bestResolution.rawValue | CGWindowImageOption.boundsIgnoreFraming.rawValue
+        guard let image = create(bounds, array, options)?.takeRetainedValue() else { throw XCTSkip("Window capture returned no image") }
+        let png = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+        try png.write(to: url, options: .atomic)
+    }
+}
+
+final class InlineSkillPillTests: InlineSkillPillTestCase {
     /// The helper's display row carries the skills a user message was sent
     /// with; the direct projector reads them exactly as Codable does, and a
     /// row it is unsure of falls back to Codable's answer.
@@ -176,8 +208,6 @@ final class InlineSkillPillTests: XCTestCase {
         XCTAssertEqual(user.skills?.first?.arguments, "focus")
         XCTAssertNil(page.messages.first { $0.id == "a1" }?.skills)
     }
-
-    // MARK: The token model
 
     /// The card sits above its pill while the window has the room there,
     /// below it while the window has the room there, and on the screen always.
@@ -306,8 +336,6 @@ final class InlineSkillPillTests: XCTestCase {
         XCTAssertEqual(legacy.skills, [chip])
     }
 
-    // MARK: What a pill says
-
     /// A sent message's pill is compared with the skill as installed now.
     func testChangedSinceThisMessageAndNoLongerInstalled() {
         let sent = Self.use("release-checklist", hash: "3f2a9c1e77ab01cd")
@@ -380,8 +408,6 @@ final class InlineSkillPillTests: XCTestCase {
         XCTAssertEqual(SkillPillLabel.arguments(String(repeating: "x", count: 40)), String(repeating: "x", count: 23) + "…")
         XCTAssertEqual(SkillPillLabel.arguments("two\nlines"), "two lines")
     }
-
-    // MARK: In a real window: the composer
 
     /// Two skills in a real composer: tokens inside the editor that lead the
     /// text on its first line, no row above it; typing, an input method's
@@ -491,8 +517,6 @@ final class InlineSkillPillTests: XCTestCase {
         XCTAssertEqual(field.frame.height, 44, accuracy: 0.5)
     }
 
-    // MARK: In a real window: the transcript
-
     /// A sent message shows the skills it used as pills at the start of its
     /// bubble, ahead of the text, and the bubble is exactly one pill row and
     /// a gap taller than the same message without them.
@@ -568,58 +592,6 @@ final class InlineSkillPillTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(Self.row("u0", in: pane)).frame, before, "The rows above did not move")
         XCTAssertEqual(try XCTUnwrap(Self.row("block:a0", in: pane)).frame, answered)
         print("PERF skill-pill row: \(row.measurementCount) measurement(s), height \(row.frame.height)")
-    }
-
-    // MARK: In a real window: hover and press
-
-    /// The card appears once the pointer has rested on a pill for about 450
-    /// ms, takes no focus, and leaves with the pointer.
-    @MainActor func testHoverShowsTheCardAfterTheDelayAndHidesItOnExit() async throws {
-        var user = TranscriptMessage(id: "u1", role: "user", text: "Tag it.", at: 1_000, turn: "u1")
-        user.skills = [Self.use("release-checklist", arguments: "focus on notarization")]
-        let pane = try ConversationPaneTests.Pane(messages: [user, TranscriptMessage(id: "a1", role: "assistant", text: "Tagged.", state: "complete", at: 2_000, turn: "u1")])
-        defer { pane.close() }
-        pane.session.skillCatalog = Self.catalog([Self.descriptor("release-checklist")])
-        pane.session.skills = [Self.chip("review")]
-        await pane.settle(20)
-        let editor = try XCTUnwrap(pane.editor)
-        pane.window.makeFirstResponder(editor)
-        let card = SkillPopovers.shared.card
-        let pill = try XCTUnwrap(Self.sentPills(in: pane).first)
-
-        let start = ProcessInfo.processInfo.systemUptime
-        Self.pointer(true, over: pill)
-        XCTAssertTrue(card.isWaiting); XCTAssertFalse(card.isShown)
-        try await Task.sleep(for: .milliseconds(250)); pane.draw()
-        if ProcessInfo.processInfo.systemUptime - start < 0.4 { XCTAssertFalse(card.isShown, "Nothing shows before the pointer has rested") }
-        try await waitFor("The card did not appear", seconds: 3, pane: pane) { card.isShown }
-        XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - start, 0.44, "It waited for the pointer to rest")
-        let panel = try XCTUnwrap(card.panel)
-        XCTAssertFalse(panel.canBecomeKey); XCTAssertFalse(panel.canBecomeMain); XCTAssertTrue(panel.ignoresMouseEvents)
-        XCTAssertTrue(pane.window.firstResponder === editor, "The card takes no focus: the composer keeps it")
-        XCTAssertTrue(panel.parent === pane.window, "It rides on the window it describes")
-        let pillOnScreen = pane.window.convertToScreen(pill.convert(pill.bounds, to: nil))
-        XCTAssertTrue(panel.frame.maxY <= pillOnScreen.minY + PiHoverCardPresenter.shadowMargin || panel.frame.minY >= pillOnScreen.maxY - PiHoverCardPresenter.shadowMargin,
-                      "It sits above or below the pill, not over it")
-        XCTAssertLessThanOrEqual(abs(panel.frame.minX + PiHoverCardPresenter.shadowMargin - pillOnScreen.minX), 1, "and lines up with it")
-        Self.pointer(false, over: pill)
-        XCTAssertFalse(card.isShown, "The card leaves with the pointer"); XCTAssertNil(card.panel)
-
-        // A pointer that passes over without resting shows nothing.
-        Self.pointer(true, over: pill)
-        try await Task.sleep(for: .milliseconds(150))
-        Self.pointer(false, over: pill)
-        try await Task.sleep(for: .milliseconds(500)); pane.draw()
-        XCTAssertFalse(card.isShown)
-
-        // A composer token has its card too, and typing sends it away.
-        let token = try XCTUnwrap(editor.skillTokenViews.first)
-        Self.pointer(true, over: token)
-        try await waitFor("The token's card did not appear", seconds: 3, pane: pane) { card.isShown }
-        XCTAssertTrue(card.anchorView === token)
-        XCTAssertTrue(pane.window.firstResponder === editor)
-        Self.pointer(false, over: token)
-        XCTAssertFalse(card.isShown)
     }
 
     /// A press opens the pill's popover — the composer's with Edit Arguments
@@ -759,8 +731,6 @@ final class InlineSkillPillTests: XCTestCase {
         }
     }
 
-    // MARK: Looks (opt-in captures for review)
-
     @MainActor func testCaptureSkillPillLooks() async throws {
         guard let path = testEnvironment("PI_APP_UI_SCREENSHOT_ROOT") else {
             throw XCTSkip("Set PI_APP_UI_SCREENSHOT_ROOT to render the skill pill captures.")
@@ -807,22 +777,58 @@ final class InlineSkillPillTests: XCTestCase {
             try SessionStatsPopoverTests.capture(narrow.window, to: folder.appendingPathComponent("skills-narrow-\(name).png"))
         }
     }
+}
 
-    /// The window and every panel of ours over it (the hover card is a child panel, not a popover).
-    @MainActor func captureWithPanels(_ window: NSWindow, to url: URL) throws {
-        typealias ArrayImage = @convention(c) (CGRect, CFArray, UInt32) -> Unmanaged<CGImage>?
-        guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImageFromArray") else { throw XCTSkip("Window capture unavailable") }
-        let create = unsafeBitCast(symbol, to: ArrayImage.self)
-        let screen = NSScreen.screens.first?.frame ?? .zero
-        let panels = NSApp.windows.filter { $0.isVisible && $0 != window && ($0 is PiHoverCardPanel || String(describing: type(of: $0)).contains("Popover")) }
-        var frame = window.frame
-        for panel in panels { frame = frame.union(panel.frame) }
-        var ids = (panels + [window]).map { UnsafeRawPointer(bitPattern: UInt($0.windowNumber)) }
-        let array = try XCTUnwrap(ids.withUnsafeMutableBufferPointer { CFArrayCreate(nil, $0.baseAddress, $0.count, nil) })
-        let bounds = CGRect(x: frame.minX, y: screen.height - frame.maxY, width: frame.width, height: frame.height)
-        let options = CGWindowImageOption.bestResolution.rawValue | CGWindowImageOption.boundsIgnoreFraming.rawValue
-        guard let image = create(bounds, array, options)?.takeRetainedValue() else { throw XCTSkip("Window capture returned no image") }
-        let png = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
-        try png.write(to: url, options: .atomic)
+/// The pill's hover card, which waits for the pointer to rest: a wall-clock
+/// delay, so it runs in the serial lane (`scripts/test-lanes.py`).
+final class InlineSkillPillTimingTests: InlineSkillPillTestCase, SerialTestLane {
+    /// The card appears once the pointer has rested on a pill for about 450
+    /// ms, takes no focus, and leaves with the pointer.
+    @MainActor func testHoverShowsTheCardAfterTheDelayAndHidesItOnExit() async throws {
+        var user = TranscriptMessage(id: "u1", role: "user", text: "Tag it.", at: 1_000, turn: "u1")
+        user.skills = [Self.use("release-checklist", arguments: "focus on notarization")]
+        let pane = try ConversationPaneTests.Pane(messages: [user, TranscriptMessage(id: "a1", role: "assistant", text: "Tagged.", state: "complete", at: 2_000, turn: "u1")])
+        defer { pane.close() }
+        pane.session.skillCatalog = Self.catalog([Self.descriptor("release-checklist")])
+        pane.session.skills = [Self.chip("review")]
+        await pane.settle(20)
+        let editor = try XCTUnwrap(pane.editor)
+        pane.window.makeFirstResponder(editor)
+        let card = SkillPopovers.shared.card
+        let pill = try XCTUnwrap(Self.sentPills(in: pane).first)
+
+        let start = ProcessInfo.processInfo.systemUptime
+        Self.pointer(true, over: pill)
+        XCTAssertTrue(card.isWaiting); XCTAssertFalse(card.isShown)
+        try await Task.sleep(for: .milliseconds(250)); pane.draw()
+        if ProcessInfo.processInfo.systemUptime - start < 0.4 { XCTAssertFalse(card.isShown, "Nothing shows before the pointer has rested") }
+        try await waitFor("The card did not appear", seconds: 3, pane: pane) { card.isShown }
+        XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - start, 0.44, "It waited for the pointer to rest")
+        let panel = try XCTUnwrap(card.panel)
+        XCTAssertFalse(panel.canBecomeKey); XCTAssertFalse(panel.canBecomeMain); XCTAssertTrue(panel.ignoresMouseEvents)
+        XCTAssertTrue(pane.window.firstResponder === editor, "The card takes no focus: the composer keeps it")
+        XCTAssertTrue(panel.parent === pane.window, "It rides on the window it describes")
+        let pillOnScreen = pane.window.convertToScreen(pill.convert(pill.bounds, to: nil))
+        XCTAssertTrue(panel.frame.maxY <= pillOnScreen.minY + PiHoverCardPresenter.shadowMargin || panel.frame.minY >= pillOnScreen.maxY - PiHoverCardPresenter.shadowMargin,
+                      "It sits above or below the pill, not over it")
+        XCTAssertLessThanOrEqual(abs(panel.frame.minX + PiHoverCardPresenter.shadowMargin - pillOnScreen.minX), 1, "and lines up with it")
+        Self.pointer(false, over: pill)
+        XCTAssertFalse(card.isShown, "The card leaves with the pointer"); XCTAssertNil(card.panel)
+
+        // A pointer that passes over without resting shows nothing.
+        Self.pointer(true, over: pill)
+        try await Task.sleep(for: .milliseconds(150))
+        Self.pointer(false, over: pill)
+        try await Task.sleep(for: .milliseconds(500)); pane.draw()
+        XCTAssertFalse(card.isShown)
+
+        // A composer token has its card too, and typing sends it away.
+        let token = try XCTUnwrap(editor.skillTokenViews.first)
+        Self.pointer(true, over: token)
+        try await waitFor("The token's card did not appear", seconds: 3, pane: pane) { card.isShown }
+        XCTAssertTrue(card.anchorView === token)
+        XCTAssertTrue(pane.window.firstResponder === editor)
+        Self.pointer(false, over: token)
+        XCTAssertFalse(card.isShown)
     }
 }

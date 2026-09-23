@@ -15,7 +15,7 @@ final class ContextPreviewTests: XCTestCase {
         XCTAssertEqual(preview["seq"].int,0,"A preview is bound to the unchanged conversation for native meter invalidation")
         let read = try await session.readPreparedContext(["revision":preview["revision"],"section":"request"])
         let body = try JSON.parse(Data(read["text"].text!.utf8))
-        XCTAssertTrue(body["instructions"].text!.contains("Follow the fixture instructions."))
+        XCTAssertTrue(RequestContextCounter.systemPrompt(body)!.contains("Follow the fixture instructions."))
         XCTAssertEqual(body["input"].list.last?["content"].list.first?["text"].text,"An unsent question 🙂")
         XCTAssertEqual(body["tools"].list.map { $0["name"].text! },["first","second","history_read"])
         let beforeCount = await client.count, beforeTools = await tools.calls, status = await session.snapshot()

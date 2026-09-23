@@ -6,7 +6,7 @@ import XCTest
 /// hold the two answers identical — as values and as bytes — over a page the
 /// real helper produced and over every row shape the wire can carry, and they
 /// hold the fallback honest for everything the projector declines.
-final class TranscriptWirePageTests: XCTestCase {
+final class TranscriptWirePageTests: XCTestCase, SerialTestLane {
     private static let sorted: JSONEncoder = {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]; return encoder
     }()

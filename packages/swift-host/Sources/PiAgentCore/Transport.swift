@@ -123,6 +123,11 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
         }
     }
     private var continuation: AsyncThrowingStream<HTTPPart, Error>.Continuation?
+    /// Pi's httpIdleTimeoutMs (300 s) bounds the wait for the response head
+    /// and each gap in its body; pi sets no limit on a whole request, so the
+    /// URL session's own week-long bound stays.
+    static let idleTimeout: TimeInterval = 300
+    static let totalTimeout: TimeInterval = 604_800
     func start(_ request: URLRequest, configuration: URLSessionConfiguration? = nil) -> AsyncThrowingStream<HTTPPart, Error> {
         // The queue retains whole, ordered delegate chunks. Byte admission is
         // bounded BEFORE yield, independent of a slow capture acknowledgement.
@@ -132,7 +137,7 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
             self.continuation=continuation
             continuation.onTermination = { [weak self] _ in self?.cancel() }
             let config = configuration ?? URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest=120; config.timeoutIntervalForResource=1800
+            config.timeoutIntervalForRequest=Self.idleTimeout; config.timeoutIntervalForResource=Self.totalTimeout
             config.httpCookieStorage=nil; config.urlCredentialStorage=nil; config.urlCache=nil
             let queue=OperationQueue(); queue.maxConcurrentOperationCount=1
             let session=URLSession(configuration: config, delegate:self, delegateQueue:queue)
@@ -307,8 +312,11 @@ public actor TraceStore {
     func monitoring(_ id: String) -> JSON {
         guard let t = traces[id] else { return [:] }
         let identity = t.credentials.metadata(t.identity?.json ?? .null), gateway = t.gateway?.json ?? .null
+        // `outcome` leaves "running" once the attempt has ended: its cost is
+        // final then, and the session adds it to the chat's spend.
         return ["identity":["status":identity["status"], "effectiveModel":identity["effectiveModel"]],
                 "gateway":["version":1, "cost":["status":gateway["cost"]["status"], "usd":gateway["cost"]["usd"]]],
+                "outcome":JSON(t.outcome),
                 "dispatch":t.dispatch.map { JSON($0) } ?? .null, "firstContent":t.firstContent.map { JSON($0) } ?? .null,
                 "modelComplete":t.completed.map { JSON($0) } ?? .null, "httpEnd":t.eof.map { JSON($0) } ?? .null,
                 "dispatchWall":t.dispatchWallTimestamp.map { JSON($0) } ?? .null]

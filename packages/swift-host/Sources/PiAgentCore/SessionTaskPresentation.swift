@@ -32,9 +32,9 @@ extension AgentSession {
     }
     /// Called only at the actual continuation decision, never message_end or
     /// turn_end. Persist before advancing to a queued follow-up.
-    func finishPresentedTask(_ outcome: String, detail: String? = nil) throws {
+    func finishPresentedTask(_ outcome: String, detail: String? = nil, code: String? = nil) throws {
         guard var task = activeTaskPresentation else { return }
-        task.phase = "terminal"; task.outcome = outcome; task.endedAt = nowMS()
+        task.phase = "terminal"; task.outcome = outcome; task.errorCode = code; task.endedAt = nowMS()
         task.endedAtUnixMs = Date().timeIntervalSince1970 * 1000
         task.lastSourceID = task.lastSourceID ?? task.anchorSourceID
         task.detail = detail.map { preview($0, bytes: 2048) }; task.preparingCalls = 0; task.currentTool = nil

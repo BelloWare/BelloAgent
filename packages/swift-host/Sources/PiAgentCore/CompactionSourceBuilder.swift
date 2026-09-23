@@ -160,11 +160,13 @@ enum CompactionSourceBuilder {
     }
 
     /// generateSummaryWithUsage's prompt text; the turn prefix's when `turnPrefix`.
-    static func prompt(_ parts: ArraySlice<String>, previous: String?, turnPrefix: Bool) -> String {
+    static func prompt(_ parts: ArraySlice<String>, previous: String?, turnPrefix: Bool, focus: String? = nil) -> String {
         var text="<conversation>\n"+parts.joined(separator:"\n\n")+"\n</conversation>\n\n"
         if let previous { text += "<previous-summary>\n"+previous+"\n</previous-summary>\n\n" }
         text += turnPrefix ? (previous == nil ? turnPrefixPrompt : turnPrefixUpdatePrompt) : (previous == nil ? summarizationPrompt : updatePrompt)
-        if parts.contains(where: { $0.contains(referenceMarker) }) { text += "\n\nAdditional focus: "+referenceFocus }
+        // Pi's customInstructions, then ours for history_read references.
+        let extra=[focus, parts.contains(where: { $0.contains(referenceMarker) }) ? referenceFocus : nil].compactMap { $0 }
+        if !extra.isEmpty { text += "\n\nAdditional focus: "+extra.joined(separator:" ") }
         return text
     }
     /// A part too long for the room left is cut after `fraction` of it and
@@ -190,7 +192,9 @@ enum CompactionSourceBuilder {
                 }
             }
         }
-        return (read.subtracting(modified).sorted(),modified.sorted())
+        // JavaScript's default sort: UTF-16 code unit order.
+        func sorted(_ paths: Set<String>) -> [String] { paths.sorted { $0.utf16.lexicographicallyPrecedes($1.utf16) } }
+        return (sorted(read.subtracting(modified)),sorted(modified))
     }
     /// formatFileOperations.
     static func fileOperations(read: [String], modified: [String]) -> String {

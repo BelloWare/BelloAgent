@@ -16,13 +16,16 @@ struct TranscriptActions {
     var retry: () -> Void = {}
     /// Nil for panes that cannot create a child conversation.
     var quoteReply: ((TranscriptQuote) -> Void)? = nil
-    /// Created only when Info opens, without observing the entire workspace in a row.
-    var turnRequestSource: (() -> TurnRequestSource?)? = nil
+    /// The turn report's info button: the Session Inspector at that turn.
+    var inspectTurn: ((TurnSummary) -> Void)? = nil
     /// A skill pill in a sent message (the message's id, the skill, the pill)
     /// was pressed; nil where no popover can open.
     var skillPressed: ((String, TranscriptSkillUse, NSView) -> Void)? = nil
     /// The pointer entered or left a sent message's skill pill.
     var skillHovered: ((String, TranscriptSkillUse, NSView, Bool) -> Void)? = nil
+    /// The cost-limit notice: raise the limit (the editor opens over the
+    /// button it passes), or continue a run stopped there.
+    var costLimit: ((CostLimitNoticeAction, NSView?) -> Void)? = nil
 }
 
 enum TranscriptMetrics {
@@ -259,12 +262,34 @@ struct WaitingDots: View {
 
 /// Actions and transient paint travel independently of the selectable text's
 /// native root and exact geometry. Copy always resolves the newest payload.
+///
+/// `update` is called while SwiftUI updates the row — and, for a streaming
+/// reply, while it updates the whole window (`TranscriptScrollSurface`). A
+/// publish from there is a change made during a view update: it scheduled
+/// the block hosts' own updates from inside the window's, and the text view
+/// it touched committed a Core Animation transaction that laid the window out
+/// again in the middle of its update. So a change is published on the next
+/// turn of the run loop, the newest one winning.
 @MainActor final class MarkdownBlockDecoration: ObservableObject {
     @Published private(set) var caret = false
     @Published private(set) var target: MarkdownCopyTarget?
+    private var pending: (caret: Bool, target: MarkdownCopyTarget?)?
+    /// A decoration drawn from the start with these values; nothing observes
+    /// it yet, so nothing is published.
+    init(caret: Bool = false, target: MarkdownCopyTarget? = nil) { self.caret = caret; self.target = target }
     func update(caret: Bool, target: MarkdownCopyTarget?) {
-        if self.caret != caret { self.caret = caret }
-        if self.target != target { self.target = target }
+        let scheduled = pending != nil
+        pending = (caret, target)
+        guard !scheduled else { return }
+        if pending?.caret == self.caret, pending?.target == self.target { pending = nil; return }
+        DispatchQueue.main.async { [weak self] in self?.flush() }
+    }
+    /// Publishes the newest values now. Called on the turn after `update`.
+    func flush() {
+        guard let next = pending else { return }
+        pending = nil
+        if caret != next.caret { caret = next.caret }
+        if target != next.target { target = next.target }
     }
 }
 
@@ -593,7 +618,9 @@ struct MessageRowView: View {
         case "requestInfo": if !disclosure.responseFolded { RequestTimelineInfo(message:message, actions:actions) }
         case "compaction": CompactionRowView(message: message, actions: actions, open: disclosure.compaction, toggle: { toggle(.compaction(message.id)) })
         case "branch": BranchRowView(message: message)
-        case "failure": FailureRowView(message: message, actions: actions)
+        case "failure":
+            if message.failureCode?.hasPrefix(SessionDisplay.costLimitCode) == true { CostLimitNoticeRow(message: message, actions: actions) }
+            else { FailureRowView(message: message, actions: actions) }
         case "notice": NoticeRowView(message: message)
         default: plain
         }

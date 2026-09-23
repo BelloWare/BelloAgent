@@ -171,6 +171,10 @@ extension WorkspaceModel {
                 }
                 let rejection: String? = { if case HostError.rejected(let code, _) = error { return code }; return nil }()
                 // The failure sits in the conversation, under the messages, not in a fixed strip.
+                // A chat at its cost limit refuses a message where it was typed:
+                // the notice says so and offers to raise the limit. Its code
+                // goes first, so the row is drawn once, as that notice.
+                if rejection == SessionDisplay.costLimitCode { view.sendFailureCode = rejection }
                 if rejection == "not_running", steer {
                     view.sendFailure = "The run finished. Press Return to send this as a new message."
                 } else { view.sendFailure = error.localizedDescription }

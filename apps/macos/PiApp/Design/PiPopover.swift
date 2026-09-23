@@ -209,6 +209,8 @@ struct PiPopoverTrigger: NSViewRepresentable {
 struct PiStatPopoverPill<Content: View>: View {
     let symbol: String
     let label: String
+    /// A last figure in warning ink (see `PiStatPillFace.warningTail`).
+    var warningTail: String? = nil
     var accessibility: String? = nil
     var identifier: String? = nil
     var help: String = ""
@@ -226,7 +228,7 @@ struct PiStatPopoverPill<Content: View>: View {
     @Environment(\.piReduceMotion) private var reduceMotion
 
     var body: some View {
-        PiStatPillFace(symbol: symbol, label: label, highlighted: hovering || presenter.isShown)
+        PiStatPillFace(symbol: symbol, label: label, highlighted: hovering || presenter.isShown, warningTail: warningTail)
             .accessibilityHidden(true)
             .overlay {
                 PiPopoverTrigger(label: accessibility ?? label, identifier: identifier, help: help.isEmpty ? label : help,

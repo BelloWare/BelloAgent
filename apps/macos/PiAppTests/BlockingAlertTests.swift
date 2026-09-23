@@ -169,7 +169,7 @@ final class BlockingAlertTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("PiApp")
         let converted = [
             "Workspaces/WorkspaceFolders.swift",
-            "Inspector/InspectorView.swift", "Inspector/ResourceInspector.swift", "Inspector/MessageDetailView.swift",
+            "Inspector/Session/InspectorRawTab.swift", "Inspector/ResourceInspector.swift",
             "Inspector/ConversationContentView.swift", "Application/UpdateController.swift",
             "Application/WindowActivityGuard.swift", "Git/GitPanel.swift",
         ]

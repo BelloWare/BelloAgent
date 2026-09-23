@@ -422,33 +422,6 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(display.footer.timing, newer)
     }
 
-    @MainActor func testHoverPreviewAllowsCrossingIntoChartAndClickPinsIt() async throws {
-        let hover = SessionTimingHover(openDelay: .milliseconds(10), closeDelay: .milliseconds(30))
-        defer { hover.stop() }
-        hover.triggerHover(true)
-        try await Task.sleep(for: .milliseconds(30))
-        XCTAssertTrue(hover.presented); XCTAssertFalse(hover.pinned)
-        hover.triggerHover(false)
-        hover.panelHover(true)
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertTrue(hover.presented, "The preview must not vanish when the pointer enters the chart")
-        hover.togglePinned(); hover.panelHover(false)
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertTrue(hover.presented); XCTAssertTrue(hover.pinned)
-        hover.togglePinned()
-        XCTAssertFalse(hover.presented); XCTAssertFalse(hover.pinned)
-    }
-
-    @MainActor func testBriefHoverAndDisappearingSessionDoNotLeaveAPopup() async throws {
-        let hover = SessionTimingHover(openDelay: .milliseconds(30), closeDelay: .milliseconds(10))
-        hover.triggerHover(true); hover.triggerHover(false)
-        try await Task.sleep(for: .milliseconds(50)); XCTAssertFalse(hover.presented)
-        hover.togglePinned(); XCTAssertTrue(hover.presented)
-        hover.stop(); XCTAssertFalse(hover.presented)
-        hover.triggerHover(true); hover.stop()
-        try await Task.sleep(for: .milliseconds(50)); XCTAssertFalse(hover.presented)
-    }
-
     /// The footer no longer carries a rate that moves while a request streams.
     /// While a run is going it shows two things: how long the turn has been
     /// running, and what it is doing.
@@ -513,9 +486,8 @@ final class SessionTimingTests: XCTestCase {
     /// One request has one speed. This one waited two seconds for its first
     /// token and then decoded the 100 after it in one second: it decoded at
     /// 100 tok/s, and its three-second round trip is latency, not speed.
-    /// The history popover's latest tile, its chart and the caption of the
-    /// request under the pointer, the sidebar slot and the menu bar all quote
-    /// that request — so all of them must quote the same figure.
+    /// The sidebar slot, the Session Inspector's request header and the menu
+    /// bar all quote that request — so all of them must quote the same figure.
     @MainActor func testEveryCaptionOfOneRequestQuotesTheSameSettledRate() async throws {
         let request = SessionTimingSample(id: "r1", wall: Date(timeIntervalSince1970: 1_790_000_000), ttftMilliseconds: 2_000,
                                           streamingMilliseconds: 1_000, outputTokens: 101, requestMilliseconds: 3_000)
@@ -524,17 +496,12 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(history.points(for: .rate).map(\.value), [100])
         XCTAssertEqual(SessionRatePresentation(history: history).label, "Latest 100 tok/s")
 
-        // The popover itself, in a window, read back as the reader sees it.
-        let hosted = NSHostingView(rootView: SessionTimingHistoryView(history: history, sessionTitle: "One request", close: {})
-            .background(Color.piSurface))
-        let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 430, height: 560), styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: .aqua)
-        window.contentView = hosted; window.orderFront(nil)
-        defer { window.orderOut(nil); window.contentView = nil; window.close() }
-        let rendered = try await Self.recognizedText(in: window)
-        XCTAssertNotNil(rendered.range(of: #"ttft\W+100 tok/s"#, options: .regularExpression),
-                        "The request caption quotes the request's decode rate, not output over the whole round trip. OCR: \(rendered)")
-        XCTAssertFalse(rendered.contains("34 tok/s") || rendered.contains("33 tok/s"), "No caption divides by the wait for the first token. OCR: \(rendered)")
+        // The Session Inspector's request header quotes the same request's rate.
+        let row = InspectorRequestRow(id: "r1", wall: 1_790_000_000, turn: "t", purpose: "turn", api: "openai-responses", alias: "m", model: "m",
+                                      outcome: "completed", output: 101, ttft: 2_000, decode: 1_000, duration: 3_000)
+        XCTAssertEqual(row.figures.first { $0.label == "Speed" }?.value, "100 tok/s",
+                       "The request's decode rate, not output over the whole round trip")
+        XCTAssertFalse(row.figures.contains { $0.value.contains("34 tok/s") || $0.value.contains("33 tok/s") })
 
         // The menu bar's row for the chat that ran it.
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
@@ -677,32 +644,5 @@ final class SessionTimingTests: XCTestCase {
         request.recognitionLevel = .accurate; request.recognitionLanguages = ["en-US"]; request.usesLanguageCorrection = false
         try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
-    }
-
-    @MainActor func testOptionalNativeTimingChartPreview() async throws {
-        guard let directory = testEnvironment("PI_APP_USAGE_CAPTURE_ROOT") else { return }
-        let output = URL(fileURLWithPath: directory); try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-        let samples = (0..<16).map { index in
-            SessionTimingSample(id: "request-\(index)", wall: Date(timeIntervalSince1970: 1_789_535_000 + Double(index * 60)),
-                                ttftMilliseconds: index == 7 ? nil : Double(250 + (index * 113) % 1300), streamingMilliseconds: 1_200,
-                                outputTokens: index == 9 ? nil : Double(60 + (index * 11) % 70), requestMilliseconds: Double(1450 + (index * 113) % 1300))
-        }
-        // The session figure the popover quotes: the settled rate over the
-        // requests that reported both a decode span and their output.
-        var settled = SettledThroughput()
-        for sample in samples { settled.add(decodeMilliseconds: sample.streamingMilliseconds, outputTokens: sample.outputTokens) }
-        XCTAssertEqual(settled.samples, samples.filter { $0.settledTokensPerSecond != nil }.count)
-        let history = SessionTimingHistory(samples: samples, completedRequests: samples.count, historicalSettledThroughput: settled)
-        let hosted = NSHostingView(rootView: SessionTimingHistoryView(history: history, sessionTitle: "Gateway timing review", close: {}))
-        let window = NSWindow(contentRect: NSRect(x: 120, y: 120, width: 430, height: 570), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)
-        defer { window.close() }
-        for _ in 0..<20 { hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertGreaterThan(hosted.fittingSize.height, 300)
-        // Capture only this synthetic hosted view, never the user's desktop.
-        guard let bitmap = hosted.bitmapImageRepForCachingDisplay(in: hosted.bounds) else { return XCTFail("Chart preview has no bitmap") }
-        hosted.cacheDisplay(in: hosted.bounds, to: bitmap)
-        let data = try XCTUnwrap(bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.82]))
-        try data.write(to: output.appendingPathComponent("session-timing-history.jpg"))
     }
 }

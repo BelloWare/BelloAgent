@@ -3,10 +3,11 @@ import SwiftUI
 import AppKit
 @testable import PiApp
 
-/// The Changes panel driven the way a reader drives it, against real throwaway
-/// repositories: thousands of changed files, every kind of change, a repository
-/// that moves under the panel, and the reads the panel leaves behind.
-final class GitPanelAuditTests: XCTestCase {
+/// What the Git panel's test classes share: throwaway repositories, git
+/// itself, a wait for what the panel reads, and a window to put it in. It has
+/// no tests of its own; the classes that do are split by what they drive, so
+/// the parallel lane can spread them over its clones.
+class GitPanelTestCase: XCTestCase {
 
     // MARK: Fixtures
     //
@@ -75,6 +76,28 @@ final class GitPanelAuditTests: XCTestCase {
         work()
         return (ProcessInfo.processInfo.systemUptime - start) * 1000
     }
+
+    // MARK: Renames
+
+    static let renamedContent = "one\ntwo\nthree\nfour\nfive\n"
+    /// A repository whose one commit holds `before.txt`.
+    func renameFixture(_ name: String) throws -> URL {
+        let root = try repository(name)
+        try start(root)
+        try Self.renamedContent.write(to: root.appendingPathComponent("before.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
+        return root
+    }
+    /// What git itself says about the index and the working tree, a line per path.
+    func porcelain(_ root: URL) throws -> [String] {
+        try git(["status", "--porcelain"], in: root).split(separator: "\n").map(String.init)
+    }
+}
+
+/// The Changes panel driven the way a reader drives it, against real throwaway
+/// repositories: thousands of changed files, every kind of change, a repository
+/// that moves under the panel, and the reads the panel leaves behind.
+final class GitPanelAuditTests: GitPanelTestCase {
 
     // MARK: Argument limits
 
@@ -213,22 +236,117 @@ final class GitPanelAuditTests: XCTestCase {
         XCTAssertEqual(seen["modified.txt"]?.first?.added, 1)
     }
 
-    // MARK: Renames
+    /// A failed action said why for no time at all: the refresh after every
+    /// action begins by clearing the notice, and it ran in the same turn, so a
+    /// refused push, stage or commit left the panel as if nothing had been
+    /// pressed.
+    @MainActor func testAFailedActionKeepsItsMessageOnScreen() async throws {
+        let root = try renameFixture("git-failure-notice"); defer { try? FileManager.default.removeItem(at: root) }
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
+        try await eventually("settle") { controller.repositoryRoot != nil && !controller.loading }
 
-    static let renamedContent = "one\ntwo\nthree\nfour\nfive\n"
-    /// A repository whose one commit holds `before.txt`.
-    func renameFixture(_ name: String) throws -> URL {
-        let root = try repository(name)
+        await controller.push()
+        XCTAssertTrue(controller.notice.hasPrefix("Push: "), "a push with nowhere to go says so: \(controller.notice)")
+        XCTAssertFalse(controller.busy)
+        await controller.stage(["no-such-file.txt"])
+        XCTAssertTrue(controller.notice.contains("no-such-file.txt"), "so does a stage git refuses: \(controller.notice)")
+        await controller.refresh()
+        XCTAssertEqual(controller.notice, "", "the reader's own refresh clears it")
+
+        let fresh = root.appendingPathComponent("new.txt")
+        try "fresh\n".write(to: fresh, atomically: true, encoding: .utf8)
+        try git(["add", "new.txt"], in: root)
+        try FileManager.default.removeItem(at: fresh)
+        await controller.refresh()
+        controller.commitMessage = "Nothing really"
+        await controller.commitChecked()
+        XCTAssertEqual(controller.notice, "Commit: Nothing to commit: the chosen files on disk match HEAD.")
+    }
+
+    /// A repository that is not one, one with no commits at all, a detached
+    /// HEAD and several roots: none of these may leave the panel stuck or
+    /// showing an error for something ordinary.
+    @MainActor func testUnusualRepositoriesAreHandledWithoutANotice() async throws {
+        let plain = try repository("git-plain"); defer { try? FileManager.default.removeItem(at: plain) }
+        try "loose\n".write(to: plain.appendingPathComponent("loose.txt"), atomically: true, encoding: .utf8)
+        let notARepository = GitController(roots: [plain.path])
+        try await eventually("settle on no repository") { !notARepository.loading }
+        XCTAssertNil(notARepository.repositoryRoot)
+        XCTAssertEqual(notARepository.notice, "", "a folder outside git is a state, not an error")
+        XCTAssertTrue(notARepository.status.entries.isEmpty)
+
+        let empty = try repository("git-empty"); defer { try? FileManager.default.removeItem(at: empty) }
+        try start(empty)
+        try "first\n".write(to: empty.appendingPathComponent("first.txt"), atomically: true, encoding: .utf8)
+        let noCommits = GitController(roots: [empty.path])
+        try await eventually("read a repository with no commits") { noCommits.repositoryRoot != nil && !noCommits.loading }
+        XCTAssertEqual(noCommits.notice, "", "an empty repository has no history, which is not a failure")
+        XCTAssertTrue(noCommits.commits.isEmpty)
+        XCTAssertEqual(noCommits.status.entries.map(\.path), ["first.txt"])
+        XCTAssertEqual(noCommits.status.branch, "main")
+        XCTAssertNil(noCommits.status.head)
+
+        let detached = try repository("git-detached"); defer { try? FileManager.default.removeItem(at: detached) }
+        try start(detached)
+        for index in 1...2 {
+            try "line \(index)\n".write(to: detached.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
+            try git(["add", "."], in: detached); try git(["commit", "-q", "-m", "Commit \(index)"], in: detached)
+        }
+        try git(["checkout", "-q", "HEAD~1"], in: detached)
+        let head = GitController(roots: [detached.path])
+        try await eventually("read a detached HEAD") { head.commits.count == 1 }
+        XCTAssertEqual(head.notice, "")
+        XCTAssertEqual(head.status.branch, "(detached)")
+        XCTAssertNotNil(head.status.head)
+
+        // Several roots: switching moves the whole panel to the other repository.
+        let second = try repository("git-second"); defer { try? FileManager.default.removeItem(at: second) }
+        try start(second)
+        try "other\n".write(to: second.appendingPathComponent("other.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."], in: second); try git(["commit", "-q", "-m", "Second repository"], in: second)
+        let many = GitController(roots: [detached.path, second.path])
+        try await eventually("read the first root") { many.commits.count == 1 }
+        many.root = second.path
+        try await eventually("move to the second root") { many.commits.first?.subject == "Second repository" }
+        XCTAssertEqual(many.repositoryRoot.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }, second.resolvingSymlinksInPath().path)
+        XCTAssertEqual(many.notice, "")
+    }
+
+    /// The reader keeps the panel open while HEAD moves underneath it.
+    @MainActor func testHeadMovingUnderThePanelIsPickedUpAndStaleSelectionDropped() async throws {
+        let root = try repository("git-head"); defer { try? FileManager.default.removeItem(at: root) }
         try start(root)
-        try Self.renamedContent.write(to: root.appendingPathComponent("before.txt"), atomically: true, encoding: .utf8)
-        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
-        return root
-    }
-    /// What git itself says about the index and the working tree, a line per path.
-    func porcelain(_ root: URL) throws -> [String] {
-        try git(["status", "--porcelain"], in: root).split(separator: "\n").map(String.init)
-    }
+        try "one\n".write(to: root.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "First"], in: root)
+        try "one\ntwo\n".write(to: root.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
 
+        let controller = GitController(roots: [root.path])
+        try await eventually("select the changed file and read the history") { controller.selection?.path == "tracked.txt" && !controller.diff.isEmpty && controller.commits.count == 1 }
+
+        // Somebody commits from a terminal while the panel is open.
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Second, from outside"], in: root)
+        try git(["checkout", "-q", "-b", "side"], in: root)
+        let start = ProcessInfo.processInfo.systemUptime
+        await controller.refresh()
+        let cost = (ProcessInfo.processInfo.systemUptime - start) * 1000
+        print(String(format: "PERF git panel refresh of a small repository: %.0f ms", cost))
+        XCTAssertEqual(controller.commits.first?.subject, "Second, from outside", "the new commit is there")
+        XCTAssertEqual(controller.status.branch, "side", "and so is the new branch")
+        XCTAssertNil(controller.selection, "the file that is no longer changed stops being selected")
+        XCTAssertTrue(controller.diff.isEmpty)
+        XCTAssertEqual(controller.notice, "")
+
+        // A file changed on disk shows up on the next refresh.
+        try "one\ntwo\nthree\n".write(to: root.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
+        await controller.refresh()
+        XCTAssertEqual(controller.status.entries.map(\.path), ["tracked.txt"])
+        try await eventually("read the new diff") { controller.diff.first?.added == 1 }
+    }
+}
+
+/// A rename, a copy and a deletion, staged, committed and discarded: each
+/// must move both of its names, or its one name, together.
+final class GitRenameTests: GitPanelTestCase {
     /// The rename's row arrives ticked, so Commit is one click away. It used
     /// to commit the new name alone — a copy — and leave the old name's
     /// removal staged for a second commit nobody asked for.
@@ -448,113 +566,6 @@ final class GitPanelAuditTests: XCTestCase {
             _ = try await GitService().commit(message: "Nothing really", in: root.path, paths: ["new.txt"], staging: [])
             XCTFail("a commit that changes nothing is refused")
         } catch { XCTAssertEqual(error.localizedDescription, "Nothing to commit: the chosen files on disk match HEAD.") }
-    }
-
-    /// A failed action said why for no time at all: the refresh after every
-    /// action begins by clearing the notice, and it ran in the same turn, so a
-    /// refused push, stage or commit left the panel as if nothing had been
-    /// pressed.
-    @MainActor func testAFailedActionKeepsItsMessageOnScreen() async throws {
-        let root = try renameFixture("git-failure-notice"); defer { try? FileManager.default.removeItem(at: root) }
-        let controller = GitController(roots: [root.path]); defer { controller.stop() }
-        try await eventually("settle") { controller.repositoryRoot != nil && !controller.loading }
-
-        await controller.push()
-        XCTAssertTrue(controller.notice.hasPrefix("Push: "), "a push with nowhere to go says so: \(controller.notice)")
-        XCTAssertFalse(controller.busy)
-        await controller.stage(["no-such-file.txt"])
-        XCTAssertTrue(controller.notice.contains("no-such-file.txt"), "so does a stage git refuses: \(controller.notice)")
-        await controller.refresh()
-        XCTAssertEqual(controller.notice, "", "the reader's own refresh clears it")
-
-        let fresh = root.appendingPathComponent("new.txt")
-        try "fresh\n".write(to: fresh, atomically: true, encoding: .utf8)
-        try git(["add", "new.txt"], in: root)
-        try FileManager.default.removeItem(at: fresh)
-        await controller.refresh()
-        controller.commitMessage = "Nothing really"
-        await controller.commitChecked()
-        XCTAssertEqual(controller.notice, "Commit: Nothing to commit: the chosen files on disk match HEAD.")
-    }
-
-    /// A repository that is not one, one with no commits at all, a detached
-    /// HEAD and several roots: none of these may leave the panel stuck or
-    /// showing an error for something ordinary.
-    @MainActor func testUnusualRepositoriesAreHandledWithoutANotice() async throws {
-        let plain = try repository("git-plain"); defer { try? FileManager.default.removeItem(at: plain) }
-        try "loose\n".write(to: plain.appendingPathComponent("loose.txt"), atomically: true, encoding: .utf8)
-        let notARepository = GitController(roots: [plain.path])
-        try await eventually("settle on no repository") { !notARepository.loading }
-        XCTAssertNil(notARepository.repositoryRoot)
-        XCTAssertEqual(notARepository.notice, "", "a folder outside git is a state, not an error")
-        XCTAssertTrue(notARepository.status.entries.isEmpty)
-
-        let empty = try repository("git-empty"); defer { try? FileManager.default.removeItem(at: empty) }
-        try start(empty)
-        try "first\n".write(to: empty.appendingPathComponent("first.txt"), atomically: true, encoding: .utf8)
-        let noCommits = GitController(roots: [empty.path])
-        try await eventually("read a repository with no commits") { noCommits.repositoryRoot != nil && !noCommits.loading }
-        XCTAssertEqual(noCommits.notice, "", "an empty repository has no history, which is not a failure")
-        XCTAssertTrue(noCommits.commits.isEmpty)
-        XCTAssertEqual(noCommits.status.entries.map(\.path), ["first.txt"])
-        XCTAssertEqual(noCommits.status.branch, "main")
-        XCTAssertNil(noCommits.status.head)
-
-        let detached = try repository("git-detached"); defer { try? FileManager.default.removeItem(at: detached) }
-        try start(detached)
-        for index in 1...2 {
-            try "line \(index)\n".write(to: detached.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
-            try git(["add", "."], in: detached); try git(["commit", "-q", "-m", "Commit \(index)"], in: detached)
-        }
-        try git(["checkout", "-q", "HEAD~1"], in: detached)
-        let head = GitController(roots: [detached.path])
-        try await eventually("read a detached HEAD") { head.commits.count == 1 }
-        XCTAssertEqual(head.notice, "")
-        XCTAssertEqual(head.status.branch, "(detached)")
-        XCTAssertNotNil(head.status.head)
-
-        // Several roots: switching moves the whole panel to the other repository.
-        let second = try repository("git-second"); defer { try? FileManager.default.removeItem(at: second) }
-        try start(second)
-        try "other\n".write(to: second.appendingPathComponent("other.txt"), atomically: true, encoding: .utf8)
-        try git(["add", "."], in: second); try git(["commit", "-q", "-m", "Second repository"], in: second)
-        let many = GitController(roots: [detached.path, second.path])
-        try await eventually("read the first root") { many.commits.count == 1 }
-        many.root = second.path
-        try await eventually("move to the second root") { many.commits.first?.subject == "Second repository" }
-        XCTAssertEqual(many.repositoryRoot.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }, second.resolvingSymlinksInPath().path)
-        XCTAssertEqual(many.notice, "")
-    }
-
-    /// The reader keeps the panel open while HEAD moves underneath it.
-    @MainActor func testHeadMovingUnderThePanelIsPickedUpAndStaleSelectionDropped() async throws {
-        let root = try repository("git-head"); defer { try? FileManager.default.removeItem(at: root) }
-        try start(root)
-        try "one\n".write(to: root.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
-        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "First"], in: root)
-        try "one\ntwo\n".write(to: root.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
-
-        let controller = GitController(roots: [root.path])
-        try await eventually("select the changed file and read the history") { controller.selection?.path == "tracked.txt" && !controller.diff.isEmpty && controller.commits.count == 1 }
-
-        // Somebody commits from a terminal while the panel is open.
-        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Second, from outside"], in: root)
-        try git(["checkout", "-q", "-b", "side"], in: root)
-        let start = ProcessInfo.processInfo.systemUptime
-        await controller.refresh()
-        let cost = (ProcessInfo.processInfo.systemUptime - start) * 1000
-        print(String(format: "PERF git panel refresh of a small repository: %.0f ms", cost))
-        XCTAssertEqual(controller.commits.first?.subject, "Second, from outside", "the new commit is there")
-        XCTAssertEqual(controller.status.branch, "side", "and so is the new branch")
-        XCTAssertNil(controller.selection, "the file that is no longer changed stops being selected")
-        XCTAssertTrue(controller.diff.isEmpty)
-        XCTAssertEqual(controller.notice, "")
-
-        // A file changed on disk shows up on the next refresh.
-        try "one\ntwo\nthree\n".write(to: root.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
-        await controller.refresh()
-        XCTAssertEqual(controller.status.entries.map(\.path), ["tracked.txt"])
-        try await eventually("read the new diff") { controller.diff.first?.added == 1 }
     }
 }
 

@@ -1,5 +1,98 @@
 # Native Swift — test and continuation handoff
 
+## Test lanes
+
+The native suite runs in two lanes, and `scripts/verify-release.sh` runs
+both: first the serial lane, alone on the machine, then the parallel lane in
+clones of the test host (`PI_TEST_WORKERS`, 8 by default). With a build in
+`$DD`:
+
+```sh
+X=(-project PiApp.xcodeproj -scheme PiApp -destination 'platform=macOS,arch=arm64' \
+   -derivedDataPath "$DD" CODE_SIGNING_ALLOWED=NO)
+xcodebuild test-without-building "${X[@]}" -parallel-testing-enabled NO \
+  $(python3 scripts/test-lanes.py serial)
+xcodebuild test-without-building "${X[@]}" -parallel-testing-enabled YES \
+  -parallel-testing-worker-count 8 $(python3 scripts/test-lanes.py parallel)
+```
+
+`scripts/test-lanes.py list` prints every class, its lane and why. The lanes
+come from the test sources, so a new test lands in one by what it uses. A
+class runs in the serial lane when its source (its body, its extensions, the
+test classes it inherits from, and the helper declarations in those files):
+
+- activates the app or reads activation or key-window state (`NSApp.activate`,
+  `NSApp.isActive`, `isKeyWindow`, `NSApp.keyWindow`, `NSApp.mainWindow`):
+  one window server gives focus to one process at a time;
+- writes the standard user defaults (`UserDefaults.standard`,
+  `WindowChrome.adjustStoredSidebarWidth`), which every test host shares;
+- uses the general or the drag pasteboard, which every test host shares;
+- asserts on elapsed time in Debug: an elapsed-time expression
+  (`systemUptime`, `Date().timeIntervalSince`, …) inside an `XCTAssert…`, or a
+  class that declares `SerialTestLane` (TestSeams.swift). Declare it when a
+  wall-clock figure reaches an assertion through a variable, or when a count
+  the test asserts depends on how fast the machine is.
+
+Every other class runs in the parallel lane, including the budget classes:
+`releaseBudget` is infinite in Debug, so those budgets cannot fail on time
+there. **A Release-configuration performance run keeps the budget classes
+serial:** `scripts/test-lanes.py --configuration Release serial|parallel` adds
+every class that calls `releaseBudget` to the serial lane, so a budget is only
+ever measured with the machine to itself. The parallel lane skips the serial
+classes rather than naming its own, so a class the script cannot read still
+runs.
+
+To keep the serial lane short, a class whose tests mostly run in parallel
+keeps those and moves the rest into a sibling serial class over a shared,
+test-free base: `GitPanelTestCase` (`GitPanelTimingTests`),
+`TranscriptStressTestCase` (`TranscriptStreamingSerialTests`),
+`SmoothShellTestCase` (`SmoothShellTests`), `AppShellTestCase`
+(`AppShellTimingTests`), `HistoryEdgeTestCase` (`HistoryEdgeTimingTests`,
+`HistoryEditTests`),
+`SessionReadStateTestCase` (`SessionReadFocusTests`), `SessionUsageTestCase`
+(`SessionUsageWindowFrameTests`), `TerminalPanelTestCase`
+(`TerminalPanelSerialTests`), `InlineSkillPillTestCase`
+(`InlineSkillPillTimingTests`), `ModelCatalogEndpointTestCase`
+(`ModelCatalogTimeoutTests`), `HostTransportTestCase`
+(`HostTransportTimingTests`) and `LivePopupTestCase`
+(`LiveMonitorDesignTests`). A base must hold no test: XCTest runs an
+inherited test method in every subclass. Large classes are split the same way
+so the parallel lane can spread them over its clones: the Git panel by file
+(`GitPanelAuditTests`, `GitRenameTests`, `GitPanelLayoutTests`,
+`GitChangelistReadTests`, `GitWorkingTreeWatcherTests`,
+`GitDiscardQuestionTests`, `GitPanelDiffCaptureTests`), the transcript stress
+tests by section (`TranscriptStreamingStressTests`,
+`TranscriptWidthChangeTests`, `TranscriptPageStressTests`), and the frame
+budgets by fixture (`TranscriptFrameBudgetTests`,
+`TranscriptSwitchBudgetTests`, `TranscriptScrollBudgetTests`; the disclosure
+motion, timed against its own click, is `TranscriptMotionTimingTests`). The
+token cadence test is `TranscriptStreamingCadenceTests`.
+`TranscriptStreamingStressTests.testResizingALongHistoryStaysWithinAFrameOfWork`
+was removed: its one assertion, stacking after a resize sweep, is held by
+`testEveryRowRemeasuresAtTheNewWidthInOnePass` (stacking at every width),
+`testAOneShotWidthChangeMeasuresWhatTheReaderCanSeeAtOnce` (the same 60-turn
+history resized) and `testDragStepCostOverFiveHundredRows` (a ten-width sweep
+over 250 turns).
+
+A wait in a parallel test is bounded by time, not by a count of turns or
+yields: on a loaded machine the thing waited for arrives later, and later is
+not a failure. A test whose outcome depends on the app's own wall-clock
+deadlines belongs in the serial lane too, and the way to find one is to load
+the machine: run the parallel lane with 10 clones on this 10-core machine,
+where the gate uses 8, and mark what fails. That is how `HistoryEditTests`
+(every pass watched while the helper answers an edit), `LiveMonitorDesignTests`
+(the monitor reads again once its last read is old enough) and
+`LifecycleHelperTests` (helper restarts against the handshake watchdog) came
+to be serial.
+
+Two fixture seams keep the long transcript tests short: waits for a long
+page's exact geometry run the page's idle units back to back
+(`unpacedIdleWork`, TestSeams.swift; the two tests that report the paced time
+keep the app's one unit per frame), and the long page scroll steps through the
+first 100 of its 400 identical rows (`PI_PERF_SCROLL_SAMPLE_ROWS`, 0 for the
+whole page). Fixtures that page past both resident caps lower them through
+`TranscriptPaging.residentCaps`.
+
 ## 0.1.84 routing analytics and retained token splits
 
 Use `CompactTurnReportTests`, `GatewayAccountingTests`, `ReportPageTests`,
@@ -279,15 +372,19 @@ use `xcodebuild test-without-building` for additional selections of that binary.
 Relevant suites:
 
 - Motion, resize and scheduling: `TranscriptDisclosureTests`,
-  `TranscriptStreamingStressTests`, `TranscriptIdleSchedulerTests`,
+  `TranscriptStreamingStressTests`, `TranscriptWidthChangeTests`,
+  `TranscriptPageStressTests`, `TranscriptStreamingSerialTests`,
+  `TranscriptIdleSchedulerTests`,
   `TranscriptGeometryCacheTests`, `ReportNavigationTests`.
 - Text and input: `NativeCodeTextTests`, `NativeMarkdownSizingTests`,
   `NativeMarkdownViewportTests`, `MarkdownStreamingTests`,
   `TranscriptMarkdownTests`, `ComposerAttachmentDestinationTests`, and the
   paste/marked-text/typing/two-chat cases in `ConversationPaneTests`.
 - Measurements and retention: `NativeTranscriptScrollingPerformanceTests`,
-  `FiveSessionWorkspacePerformanceTests`, and the streaming, disclosure-tick,
-  scrolling and page-retention cases in `TranscriptFrameBudgetTests`.
+  `FiveSessionWorkspacePerformanceTests`, the streaming and page-retention
+  cases in `TranscriptFrameBudgetTests`, `TranscriptSwitchBudgetTests`,
+  `TranscriptScrollBudgetTests` and `TranscriptMotionTimingTests` (the
+  disclosure tick).
 
 The opt-in combined native/helper/gateway workload is:
 
@@ -307,7 +404,9 @@ contains 2 MiB of fixture JSON. IME is driven through native test APIs, not phys
 keyboard input. This is correctness/load evidence, not proof of a frame-rate target.
 
 For the scrolling-size variation, set both `PI_PERF_SCROLL_ROWS=2000` and
-`TEST_RUNNER_PI_PERF_SCROLL_ROWS=2000`. The production page cap still applies:
+`TEST_RUNNER_PI_PERF_SCROLL_ROWS=2000`, and `PI_PERF_SCROLL_SAMPLE_ROWS=0` (with
+its `TEST_RUNNER_` twin) to scroll the whole page rather than its first 100
+rows. The production page cap still applies:
 **2,000 source messages produce 500 rendered rows**. The test now reports both.
 Keep visual readiness separate from exact offscreen settlement in tab/resize
 fixtures. Never compare a provisional row frame as if it were final, or weaken
@@ -1023,6 +1122,20 @@ xcodebuild test -project PiApp.xcodeproj -scheme PiApp -configuration Debug \
   -only-testing:PiAppTests/UIScreenshotTests CODE_SIGNING_ALLOWED=NO
 open "$PI_APP_UI_SCREENSHOT_ROOT/screenshots"
 ```
+
+`PI_APP_UI_GALLERY_COST_ONLY=1` (with `TEST_RUNNER_` beside it) renders only the
+cost-limit scenes after the first turn: `18-cost-limit-*` (the stop notice; the
+limited chat's Session Inspector Overview, with its spend against the limit and
+the limit's editor; the Raise limit… editor; the notice once raised; the
+Settings default).
+
+`PI_APP_UI_GALLERY_INSPECTOR_ONLY=1` renders the Session Inspector's scenes over
+the main chat once it has three turns, two routes and a tool round: `11-inspector-*`
+(the Overview, the first turn, its tool round's Conversation and Response, a
+Raw search, the Next request, a narrow window, and, during the slow turn of
+13, a request still streaming), `09-message-details` (a reply's Details landing
+on its request), and the chat scenes 12–16 whose turn cards and live bar lead
+there.
 
 ## Performance baseline
 

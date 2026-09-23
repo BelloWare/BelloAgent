@@ -22,12 +22,14 @@ struct PiFigure: View {
     var caption: String? = nil
     var partial = false
     var large = false
+    /// The value needs attention, such as a spend near its limit: warning ink.
+    var warning = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(value)
                 .font(.system(size: large ? 21 : 15, weight: .semibold))
-                .foregroundStyle(Color.piInk).lineLimit(1).minimumScaleFactor(0.7)
+                .foregroundStyle(warning ? Color.piWarning : Color.piInk).lineLimit(1).minimumScaleFactor(0.7)
             Text(title).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(1)
             if let caption {
                 Text(caption).font(PiFont.micro).foregroundStyle(partial ? Color.piWarning : Color.piInkTertiary)

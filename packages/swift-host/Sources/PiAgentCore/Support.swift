@@ -16,7 +16,10 @@ public struct AgentError: Error, LocalizedError, Sendable {
     public let message: String
     public let failure: ProviderFailure?
     public let attemptID: String?
-    public init(_ code: String, _ message: String, failure: ProviderFailure? = nil, attemptID: String? = nil) { self.code = code; self.message = message; self.failure=failure; self.attemptID=attemptID }
+    /// What pi's provider would have reported for this failure, when it came
+    /// from the gateway; pi's overflow and retry rules read it (`piMessage`).
+    public let providerMessage: String?
+    public init(_ code: String, _ message: String, failure: ProviderFailure? = nil, attemptID: String? = nil, providerMessage: String? = nil) { self.code = code; self.message = message; self.failure=failure; self.attemptID=attemptID; self.providerMessage=providerMessage }
     public var errorDescription: String? { message }
     public var json: JSON { ["code": JSON(code), "message": JSON(message)] }
 }

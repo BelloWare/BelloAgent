@@ -21,7 +21,6 @@ struct ReportPage: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var report: ReportController
     @Environment(\.piReduceMotion) private var reduceMotion
-    @State private var inspected: DashboardRequest?
     @State private var messageLookup: Task<Void, Never>?
     @State private var routingPalette = MonitorModelPalette()
     init(model: WorkspaceModel) { self.model = model; self.report = model.report }
@@ -74,7 +73,6 @@ struct ReportPage: View {
         .onChange(of: report.grouping) { _, _ in report.requestListOpen = true }
         .onDisappear { messageLookup?.cancel(); messageLookup = nil; report.suspend() }
         .onExitCommand { model.closeReport() }
-        .sheet(item: $inspected) { request in InspectorView(model: model, sessionID: request.sessionID, initialAttemptID: request.id) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Usage report")
         }
@@ -409,7 +407,7 @@ struct ReportPage: View {
                 Rectangle().fill(Color.piHairline).frame(height: 1)
                 LazyVStack(spacing: 0) {
                     ForEach(snapshot.requests) { item in
-                        ReportRequestRow(item: item, title: titles[item.sessionID], detailed: report.detailsOpen, inspect: { inspected = item }, message: { goToMessage(item) })
+                        ReportRequestRow(item: item, title: titles[item.sessionID], detailed: report.detailsOpen, inspect: { inspect(item, title: titles[item.sessionID]) }, message: { goToMessage(item) })
                         Rectangle().fill(Color.piHairline).frame(height: 1)
                     }
                 }
@@ -504,7 +502,7 @@ struct ReportPage: View {
                         Group {
                             if let inner = report.sessionRequests[summary.sessionID] {
                                 ForEach(inner.requests) { item in
-                                    ReportRequestRow(item: item, title: nil, detailed: report.detailsOpen, inspect: { inspected = item }, message: { goToMessage(item) }, nested: true)
+                                    ReportRequestRow(item: item, title: nil, detailed: report.detailsOpen, inspect: { inspect(item, title: titles[item.sessionID]) }, message: { goToMessage(item) }, nested: true)
                                     Rectangle().fill(Color.piHairline).frame(height: 1)
                                 }
                                 if inner.hasNext { Text("Showing the first \(inner.requests.count) of \(inner.selectedRequests) requests · filter by this session for the rest").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).padding(.vertical, 6).padding(.leading, 44) }
@@ -524,6 +522,12 @@ struct ReportPage: View {
         } else {
             HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Grouping by session…").font(PiFont.caption).foregroundStyle(Color.piInkTertiary) }.frame(maxWidth: .infinity).padding(PiSpacing.lg)
         }
+    }
+
+    /// A row's request in its chat's Session Inspector. The chat may be gone;
+    /// its project and request log are not.
+    private func inspect(_ item: DashboardRequest, title: String?) {
+        model.openInspector(session: item.sessionID, workspaceID: item.workspaceID, title: title, focus: .request(item.id))
     }
 
     /// Jumps to the message a request produced (or last consumed). When the

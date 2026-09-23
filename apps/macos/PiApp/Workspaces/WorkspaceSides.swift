@@ -17,7 +17,9 @@ struct SideRecord: Identifiable {
     var modelOutputLimit: Int? = nil
     var outputBudgetVersion: Int? = 1
     var topicID: String?
-    var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: "read-only", model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, topicID: topicID, parentSessionID: parentID) }
+    /// The side's own cost limit; nil runs it under the Settings default.
+    var costLimit: CostLimit? = nil
+    var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: "read-only", model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, topicID: topicID, parentSessionID: parentID, costLimit: costLimit) }
 }
 struct SideKeepIntent: Codable, Sendable { var chat: ChatRecord }
 
@@ -28,7 +30,8 @@ extension WorkspaceModel {
     func record(_ id: String) -> ChatRecord? { chatRecord(id) ?? side(id)?.chat }
     func isEphemeral(_ id: String) -> Bool { side(id).map { !$0.kept } ?? false }
     var resourceTarget: SessionDisplay? { displays[resourceTargetSessionID ?? selectedID ?? ""] }
-    func inspect(_ id: String, messageID: String? = nil) { inspectorSessionID = id; inspectorMessageID = messageID; showInspector = true }
+    /// The Session Inspector at the session's latest request: 🐞, ⌥⌘I and the chat's ⋯ menu.
+    func inspect(_ id: String) { openInspector(session: id, focus: .latestRequest) }
     /// Shows or hides the integrated terminal under the selected chat.
     func toggleTerminal() {
         guard selectedID != nil else { return }
@@ -41,7 +44,6 @@ extension WorkspaceModel {
         gitWorkspaceID = workspaceID; showGit = true
     }
     func inspectResources(_ id: String?) { resourceTargetSessionID = id; showResources = true }
-    func viewMessages(_ id: String) { messageViewerSessionID = id; showMessageViewer = true }
     func updateHostActivity(workspaceID: String) {
         hosts[workspaceID]?.isBusy = sides.values.contains { $0.workspaceID == workspaceID && !$0.kept && !$0.pending } || displays.values.contains { ($0.hasWork || $0.loading) && record($0.id)?.workspaceID == workspaceID }
     }
@@ -151,7 +153,8 @@ extension WorkspaceModel {
         let result: [String: WireValue]
         var written = false
         do {
-            result = try await host.request("side.open", sessionID: parentID, params: ["sideSessionId": .string(id)]).object ?? [:]
+            // A side is a session of its own, with its own spend and limit.
+            result = try await host.request("side.open", sessionID: parentID, params: ["sideSessionId": .string(id), "costLimit": costLimit(for: info.chat).wire]).object ?? [:]
             written = true
             guard result["sessionId"]?.string == id, sides[parentID]?.id == id else { throw HostError.failure("Side identity changed; reopen this project before creating another side.") }
             try await registerKeptSide(id: id, path: result["path"]?.string)
@@ -407,7 +410,7 @@ extension WorkspaceModel {
         fork.path = root.appendingPathComponent("Workspaces/\(parent.workspaceID)/Sessions/fork_\(id).jsonl").path
         try await store.put(SideKeepIntent(chat: fork), kind: "side-keep", id: id)
         let host = try await open(parent)
-        let result = try await host.request("session.fork", sessionID: parentID, params: ["forkSessionId": .string(id)]).object ?? [:]
+        let result = try await host.request("session.fork", sessionID: parentID, params: ["forkSessionId": .string(id), "costLimit": costLimit(for: fork).wire]).object ?? [:]
         guard result["sessionId"]?.string == id else { throw HostError.failure("The fork identity changed. Its recovery intent was preserved.") }
         try await registerKeptSide(id: id, path: result["path"]?.string)
         let view = SessionDisplay(id: id); displays[id] = view; opened.insert(id)

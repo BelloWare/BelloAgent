@@ -4,47 +4,8 @@ import SwiftUI
 import XCTest
 @testable import PiApp
 
-extension SmoothShellTests {
+final class SmoothPaneAndKeyboardTests: SmoothShellTestCase {
     // MARK: 6. The split pane
-
-    /// The boundary between a chat and its side used to be a hairline that
-    /// invited a drag it could not answer, at a fixed half. It is draggable
-    /// now, bounded, and what it lands on is kept.
-    @MainActor func testTheSplitPaneIsBoundedAndKeepsWhereItWasPut() async throws {
-        XCTAssertEqual(SplitPane.clampFraction(0.01), SplitPane.minimumFraction)
-        XCTAssertEqual(SplitPane.clampFraction(0.99), SplitPane.maximumFraction)
-        XCTAssertEqual(SplitPane.clampFraction(.nan), SplitPane.defaultFraction)
-        // The two panes and their divider always add up to the column exactly.
-        for total in stride(from: 600.0, through: 1_801.0, by: 37.0) {
-            for fraction in [0.3, 0.42, 0.5, 0.63, 0.7] {
-                let main = SplitPane.mainWidth(total: CGFloat(total), fraction: fraction)
-                let side = SplitPane.sideWidth(total: CGFloat(total), fraction: fraction)
-                XCTAssertEqual(main + side + SplitPane.dividerWidth, CGFloat(total), accuracy: 0.001,
-                               "the split lost a point at \(total) × \(fraction)")
-                XCTAssertGreaterThan(main, 0); XCTAssertGreaterThan(side, 0)
-            }
-        }
-        let start = UserDefaults.standard.object(forKey: "sidePaneFraction") as? Double
-        defer {
-            if let start { UserDefaults.standard.set(start, forKey: "sidePaneFraction") }
-            else { UserDefaults.standard.removeObject(forKey: "sidePaneFraction") }
-        }
-        UserDefaults.standard.set(0.62, forKey: "sidePaneFraction")
-        let shell = try shell(["Split"], rows: 20, width: 1_400)
-        await shell.model.select(shell.chats[0].id)
-        await shell.settle(1.0)
-        let whole = shell.transcriptFrame.width
-        shell.model.openSide(parentID: shell.chats[0].id)
-        await shell.settle(1.4)
-        let panes = Self.views(TranscriptSurfaceMarker.self, in: shell.hosted).compactMap { $0.enclosingScrollView }
-        XCTAssertEqual(panes.count, 2, "the side conversation did not open beside the chat")
-        let widths = panes.map(\.frame.width).sorted()
-        print(String(format: "PERF smooth split pane at 0.62: panes %.0f and %.0f points of a %.0f point column",
-                     widths[1], widths[0], whole))
-        XCTAssertGreaterThan(widths[1], widths[0], "a stored fraction of 0.62 must leave the chat the wider pane")
-        XCTAssertEqual(widths[1] / (widths[0] + widths[1]), 0.62, accuracy: 0.04,
-                       "the stored fraction is not where the boundary landed")
-    }
 
     // MARK: 7. Keyboard paths for the row's own actions
 
@@ -155,7 +116,7 @@ extension SmoothShellTests {
     }
 }
 
-extension SmoothShellTests {
+extension SmoothPaneAndKeyboardTests {
     /// The pane is kept across chats, so a switch hands the composer the
     /// arriving chat's draft. That is not typing: it used to write the
     /// unchanged draft back to the store on every click in the sidebar.

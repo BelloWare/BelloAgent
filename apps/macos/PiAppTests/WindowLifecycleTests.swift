@@ -5,7 +5,7 @@ import AppKit
 /// Closing the last window with a running turn, and quitting with unsaved
 /// state. Both used to run an application-modal alert from inside an AppKit
 /// callback that was already deciding whether to close or terminate.
-final class WindowLifecycleTests: XCTestCase {
+final class WindowLifecycleTests: XCTestCase, SerialTestLane {
     private func scratch() throws -> URL {
         let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("window-lifecycle-\(UUID().uuidString)")

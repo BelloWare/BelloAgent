@@ -160,6 +160,7 @@ extension WorkspaceModel {
                     view.observeCompaction(result)
                     let wasBusy = view.busy
                     view.observeRunState(result)
+                    observeCost(result, view: view)
                     if wasBusy, view.state == "error" { markRunFailed(sessionID: id) }
                     view.observeRetry(result)
                     let queued = result["queue"]?.array?.compactMap(\.object) ?? []

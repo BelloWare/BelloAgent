@@ -33,10 +33,26 @@ struct ConversationPageVisibility: NSViewRepresentable {
     var closeReport: (() -> Void)?
     override var acceptsFirstResponder: Bool { reportVisible }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); applyVisibility() }
+    private var applyScheduled = false
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); scheduleVisibility() }
     func update(reportVisible: Bool, focusIdentity: String?) {
         self.reportVisible = reportVisible; self.focusIdentity = focusIdentity
-        applyVisibility()
+        scheduleVisibility()
+    }
+    /// Both callers run inside SwiftUI's update of the window. Moving the
+    /// first responder from there made the composer's text view commit a Core
+    /// Animation transaction that laid the window out again in the middle of
+    /// its update ("NSHostingView is being laid out reentrantly while
+    /// rendering its SwiftUI content"). The page's native views are hidden
+    /// and focus moves on the next turn of the run loop instead.
+    private func scheduleVisibility() {
+        guard appliedReportVisible != reportVisible || appliedWindow !== window, !applyScheduled else { return }
+        applyScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.applyScheduled = false
+            self.applyVisibility()
+        }
     }
     private func applyVisibility() {
         guard appliedReportVisible != reportVisible || appliedWindow !== window else { return }

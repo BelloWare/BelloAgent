@@ -30,46 +30,55 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             assert body['model'] == 'fixture-model'
             assert body['metadata']['session_id'] == sid
             assert body['stream'] is True and body['store'] is False
+            # Pi's system prompt is the first input item; the history follows it.
+            system, history = body['input'][0], body['input'][1:]
+            assert system['role'] in ('developer', 'system') and isinstance(system['content'], str)
+            instructions = system['content']
+            summary = not body.get('tools')
+            # Pi sends a summary with cacheRetention "none" and every other request with the session's cache key.
+            assert ('prompt_cache_key' in body) == (not summary) and body.get('prompt_cache_key', sid) == sid
             pending, results, texts = {}, [], []
-            for item in body['input']:
-                if item['type'] == 'function_call':
+            for item in history:
+                kind = item.get('type', 'message')
+                if kind == 'function_call':
                     assert item['call_id'] not in pending
                     pending[item['call_id']] = item
-                elif item['type'] == 'function_call_output':
+                elif kind == 'function_call_output':
                     assert item['call_id'] in pending
                     pending.pop(item['call_id'])
                     results.append(item['output'])
-                elif item['type'] == 'message':
+                elif kind == 'message':
                     assert item['role'] in ('user', 'assistant')
                     texts.extend(part['text'] for part in item['content'] if part['type'] in ('input_text', 'output_text'))
             assert not pending, 'orphan call/result in replay'
             joined = '\n'.join(texts)
-            summary = not body.get('tools')
             incomplete = False
             if summary:
                 # Pi's summary request: its system prompt, one message of
                 # <conversation> text, and pi's summarization prompt last.
-                assert len(body['input']) == 1 and len(texts) == 1
-                assert body['instructions'].startswith('You are a context summarization assistant.')
+                assert len(history) == 1 and len(texts) == 1
+                assert instructions.startswith('You are a context summarization assistant.')
                 prompt = texts[0]
                 assert prompt.startswith('<conversation>\n') and '\n</conversation>\n\n' in prompt
-                assert 0 < body['max_output_tokens'] <= (6400 if sid.startswith('compaction-budget') else 512)
+                # Pi's cap: 0.8 × the reserve (half of these small windows), never the chat's output budget.
+                assert 0 < body['max_output_tokens'] <= (6400 if sid.startswith('compaction-budget') else 3200)
                 if sid.startswith('compaction-budget'):
                     assert body['reasoning']['effort'] == 'high'
                     assert body['max_output_tokens'] == 6400
                     # Pi's estimate of the request, characters over four, leaves the cap's room.
-                    assert (len(prompt) + len(body['instructions'])) / 4 + body['max_output_tokens'] < 16000
+                    assert (len(prompt) + len(instructions)) / 4 + body['max_output_tokens'] < 16000
                     incomplete = sid == 'compaction-budget-exhausted'
                     text = 'Observed evidence retained. Continue the original objective.'
                 elif '<previous-summary>' in prompt:
                     assert 'The messages above are NEW conversation messages' in prompt
                     assert '[Tool result]: READ_STAGE_COMPLETE part 3' in prompt
-                    text = 'COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE PART_3_READ. Do not rerun the mutation.'
+                    # Pi replays no input verbatim: the summary carries the objective.
+                    text = 'ORIGINAL GOLDEN OBJECTIVE carried. COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE PART_3_READ. Do not rerun the mutation.'
                 else:
                     assert '[Assistant tool calls]: write(' in prompt and 'read(part=1)' in prompt
                     assert 'READ_STAGE_COMPLETE' in prompt and 'COUNTER_APPENDED_ONCE' in prompt
                     assert '[history_read: history:' in prompt
-                    text = 'COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE. Do not rerun the mutation.'
+                    text = 'ORIGINAL GOLDEN OBJECTIVE carried. COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE. Do not rerun the mutation.'
                 output = message(text)
             elif sid == 'compaction-sibling':
                 assert joined == 'sibling independent'
@@ -77,8 +86,9 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             else:
                 assert 'ORIGINAL GOLDEN OBJECTIVE' in joined
                 assert {t['name'] for t in body['tools']} == {'write', 'read', 'history_read'}
-                if any(t.startswith('Conversation summary') for t in texts):
-                    if len(json.dumps(body['input'], ensure_ascii=False, separators=(',', ':')).encode()) > 1500:
+                # Pi replays a checkpoint as its compaction summary message.
+                if any(t.startswith('The conversation history before this point was compacted into the following summary:') for t in texts):
+                    if len(json.dumps(history, ensure_ascii=False, separators=(',', ':')).encode()) > 1500:
                         status = 400
                         output = None
                     elif 'PART_3_READ' in joined:

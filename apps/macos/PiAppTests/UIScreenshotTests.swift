@@ -145,6 +145,16 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // Only the cost-limit scenes, the Session Inspector's Overview of the
+        // chat under a limit among them.
+        if testEnvironment("PI_APP_UI_GALLERY_COST_ONLY") == "1" {
+            try await captureCostLimitScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                             workspaceID: workspace.id, profileID: connections[0].profile.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         // The first turn ran the read tool: capture its grouped activity before more turns scroll it away.
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
@@ -220,11 +230,7 @@ final class UIScreenshotTests: XCTestCase {
         // A quick gallery for transcript/metrics changes; the full shell
         // gallery remains available for changes to the other pages.
         if testEnvironment("PI_APP_UI_GALLERY_CORE_ONLY") == "1" {
-            for (name, appearance) in appearances {
-                NSApp.appearance = NSAppearance(named: appearance)
-                try await captureSessionInfo(model: model, session: session, name: name, gallery: gallery)
-                try await captureStatsPopovers(model: model, session: session, window: window, name: name, gallery: gallery)
-            }
+            try await captureInspectorScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
             try await captureSkillScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
             session.draft = "slow: walk through the retry budget one step at a time."
             model.send(sessionID: main.id)
@@ -233,6 +239,17 @@ final class UIScreenshotTests: XCTestCase {
                 NSApp.appearance = NSAppearance(named: appearance); try await settle(0.4)
                 try capture(window, to: gallery.appendingPathComponent("01d-ongoing-\(name).png"))
             }
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
+        // The Session Inspector's scenes, and the chat scenes whose turn
+        // cards and live bar open it (12, 13).
+        if testEnvironment("PI_APP_UI_GALLERY_INSPECTOR_ONLY") == "1" {
+            try await captureInspectorScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
+            try await renderReviewScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                         mainID: main.id, secondID: second.id, workspaceID: workspace.id)
             XCTAssertNil(model.error, model.error ?? "")
             for host in model.hosts.values { try await host.shutdownAndWait() }
             try await model.traces.close()
@@ -270,23 +287,19 @@ final class UIScreenshotTests: XCTestCase {
             model.report.advancedOpen = false; model.report.setPreset(.day)
             window.setContentSize(NSSize(width: 1440, height: 900)); window.center(); try await settle(0.8)
             model.closeReport(); try await settle(0.8)
-            try await sheet(window, name: "04-inspector-\(name)", into: gallery, open: { model.inspect(main.id) }, close: { model.showInspector = false })
             try await sheet(window, name: "05-profiles-\(name)", into: gallery, open: { model.showProfiles = true }, close: { model.showProfiles = false })
             try await sheet(window, name: "06-resources-\(name)", into: gallery, open: { model.inspectResources(main.id) }, close: { model.showResources = false })
             try await sheet(window, name: "07-search-\(name)", into: gallery, open: { model.inspectConversation(main.id) }, close: { model.showConversationContent = false })
             try await sheet(window, name: "08-workspaces-\(name)", into: gallery, open: { model.showWorkspaceManager = true }, close: { model.showWorkspaceManager = false })
-            if let assistant = session.messages.last(where: { $0.role == "assistant" && !$0.id.hasPrefix("stream:") }) {
-                try await sheet(window, name: "09-message-\(name)", into: gallery, open: { model.showMessageDetail(main.id, messageID: assistant.id) }, close: { model.showMessageDetail = false })
-            }
             // The Changes sheet against a small repository inside the project folder.
             try await sheet(window, name: "10-changes-\(name)", into: gallery, open: { model.showChanges(in: workspace.id) }, close: { model.showGit = false })
-            // Session info for the main chat, in its own window, with both routes it used.
-            try await captureSessionInfo(model: model, session: session, name: name, gallery: gallery)
-            // The two chart popovers behind the pills under the composer.
-            try await captureStatsPopovers(model: model, session: session, window: window, name: name, gallery: gallery)
         }
+        // The Session Inspector of the main chat, with both routes it used.
+        try await captureInspectorScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
         try await renderReviewScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                      mainID: main.id, secondID: second.id, workspaceID: workspace.id)
+        try await captureCostLimitScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                         workspaceID: workspace.id, profileID: connections[0].profile.id)
         try await captureSkillScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
@@ -366,6 +379,8 @@ final class UIScreenshotTests: XCTestCase {
         try await settle(2.0)
         // 13a · The compact working report at the beginning of a run.
         try await pair("13a-working-indicator", hold: 0.3)
+        // 11g · The same run in the Session Inspector: the request still streaming.
+        try await captureRunningInspector(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
         // 13b · The same report later in the run. The live clock updates
         // independently of the helper's most recent snapshot.
         func liveElapsed() -> Double {
@@ -489,6 +504,79 @@ final class UIScreenshotTests: XCTestCase {
         }
     }
 
+    /// 18 · A chat's cost limit: the notice where a run stopped at it, the
+    /// editor Raise limit… opens over it, and the notice once the limit is
+    /// above the spend. The chat has its own limit of $0.001; the fixture's
+    /// read round costs $0.00125, so the request after it never goes.
+    @MainActor private func captureCostLimitScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                   appearances: [(String, NSAppearance.Name)], workspaceID: String, profileID: String) async throws {
+        func pair(_ name: String, hold: Double = 0.8, popovers: Bool = false, before: () async throws -> Void = {}) async throws {
+            for (appearanceName, appearance) in appearances {
+                NSApp.appearance = NSAppearance(named: appearance)
+                try await before()
+                try await settle(hold)
+                let file = gallery.appendingPathComponent("\(name)-\(appearanceName).png")
+                if popovers { try captureWithPopovers(window, to: file) } else { try capture(window, to: file) }
+            }
+        }
+        let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "Watch the retry budget", path: nil, profileID: profileID, toolMode: "editing")
+        model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+        await model.select(chat.id); try await settle(0.8)
+        let session = try XCTUnwrap(model.displays[chat.id])
+        try await model.setCostLimit(.usd(0.001), for: chat.id)
+        session.draft = "Please read fixture README.md, then summarise the retry budget it describes."
+        model.send(sessionID: chat.id)
+        let stopped = Date().addingTimeInterval(90)
+        while Date() < stopped, !(session.failureCode == SessionDisplay.costLimitCode && !session.hasWork) { try await settle(0.25) }
+        XCTAssertEqual(session.failureCode, SessionDisplay.costLimitCode, "The run stopped at the chat's cost limit: \(session.failureMessage ?? session.notice)")
+        XCTAssertEqual(session.failureMessage, "This chat reached its $0.001 cost limit ($0.00125 spent). Raise the limit to continue.")
+        try await settle(1.0)
+        try await pair("18-cost-limit-notice")
+        // 18a · The chat's Session Inspector, which the usage pill opens: its
+        // spend against the limit, over it and in warning ink, and the editor.
+        do {
+            let controller = try openInspector(model, session, at: .overview)
+            defer { controller.close(); window.makeKeyAndOrderFront(nil) }
+            try await until("the limited chat's Overview") { controller.inspector.indexLoaded && controller.inspector.timeCharts.historyLoaded }
+            for (name, appearance) in appearances {
+                NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+                try capture(try XCTUnwrap(controller.window), to: gallery.appendingPathComponent("18a-cost-limit-overview-\(name).png"))
+            }
+        }
+        try await settle(0.6)
+        let content = try XCTUnwrap(window.contentView)
+        try await pair("18b-cost-limit-editor", hold: 1.0, popovers: true) {
+            CostLimitPopover.shared.close(); try await settle(0.4)
+            let raise = try XCTUnwrap(descendants(PiPopoverTriggerButton.self, in: content).first { $0.accessibilityIdentifier() == "cost-limit-raise" },
+                                      "The notice offers Raise limit…")
+            raise.performClick(nil)
+            let opened = Date().addingTimeInterval(5)
+            while Date() < opened, CostLimitPopover.shared.presenter.popover?.isShown != true { try await settle(0.05) }
+            XCTAssertTrue(CostLimitPopover.shared.presenter.isShown, "Raise limit… opened the chat's limit editor")
+        }
+        CostLimitPopover.shared.close(); try await settle(0.4)
+        try await model.setCostLimit(.usd(10), for: chat.id)
+        try await pair("18c-cost-limit-raised", hold: 1.0)
+        model.costLimitNotice(.continueRun, sessionID: chat.id, anchor: nil)
+        let resumed = Date().addingTimeInterval(90)
+        while Date() < resumed, session.failureMessage != nil || session.hasWork || session.loading { try await settle(0.25) }
+        XCTAssertNil(session.failureMessage, "Continue took the stopped turn on")
+        // 18d · Settings: the default every chat without its own limit runs
+        // under. The Spending group sits low on the page, so the page is
+        // scrolled to its end first.
+        try await pair("18d-cost-limit-settings", hold: 0.8) {
+            if window.attachedSheet == nil { model.showProfiles = true; try await settle(2.2) }
+            let sheet = try XCTUnwrap(window.attachedSheet, "Settings opened as a sheet")
+            let scroll = try XCTUnwrap(descendants(NSScrollView.self, in: sheet.contentView ?? NSView()).max { $0.frame.height < $1.frame.height })
+            for _ in 0..<3 {
+                let end = max(0, (scroll.documentView?.frame.height ?? 0) - scroll.contentView.bounds.height)
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: end)); scroll.reflectScrolledClipView(scroll.contentView)
+                try await settle(0.4)
+            }
+        }
+        model.showProfiles = false; try await settle(0.8)
+    }
+
     /// Scrolls the main conversation so a row stands near the top of the
     /// viewport, announced the way AppKit announces a reader's scroll.
     @MainActor private func scrollConversation(in window: NSWindow, toRow id: String) throws {
@@ -523,36 +611,103 @@ final class UIScreenshotTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(Int(seconds * 1000)))
     }
 
-    @MainActor private func captureSessionInfo(model: WorkspaceModel, session: SessionDisplay, name: String, gallery: URL) async throws {
-        let chat = try XCTUnwrap(model.record(session.id))
-        let usage = SessionUsageWindows.shared.show(model: model, chat: chat, footer: session.footer, initialBreakdown: .models)
-        defer { usage.close() }
-        try await settle(2.5)
-        let panel = try XCTUnwrap(usage.window)
-        panel.setContentSize(NSSize(width: 1000, height: 940)); panel.center(); try await settle(0.8)
-        try capture(panel, to: gallery.appendingPathComponent("11-session-info-\(name).png"))
+    @MainActor private func until(_ what: String, seconds: Double = 30, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !condition() {
+            guard Date() < deadline else { return XCTFail("Timed out waiting for " + what) }
+            try await settle(0.1)
+        }
     }
 
-    /// The session statistics and token usage popovers of the main chat, each
-    /// opened by pressing its pill and captured over the window it belongs to.
-    @MainActor private func captureStatsPopovers(model: WorkspaceModel, session: SessionDisplay, window: NSWindow, name: String, gallery: URL) async throws {
-        let store = SessionStatsStore.shared(archive: model.traces, sessionID: session.id)
-        let content = try XCTUnwrap(window.contentView)
-        for (file, identifier, presenter) in [("11b-session-statistics", "session-stats-time", store.timePresenter),
-                                              ("11c-token-usage", "session-stats-usage", store.tokenPresenter)] {
-            try await settle(0.4)
-            // The main chat's pane is the leftmost; an open side has pills of its own.
-            let pill = try XCTUnwrap(descendants(PiPopoverTriggerButton.self, in: content).filter { $0.accessibilityIdentifier() == identifier }
-                                        .min { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX },
-                                     "The \(identifier) pill is under the composer")
-            pill.performClick(nil)
-            let deadline = Date().addingTimeInterval(20)
-            while Date() < deadline, !(presenter.isShown && store.time.historyLoaded && store.tokens.historyLoaded) { try await settle(0.1) }
-            XCTAssertTrue(presenter.isShown && store.time.historyLoaded, "The \(identifier) popover opened with its charts")
-            try await settle(1.2)
-            try captureWithPopovers(window, to: gallery.appendingPathComponent("\(file)-\(name).png"))
-            presenter.close()
-            try await settle(0.5)
+    /// The main chat's Session Inspector, opened as the reader opens it,
+    /// sized for the gallery.
+    @MainActor private func openInspector(_ model: WorkspaceModel, _ session: SessionDisplay, at focus: InspectorFocus) throws -> SessionInspectorWindowController {
+        model.openInspector(session: session.id, focus: focus)
+        let controller = try XCTUnwrap(SessionInspectorWindows.shared.controller(sessionID: session.id), "The Session Inspector opened")
+        try XCTUnwrap(controller.window).setContentSize(NSSize(width: 1_200, height: 860))
+        controller.window?.center()
+        return controller
+    }
+
+    /// The Session Inspector of the main chat, which by now has several turns,
+    /// two routes and a tool round: its Overview (where the pills open it),
+    /// the first turn, that turn's tool round in each of the request page's
+    /// tabs, a search of its raw bytes, what the next request will send, a
+    /// narrow window, and a reply's Details landing on its request.
+    @MainActor private func captureInspectorScenes(model: WorkspaceModel, session: SessionDisplay, window: NSWindow, gallery: URL,
+                                                  appearances: [(String, NSAppearance.Name)]) async throws {
+        let controller = try openInspector(model, session, at: .overview)
+        let inspector = controller.inspector, panel = try XCTUnwrap(controller.window)
+        defer { controller.close(); window.makeKeyAndOrderFront(nil) }
+        func shoot(_ scene: String, hold: Double = 0.8) async throws {
+            for (name, appearance) in appearances {
+                NSApp.appearance = NSAppearance(named: appearance); try await settle(hold)
+                try capture(panel, to: gallery.appendingPathComponent("\(scene)-\(name).png"))
+            }
+        }
+        try await until("the Inspector's Overview") {
+            inspector.indexLoaded && inspector.index.requests.count >= 2 && inspector.timeCharts.historyLoaded && inspector.usage.snapshot != nil
+        }
+        // 11 · The Overview: what the chat cost, used and how fast, its charts and requests.
+        try await shoot("11-inspector-overview", hold: 1.2)
+        // 11b · The first turn, which ran the read tool: its prompt, usage and requests.
+        let first = try XCTUnwrap(inspector.index.turns.first { !$0.isOther })
+        inspector.select(.turn(first.id))
+        try await until("the first turn's prompt") { inspector.prompts[first.id] != nil }
+        try await shoot("11b-inspector-turn")
+        // 11c · Its tool round: what was new since the request before.
+        let round = try XCTUnwrap(first.requests.first { inspector.index.kind(of: $0.id) == "tool round" } ?? first.requests.last)
+        inspector.select(.request(round.id))
+        inspector.request.tab = .conversation
+        try await until("the tool round's conversation") { inspector.request.conversation.value != nil && inspector.request.delta != nil }
+        try await shoot("11c-inspector-conversation", hold: 1.0)
+        // 11d · What came back.
+        inspector.request.tab = .response
+        try await until("the tool round's response") { inspector.request.response.value != nil }
+        try await shoot("11d-inspector-response", hold: 1.0)
+        // 11e · The raw request, searched.
+        inspector.request.tab = .raw
+        inspector.request.raw = .request
+        inspector.request.query = "README"
+        try await shoot("11e-inspector-raw-search", hold: 1.4)
+        inspector.request.query = ""
+        // 11f · What the next request will send, against the last one.
+        inspector.select(.nextRequest)
+        try await until("the next request") { inspector.next.document.value != nil }
+        try await shoot("11f-inspector-next-request", hold: 1.0)
+        // 11h · A narrow window: the navigator narrows and the figures wrap.
+        inspector.select(.request(round.id)); inspector.request.tab = .conversation
+        panel.setContentSize(NSSize(width: 760, height: 700)); panel.center()
+        try await shoot("11h-inspector-narrow", hold: 1.2)
+        // 09 · A reply's Details open the Inspector at the request that produced it.
+        panel.setContentSize(NSSize(width: 1_200, height: 860)); panel.center()
+        if let assistant = session.messages.last(where: { $0.role == "assistant" && !$0.id.hasPrefix("stream:") }) {
+            model.showMessageDetail(session.id, messageID: assistant.id)
+            try await until("the reply's request") {
+                if case .request(let id) = inspector.page { return id != round.id && inspector.request.row?.id == id }
+                return false
+            }
+            try await shoot("09-message-details", hold: 1.2)
+        }
+        XCTAssertNil(inspector.failure, inspector.failure ?? "")
+        XCTAssertNil(inspector.focusNotice, inspector.focusNotice ?? "")
+    }
+
+    /// 11g · The Inspector on the request a running turn is still streaming.
+    @MainActor private func captureRunningInspector(model: WorkspaceModel, session: SessionDisplay, window: NSWindow, gallery: URL,
+                                                   appearances: [(String, NSAppearance.Name)]) async throws {
+        let controller = try openInspector(model, session, at: .latestRequest)
+        let inspector = controller.inspector, panel = try XCTUnwrap(controller.window)
+        defer { controller.close(); window.makeKeyAndOrderFront(nil) }
+        try await until("the running request", seconds: 10) {
+            if case .request(let id) = inspector.page { return inspector.index.request(id)?.running == true }
+            return false
+        }
+        inspector.request.tab = .response
+        try await until("the response so far", seconds: 10) { inspector.request.response.value != nil }
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(panel, to: gallery.appendingPathComponent("11g-inspector-running-\(name).png"))
         }
     }
 

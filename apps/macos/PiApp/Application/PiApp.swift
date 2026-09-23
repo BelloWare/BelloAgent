@@ -74,7 +74,8 @@ extension FocusedValues {
             }
             CommandGroup(after: .sidebar) {
                 Button(commandModel.page == .report ? "Back to Chats" : "Usage Report") { commandModel.toggleReport() }.keyboardShortcut("r", modifiers: [.command, .shift])
-                Button("Current-session Inspector…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspect(id) } }.keyboardShortcut("i", modifiers: [.command, .option])
+                Button("Session Inspector…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspect(id) } }.keyboardShortcut("i", modifiers: [.command, .option])
+                    .disabled((commandModel.focusedSessionID ?? commandModel.selectedID).flatMap(commandModel.record) == nil)
                 Button("Changes and History…") { commandModel.showChanges() }.keyboardShortcut("g", modifiers: [.command, .shift]).disabled(commandModel.workspaces.isEmpty)
                 Button(commandModel.terminalVisible ? "Hide Terminal" : "Show Terminal") { commandModel.toggleTerminal() }.keyboardShortcut("`", modifiers: .control).disabled(commandModel.selectedID == nil)
                 Divider()
@@ -114,7 +115,6 @@ extension FocusedValues {
                 Button("Show This Response") { commandModel.setFocusedResponseCollapsed(false) }
                     .disabled(!foldsResponses)
                 Divider()
-                Button("View Retained Message…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.viewMessages(id) } }.disabled(!commandModel.conversationCommandsEnabled)
                 Button("Search and Copy Conversation…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspectConversation(id) } }.keyboardShortcut("f").disabled(!commandModel.conversationCommandsEnabled)
             }
         }

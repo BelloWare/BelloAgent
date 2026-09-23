@@ -112,10 +112,12 @@ final class NativeTranscriptScrollingPerformanceTests: XCTestCase {
         // in idle slices. This measures scrolling through content that is
         // already loaded, so it waits for the last slice first.
         let exactBy = ProcessInfo.processInfo.systemUptime + 120
-        while let native = document as? TranscriptNativeDocument, native.approximateRowCount > 0,
-              ProcessInfo.processInfo.systemUptime < exactBy {
-            hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-            try await Task.sleep(for: .milliseconds(10))
+        try await unpacedIdleWork {
+            while let native = document as? TranscriptNativeDocument, native.approximateRowCount > 0,
+                  ProcessInfo.processInfo.systemUptime < exactBy {
+                hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                try await Task.sleep(for: .milliseconds(10))
+            }
         }
         XCTAssertEqual((document as? TranscriptNativeDocument)?.approximateRowCount ?? 0, 0,
                        "\(label): the page never finished measuring itself")

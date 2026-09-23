@@ -29,20 +29,24 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             assert self.path == '/v1/responses'
             assert self.headers['Authorization'] == 'Bearer synthetic-edit-key'
             assert body['model'] == 'fixture-model' and body['stream'] is True
+            # Pi's system prompt is the first input item; the history follows it.
+            system, history = body['input'][0], body['input'][1:]
+            assert system['role'] in ('developer', 'system') and isinstance(system['content'], str)
             pending, results, texts = set(), [], []
-            for item in body['input']:
-                if item['type'] == 'function_call':
+            for item in history:
+                kind = item.get('type', 'message')
+                if kind == 'function_call':
                     assert item['call_id'] not in pending
                     pending.add(item['call_id'])
-                elif item['type'] == 'function_call_output':
+                elif kind == 'function_call_output':
                     assert item['call_id'] in pending
                     pending.remove(item['call_id']); results.append(item['output'])
-                elif item['type'] == 'message':
+                elif kind == 'message':
                     texts += [p['text'] for p in item['content'] if p['type'] in ('input_text', 'output_text')]
             assert not pending
             joined = '\n'.join(texts)
             if not body.get('tools'):
-                assert body['instructions'].startswith('You are a context summarization assistant.') and texts[0].startswith('<conversation>\n')
+                assert system['content'].startswith('You are a context summarization assistant.') and texts[0].startswith('<conversation>\n')
                 output = message('UNSAFE_SUMMARY ORIGINAL_TARGET FUTURE_SECOND')
             elif 'EDITED_REPLACEMENT' in joined:
                 assert 'SAFE_FIRST' in joined and 'SKILL_CURRENT_SELECTION' in joined

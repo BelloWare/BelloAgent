@@ -311,30 +311,32 @@ struct MarkedSessionActions: View {
     }
 }
 
-struct SessionOrganizationActions: View {
-    @ObservedObject var model: WorkspaceModel
-    let chat: ChatRecord
-    var body: some View {
-        if !chat.isBackgroundTask { Button("Rename…") { model.renameSession(chat.id) } }
-        Button(chat.isPinned ? "Unpin Chat" : "Pin Chat", systemImage: chat.isPinned ? "pin.slash" : "pin") { model.toggleSessionPin(chat.id) }
-        Button(chat.isArchived ? "Restore Chat" : "Archive Chat", systemImage: chat.isArchived ? "arrow.uturn.backward" : "archivebox") { model.toggleSessionArchive(chat.id) }
+/// A chat's own organising commands: in its right-click menu and in the
+/// conversation's "…" menu, built when either opens.
+enum SessionOrganizationActions {
+    @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel, chat: ChatRecord) -> [PiMenuEntry] {
+        if !chat.isBackgroundTask { PiMenuEntry.button("Rename…") { model.renameSession(chat.id) } }
+        PiMenuEntry.button(chat.isPinned ? "Unpin Chat" : "Pin Chat", systemImage: chat.isPinned ? "pin.slash" : "pin") { model.toggleSessionPin(chat.id) }
+        PiMenuEntry.button(chat.isArchived ? "Restore Chat" : "Archive Chat", systemImage: chat.isArchived ? "arrow.uturn.backward" : "archivebox") {
+            model.toggleSessionArchive(chat.id)
+        }
         if chat.workspaceID != WorkspaceRecord.scratchID, !chat.isBackgroundTask, chat.connectionTest != true {
-            Menu {
-                Text("Includes saved side chats")
-                Button("Project root", systemImage: model.effectiveTopicID(for: chat) == nil ? "checkmark" : "tray") { move(to: nil) }
-                ForEach(model.topics(in: chat.workspaceID)) { topic in
-                    Button(topic.title, systemImage: model.effectiveTopicID(for: chat) == topic.id ? "checkmark" : "folder") { move(to: topic.id) }
+            let current = model.effectiveTopicID(for: chat)
+            PiMenuEntry.menu("Move to Topic", systemImage: "folder", identifier: "moveSessionToTopic-" + chat.id,
+                             help: "Move this chat and its saved side chats within this project") {
+                PiMenuEntry.note("Includes saved side chats")
+                PiMenuEntry.button("Project root", systemImage: current == nil ? "checkmark" : "tray") { move(chat, model: model, to: nil) }
+                for topic in model.topics(in: chat.workspaceID) {
+                    PiMenuEntry.button(topic.title, systemImage: current == topic.id ? "checkmark" : "folder") { move(chat, model: model, to: topic.id) }
                 }
-            } label: { Label("Move to Topic", systemImage: "folder") }
-            .help("Move this chat and its saved side chats within this project")
-            .accessibilityIdentifier("moveSessionToTopic-" + chat.id)
+            }
         }
         if chat.isArchived {
-            Divider()
-            Button("Delete Chat…", systemImage: "trash", role: .destructive) { model.deleteChat(chat.id) }
+            PiMenuEntry.divider
+            PiMenuEntry.button("Delete Chat…", systemImage: "trash", destructive: true) { model.deleteChat(chat.id) }
         }
     }
-    private func move(to topicID: String?) {
+    @MainActor private static func move(_ chat: ChatRecord, model: WorkspaceModel, to topicID: String?) {
         Task {
             do { try await model.moveSessions([chat.id], in: chat.workspaceID, toTopic: topicID) }
             catch { model.error = error.localizedDescription }
@@ -343,14 +345,12 @@ struct SessionOrganizationActions: View {
 }
 
 /// Shared by sidebar right-click menus and the main/side conversation menu.
-struct SessionReferenceActions: View {
-    let model: WorkspaceModel
-    let sessionID: String
-    var body: some View {
-        Button("Copy Session ID", systemImage: "number") { model.copySessionID(sessionID) }
-            .accessibilityIdentifier("copySessionID-" + sessionID)
-        Button("Copy Session Reference", systemImage: "doc.on.doc") { Task { await model.copySessionReference(sessionID) } }
-            .help("Copy the session ID, conversation file path, token usage and reported cost")
-            .accessibilityIdentifier("copySessionReference-" + sessionID)
+enum SessionReferenceActions {
+    @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel, sessionID: String) -> [PiMenuEntry] {
+        PiMenuEntry.button("Copy Session ID", systemImage: "number", identifier: "copySessionID-" + sessionID) { model.copySessionID(sessionID) }
+        PiMenuEntry.button("Copy Session Reference", systemImage: "doc.on.doc", identifier: "copySessionReference-" + sessionID,
+                           help: "Copy the session ID, conversation file path, token usage and reported cost") {
+            Task { await model.copySessionReference(sessionID) }
+        }
     }
 }

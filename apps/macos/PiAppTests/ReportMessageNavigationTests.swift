@@ -71,7 +71,7 @@ final class ReportMessageNavigationTests: XCTestCase {
         await gate.release(oldPage)
         let result = await delayed.value
         XCTAssertFalse(result); XCTAssertEqual(view.messages.map(\.id), ["latest"]); XCTAssertEqual(view.scrollAnchor?.id, "latest")
-        XCTAssertFalse(model.showMessageDetail)
+        XCTAssertNil(model.lastInspectorFocus)
         try await close(model, root: root)
     }
 
@@ -82,7 +82,7 @@ final class ReportMessageNavigationTests: XCTestCase {
         model.selectedID = "another-chat"; model.selectedID = "chat"
         await gate.release(oldPage)
         let result = await delayed.value
-        XCTAssertFalse(result); XCTAssertEqual(view.messages.map(\.id), ["latest"]); XCTAssertFalse(model.showMessageDetail)
+        XCTAssertFalse(result); XCTAssertEqual(view.messages.map(\.id), ["latest"]); XCTAssertNil(model.lastInspectorFocus)
         try await close(model, root: root)
     }
 
@@ -94,7 +94,7 @@ final class ReportMessageNavigationTests: XCTestCase {
             if cancel { delayed.cancel() } else { model.openReport() }
             await gate.release(oldPage)
             let result = await delayed.value
-            XCTAssertFalse(result); XCTAssertEqual(view.messages.map(\.id), ["latest"]); XCTAssertFalse(model.showMessageDetail)
+            XCTAssertFalse(result); XCTAssertEqual(view.messages.map(\.id), ["latest"]); XCTAssertNil(model.lastInspectorFocus)
             XCTAssertEqual(model.page, cancel ? .chats : .report)
             try await close(model, root: root)
         }

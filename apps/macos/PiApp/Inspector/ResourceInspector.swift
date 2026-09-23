@@ -141,12 +141,12 @@ struct ResourceInspector: View {
                                         }
                                     } label: { Label("Select for Draft", systemImage: "plus.circle") }
                                         .buttonStyle(.piPrimary).disabled(originID.flatMap({ model.displays[$0] }).map { !model.canSelectSkill(skill, view: $0) || $0.skills.count == 8 || $0.skills.contains(where: { $0.id == skill.id }) } ?? true)
-                                    PiMenuButton(title: "Project Policy", icon: "checkmark.shield") {
-                                        Button("Explicit Only") { policy(skill, key: "explicitOnly", enabled: true) }
-                                        Button("Remove App Explicit-only Override") { policy(skill, key: "explicitOnly", enabled: false) }
-                                        Divider()
-                                        Button("Disable for This Project") { policy(skill, key: "disabled", enabled: true) }
-                                        Button("Remove Project Disable Override") { policy(skill, key: "disabled", enabled: false) }
+                                    PiMenuButton(title: "Project Policy", icon: "checkmark.shield", identifier: "skill-project-policy") {
+                                        PiMenuEntry.button("Explicit Only") { policy(skill, key: "explicitOnly", enabled: true) }
+                                        PiMenuEntry.button("Remove App Explicit-only Override") { policy(skill, key: "explicitOnly", enabled: false) }
+                                        PiMenuEntry.divider
+                                        PiMenuEntry.button("Disable for This Project") { policy(skill, key: "disabled", enabled: true) }
+                                        PiMenuEntry.button("Remove Project Disable Override") { policy(skill, key: "disabled", enabled: false) }
                                     }.disabled(policyBusy)
                                 }.padding(.top, 2)
                             }

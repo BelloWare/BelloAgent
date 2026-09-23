@@ -228,7 +228,8 @@ final class TitleGenerationTests: XCTestCase {
         let body = try JSONDecoder().decode(WireValue.self, from: Data(request[split.upperBound...].utf8)).object ?? [:]
         XCTAssertEqual(body["model"]?.string, "mini-fixture"); XCTAssertEqual(body["max_output_tokens"]?.number, 512)
         XCTAssertEqual(body["tools"]?.array ?? [], [])
-        XCTAssertTrue(body["instructions"]?.string?.contains("Generate a short session title") == true)
+        // Pi's system prompt is the first input item.
+        XCTAssertTrue(body["input"]?.array?.first?.object?["content"]?.string?.contains("Generate a short session title") == true)
         XCTAssertFalse(request.contains("PRIVATE PROJECT INSTRUCTION"))
         let attempts = try await model.traces.list(sessionID: background.id, workspaceID: WorkspaceRecord.scratchID)
         XCTAssertEqual(attempts.count, 1); XCTAssertEqual(attempts.first?["purpose"]?.string, "title")
@@ -435,7 +436,7 @@ private final class TitleGenerationGateway: @unchecked Sendable {
                     head.lowercased().contains("authorization: bearer synthetic-title-key") &&
                     body?["model"]?.string == "mini-fixture" && body?["max_output_tokens"]?.number == 512 &&
                     (body?["tools"]?.array ?? []).isEmpty && !request.contains("PRIVATE PROJECT INSTRUCTION") &&
-                    body?["instructions"]?.string?.contains("Generate a short session title") == true
+                    body?["input"]?.array?.first?.object?["content"]?.string?.contains("Generate a short session title") == true
                 let response = valid
                     ? #"{"id":"resp_title","object":"response","status":"completed","model":"resolved-mini-fixture","output":[{"id":"msg_title","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Improve the model picker"}]}],"usage":{"input_tokens":24,"output_tokens":5,"total_tokens":29}}"#
                     : #"{"error":{"message":"Title request failed fixture validation"}}"#

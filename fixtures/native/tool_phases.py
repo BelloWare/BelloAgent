@@ -30,12 +30,14 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             assert body['stream'] is True and body['model'] == 'phase-fixture'
             assert 'bash' in [tool['name'] for tool in body['tools']]
             pending, results = set(), []
+            # Pi's system prompt leads the input; items without a type are messages.
             for item in body['input']:
-                if item['type'] == 'function_call':
+                kind = item.get('type', 'message')
+                if kind == 'function_call':
                     assert item['call_id'] not in pending
                     pending.add(item['call_id'])
                     assert json.loads(item['arguments'])['command'] == 'sleep 0.3; printf phase-tool-ok'
-                elif item['type'] == 'function_call_output':
+                elif kind == 'function_call_output':
                     assert item['call_id'] in pending
                     pending.remove(item['call_id']); results.append(item['output'])
             assert not pending and all('phase-tool-ok' in result for result in results)

@@ -145,13 +145,16 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         }
         /// A long chat comes up with its viewport exact and measures the rest
         /// in idle slices. This waits for the last of them, as a reader who
-        /// leaves the chat open does.
+        /// leaves the chat open does, with the slices run back to back
+        /// (`unpacedIdleWork`).
         func settleUntilExact(seconds: Double = 120) async {
             let deadline = ProcessInfo.processInfo.systemUptime + seconds
-            while (document?.approximateRowCount ?? 0) > 0, ProcessInfo.processInfo.systemUptime < deadline {
-                hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-                await Task.yield()
-                try? await Task.sleep(for: .milliseconds(5))
+            await unpacedIdleWork {
+                while (document?.approximateRowCount ?? 0) > 0, ProcessInfo.processInfo.systemUptime < deadline {
+                    hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                    await Task.yield()
+                    try? await Task.sleep(for: .milliseconds(5))
+                }
             }
             await settle(turns: 8)
         }
@@ -471,84 +474,110 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         XCTAssertLessThan(unfold.scaled(by: 1 / Double(rounds)).total, releaseBudget(0.025), "unfolding a 60-tool turn took too long")
     }
 
-    /// What a tick of a disclosure's motion costs over a long page. A tick
-    /// is frame changes: the row that is moving keeps the tree it was
-    /// measured with, every row under it shifts by the same amount, and
-    /// nothing is measured, built or handed to SwiftUI.
-    @MainActor func testATickOfADisclosureMotionIsFrameChangesOnly() async throws {
-        let rows = Int(testEnvironment("PI_PERF_ROWS") ?? "") ?? 300
-        let session = Self.chat("motion-budget", rows: rows)
-        var worked = TranscriptMessage(id: "worked", role: "assistant",
-                                       text: String(repeating: "Here is what changed and why. ", count: 8),
-                                       at: Double(rows) * 1000 + 10, turn: Self.lastUserID(rows: rows))
-        worked.tools = (0..<60).map { index in
-            ToolView(id: "w\(index)", name: index % 3 == 0 ? "bash" : "read", state: "completed",
-                     input: "{\"path\":\"apps/macos/PiApp/Sources/File\(index).swift\"}",
-                     output: String(repeating: "line \(index) of the result. ", count: 6),
-                     durationMs: 10 + Double(index), truncated: false, path: "apps/macos/PiApp/Sources/File\(index).swift")
-        }
-        session.messages.append(worked)
-        TranscriptNativeDocument.reducesMotionOverride = false
-        defer { TranscriptNativeDocument.reducesMotionOverride = nil }
-        let pane = Pane(session); defer { pane.close() }
-        let ready = await pane.waitForRow("worked", seconds: 60)
-        XCTAssertTrue(ready)
-        await pane.settleUntilExact()
-        let document = try XCTUnwrap(pane.document)
-        let row = try XCTUnwrap(pane.rows.first { if case .block(let block) = $0.item { return !block.tools.isEmpty }; return false })
-        guard case .block(let block) = row.item else { return XCTFail("no turn with work") }
-        // The reader is looking at the turn whose chevron they click.
-        if let scroll = pane.scroll {
-            scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: max(0, row.frame.minY - 40)))
-            scroll.reflectScrolledClipView(scroll.contentView)
-            NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
-        }
-        await pane.settle(turns: 8)
 
-        row.toggleDisclosure(.work(block.key))
-        document.advanceDisclosureMotion(to:1)
-        await pane.settleUntilExact()
-        let measurementsBefore = pane.rows.reduce(0) { $0 + $1.measurementCount }
-        let builtBefore = document.rowsBuiltCount
-        let open = row.frame.height
-        let clickStart = ProcessInfo.processInfo.systemUptime
-        row.toggleDisclosure(.work(block.key))
-        let click = ProcessInfo.processInfo.systemUptime - clickStart
-        XCTAssertTrue(document.isMovingDisclosure, "the click must start the motion")
-        // A 220 ms motion at 120 Hz.
-        let ticks = 26
-        var worst = 0.0
-        let ticksStart = ProcessInfo.processInfo.systemUptime
-        for tick in 1...ticks {
-            let started = ProcessInfo.processInfo.systemUptime
-            document.advanceDisclosureMotion(to: Double(tick) / Double(ticks))
-            pane.window.displayIfNeeded()
-            worst = max(worst, ProcessInfo.processInfo.systemUptime - started)
+    /// The chat the reader leaves is let go of. The pane is kept across
+    /// chats now, so anything under it that captured the conversation when
+    /// it was bound would hold it for the window's lifetime. The actions are
+    /// the shape the real pane hands down: closures that capture the session.
+    @MainActor func testRebindingReleasesTheChatTheReaderLeft() async throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        weak var left: SessionDisplay?
+        var hosted: NSHostingView<NativeTranscriptView>!
+        do {
+            let first = Self.chat("leak-first", rows: 20)
+            left = first
+            hosted = NSHostingView(rootView: NativeTranscriptView(
+                session: first, actions: TranscriptActions(inspect: { _ in _ = first.id }, edit: { _ in _ = first.id }),
+                onAnchorChanged: { _ in _ = first.id }))
+            window.contentView = hosted
+            window.makeKeyAndOrderFront(nil)
+            for _ in 0..<60 {
+                hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                await Task.yield(); try? await Task.sleep(for: .milliseconds(5))
+            }
+            XCTAssertNotNil(left)
         }
-        let ticksCost = ProcessInfo.processInfo.systemUptime - ticksStart
-        print(String(format: "PERF a disclosure over %d rows: the click %.1f ms, %d ticks %.2f ms each (worst %.2f ms), %.1f ms in total; the document's own tick %.2f ms",
-                     rows, click * 1000, ticks, ticksCost * 1000 / Double(ticks), worst * 1000,
-                     (click + ticksCost) * 1000, document.motionTickSeconds * 1000 / Double(max(1, document.motionTickCount))))
-        // The motion itself measures nothing; the row it lands on may be
-        // confirmed once as it settles.
-        XCTAssertLessThanOrEqual(pane.rows.reduce(0) { $0 + $1.measurementCount }, measurementsBefore + 1,
-                                 "the motion measured more than the row it landed on")
-        XCTAssertEqual(document.rowsBuiltCount, builtBefore, "a tick built a row host")
-        XCTAssertLessThan(row.frame.height, open / 2, "the turn ends folded")
-        XCTAssertLessThan(document.motionTickSeconds / Double(max(1, document.motionTickCount)), releaseBudget(0.001),
-                          "a tick over \(rows) rows costs more than a millisecond")
-        // The click is the one layout this transition does; every tick after
-        // it moves frames that were measured then. The ticks together may
-        // cost a few clicks' worth of redrawing — never a click each, which
-        // is what a tick that laid the page out again would cost. Relative,
-        // because an absolute ceiling here only measures how busy the
-        // machine is: under a full suite the same transition takes twice as
-        // long as it does on its own, and so does the click.
-        XCTAssertLessThan(ticksCost, click * 8,
-                          "\(ticks) ticks cost \(Int(ticksCost * 1000)) ms against a \(Int(click * 1000)) ms click: a tick is laying the page out again")
+        do {
+            let second = Self.chat("leak-second", rows: 20)
+            hosted.rootView = NativeTranscriptView(
+                session: second, actions: TranscriptActions(inspect: { _ in _ = second.id }, edit: { _ in _ = second.id }),
+                onAnchorChanged: { _ in _ = second.id })
+            for _ in 0..<80 {
+                hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                await Task.yield(); try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+        for _ in 0..<40 { await Task.yield(); try? await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertNil(left, "the chat the reader left is still in memory")
     }
 
-    // MARK: 3b — Switching between two long chats
+
+    // MARK: 5 — Memory over a session of use
+
+    @MainActor func testVisitingManyLongChatsDoesNotGrowTheProcess() async throws {
+        // Fifty chats is the target; the suite visits fewer by default and
+        // PI_PERF_VISITS asks for the whole run.
+        let visits = Int(testEnvironment("PI_PERF_VISITS") ?? "") ?? 30
+        let rows = Int(testEnvironment("PI_PERF_VISIT_ROWS") ?? "") ?? 60
+        // The pane is built once and shown one chat after another, as the app
+        // does when the reader clicks through the sidebar.
+        let sessions = (0..<visits).map { Self.chat("visit-\($0)", rows: rows) }
+        let pane = Pane(sessions[0]); defer { pane.close() }
+        let ready = await pane.waitForRow(Self.lastUserID(rows: rows), seconds: 60)
+        XCTAssertTrue(ready)
+        await pane.settle(turns: 20)
+        // Warm up: the first handful of visits pay for fonts, text engines and
+        // the caches that are meant to stay warm.
+        for session in sessions.prefix(5) {
+            pane.hosted.rootView = NativeTranscriptView(session: session, actions: TranscriptActions())
+            _ = await pane.waitForRow(Self.lastUserID(rows: rows), seconds: 60)
+            await pane.settle(turns: 6)
+        }
+        let before = Self.footprintBytes()
+        let remaining = sessions.dropFirst(5)
+        // Where the visits are half done, so the second half can be compared
+        // with the first: what "bounded" means is that the page stops costing
+        // more, not that it costs nothing.
+        var middle = before
+        for (index, session) in remaining.enumerated() {
+            pane.hosted.rootView = NativeTranscriptView(session: session, actions: TranscriptActions())
+            _ = await pane.waitForRow(Self.lastUserID(rows: rows), seconds: 60)
+            await pane.settle(turns: 4)
+            if index == remaining.count / 2 - 1 { await pane.settle(turns: 8); middle = Self.footprintBytes() }
+        }
+        await pane.settle(turns: 20)
+        let after = Self.footprintBytes()
+        let grown = Double(after) - Double(before)
+        let visited = visits - 5
+        let firstHalf = Double(middle) - Double(before), secondHalf = Double(after) - Double(middle)
+        print(String(format: "PERF visiting %d chats of %d rows: %.1f MB before, %.1f MB after, %+.0f KB per chat visited (first half %+.1f MB, second half %+.1f MB)",
+                     visited, rows, Double(before) / 1_048_576, Double(after) / 1_048_576, grown / 1024 / Double(visited),
+                     firstHalf / 1_048_576, secondHalf / 1_048_576))
+        // The transcript's own caches are bounded — the shared geometry cache
+        // by count and bytes, the Markdown and highlighter caches by NSCache
+        // limits that also yield under memory pressure — so what the page
+        // costs is the caches filling, and filling stops. That is the shape
+        // this holds to, in any configuration: the second half of the visits
+        // must cost less than the first. Something retained per chat would
+        // cost the same for every one of them. Debug views are heavy enough
+        // that twenty-five visits do not fill the caches, so the claim is a
+        // Release one; retention itself is proved by the weak-reference tests.
+        XCTAssertLessThan(secondHalf, releaseBudget(max(firstHalf, 4 * 1_048_576)),
+                          String(format: "the page kept growing: %.1f MB over the first %d chats, %.1f MB over the next %d",
+                                 firstHalf / 1_048_576, visited / 2, secondHalf / 1_048_576, visited - visited / 2))
+        XCTAssertLessThan(grown / Double(visited), releaseBudget(1_500_000),
+                          "each visited chat left \(Int(grown / Double(visited) / 1024)) KB behind")
+    }
+}
+
+/// Clicking from one long chat to another, with the pane kept and with it
+/// rebuilt: the frame budget of a switch. Split from `TranscriptFrameBudgetTests`
+/// so the parallel lane can run the two long fixtures side by side.
+final class TranscriptSwitchBudgetTests: XCTestCase {
+    private typealias Pane = TranscriptFrameBudgetTests.Pane
 
     /// Clicking from one long chat to another. Two shapes are measured: the
     /// pane kept and rebound, which is what the transcript is built for, and
@@ -557,9 +586,9 @@ final class TranscriptFrameBudgetTests: XCTestCase {
     /// either way — never an empty pane that fills in afterwards.
     @MainActor func testSwitchingBetweenTwoLongChats() async throws {
         let rows = Int(testEnvironment("PI_PERF_ROWS") ?? "") ?? 300
-        let last = Self.lastUserID(rows: rows)
-        let first = Self.chat("switch-a", rows: rows)
-        let second = Self.chat("switch-b", rows: rows)
+        let last = TranscriptFrameBudgetTests.lastUserID(rows: rows)
+        let first = TranscriptFrameBudgetTests.chat("switch-a", rows: rows)
+        let second = TranscriptFrameBudgetTests.chat("switch-b", rows: rows)
         // The other chat answers at greater length, so borrowing one chat's
         // geometry for the other would show up as a wrong height.
         second.messages = second.messages.map { message in
@@ -633,57 +662,35 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         XCTAssertLessThan(rebuiltPaint, releaseBudget(0.500), "rebuilding the pane for a \(rows)-row chat took \(Int(rebuiltPaint * 1000)) ms")
         XCTAssertLessThan(cold.measured, 40, "switching to another \(rows)-row chat measured \(cold.measured) rows")
     }
+}
 
-    /// The chat the reader leaves is let go of. The pane is kept across
-    /// chats now, so anything under it that captured the conversation when
-    /// it was bound would hold it for the window's lifetime. The actions are
-    /// the shape the real pane hands down: closures that capture the session.
-    @MainActor func testRebindingReleasesTheChatTheReaderLeft() async throws {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700), styleMask: [.titled],
-                              backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        defer { window.contentView = nil; window.close() }
-        weak var left: SessionDisplay?
-        var hosted: NSHostingView<NativeTranscriptView>!
-        do {
-            let first = Self.chat("leak-first", rows: 20)
-            left = first
-            hosted = NSHostingView(rootView: NativeTranscriptView(
-                session: first, actions: TranscriptActions(inspect: { _ in _ = first.id }, edit: { _ in _ = first.id }),
-                onAnchorChanged: { _ in _ = first.id }))
-            window.contentView = hosted
-            window.makeKeyAndOrderFront(nil)
-            for _ in 0..<60 {
-                hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-                await Task.yield(); try? await Task.sleep(for: .milliseconds(5))
-            }
-            XCTAssertNotNil(left)
-        }
-        do {
-            let second = Self.chat("leak-second", rows: 20)
-            hosted.rootView = NativeTranscriptView(
-                session: second, actions: TranscriptActions(inspect: { _ in _ = second.id }, edit: { _ in _ = second.id }),
-                onAnchorChanged: { _ in _ = second.id })
-            for _ in 0..<80 {
-                hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-                await Task.yield(); try? await Task.sleep(for: .milliseconds(5))
-            }
-        }
-        for _ in 0..<40 { await Task.yield(); try? await Task.sleep(for: .milliseconds(5)) }
-        XCTAssertNil(left, "the chat the reader left is still in memory")
-    }
-
-    // MARK: 4 — Scrolling
+/// A long page scrolled a wheel step at a time: the frame budget of reading.
+final class TranscriptScrollBudgetTests: XCTestCase {
+    private typealias Pane = TranscriptFrameBudgetTests.Pane
 
     /// A long source history scrolled through the real bounded display page,
     /// a synthetic wheel step at a time. Report both counts: the app's 500-row
     /// cap means a 2,000-message source is not a 2,000-row rendered document.
+    ///
+    /// The whole page is built, measured and laid out, and the steps are
+    /// taken from its top through its first hundred rows
+    /// (PI_PERF_SCROLL_SAMPLE_ROWS; 0 scrolls to the end). Every row of this
+    /// page is the same question or the same answer, so what a step costs
+    /// depends only on where it stands against the rows it brings in, which
+    /// repeats every two rows, and on the page's own length, which is the
+    /// whole page's either way. A hundred rows are some 2,200 steps over
+    /// thirty screens, many times the few screens of trees the page keeps
+    /// ready around the reader: the stretch holds the steady state, and every
+    /// kind of step in its share. Measured over the whole page in a Debug
+    /// run, the first hundred rows took 3.51 ms a step with 4.6% of steps
+    /// over a frame; all four hundred, 3.46 ms and 4.5%; each hundred-row
+    /// band, 3.40 to 3.50 ms and 4.4 to 4.5%.
     @MainActor func testScrollingATwoThousandRowPageKeepsUpWithTheDisplay() async throws {
         // PI_PERF_SCROLL_ROWS varies the source; production paging still applies.
         let rows = Int(testEnvironment("PI_PERF_SCROLL_ROWS") ?? "") ?? 400
-        let session = Self.chat("scroll-budget", rows: rows)
+        let session = TranscriptFrameBudgetTests.chat("scroll-budget", rows: rows)
         let pane = Pane(session); defer { pane.close() }
-        let ready = await pane.waitForRow(Self.lastUserID(rows: rows), seconds: 120)
+        let ready = await pane.waitForRow(TranscriptFrameBudgetTests.lastUserID(rows: rows), seconds: 120)
         XCTAssertTrue(ready)
         await pane.settleUntilExact()
         let scroll = try XCTUnwrap(pane.scroll)
@@ -691,12 +698,14 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         let renderedRows = document.retainedRows.count
         XCTAssertEqual(renderedRows, min(rows, TranscriptPage.rowLimit))
         let travel = max(0, document.frame.height - scroll.contentView.bounds.height)
+        let sampleRows = Int(testEnvironment("PI_PERF_SCROLL_SAMPLE_ROWS") ?? "") ?? 100
+        let end = sampleRows > 0 && sampleRows < renderedRows ? min(travel, document.retainedRows[sampleRows].frame.minY) : travel
         // A trackpad delivers about 10 points per event at 120 Hz.
         let step: CGFloat = 10
         let budget = 1.0 / 120
         var over = 0, steps = 0, worst = 0.0, total = 0.0
         var y: CGFloat = 0
-        while y < travel {
+        while y < end {
             let start = ProcessInfo.processInfo.systemUptime
             scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: y))
             scroll.reflectScrolledClipView(scroll.contentView)
@@ -713,8 +722,8 @@ final class TranscriptFrameBudgetTests: XCTestCase {
             await Task.yield()
             if steps % 16 == 0 { try? await Task.sleep(for: .milliseconds(1)) }
         }
-        print(String(format: "PERF scrolling %d rendered rows from %d source messages: %d synthetic steps of %.0f points, %.2f ms mean, %.1f ms worst, %d over 8.33 ms (%.1f%%)",
-                     renderedRows, rows, steps, step, total * 1000 / Double(max(1, steps)), worst * 1000, over, Double(over) * 100 / Double(max(1, steps))))
+        print(String(format: "PERF scrolling %d rendered rows from %d source messages, from the top through %.0f of %.0f points: %d synthetic steps of %.0f points, %.2f ms mean, %.1f ms worst, %d over 8.33 ms (%.1f%%)",
+                     renderedRows, rows, end, travel, steps, step, total * 1000 / Double(max(1, steps)), worst * 1000, over, Double(over) * 100 / Double(max(1, steps))))
         // Reading a chat through for the first time builds each row's
         // SwiftUI tree as the reader reaches it — the work that used to be
         // done for the whole page before the chat appeared at all. Those are
@@ -726,62 +735,89 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         XCTAssertLessThan(total / Double(max(1, steps)), releaseBudget(0.006),
                           String(format: "a scroll step costs %.2f ms on average", total * 1000 / Double(max(1, steps))))
     }
+}
 
-    // MARK: 5 — Memory over a session of use
+/// A disclosure's motion over a long page, held to a multiple of its own
+/// click in Debug too: its ticks are timed, so it runs in the serial lane
+/// (`scripts/test-lanes.py`).
+final class TranscriptMotionTimingTests: XCTestCase, SerialTestLane {
+    private typealias Pane = TranscriptFrameBudgetTests.Pane
 
-    @MainActor func testVisitingManyLongChatsDoesNotGrowTheProcess() async throws {
-        // Fifty chats is the target; the suite visits fewer by default and
-        // PI_PERF_VISITS asks for the whole run.
-        let visits = Int(testEnvironment("PI_PERF_VISITS") ?? "") ?? 30
-        let rows = Int(testEnvironment("PI_PERF_VISIT_ROWS") ?? "") ?? 60
-        // The pane is built once and shown one chat after another, as the app
-        // does when the reader clicks through the sidebar.
-        let sessions = (0..<visits).map { Self.chat("visit-\($0)", rows: rows) }
-        let pane = Pane(sessions[0]); defer { pane.close() }
-        let ready = await pane.waitForRow(Self.lastUserID(rows: rows), seconds: 60)
+    /// What a tick of a disclosure's motion costs over a long page. A tick
+    /// is frame changes: the row that is moving keeps the tree it was
+    /// measured with, every row under it shifts by the same amount, and
+    /// nothing is measured, built or handed to SwiftUI.
+    @MainActor func testATickOfADisclosureMotionIsFrameChangesOnly() async throws {
+        let rows = Int(testEnvironment("PI_PERF_ROWS") ?? "") ?? 300
+        let session = TranscriptFrameBudgetTests.chat("motion-budget", rows: rows)
+        var worked = TranscriptMessage(id: "worked", role: "assistant",
+                                       text: String(repeating: "Here is what changed and why. ", count: 8),
+                                       at: Double(rows) * 1000 + 10, turn: TranscriptFrameBudgetTests.lastUserID(rows: rows))
+        worked.tools = (0..<60).map { index in
+            ToolView(id: "w\(index)", name: index % 3 == 0 ? "bash" : "read", state: "completed",
+                     input: "{\"path\":\"apps/macos/PiApp/Sources/File\(index).swift\"}",
+                     output: String(repeating: "line \(index) of the result. ", count: 6),
+                     durationMs: 10 + Double(index), truncated: false, path: "apps/macos/PiApp/Sources/File\(index).swift")
+        }
+        session.messages.append(worked)
+        TranscriptNativeDocument.reducesMotionOverride = false
+        defer { TranscriptNativeDocument.reducesMotionOverride = nil }
+        let pane = Pane(session); defer { pane.close() }
+        let ready = await pane.waitForRow("worked", seconds: 60)
         XCTAssertTrue(ready)
-        await pane.settle(turns: 20)
-        // Warm up: the first handful of visits pay for fonts, text engines and
-        // the caches that are meant to stay warm.
-        for session in sessions.prefix(5) {
-            pane.hosted.rootView = NativeTranscriptView(session: session, actions: TranscriptActions())
-            _ = await pane.waitForRow(Self.lastUserID(rows: rows), seconds: 60)
-            await pane.settle(turns: 6)
+        await pane.settleUntilExact()
+        let document = try XCTUnwrap(pane.document)
+        let row = try XCTUnwrap(pane.rows.first { if case .block(let block) = $0.item { return !block.tools.isEmpty }; return false })
+        guard case .block(let block) = row.item else { return XCTFail("no turn with work") }
+        // The reader is looking at the turn whose chevron they click.
+        if let scroll = pane.scroll {
+            scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: max(0, row.frame.minY - 40)))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
         }
-        let before = Self.footprintBytes()
-        let remaining = sessions.dropFirst(5)
-        // Where the visits are half done, so the second half can be compared
-        // with the first: what "bounded" means is that the page stops costing
-        // more, not that it costs nothing.
-        var middle = before
-        for (index, session) in remaining.enumerated() {
-            pane.hosted.rootView = NativeTranscriptView(session: session, actions: TranscriptActions())
-            _ = await pane.waitForRow(Self.lastUserID(rows: rows), seconds: 60)
-            await pane.settle(turns: 4)
-            if index == remaining.count / 2 - 1 { await pane.settle(turns: 8); middle = Self.footprintBytes() }
+        await pane.settle(turns: 8)
+
+        row.toggleDisclosure(.work(block.key))
+        document.advanceDisclosureMotion(to:1)
+        await pane.settleUntilExact()
+        let measurementsBefore = pane.rows.reduce(0) { $0 + $1.measurementCount }
+        let builtBefore = document.rowsBuiltCount
+        let open = row.frame.height
+        let clickStart = ProcessInfo.processInfo.systemUptime
+        row.toggleDisclosure(.work(block.key))
+        let click = ProcessInfo.processInfo.systemUptime - clickStart
+        XCTAssertTrue(document.isMovingDisclosure, "the click must start the motion")
+        // A 220 ms motion at 120 Hz.
+        let ticks = 26
+        var worst = 0.0
+        let ticksStart = ProcessInfo.processInfo.systemUptime
+        for tick in 1...ticks {
+            let started = ProcessInfo.processInfo.systemUptime
+            document.advanceDisclosureMotion(to: Double(tick) / Double(ticks))
+            pane.window.displayIfNeeded()
+            worst = max(worst, ProcessInfo.processInfo.systemUptime - started)
         }
-        await pane.settle(turns: 20)
-        let after = Self.footprintBytes()
-        let grown = Double(after) - Double(before)
-        let visited = visits - 5
-        let firstHalf = Double(middle) - Double(before), secondHalf = Double(after) - Double(middle)
-        print(String(format: "PERF visiting %d chats of %d rows: %.1f MB before, %.1f MB after, %+.0f KB per chat visited (first half %+.1f MB, second half %+.1f MB)",
-                     visited, rows, Double(before) / 1_048_576, Double(after) / 1_048_576, grown / 1024 / Double(visited),
-                     firstHalf / 1_048_576, secondHalf / 1_048_576))
-        // The transcript's own caches are bounded — the shared geometry cache
-        // by count and bytes, the Markdown and highlighter caches by NSCache
-        // limits that also yield under memory pressure — so what the page
-        // costs is the caches filling, and filling stops. That is the shape
-        // this holds to, in any configuration: the second half of the visits
-        // must cost less than the first. Something retained per chat would
-        // cost the same for every one of them. Debug views are heavy enough
-        // that twenty-five visits do not fill the caches, so the claim is a
-        // Release one; retention itself is proved by the weak-reference tests.
-        XCTAssertLessThan(secondHalf, releaseBudget(max(firstHalf, 4 * 1_048_576)),
-                          String(format: "the page kept growing: %.1f MB over the first %d chats, %.1f MB over the next %d",
-                                 firstHalf / 1_048_576, visited / 2, secondHalf / 1_048_576, visited - visited / 2))
-        XCTAssertLessThan(grown / Double(visited), releaseBudget(1_500_000),
-                          "each visited chat left \(Int(grown / Double(visited) / 1024)) KB behind")
+        let ticksCost = ProcessInfo.processInfo.systemUptime - ticksStart
+        print(String(format: "PERF a disclosure over %d rows: the click %.1f ms, %d ticks %.2f ms each (worst %.2f ms), %.1f ms in total; the document's own tick %.2f ms",
+                     rows, click * 1000, ticks, ticksCost * 1000 / Double(ticks), worst * 1000,
+                     (click + ticksCost) * 1000, document.motionTickSeconds * 1000 / Double(max(1, document.motionTickCount))))
+        // The motion itself measures nothing; the row it lands on may be
+        // confirmed once as it settles.
+        XCTAssertLessThanOrEqual(pane.rows.reduce(0) { $0 + $1.measurementCount }, measurementsBefore + 1,
+                                 "the motion measured more than the row it landed on")
+        XCTAssertEqual(document.rowsBuiltCount, builtBefore, "a tick built a row host")
+        XCTAssertLessThan(row.frame.height, open / 2, "the turn ends folded")
+        XCTAssertLessThan(document.motionTickSeconds / Double(max(1, document.motionTickCount)), releaseBudget(0.001),
+                          "a tick over \(rows) rows costs more than a millisecond")
+        // The click is the one layout this transition does; every tick after
+        // it moves frames that were measured then. The ticks together may
+        // cost a few clicks' worth of redrawing — never a click each, which
+        // is what a tick that laid the page out again would cost. Relative,
+        // because an absolute ceiling here only measures how busy the
+        // machine is: under a full suite the same transition takes twice as
+        // long as it does on its own, and so does the click.
+        XCTAssertLessThan(ticksCost, click * 8,
+                          "\(ticks) ticks cost \(Int(ticksCost * 1000)) ms against a \(Int(click * 1000)) ms click: a tick is laying the page out again")
     }
 }
 

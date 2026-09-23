@@ -188,9 +188,10 @@ final class TranscriptNativeScrollView: NSScrollView {
         copyMessage: { [weak self] in self?.current.copyMessage($0) },
         stop: { [weak self] in self?.current.stop() },
         retry: { [weak self] in self?.current.retry() },
-        turnRequestSource: { [weak self] in self?.current.turnRequestSource?() },
+        inspectTurn: { [weak self] in self?.current.inspectTurn?($0) },
         skillPressed: { [weak self] in self?.current.skillPressed?($0, $1, $2) },
-        skillHovered: { [weak self] in self?.current.skillHovered?($0, $1, $2, $3) }
+        skillHovered: { [weak self] in self?.current.skillHovered?($0, $1, $2, $3) },
+        costLimit: { [weak self] in self?.current.costLimit?($0, $1) }
     )
 }
 
@@ -198,7 +199,9 @@ final class TranscriptNativeScrollView: NSScrollView {
 /// retain their SwiftUI disclosure and native selection state across updates.
 @MainActor final class TranscriptNativeDocument: NSView {
     private weak var page: TranscriptPage?
-    private let actionRelay = TranscriptActionRelay()
+    /// The actions every row calls (Details, Edit, Copy, a turn's info…);
+    /// internal so a test can call them as a row does.
+    let actionRelay = TranscriptActionRelay()
     private(set) lazy var quoteSelection = TranscriptQuoteSelectionController(scope: self) { [weak self] quote in
         self?.actionRelay.current.quoteReply?(quote)
     }

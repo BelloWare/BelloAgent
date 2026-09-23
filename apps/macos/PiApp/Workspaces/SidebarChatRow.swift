@@ -122,11 +122,19 @@ struct SidebarChatRow: View, Equatable {
         if state.anyMarked && state.marked {
             MarkedSessionActions(model: model)
         } else {
-            if chat.parentSessionID != nil { Button("Open on Its Own", systemImage: "rectangle.expand.vertical") { Task { await model.select(chat.id) } }; Divider() }
-            SessionOrganizationActions(model: model, chat: chat)
-            Divider()
-            SessionReferenceActions(model: model, sessionID: chat.id)
-            if state.offersMarkAsRead { Divider(); Button("Mark as Read") { model.markSessionRead(chat.id) } }
+            PiMenuContent { [model, chat, state] in
+                if chat.parentSessionID != nil {
+                    PiMenuEntry.button("Open on Its Own", systemImage: "rectangle.expand.vertical") { Task { await model.select(chat.id) } }
+                    PiMenuEntry.divider
+                }
+                SessionOrganizationActions.entries(model: model, chat: chat)
+                PiMenuEntry.divider
+                SessionReferenceActions.entries(model: model, sessionID: chat.id)
+                if state.offersMarkAsRead {
+                    PiMenuEntry.divider
+                    PiMenuEntry.button("Mark as Read") { model.markSessionRead(chat.id) }
+                }
+            }
         }
     }
 }
@@ -144,9 +152,11 @@ struct SidebarSideRow: View, Equatable {
                     display: state.liveIdentity == nil ? nil : model.displays[state.id], available: state.available)
         }
         .contextMenu {
-            if state.kept, let record = model.record(state.id) { SessionOrganizationActions(model: model, chat: record) }
-            SessionReferenceActions(model: model, sessionID: state.id)
-            if state.unreadCount > 0 { Button("Mark as Read") { model.markSessionRead(state.id) } }
+            PiMenuContent { [model, state] in
+                if state.kept, let record = model.record(state.id) { SessionOrganizationActions.entries(model: model, chat: record) }
+                SessionReferenceActions.entries(model: model, sessionID: state.id)
+                if state.unreadCount > 0 { PiMenuEntry.button("Mark as Read") { model.markSessionRead(state.id) } }
+            }
         }
         .padding(.leading, state.indent)
     }

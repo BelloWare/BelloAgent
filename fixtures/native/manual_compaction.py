@@ -24,14 +24,21 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             assert body['metadata']['session_id'] == sid
             assert body['stream'] is True and body['store'] is False
             summary = not body.get('tools')
+            system, history = body['input'][0], body['input'][1:]
+            assert system['role'] == 'developer' and isinstance(system['content'], str)
+            # Pi sends a summary with cacheRetention "none" and a turn with the session's cache key.
+            assert ('prompt_cache_key' in body) == (not summary)
             if summary:
-                # Pi's cap: min(0.8 × the 16,384-token reserve, the model's output limit).
-                expected = ('connection-default', 'low', 4096) if sid == 'default' else ('chosen-' + sid, 'high', 13107)
+                # Pi's cap: min(0.8 × the 16,384-token reserve, the model's output limit);
+                # 0.5 × for a split turn's prefix. An unknown limit bounds nothing.
+                prompt = history[0]['content'][0]['text']
+                prefix = 'This is the PREFIX of a turn that was too large to keep.' in prompt
+                expected = ('connection-default', 'low') if sid == 'default' else ('chosen-' + sid, 'high')
                 assert body['model'] == expected[0], 'Compaction lost selected model: ' + body['model']
                 assert body['reasoning']['effort'] == expected[1], 'Compaction lost effort'
-                assert body['max_output_tokens'] == expected[2], 'Compaction lost model output ceiling'
-                assert body['instructions'].startswith('You are a context summarization assistant.')
-                assert len(body['input']) == 1 and body['input'][0]['content'][0]['text'].startswith('<conversation>\n')
+                assert body['max_output_tokens'] == (8192 if prefix else 13107), 'Compaction lost pi summary cap'
+                assert system['content'].startswith('You are a context summarization assistant.')
+                assert len(history) == 1 and prompt.startswith('<conversation>\n')
                 text = 'Preserve the original objective. Verified evidence was retained.'
             else:
                 assert body['model'] == 'previous-model'

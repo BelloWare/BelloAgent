@@ -49,7 +49,7 @@ extension WorkspaceModel {
         cancelAutomaticContext()
         for pending in hostStarts.values { pending.task.cancel() }
         for pending in sessionOpenings.values { pending.task.cancel() }
-        SessionUsageWindows.shared.closeAll(owner: self)
+        SessionInspectorWindows.shared.closeAll(owner: self)
         for task in titleGenerationTasks.values { task.cancel() }
         titleGenerationTasks.removeAll()
         accountingStopped = true

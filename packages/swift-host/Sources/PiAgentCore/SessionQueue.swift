@@ -16,6 +16,10 @@ extension AgentSession {
         guard !commands.contains(where:{$0["turnId"].text == input.turnID}), !history.contains(where:{$0.id == input.turnID}) else { throw AgentError("duplicate_turn", "Turn identity already accepted; no duplicate submission was made") }
         _ = try profile.overriding(model:input.model,thinkingLevel:input.thinkingLevel,contextWindow:input.contextWindow,maxOutputTokens:input.maxOutputTokens,modelOutputLimit:input.modelOutputLimit)
         if steer, runTask == nil { throw AgentError("not_running", "Steering requires an active run; send a normal message") }
+        // A message sent to a chat at its cost limit is refused where it was
+        // typed, with the same words as a run stopped there. One sent while a
+        // run is going waits in the queue, which pauses if the run stops.
+        if !steer, runTask == nil { try enforceCostLimit() }
         if !steer, runTask == nil, queuePaused, !queue.isEmpty || !steering.isEmpty { throw AgentError("queue_paused", "Resume or remove paused messages before sending another") }
     }
     public func submit(_ input: Submission, steer: Bool) throws -> JSON {
@@ -77,7 +81,17 @@ extension AgentSession {
         guard ["one-at-a-time","all"].contains(steering), ["one-at-a-time","all"].contains(followUp) else { throw AgentError("queue_mode", "Queue modes are one-at-a-time or all") }
         steeringMode=steering; followUpMode=followUp; try persistState(); event("queue.changed")
     }
-    public func resumeQueue() throws { guard runTask == nil else { throw AgentError("session_busy", "Run already active") }; queuePaused=false; try persistState(); if !queue.isEmpty || !steering.isEmpty { launch() } else { if state != "error" { state="idle" }; event("state") } }
+    public func resumeQueue() throws {
+        guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
+        queuePaused=false; try persistState()
+        if !queue.isEmpty || !steering.isEmpty { launch(); return }
+        if errorCode == Self.costLimitCode, !costLimitReached {
+            // A run stopped at its cost limit with nothing left to continue
+            // (a compaction, say) is over once the limit is above the spend.
+            state="idle"; runStatus="idle"; errorMessage=nil; errorCode=nil; try persistState()
+        } else if state != "error" { state="idle" }
+        event("state")
+    }
     /// Runs the failed or stopped turn again from where it stopped: the last
     /// user message, or the tool results after it, go to the model once more,
     /// with the chat's current choices (`overrides`: model, thinkingLevel,
@@ -98,7 +112,7 @@ extension AgentSession {
         submission.modelOutputLimit = overrides["modelOutputLimit"].int
         _ = try profile.overriding(model:submission.model,thinkingLevel:submission.thinkingLevel,contextWindow:submission.contextWindow,maxOutputTokens:submission.maxOutputTokens,modelOutputLimit:submission.modelOutputLimit)
         currentTurnID = submission.turnID
-        activeSubmission=submission; retrying=true; queuePaused=false; errorMessage=nil; try persistState(); launch()
+        activeSubmission=submission; retrying=true; queuePaused=false; errorMessage=nil; errorCode=nil; try persistState(); launch()
     }
     func deliver(_ submission: Submission, lane: String = "follow-up", newTask: Bool = true) async throws {
         _ = try profile.overriding(model:submission.model,thinkingLevel:submission.thinkingLevel,contextWindow:submission.contextWindow,maxOutputTokens:submission.maxOutputTokens,modelOutputLimit:submission.modelOutputLimit)

@@ -58,7 +58,7 @@ final class CompactionGatewayTests: XCTestCase {
         try await s.compact();try await eventually { !(await s.isRunning) }
         let state=await s.snapshot(),context=await s.context,chained=try await attempts("compaction-budget")
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
-        XCTAssertEqual(context.first?.kind,"compaction");XCTAssertEqual(context.filter { $0.role=="user" }.map(\.id),["root"])
+        XCTAssertEqual(context.first?.kind,"compaction");XCTAssertTrue(context.filter { $0.role=="user" }.isEmpty,"Pi replays no input verbatim")
         XCTAssertGreaterThan(chained.count,1,"Each chunk updates the summary so far, at pi's 6,400-token cap")
         XCTAssertTrue(try records().allSatisfy { $0["status"].int==200 })
         var output=0

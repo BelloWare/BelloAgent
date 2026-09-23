@@ -80,17 +80,16 @@ struct GitPanelView: View {
 
     /// IntelliJ's branch popup: the local branches to switch to, and a new branch from HEAD.
     private var branchMenu: some View {
-        PiMenuButton(title: controller.status.branch.isEmpty ? "detached" : controller.status.branch, icon: "arrow.triangle.branch") {
-            Button("New Branch from \(controller.status.branch.isEmpty ? "HEAD" : controller.status.branch)…") { newBranchName = ""; showNewBranch = true }
-            Divider()
-            ForEach(controller.branches, id: \.self) { branch in
-                Button { Task { await controller.checkout(branch) } } label: {
-                    if branch == controller.status.branch { Label(branch, systemImage: "checkmark") } else { Text(branch) }
-                }.disabled(branch == controller.status.branch)
+        PiMenuButton(title: controller.status.branch.isEmpty ? "detached" : controller.status.branch, icon: "arrow.triangle.branch",
+                     identifier: "git-branch-menu") { [controller, _newBranchName, _showNewBranch] in
+            let current = controller.status.branch
+            PiMenuEntry.button("New Branch from \(current.isEmpty ? "HEAD" : current)…") { _newBranchName.wrappedValue = ""; _showNewBranch.wrappedValue = true }
+            PiMenuEntry.divider
+            for branch in controller.branches {
+                PiMenuEntry.button(branch, enabled: branch != current, checked: branch == current) { Task { await controller.checkout(branch) } }
             }
         }
         .disabled(controller.busy)
-        .accessibilityIdentifier("git-branch-menu")
         .popover(isPresented: $showNewBranch, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: PiSpacing.sm) {
                 Text("New branch").font(PiFont.heading).foregroundStyle(Color.piInk)
@@ -150,17 +149,17 @@ struct GitPanelView: View {
     }
 
     private var stashMenu: some View {
-        PiMenuButton(title: controller.stashes.isEmpty ? "Stash" : "Stash · \(controller.stashes.count)", icon: "tray.and.arrow.down") {
-            Button("Stash Changes…") { stashMessage = ""; showStash = true }.disabled(controller.status.entries.isEmpty)
+        PiMenuButton(title: controller.stashes.isEmpty ? "Stash" : "Stash · \(controller.stashes.count)", icon: "tray.and.arrow.down",
+                     identifier: "git-stash-menu") { [controller, _stashMessage, _showStash] in
+            PiMenuEntry.button("Stash Changes…", enabled: !controller.status.entries.isEmpty) { _stashMessage.wrappedValue = ""; _showStash.wrappedValue = true }
             if !controller.stashes.isEmpty {
-                Divider()
-                ForEach(controller.stashes) { stash in
-                    Button("Pop \(stash.name): \(stash.subject)") { Task { await controller.popStash(stash.name) } }
+                PiMenuEntry.divider
+                for stash in controller.stashes {
+                    PiMenuEntry.button("Pop \(stash.name): \(stash.subject)") { Task { await controller.popStash(stash.name) } }
                 }
             }
         }
         .disabled(controller.busy)
-        .accessibilityIdentifier("git-stash-menu")
         .popover(isPresented: $showStash, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: PiSpacing.sm) {
                 Text("Stash changes").font(PiFont.heading).foregroundStyle(Color.piInk)
@@ -478,13 +477,32 @@ struct GitPanelView: View {
 }
 
 /// Hands the panel the window it is in, so a confirmation can be a sheet on it.
-private struct GitPanelWindowReader: NSViewRepresentable {
+///
+/// Told on the next turn of the run loop, and only when the window changes:
+/// both `updateNSView` and a view moving into its window run inside SwiftUI's
+/// update, and the panel keeps the window in its `@State` — writing that from
+/// there, on every update of the panel, was a change made during a view update.
+struct GitPanelWindowReader: NSViewRepresentable {
     let found: (NSWindow?) -> Void
     func makeNSView(context: Context) -> Reader { let view = Reader(); view.found = found; return view }
-    func updateNSView(_ view: Reader, context: Context) { view.found = found; found(view.window) }
+    func updateNSView(_ view: Reader, context: Context) { view.found = found; view.report() }
     @MainActor final class Reader: NSView {
         var found: ((NSWindow?) -> Void)?
-        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); found?(window) }
+        private weak var reported: NSWindow?
+        private var reportedOnce = false
+        private var scheduled = false
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); report() }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        func report() {
+            guard !scheduled, !reportedOnce || reported !== window else { return }
+            scheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.scheduled = false
+                guard !self.reportedOnce || self.reported !== self.window else { return }
+                self.reportedOnce = true; self.reported = self.window
+                self.found?(self.window)
+            }
+        }
     }
 }

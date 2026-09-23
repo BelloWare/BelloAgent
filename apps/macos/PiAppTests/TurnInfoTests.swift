@@ -146,17 +146,9 @@ final class TurnInfoTests: XCTestCase {
         let wide = NSHostingView(rootView:StableTurnSummaryView(turn:turn,actions:TranscriptActions()).frame(width:640))
         narrow.safeAreaRegions = []; wide.safeAreaRegions = []
         XCTAssertGreaterThan(narrow.fittingSize.height,wide.fittingSize.height,"Figures wrap rather than truncate behind a click")
-        let details = NSHostingView(rootView:TurnInfoView(turn:turn,actions:TranscriptActions()))
-        details.safeAreaRegions = []; details.frame = NSRect(x:0,y:0,width:620,height:480)
-        let window = NSWindow(contentRect:details.frame,styleMask:[.titled],backing:.buffered,defer:false)
+        let window = NSWindow(contentRect:NSRect(x:0,y:0,width:620,height:480),styleMask:[.titled],backing:.buffered,defer:false)
         window.isReleasedWhenClosed = false
-        window.contentView = details; window.orderFront(nil); defer { window.close() }
-        details.layoutSubtreeIfNeeded()
-        if let bitmap = details.bitmapImageRepForCachingDisplay(in:details.bounds) {
-            details.cacheDisplay(in:details.bounds,to:bitmap)
-            let path = URL(fileURLWithPath:ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()).appendingPathComponent("turn-info-table.png")
-            try bitmap.representation(using:.png,properties:[:])?.write(to:path)
-        }
+        window.orderFront(nil); defer { window.close() }
         var running = turn; running.live = true; running.phase = "model"; running.outcome = nil
         running.startedAt = Date().timeIntervalSince1970 * 1000 - 12500; running.endedAt = nil
         running.liveStartedUptimeMs = ProcessInfo.processInfo.systemUptime * 1000 - 12500
@@ -171,5 +163,16 @@ final class TurnInfoTests: XCTestCase {
             let path = URL(fileURLWithPath:ProcessInfo.processInfo.environment["PI_APP_SCRATCH_ROOT"] ?? NSTemporaryDirectory()).appendingPathComponent("turn-info-overview.png")
             try bitmap.representation(using:.png,properties:[:])?.write(to:path)
         }
+    }
+
+    /// Moved from the Turn Info popup's tests: the live dock and the turn
+    /// report still name a compaction and a retry the way the run line does.
+    func testLiveLabelsUseExistingCompactionAndRetryStyle() {
+        var value = TurnSummary(replies: 1, tools: 1, startedAt: 1_000_000, endedAt: nil, elapsedMs: nil, modelMs: 0, toolMs: 0, live: true,
+                                files: 0, partial: false, accounting: TurnAccounting(), requests: [], current: nil, notice: nil)
+        value.phase = "compacting"
+        XCTAssertEqual(TurnInfoPresentation.workingLabel(value), "Compacting context…")
+        value.phase = "retrying"
+        XCTAssertEqual(TurnInfoPresentation.workingLabel(value), "Waiting to retry…")
     }
 }

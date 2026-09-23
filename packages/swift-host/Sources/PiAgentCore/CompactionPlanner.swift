@@ -1,12 +1,10 @@
 import Foundation
 
 public struct CompactionPolicy: Sendable {
-    /// Physical requests one summary chunk may use, including transient
-    /// retries and a repack after the gateway rejects its size. A long history
-    /// takes more chunks; it never fails for its length.
+    /// Ours: physical requests one chained summary chunk may use, including
+    /// transient retries and a repack after the gateway rejects its size. A
+    /// long history takes more chunks; it never fails for its length.
     public var maximumAttempts = 8
-    /// Optional explicit cost ceiling, including reasoning.
-    public var summaryOutputTokens: Int?
     /// Pi's compaction reserve and recent-context target (settings-manager.ts).
     public var reserveTokens = 16_384
     public var keepRecentTokens = 20_000
@@ -22,24 +20,18 @@ public struct CompactionPolicy: Sendable {
     func keepRecentTokens(contextWindow: Int) -> Int {
         max(0, min(keepRecentTokens, (contextWindow - settings(autoCompaction: true, contextWindow: contextWindow).reserveTokens) / 2))
     }
-    /// The model's output limit: its declared ceiling, else the configured
-    /// budget, within any explicit cap. Unknown routes never omit the bound.
-    func outputAllowance(for profile: Profile) -> Int {
-        let declared=profile.modelOutputLimit ?? profile.maxOutput
-        return max(1,min(declared,summaryOutputTokens ?? Int.max,profile.outputCap ?? Int.max))
-    }
-    /// Pi's summary maxTokens, min(0.8 × reserveTokens, model.maxTokens); a
-    /// split turn's prefix gets 0.5 × reserveTokens.
+    /// Pi's summary maxTokens (compaction.ts generateSummaryWithUsage):
+    /// min(floor(0.8 × reserveTokens), model.maxTokens when known); a split
+    /// turn's prefix gets 0.5 × reserveTokens. The chat's output budget and
+    /// output cap are not part of it, and an unknown ceiling bounds nothing.
     func summaryTokens(for profile: Profile, turnPrefix: Bool = false) -> Int {
         let reserve=settings(autoCompaction:true,contextWindow:profile.contextWindow).reserveTokens
-        return max(1,min(reserve*(turnPrefix ? 5 : 8)/10,outputAllowance(for:profile)))
+        return max(1,min(reserve*(turnPrefix ? 5 : 8)/10,profile.modelOutputLimit ?? Int.max))
     }
+    /// A summary request's profile: `cap` is its output limit and the room its
+    /// request keeps free. A gateway that omits output limits gets the request
+    /// without one, as pi sends it.
     func summaryProfile(_ original: Profile, cap: Int) throws -> Profile {
-        guard original.raw["compat"]["supportsMaxOutputTokens"].flag != false else {
-            throw AgentError("compaction_source_limit","Compaction cannot guarantee bounded generation: this gateway omits output limits. Configure a supported output-limit contract.")
-        }
-        // Every summary request reserves its whole cap; its source is packed
-        // to fit beside it, so the cap is never clipped.
         var raw=original.raw
         raw["maxOutputTokens"]=JSON(cap);raw["outputCap"]=JSON(cap)
         return try Profile(raw)
@@ -55,7 +47,8 @@ struct ReplayGroup: Sendable {
 struct CompactionPlan: Sendable {
     /// The previous checkpoint, whose summary is pi's previousSummary.
     let previous: ChatMessage?
-    /// Current-task inputs before the cut, replayed verbatim ahead of `kept`.
+    /// Inputs replayed verbatim ahead of `kept`. Pi replays none; a checkpoint
+    /// written before 0.1.90 may have, and its record still lists them.
     let protected: [ChatMessage]
     /// Summarized with pi's summarization or update prompt, oldest first.
     let history: [ChatMessage]
@@ -100,21 +93,17 @@ enum CompactionPlanner {
         return result
     }
 
-    static func protectedInputs(_ context: [ChatMessage], taskRoot: String?) -> [ChatMessage] {
-        let users=context.filter { $0.role == "user" && $0.replayEligible }
-        guard let taskRoot, users.contains(where: { $0.id == taskRoot }) else { return users }
-        // Ambiguous legacy inputs remain protected rather than guessed away.
-        return users.filter { $0.id == taskRoot || $0.taskRootID == taskRoot || $0.taskRootID == nil }
-    }
-
     /// What pi's prepareCompaction reads: the previous summary and the
-    /// messages since it. Inputs the previous checkpoint replays ahead of its
-    /// kept messages (`carried`) are not at their place in the turn.
+    /// messages since it. Inputs a checkpoint written before 0.1.90 replayed
+    /// ahead of its kept messages (`carried`) are not at their place in the
+    /// turn; they are history now. `newSince` is the first group appended after
+    /// the previous checkpoint, where pi's session path holds that checkpoint.
     struct Source: Sendable {
         let previous: ChatMessage?
         let carried: [ChatMessage]
         let body: [ReplayGroup]
         let protectedIDs: Set<String>
+        var newSince: Int?
     }
     static func source(context: [ChatMessage], taskRoot: String?) throws -> Source {
         let active=context.filter(\.replayEligible)
@@ -122,16 +111,22 @@ enum CompactionPlanner {
         let since=Array(active.dropFirst(previous == nil ? 0 : 1))
         let replayed=Set(previous?.compaction?["protectedIDs"].list.compactMap(\.text) ?? [])
         let carried=since.prefix { $0.role == "user" && replayed.contains($0.id) }
-        return Source(previous:previous,carried:Array(carried),body:try groups(Array(since.dropFirst(carried.count))),
-                      protectedIDs:Set(protectedInputs(active,taskRoot:taskRoot).map(\.id)))
+        let body=try groups(Array(since.dropFirst(carried.count)))
+        // The rows the previous checkpoint kept come first; the rows after them
+        // were appended after it.
+        let kept=Set(previous?.compaction?["keptIDs"].list.compactMap(\.text) ?? [])
+        let newSince=previous == nil ? nil : body.firstIndex { !kept.contains($0.id) } ?? body.count
+        return Source(previous:previous,carried:Array(carried),body:body,protectedIDs:[],newSince:newSince)
     }
 
     /// findCutPoint: walking back from the newest message by pi's
     /// estimateTokens, the first group start at or after the message that
     /// reaches `keepRecentTokens`; a tool result stays with its call. 0 keeps
-    /// everything. When the newest group alone reaches the target the whole
-    /// body is summarized, where pi would keep it and could not compact.
-    static func cut(_ body: [ReplayGroup], keepRecentTokens: Int) -> Int {
+    /// everything. Pi's walk passes the previous checkpoint where its session
+    /// path holds it, after the rows it kept, and counts its summary there.
+    /// Ours: when the newest group alone reaches the target the whole body is
+    /// summarized, where pi would keep it and could not compact.
+    static func cut(_ body: [ReplayGroup], keepRecentTokens: Int, previous: (index: Int, tokens: Int)? = nil) -> Int {
         var used=0
         for index in body.indices.reversed() {
             for (offset,message) in body[index].messages.enumerated().reversed() {
@@ -140,8 +135,19 @@ enum CompactionPlanner {
                 used=PiContext.sum([used,tokens])
                 if used >= keepRecentTokens { return offset == 0 ? index : index+1 }
             }
+            // The previous checkpoint sits just before the first new group.
+            if let previous, previous.index == index, previous.tokens > 0 {
+                used=PiContext.sum([used,previous.tokens])
+                if used >= keepRecentTokens { return index }
+            }
         }
         return 0
+    }
+    /// The previous checkpoint's place and size in pi's walk: its summary text
+    /// over four characters (estimateTokens of a compactionSummary message).
+    static func previousPosition(_ source: Source) -> (index: Int, tokens: Int)? {
+        guard let previous=source.previous, let index=source.newSince, index < source.body.count else { return nil }
+        return (index, PiContext.tokens(chars:CompactionCheckpoint.summaryText(previous).utf16.count))
     }
 
     /// Pi's split: a cut group that does not start a turn splits the turn

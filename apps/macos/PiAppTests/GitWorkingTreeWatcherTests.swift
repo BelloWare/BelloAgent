@@ -4,7 +4,7 @@ import AppKit
 import CoreServices
 @testable import PiApp
 
-extension GitPanelAuditTests {
+final class GitWorkingTreeWatcherTests: GitPanelTestCase {
     func testLargeGitPatchFailsExplicitlyAndLeavesOtherReadsWorking() async throws {
         let root = try repository("git-large-patch"); defer { try? FileManager.default.removeItem(at: root) }
         try start(root)
@@ -76,28 +76,6 @@ extension GitPanelAuditTests {
     }
 
     // MARK: Noticing the working tree
-
-    /// The reader saves a file in their editor. The panel must show it without
-    /// being told, and without waiting long.
-    @MainActor func testAFileSavedOnDiskAppearsWithoutPressingRefresh() async throws {
-        let root = try repository("git-watch"); defer { try? FileManager.default.removeItem(at: root) }
-        try start(root)
-        try "seed\n".write(to: root.appendingPathComponent("seed.txt"), atomically: true, encoding: .utf8)
-        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
-        let controller = GitController(roots: [root.path])
-        try await eventually("settle on a clean tree") { controller.repositoryRoot != nil && !controller.loading }
-        XCTAssertTrue(controller.isWatching, "the panel watches the working tree while it is open")
-        XCTAssertTrue(controller.status.entries.isEmpty)
-
-        let started = ProcessInfo.processInfo.systemUptime
-        try "edited in another editor\n".write(to: root.appendingPathComponent("seed.txt"), atomically: true, encoding: .utf8)
-        try await eventually("see the saved file", timeout: 5) { controller.status.entries.map(\.path) == ["seed.txt"] }
-        let delay = (ProcessInfo.processInfo.systemUptime - started) * 1000
-        print(String(format: "PERF a file saved on disk reached the changes list in %.0f ms", delay))
-        XCTAssertLessThan(delay, 2_000, "about a second, not a Refresh press")
-        XCTAssertGreaterThanOrEqual(controller.automaticRefreshes, 1)
-        XCTAssertEqual(controller.notice, "")
-    }
 
     /// A refresh nobody asked for must leave the reader exactly where they are.
     @MainActor func testAnAutomaticRefreshNeverMovesTheReader() async throws {
@@ -409,35 +387,6 @@ extension GitPanelAuditTests {
         XCTAssertEqual(controller.automaticRefreshes, refreshes, "a closed panel does not read the repository")
         XCTAssertTrue(controller.status.entries.isEmpty, "and does not change what it was showing")
         try await eventually("leave no git behind", timeout: 10) { self.gitChildren().isEmpty }
-    }
-
-    /// Blocking on a process inside Swift's cooperative pool takes one of its
-    /// few threads out of circulation: a handful of git reads used to stall
-    /// every other task in the app for seconds.
-    func testConcurrentGitReadsDoNotStallUnrelatedTasks() async throws {
-        let root = try repository("git-stall"); defer { try? FileManager.default.removeItem(at: root) }
-        try start(root)
-        let service = GitService()
-        let start = ProcessInfo.processInfo.systemUptime
-        let reads = Task {
-            await withTaskGroup(of: Void.self) { group in
-                for _ in 0..<24 {
-                    group.addTask { _ = try? await service.run(["-c", "alias.wait=!sleep 1", "wait"], in: root.path, timeout: 30) }
-                }
-                await group.waitForAll()
-            }
-        }
-        let unrelated = Task(priority: .userInitiated) { () -> Double in
-            for _ in 0..<50 { await Task.yield() }
-            return (ProcessInfo.processInfo.systemUptime - start) * 1000
-        }
-        let latency = await unrelated.value
-        print(String(format: "PERF unrelated task while 24 git reads are in flight: %.0f ms", latency))
-        XCTAssertLessThan(latency, 600, "git reads must not own the cooperative threads the rest of the app runs on")
-        await reads.value
-        let total = (ProcessInfo.processInfo.systemUptime - start) * 1000
-        print(String(format: "PERF 24 concurrent one-second git reads finished in %.0f ms", total))
-        XCTAssertLessThan(total, 6_000)
     }
 
     /// However badly the panel behaves, it may not fork without bound.

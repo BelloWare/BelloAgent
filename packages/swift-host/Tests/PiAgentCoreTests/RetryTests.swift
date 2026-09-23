@@ -33,8 +33,11 @@ private actor HeldRetryClient: ModelClient {
 }
 
 final class RetryTests: XCTestCase {
-    private func session(_ client: FlakyClient, root: URL) throws -> AgentSession {
-        try AgentSession(id:"s",profile:fixtureProfile(),apiKey:"test",cwd:root,directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false)
+    /// Pi's retry settings with a shorter back-off, so a test waits less than 2, 4 and 8 seconds.
+    private func session(_ client: FlakyClient, root: URL, baseDelayMs: Double = 250) async throws -> AgentSession {
+        let session=try AgentSession(id:"s",profile:fixtureProfile(),apiKey:"test",cwd:root,directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false)
+        await session.useRetrySettings(.init(enabled:true,maxRetries:3,baseDelayMs:baseDelayMs))
+        return session
     }
 
     /// A request the policy does not retry on its own can be retried by the
@@ -42,7 +45,7 @@ final class RetryTests: XCTestCase {
     func testAFailedRequestCanBeRetriedFromWhereItStopped() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=FlakyClient(failures:[AgentError("provider_http","Provider returned HTTP 401. The gateway rejected the API key."),AgentError("provider_http","Provider returned HTTP 401. Still rejected.")],replies:[answer("recovered")])
-        let session=try session(client,root:root)
+        let session=try await session(client,root:root)
         var submission=Submission(commandID:"c1",turnID:"t1",text:"go"); submission.model="override-model"; submission.thinkingLevel="high"
         _ = try await session.submit(submission,steer:false)
         try await eventually { !(await session.isRunning) }
@@ -70,12 +73,12 @@ final class RetryTests: XCTestCase {
     func testTransientFailuresAreRetriedTwiceBeforeTheReplyLands() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=FlakyClient(failures:[AgentError("provider_transport","stream dropped"),AgentError("provider_http","Provider returned HTTP 503. Inspect request a.")],replies:[answer("finally")])
-        let session=try session(client,root:root)
+        let session=try await session(client,root:root)
         _ = try await session.submit(Submission(commandID:"c1",turnID:"t1",text:"go"),steer:false)
-        // The first attempt fails at once; the session then waits one second before the second.
+        // The first attempt fails at once; the session then waits before the second.
         try await eventually { await session.snapshot()["runStatus"].text == "retrying" }
         let midway = await session.snapshot()
-        XCTAssertEqual(midway["retry"]["attempt"].int, 2); XCTAssertEqual(midway["retry"]["of"].int, 6); XCTAssertEqual(midway["retry"]["reason"].text, "stream dropped")
+        XCTAssertEqual(midway["retry"]["attempt"].int, 2); XCTAssertEqual(midway["retry"]["of"].int, 4, "The first request and pi's three retries"); XCTAssertEqual(midway["retry"]["reason"].text, "stream dropped")
         XCTAssertEqual(midway["state"].text, "running")
         XCTAssertEqual(midway["messages"].list.last?["text"].text, "", "The replacement attempt starts with a new, empty source")
         XCTAssertEqual(midway["messages"].list.filter { $0["stopReason"].text == "interrupted" }.count,1,"The failed attempt's visible prose stays inspectable")
@@ -94,20 +97,23 @@ final class RetryTests: XCTestCase {
         await session.close()
     }
 
-    func testFiveRetriesStopAfterSixFailedAttempts() async throws {
+    /// Pi's settings.retry as it ships: three retries after 2, 4 and 8 seconds.
+    func testThreeRetriesAfterTwoFourAndEightSecondsThenTheFailureStands() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=FlakyClient(failures:Array(repeating:AgentError("provider_failed","Model overloaded (overloaded_error)"),count:6),replies:[])
-        let session=try session(client,root:root)
+        let session=try AgentSession(id:"s",profile:fixtureProfile(),apiKey:"test",cwd:root,directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false)
+        let started = Date()
         _ = try await session.submit(Submission(commandID:"c1",turnID:"t1",text:"go"),steer:false)
         let deadline = Date().addingTimeInterval(40)
         while await session.isRunning, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        let running = await session.isRunning
-        XCTAssertFalse(running, "Five bounded backoffs must eventually settle")
+        let running = await session.isRunning, elapsed = Date().timeIntervalSince(started)
+        XCTAssertFalse(running, "Three bounded backoffs must eventually settle")
         let requests = await client.requests
-        XCTAssertEqual(requests, 6, "Initial request plus five retries, never a seventh attempt")
+        XCTAssertEqual(requests, 4, "Initial request plus three retries, never a fifth attempt")
+        XCTAssertGreaterThanOrEqual(elapsed, 14, "2 + 4 + 8 seconds of back-off")
         let final = await session.snapshot()
         XCTAssertEqual(final["state"].text, "error")
-        XCTAssertEqual(final["preflightError"].text, "Failed after 6 attempts. Model overloaded (overloaded_error)")
+        XCTAssertEqual(final["preflightError"].text, "Failed after 4 attempts. Model overloaded (overloaded_error)")
         XCTAssertTrue(final["retry"].isNull)
         await session.close()
     }
@@ -115,7 +121,7 @@ final class RetryTests: XCTestCase {
     func testRequestErrorsFailAtOnce() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=FlakyClient(failures:[AgentError("provider_http","Provider returned HTTP 400. Invalid request.")],replies:[answer("never")])
-        let session=try session(client,root:root)
+        let session=try await session(client,root:root)
         _ = try await session.submit(Submission(commandID:"c1",turnID:"t1",text:"go"),steer:false)
         try await eventually { !(await session.isRunning) }
         let requests = await client.requests
@@ -128,7 +134,7 @@ final class RetryTests: XCTestCase {
     func testStopDuringTheBackoffCancelsInsteadOfRetrying() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=FlakyClient(failures:[AgentError("provider_transport","stream dropped")],replies:[answer("never")])
-        let session=try session(client,root:root)
+        let session=try await session(client,root:root,baseDelayMs:1000)
         _ = try await session.submit(Submission(commandID:"c1",turnID:"t1",text:"go"),steer:false)
         try await eventually { await session.snapshot()["runStatus"].text == "retrying" }
         await session.stop()
@@ -145,7 +151,7 @@ final class RetryTests: XCTestCase {
     func testAStreamThatEndsWithoutItsTerminalEventIsRetried() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=FlakyClient(failures:[AgentError("incomplete_stream","The stream ended without its terminal event. No tool arguments were executed.")],replies:[answer("complete")])
-        let session=try session(client,root:root)
+        let session=try await session(client,root:root)
         _ = try await session.submit(Submission(commandID:"c1",turnID:"t1",text:"go"),steer:false)
         try await eventually { !(await session.isRunning) }
         let requests = await client.requests, final = await session.snapshot()
@@ -180,14 +186,14 @@ final class RetryTests: XCTestCase {
     func testModelTimeCountsRequestsNotTheBackoffBetweenThem() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=FlakyClient(failures:[AgentError("provider_transport","stream dropped")],replies:[answer("done")])
-        let session=try session(client,root:root)
+        let session=try await session(client,root:root)
         _ = try await session.submit(Submission(commandID:"c1",turnID:"t1",text:"go"),steer:false)
         try await eventually { !(await session.isRunning) }
         let state=await session.snapshot()
         let reply=try XCTUnwrap(state["messages"].list.last { $0["role"].text == "assistant" && $0["text"].text == "done" })
         let replyMs=try XCTUnwrap(reply["modelMs"].double), turnMs=try XCTUnwrap(state["turnMetrics"]["modelMs"].double)
         print("PERF model-time-with-retry replyModelMs=\(replyMs) turnModelMs=\(turnMs)")
-        XCTAssertLessThan(replyMs, 500, "the reply's model time is its own request, not the one-second back-off before it")
+        XCTAssertLessThan(replyMs, 500, "the reply's model time is its own request, not the back-off before it")
         XCTAssertLessThan(turnMs, 500, "the turn's model time sums its requests, not the waits between them")
         await session.close()
     }
@@ -202,6 +208,7 @@ final class RetryTests: XCTestCase {
         XCTAssertFalse(AgentSession.isRetryable(AgentError("provider_http", "Provider returned HTTP 401. no")))
         XCTAssertFalse(AgentSession.isRetryable(AgentError("provider_http", "Provider returned HTTP 404. no such model")))
         XCTAssertTrue(AgentSession.isRetryable(AgentError("provider_failed", "The server is temporarily unavailable (server_error)")))
+        XCTAssertFalse(AgentSession.isRetryable(AgentError("provider_http", "Provider returned HTTP 408. slow")),"No pi pattern names a bare 408")
         XCTAssertFalse(AgentSession.isRetryable(AgentError("provider_failed", "Requested model is unavailable.\nCheck the route. (model_not_found)")), "A missing model is not transient even though it says unavailable")
         XCTAssertFalse(AgentSession.isRetryable(AgentError("provider_failed", "Invalid API key (authentication_error)")))
         XCTAssertFalse(AgentSession.isRetryable(AgentError("context_limit", "too big")))
@@ -212,7 +219,7 @@ final class RetryTests: XCTestCase {
     func testRowsCarryTheirTurnAndTheMeasuredModelTime() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=FlakyClient(failures:[],replies:[answer("hello")])
-        let session=try session(client,root:root)
+        let session=try await session(client,root:root)
         _ = try await session.submit(Submission(commandID:"c1",turnID:"turn-1",text:"go"),steer:false)
         try await eventually { !(await session.isRunning) }
         let rows = await session.snapshot()["messages"].list

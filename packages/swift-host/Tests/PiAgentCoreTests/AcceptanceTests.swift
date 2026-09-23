@@ -5,7 +5,7 @@ private actor HeldTools: ToolExecuting {
     var calls: [String] = []
     var held = true
     func definitions(readOnly: Bool) -> [ToolDefinition] {
-        [ToolDefinition("first", "Fixture", [:]), ToolDefinition("second", "Fixture", [:])]
+        [ToolDefinition("first", "Fixture", [:]), ToolDefinition("second", "Fixture", [:]), ToolDefinition("edit", "Fixture", [:]), ToolDefinition("write", "Fixture", [:])]
     }
     func release() { held = false }
     func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON {
@@ -24,7 +24,9 @@ final class AcceptanceTests: XCTestCase {
     func testSideDuringModelAndToolUsesCompleteBoundaryAndIndependentCancellation() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let directory = root.appendingPathComponent("state"), resources = Resources(cwd: root, home: root)
-        let client = ScriptClient([toolReply(["first", "second"]), answer("parent complete")], holdFirst: true)
+        // Calls that change the workspace run in call order, so one is in
+        // flight while the next waits; other calls would run together.
+        let client = ScriptClient([toolReply(["edit", "write"]), answer("parent complete")], holdFirst: true)
         let tools = HeldTools(), traces = TraceStore()
         let parent = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: resources, client: client, tools: tools, traces: traces, autoCompaction: false)
         _ = try await parent.submit(Submission(commandID: "initial", turnID: "initial", text: "Parent question"), steer: false)
@@ -81,7 +83,7 @@ final class AcceptanceTests: XCTestCase {
     func testCancellationDuringToolPairsEntireBatchAndNeverReinvokesOnResume() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let directory = root.appendingPathComponent("state"), tools = HeldTools(), resources = Resources(cwd: root, home: root), traces = TraceStore()
-        let first = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: resources, client: ScriptClient([toolReply(["first", "second"])]), tools: tools, traces: traces, autoCompaction: false)
+        let first = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: resources, client: ScriptClient([toolReply(["edit", "write"])]), tools: tools, traces: traces, autoCompaction: false)
         _ = try await first.submit(Submission(commandID: "initial", turnID: "initial", text: "Run tools"), steer: false)
         try await eventually { await tools.calls.count == 1 }
         _ = try await first.submit(Submission(commandID: "follow", turnID: "follow", text: "Continue after inspection"), steer: false)
@@ -103,7 +105,7 @@ final class AcceptanceTests: XCTestCase {
         XCTAssertEqual(cards(reopened), ["unknown", "cancelled"])
         try await resumed.resumeQueue(); try await eventually { !(await resumed.isRunning) }
         let calls = await tools.calls, requests = await client.requests
-        XCTAssertEqual(calls, ["first"]); XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(calls, ["edit"]); XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(requests[0].filter { $0.role == "toolResult" }.count, 2)
         await resumed.close()
     }

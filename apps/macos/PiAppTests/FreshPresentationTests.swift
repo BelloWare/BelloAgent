@@ -29,17 +29,38 @@ final class FreshPresentationTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         return root
     }
-    private func journal(_ count: Int, root: URL, large: Bool = false, userEvery: Int = 2, rich: Bool = false) throws -> URL {
+    private func journal(_ count: Int, root: URL, large: Bool = false, largeLines: Int = 1_200, userEvery: Int = 2, rich: Bool = false) throws -> URL {
         let file = root.appendingPathComponent("history.jsonl"), encoder = JSONEncoder()
         var bytes = try encoder.encode(["type": WireValue.string("session"), "version": .number(3), "id": .string("a")]); bytes.append(10)
         for i in 0..<count {
             bytes.append(try encoder.encode(["type": WireValue.string("message"), "id": .string("m\(i)"),
                 "parentId": i == 0 ? .null : .string("m\(i-1)"),
                 "message": .object(["role": .string(i % userEvery == 0 ? "user" : "assistant"),
-                    "content": .string(large ? String(repeating: "Evidence\n", count: 1_200) : rich && i % userEvery != 0 ? "## Module \(i)\n\n" + String(repeating: "A **bounded** paragraph with `code` and useful details. ", count: 18) + "\n\n~~~swift\nlet value = inspect()\n~~~" : "Message \(i)")])]))
+                    "content": .string(large ? String(repeating: "Evidence\n", count: largeLines) : rich && i % userEvery != 0 ? "## Module \(i)\n\n" + String(repeating: "A **bounded** paragraph with `code` and useful details. ", count: 18) + "\n\n~~~swift\nlet value = inspect()\n~~~" : "Message \(i)")])]))
             bytes.append(10)
         }
         try bytes.write(to: file); return file
+    }
+    /// A chat past both of the resident window's caps. The app's caps are
+    /// 500 rows and 4,000,000 bytes, which 1,100 messages of 10,800 bytes
+    /// pass 2.2 and 3.1 times over, the byte cap binding at 353 rows. The
+    /// caps are lowered here to the same shape at a size a test pages
+    /// through in moments: 66 messages of 900 bytes (1,412 as the window
+    /// counts them) pass 30 rows and 30,000 bytes 2.2 and 3.1 times over,
+    /// the byte cap binding at 21 rows.
+    private static let pastCaps = (messages: 66, lines: 100, rows: 30, bytes: 30_000)
+    private func lowerResidentCaps() -> (rows: Int, bytes: Int) {
+        let app = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (Self.pastCaps.rows, Self.pastCaps.bytes)
+        addTeardownBlock { TranscriptPaging.residentCaps = app }
+        return TranscriptPaging.residentCaps
+    }
+    /// The chat really is longer than the row cap and larger than the byte cap.
+    @MainActor private func assertPassesBothCaps(_ view: SessionDisplay, count: Int, _ caps: (rows: Int, bytes: Int),
+                                                  file: StaticString = #filePath, line: UInt = #line) throws {
+        let perRow = TranscriptPaging.size(try XCTUnwrap(view.messages.first, file: file, line: line))
+        XCTAssertGreaterThan(count, caps.rows, "the chat must be longer than the row cap", file: file, line: line)
+        XCTAssertGreaterThan(count * perRow, caps.bytes, "the chat must be larger than the byte cap", file: file, line: line)
     }
     @MainActor private func model(_ root: URL, path: URL? = nil) async throws -> WorkspaceModel {
         let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
@@ -133,9 +154,12 @@ final class FreshPresentationTests: XCTestCase {
         XCTAssertNil(view.olderPage.error); XCTAssertEqual(view.messages.first?.id, "m28")
     }
     @MainActor func testMovingWindowRevealsRequestedRowsPastRowAndByteCaps() async throws {
-        let root = try folder(), path = try journal(1100, root: root, large: true), model = try await model(root, path: path)
+        let caps = lowerResidentCaps(), count = Self.pastCaps.messages
+        let root = try folder(), path = try journal(count, root: root, large: true, largeLines: Self.pastCaps.lines)
+        let model = try await model(root, path: path)
         await model.select("a")
         let view = try XCTUnwrap(model.selected), native = TranscriptPage()
+        try assertPassesBothCaps(view, count: count, caps)
         model.historyViewportReady("a", generation: view.presentationGeneration)
         native.bind(view)
         var firsts = [String]()
@@ -145,12 +169,12 @@ final class FreshPresentationTests: XCTestCase {
             XCTAssertNotEqual(view.messages.first?.id, previous)
             firsts.append(view.messages.first!.id)
             XCTAssertEqual(native.snapshot?.messages.first?.id, view.messages.first?.id)
-            XCTAssertLessThanOrEqual(view.messages.count, HistoryWindowPolicy.residentRows)
-            XCTAssertLessThanOrEqual(view.messages.reduce(0) { $0 + TranscriptPaging.size($1) }, HistoryWindowPolicy.residentBytes)
+            XCTAssertLessThanOrEqual(view.messages.count, caps.rows)
+            XCTAssertLessThanOrEqual(view.messages.reduce(0) { $0 + TranscriptPaging.size($1) }, caps.bytes)
         }
         XCTAssertEqual(firsts.last, "m0"); XCTAssertNotNil(view.newerPage.cursor)
         while view.newerPage.cursor != nil { let loaded = await model.loadHistoryPage("a", newer: true); XCTAssertTrue(loaded) }
-        XCTAssertEqual(view.messages.last?.id, "m1099")
+        XCTAssertEqual(view.messages.last?.id, "m\(count - 1)")
     }
     @MainActor func testRapidABARejectsObsoleteSourceAndKeepsTypingWhileLoading() async throws {
         let root = try folder(), model = try await model(root), gate = Gate()
@@ -220,9 +244,12 @@ final class FreshPresentationTests: XCTestCase {
         XCTAssertEqual(view.messages.map(\.id), ids); XCTAssertNotNil(view.olderPage.error)
     }
     @MainActor func testNativeDocumentAdoptsOlderCoverageBeyondBothResidentCaps() async throws {
-        let root = try folder(), path = try journal(1100, root: root, large: true), model = try await model(root, path: path)
+        let caps = lowerResidentCaps(), count = Self.pastCaps.messages
+        let root = try folder(), path = try journal(count, root: root, large: true, largeLines: Self.pastCaps.lines)
+        let model = try await model(root, path: path)
         await model.select("a")
         let view = try XCTUnwrap(model.selected)
+        try assertPassesBothCaps(view, count: count, caps)
         model.historyViewportReady("a", generation: view.presentationGeneration)
         let pane = TranscriptFrameBudgetTests.Pane(view)
         defer { pane.close() }
@@ -233,7 +260,7 @@ final class FreshPresentationTests: XCTestCase {
         await pane.settle()
         let document = try XCTUnwrap(pane.document), page = try XCTUnwrap(pane.page)
         XCTAssertTrue(document.retainedRows.contains { $0.itemID == "m0" }, "The requested prefix must reach the actual native document")
-        XCTAssertFalse(document.retainedRows.contains { $0.itemID == "m1098" }, "Far newer content is evicted, not the newly fetched prefix")
+        XCTAssertFalse(document.retainedRows.contains { $0.itemID == "m\(count - 2)" }, "Far newer content is evicted, not the newly fetched prefix")
         let target = try XCTUnwrap(page.rowFrame(of: "m0")), scroll = try XCTUnwrap(pane.scroll)
         page.readerWillNavigate(upward: true)
         scroll.contentView.scroll(to: NSPoint(x: 0, y: target.minY))
@@ -243,8 +270,8 @@ final class FreshPresentationTests: XCTestCase {
         XCTAssertNotNil(view.newerPage.cursor)
         model.latest(sessionID: "a"); await view.presentation.navigation?.value
         await pane.settle()
-        XCTAssertEqual(view.messages.last?.id, "m1099"); XCTAssertEqual(view.messages.count, 6)
-        XCTAssertTrue(document.retainedRows.contains { $0.itemID == "m1098" })
+        XCTAssertEqual(view.messages.last?.id, "m\(count - 1)"); XCTAssertEqual(view.messages.count, 6)
+        XCTAssertTrue(document.retainedRows.contains { $0.itemID == "m\(count - 2)" })
     }
     @MainActor func testFiftyFreshNativePresentationsAndRichThresholds() async throws {
         let session = SessionDisplay(id: "first"), pane = TranscriptFrameBudgetTests.Pane(session)

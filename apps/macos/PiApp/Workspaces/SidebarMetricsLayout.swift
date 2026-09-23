@@ -31,7 +31,7 @@ struct SidebarMetricsFigures: Equatable {
         if (stats.busy || stats.loading) && !stats.generating {
             state = PiSessionState.label(stats.state, loading: stats.loading)
         } else if ["error", "interrupted", "paused"].contains(stats.state) {
-            state = PiSessionState.label(stats.state)
+            state = PiSessionState.label(stats.state, costLimited: stats.costLimited)
         }
         cost = stats.costLabel
         rate = stats.timing != nil

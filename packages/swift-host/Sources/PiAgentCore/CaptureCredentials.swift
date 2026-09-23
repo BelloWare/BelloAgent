@@ -6,8 +6,10 @@ import Foundation
 /// Body replacement operates on submitted bytes, not JSON reconstruction.
 struct CaptureCredentials: Sendable {
     // Session and turn identities are transport-owned correlation values, not
-    // credentials; hashing them would also transform the Responses metadata body.
-    static let ordinaryHeaders: Set<String> = ["content-type", "content-length", "content-encoding", "accept", "accept-encoding", "user-agent", "host", "connection", "anthropic-version", "anthropic-beta", "openai-version", "x-request-id", "request-id", "retry-after", "openai-processing-ms", "x-session-id", "x-turn-id"]
+    // credentials; hashing them would also transform the Responses metadata body
+    // and pi's prompt_cache_key. session_id and x-client-request-id are pi's
+    // session affinity headers and carry the same identity.
+    static let ordinaryHeaders: Set<String> = ["content-type", "content-length", "content-encoding", "accept", "accept-encoding", "user-agent", "host", "connection", "anthropic-version", "anthropic-beta", "openai-version", "x-request-id", "request-id", "retry-after", "openai-processing-ms", "x-session-id", "x-turn-id", "session_id", "x-client-request-id"]
     let values: [String]
     let configuredNames: Set<String>
 

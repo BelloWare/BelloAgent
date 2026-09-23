@@ -7,6 +7,14 @@ No credentials, outbound networking, or real model calls. Prompts containing
 synthetic stdout producer. Both stay local and use only deterministic data.
 "owner billing sample" returns a validated final Responses JSON response with
 the owner's usage/header billing shape, using synthetic IDs and visible text.
+"bulk N" answers with about N KiB of plain Markdown at once, so a test can
+grow a long chat quickly. Pi's summary requests (its summarization system
+prompt, no tools) are answered with a summary streamed a delta at a time, every
+PI_APP_UI_FIXTURE_SUMMARY_DELAY seconds (default 0.03), so compaction runs
+visibly in the window. PI_APP_UI_FIXTURE_LENIENT_LIMIT=1 lets a conversation
+request carry any output limit up to the catalog ceiling, which is what a chat
+with a smaller context window sends. PI_APP_UI_FIXTURE_REAL_USAGE=1 reports each
+Responses request's size (bytes over four) as its input tokens.
 
 PI_APP_UI_FIXTURE_MODEL selects the exact accepted request alias (default:
 ui-fixture). Any configured non-default alias exercises synthetic routing:
@@ -100,16 +108,15 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 require(self.path == "/v1/responses", "connection tests use Responses")
                 require(type(body.get("max_output_tokens")) is int and 0 < body["max_output_tokens"] <= 256,
                         "connection test output must be between 1 and 256 tokens")
-                require(body.get("instructions") == "This is a connection test. Reply briefly with OK.",
-                        "connection test instructions must exclude workspace resources")
-                require(body.get("input") == [{"type": "message", "role": "user", "content": [
-                    {"type": "input_text", "text": "Reply with OK to confirm this connection."}]}],
-                    "connection test must contain only its fixed short prompt")
+                # Pi's system prompt leads the input: a system message to a model without reasoning.
+                require(body.get("input") == [{"role": "system", "content": "This is a connection test. Reply briefly with OK."},
+                    {"role": "user", "content": [{"type": "input_text", "text": "Reply with OK to confirm this connection."}]}],
+                    "connection test must contain only its fixed instructions and short prompt")
                 require(body.get("tools", []) == [], "connection test tools must be empty")
                 require(body.get("metadata") == {"session_id": self.headers.get("x-session-id")},
                         "connection test metadata must name only its session")
                 require(body.get("disable_fallbacks") is True, "requests must opt out of gateway fallback models")
-                require(set(body) <= {"model", "stream", "store", "instructions", "input", "metadata", "disable_fallbacks",
+                require(set(body) <= {"model", "stream", "store", "input", "metadata", "disable_fallbacks", "prompt_cache_key",
                                       "max_output_tokens", "tools", "temperature", "top_p"},
                         "connection test contains unrelated request settings")
             if requested_model == "fixture-fast" and any(name in body for name in ("reasoning", "thinking", "output_config")):
@@ -119,9 +126,19 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             limit_name = "max_output_tokens" if self.path.endswith("responses") else "max_tokens"
             if requested_model == "fixture-fast" and not connection_test:
                 require(type(body.get(limit_name)) is int and 0 < body[limit_name] <= limits["fixture-fast"], "fixture-fast output limit must stay within its catalog ceiling")
+            # Pi caps a summary request's output below the model's ceiling, and a
+            # chat with a smaller window clips its reply room; both stay within it.
+            # Pi's system prompt leads the input (fix/pi-parity); older requests carried it as instructions.
+            first = body.get("input")[0] if isinstance(body.get("input"), list) and body.get("input") else None
+            system_prompt = body.get("instructions") or (first.get("content") if isinstance(first, dict) and first.get("role") in ("system", "developer") else "")
+            summary_request = str(system_prompt).startswith("You are a context summarization assistant.")
+            lenient = summary_request or os.environ.get("PI_APP_UI_FIXTURE_LENIENT_LIMIT") == "1"
+            if lenient and requested_model != "fixture-fast" and not connection_test:
+                require(type(body.get(limit_name)) is int and 0 < body[limit_name] <= limits[requested_model], "output limit must stay within the catalog ceiling")
+            expected_limit = body.get(limit_name) if connection_test or lenient else (None if requested_model == "fixture-fast" else limits[requested_model])
             contract = validate_request("POST", self.path, self.headers, body,
                                         api_key="synthetic-loopback-only-key", model=requested_model,
-                                        max_output_tokens=body["max_output_tokens"] if connection_test else (None if requested_model == "fixture-fast" else limits[requested_model]), native_items="portable",
+                                        max_output_tokens=expected_limit, native_items="portable",
                                         historical_tool_schemas=self.historical_tool_schemas)
         except (ValueError, FixtureContractError) as error:
             # Validation failures expose only a fixed contract explanation, not
@@ -134,7 +151,10 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         history = body.get("input", []) if responses else body.get("messages", [])
         # A Messages tool-result user block is not a new user prompt. Use the
         # validated semantic history for response choice on both APIs.
-        prompt = contract["latest_text"]
+        summary = contract["is_compaction"]
+        # A summary request's one message is the whole conversation: none of
+        # the keywords below are asked of it.
+        prompt = "" if summary else contract["latest_text"]
         owner_billing = responses and "owner billing sample" in prompt.lower()
         if owner_billing:
             resolved_model = "gpt-5.4-mini"
@@ -168,16 +188,29 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     else "Fixture bash completed. The native helper returned the synthetic tool output.")
             if secondary_read:
                 text = "Fixture read completed. SECONDARY-WORKSPACE-ROOT-VERIFIED: the file came from the added workspace folder."
-        if stress_markdown:
+        bulk = next((int(word) for previous, word in zip(prompt.lower().split(), prompt.lower().split()[1:])
+                     if previous == "bulk" and word.isdigit()), None)
+        if summary:
+            text = "## Goal\nKeep the synthetic fixture objective.\n\n## Progress\n" + "\n".join(
+                f"- Synthetic summary point {i}: the earlier work stays retained." for i in range(1, 41))
+        elif bulk:
+            paragraph = "\n\n### Bulk section\nSynthetic history paragraph with **bold** and `code` to grow the chat. " * 4
+            text = "Fixture bulk reply.\n" + (paragraph * (bulk * 1024 // len(paragraph) + 1))[:bulk * 1024]
+        elif stress_markdown:
             paragraph = "\n\n### Synthetic stress section\n" + "**bold** `code` stable scroll anchor. " * 30
             text = (paragraph * (1_048_576 // len(paragraph) + 1))[:1_048_576]
         elif "large" in prompt.lower():
             text += "\n\n" + "\n\n".join(f"### Section {i}\nSynthetic searchable paragraph {i}: **bold**, `code`, 中文🙂, and stable scroll anchors." for i in range(1, 101))
         elif "slow" in prompt.lower():
             text += "\n\n" + " ".join(f"stream-{i:02d}" for i in range(1, 81))
-        chunk_size = 1024 if stress_markdown else 36
+        chunk_size = 1024 if stress_markdown else 8192 if bulk else 36
+        delay = float(os.environ.get("PI_APP_UI_FIXTURE_SUMMARY_DELAY", "0.03")) if summary else (
+            0.025 if stress_markdown else 0.002 if bulk else 0.8 if "slow" in prompt.lower() else 0.035 if "large" in prompt.lower() else 0.03)
         chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
         request_id = uuid.uuid4().hex
+        # PI_APP_UI_FIXTURE_REAL_USAGE=1 reports the request's own size as its
+        # input, as a gateway would, so a long chat's context reads as long.
+        input_tokens = len(raw) // 4 if os.environ.get("PI_APP_UI_FIXTURE_REAL_USAGE") == "1" else 30
         record = {"id": request_id, "path": self.path, "request": base64.b64encode(raw).decode(), "response": "", "cancelled": False,
                   "contractValidated": True, "toolCalls": len(contract["calls"]), "toolResults": len(contract["results"]),
                   "sessionID": self.headers.get("x-session-id"), "turnID": self.headers.get("x-turn-id"), "model": requested_model,
@@ -248,10 +281,10 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     emit({"type": "response.content_part.added", "output_index": 0, "item_id": item_id, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": []}})
                     for chunk in chunks:
                         emit({"type": "response.output_text.delta", "output_index": 0, "item_id": item_id, "content_index": 0, "delta": chunk})
-                        time.sleep(0.025 if stress_markdown else 0.8 if "slow" in prompt.lower() else 0.035 if "large" in prompt.lower() else 0.03)
+                        time.sleep(delay)
                     output = [{"type": "message", "id": "msg_" + request_id, "role": "assistant", "content": [{"type": "output_text", "text": text, "annotations": []}], "status": "completed"}]
                 emit({"type": "response.output_item.done", "output_index": 0, "item": output[0]})
-                emit({"type": "response.completed", "response": {"id": "resp_" + request_id, "model": resolved_model, "status": "completed", "output": output, "usage": {"input_tokens": 30, "input_tokens_details": {"cached_tokens": 10}, "output_tokens": len(text) // 4 + 1, "cost": 0 if "cache hit" in prompt.lower() else 0.00125}}})
+                emit({"type": "response.completed", "response": {"id": "resp_" + request_id, "model": resolved_model, "status": "completed", "output": output, "usage": {"input_tokens": input_tokens, "input_tokens_details": {"cached_tokens": 10}, "output_tokens": len(text) // 4 + 1, "cost": 0 if "cache hit" in prompt.lower() else 0.00125}}})
             else:
                 emit({"type": "message_start", "message": {"id": "msg_" + request_id, "model": resolved_model, "type": "message", "role": "assistant", "content": [], "usage": {"input_tokens": 20, "cache_read_input_tokens": 10, "output_tokens": 0}}})
                 block = {"type": "tool_use", "id": "call_" + request_id, "name": tool_name, "input": {}} if call_tool else {"type": "text", "text": ""}
@@ -261,7 +294,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 else:
                     for chunk in chunks:
                         emit({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": chunk}})
-                        time.sleep(0.025 if stress_markdown else 0.8 if "slow" in prompt.lower() else 0.035 if "large" in prompt.lower() else 0.03)
+                        time.sleep(delay)
                 emit({"type": "content_block_stop", "index": 0})
                 emit({"type": "message_delta", "delta": {"stop_reason": "tool_use" if call_tool else "end_turn"}, "usage": {"output_tokens": len(text) // 4 + 1, "cost": 0 if "cache hit" in prompt.lower() else 0.00125}})
                 emit({"type": "message_stop"})

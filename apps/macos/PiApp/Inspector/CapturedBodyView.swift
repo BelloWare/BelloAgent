@@ -332,6 +332,14 @@ enum CapturedBodyReader {
     /// `combine` also builds the combined response view before returning, so
     /// a document that replaces one on screen never passes through a spinner.
     @MainActor static func read(kind: String, source: CapturedBodySource, combine: Bool = false, progress: @escaping @MainActor @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> CapturedBodyDocument {
+        let (bytes, metadata) = try await readBytes(kind: kind, source: source, progress: progress)
+        return try await CapturedBodyWorker.shared.run { try CapturedBodyDocument.parse(bytes: bytes, metadata: metadata, combine: combine) }
+    }
+
+    /// The retained bytes of one body and the descriptor that says what they
+    /// are, without parsing them: the Inspector's documents parse the bytes
+    /// their own way, on the worker.
+    @MainActor static func readBytes(kind: String, source: CapturedBodySource, progress: @escaping @MainActor @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> (bytes: Data, metadata: CapturedBodyMetadata) {
         try Task.checkCancellation()
         let before = try await source.metadata()
         let state = before.body["state"]?.string ?? ""
@@ -363,8 +371,13 @@ enum CapturedBodyReader {
             // Every byte the capture holds now was read: `after` describes them.
             described = now == bytes.count ? after : CapturedBodyMetadata(prefix: bytes.count, of: before)
         }
-        let metadata = described
-        return try await CapturedBodyWorker.shared.run { try CapturedBodyDocument.parse(bytes: bytes, metadata: metadata, combine: combine) }
+        return (bytes, described)
+    }
+
+    /// What a cache keys a body's document by: its retained length and digest.
+    static func revision(_ metadata: CapturedBodyMetadata) -> String {
+        let length = metadata.body["retainedBytes"]?.number.map { String(Int($0)) } ?? "?"
+        return length + ":" + (metadata.hash?.object?["sha256"]?.string ?? metadata.body["state"]?.string ?? "")
     }
 }
 

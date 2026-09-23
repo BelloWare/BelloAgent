@@ -16,7 +16,7 @@ import XCTest
 ///
 /// Everything asserted here is something the reader would see: a scroll
 /// offset, a row's place on screen, a cursor, a pane's frame.
-final class SmoothShellTests: XCTestCase {
+class SmoothShellTestCase: XCTestCase {
 
     // MARK: Fixture
     //
@@ -159,6 +159,28 @@ final class SmoothShellTests: XCTestCase {
         return shell
     }
 
+
+
+    // MARK: Helpers
+
+    @MainActor func waitFor(_ what: String, seconds: Double = 10, file: StaticString = #filePath, line: UInt = #line,
+                                    _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if condition() { return }
+            await Task.yield()
+            try await Task.sleep(for: .milliseconds(15))
+        }
+        XCTFail(what, file: file, line: line)
+    }
+}
+
+/// The shell tests that cannot share the machine, run alone in the serial
+/// lane (`scripts/test-lanes.py`): the ones that move the window's stored
+/// sidebar width or split, which every test host reads, and the ones that
+/// count the frames a change takes or hold each one to a frame's budget in
+/// Debug too.
+final class SmoothShellTests: SmoothShellTestCase, SerialTestLane {
     // MARK: 1. A chat switch arrives settled
 
     /// Clicking another chat must show that chat: its rows, its draft and its
@@ -211,17 +233,223 @@ final class SmoothShellTests: XCTestCase {
         XCTAssertLessThanOrEqual(worstPasses, 24, "a chat switch cost \(worstPasses) document layout passes")
     }
 
+    @MainActor func testTheReadingPositionHoldsThroughEveryChangeAroundTheTranscript() async throws {
+        let shell = try shell(["Reading"], rows: 60)
+        let session = try XCTUnwrap(shell.model.displays[shell.chats[0].id])
+        await shell.model.select(shell.chats[0].id)
+        await shell.settle(1.2)
+        await shell.scrollAwayFromTheBottom()
+        XCTAssertFalse(shell.page?.followsBottom ?? true, "the reader must be away from the newest row for this to mean anything")
 
-    // MARK: Helpers
-
-    @MainActor func waitFor(_ what: String, seconds: Double = 10, file: StaticString = #filePath, line: UInt = #line,
-                                    _ condition: () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(seconds)
-        while Date() < deadline {
-            if condition() { return }
-            await Task.yield()
-            try await Task.sleep(for: .milliseconds(15))
+        /// A change that does not alter the pane's width keeps the reader on
+        /// the same content: the scroll offset and the row's own place in the
+        /// document are untouched. A change that does alter it reflows the
+        /// text, so what must hold is the row's place on the screen.
+        func holds(_ what: String, reflows: Bool, settle seconds: Double = 0.6, tolerance: CGFloat = 2,
+                   _ change: () -> Void) async throws {
+            let before = try XCTUnwrap(shell.readingRow(), "no row is in view before " + what)
+            let offsetBefore = shell.offset
+            change()
+            // Five ticks through the change, not only where it lands: an
+            // animated pane moves the reader's row on every frame or on none
+            // of them, and only the frames can tell which.
+            for tick in 1...5 {
+                shell.draw()
+                if let now = shell.readingRow(), now.id == before.id {
+                    XCTAssertEqual(now.screenY, before.screenY, accuracy: tolerance,
+                                   "\(what) moved the row the reader was on by \(Int(now.screenY - before.screenY)) points at tick \(tick)")
+                }
+                try? await Task.sleep(for: .milliseconds(PiMotion.baseMilliseconds / 5))
+            }
+            await shell.settle(seconds)
+            let after = try XCTUnwrap(shell.readingRow(), "no row is in view after " + what)
+            XCTAssertEqual(after.id, before.id, "\(what) moved the reader onto another row")
+            XCTAssertEqual(after.screenY, before.screenY, accuracy: tolerance,
+                           "\(what) moved the row the reader was on by \(Int(after.screenY - before.screenY)) points")
+            if !reflows {
+                XCTAssertEqual(shell.offset, offsetBefore, accuracy: tolerance,
+                               "\(what) scrolled the page by \(Int(shell.offset - offsetBefore)) points")
+                XCTAssertEqual(after.contentY, before.contentY, accuracy: 1, "\(what) moved the row inside the document")
+            }
+            XCTAssertFalse(shell.page?.followsBottom ?? true, "\(what) put the page back on the newest row")
         }
-        XCTFail(what, file: file, line: line)
+
+        // The composer grows as a long draft is typed, and shrinks again.
+        try await holds("a composer grown to five lines", reflows: false) {
+            session.draft = (1...5).map { "Line \($0) of a draft that makes the composer taller." }.joined(separator: "\n")
+        }
+        try await holds("a composer shrunk back to one line", reflows: false) { session.draft = "One line." }
+        // A follow-up waiting behind the run appears under the conversation.
+        try await holds("the follow-up panel appearing", reflows: false) {
+            session.queue = [["turnId": .string("q1"), "text": .string("Then summarise the change in one line.")]]
+        }
+        try await holds("the follow-up panel leaving", reflows: false) { session.queue = [] }
+        // The error strip takes room from the top of the content column.
+        // Pushing the column down takes the conversation out from under the
+        // titlebar and AppKit removes the inset it had put there;
+        // `TranscriptNativeScrollView` moves the clip view by the difference,
+        // so the reader stays on the same line.
+        try await holds("the error strip arriving", reflows: false) {
+            shell.model.error = "The gateway refused the request: 400 invalid_request_error — the model does not accept that output limit on this route."
+        }
+        try await holds("the error strip dismissed", reflows: false) { shell.model.error = nil }
+        // The terminal opens under the conversation and closes again.
+        try await holds("the terminal opening", reflows: false, settle: 1.0) { shell.model.toggleTerminal() }
+        try await holds("the terminal closing", reflows: false, settle: 1.0) { shell.model.toggleTerminal() }
+        // The window and the sidebar's edge both change the pane's width.
+        try await holds("the window narrowed by 200 points", reflows: true, settle: 1.0) {
+            shell.window.setContentSize(NSSize(width: 1_080, height: 880))
+        }
+        try await holds("the sidebar widened", reflows: true, settle: 1.0) {
+            WindowChrome.adjustStoredSidebarWidth(by: 3 * WindowChrome.widthStep)
+        }
+        WindowChrome.adjustStoredSidebarWidth(by: -3 * WindowChrome.widthStep)
+        await shell.settle(0.6)
+        // A side conversation halves the pane.
+        try await holds("a side conversation opening beside the chat", reflows: true, settle: 1.4) {
+            shell.model.openSide(parentID: shell.chats[0].id)
+        }
+    }
+
+    /// Every animated change to the shell, driven frame by frame for the
+    /// length of the animation: what one tick costs the main thread, and
+    /// whether any tick misses a 120 Hz frame.
+    ///
+    /// What is asserted about the geometry is that it does *not* move more
+    /// than once. The panels slide and fade over the room they take, rather
+    /// than growing into it: a panel whose height is interpolated drags the
+    /// conversation's edge across a fifth of a second, and for the strip
+    /// above the conversation that is the line the reader is on. The travel
+    /// is the transition's own; the layout lands in one step and stays.
+    @MainActor func testEveryTransitionHoldsAFrameOfTheBudget() async throws {
+        let shell = try shell(["Moving"], rows: 60)
+        let session = try XCTUnwrap(shell.model.displays[shell.chats[0].id])
+        await shell.model.select(shell.chats[0].id)
+        await shell.settle(1.2)
+
+        /// Drives frames for the length of the animation, returning what each
+        /// one cost and how many distinct pane geometries were drawn.
+        @MainActor func run(_ what: String, over milliseconds: Int = PiMotion.baseMilliseconds,
+                            _ change: () -> Void) async -> (mean: Double, worst: Double, ticks: Int, steps: Int) {
+            var costs: [Double] = [], geometries: Set<Int> = []
+            change()
+            let deadline = Date().addingTimeInterval(Double(milliseconds) / 1_000)
+            // The animation runs on the wall clock, so how many frames land
+            // inside it is what the machine can give: under load, two or
+            // three. The loop goes on past its end until it has driven five.
+            // Those frames draw the pane the animation landed on, so they add
+            // no height to the count of distinct ones, and their cost is still
+            // held to the frame budget.
+            var inside = 0
+            while Date() < deadline || costs.count <= 4 {
+                if Date() < deadline { inside += 1 }
+                let started = ProcessInfo.processInfo.systemUptime
+                shell.draw()
+                costs.append((ProcessInfo.processInfo.systemUptime - started) * 1_000)
+                geometries.insert(Int((shell.transcriptFrame.height * 4).rounded()))
+                await Task.yield()
+                try? await Task.sleep(for: .milliseconds(4))
+            }
+            await shell.settle(0.5)
+            let mean = costs.reduce(0, +) / Double(max(1, costs.count))
+            let worst = costs.max() ?? 0
+            print(String(format: "PERF smooth transition %@: %d frames (%d inside the animation), mean %.2f ms, worst %.2f ms, %d distinct heights",
+                         what, costs.count, inside, mean, worst, geometries.count))
+            return (mean, worst, costs.count, geometries.count)
+        }
+
+        /// One 120 Hz frame. Nothing a transition does may cost more.
+        let frame = 1_000.0 / 120
+        /// The target is under 2 ms a frame and that is what Release
+        /// measures; what is asserted is a ceiling this machine still clears
+        /// with the rest of the suite running beside it.
+        let ceiling = 4.0
+        var animated: [String] = [], snapped: [String] = []
+        // Opening the terminal starts a login shell on its first frame, which
+        // can take the whole window on a loaded machine, so that one change
+        // is not held to a count of driven frames.
+        let changes: [(what: String, driven: Bool, change: () -> Void)] = [
+            ("the follow-up panel arriving", true, { session.queue = [["turnId": .string("q1"), "text": .string("Then summarise the change.")]] }),
+            ("the follow-up panel leaving", true, { session.queue = [] }),
+            ("the error strip arriving", true, { shell.model.error = "The gateway refused the request: 400 invalid_request_error." }),
+            ("the error strip leaving", true, { shell.model.error = nil }),
+            ("the terminal opening", false, { shell.model.toggleTerminal() }),
+            ("the terminal closing", true, { shell.model.toggleTerminal() })
+        ]
+        for (what, driven, change) in changes {
+            let result = await run(what, change)
+            XCTAssertLessThan(result.mean, ceiling, "\(what) cost \(result.mean) ms a frame")
+            XCTAssertLessThan(result.worst, frame, "\(what) missed a 120 Hz frame: \(result.worst) ms")
+            if driven { XCTAssertGreaterThan(result.ticks, 4, "\(what) was not driven for long enough to mean anything") }
+            if result.steps > 2 { animated.append(what) } else { snapped.append(what) }
+        }
+        print("PERF smooth transitions whose layout landed in one step: \(snapped.joined(separator: ", "))"
+              + (animated.isEmpty ? "" : " — interpolated their height: \(animated.joined(separator: ", "))"))
+        XCTAssertTrue(animated.isEmpty,
+                      "these changes interpolate the conversation's own edge, which drags the line the reader is on: "
+                      + animated.joined(separator: ", "))
+    }
+
+    /// The boundary between a chat and its side used to be a hairline that
+    /// invited a drag it could not answer, at a fixed half. It is draggable
+    /// now, bounded, and what it lands on is kept.
+    @MainActor func testTheSplitPaneIsBoundedAndKeepsWhereItWasPut() async throws {
+        XCTAssertEqual(SplitPane.clampFraction(0.01), SplitPane.minimumFraction)
+        XCTAssertEqual(SplitPane.clampFraction(0.99), SplitPane.maximumFraction)
+        XCTAssertEqual(SplitPane.clampFraction(.nan), SplitPane.defaultFraction)
+        // The two panes and their divider always add up to the column exactly.
+        for total in stride(from: 600.0, through: 1_801.0, by: 37.0) {
+            for fraction in [0.3, 0.42, 0.5, 0.63, 0.7] {
+                let main = SplitPane.mainWidth(total: CGFloat(total), fraction: fraction)
+                let side = SplitPane.sideWidth(total: CGFloat(total), fraction: fraction)
+                XCTAssertEqual(main + side + SplitPane.dividerWidth, CGFloat(total), accuracy: 0.001,
+                               "the split lost a point at \(total) × \(fraction)")
+                XCTAssertGreaterThan(main, 0); XCTAssertGreaterThan(side, 0)
+            }
+        }
+        let start = UserDefaults.standard.object(forKey: "sidePaneFraction") as? Double
+        defer {
+            if let start { UserDefaults.standard.set(start, forKey: "sidePaneFraction") }
+            else { UserDefaults.standard.removeObject(forKey: "sidePaneFraction") }
+        }
+        UserDefaults.standard.set(0.62, forKey: "sidePaneFraction")
+        let shell = try shell(["Split"], rows: 20, width: 1_400)
+        await shell.model.select(shell.chats[0].id)
+        await shell.settle(1.0)
+        let whole = shell.transcriptFrame.width
+        shell.model.openSide(parentID: shell.chats[0].id)
+        await shell.settle(1.4)
+        let panes = Self.views(TranscriptSurfaceMarker.self, in: shell.hosted).compactMap { $0.enclosingScrollView }
+        XCTAssertEqual(panes.count, 2, "the side conversation did not open beside the chat")
+        let widths = panes.map(\.frame.width).sorted()
+        print(String(format: "PERF smooth split pane at 0.62: panes %.0f and %.0f points of a %.0f point column",
+                     widths[1], widths[0], whole))
+        XCTAssertGreaterThan(widths[1], widths[0], "a stored fraction of 0.62 must leave the chat the wider pane")
+        XCTAssertEqual(widths[1] / (widths[0] + widths[1]), 0.62, accuracy: 0.04,
+                       "the stored fraction is not where the boundary landed")
+    }
+
+    /// The boundary answers the keyboard with the same value and the same
+    /// bounds the handle commits, and the sidebar really changes width.
+    @MainActor func testTheSidebarWidthHasAKeyboardPathWithinTheSameBounds() async throws {
+        let shell = try shell(["Keyboard"], rows: 10)
+        await shell.model.select(shell.chats[0].id)
+        await shell.settle(0.8)
+        let start = WindowChrome.storedSidebarWidth
+        defer { UserDefaults.standard.set(Double(start), forKey: "sidebarWidth") }
+        let firstTranscript = shell.transcriptFrame
+
+        WindowChrome.adjustStoredSidebarWidth(by: WindowChrome.widthStep)
+        await shell.settle(0.6)
+        XCTAssertEqual(WindowChrome.storedSidebarWidth, start + WindowChrome.widthStep, accuracy: 0.5)
+        XCTAssertEqual(shell.transcriptFrame.width, firstTranscript.width - WindowChrome.widthStep, accuracy: 2,
+                       "widening the sidebar did not narrow the conversation")
+        // The bounds are the handle's own: pressing past them stops there.
+        for _ in 0..<40 { WindowChrome.adjustStoredSidebarWidth(by: WindowChrome.widthStep) }
+        XCTAssertEqual(WindowChrome.storedSidebarWidth, WindowChrome.maximumSidebarWidth, accuracy: 0.5)
+        for _ in 0..<60 { WindowChrome.adjustStoredSidebarWidth(by: -WindowChrome.widthStep) }
+        XCTAssertEqual(WindowChrome.storedSidebarWidth, WindowChrome.minimumSidebarWidth, accuracy: 0.5)
+        await shell.settle(0.6)
+        XCTAssertEqual(shell.transcriptFrame.width, firstTranscript.width + (start - WindowChrome.minimumSidebarWidth), accuracy: 2)
     }
 }

@@ -12,7 +12,7 @@ import XCTest
 /// lays out, the chosen form is the form the trial layouts would have taken,
 /// and where a rung sits within the rounding allowance of the bar's edge the
 /// arithmetic is the one that gives way.
-final class ComposerBarLayoutTests: XCTestCase {
+final class ComposerBarLayoutTests: XCTestCase, SerialTestLane {
 
     /// The widths `ConversationPaneTests.testComposerBarFitsNarrowPanes`
     /// drives, plus the two halves of a split at the smallest window.
@@ -126,10 +126,34 @@ final class ComposerBarLayoutTests: XCTestCase {
     /// What SwiftUI says a candidate wants to be. `ViewThatFits` takes the
     /// first candidate whose ideal width fits, so these widths are the whole
     /// of its decision.
-    @MainActor private func idealWidth(_ view: some View) -> CGFloat {
+    @MainActor private static func idealWidth(_ view: some View) -> CGFloat {
         let hosting = NSHostingView(rootView: view.fixedSize())
         hosting.layoutSubtreeIfNeeded()
         return hosting.fittingSize.width
+    }
+    /// The oracle's answers, each group laid out by SwiftUI once per test.
+    /// What a group asks for depends on nothing but what it draws — its
+    /// labels and its form — so the same group at another pane width, or
+    /// beside other furniture, is the same layout with the same answer. Every
+    /// combination is still checked; each distinct group is laid out once.
+    @MainActor private final class Oracle {
+        private var widths: [String: CGFloat] = [:]
+        func pills(_ set: LabelSet, _ form: ComposerPillsForm) -> CGFloat {
+            width("pills|\(set.showsConnectionPill)|\(set.connection)|\(set.model)|\(set.effort)|\(set.loading)|\(form)") {
+                ComposerBarLayoutTests.idealWidth(OraclePills(set: set, form: form))
+            }
+        }
+        func runControls(steer: Bool, hint: String?, _ form: ComposerRunControlsForm) -> CGFloat {
+            width("run|\(steer)|\(String(describing: hint))|\(form)") {
+                ComposerBarLayoutTests.idealWidth(OracleRunControls(steer: steer, hint: hint, form: form))
+            }
+        }
+        private func width(_ key: String, _ layOut: () -> CGFloat) -> CGFloat {
+            if let known = widths[key] { return known }
+            let width = layOut()
+            widths[key] = width
+            return width
+        }
     }
 
     // MARK: Tests
@@ -139,10 +163,11 @@ final class ComposerBarLayoutTests: XCTestCase {
     /// glyph would break first.
     @MainActor func testTheMeasuredWidthsAreTheWidthsSwiftUILaysOut() throws {
         var worst = 0.0, worstName = "", checks = 0
+        let oracle = Oracle()
         for set in Self.labelSets() {
             let metrics = Self.metrics(set) { $0.showsSteer = true; $0.hint = "Queue follow-up" }
             for form in ComposerPillsForm.allCases {
-                let drawn = idealWidth(OraclePills(set: set, form: form))
+                let drawn = oracle.pills(set, form)
                 let measured = metrics.pillsWidth(form)
                 checks += 1
                 if abs(measured - drawn) > worst { worst = abs(measured - drawn); worstName = "\(set.name) pills \(form)" }
@@ -150,7 +175,7 @@ final class ComposerBarLayoutTests: XCTestCase {
                                "pills \(form) for \(set.name): measured \(measured), SwiftUI lays out \(drawn)")
             }
             for form in [ComposerRunControlsForm.labelled, .compactSteer, .steerOnly] {
-                let drawn = idealWidth(OracleRunControls(steer: true, hint: "Queue follow-up", form: form))
+                let drawn = oracle.runControls(steer: true, hint: "Queue follow-up", form)
                 let measured = metrics.runControlsWidth(form)
                 checks += 1
                 if abs(measured - drawn) > worst { worst = abs(measured - drawn); worstName = "run controls \(form)" }
@@ -167,6 +192,7 @@ final class ComposerBarLayoutTests: XCTestCase {
     /// by SwiftUI, fit the same available width.
     @MainActor func testTheChosenFormIsTheOneTheTrialLayoutsWouldHaveChosen() throws {
         var disagreements: [String] = [], checks = 0
+        let oracle = Oracle()
         for set in Self.labelSets() {
             for (furnitureName, furniture) in Self.furniture() {
                 let metrics = Self.metrics(set, furniture)
@@ -176,25 +202,25 @@ final class ComposerBarLayoutTests: XCTestCase {
                     // measured by SwiftUI rather than by arithmetic.
                     let fixed = metrics.width(ComposerBarForm.narrowest)
                         - metrics.pillsWidth(.icons) - metrics.runControlsWidth(.steerOnly)
-                    var oracle = ComposerBarForm.narrowest
+                    var laidOut = ComposerBarForm.narrowest
                     for form in ComposerBarForm.ladder {
-                        let drawn = fixed + idealWidth(OraclePills(set: set, form: form.pills))
-                            + idealWidth(OracleRunControls(steer: metrics.showsSteer, hint: metrics.hint, form: form.runControls))
-                        if drawn <= available { oracle = form; break }
+                        let drawn = fixed + oracle.pills(set, form.pills)
+                            + oracle.runControls(steer: metrics.showsSteer, hint: metrics.hint, form.runControls)
+                        if drawn <= available { laidOut = form; break }
                     }
                     let chosen = metrics.form(fitting: available)
                     checks += 1
-                    guard chosen != oracle else { continue }
+                    guard chosen != laidOut else { continue }
                     let rung = { (form: ComposerBarForm) in ComposerBarForm.ladder.firstIndex(of: form) ?? 0 }
                     // Arithmetic and layout can only disagree about a rung
                     // whose width is within the rounding allowance of the
                     // bar, and the arithmetic must always be the cautious one.
-                    XCTAssertGreaterThan(rung(chosen), rung(oracle),
-                                         "\(set.name)/\(furnitureName) at \(Int(pane))pt claimed room it has not got: \(chosen) over \(oracle)")
-                    let gap = available - metrics.width(oracle)
+                    XCTAssertGreaterThan(rung(chosen), rung(laidOut),
+                                         "\(set.name)/\(furnitureName) at \(Int(pane))pt claimed room it has not got: \(chosen) over \(laidOut)")
+                    let gap = available - metrics.width(laidOut)
                     XCTAssertLessThanOrEqual(gap, ComposerBarMetrics.roundingAllowance + 1,
-                                             "\(set.name)/\(furnitureName) at \(Int(pane))pt gave up \(oracle) with \(Int(gap)) points to spare")
-                    disagreements.append("\(set.name)/\(furnitureName) at \(Int(pane))pt: chose \(chosen), laid out \(oracle), \(String(format: "%.1f", gap)) pt from the edge")
+                                             "\(set.name)/\(furnitureName) at \(Int(pane))pt gave up \(laidOut) with \(Int(gap)) points to spare")
+                    disagreements.append("\(set.name)/\(furnitureName) at \(Int(pane))pt: chose \(chosen), laid out \(laidOut), \(String(format: "%.1f", gap)) pt from the edge")
                 }
             }
         }
@@ -209,6 +235,7 @@ final class ComposerBarLayoutTests: XCTestCase {
     /// card's edge.
     @MainActor func testTheChosenFormAlwaysFitsTheBar() throws {
         var overflows: [String] = []
+        let oracle = Oracle()
         var worstSlack = CGFloat.greatestFiniteMagnitude, tightest = ""
         for set in Self.labelSets() {
             for (furnitureName, furniture) in Self.furniture() {
@@ -217,8 +244,8 @@ final class ComposerBarLayoutTests: XCTestCase {
                     let available = ComposerBarMetrics.available(paneWidth: pane)
                     let form = metrics.form(fitting: available)
                     let fixed = metrics.width(form) - metrics.pillsWidth(form.pills) - metrics.runControlsWidth(form.runControls)
-                    let drawn = fixed + idealWidth(OraclePills(set: set, form: form.pills))
-                        + idealWidth(OracleRunControls(steer: metrics.showsSteer, hint: metrics.hint, form: form.runControls))
+                    let drawn = fixed + oracle.pills(set, form.pills)
+                        + oracle.runControls(steer: metrics.showsSteer, hint: metrics.hint, form.runControls)
                     // The narrowest rung has nothing left to give up; at 460
                     // points with a long connection name it is simply wider
                     // than the bar, exactly as it was before.

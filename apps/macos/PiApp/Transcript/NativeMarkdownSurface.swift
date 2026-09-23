@@ -81,7 +81,7 @@ private struct NativeHostedMarkdownBlock: View {
     private(set) var view: NSHostingView<NativeHostedMarkdownBlock>?
     private var item: NativeMarkdownItem
     private var nativeCodeChoice: Bool?
-    private let decoration = MarkdownBlockDecoration()
+    private let decoration: MarkdownBlockDecoration
     private weak var selectionEditor: NSTextView?
     private var restoredSelection: (range: NSRange, original: NSRange, rendered: String)?
     private var selectionRevision = 0
@@ -103,7 +103,7 @@ private struct NativeHostedMarkdownBlock: View {
 
     init(item: NativeMarkdownItem) {
         self.item = item
-        decoration.update(caret: item.caret, target: item.headingTarget)
+        decoration = MarkdownBlockDecoration(caret: item.caret, target: item.headingTarget)
         if case .code(_, let code) = item.block {
             nativeCodeChoice = NativeCodeText.enabled && (item.caret || code.utf8.count >= NativeCodeText.minimumBytes)
         } else { nativeCodeChoice = nil }

@@ -48,7 +48,7 @@ extension AgentSession {
         }
         Self.adoptBranch(plan, history: &history, visible: &visible, context: &context, markerID: markerID)
         prunePresentedTasksAfterBranch()
-        invalidateDisplay(allRows: true); replayInputsChanged(); contextRecovery = .null; compactionState = .null
+        invalidateDisplay(allRows: true); replayInputsChanged(); contextRecovery = .null; compactionState = .null; requestExclusions = []
         boundary = context; currentContextCount = nil; clearRequestObservation()
         retrySubmission = nil; activeSubmission = nil; partialID = nil; partialText = ""; partialThinking = ""; resetPartialRow(); currentTurnID = ""; taskRootID = nil
         recordDisplayChange(markerID, at: displayClock())
@@ -60,7 +60,7 @@ extension AgentSession {
         Self.branch(history:&history,context:&context,visible:&visible,from:messageID,keptIDs:keptIDs,markerID:markerID)
         prunePresentedTasksAfterBranch()
         invalidateDisplay(allRows: true)
-        replayInputsChanged(); contextRecovery = .null; compactionState = .null
+        replayInputsChanged(); contextRecovery = .null; compactionState = .null; requestExclusions = []
         boundary=context; currentContextCount=nil; clearRequestObservation()
     }
     /// Shared by live edits and journal replay (the synchronous initializer

@@ -51,6 +51,10 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// from. The turn report reads it for a request the request log has no
     /// row for. Nil from helpers before 0.1.88 and for rows it has no record of.
     var reply: ReplyRecord? = nil
+    /// Failure rows the app adds: the helper's code for what failed, when it
+    /// has a notice of its own (`cost_limit`: a stop at the chat's cost limit).
+    /// Display only, like `foldGroup`.
+    var failureCode: String? = nil
     static func project(id: String, message: [String: WireValue]) -> TranscriptMessage {
         let stopReason = message["nativeStopReason"]?.string ?? message["stopReason"]?.string
         let content = message["content"], blocks = content?.array ?? []

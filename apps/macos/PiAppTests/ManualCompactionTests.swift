@@ -31,7 +31,8 @@ final class ManualCompactionTests: XCTestCase {
             model.selectedID = id; model.selected = view; model.focusedSessionID = id
             let host = try await model.open(chat)
             // Two answers past pi's 20,000-token recent tail: the second is
-            // kept, the first task is what compaction summarizes.
+            // kept; the first task and the second's request are summarized,
+            // the request as pi's turn prefix.
             for (turn, text) in ["Keep my original objective.", "Continue with the evidence."].enumerated() {
                 view.draft = text; model.send(sessionID:id)
                 for _ in 0..<1500 {
@@ -46,7 +47,7 @@ final class ManualCompactionTests: XCTestCase {
             model.chats[index].contextWindow = id == "default" ? nil : 60000
             model.chats[index].maxOutputTokens = id == "default" ? nil : 2048
             model.chats[index].modelOutputLimit = id == "default" ? nil : 16000
-            if id == "slash" { view.draft = "/compact"; view.directCommand = true; model.send(sessionID:id) }
+            if id == "slash" { view.draft = "/compact keep the evidence list"; view.directCommand = true; model.send(sessionID:id) }
             else { model.action("context.compact",sessionID:id) }
             // Selection is frozen synchronously even while open() awaits.
             model.chats[index].model = "changed-after-dispatch"
@@ -62,11 +63,11 @@ final class ManualCompactionTests: XCTestCase {
             var attempts: [[String:WireValue]] = []
             for _ in 0..<500 {
                 attempts = try await model.traces.list(sessionID:id)
-                if attempts.count == 3 { break }
+                if attempts.count == 4 { break }
                 try await Task.sleep(for:.milliseconds(10))
             }
             let records = try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSONDecoder().decode([String:WireValue].self,from:Data($0.utf8)) }.filter { $0["session"]?.string == id }
-            XCTAssertEqual(attempts.count,3); XCTAssertEqual(records.count,3)
+            XCTAssertEqual(attempts.count,4); XCTAssertEqual(records.count,4)
             XCTAssertTrue(records.allSatisfy { $0["status"]?.number == 200 })
             for attempt in attempts {
                 let attemptID = try XCTUnwrap(attempt["attemptId"]?.string)
@@ -74,6 +75,15 @@ final class ManualCompactionTests: XCTestCase {
                 let response = try await model.traces.completeBody(attemptID:attemptID,body:"response")
                 XCTAssertTrue(records.contains { Data(base64Encoded:$0["request"]?.string ?? "") == request && Data(base64Encoded:$0["response"]?.string ?? "") == response })
             }
+            // Pi's /compact [instructions]: the focus ends the history summary's
+            // prompt; the turn prefix's summary, like pi's, takes none.
+            var focused = 0
+            for attempt in attempts {
+                guard let attemptID = attempt["attemptId"]?.string else { continue }
+                let request = try await model.traces.completeBody(attemptID:attemptID,body:"request")
+                if String(decoding:request,as:UTF8.self).contains("Additional focus: keep the evidence list") { focused += 1 }
+            }
+            XCTAssertEqual(focused, id == "slash" ? 1 : 0, id)
         }
     }
 }

@@ -99,11 +99,12 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         if model == 'slow':
             time.sleep(2)
         text = 'Hello 中文🙂'
-        users = [part.get('text', '') for item in body.get('input', []) if item.get('type') == 'message' and item.get('role') == 'user' for part in item.get('content', []) if part.get('type') == 'input_text']
+        # Pi sends a user message without an item type.
+        users = [part.get('text', '') for item in body.get('input', []) if item.get('type', 'message') == 'message' and item.get('role') == 'user' for part in item.get('content', []) if part.get('type') == 'input_text']
         if users and users[-1].startswith('long question'):
             text += ' ' + 'padding ' * 10500  # past pi's 20,000-token recent tail
         if self.path.endswith('/responses'):
-            tool = model in ('tool', 'limited-tool') and bool(body.get('tools')) and not any(item.get('type') == 'function_call_output' for item in body['input'])
+            tool = model in ('tool', 'limited-tool', 'billing-tool') and bool(body.get('tools')) and not any(item.get('type') == 'function_call_output' for item in body['input'])
             if tool:
                 output = [{'type': 'function_call', 'id': 'fc_1', 'call_id': 'call_1', 'name': 'read', 'arguments': '{"path":"README.md"}'}]
                 events = [{'type': 'response.output_item.added', 'output_index': 0, 'item': {**output[0], 'arguments': ''}}, {'type': 'response.function_call_arguments.delta', 'output_index': 0, 'delta': output[0]['arguments']}]
@@ -284,7 +285,11 @@ class Fixture(http.server.BaseHTTPRequestHandler):
                 CONTRACT.require(issued is not None, 'continuation invented a tool ID that the gateway never issued')
                 CONTRACT.require(semantic['calls'][ident] == issued['call'], 'continuation changed the issued tool name or arguments')
                 CONTRACT.require(result == issued['result'], 'tool result differs from the actual fixture file contents')
-        if semantic['is_compaction']:
+        if semantic['is_compaction'] and 'This is the PREFIX of a turn that was too large to keep.' in prompt:
+            # Pi's split turn: the long echo's request is summarized as the kept answer's prefix.
+            CONTRACT.require('fixture: long echo' in prompt, 'turn-prefix summary lost the split turn\'s request')
+            text, kind = 'Fixture turn prefix: the long echo was requested.', 'compaction'
+        elif semantic['is_compaction']:
             CONTRACT.require('fixture: read README.md' in prompt and 'fixture file contents' in prompt, 'compaction source lost the completed tool turn')
             text, kind = 'Fixture continuation summary: README.md read successfully; fixture file contents; remaining echo preserved.', 'compaction'
         elif tool_result:
@@ -523,6 +528,15 @@ class NativeIntegration(unittest.TestCase):
             self.assertEqual(wire['x-session-id'],'s'); self.assertEqual(wire['x-turn-id'],attempt['turnId'])
             self.assertEqual(metadata['requestHeaders']['x-session-id'],'s'); self.assertEqual(metadata['requestHeaders']['x-turn-id'],attempt['turnId'])
             self.assertEqual(json.loads(sent)['metadata'],{'session_id':'s'}); self.assertTrue(metadata['request']['byteExact'])
+            # Pi 0.85.1's request: its session prompt cache and affinity headers,
+            # the system prompt as the first input item, no serial-tools or
+            # strict flags, and a user message without an item type.
+            body=json.loads(sent)
+            self.assertEqual(body['prompt_cache_key'],'s'); self.assertEqual(wire['session_id'],'s'); self.assertEqual(wire['x-client-request-id'],'s')
+            self.assertEqual(body['input'][0]['role'],'developer'); self.assertIsInstance(body['input'][0]['content'],str)
+            self.assertNotIn('instructions',body); self.assertNotIn('parallel_tool_calls',body)
+            self.assertTrue(all('strict' not in tool for tool in body['tools']))
+            self.assertEqual(body['input'][1],{'role':'user','content':[{'type':'input_text','text':'question'}]})
     def test_turn_overrides_and_edit_branch_reach_the_wire_and_survive_reload(self):
         session='overrides'; self.open(model='text',session=session)
         first=str(uuid.uuid4()); self.peer.command('turn.submit',{'clientTurnId':first,'text':'first question'},session)
@@ -648,6 +662,78 @@ class NativeIntegration(unittest.TestCase):
                 observed = next(r for r in reversed(Fixture.requests) if r['body']==request)
                 self.assertEqual(response,observed['response'])
                 self.peer.command('session.close',session=session)
+    def test_cost_limit_on_open_configure_and_reopen_stops_at_reported_spend(self):
+        # Each billing reply reports usage.cost 0.0123 on its terminal event.
+        self.assertIn('cost-limit', self.peer.ready['capabilities'])
+        session = 'cost-limit'
+        opened = self.open(model='billing-limit', session=session, costLimit={'usd': 0.02})
+        self.assertEqual(opened['cost']['limitUSD'], 0.02); self.assertEqual(opened['cost']['spentUSD'], 0)
+        self.submit(session, 'first'); value = self.settled(session)
+        self.assertEqual(value['state'], 'idle'); self.assertAlmostEqual(value['cost']['spentUSD'], 0.0123)
+        self.assertFalse(value['cost']['reached'])
+        # Below the limit the request goes; its reply takes the chat past it.
+        self.submit(session, 'second'); value = self.settled(session)
+        self.assertEqual(value['state'], 'idle'); self.assertAlmostEqual(value['cost']['spentUSD'], 0.0246)
+        self.assertEqual(value['cost']['reportedRequests'], 2); self.assertTrue(value['cost']['reached'])
+        sent = len(Fixture.requests)
+        refused = self.peer.command('turn.submit', {'clientTurnId': str(uuid.uuid4()), 'text': 'third'}, session, fail=True)
+        self.assertEqual(refused['code'], 'cost_limit')
+        self.assertEqual(refused['message'], 'This chat reached its $0.02 cost limit ($0.02 spent). Raise the limit to continue.')
+        self.assertEqual(len(Fixture.requests), sent, 'A chat at its limit sends nothing')
+        # A configure that carries only the limit applies at once and keeps the connection.
+        self.assertEqual(self.peer.command('session.configure', {'costLimit': {'usd': 1}}, session), {'accepted': True, 'applied': True})
+        self.submit(session, 'third'); value = self.settled(session)
+        self.assertEqual(value['state'], 'idle'); self.assertAlmostEqual(value['cost']['spentUSD'], 0.0369)
+        self.peer.command('session.configure', {'costLimit': {'usd': None}}, session)
+        self.assertIsNone(self.peer.command('session.status', session=session)['cost']['limitUSD'])
+        self.peer.command('session.configure', {'costLimit': {'usd': -1}}, session, fail=True)
+        # The spend is in the journal: a reopened chat is checked against it.
+        self.peer.command('session.close', session=session)
+        reopened = self.open(model='billing-limit', session=session, path=value['path'], costLimit={'usd': 0.03})
+        self.assertAlmostEqual(reopened['cost']['spentUSD'], 0.0369); self.assertTrue(reopened['cost']['reached'])
+        journal = [json.loads(line) for line in pathlib.Path(value['path']).read_bytes().split(b'\n') if line]
+        self.assertEqual(sum(1 for r in journal if r.get('customType') == 'pi-app.cost.v1'), 3)
+        # A request whose gateway reported no cost is counted as unknown, not free.
+        self.open(model='billing-unknown', session='cost-unknown', costLimit={'usd': 0.01})
+        self.submit('cost-unknown'); value = self.settled('cost-unknown')
+        self.assertEqual(value['cost']['spentUSD'], 0); self.assertEqual(value['cost']['unreportedRequests'], 1)
+        self.assertFalse(value['cost']['reached'])
+    def test_cost_limit_stops_a_running_turn_and_reaches_sides_forks_and_seeds(self):
+        # A tool round costs 0.0123: the request after it is not sent under a 0.01 limit.
+        session = 'cost-stop'
+        self.open(model='billing-tool', session=session, costLimit={'usd': 0.01})
+        self.submit(session, 'read the fixture'); value = self.settled(session)
+        self.assertEqual(value['state'], 'error'); self.assertEqual(value['errorCode'], 'cost_limit')
+        self.assertEqual(value['preflightError'], 'This chat reached its $0.01 cost limit ($0.01 spent). Raise the limit to continue.')
+        self.assertIn('fixture file contents', json.dumps(value['messages']), 'The request in flight finished and its tool ran')
+        self.assertEqual(len(self.peer.command('debug.list', session=session)['attempts']), 1)
+        # Raised mid-session: the stopped turn goes on from where it stopped.
+        self.peer.command('session.configure', {'costLimit': {'usd': 1}}, session)
+        self.peer.command('turn.retry', {}, session); value = self.settled(session)
+        self.assertEqual(value['state'], 'idle', value.get('preflightError')); self.assertNotIn('errorCode', value)
+        self.assertAlmostEqual(value['cost']['spentUSD'], 0.0246); self.assertEqual(value['cost']['reportedRequests'], 2)
+        # A side and a fork are sessions of their own, with their own limit and spend.
+        side = self.peer.command('side.open', {'sideSessionId': 'cost-side', 'costLimit': {'usd': 2}}, session)
+        self.assertEqual(side['sessionId'], 'cost-side')
+        state = self.peer.command('session.status', session='cost-side')
+        self.assertEqual(state['cost']['limitUSD'], 2); self.assertEqual(state['cost']['spentUSD'], 0)
+        fork = self.peer.command('session.fork', {'forkSessionId': 'cost-fork', 'costLimit': {'usd': None}}, session)
+        state = self.peer.command('session.status', session='cost-fork')
+        self.assertIsNone(state['cost']['limitUSD']); self.assertEqual(state['cost']['spentUSD'], 0)
+        self.peer.command('session.close', session='cost-fork')
+        reopened = self.open(model='billing-tool', session='cost-fork', path=fork['path'], costSeed={'usd': 9, 'reported': 1, 'unreported': 0})
+        self.assertEqual(reopened['cost']['spentUSD'], 0, 'A fork records its own costs from the start and takes no seed')
+        # A chat whose journal has no cost record takes the app's figure once.
+        first = self.open(model='billing-limit', session='cost-seeded', costSeed={'usd': 3, 'reported': 2, 'unreported': 1})
+        self.assertEqual(first['cost']['spentUSD'], 0, 'A new chat takes no seed')
+        path = first['path']; self.peer.command('session.close', session='cost-seeded')
+        for _ in range(2):
+            seeded = self.open(model='billing-limit', session='cost-seeded', path=path, costSeed={'usd': 3, 'reported': 2, 'unreported': 1}, costLimit={'usd': 2.5})
+            self.assertEqual(seeded['cost']['spentUSD'], 3); self.assertEqual(seeded['cost']['unreportedRequests'], 1)
+            self.assertTrue(seeded['cost']['reached'])
+            self.peer.command('session.close', session='cost-seeded')
+        bad = self.peer.command('session.open', {'profile': {'id':'p'}, 'costLimit': 5}, 'cost-bad', fail=True)
+        self.assertEqual(bad['code'], 'invalid_params'); self.assertIn('costLimit', bad['message'])
     def test_owner_samples_json_and_fragmented_sse_usage_model_cost_and_exact_capture(self):
         variants = [(f'fixture: owner-sample {transport} {cost}',transport,cost,False)
                     for transport in ('json','sse') for cost in ('null','paid','zero')]
@@ -764,7 +850,8 @@ class NativeIntegration(unittest.TestCase):
                 self.peer.command('context.compact',session=session)
                 compacted = self.settled(session); self.assertEqual(compacted['state'],'idle',compacted.get('preflightError'))
                 self.assertIn('Fixture continuation summary',json.dumps(compacted['messages']))
-                attempts = self.peer.command('debug.list',session=session)['attempts']; self.assertEqual(len(attempts),4)
+                # Pi splits the long echo's turn: the history summary, then its turn-prefix summary.
+                attempts = self.peer.command('debug.list',session=session)['attempts']; self.assertEqual(len(attempts),5)
                 records = []
                 with self.peer.capture_lock: packets = list(self.peer.captures)
                 for attempt in attempts:
@@ -788,8 +875,8 @@ class NativeIntegration(unittest.TestCase):
                 continuation = next(r for r in records if r['scenario']=='tool-result')
                 self.assertEqual(bool(continuation['semantic']['opaque']),policy=='pinned')
                 self.assertEqual(list(continuation['semantic']['results'].values()),['fixture file contents'])
-                self.assertEqual(sum(a['purpose']=='compaction' for a in attempts),1)
-                self.assertAlmostEqual(sum(a['gateway']['cost']['usd'] for a in attempts),0.0183)
+                self.assertEqual(sum(a['purpose']=='compaction' for a in attempts),2)
+                self.assertAlmostEqual(sum(a['gateway']['cost']['usd'] for a in attempts),0.0193)
                 journals = ''.join(path.read_text() for path in (self.root/'sessions').rglob('*.jsonl'))
                 self.assertIn('strict-original-opaque' if api=='openai-responses' else 'strict-original-signature',journals,'Portable replay must still retain original provider items on disk')
                 self.peer.command('session.close',session=session)
@@ -821,11 +908,11 @@ class NativeIntegration(unittest.TestCase):
         for api in ['openai-responses']:
             session='strict-errors-'+api; self.strict_open(api,session)
             self.submit(session,'fixture: error')
-            # Five production backoffs total 27 seconds; other scenarios keep
+            # Pi's three production backoffs total 14 seconds; other scenarios keep
             # their original short deadline. Every physical attempt is captured.
             failed=self.settled(session,timeout=40); self.assertEqual(failed['state'],'error')
-            self.assertIn('Failed after 6 attempts.',failed['preflightError'])
-            attempts=self.peer.command('debug.list',session=session)['attempts']; self.assertEqual(len(attempts),6)
+            self.assertIn('Failed after 4 attempts.',failed['preflightError'])
+            attempts=self.peer.command('debug.list',session=session)['attempts']; self.assertEqual(len(attempts),4)
             request_bodies=[]
             for attempt in attempts:
                 self.assertEqual(attempt['status'],429); self.assertEqual(attempt['gateway']['cost']['status'],'unreported')
@@ -833,7 +920,7 @@ class NativeIntegration(unittest.TestCase):
                 record=next(r for r in reversed(Fixture.requests) if r['body']==sent)
                 self.assertEqual(self.captured_body(session,attempt,'response'),record['response']); self.assertEqual(record['scenario'],'provider-error')
             self.assertEqual(len(set(request_bodies)),1,'Retries must preserve the submitted model context')
-            self.assertEqual(sum(r['body']==request_bodies[0] for r in Fixture.requests),6,'The gateway must receive exactly one initial request and five retries')
+            self.assertEqual(sum(r['body']==request_bodies[0] for r in Fixture.requests),4,'The gateway must receive exactly one initial request and pi\'s three retries')
             self.peer.command('session.close',session=session)
             session='strict-cancel-'+api; self.strict_open(api,session); self.submit(session,'fixture: cancel')
             deadline=time.monotonic()+5

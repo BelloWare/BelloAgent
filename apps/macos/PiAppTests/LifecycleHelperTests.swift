@@ -5,7 +5,12 @@ import AppKit
 
 /// Quit, relaunch and recovery driven through the packaged helper and the
 /// synthetic gateway (`fixtures/native/ui-gateway.py`), in a real window.
-final class LifecycleHelperTests: XCTestCase {
+///
+/// These stop, start and restart the helper against the app's own wall-clock
+/// deadlines (the handshake watchdog, the wait for a stopping helper), so a
+/// loaded machine can run one out: in ten parallel clones a restart was
+/// cancelled. They run in the serial lane (`scripts/test-lanes.py`).
+final class LifecycleHelperTests: XCTestCase, SerialTestLane {
     /// One project folder, one gateway and a model over a fresh state root.
     @MainActor final class Bench {
         let root: URL, folder: URL, workspace: WorkspaceRecord, profile: ProfileRecord

@@ -103,9 +103,12 @@ final class MessageDetailTests: XCTestCase {
         model.cancelEdit(sessionID: "chat")
         XCTAssertNil(view.editingMessageID); XCTAssertEqual(view.draft, "unsent draft"); XCTAssertNil(view.draftBeforeEdit)
         XCTAssertEqual(view.attachments, [originalAttachment]); XCTAssertEqual(view.skills, [originalSkill])
+        // A message's Details open the chat's Session Inspector at that message's request.
         model.showMessageDetail("chat", messageID: "u1")
-        XCTAssertTrue(model.showMessageDetail); XCTAssertEqual(model.messageDetailID, "u1"); XCTAssertEqual(model.messageDetailSessionID, "chat")
+        XCTAssertEqual(model.lastInspectorFocus, .message("u1"))
+        XCTAssertNotNil(SessionInspectorWindows.shared.controller(sessionID: "chat"), "The chat's Inspector window is open")
         model.shutdown()
+        XCTAssertNil(SessionInspectorWindows.shared.controller(sessionID: "chat"), "Shutting down closes the chat's Inspector")
     }
     @MainActor func testEditDraftRoundTripRestoresTargetAndOriginalComposer() throws {
         let view = SessionDisplay(id: "chat")

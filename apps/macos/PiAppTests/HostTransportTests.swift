@@ -1,7 +1,11 @@
 import XCTest
 @testable import PiApp
 
-final class HostTransportTests: XCTestCase {
+class HostTransportTestCase: XCTestCase {
+
+}
+
+final class HostTransportTests: HostTransportTestCase {
     func testCaptureAcknowledgmentDoesNotConsumeAnOrdinaryCommandSlot() async throws {
         let started = expectation(description: "Child started"), echoed = expectation(description: "Control plus 32 commands")
         echoed.expectedFulfillmentCount = 33
@@ -51,35 +55,6 @@ final class HostTransportTests: XCTestCase {
         await fulfillment(of: [replied], timeout: 2)
         transport.stop()
         await fulfillment(of: [exited], timeout: 6.5)
-    }
-
-    /// The app's ends of the helper's pipes used to be inherited by every
-    /// program the app started without closing descriptors itself: a helper
-    /// told to stop by closing its stdin then waited for SIGTERM 3.5 s later,
-    /// and such a program outliving the app kept the helper alive past quit.
-    func testStoppingEndsTheHelpersInputWhileAnotherProgramRuns() async throws {
-        let exited = expectation(description: "The helper saw its input end")
-        let transport = HostTransport { event in if case .exited = event { exited.fulfill() } }
-        transport.start(executable: URL(fileURLWithPath: "/bin/cat"), arguments: [],
-                        cwd: URL(fileURLWithPath: NSTemporaryDirectory()), environment: ["PATH": "/usr/bin:/bin"])
-        for _ in 0..<200 where transport.processIdentifier == nil { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertNotNil(transport.processIdentifier)
-
-        // Started the plain POSIX way, a program inherits every descriptor
-        // that is not marked close-on-exec.
-        var bystander: pid_t = 0
-        let argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sleep"), strdup("5"), nil]
-        let envp: [UnsafeMutablePointer<CChar>?] = [strdup("PATH=/usr/bin:/bin"), nil]
-        defer { argv.forEach { free($0) }; envp.forEach { free($0) } }
-        XCTAssertEqual(posix_spawn(&bystander, "/bin/sleep", nil, nil, argv, envp), 0)
-        defer { kill(bystander, SIGKILL); var status: Int32 = 0; waitpid(bystander, &status, 0) }
-
-        let started = ProcessInfo.processInfo.systemUptime
-        transport.stop()
-        await fulfillment(of: [exited], timeout: 2)
-        let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
-        print(String(format: "PERF helper stopped by closing its input in %.0f ms while another program ran", elapsed))
-        XCTAssertLessThan(elapsed, 1_000, "the helper sees its input end at once, not a SIGTERM 3.5 s later")
     }
 
     func testFailedSpawnProducesAnExitSoTheSupervisorCanReleaseOwnership() async {
@@ -164,6 +139,39 @@ final class HostTransportTests: XCTestCase {
         XCTAssertEqual(order.values, [1, 2], "Partial writes cannot interleave or reorder command frames")
         transport.stop()
         await fulfillment(of: [exited], timeout: 2)
+    }
+}
+
+/// Stopping ends the helper's input at once rather than after a signal a few
+/// seconds later: timed, so it runs in the serial lane (`scripts/test-lanes.py`).
+final class HostTransportTimingTests: HostTransportTestCase, SerialTestLane {
+    /// The app's ends of the helper's pipes used to be inherited by every
+    /// program the app started without closing descriptors itself: a helper
+    /// told to stop by closing its stdin then waited for SIGTERM 3.5 s later,
+    /// and such a program outliving the app kept the helper alive past quit.
+    func testStoppingEndsTheHelpersInputWhileAnotherProgramRuns() async throws {
+        let exited = expectation(description: "The helper saw its input end")
+        let transport = HostTransport { event in if case .exited = event { exited.fulfill() } }
+        transport.start(executable: URL(fileURLWithPath: "/bin/cat"), arguments: [],
+                        cwd: URL(fileURLWithPath: NSTemporaryDirectory()), environment: ["PATH": "/usr/bin:/bin"])
+        for _ in 0..<200 where transport.processIdentifier == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNotNil(transport.processIdentifier)
+
+        // Started the plain POSIX way, a program inherits every descriptor
+        // that is not marked close-on-exec.
+        var bystander: pid_t = 0
+        let argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sleep"), strdup("5"), nil]
+        let envp: [UnsafeMutablePointer<CChar>?] = [strdup("PATH=/usr/bin:/bin"), nil]
+        defer { argv.forEach { free($0) }; envp.forEach { free($0) } }
+        XCTAssertEqual(posix_spawn(&bystander, "/bin/sleep", nil, nil, argv, envp), 0)
+        defer { kill(bystander, SIGKILL); var status: Int32 = 0; waitpid(bystander, &status, 0) }
+
+        let started = ProcessInfo.processInfo.systemUptime
+        transport.stop()
+        await fulfillment(of: [exited], timeout: 2)
+        let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+        print(String(format: "PERF helper stopped by closing its input in %.0f ms while another program ran", elapsed))
+        XCTAssertLessThan(elapsed, 1_000, "the helper sees its input end at once, not a SIGTERM 3.5 s later")
     }
 }
 

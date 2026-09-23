@@ -22,6 +22,17 @@ final class CompactTurnReportTests: XCTestCase {
                     accounting: accounting(), requests: [], outcome: "completed")
     }
 
+    /// A run stopped at the chat's cost limit reads as a stop, on the turn
+    /// card and in the sidebar, never as a failure.
+    func testAStopAtTheCostLimitReadsAsAStopNotAFailure() {
+        var stopped = turn(); stopped.outcome = "failed"; stopped.errorCode = SessionDisplay.costLimitCode
+        XCTAssertEqual(TurnInfoPresentation.outcome(stopped), "Stopped · cost limit")
+        var failed = turn(); failed.outcome = "failed"; failed.errorCode = "provider_http"
+        XCTAssertEqual(TurnInfoPresentation.outcome(failed), "Failed")
+        XCTAssertEqual(PiSessionState.label("error", costLimited: true), "Stopped · cost limit")
+        XCTAssertEqual(PiSessionState.label("error"), "Failed")
+    }
+
     func testSharesPartitionTheirOwnParentWithoutAddingSubsetsAgain() throws {
         let a = accounting(), input = TurnTokenPartition(a, input: true), output = TurnTokenPartition(a, input: false)
         XCTAssertEqual(try XCTUnwrap(input.fraction), 0.5)
@@ -152,7 +163,10 @@ final class CompactTurnReportTests: XCTestCase {
             XCTAssertEqual(Double(text.dropFirst()), cost, "Displayed cost must preserve this gateway observation")
         }
         XCTAssertEqual(MetricFormat.detailedDuration(2.403), "2.403 ms")
-        XCTAssertEqual(MetricFormat.detailedDuration(0.03125), "0.03125 ms")
+        // Below a millisecond, three decimals; a quick call never reads as zero.
+        XCTAssertEqual(MetricFormat.detailedDuration(0.03125), "0.031 ms")
+        XCTAssertEqual(MetricFormat.detailedDuration(0.50433331728), "0.504 ms")
+        XCTAssertEqual(MetricFormat.detailedDuration(0.0004), "<0.001 ms")
         XCTAssertEqual(MetricFormat.detailedDuration(12_345), "12.345s")
         XCTAssertEqual(MetricFormat.detailedDuration(3_662_345), "1h 1m 2.345s")
         XCTAssertEqual(MetricFormat.detailedDuration(59_999.9), "1m 0s", "Rounding carries across the minute boundary")
