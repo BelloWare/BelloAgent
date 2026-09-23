@@ -121,6 +121,16 @@ extension NSScrollView {
               first.superview === document else { return nil }
         return first
     }
+    /// Holds the reader's line on a row the page has just put them at,
+    /// wherever on the screen it sits, instead of the row at the top of the
+    /// viewport: that row is usually one the reader was never shown, and its
+    /// own measurement would move the one they were.
+    func hold(_ held: NSView) {
+        catchUp()
+        guard !following, let scroll, held.enclosingScrollView === scroll else { return }
+        source = nil; surface = nil; row = held
+        rowDisplacement = held.convert(NSPoint.zero, to: scroll.contentView).y - scroll.contentView.bounds.minY
+    }
     func captureDocument() {
         catchUp()
         guard !following, !hasAnchor, let scroll, let document = scroll.documentView else { return }

@@ -35,6 +35,12 @@ final class UIScreenshotTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("codex"), withIntermediateDirectories: true)
         try Data("---\nname: release-checklist\ndescription: Walk through the release preflight before tagging\n---\nCheck signing, notarization and the appcast before publishing.\n".utf8).write(to: skill.appendingPathComponent("SKILL.md"))
         try Data("policy:\n  allow_implicit_invocation: false\n".utf8).write(to: skill.appendingPathComponent("agents/openai.yaml"))
+        // A second skill, in Codex's own folder; explicit only, so no other
+        // scene's instructions change for it.
+        let review = folder.appendingPathComponent("codex/skills/review-diff")
+        try FileManager.default.createDirectory(at: review.appendingPathComponent("agents"), withIntermediateDirectories: true)
+        try Data("---\nname: review-diff\ndescription: Review the pending diff for correctness, risky changes and missing tests\n---\nRead the diff before answering.\n".utf8).write(to: review.appendingPathComponent("SKILL.md"))
+        try Data("policy:\n  allow_implicit_invocation: false\n".utf8).write(to: review.appendingPathComponent("agents/openai.yaml"))
         try Data("Synthetic native screenshot instructions: fixture data only.\n".utf8).write(to: folder.appendingPathComponent("AGENTS.md"))
 
         var repository = URL(fileURLWithPath: #filePath)
@@ -132,6 +138,13 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        if testEnvironment("PI_APP_UI_GALLERY_SKILLS_ONLY") == "1" {
+            try await captureSkillScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         // The first turn ran the read tool: capture its grouped activity before more turns scroll it away.
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
@@ -212,6 +225,7 @@ final class UIScreenshotTests: XCTestCase {
                 try await captureSessionInfo(model: model, session: session, name: name, gallery: gallery)
                 try await captureStatsPopovers(model: model, session: session, window: window, name: name, gallery: gallery)
             }
+            try await captureSkillScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
             session.draft = "slow: walk through the retry budget one step at a time."
             model.send(sessionID: main.id)
             try await settle(2.0)
@@ -273,6 +287,7 @@ final class UIScreenshotTests: XCTestCase {
         }
         try await renderReviewScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                      mainID: main.id, secondID: second.id, workspaceID: workspace.id)
+        try await captureSkillScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
         let fresh = WorkspaceModel(stateRoot: folder.appendingPathComponent("onboarding-state"), vault: freshVault)
@@ -403,6 +418,92 @@ final class UIScreenshotTests: XCTestCase {
         XCTAssertNil(model.error, model.error ?? "")
     }
 
+    /// 17 · Skills rendered inline: two selected skills leading the
+    /// composer's text as tokens, the sent message's bubble leading with its
+    /// pills, a pill's hover card, and a pill's popover.
+    @MainActor private func captureSkillScenes(model: WorkspaceModel, session: SessionDisplay, window: NSWindow, gallery: URL,
+                                               appearances: [(String, NSAppearance.Name)]) async throws {
+        await model.select(session.id); try await settle(0.6)
+        // An earlier scene stops a run with a follow-up queued, which leaves the
+        // follow-up paused for the reader to decide on. Remove it as the reader
+        // would from the queue panel, so this scene's message is not refused
+        // behind it.
+        for item in QueuedMessage.from(session.queue) {
+            model.action("queue.remove", params: ["turnId": .string(item.id)], sessionID: session.id)
+        }
+        let cleared = Date().addingTimeInterval(20)
+        while Date() < cleared, !session.queue.isEmpty || session.hasWork { try await settle(0.3) }
+        await model.loadSkillCatalog(refresh: true, sessionID: session.id)
+        let catalog = session.skillCatalog.entries.map(\.skill)
+        let checklist = try XCTUnwrap(catalog.first { $0.name == "release-checklist" }, "The project skill was discovered: \(session.skillCatalog.notice)")
+        let review = try XCTUnwrap(catalog.first { $0.name == "review-diff" }, "The Codex skill was discovered")
+        session.draft = ""
+        XCTAssertTrue(model.addSkill(checklist, view: session)); XCTAssertTrue(model.addSkill(review, view: session))
+        let index = try XCTUnwrap(session.skills.firstIndex { $0.id == checklist.id })
+        session.skills[index].arguments = "focus on notarization"
+        session.draft = "Tag 0.1.86 once both pass, then write the release notes."
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("17-skills-composer-\(name).png"))
+        }
+        let sent = session.messages.count
+        model.send(sessionID: session.id)
+        try await waitIdle(session, model: model, minimumMessages: sent + 2)
+        let user = try XCTUnwrap(session.messages.last { $0.role == "user" })
+        XCTAssertEqual(user.skills?.map(\.name), ["release-checklist", "review-diff"], "The sent message carries its skills")
+        XCTAssertTrue(session.skills.isEmpty, "The send took the tokens with it")
+        // The fixture echoes what the model received — the skills' expansions
+        // ahead of the text — so the reply is long: bring the sent message's
+        // bubble into view, as a reader scrolling up to it would.
+        try await settle(0.6)
+        try scrollConversation(in: window, toRow: user.id)
+        try await settle(0.8)
+        func pills() -> [SkillPillButton] {
+            descendants(SkillPillButton.self, in: window.contentView ?? NSView()).filter { !($0 is ComposerSkillToken) }
+        }
+        XCTAssertEqual(pills().count, 2, "The sent message's bubble shows its two pills")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("17b-skills-message-\(name).png"))
+        }
+        let popovers = SkillPopovers.shared
+        popovers.card.delay = .milliseconds(20)
+        defer { popovers.card.delay = PiHoverCardPresenter.delay }
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.5)
+            let pill = try XCTUnwrap(pills().first, "The sent message shows its pills")
+            pill.setHovering(true)
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline, !popovers.card.isShown { try await settle(0.05) }
+            try await settle(0.4)
+            XCTAssertTrue(popovers.card.isShown, "The pill's card appeared")
+            try captureWithPopovers(window, to: gallery.appendingPathComponent("17c-skills-card-\(name).png"))
+            pill.setHovering(false)
+            pill.performClick(nil)
+            let opened = Date().addingTimeInterval(5)
+            while Date() < opened, popovers.popover.popover?.isShown != true { try await settle(0.05) }
+            XCTAssertTrue(popovers.popover.isShown, "The pill's popover opened")
+            try await settle(1.0)
+            try captureWithPopovers(window, to: gallery.appendingPathComponent("17d-skills-popover-\(name).png"))
+            popovers.close(); try await settle(0.4)
+        }
+    }
+
+    /// Scrolls the main conversation so a row stands near the top of the
+    /// viewport, announced the way AppKit announces a reader's scroll.
+    @MainActor private func scrollConversation(in window: NSWindow, toRow id: String) throws {
+        let scroll = try XCTUnwrap(descendants(TranscriptNativeScrollView.self, in: window.contentView ?? NSView()).first)
+        let row = try XCTUnwrap(descendants(TranscriptRowContainer.self, in: scroll).first { $0.itemID == id }, "The row \(id) is in the page")
+        let clip = scroll.contentView
+        let y = max(0, row.frame.minY - 24)
+        scroll.readerWillNavigate(upward: y < clip.bounds.minY)
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: y))
+        scroll.reflectScrolledClipView(clip)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+    }
+
     @MainActor private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
         (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants(type, in: $0) }
     }
@@ -462,7 +563,8 @@ final class UIScreenshotTests: XCTestCase {
         guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImageFromArray") else { throw XCTSkip("Window capture unavailable") }
         let create = unsafeBitCast(symbol, to: ArrayImage.self)
         let screen = NSScreen.screens.first?.frame ?? .zero
-        let popovers = NSApp.windows.filter { $0.isVisible && $0 != window && String(describing: type(of: $0)).contains("Popover") }
+        // A skill pill's hover card is a panel of its own, captured the same way.
+        let popovers = NSApp.windows.filter { $0.isVisible && $0 != window && (String(describing: type(of: $0)).contains("Popover") || $0 is PiHoverCardPanel) }
         var frame = window.frame
         for popover in popovers { frame = frame.union(popover.frame) }
         var ids = (popovers + [window]).map { UnsafeRawPointer(bitPattern: UInt($0.windowNumber)) }

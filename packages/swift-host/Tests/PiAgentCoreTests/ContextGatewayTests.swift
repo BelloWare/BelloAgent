@@ -55,9 +55,11 @@ final class ContextGatewayTests: XCTestCase {
         XCTAssertEqual(sent, try preparedBody.data(), "The retained JSON represents the actual deterministic wire request")
         let effective = try profile.overriding(model: "context-selected-model", thinkingLevel: "high",
             contextWindow: 64000, maxOutputTokens: 2048, modelOutputLimit: 32768)
-        var independentCounter = RequestContextCounter()
-        let independentlyCounted = try independentCounter.count(request: sentBody, profile: effective)
+        // With no reply yet, pi counts the draft alone: its UTF-16 characters over four.
+        let independentlyCounted = try RequestContextCounter().count(messages: [ChatMessage(role: "user", content: [textBlock(draft)])], profile: effective, request: sentBody)
         XCTAssertEqual(prepared["count"]["tokens"].int, independentlyCounted.tokens)
+        XCTAssertEqual(prepared["count"]["tokens"].int, (draft.utf16.count + 3) / 4)
+        XCTAssertEqual(prepared["count"]["method"].text, "pi-estimate")
         XCTAssertEqual(prepared["count"]["requestFingerprint"].text, independentlyCounted.requestFingerprint)
         let running = await session.snapshot(["includeMessages": false])
         XCTAssertEqual(running["context"]["tokens"], prepared["count"]["tokens"])
@@ -134,7 +136,7 @@ final class ContextGatewayTests: XCTestCase {
             "maxOutputTokens": 512, "modelOutputLimit": 2048]
         let prepared = try await session.prepareContext(params)
         XCTAssertEqual(prepared["count"]["fits"].flag, false)
-        XCTAssertGreaterThan(try XCTUnwrap(prepared["count"]["tokens"].int), 4000,
+        XCTAssertGreaterThan(try XCTUnwrap(prepared["count"]["requestTokens"].int), 4000,
             "Actual schema contents must replace the old fixed tool allowance")
         _ = try await session.submit(Submission(commandID: "blocked", turnID: "blocked", text: "Small question",
             model: "small-model", contextWindow: 4000, maxOutputTokens: 512, modelOutputLimit: 2048), steer: false)
@@ -144,6 +146,7 @@ final class ContextGatewayTests: XCTestCase {
         XCTAssertEqual(blocked["state"].text, "error")
         XCTAssertTrue(blocked["preflightError"].text?.contains("exceeds configured capacity") == true)
         XCTAssertEqual(blocked["context"]["tokens"], prepared["count"]["tokens"])
+        XCTAssertEqual(blocked["context"]["requestTokens"], prepared["count"]["requestTokens"])
         XCTAssertEqual(blocked["context"]["requestFingerprint"], prepared["count"]["requestFingerprint"])
         let attempts = try await traces.command("debug.list", session: "context-too-large", params: [:])["attempts"].list
         XCTAssertTrue(attempts.isEmpty)

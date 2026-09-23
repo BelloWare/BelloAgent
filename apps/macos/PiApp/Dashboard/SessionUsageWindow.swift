@@ -24,6 +24,10 @@ private struct SessionUsageWindowContent: View {
     private(set) var isClosed = false
     private var observations: Set<AnyCancellable> = []
     var onClose: (() -> Void)?
+    /// Session info opens where it was last left, at that size, rather than
+    /// centred at the default size every time. Test runs use no name, or one
+    /// of their own, so they neither read nor write the reader's frame.
+    static var frameAutosaveName: String? = ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : "SessionInfo"
 
     init(scope: SessionUsageScope, title: String, load: @escaping SessionUsageLoader,
          interval: Duration = .seconds(10)) {
@@ -44,7 +48,12 @@ private struct SessionUsageWindowContent: View {
         super.init(window: window)
         window.delegate = self
         updateTitle(title)
-        window.center()
+        if let name = Self.frameAutosaveName {
+            if !window.setFrameUsingName(name) { window.center() }
+            // A second window open at the same time cannot share the name:
+            // it opens just below and right of the first.
+            if !window.setFrameAutosaveName(name) { window.setFrameTopLeftPoint(NSPoint(x: window.frame.minX + 24, y: window.frame.maxY - 24)) }
+        } else { window.center() }
     }
 
     required init?(coder: NSCoder) { return nil }
@@ -100,6 +109,9 @@ private struct SessionUsageWindowContent: View {
     func windowWillClose(_ notification: Notification) {
         guard !isClosed else { return }
         isClosed = true
+        // The frame stays saved; the name is let go of so the next Session
+        // Info window, opened before this one is released, can take it.
+        if let window, !window.frameAutosaveName.isEmpty { window.saveFrame(usingName: window.frameAutosaveName); window.setFrameAutosaveName("") }
         usage.setVisible(false)
         observations.removeAll()
         DispatchQueue.main.async { [weak self] in self?.window?.contentView = nil }

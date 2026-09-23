@@ -129,7 +129,10 @@ extension WorkspaceModel {
     /// parent's context snapshot as a durable child session, and its capture
     /// preference. Called when a side with a question opens, and when a
     /// pending side sends its first message.
-    func publishPendingSide(_ info: SideRecord, view: SessionDisplay) async throws {
+    /// `draft` is what the kept side starts with on disk: the message being
+    /// sent, whose composer has already emptied (`send`), else what the
+    /// composer holds.
+    func publishPendingSide(_ info: SideRecord, view: SessionDisplay, draft: DraftRecord? = nil) async throws {
         guard let store else { throw StoreError.unavailable }
         guard let parent = record(info.parentID) else { throw HostError.failure("The parent chat is no longer available.") }
         let id = info.id, parentID = info.parentID
@@ -142,7 +145,7 @@ extension WorkspaceModel {
         saved.topicID = effectiveTopicID(for: parent)
         saved.path = root.appendingPathComponent("Workspaces/\(info.workspaceID)/Sessions/side_\(id).jsonl").path
         try await store.put(SideKeepIntent(chat: saved), kind: "side-keep", id: id)
-        try await store.put(DraftRecord(id: id, text: view.draft), kind: "draft", id: id)
+        try await store.put(draft ?? DraftRecord(id: id, text: view.draft), kind: "draft", id: id)
         let host = try await open(parent); host.isBusy = true
         sides[parentID]?.pending = false
         let result: [String: WireValue]
@@ -236,7 +239,7 @@ extension WorkspaceModel {
                 view.recovered = metadata?.recovered ?? []; view.uncertain = !view.recovered.isEmpty
                 view.draftReady = true
                 if self.focusedSessionID == id { view.composerFocusRequest += 1 }
-                let page = try await self.readConversationWindow(child, cursor: nil)
+                let page = try await self.readInitialWindow(child, holding: view.scrollAnchor)
                 guard current() else { return }
                 self.adoptInitialHistory(page, into: view)
                 if self.opened.contains(id) { self.refresh(id) }
@@ -367,8 +370,12 @@ extension WorkspaceModel {
                 let result = try await host.request("side.close", sessionID: id).object ?? [:]
                 try await registerKeptSide(id: id, path: result["path"]?.string)
             }
-            try await store.put(view.savedDraft, kind: "draft", id: id)
-            if let anchor = view.scrollAnchor { try await store.put(anchor, kind: "anchor", id: id) }
+            // A side whose saved draft never loaded holds nothing of the user's
+            // yet: writing its empty composer would erase the one on disk.
+            if view.selectionMetadataLoaded {
+                try await store.put(view.savedDraft, kind: "draft", id: id)
+                if let anchor = view.scrollAnchor { try await store.put(anchor, kind: "anchor", id: id) }
+            }
             view.presentation.cancel()
             sides.removeValue(forKey: info.parentID)
             if focusedSessionID == id { focusedSessionID = info.parentID }

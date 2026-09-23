@@ -20,6 +20,28 @@ struct HistoryPage: Sendable {
     var newer: ConversationCursor? = nil
     var partialTurnInput: String? = nil
     var taskRecords: [TaskPresentationRecord] = []
+    /// Work the journal's last state record left unfinished.
+    var retainedRun: RetainedRun? = nil
+    /// The notice is only that the last record was cut off mid-write: every
+    /// record before it is complete and on this page.
+    var incompleteTail = false
+}
+
+/// What a journal's last state record says was unfinished when its helper
+/// last stopped: a run still going (cut off by a quit or a crash), or
+/// follow-ups and steering waiting, paused, behind a stopped one. The helper
+/// restores exactly this, paused and with nothing replayed, the next time the
+/// chat is used; the app shows it before then.
+struct RetainedRun: Equatable, Sendable {
+    var active: Bool
+    var runStatus: String?
+    var queuePaused: Bool
+    /// The waiting submissions, in the shape the helper's queue rows have
+    /// (`turnId`, a bounded `text` preview, `kind` for steering).
+    var queue: [[String: WireValue]]
+    /// Tool calls in the conversation's context with no result: their outcome
+    /// is unknown when the run that issued them never finished.
+    var unansweredCalls: Set<String>
 }
 
 /// The journal identity used for a retained display, including replacements
@@ -51,15 +73,28 @@ actor HistoryReader {
         var presentationTarget: String?
         var taskTerminal: TaskPresentationRecord?
         struct Checkpoint: Decodable { var operationId: String?; var version: Int; var sourceIDs: [String]; var protectedIDs: [String]; var keptIDs: [String]; var dependencyIDs: [String]?; var summarySourceIDs: [String]? }
-        struct PendingItem: Decodable {}
+        struct PendingItem: Decodable { var turnID: String?; var text: String? }
         struct PendingWork: Decodable {
             var active: Bool?; var queue: [PendingItem]?; var steering: [PendingItem]?
-            var runStatus: String?; var errorMessage: String?
+            var runStatus: String?; var errorMessage: String?; var queuePaused: Bool?
             var exists: Bool { active == true || !(queue ?? []).isEmpty || !(steering ?? []).isEmpty }
             var failure: String? {
                 guard active != true, runStatus == "failed" else { return nil }
                 let detail = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 return detail.isEmpty ? "Run failed." : detail
+            }
+            func retained(unanswered: Set<String>) -> RetainedRun? {
+                guard exists else { return nil }
+                func row(_ item: PendingItem, steering: Bool) -> [String: WireValue]? {
+                    guard let id = item.turnID else { return nil }
+                    let text = item.text ?? "", kept = String(text.prefix(1024))
+                    var value: [String: WireValue] = ["turnId": .string(id), "text": .string(steering ? "[Steering] " + kept : kept), "textTruncated": .bool(kept.count < text.count)]
+                    if steering { value["kind"] = .string("steering") }
+                    return value
+                }
+                let rows = (steering ?? []).compactMap { row($0, steering: true) } + (queue ?? []).compactMap { row($0, steering: false) }
+                return RetainedRun(active: active == true, runStatus: runStatus, queuePaused: queuePaused == true || !rows.isEmpty || active == true,
+                                   queue: rows, unansweredCalls: active == true ? unanswered : [])
             }
         }
         struct MessageRole: Decodable {
@@ -121,7 +156,7 @@ actor HistoryReader {
     private struct Stamp: Equatable {
         var device: Int32; var inode: UInt64; var size: Int64; var modified: Int; var modifiedNS: Int; var changed: Int; var changedNS: Int
     }
-    private struct Index { var stamp: Stamp; var branch: HistoryOffsetIndex; var assistantCount: Int; var latestAssistantID: String?; var sessionID: String?; var automaticContextSafe: Bool; var failureMessage: String?; var taskRecords: [TaskPresentationRecord] }
+    private struct Index { var stamp: Stamp; var branch: HistoryOffsetIndex; var assistantCount: Int; var latestAssistantID: String?; var sessionID: String?; var automaticContextSafe: Bool; var failureMessage: String?; var taskRecords: [TaskPresentationRecord]; var retainedRun: RetainedRun? }
     private var indexes: [String: Index] = [:]
     // As many bounded offset indexes as the workspace keeps transcript pages, so
     // cycling between open chats does not re-index a large journal each time.
@@ -339,17 +374,17 @@ actor HistoryReader {
         if let cached = indexes[path], cached.stamp == identity { branch = cached.branch }
         else { branch = try HistoryOffsetIndex() }
         var notice: String?, assistantCount = 0, latestAssistantID: String?, failureMessage: String?
-        var taskRecords: [TaskPresentationRecord] = []
+        var taskRecords: [TaskPresentationRecord] = [], retainedRun: RetainedRun?, incompleteTail = false
         if let cached = indexes[path], cached.stamp == identity {
             assistantCount = cached.assistantCount; latestAssistantID = cached.latestAssistantID
-            failureMessage = cached.failureMessage
+            failureMessage = cached.failureMessage; retainedRun = cached.retainedRun
             taskRecords = cached.taskRecords
             if targetTurns != nil && cached.sessionID == nil { notice = "History has no valid session header. Its source was left untouched." }
         }
         else {
         indexes.removeValue(forKey: path)
         var pending = Data(), offset: UInt64 = 0, leaf: String?
-        var sessionID: String?, native = false, linear = true, pendingWork = false
+        var sessionID: String?, native = false, linear = true, pendingWork = false, lastWork: IndexRecord.PendingWork?
         var contextIDs: Set<String> = [], contextMessages: [String: (calls: [String], result: String?)] = [:]
         var orderedContext: [String] = [], roles: [String: String] = [:]
         var replayNodes: [String: ReplayNode] = [:], selectedTimeline: [String] = []
@@ -366,7 +401,7 @@ actor HistoryReader {
                     let value = try JSONDecoder().decode(IndexRecord.self, from: pending)
                     if value.type == "session", offset == 0, value.version == 3 { sessionID = value.id }
                     if value.customType == "pi-app.native.v1" { native = true }
-                    if let work = value.pendingWork { pendingWork = work.exists; failureMessage = work.failure }
+                    if let work = value.pendingWork { pendingWork = work.exists; failureMessage = work.failure; lastWork = work }
                     if let task = value.taskTerminal {
                         taskRecords.removeAll { $0.key == task.key }; taskRecords.append(task)
                         if taskRecords.count > 64 { taskRecords.removeFirst() }
@@ -459,7 +494,7 @@ actor HistoryReader {
                 progress?(branch.recordCount, offset, size); progressAt = ProcessInfo.processInfo.systemUptime
             }
         }
-        if !pending.isEmpty && notice == nil { notice = "Incomplete tail preserved. No repair was performed." }
+        if !pending.isEmpty && notice == nil { notice = "Incomplete tail preserved. No repair was performed."; incompleteTail = sessionID != nil }
         if targetTurns != nil && sessionID == nil && notice == nil { notice = "History has no valid session header. Its source was left untouched." }
         try branch.constructChain(leaf: leaf)
         // Native edits keep the append-only source, while the disk-backed
@@ -484,8 +519,9 @@ actor HistoryReader {
         guard try stamp(file) == identity else { throw StoreError.unreadableRecord }
         let activeCalls = Set(contextIDs.flatMap { contextMessages[$0]?.calls ?? [] })
         let activeResults = Set(contextIDs.compactMap { contextMessages[$0]?.result })
+        retainedRun = lastWork?.retained(unanswered: activeCalls.subtracting(activeResults))
         if notice == nil { indexes[path] = Index(stamp: identity, branch: branch, assistantCount: assistantCount, latestAssistantID: latestAssistantID,
-                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords) }
+                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords, retainedRun: retainedRun) }
         }
         recency.removeAll { $0 == path }; recency.append(path)
         while recency.count > Self.retainedIndexes { indexes.removeValue(forKey: recency.removeFirst()) }
@@ -572,6 +608,15 @@ actor HistoryReader {
         guard try stamp(file) == identity else { indexes.removeValue(forKey: path); throw StoreError.unreadableRecord }
         guard range.isEmpty || !messages.isEmpty else { throw HostError.failure("This history record exceeds the display envelope. Its retained source is unchanged.") }
         messages = TranscriptMessage.resolvingToolResults(messages, results: toolResults)
+        if let unanswered = retainedRun?.unansweredCalls, !unanswered.isEmpty {
+            // A call the stopped run issued and never answered did not
+            // finish: it reads "unknown", as the helper will record it, not "Ran".
+            for index in messages.indices where messages[index].tools?.contains(where: { unanswered.contains($0.id) && $0.state == "recorded" }) == true {
+                messages[index].tools = messages[index].tools?.map { tool in
+                    var card = tool; if unanswered.contains(tool.id) && tool.state == "recorded" { card.state = "unknown" }; return card
+                }
+            }
+        }
         return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: branch.count, notice: notice,
                            assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil,
                            failureMessage: notice == nil ? failureMessage : nil,
@@ -579,6 +624,7 @@ actor HistoryReader {
                            incarnation: incarnation, lineage: lineage,
                            older: start > 0 && !messages.isEmpty ? pageCursor(try branch.at(start).id) : nil,
                            newer: end < branch.count && !messages.isEmpty ? pageCursor(try branch.at(end - 1).id) : nil,
-                           partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil, taskRecords:taskRecords)
+                           partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil, taskRecords:taskRecords,
+                           retainedRun: notice == nil ? retainedRun : nil, incompleteTail: incompleteTail)
     }
 }

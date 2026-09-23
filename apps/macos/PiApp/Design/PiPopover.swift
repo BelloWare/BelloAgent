@@ -15,6 +15,8 @@ import SwiftUI
     @Published private(set) var isShown = false
     private(set) var popover: NSPopover?
     private weak var anchor: NSView?
+    /// The control the open popover points at.
+    var anchorView: NSView? { anchor }
 
     /// The arrow and a margin, kept clear between the popover and the edge of the screen.
     static let screenMargin: CGFloat = 34

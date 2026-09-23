@@ -34,17 +34,29 @@ extension AgentSession {
         // A running request keeps its frozen resource snapshot. Delivery of a
         // later submission already advances the revision when it applies changes.
         guard runTask == nil else { return }
-        replayInputsChanged(); contextBaseline=nil; event("context.inputs-changed")
+        replayInputsChanged(); event("context.inputs-changed")
     }
+    /// Pi's context usage for the snapshot: the count a request was sent with
+    /// while it runs, otherwise the stored context counted as pi counts it.
     public func contextInfo() -> JSON {
         if let count=currentContextCount { return count.json }
+        let profile=turnProfile, key="\(displayEpoch):\(contextMutation):\(context.count):\(context.last?.id ?? "")"
+        if let cached=contextInfoCache, cached.key == key, cached.profile == profile.raw { return cached.value }
+        if let count=try? contextCounter.count(messages:context,profile:profile,reserveTokens:compactionPolicy.settings(autoCompaction:autoCompaction,contextWindow:profile.contextWindow).reserveTokens) {
+            contextInfoCache=(key,profile.raw,count.json); return count.json
+        }
         return ["tokens":.null,"contextWindow":JSON(turnProfile.contextWindow),"source":"Prepared request calculation pending",
                 "state":"pending","estimated":true,"outputReserve":JSON(turnProfile.maxOutput),"outputBudget":JSON(turnProfile.maxOutput),
                 "outputCap":turnProfile.wireOutputLimit.map { JSON($0) } ?? .null]
     }
+    var compactionSettings: PiContext.Settings { compactionPolicy.settings(autoCompaction:autoCompaction,contextWindow:turnProfile.contextWindow) }
+    /// The count for a turn request built from `messages`.
+    func countContext(_ messages: [ChatMessage], request: JSON) throws -> RequestContextCount {
+        try contextCounter.count(messages:messages,profile:turnProfile,request:request,reserveTokens:compactionSettings.reserveTokens)
+    }
     public func inspectContext() async -> JSON {
         let latest=await traces.latest(id)
-        return ["context":contextInfo(),"contextSource":"Native estimate; configured capacity","profile":profile.publicValue,"headerNames":.array(profile.raw["headers"].map.keys.sorted().map { JSON($0) }),"effectiveThinkingLevel":turnProfile.raw["thinkingLevel"],"effectiveModel":JSON(turnProfile.model),"outputReserve":JSON(turnProfile.maxOutput),"run":turnMetrics(),"captureMode":JSON(await traces.mode(id)),"latestAttemptId":latest["attemptId"],"latestUsage":latest["usage"],"latestMetrics":latest["metrics"],"cumulative":cumulativeUsage.json,"provenance":parentInfo,"liveTokenRate":.null,"resources":["appliedRevision":appliedRevision.map { JSON($0) } ?? .null]]
+        return ["context":contextInfo(),"contextSource":JSON(RequestContextCount.usageSource+"; configured capacity"),"profile":profile.publicValue,"headerNames":.array(profile.raw["headers"].map.keys.sorted().map { JSON($0) }),"effectiveThinkingLevel":turnProfile.raw["thinkingLevel"],"effectiveModel":JSON(turnProfile.model),"outputReserve":JSON(turnProfile.maxOutput),"run":turnMetrics(),"captureMode":JSON(await traces.mode(id)),"latestAttemptId":latest["attemptId"],"latestUsage":latest["usage"],"latestMetrics":latest["metrics"],"cumulative":cumulativeUsage.json,"provenance":parentInfo,"liveTokenRate":.null,"resources":["appliedRevision":appliedRevision.map { JSON($0) } ?? .null]]
     }
     /// Builds the same provider body as dispatch without appending a message,
     /// starting a run, executing tools, compacting, or granting skill selection.
@@ -84,7 +96,8 @@ extension AgentSession {
               definitions == finalDefinitions, !closed else { throw AgentError("context_changed", "The conversation changed. Refresh the context preview.") }
         let instructions = Self.requestInstructions(snapshot.prompt,selectionIDs:selectionIDs)
         var body = try ProviderClient.requestBody(profile:effective,messages:messages,instructions:instructions,tools:definitions,sessionID:id)
-        let count = try contextCounter.count(request:body,profile:effective,baseline:contextBaseline)
+        let count = try contextCounter.count(messages:messages,profile:effective,request:body,
+                                             reserveTokens:compactionPolicy.settings(autoCompaction:autoCompaction,contextWindow:effective.contextWindow).reserveTokens)
         // Dispatch clips a catalog ceiling to the estimated remaining room.
         // Show that same provider-built request in the inspector.
         body = try ProviderClient.requestBody(profile:effective.dispatching(count),messages:messages,instructions:instructions,tools:definitions,sessionID:id)
@@ -98,7 +111,7 @@ extension AgentSession {
             "draftIncluded":JSON(includedDraft), "draftDeferred":JSON(active && (!draft.isEmpty || !params["skills"].list.isEmpty || !params["attachments"].list.isEmpty)),
             "queueCount":JSON(queue.count + steering.count), "contextMessages":JSON(context.filter(\.replayEligible).count),
             "instructionRevision":JSON(snapshot.revision), "contextWindow":JSON(effective.contextWindow), "outputReserve":JSON(effective.maxOutput),
-            "estimatedTokens":JSON(count.tokens), "count":count.json,
+            "estimatedTokens":count.tokens.map { JSON($0) } ?? .null, "count":count.json,
             "credentialsRedacted":JSON(safe != body), "dispatched":false]
         let prepared = try ContextPreview(body:safe,metadata:metadata,sources:snapshot.sources.map(credentials.metadata))
         preparedContext = prepared

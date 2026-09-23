@@ -25,7 +25,7 @@ struct ConversationPane: View {
     private var projectAvailable: Bool { model.workspace(for: chat.workspaceID) != nil }
     /// A chat with nothing in it yet shows what it is connected to and where to start.
     private var showsStarter: Bool {
-        session.historyState == .empty && session.messages.isEmpty && !session.busy && !session.loading && session.failureMessage == nil && session.sendFailure == nil
+        session.historyState == .empty && session.messages.isEmpty && session.sendingRows.isEmpty && !session.busy && !session.loading && session.failureMessage == nil && session.sendFailure == nil
             && !chat.imported && !chat.isBackgroundTask && projectAvailable && (side == nil || side?.pending == true)
     }
     var body: some View {
@@ -47,6 +47,14 @@ struct ConversationPane: View {
                                                             quoteReply: quoteReplyAction,
                                                             turnRequestSource: { [weak model] in
                                                                 model.map { TurnRequestSource.session($0, sessionID: session.id) }
+                                                            },
+                                                            skillPressed: { [weak model, weak session] messageID, use, anchor in
+                                                                guard let model, let session else { return }
+                                                                SkillPopovers.shared.pressSent(use: use, messageID: messageID, anchor: anchor, model: model, session: session)
+                                                            },
+                                                            skillHovered: { [weak session] _, use, anchor, inside in
+                                                                guard let session else { return }
+                                                                SkillPopovers.shared.hoverSent(inside, use: use, anchor: anchor, session: session)
                                                             }),
                                  onAnchorChanged: { anchor in session.scrollAnchor = anchor; model.anchorChanged(session) },
                                  onReadReply: { sessionID, messageID in model.acknowledgeVisibleReply(sessionID: sessionID, messageID: messageID) },
@@ -71,7 +79,8 @@ struct ConversationPane: View {
                 }
                 .overlay {
                     ZStack {
-                        if session.historyState.loading || session.loading && session.messages.isEmpty {
+                        // A first message being sent is already on the page: it is not covered while the helper starts.
+                        if session.historyState.loading || session.loading && session.messages.isEmpty && session.sendingRows.isEmpty {
                             Color.piContent
                             VStack(spacing: PiSpacing.md) {
                                 LoadingMark()
@@ -91,12 +100,24 @@ struct ConversationPane: View {
             if model.terminalVisible, side == nil, let workspace = model.workspace(for: chat.workspaceID), !workspace.isScratch {
                 TerminalPanel(model: model, workspace: workspace).transition(PiMotion.arrival(from: .bottom))
             }
+            if let missing = model.missingProjectFolders[chat.workspaceID] {
+                HStack(spacing: PiSpacing.sm) {
+                    Image(systemName: "folder.badge.questionmark").foregroundStyle(Color.piWarning)
+                    Text("Project folder not found · \(missing)").font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.middle).help(missing)
+                    Spacer()
+                    Button("Locate Folder…") { Task { await model.locateMissingFolder(chat.workspaceID) } }.buttonStyle(.piSecondaryCompact)
+                        .accessibilityIdentifier("locateProjectFolder")
+                }.padding(.horizontal, PiSpacing.md).padding(.top, PiSpacing.sm)
+            }
             if !projectAvailable {
                 HStack(spacing: PiSpacing.sm) {
                     Image(systemName: "folder.badge.questionmark").foregroundStyle(Color.piInkSecondary)
                     Text("Project unavailable · Retained history is read-only").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
                     Spacer()
-                    Button("Configure Projects…") { model.showWorkspaceManager = true }.buttonStyle(.piSecondaryCompact)
+                    // Settings that could not be read (a locked Keychain) are
+                    // read again; a project that was really removed is set up.
+                    if !model.configurationLoaded { Button("Retry") { model.retryConfiguration() }.buttonStyle(.piSecondaryCompact) }
+                    else { Button("Configure Projects…") { model.showWorkspaceManager = true }.buttonStyle(.piSecondaryCompact) }
                 }.padding(PiSpacing.md)
             } else if chat.isBackgroundTask {
                 HStack(spacing: PiSpacing.sm) {
@@ -110,7 +131,7 @@ struct ConversationPane: View {
                         Button("Open source chat") { Task { await model.select(source) } }.buttonStyle(.piSecondaryCompact)
                     }
                 }.padding(PiSpacing.md)
-            } else if chat.isArchived { archivedFooter } else if chat.imported { importedFooter } else { ComposerInput(model: model, session: session, paneWidth: paneWidth) }
+            } else if chat.isArchived { archivedFooter } else if session.damagedTail { damagedFooter } else if chat.imported { importedFooter } else { ComposerInput(model: model, session: session, paneWidth: paneWidth) }
             // A side conversation repeats the whole status bar of the chat it
             // was opened from. In half a window that is two of everything; it
             // keeps the two figures that are its own.
@@ -223,6 +244,22 @@ struct ConversationPane: View {
             .padding(.horizontal, PiSpacing.lg).padding(.bottom, PiSpacing.sm)
     }
 
+    /// The chat's last record was cut off mid-write (a power loss, a full
+    /// disk). Its file cannot be continued; a recovered copy can.
+    private var damagedFooter: some View {
+        HStack(spacing: PiSpacing.sm) {
+            Image(systemName: "exclamationmark.triangle").foregroundStyle(Color.piWarning)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Last record incomplete · Read-only").font(PiFont.heading)
+                Text("Recover Copy makes a new chat from every complete record. This chat's file stays as it is.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+            }
+            Spacer()
+            Button("Recover Copy") { model.recoverCopy(chat.id) }.buttonStyle(.piSecondaryCompact)
+                .accessibilityIdentifier("recoverDamagedChat")
+        }
+        .padding(PiSpacing.md)
+        .accessibilityElement(children: .contain).accessibilityLabel("Chat with an incomplete last record")
+    }
     /// An archived chat is read-only until it is restored; nothing can run in it.
     private var archivedFooter: some View {
         HStack(spacing: PiSpacing.sm) {
@@ -244,11 +281,10 @@ struct ConversationPane: View {
                 Image(systemName: "doc.text").foregroundStyle(Color.piInkSecondary)
                 Text("Imported original · Read-only").font(PiFont.heading)
             }
-            Text("Continue creates a separate managed copy; the imported file stays untouched.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+            Text("A portable context draft starts a separate chat from its text; the imported file stays untouched.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
             HStack(spacing: PiSpacing.sm) {
                 PiDropdown(selection: $model.profileChoice, items: [("", "Choose Responses connection")] + model.requestProfiles.map { ($0.id, $0.name) }, placeholder: "Choose Responses connection", icon: "antenna.radiowaves.left.and.right")
-                Button("Continue as Separate Chat") { model.continueCopy() }.buttonStyle(.piPrimary)
-                PiMenuButton(title: "Recovery / Handoff") { Button("Portable Context Draft…", action: model.portableHandoff); Button("Recover Incomplete Tail…") { model.continueCopy(recoverTail: true) } }
+                Button("Portable Context Draft…", action: model.portableHandoff).buttonStyle(.piPrimary)
                 Spacer()
             }
         }

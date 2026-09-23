@@ -75,7 +75,9 @@ final class TurnCapacityTests: XCTestCase {
 
     func testSmallerModelPreflightAndCompactionUseItsOwnCapacity() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let client = ScriptClient([answer("old answer"), answer("short summary"), answer("new answer")])
+        // The first reply reports what its 11,000-character input really cost.
+        var first = answer("old answer"); first.usage = ["input": 4_000, "inputIncludingCache": 4_000, "output": 5]
+        let client = ScriptClient([first, answer("short summary"), answer("new answer")])
         let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore())
         _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 11000)), steer: false)
         try await eventually { !(await session.isRunning) }
@@ -85,7 +87,7 @@ final class TurnCapacityTests: XCTestCase {
         try await eventually { !(await session.isRunning) }
         let purposes = await client.purposes, profiles = await client.profiles, snapshot = await session.snapshot()
         XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
-        XCTAssertEqual(purposes, ["turn", "compaction", "turn"], "A previous model's small usage count cannot bypass the selected model's context check")
+        XCTAssertEqual(purposes, ["turn", "compaction", "turn"], "The previous reply's reported tokens are measured against the selected model's smaller window")
         XCTAssertEqual(profiles.map(\.contextWindow), [100000, 5000, 5000])
         XCTAssertEqual(profiles.map(\.maxOutput), [4096, 1000, 1000])
         XCTAssertEqual(profiles.map(\.model), ["fixture-model", "small-model", "small-model"])
@@ -94,7 +96,8 @@ final class TurnCapacityTests: XCTestCase {
 
     func testCompactionBoundsOversizedSourceBeforeDispatchToSmallerModel() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let client = ScriptClient([answer("old answer"), answer("Bounded summary of previous work"), answer("continued")])
+        var first = answer("old answer"); first.usage = ["input": 4_600, "inputIncludingCache": 4_600, "output": 5]
+        let client = ScriptClient([first, answer("Bounded summary of previous work"), answer("continued")])
         let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore())
         _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 18000)), steer: false)
         try await eventually { !(await session.isRunning) }
@@ -105,8 +108,7 @@ final class TurnCapacityTests: XCTestCase {
         XCTAssertEqual(snapshot["state"].text, "idle",snapshot["preflightError"].encoded())
         let requests=await client.requests, profiles=await client.profiles
         let summaryBody=try ProviderClient.requestBody(profile:profiles[1],messages:requests[1],instructions:"",tools:[],sessionID:"compact")
-        var counter=RequestContextCounter()
-        XCTAssertTrue(try counter.count(request:summaryBody,profile:profiles[1]).fits)
+        XCTAssertTrue(try RequestContextCounter().count(messages:requests[1],profile:profiles[1],request:summaryBody,reportedUsage:false).fits)
         XCTAssertTrue(requests[1][0].text.contains("EXCERPT"),"Oversized retained source is explicitly excerpted and recallable")
         await session.close()
     }

@@ -57,14 +57,64 @@ import Combine
     private var transcriptBatchDepth = 0
     func beginTranscriptBatch() { transcriptBatchDepth += 1 }
     func endTranscriptBatch() { transcriptBatchDepth -= 1; if transcriptBatchDepth == 0 { publishTranscript() } }
-    var messages: [TranscriptMessage] = [] { didSet { projectionRevision = nil; publishTranscript() } }
-    /// What the conversation page shows: the messages, then a retry notice
-    /// while the helper retries a failed request, then the run failure or the
-    /// last send failure where the conversation stopped. Errors live in the
-    /// flow of the chat, not in a strip pinned above it.
+    var messages: [TranscriptMessage] = [] { didSet { projectionRevision = nil; adoptDeliveredSending(); publishTranscript() } }
+    /// Messages this chat has sent that the helper has not shown yet. Each is
+    /// drawn on Return, at the foot of the conversation, and the helper's own
+    /// row for it — the same id, the submission's `clientTurnId` — takes its
+    /// place when a snapshot brings it: the same row of the page, in the same
+    /// place, never a second copy. Held in memory only; the durable record of
+    /// a submission is its `CommandIntent`.
+    @Published private(set) var sendingRows: [TranscriptMessage] = []
+    func showSending(_ row: TranscriptMessage) {
+        guard !sendingRows.contains(where: { $0.id == row.id }), !messages.contains(where: { $0.id == row.id }) else { return }
+        sendingRows.append(row); publishTranscript()
+    }
+    func dropSending(_ id: String) {
+        guard let index = sendingRows.firstIndex(where: { $0.id == id }) else { return }
+        sendingRows.remove(at: index); publishTranscript()
+    }
+    func dropAllSending() {
+        guard !sendingRows.isEmpty else { return }
+        sendingRows = []; publishTranscript()
+    }
+    func isSending(_ turnID: String?) -> Bool { turnID.map { id in sendingRows.contains { $0.id == id } } ?? false }
+    /// A sent message whose row the helper has now shown stops being drawn
+    /// by the app: from here on the helper's row is the message.
+    private func adoptDeliveredSending() {
+        guard !sendingRows.isEmpty else { return }
+        let shown = sendingRows.filter { row in messages.reversed().contains { $0.id == row.id } }
+        if !shown.isEmpty { sendingRows.removeAll { row in shown.contains { $0.id == row.id } } }
+    }
+    /// Sent messages the helper has taken somewhere other than the
+    /// conversation: a delivery it refused or a removal (the receipts), or a
+    /// paused queue that holds it once nothing is running any more. The queue
+    /// panel shows those; the transcript stops drawing them.
+    @discardableResult func settleSending(receipts: [[String: WireValue]], queued: Set<String>) -> Bool {
+        guard !sendingRows.isEmpty else { return false }
+        let settled = sendingRows.filter { row in
+            let receipt = receipts.last { $0["turnId"]?.string == row.id }?["state"]?.string ?? ""
+            return ["failed", "cancelled", "removed"].contains(receipt) || (!loading && !busy && queued.contains(row.id))
+        }
+        guard !settled.isEmpty else { return false }
+        sendingRows.removeAll { row in settled.contains { $0.id == row.id } }
+        publishTranscript()
+        return true
+    }
+    /// The helper's queue as the panel shows it: a message drawn on Return
+    /// shows once, in the transcript, not also in the panel while the helper
+    /// picks it up.
+    func panelQueue(_ helperQueue: [[String: WireValue]]) -> [[String: WireValue]] {
+        sendingRows.isEmpty ? helperQueue : helperQueue.filter { !isSending($0["turnId"]?.string) }
+    }
+    /// What the conversation page shows: the messages, then the messages sent
+    /// that the helper has not shown yet, then a retry notice while the helper
+    /// retries a failed request, then the run failure or the last send failure
+    /// where the conversation stopped. Errors live in the flow of the chat,
+    /// not in a strip pinned above it.
     var presentedMessages: [TranscriptMessage] {
         if historyState == .loading { return [] }
         var rows = messages
+        for row in sendingRows where !messages.reversed().contains(where: { $0.id == row.id }) { rows.append(row) }
         if let retryNotice { rows.append(TranscriptMessage(id: "notice:retry:" + id, role: "system", text: retryNotice, kind: "notice")) }
         if let failureMessage {
             rows.append(TranscriptMessage(id: "failure:run:" + id, role: "system", text: failureMessage, kind: "failure",
@@ -124,6 +174,9 @@ import Combine
     @Published var composerFocusRequest = 0
     @Published var failureMessage: String? { didSet { if failureMessage != oldValue { publishTranscript() } } }
     @Published var queuePaused = false { didSet { if queuePaused != oldValue { publishTranscript() } } }
+    /// The chat's journal ends in a record cut off mid-write: its complete
+    /// records are shown read-only and Recover Copy is offered instead of the composer.
+    @Published var damagedTail = false
     var canResumeQueue: Bool { !busy && (!queue.isEmpty || queuePaused || ["paused", "interrupted"].contains(state)) }
     func observeRunState(_ snapshot: [String: WireValue]) {
         let rawState = snapshot["state"]?.string ?? "idle", run = snapshot["runStatus"]?.string ?? rawState
@@ -215,6 +268,9 @@ import Combine
     /// not to the panel: the queue changes underneath it while a run delivers,
     /// and the panel has to be sized for the taller row it opens.
     @Published var queueEditingID: String?
+    /// What was typed into that row, kept with the chat: the panel is rebuilt
+    /// for each chat, and came back showing the original message.
+    var queueEditText: (id: String, text: String)?
     var queueCount = 0 { didSet { if queueCount != oldValue { activityChanges.send() } } }
     @Published var notice = ""
     @Published var before: String?
@@ -309,6 +365,9 @@ import Combine
     @Published var editNotice = ""
     var editSourceTimeline: String?
     var editSourceTextDigest: String?
+    /// The branch this reader's edit is making (`sendEdit`), until the
+    /// snapshot that first carries it is adopted (`adoptOwnBranch`).
+    var pendingBranch: PendingBranch?
     var savedDraft: DraftRecord {
         let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills, sourceTimeline: editSourceTimeline, sourceTextDigest: editSourceTextDigest, inputReviewRequired: editInputReviewRequired) }
         return DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, edit: edit)

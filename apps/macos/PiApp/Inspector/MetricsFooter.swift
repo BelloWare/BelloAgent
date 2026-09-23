@@ -52,7 +52,7 @@ struct MetricsFooter: View {
         }
         .task(id: model.automaticContextActivation(session)) { [weak model, id = session.id] in model?.scheduleAutomaticContext(id) }
         .onDisappear { [weak model, id = session.id] in model?.cancelAutomaticContext(id) }
-        .help(SettledThroughput.explanation + " The context ring uses the helper's matching request count; inspect it for its method, model and uncertainty.")
+        .help(SettledThroughput.explanation + " " + ContextMeterPresentation.methodExplanation)
     }
 
     /// The figures a side conversation owns, and — when there is one — the one
@@ -213,6 +213,8 @@ func workDuration(_ milliseconds: Double) -> String {
 /// An unloaded conversation has not been calculated yet, rather than having
 /// unknowable context. Both the ring and inspector use these validated counts.
 struct ContextMeterPresentation {
+    /// How the helper counts context, as pi does, in plain words.
+    static let methodExplanation = "The context ring counts the last reply's reported tokens, plus about 4 characters per token for the messages since. After a compaction it waits for the next reply."
     let context: [String: WireValue]
     var capacity: Double? = nil
     private var counts: (tokens: Double, capacity: Double)? {
@@ -228,6 +230,7 @@ struct ContextMeterPresentation {
         case "gateway-reported": return "LiteLLM reported"
         case "provider-count": return "Provider count"
         case "tokenizer": return "Gateway tokenizer"
+        case "pi-estimate": return "Last reply + ~4 characters per token"
         case "usage-baseline": return "Usage baseline"
         case "heuristic": return "Request heuristic"
         default: return "Count method unavailable"
@@ -284,7 +287,9 @@ struct ContextMeterPresentation {
         // its figure, so the detail still says by how much.
         let ratio = counts.tokens / counts.capacity
         let percent = ratio > 1 ? String(format: "%.1f", ratio * 100) : MetricFormat.occupancyPercent(ratio, decimals: 1) ?? "—"
-        return fullLabel + " configured · \(percent)% · \(methodLabel) · \(source)" + scope + preparation + warning
+        // Pi's source already says how it was counted, in plain words.
+        let method = context["method"]?.string == "pi-estimate" ? "" : " · " + methodLabel
+        return fullLabel + " configured · \(percent)%\(method) · \(source)" + scope + preparation + warning
     }
     /// Each unit starts where the one below would round up to a thousand of
     /// itself: 999,600 tokens is "1M", never "1000k".

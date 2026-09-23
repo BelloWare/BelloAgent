@@ -150,6 +150,20 @@ final class TranscriptNativeScrollView: NSScrollView {
         if frame.size != newSize { (documentView as? TranscriptNativeDocument)?.viewportWillResize() }
         super.setFrameSize(newSize)
     }
+    /// A page following its newest row stays on it when the viewport changes
+    /// height — the live bar's slot opening under it as a run starts, the
+    /// composer or the queue panel growing — in the same layout pass. The
+    /// page's own landing comes a run-loop turn later, and the frame drawn in
+    /// between showed the newest row pushed out of sight under the bar.
+    override func tile() {
+        let height = contentView.bounds.height
+        super.tile()
+        let clip = contentView
+        guard abs(clip.bounds.height - height) > 0.5, let document = documentView as? TranscriptNativeDocument,
+              document.pinsNewestRow else { return }
+        let end = max(0, document.frame.height - clip.bounds.height)
+        if abs(clip.bounds.origin.y - end) > 0.5 { transcriptReading.setOrigin(NSPoint(x: clip.bounds.origin.x, y: end)) }
+    }
     // AppKit sends these to the whole hierarchy of a window or split view the
     // reader is dragging. The document measures less while the drag is running
     // and catches up the moment it stops.
@@ -174,7 +188,9 @@ final class TranscriptNativeScrollView: NSScrollView {
         copyMessage: { [weak self] in self?.current.copyMessage($0) },
         stop: { [weak self] in self?.current.stop() },
         retry: { [weak self] in self?.current.retry() },
-        turnRequestSource: { [weak self] in self?.current.turnRequestSource?() }
+        turnRequestSource: { [weak self] in self?.current.turnRequestSource?() },
+        skillPressed: { [weak self] in self?.current.skillPressed?($0, $1, $2) },
+        skillHovered: { [weak self] in self?.current.skillHovered?($0, $1, $2, $3) }
     )
 }
 
@@ -301,6 +317,9 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// Whether the page is following the newest row, for the scroll view
     /// deciding whether a content-inset change should move the reader.
     var pageFollowsBottom: Bool { page?.followsBottom ?? true }
+    /// Whether the page is on its newest row and placing nothing else, so a
+    /// viewport that changes height keeps it there (`TranscriptNativeScrollView.tile`).
+    var pinsNewestRow: Bool { page?.pinsNewestRow ?? false }
     func readerWillNavigate(upward: Bool) { page?.readerWillNavigate(upward: upward) }
     /// Which chat's rows the document currently holds, which lags the page's
     /// own binding by one SwiftUI update.

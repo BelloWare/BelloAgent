@@ -90,6 +90,8 @@ extension AgentSession {
             try Task.checkCancellation(); state="running"; runStatus="running"; try persistState(active:true); event("state")
             if compactOnly { try await compactContext();if let activeSubmission { commandState(activeSubmission,"completed") } }
             else {
+                // Pi checks a new prompt against the context before the prompt joins it.
+                let priorContext=context
                 if steering.isEmpty, !retrying { _ = try await startFollowUp() }
                 let retryFirstRequest=retrying
                 retrying=false
@@ -108,20 +110,23 @@ extension AgentSession {
                     var definitions=await sessionDefinitions()
                     var instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
                     var request=try ProviderClient.requestBody(profile:turnProfile,messages:context,instructions:instructions,tools:definitions,sessionID:id)
-                    var count=try contextCounter.count(request:request,profile:turnProfile,baseline:contextBaseline)
+                    var count=try countContext(context,request:request)
                     currentContextCount=count
-                    // The output budget is a reserve, not a rule: when the estimate says the
-                    // reply may not fit beside the input, older turns are folded first, but a
-                    // request whose input fits the window is always sent, with its cap clipped
-                    // to the room that is left. Only input that cannot fit at all stops a turn.
-                    if !count.fits, autoCompaction, canCompact {
+                    // Pi 0.85.1 checks the threshold before a new prompt joins the context
+                    // (Case 3 of _checkCompaction, on the reply before it) and before each
+                    // later request of the run (_compactBeforeNextAssistantResponse), where
+                    // the context is unknown after a compaction until a reply reports usage.
+                    // A retried request is not checked again. A request whose input fits the
+                    // window is always sent, with its cap clipped to the room that is left.
+                    let thresholdTokens=resumingFailedRequest ? nil : rounds == 1 ? PiContext.promptThresholdTokens(priorContext) : count.tokens
+                    if let thresholdTokens, PiContext.shouldCompact(thresholdTokens,contextWindow:turnProfile.contextWindow,settings:compactionSettings), canCompact {
                         try await compactContext(reason:"threshold")
                         if !drained && !resumingFailedRequest { _ = try await drainSteering() }
                         resourceSnapshot=appliedSnapshot ?? resourceSnapshot
                         definitions=await sessionDefinitions()
                         instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
                         request=try ProviderClient.requestBody(profile:turnProfile,messages:context,instructions:instructions,tools:definitions,sessionID:id)
-                        count=try contextCounter.count(request:request,profile:turnProfile,baseline:contextBaseline); currentContextCount=count
+                        count=try countContext(context,request:request); currentContextCount=count
                         guard count.inputFits else { throw AgentError("context_limit", "Current turn remains too large after compaction; use a new chat or smaller input") }
                     }
                     guard count.inputFits else { throw AgentError("context_limit", "Estimated request input plus the safety margin exceeds configured capacity; use a new chat or smaller input") }
@@ -159,14 +164,14 @@ extension AgentSession {
                                 try append(partial)
                             }
                             partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); modelActive=false
-                            let recovery: JSON=["logicalRequestId":JSON(operationID),"consumed":true,"failedAttemptId":error.attemptID.map { JSON($0) } ?? .null,"failedFingerprint":JSON(count.requestFingerprint),"failure":JSON(error.failure!.rawValue)]
+                            let recovery: JSON=["logicalRequestId":JSON(operationID),"consumed":true,"failedAttemptId":error.attemptID.map { JSON($0) } ?? .null,"failedFingerprint":count.requestFingerprint.map { JSON($0) } ?? .null,"failure":JSON(error.failure!.rawValue)]
                             try journal?.append(["type":"custom","customType":"pi-app.context-recovery.v1","data":recovery],flush:true)
                             contextRecovery=recovery; recovered=true
                             try await compactContext(reason:"context-rejection")
                             try Task.checkCancellation()
                             // Pending steering keeps its normal next-boundary admission.
                             request=try ProviderClient.requestBody(profile:turnProfile,messages:context,instructions:instructions,tools:definitions,sessionID:id)
-                            count=try contextCounter.count(request:request,profile:turnProfile); currentContextCount=count
+                            count=try countContext(context,request:request); currentContextCount=count
                             guard count.inputFits else { throw AgentError("context_limit","Context recovery could not fit this request. Your conversation and tool results are retained.") }
                         }
                     }
@@ -188,8 +193,10 @@ extension AgentSession {
                     let stoppedEarly = reply.truncated ? (reply.terminal?.incompleteReason ?? "max_output_tokens") : nil
                     let outputLimited = stoppedEarly == "max_output_tokens"
                     if let stoppedEarly { assistant.stopReason = outputLimited ? "length" : stoppedEarly }
+                    // The reply keeps its usage in pi's shape: the next count rests on it.
+                    assistant.usage=PiContext.usage(reply.usage,api:turnProfile.api)
                     try append(assistant); cumulativeUsage.observe(reply.usage)
-                    contextBaseline=try RequestUsageBaseline(request:request,profile:turnProfile,reply:reply)
+                    let replyID=assistant.id
                     event("message_end")
                     await flushRequestLinks()
                     guard !titleTask || reply.calls.isEmpty else { throw AgentError("title_tool_call", "Title generation returned a tool call. No tool ran and no extra model request was made.") }
@@ -231,6 +238,16 @@ extension AgentSession {
                     // A reply that stopped at the output budget ends the turn like any
                     // other: the row says so, and queued follow-ups go on.
                     if outputLimited { event("output_limit") }
+                    // Pi 0.85.1 ends a run with the same check on its last reply (Case 3 of
+                    // _checkCompaction) and compacts without a retry. A queued follow-up
+                    // continues the run instead and is checked before its request. The reply
+                    // is complete either way: a failed compaction keeps the context and says so.
+                    if queue.isEmpty, canCompact, let position=context.lastIndex(where: { $0.id == replyID }),
+                       let tokens=PiContext.thresholdTokens(after:position,in:context),
+                       PiContext.shouldCompact(tokens,contextWindow:turnProfile.contextWindow,settings:compactionSettings) {
+                        do { try await compactContext(reason:"threshold") }
+                        catch where !(error is CancellationError) && !Task.isCancelled {}
+                    }
                     try finishPresentedTask(outputLimited ? "output-limited" : "completed")
                     if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
                     if try await startFollowUp() { continue }

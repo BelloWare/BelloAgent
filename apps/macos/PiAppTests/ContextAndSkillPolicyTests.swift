@@ -111,9 +111,11 @@ final class ContextAndSkillPolicyTests: XCTestCase {
         model.chats = [chat]; model.displays[chat.id] = display
         XCTAssertEqual(ContextMeterPresentation(context:model.displayedContext(display)).compactLabel,"Inspect context")
         _ = try await model.open(chat)
-        XCTAssertEqual(display.context["state"], .string("pending"), "Opening does not substitute a different formula before the request body is prepared")
-        XCTAssertNil(display.context["tokens"]?.number)
-        XCTAssertNil(ContextMeterPresentation(context:model.displayedContext(display)).fraction)
+        // Opening reads the helper's count at once: pi's figure for the stored
+        // context, which is empty. The preview counts the same way, adding the draft.
+        XCTAssertEqual(display.context["method"], .string("pi-estimate"))
+        XCTAssertEqual(display.context["tokens"], .number(0))
+        XCTAssertEqual(ContextMeterPresentation(context:model.displayedContext(display)).fraction, 0)
         let preview = try await model.preparedContext(chat.id)
         XCTAssertEqual(preview["draftIncluded"]?.bool,true); XCTAssertEqual(preview["dispatched"]?.bool,false)
         XCTAssertEqual(model.displayedContext(display)["tokens"],preview["estimatedTokens"],"The ring and inspector must use the same calculated preview")
@@ -131,7 +133,8 @@ final class ContextAndSkillPolicyTests: XCTestCase {
         await model.clearPreparedContext(chat.id,revision:revision)
         XCTAssertEqual(model.displayedContext(display)["tokens"],preview["estimatedTokens"],"Closing inspection must not revert to unknown")
         display.draft = "Changed draft"
-        XCTAssertNil(model.displayedContext(display)["tokens"]?.number,"An estimate for an old draft must not be presented as current")
+        XCTAssertNotEqual(model.displayedContext(display)["tokens"],preview["estimatedTokens"],"An estimate for an old draft must not be presented as current")
+        XCTAssertEqual(model.displayedContext(display)["tokens"], .number(0), "The meter falls back to the stored context's count, which leaves drafts out")
         display.draft = "This remains unsent."
         XCTAssertEqual(model.displayedContext(display)["tokens"],preview["estimatedTokens"])
         display.observeContext(["seq":.number((preview["seq"]?.number ?? 0) + 1),"context":.object(["tokens":.number(3000),"contextWindow":.number(16000)])])
@@ -227,6 +230,43 @@ final class ContextAndSkillPolicyTests: XCTestCase {
         XCTAssertEqual(meter.warnings, [warning]); XCTAssertTrue(meter.detailLabel.contains(warning))
         XCTAssertEqual(meter.modelLabel, "Requested auto-router · counted model unverified")
         XCTAssertNil(context["countedModel"])
+    }
+
+    func testMeterReadsPisCountAndWaitsForTheNextReplyAfterACompaction() throws {
+        let source = "Last reply's reported tokens, plus about 4 characters per token for the messages since"
+        let counted: [String: WireValue] = ["tokens": .number(12_000), "method": .string("pi-estimate"), "estimated": .bool(true),
+            "contextWindow": .number(100_000), "source": .string(source), "usageTokens": .number(11_990), "trailingTokens": .number(10), "warnings": .array([])]
+        let state: [String: WireValue] = ["version": .number(1), "sessionID": .string("s"), "runtimeEpoch": .string("e"), "replayRevision": .number(3),
+            "generation": .number(1), "phase": .string("next-input"), "count": .object(counted)]
+        // Idle without a preview, and while a request runs, the meter reads the helper's count.
+        for phase in ["next-input", "current-request", "last-request"] {
+            var phased = state; phased["phase"] = .string(phase)
+            let presentation = ContextPresentation.resolve(state: phased, observation: [:], preview: nil, fallback: [:], preparing: false,
+                submissionPending: false, busy: phase != "next-input", runStatus: phase == "next-input" ? "idle" : "running")
+            let meter = ContextMeterPresentation(context: presentation.context)
+            XCTAssertEqual(meter.fraction, 0.12, phase)
+            XCTAssertEqual(meter.methodLabel, "Last reply + ~4 characters per token")
+            XCTAssertTrue(meter.detailLabel.hasPrefix("≈12,000 / 100,000 configured · 12"), meter.detailLabel)
+            XCTAssertTrue(meter.detailLabel.contains("% · " + source), meter.detailLabel)
+            XCTAssertFalse(meter.detailLabel.contains(meter.methodLabel), "the plain-words source says it once")
+        }
+        XCTAssertTrue(ContextMeterPresentation.methodExplanation.contains("last reply's reported tokens, plus about 4 characters per token for the messages since"))
+        // After a compaction the reading is pending until the next reply, never zero.
+        let pending: [String: WireValue] = ["tokens": .null, "state": .string("post-compaction"), "method": .string("pi-estimate"),
+            "contextWindow": .number(100_000), "source": .string("Pending until the next reply"), "percent": .null]
+        var compacted = state; compacted["count"] = .object(pending); compacted["reason"] = .string("compaction-committed")
+        let idle = ContextPresentation.resolve(state: compacted, observation: [:], preview: nil, fallback: [:], preparing: false,
+            submissionPending: false, busy: false, runStatus: "idle")
+        let meter = ContextMeterPresentation(context: idle.context)
+        XCTAssertNil(meter.fraction)
+        XCTAssertEqual(meter.compactLabel, "Pending until the next reply"); XCTAssertEqual(meter.detailLabel, "Pending until the next reply")
+        // A prepared preview then is the same pending reading.
+        let preview = try XCTUnwrap(PreparedContextMetrics.context(from: ["count": .object(pending), "contextWindow": .number(100_000), "seq": .number(4)]))
+        XCTAssertEqual(preview["state"], .string("post-compaction")); XCTAssertEqual(preview["tokens"], .null)
+        let previewed = ContextPresentation.resolve(state: compacted, observation: [:], preview: preview, fallback: [:], preparing: false,
+            submissionPending: false, busy: false, runStatus: "idle")
+        XCTAssertNil(ContextMeterPresentation(context: previewed.context).fraction)
+        XCTAssertEqual(ContextMeterPresentation(context: previewed.context).compactLabel, "Pending until the next reply")
     }
 
     func testMalformedNewCountDoesNotResurrectLegacyHeuristicAndLegacyCountsRemainEstimated() throws {

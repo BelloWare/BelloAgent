@@ -34,6 +34,25 @@ final class CaptureConcurrencyTests: XCTestCase {
         let pending = await delivery.pendingCount; XCTAssertEqual(pending, 0)
     }
 
+    /// Shutting down drops acknowledgments, so a capture sent while a stopped
+    /// run cleans up waited the whole deadline (3 s by default) and the app,
+    /// quitting meanwhile, never saw the partial reply or the final state.
+    func testClosingAnswersTheWaitingAndLaterPacketsAtOnce() async throws {
+        let packets = ConcurrentCapturePackets()
+        let delivery = CaptureDelivery(epoch: "fixture", acknowledgmentTimeoutNanoseconds: 60_000_000_000, emit: { packets.append($0) })
+        await delivery.enable()
+        let tasks = (0..<3).map { index in Task { await delivery.send(["type": "fixture", "session": JSON(index)]) } }
+        try await eventually { await delivery.pendingCount == 3 }
+        let started = Date()
+        await delivery.close()
+        for task in tasks { let accepted = await task.value; XCTAssertFalse(accepted) }
+        let accepted = await delivery.send(["type": "finish"])
+        XCTAssertFalse(accepted, "A packet after close is refused, not queued behind a reader that is gone")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5, "Nothing waits for the acknowledgment deadline")
+        XCTAssertEqual(packets.packets.count, 1)
+        let pending = await delivery.pendingCount; XCTAssertEqual(pending, 0)
+    }
+
     func testRejectedAcknowledgmentRemainsIsolatedToItsPacket() async throws {
         let packets = ConcurrentCapturePackets(), completed = CompletedCaptures()
         let delivery = CaptureDelivery(epoch: "fixture", emit: { packets.append($0) })

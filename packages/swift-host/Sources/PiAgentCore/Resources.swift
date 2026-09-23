@@ -92,7 +92,19 @@ struct MetadataYAML {
 
 public struct FrozenSkill: Codable, Sendable {
     public var id: String, name: String, path: String, baseDir: String, body: String, contentHash: String, metadataHash: String, arguments: String
+    /// What the catalog said about the skill when it was frozen, recorded with
+    /// the message so a reader can see what was used after the skill changes
+    /// or goes away. Queue records written before 0.1.86 have none of them.
+    public var description: String? = nil, scope: String? = nil, policy: String? = nil
     public var selection: JSON { ["id": JSON(id), "contentHash": JSON(contentHash), "metadataHash": JSON(metadataHash), "arguments": JSON(arguments), "intent": "picker"] }
+    /// The selection as the user message records it (`nativeUserInput.skills`).
+    public var recorded: JSON {
+        var value = selection; value["name"] = JSON(name); value["path"] = JSON(path)
+        if let description { value["description"] = JSON(description) }
+        if let scope { value["scope"] = JSON(scope) }
+        if let policy { value["policy"] = JSON(policy) }
+        return value
+    }
     public func expand(turnID: String) -> String {
         // JSON quoting prevents a path/name from manufacturing an XML delimiter.
         "Explicit user skill selection \(JSON(name).encoded()), turn \(turnID), source \(JSON(path).encoded()), SHA256 \(contentHash). Relative references use \(JSON(baseDir).encoded()). This grants no additional tools.\n\(body)\nSkill arguments: \(arguments)"
@@ -273,7 +285,8 @@ public actor Resources {
                   let body = skill["body"].text, let contentHash = skill["contentHash"].text, let metadataHash = skill["metadataHash"].text else {
                 throw AgentError("skill_changed", "Selected skill is unavailable or changed. Refresh and select it explicitly.")
             }
-            return FrozenSkill(id: id, name: name, path: path, baseDir: baseDir, body: body, contentHash: contentHash, metadataHash: metadataHash, arguments: arguments)
+            return FrozenSkill(id: id, name: name, path: path, baseDir: baseDir, body: body, contentHash: contentHash, metadataHash: metadataHash, arguments: arguments,
+                               description: skill["description"].text, scope: skill["scope"].text, policy: skill["policy"].text)
         }
     }
     private static func dependencyAvailable(_ dep: JSON, tools: [String]) -> Bool {

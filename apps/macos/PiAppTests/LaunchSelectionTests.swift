@@ -626,3 +626,27 @@ private extension PayloadArchive {
 
 /// Whether launch has finished, read by the test between frames.
 @MainActor private final class LaunchFlag { var value = false }
+
+extension LaunchSelectionTests {
+    /// "Show background tasks" and the report page were forgotten at every
+    /// launch: the toggle came back off and the window came back on Chats.
+    @MainActor func testTheReportPageAndShownBackgroundTasksComeBackAfterARelaunch() async throws {
+        let fixture = try await fixture()
+        let first = await launch(fixture)
+        await first.select(fixture.b2.id)
+        first.showBackgroundSessions = true
+        first.openReport()
+        try await quit(first)
+
+        let second = await launch(fixture)
+        XCTAssertTrue(second.showBackgroundSessions, "The sidebar still shows background tasks")
+        XCTAssertEqual(second.page, .report, "The window comes back on the report")
+        XCTAssertEqual(second.selectedID, fixture.b2.id, "with the chat the reader had open underneath")
+        second.closeReport(); second.showBackgroundSessions = false
+        try await quit(second)
+
+        let third = await launch(fixture)
+        XCTAssertFalse(third.showBackgroundSessions); XCTAssertEqual(third.page, .chats, "Turning them off is remembered too")
+        third.report.suspend()
+    }
+}

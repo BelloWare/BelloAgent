@@ -44,6 +44,9 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// this row. Never read from or written to a journal — the projector
     /// leaves it nil and an absent optional encodes to nothing.
     var foldGroup: String? = nil
+    /// User rows: the skills the message was sent with, in the order the
+    /// model received them ahead of its text. Nil when it used none.
+    var skills: [TranscriptSkillUse]? = nil
     static func project(id: String, message: [String: WireValue]) -> TranscriptMessage {
         let stopReason = message["nativeStopReason"]?.string ?? message["stopReason"]?.string
         let content = message["content"], blocks = content?.array ?? []
@@ -84,8 +87,18 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         if result.responseTimeline == nil, role == "assistant", content?.array != nil {
             result.responseTimeline = ResponseTimeline.canonical(parts,sourceID:id)
         }
+        if role == "user" { result.skills = TranscriptSkillUse.recorded(message["nativeUserInput"]?.object?["skills"]) }
         return result
     }
+}
+
+extension TranscriptMessage {
+    /// Display only: the state of a message the reader has sent that the
+    /// helper has not shown yet (`SessionDisplay.sendingRows`). The helper's
+    /// own row for it has the same id, the submission's `clientTurnId`, and
+    /// takes its place when it arrives.
+    static let sendingState = "sending"
+    var isSending: Bool { role == "user" && state == Self.sendingState }
 }
 
 /// What a journal recorded about one finished call: the helper writes this
@@ -217,7 +230,18 @@ extension TranscriptMessage {
         row.operationID = try optionalString(fields["operationID"])
         row.toolCallID = try optionalString(fields["toolCallID"])
         if let timeline = fields["responseTimeline"], timeline != .null { row.responseTimeline = try JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode(timeline)) }
+        if let list = fields["skills"], list != .null {
+            guard let skills = list.array else { throw Unexpected.shape }
+            row.skills = try skills.map(skill)
+        }
         return row
+    }
+    private static func skill(_ value: WireValue) throws -> TranscriptSkillUse {
+        guard let fields = value.object else { throw Unexpected.shape }
+        return TranscriptSkillUse(id: try string(fields["id"]), name: try string(fields["name"]), path: try string(fields["path"]),
+                                  contentHash: try string(fields["contentHash"]), metadataHash: try string(fields["metadataHash"]),
+                                  arguments: try string(fields["arguments"]), description: try optionalString(fields["description"]),
+                                  scope: try optionalString(fields["scope"]), policy: try optionalString(fields["policy"]))
     }
     private static func tool(_ value: WireValue) throws -> ToolView {
         guard let fields = value.object else { throw Unexpected.shape }

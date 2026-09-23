@@ -78,6 +78,9 @@ struct TurnFoldControlRow: View {
     let open: Bool
     let toggle: () -> Void
     @State private var hovering = false
+    @FocusState private var focused: Bool
+    /// Shown only when focus came from the keyboard; a click leaves none.
+    @State private var ringShown = false
     @Environment(\.piReduceMotion) private var reduceMotion
     var body: some View {
         Button(action: toggle) {
@@ -98,6 +101,11 @@ struct TurnFoldControlRow: View {
         }
         .buttonStyle(.plain).piPointer()
         .focusable()
+        .focused($focused)
+        // Its own outline over the whole line, instead of the system's ring.
+        .focusEffectDisabled()
+        .modifier(TranscriptFocusRing(shown: ringShown))
+        .onChange(of: focused) { _, now in ringShown = now && !hovering }
         .onKeyPress { press in
             guard TranscriptRowChrome.activates(press.key) else { return .ignored }
             toggle(); return .handled

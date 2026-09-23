@@ -121,6 +121,8 @@ struct TurnInfoButton: NSViewRepresentable {
             .withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
         button.target = context.coordinator; button.action = #selector(Coordinator.toggle(_:))
         button.isBordered = false; button.imagePosition = .imageOnly; button.contentTintColor = .tertiaryLabelColor
+        // Rows never draw the system's focus ring.
+        button.focusRingType = .none
         button.toolTip = "Show turn info"; button.setAccessibilityLabel("Show turn info")
         return button
     }

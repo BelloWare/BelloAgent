@@ -3,15 +3,192 @@ import Foundation
 import ImageIO
 #endif
 
-/// One count contract for preview, dispatch preflight and compaction. The input
-/// is the actual provider request builder's output, never transcript blocks.
+/// Pi 0.85.1's context estimate (coding-agent/src/core/compaction/compaction.ts
+/// and agent-session.ts), ported onto the helper's messages: the last valid
+/// reply's reported tokens, plus about four characters per token for every
+/// message after it. A JavaScript string's length is its UTF-16 code units.
+enum PiContext {
+    /// The compaction defaults of settings-manager.ts.
+    struct Settings: Sendable, Equatable {
+        var enabled = true
+        var reserveTokens = 16_384
+        var keepRecentTokens = 20_000
+    }
+    /// ESTIMATED_IMAGE_CHARS.
+    static let estimatedImageChars = 4_800
+
+    struct Estimate: Sendable, Equatable {
+        let tokens: Int
+        let usageTokens: Int
+        let trailingTokens: Int
+        let lastUsageIndex: Int?
+    }
+
+    /// pi-ai's usage for one reply, read from the provider's own usage object
+    /// as pi reads it, so the count equals pi's for the same response. The
+    /// Responses API's input_tokens includes cached and cache-write tokens;
+    /// pi's input does not. Without the provider object, the helper's
+    /// normalized fields map the same way (their inputIncludingCache holds
+    /// both caches on either API).
+    static func usage(_ reported: JSON, api: String) -> JSON? {
+        func count(_ value: JSON) -> Int { UsageObservation.count(value) ?? 0 }
+        func excluding(_ whole: Int, _ parts: Int...) -> Int { parts.reduce(whole) { $0 - min($0, $1) } }
+        let raw = reported["raw"]
+        if raw.isObject {
+            if api == "anthropic-messages" {
+                let input = count(raw["input_tokens"]), output = count(raw["output_tokens"])
+                let read = count(raw["cache_read_input_tokens"]), write = count(raw["cache_creation_input_tokens"])
+                return shape(input: input, output: output, cacheRead: read, cacheWrite: write, total: sum([input, output, read, write]))
+            }
+            let details = raw["input_tokens_details"]
+            let read = count(details["cached_tokens"]), write = count(details["cache_write_tokens"])
+            return shape(input: excluding(count(raw["input_tokens"]), read, write), output: count(raw["output_tokens"]),
+                         cacheRead: read, cacheWrite: write, total: count(raw["total_tokens"]))
+        }
+        guard ["input", "inputIncludingCache", "output", "total"].contains(where: { !reported[$0].isNull }) else { return nil }
+        let read = count(reported["cacheRead"]), write = count(reported["cacheWrite"])
+        let input = UsageObservation.count(reported["inputIncludingCache"]) ?? count(reported["input"])
+        return shape(input: excluding(input, read, write), output: count(reported["output"]), cacheRead: read, cacheWrite: write, total: count(reported["total"]))
+    }
+    private static func shape(input: Int, output: Int, cacheRead: Int, cacheWrite: Int, total: Int) -> JSON {
+        ["input": JSON(input), "output": JSON(output), "cacheRead": JSON(cacheRead), "cacheWrite": JSON(cacheWrite), "totalTokens": JSON(total)]
+    }
+
+    /// calculateContextTokens: the reported total, else the sum of its parts.
+    /// Parts whose sum no integer holds are malformed usage, which counts as
+    /// zero and so, like pi's all-zero usage, anchors nothing.
+    static func contextTokens(_ usage: JSON) -> Int {
+        let total = UsageObservation.count(usage["totalTokens"]) ?? 0
+        if total > 0 { return total }
+        var parts = 0
+        for key in ["input", "output", "cacheRead", "cacheWrite"] {
+            let (result, overflow) = parts.addingReportingOverflow(UsageObservation.count(usage[key]) ?? 0)
+            if overflow { return 0 }
+            parts = result
+        }
+        return parts
+    }
+
+    /// getAssistantUsage: a replayed reply's usage, unless the reply was
+    /// aborted (the helper's "interrupted") or failed, or its usage is all zero.
+    static func assistantUsage(_ message: ChatMessage) -> JSON? {
+        guard message.role == "assistant", message.replayEligible, let usage = message.usage,
+              !["aborted", "error", "interrupted"].contains(message.stopReason ?? ""), contextTokens(usage) > 0 else { return nil }
+        return usage
+    }
+
+    /// estimateTokens: characters over four, rounded up. A reply counts its
+    /// text, thinking, and each call's name and JSON arguments; every other
+    /// row (user, tool result, a summary or custom row) its text, with each
+    /// image counted as 4,800 characters.
+    static func estimateTokens(_ message: ChatMessage) -> Int {
+        var chars = 0
+        for block in message.content {
+            switch (block["type"].text ?? "", message.role == "assistant") {
+            case ("text", _): chars = sum([chars, length(block["text"])])
+            case ("thinking", true): chars = sum([chars, length(block["thinking"])])
+            case ("toolCall", true): chars = sum([chars, length(block["name"]), block["arguments"].encoded().utf16.count])
+            case ("image", false): chars = sum([chars, estimatedImageChars])
+            default: break
+            }
+        }
+        return tokens(chars: chars)
+    }
+    /// Math.ceil(chars / 4).
+    static func tokens(chars: Int) -> Int { chars / 4 + (chars % 4 == 0 ? 0 : 1) }
+
+    /// estimateContextTokens over the rows the next request replays.
+    static func estimateContextTokens(_ messages: [ChatMessage]) -> Estimate {
+        guard let index = messages.lastIndex(where: { assistantUsage($0) != nil }) else {
+            let estimated = messageTokens(messages)
+            return Estimate(tokens: estimated, usageTokens: 0, trailingTokens: estimated, lastUsageIndex: nil)
+        }
+        let usageTokens = contextTokens(messages[index].usage ?? [:]), trailing = messageTokens(messages[(index + 1)...])
+        return Estimate(tokens: sum([usageTokens, trailing]), usageTokens: usageTokens, trailingTokens: trailing, lastUsageIndex: index)
+    }
+    /// The estimate of the replayed rows alone, with no reply's usage.
+    static func messageTokens<Rows: Sequence>(_ messages: Rows) -> Int where Rows.Element == ChatMessage {
+        sum(messages.filter(\.replayEligible).map(estimateTokens))
+    }
+
+    /// The latest compaction among `messages`. A row after its summary that it
+    /// did not keep was appended after the compaction, so only such a reply's
+    /// usage measures the compacted context (getLatestCompactionEntry).
+    struct Compaction { let index: Int; let kept: Set<String> }
+    static func latestCompaction(_ messages: [ChatMessage]) -> Compaction? {
+        guard let index = messages.lastIndex(where: { $0.kind == "compaction" }) else { return nil }
+        return Compaction(index: index, kept: Set(messages[index].compaction?["keptIDs"].list.compactMap(\.text) ?? []))
+    }
+    static func isAfter(_ compaction: Compaction?, _ position: Int, in messages: [ChatMessage]) -> Bool {
+        guard let compaction else { return true }
+        return position > compaction.index && !compaction.kept.contains(messages[position].id)
+    }
+
+    /// getContextUsage: pi's figure, or nil after a compaction until a reply
+    /// that came after it reports usage.
+    static func contextUsage(_ messages: [ChatMessage]) -> Estimate? {
+        if let compaction = latestCompaction(messages),
+           !messages.indices.reversed().contains(where: { isAfter(compaction, $0, in: messages) && assistantUsage(messages[$0]) != nil }) { return nil }
+        return estimateContextTokens(messages)
+    }
+
+    /// Case 3 of _checkCompaction: the figure pi compares with the threshold
+    /// after the reply at `position`, or nil when pi returns without compacting
+    /// because that reply, or the usage its estimate rests on, predates the
+    /// latest compaction. A reply with valid usage is measured by it directly.
+    static func thresholdTokens(after position: Int, in messages: [ChatMessage]) -> Int? {
+        let compaction = latestCompaction(messages)
+        guard isAfter(compaction, position, in: messages) else { return nil }
+        let reply = messages[position], direct = reply.usage.map(contextTokens) ?? 0
+        guard reply.stopReason == "error" || direct == 0 else { return direct }
+        let estimate = estimateContextTokens(messages)
+        if let index = estimate.lastUsageIndex, !isAfter(compaction, index, in: messages) { return nil }
+        return estimate.tokens
+    }
+    /// Before a new prompt joins the context, pi runs the same check on the
+    /// last reply, aborted or not; with no reply there is nothing to check.
+    static func promptThresholdTokens(_ messages: [ChatMessage]) -> Int? {
+        messages.lastIndex(where: { $0.role == "assistant" }).flatMap { thresholdTokens(after: $0, in: messages) }
+    }
+    /// shouldCompact.
+    static func shouldCompact(_ tokens: Int, contextWindow: Int, settings: Settings) -> Bool {
+        settings.enabled && tokens > contextWindow - settings.reserveTokens
+    }
+
+    private static func length(_ value: JSON) -> Int { value.text?.utf16.count ?? 0 }
+    /// Sums saturate: a count past Int.max stays over every budget.
+    static func sum(_ values: [Int]) -> Int {
+        values.reduce(0) { total, value in
+            let (result, overflow) = total.addingReportingOverflow(value)
+            return overflow ? Int.max : result
+        }
+    }
+}
+
+/// The count for the next request. `tokens` is pi's context figure: the meter
+/// shows it and the compaction threshold reads it, and it is unknown (nil)
+/// after a compaction until a reply reports usage. `requestTokens` sizes the
+/// request itself (its output cap, whether it can be sent at all, how much a
+/// summary request can carry): the prepared request's own UTF-8 bytes over
+/// three, instructions and tool schemas included, as before. Pi sizes no
+/// request, so that conservative bound stays the helper's, and a reply's
+/// report, however wrong, never stops a request the gateway could take.
+/// Without a request body (the idle reading) it is pi's figure, or the
+/// messages' characters over four after a compaction.
 struct RequestContextCount: Sendable {
-    let tokens: Int
-    let method: String
-    let requestedModel: String
+    static let method = "pi-estimate"
+    static let usageSource = "Last reply's reported tokens, plus about 4 characters per token for the messages since"
+    static let characterSource = "About 4 characters per token for every message; no reply has reported its tokens yet"
+    static let pendingSource = "Pending until the next reply"
+    let tokens: Int?
+    let requestTokens: Int
+    let estimate: PiContext.Estimate
+    /// How `requestTokens` was reached: "request-utf8-bytes", "last-reply-usage" or "characters".
+    let requestMethod: String
+    let lastUsageID: String?
     let countedModel: String?
-    let requestFingerprint: String
-    let source: String
+    let requestedModel: String
+    let requestFingerprint: String?
     let warnings: [String]
     let contextWindow: Int
     /// The output budget: a local reserve, never a cap on the wire.
@@ -20,24 +197,32 @@ struct RequestContextCount: Sendable {
     /// The output limit the request carries: a bounded task's explicit cap as
     /// is, the model ceiling clipped to the room the input leaves, or nothing.
     let outputCap: Int?
+    let reserveTokens: Int
+    var method: String { Self.method }
+    var source: String { tokens == nil ? Self.pendingSource : lastUsageID == nil ? Self.characterSource : Self.usageSource }
     static func safetyMargin(contextWindow: Int) -> Int { min(1024, max(1, contextWindow / 100)) }
     var safetyMargin: Int { Self.safetyMargin(contextWindow: contextWindow) }
     var inputBudget: Int { max(0, contextWindow - outputBudget - safetyMargin) }
-    /// The reserve says the reply may not fit beside this input: compact first when possible.
-    var fits: Bool { tokens <= inputBudget }
+    /// The reserve says the reply may not fit beside this input.
+    var fits: Bool { requestTokens <= inputBudget }
     /// The input itself fits the window; only when it does not is a turn stopped.
-    var inputFits: Bool { tokens <= contextWindow - safetyMargin }
+    var inputFits: Bool { requestTokens <= contextWindow - safetyMargin }
     /// Room for the reply once the input and the safety margin are in the window.
-    var replyRoom: Int { tokens >= contextWindow - safetyMargin ? 1 : max(1, contextWindow - safetyMargin - tokens) }
+    var replyRoom: Int { requestTokens >= contextWindow - safetyMargin ? 1 : max(1, contextWindow - safetyMargin - requestTokens) }
     var json: JSON {
-        ["tokens":JSON(tokens), "method":JSON(method), "requestedModel":JSON(requestedModel),
-         "countedModel":countedModel.map { JSON($0) } ?? .null, "requestFingerprint":JSON(requestFingerprint),
-         "estimated":true, "source":JSON(source), "warnings":.array(warnings.map { JSON($0) }),
-         "contextWindow":JSON(contextWindow), "outputBudget":JSON(outputBudget), "outputReserve":JSON(outputBudget),
-         "modelOutputLimit":modelOutputLimit.map { JSON($0) } ?? .null, "outputCap":outputCap.map { JSON($0) } ?? .null,
-         "safetyMargin":JSON(safetyMargin), "inputBudget":JSON(inputBudget), "fits":JSON(fits), "inputFits":JSON(inputFits),
-         "percent":JSON(Double(tokens) / Double(contextWindow) * 100),
-         "countEndpointStatus":"unverified-request-compatibility"]
+        var value: JSON = ["tokens": tokens.map { JSON($0) } ?? .null, "method": JSON(method), "requestedModel": JSON(requestedModel),
+            "countedModel": countedModel.map { JSON($0) } ?? .null, "requestFingerprint": requestFingerprint.map { JSON($0) } ?? .null,
+            "estimated": true, "source": JSON(source), "warnings": .array(warnings.map { JSON($0) }),
+            "contextWindow": JSON(contextWindow), "outputBudget": JSON(outputBudget), "outputReserve": JSON(outputBudget),
+            "modelOutputLimit": modelOutputLimit.map { JSON($0) } ?? .null, "outputCap": outputCap.map { JSON($0) } ?? .null,
+            "safetyMargin": JSON(safetyMargin), "inputBudget": JSON(inputBudget), "fits": JSON(fits), "inputFits": JSON(inputFits),
+            "percent": tokens.map { JSON(Double($0) / Double(contextWindow) * 100) } ?? .null,
+            "requestTokens": JSON(requestTokens), "requestMethod": JSON(requestMethod), "reserveTokens": JSON(reserveTokens), "compactionThreshold": JSON(contextWindow - reserveTokens),
+            "lastUsageMessageID": lastUsageID.map { JSON($0) } ?? .null,
+            "countEndpointStatus": "unverified-request-compatibility"]
+        if tokens == nil { value["state"] = "post-compaction" }
+        else { value["usageTokens"] = JSON(estimate.usageTokens); value["trailingTokens"] = JSON(estimate.trailingTokens) }
+        return value
     }
 }
 
@@ -51,77 +236,43 @@ extension Profile {
     }
 }
 
-/// Usage applies only to the exact previous input prefix and a declared stable
-/// route. Previous output usage is never added: only items actually replayed by
-/// the next request builder contribute to the new-input estimate.
-struct RequestUsageBaseline: Sendable {
-    let template: String
-    let itemHashes: [String]
-    let inputTokens: Int
-    let model: String
-    init?(request: JSON, profile: Profile, reply: ModelReply) throws {
-        guard profile.raw["routing"]["replayPolicy"].text == "pinned",
-              let expected = profile.raw["routing"]["expectedModel"].text,
-              let identity = reply.message.providerIdentity, identity["status"].text == "reported",
-              let model = identity["effectiveModel"].text,
-              RequestContextCounter.modelName(model) == RequestContextCounter.modelName(expected),
-              let input = reply.usage["input"].int, input >= 0 else { return nil }
-        template = try RequestContextCounter.template(request, profile:profile)
-        itemHashes = try RequestContextCounter.items(request).map { sha256(try $0.data()) }
-        guard let observed = UsageObservation.count(reply.usage.map["inputIncludingCache"] ?? reply.usage["input"]) else { return nil }
-        inputTokens = observed
-        self.model = model
-    }
-}
-
 struct RequestContextCounter: Sendable {
-    private struct Cached: Sendable { let value: RequestContextCount; let at: Date }
-    private var cache: [String: Cached] = [:]
-
-    mutating func count(request: JSON, profile: Profile, baseline: RequestUsageBaseline? = nil, now: Date = Date()) throws -> RequestContextCount {
-        let identity = try Self.cacheIdentity(request: request, profile: profile)
-        // A new measured baseline is new evidence even for the same request.
-        let cacheKey = identity + (baseline.map { ":\($0.template):\($0.inputTokens):\(sha256(Data($0.itemHashes.joined().utf8))):\($0.model)" } ?? "")
-        if let cached = cache[cacheKey], now.timeIntervalSince(cached.at) < 300 { return cached.value }
-        let fingerprint = try Self.fingerprint(request, profile: profile)
-        let input = Self.items(request)
-        var counter = InputHeuristic(model:profile.raw["routing"]["replayPolicy"].text == "pinned" ? profile.raw["routing"]["expectedModel"].text.map(Self.modelName) : nil)
-        var method = "heuristic", countedModel: String?, tokens: Int
-        if let baseline, baseline.template == (try Self.template(request, profile:profile)), input.count >= baseline.itemHashes.count,
-           try Array(input.prefix(baseline.itemHashes.count)).map({ sha256(try $0.data()) }) == baseline.itemHashes {
-            method = "usage-baseline"; countedModel = baseline.model
-            let (sum, overflow) = baseline.inputTokens.addingReportingOverflow(counter.count(.array(Array(input.dropFirst(baseline.itemHashes.count)))))
-            // A saturated count remains over capacity without overflowing any
-            // of the budget comparisons or misrepresenting it as zero usage.
-            tokens = overflow ? Int.max : sum
-        } else {
-            tokens = counter.count(Self.modelInput(request))
+    /// `messages` is the context as the helper stores it; rows the request does
+    /// not replay count nothing. `request` is the body built from them. A
+    /// hypothetical context (a compaction candidate or a summary request) passes
+    /// `reportedUsage: false`, so no reply's usage, which measured a different
+    /// context, anchors it.
+    func count(messages: [ChatMessage], profile: Profile, request: JSON? = nil, reportedUsage: Bool = true,
+               reserveTokens: Int = PiContext.Settings().reserveTokens) throws -> RequestContextCount {
+        let measured = reportedUsage ? PiContext.contextUsage(messages) : nil
+        let unmeasured = measured == nil ? PiContext.messageTokens(messages) : 0
+        let anchor = measured?.lastUsageIndex.map { messages[$0] }
+        var warnings: [String] = [], requestTokens: Int, requestMethod: String
+        if let request {
+            var heuristic = InputHeuristic(model: profile.raw["routing"]["replayPolicy"].text == "pinned" ? profile.raw["routing"]["expectedModel"].text.map(Self.modelName) : nil)
+            requestTokens = heuristic.count(Self.modelInput(request)); warnings += heuristic.warnings; requestMethod = "request-utf8-bytes"
+        } else if let measured, measured.lastUsageIndex != nil { requestTokens = measured.tokens; requestMethod = "last-reply-usage" }
+        else { requestTokens = measured?.tokens ?? unmeasured; requestMethod = "characters" }
+        if reportedUsage && measured == nil {
+            warnings.append("The last reported tokens predate the compaction, so the context is unknown until the next reply reports usage.")
+        } else if anchor == nil {
+            warnings.append("Instructions and tool schemas are not in this figure until a reply reports its tokens.")
         }
-        var warnings = ["Estimate, not an exact tokenizer or independently verified billing usage."]
-        if profile.raw["routing"]["replayPolicy"].text != "pinned" {
-            warnings.append("The next routed model is not fixed. This estimate cannot establish capacity for every possible backend.")
-        }
-        if profile.api == "openai-responses", request["max_output_tokens"].isNull {
+        if profile.api == "openai-responses", profile.wireOutputLimit == nil {
             warnings.append(profile.raw["compat"]["supportsMaxOutputTokens"].flag == false
                 ? "The gateway compatibility setting omits the output limit; the gateway decides where the reply stops. The output budget is a local reserve and is not sent as a server-enforced cap."
                 : "The model catalog gave no output ceiling for this model, so no output limit is sent; the gateway decides where the reply stops. The output budget is a local reserve and is not sent as a server-enforced cap.")
         }
-        warnings += counter.warnings
-        warnings.append("LiteLLM counting endpoints are not used without a request-compatible counting and routing contract.")
         let available = profile.contextWindow - RequestContextCount.safetyMargin(contextWindow: profile.contextWindow)
-        let room = tokens >= available ? 1 : max(1, available - tokens)
-        let outputCap = profile.wireOutputLimit.map { profile.outputCap != nil ? $0 : min($0, room) }
-        let result = RequestContextCount(tokens:tokens, method:method, requestedModel:profile.model, countedModel:countedModel,
-            requestFingerprint:fingerprint,
-            source:method == "usage-baseline" ? "Gateway-reported input for an unchanged prefix, plus an estimate of newly replayed request items" : "Prepared request UTF-8/3 estimate, including actual instructions, tools and replayed items",
-            warnings:warnings, contextWindow:profile.contextWindow, outputBudget:profile.maxOutput, modelOutputLimit:profile.modelOutputLimit, outputCap:outputCap)
-        cache = cache.filter { now.timeIntervalSince($0.value.at) < 300 }
-        if cache.count >= 32, let oldest = cache.min(by: { $0.value.at < $1.value.at })?.key { cache.removeValue(forKey:oldest) }
-        cache[cacheKey] = Cached(value:result,at:now)
-        return result
+        let room = requestTokens >= available ? 1 : max(1, available - requestTokens)
+        let identity = anchor?.providerIdentity
+        return RequestContextCount(tokens: reportedUsage ? measured?.tokens : unmeasured, requestTokens: requestTokens,
+            estimate: measured ?? PiContext.Estimate(tokens: unmeasured, usageTokens: 0, trailingTokens: unmeasured, lastUsageIndex: nil),
+            requestMethod: requestMethod, lastUsageID: anchor?.id, countedModel: identity?["status"].text == "reported" ? identity?["effectiveModel"].text : nil,
+            requestedModel: profile.model, requestFingerprint: try request.map { try Self.fingerprint($0, profile: profile) },
+            warnings: warnings, contextWindow: profile.contextWindow, outputBudget: profile.maxOutput, modelOutputLimit: profile.modelOutputLimit,
+            outputCap: profile.wireOutputLimit.map { profile.outputCap != nil ? $0 : min($0, room) }, reserveTokens: reserveTokens)
     }
-    static func modelName(_ name: String) -> String { name.hasPrefix("openai/") ? String(name.dropFirst(7)) : name }
-    static func items(_ request: JSON) -> [JSON] { request["input"].isNull ? request["messages"].list : request["input"].list }
     private static func configuration(_ profile: Profile) -> JSON {
         // Header/credential-dependent routing is part of the hash, never of the
         // displayed metadata. Profile revision also invalidates all old counts.
@@ -130,13 +281,12 @@ struct RequestContextCounter: Sendable {
     static func fingerprint(_ request: JSON, profile: Profile) throws -> String {
         sha256(try JSON.object(["request":request,"configuration":configuration(profile)]).data())
     }
-    static func template(_ request: JSON, profile: Profile) throws -> String {
-        sha256(try JSON.object(["request":request.removing(["input","messages"]),"configuration":configuration(profile)]).data())
-    }
+    static func modelName(_ name: String) -> String { name.hasPrefix("openai/") ? String(name.dropFirst(7)) : name }
     static func modelInput(_ request: JSON) -> JSON {
         .object(request.map.filter { ["instructions","input","messages","system","tools","text","tool_choice"].contains($0.key) })
     }
 }
+
 
 /// JSON overhead scales with the actual schema rather than a fixed 2,048-token
 /// allowance. Image bytes are never mistaken for model-facing base64 text.

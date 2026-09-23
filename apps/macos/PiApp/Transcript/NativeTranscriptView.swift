@@ -41,6 +41,9 @@ struct ContentGeometry: Equatable {
         var sequence: Int
         var lifecycle: TaskPresentationProjection? = nil
         var liveTurn: TurnSummary? = nil
+        /// The page ends with a message the reader has sent that the helper
+        /// has not shown yet.
+        var sending = false
     }
 
     @Published private(set) var snapshot: Snapshot?
@@ -48,8 +51,10 @@ struct ContentGeometry: Equatable {
     var liveTurn: TurnSummary? {
         if let turn = snapshot?.liveTurn { return turn }
         // Older helpers and the brief pre-snapshot phase only report run state.
-        // Keep activity visible without borrowing historical usage or claiming a task completion.
-        guard snapshot?.lifecycle?.active == nil, snapshot?.lifecycle?.recent.isEmpty != false else { return nil }
+        // Keep activity visible without borrowing historical usage or claiming
+        // a task completion. A message just sent starts its turn in that same
+        // phase, before the helper's first presentation of it arrives.
+        guard snapshot?.lifecycle?.active == nil, snapshot?.lifecycle?.recent.isEmpty != false || snapshot?.sending == true else { return nil }
         return Self.liveTurn(in: [], busy: busy)
     }
     @Published private(set) var detached = false
@@ -59,6 +64,22 @@ struct ContentGeometry: Equatable {
     /// rather than of the page's intentions, so the pill can never disagree
     /// with what the reader can see.
     @Published private(set) var atBottom = true
+    /// Set when the page has stopped asking for earlier rows on its own: its
+    /// rows do not reach past the viewport, and it has already filled it as
+    /// often as it may. From here the reader asks, at the top edge.
+    @Published private(set) var earlierWaitsForReader = false
+    /// What `earlierWaitsForReader` is about to become. It is decided inside
+    /// the document's layout, where the page must not publish, so it is
+    /// published a turn of the run loop later.
+    private var earlierWaits = false {
+        didSet {
+            guard earlierWaits != oldValue else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.earlierWaitsForReader != self.earlierWaits else { return }
+                self.earlierWaitsForReader = self.earlierWaits
+            }
+        }
+    }
     @Published var state = "idle"
     var busy: Bool { ["queued", "running", "stopping", "compacting"].contains(state) }
 
@@ -196,7 +217,7 @@ struct ContentGeometry: Equatable {
         reset()
         scrollView?.transcriptReading.bind(scope: session.id + ":" + session.presentationGeneration.uuidString)
         frames = [:]
-        snapshot = nil; detached = false
+        snapshot = nil; detached = false; earlierWaits = false; earlierWaitsForReader = false
         subscription = session.presentationChanges.combineLatest(session.$viewportRequest).sink { [weak self, weak session] input, request in
             guard let self, let session else { return }
             self.present(input, viewportRequest: request, from: session)
@@ -212,11 +233,13 @@ struct ContentGeometry: Equatable {
     /// Defend the source-selected resident window without evicting its reading
     /// anchor. The history/live source already chooses which edge to retain.
     nonisolated static func displayPage(_ messages: [TranscriptMessage]) -> [TranscriptMessage] {
-        // A retry notice and the failure where the conversation stopped come
-        // after it, added by the app rather than read from the history. The
-        // resident window is for the conversation: at a full window they were
-        // the rows it cut, so the retry and its Retry button never showed.
-        let added = messages.reversed().prefix { $0.role == "system" && ["notice", "failure"].contains($0.kind ?? "")
+        // A message just sent, a retry notice and the failure where the
+        // conversation stopped come after it, added by the app rather than
+        // read from the history. The resident window is for the conversation:
+        // at a full window they were the rows it cut, so the retry and its
+        // Retry button never showed, and a message sent into a long chat
+        // would not have shown until the helper's own row arrived.
+        let added = messages.reversed().prefix { $0.isSending || $0.role == "system" && ["notice", "failure"].contains($0.kind ?? "")
             && ($0.id.hasPrefix("notice:retry:") || $0.id.hasPrefix("failure:")) }.count
         return TranscriptPaging.window(Array(messages.dropLast(added)), keepingEarlier: true) + messages.suffix(added)
     }
@@ -375,7 +398,8 @@ struct ContentGeometry: Equatable {
         frames = frames.filter { ids.contains($0.key) }
         sequence += 1
         lastPresentationAt = ProcessInfo.processInfo.systemUptime
-        let next = Snapshot(sessionID: session.id, generation: generation, messages: page, items: items, fresh: fresh, sequence: sequence, lifecycle: input.lifecycle, liveTurn: TaskTranscriptPlan.live(input.lifecycle, messages: messages))
+        let next = Snapshot(sessionID: session.id, generation: generation, messages: page, items: items, fresh: fresh, sequence: sequence, lifecycle: input.lifecycle, liveTurn: TaskTranscriptPlan.live(input.lifecycle, messages: messages),
+                            sending: page.last(where: { $0.role == "user" })?.isSending == true)
         // The scroll document always adopts its final geometry immediately.
         // Animating a complete snapshot also animates every existing row's
         // position and races AppKit's exact anchor/bottom placement. Controls
@@ -476,6 +500,9 @@ struct ContentGeometry: Equatable {
     func viewportChanged(_ size: CGSize) {
         guard size != viewport else { return }
         viewport = size
+        // A page the reader can scroll through now asks for earlier rows on
+        // its own again, as they reach the top.
+        if content.height > viewport.height + Self.earlierThreshold { earlierWaits = false }
         // AppKit may adjust the origin more than once during this resize.
         // Those changes belong to layout until its deferred placement lands.
         viewportResizePending = true
@@ -555,6 +582,14 @@ struct ContentGeometry: Equatable {
     /// While a jump to the newest row is running it owns the scroll position;
     /// nothing else may move the reader.
     var isPlacingScroll: Bool { jumping }
+    /// Standing on the newest row and following it, placing nothing else: no
+    /// jump, no destination the reader asked for, no opening placement or
+    /// anchor still to land. A viewport that changes height keeps such a page
+    /// on its newest row in the same layout pass.
+    var pinsNewestRow: Bool {
+        initialized && followsBottom && atBottom && !jumping && !explicitDestination && !openingPlacementPending
+            && openingReadingAnchor == nil && pendingAnchor == nil
+    }
     /// The AppKit document took its newly measured height: land the pending
     /// scroll. The frame notification can fire while the hosting scroll view is
     /// still updating (that is where 0.1.47 crashed), so the landing is deferred.
@@ -612,9 +647,18 @@ struct ContentGeometry: Equatable {
             // Wait for the document height, or AppKit would clamp the scroll short.
             guard documentSettled else { return }
             // Keep the saved anchor until the native document attaches.
-            guard scrollView?.documentView != nil else { return }
+            guard let scrollView, let document = scrollView.documentView else { return }
+            let destination = explicitDestination
             pendingAnchor = nil
             scroll(to: frame.minY - anchor.offset, animated: false)
+            // A saved position or a jump lands on the heights the rows above
+            // have so far, most of them estimated. Their measurement comes
+            // after, and moved the row the reader was put on by up to the
+            // estimate's error. Hold the reader's line on that row until the
+            // reader moves.
+            if destination, let row = (document as? TranscriptNativeDocument)?.retainedRows.first(where: { $0.itemID == rowID }) {
+                scrollView.transcriptReading.hold(row)
+            }
         }
         requestReadCheck()
     }
@@ -789,13 +833,22 @@ struct ContentGeometry: Equatable {
         setPinned(isWithinBottomBand)
     }
     private func requestEarlierIfNearTop(scrollY: CGFloat) {
+        let short = content.height <= viewport.height + Self.earlierThreshold
+        // Rows the reader can scroll through again ask for the page before
+        // them again on their own.
+        if !short { earlierWaits = false }
         guard scrollY < Self.earlierThreshold, !firstRow.isEmpty, let sessionID, let session = presentationSession,
               !session.historyState.loading, !session.olderPage.loading, session.olderPage.error == nil,
               session.olderPage.cursor != nil, session.presentation.readyAt != nil else { return }
-        if content.height <= viewport.height + Self.earlierThreshold {
-            guard session.presentation.automaticFills < HistoryWindowPolicy.automaticFills else { return }
+        if short {
+            guard session.presentation.automaticFills < HistoryWindowPolicy.automaticFills else {
+                // A page this short cannot be scrolled to ask again.
+                earlierWaits = true
+                return
+            }
             session.presentation.automaticFills += 1
         }
+        earlierWaits = false
         onLoadEarlier(sessionID)
     }
     private func scheduleReport() {
@@ -1043,6 +1096,9 @@ private struct TranscriptHostedRow: View {
         .environment(\.layoutDirection, environment.layoutDirection)
         .environment(\.locale, environment.locale)
         .disabled(!environment.isEnabled)
+        // No control in a row draws the system's focus ring; the ones that
+        // take focus on purpose draw their own (`TranscriptFocusRing`).
+        .focusEffectDisabled()
         .piStableLayout()
     }
 }
@@ -1530,7 +1586,9 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         // SwiftUI text fields merely because their parent's closures changed.
         let relay = TranscriptActions(inspect: { [weak self] in self?.actions.inspect($0) }, edit: { [weak self] in self?.actions.edit($0) },
                                       copyMessage: { [weak self] in self?.actions.copyMessage($0) }, stop: { [weak self] in self?.actions.stop() }, retry: { [weak self] in self?.actions.retry() },
-                                      turnRequestSource: { [weak self] in self?.actions.turnRequestSource?() })
+                                      turnRequestSource: { [weak self] in self?.actions.turnRequestSource?() },
+                                      skillPressed: { [weak self] in self?.actions.skillPressed?($0, $1, $2) },
+                                      skillHovered: { [weak self] in self?.actions.skillHovered?($0, $1, $2, $3) })
         let key = workListKey
         let known = workList?.key == key ? workList?.height : nil
         if known != nil { workListReuses += 1 }
@@ -1767,29 +1825,88 @@ struct NativeTranscriptView: View {
     var onViewportReady: (String, UUID) -> Void = { _, _ in }
     @StateObject private var page = TranscriptPage()
     @Environment(\.piReduceMotion) private var reduceMotion
+    /// Set once a read at that edge has run past `TranscriptEdge.quietLoad`.
+    @State private var earlierSlow = false
+    @State private var newerSlow = false
+
+    private var earlierEdge: TranscriptEdge {
+        .earlier(session.olderPage, slow: earlierSlow, waitsForReader: page.earlierWaitsForReader)
+    }
+    private var newerEdge: TranscriptEdge { .newer(session.newerPage, slow: newerSlow) }
+    /// What stands beside the Back to bottom circle: a word or a spinner.
+    private var newerBeside: TranscriptEdge {
+        switch newerEdge { case .loading, .waiting: return newerEdge; default: return .quiet }
+    }
+    /// What is said above it: a read that failed, or a page that lost its place.
+    private var newerAbove: TranscriptEdge {
+        switch newerEdge { case .failed, .changed: return newerEdge; default: return .quiet }
+    }
+    /// The question a turn that starts before the page began with, shown on
+    /// its own while the top edge has nothing else to say.
+    private var partialTurnInput: String? {
+        switch earlierEdge {
+        case .quiet, .loading: return session.presentation.partialTurnInput
+        default: return nil
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            if session.olderPage.available { boundaryControl(earlier: true) }
             if let error = page.projectionError { PiNote(error).padding(8) }
             TranscriptScrollSurface(revision: page.snapshot?.sequence ?? 0, page: page, actions: actions)
+                // The rows beyond either edge are read as the reader reaches
+                // them, and the edges float over the conversation: what comes
+                // and goes there never changes the transcript's frame, so no
+                // row moves for it.
+                .overlay(alignment: .top) {
+                    TranscriptEarlierEdge(state: earlierEdge, partialTurnInput: session.presentation.partialTurnInput,
+                                          load: { onLoadEarlier(session.id) }, inspect: actions.inspect)
+                        .padding(.top, 10).padding(.horizontal, 16)
+                        .animation(reduceMotion ? nil : PiMotion.quick, value: earlierEdge)
+                }
+                .overlay(alignment: .topTrailing) {
+                    ZStack {
+                        if let input = partialTurnInput {
+                            TranscriptPartialTurnChip(input: input, inspect: actions.inspect).transition(.opacity)
+                        }
+                    }
+                    .padding(.top, 10).padding(.trailing, 18)
+                    .animation(reduceMotion ? nil : PiMotion.quick, value: partialTurnInput)
+                }
                 // Whenever the reader is not standing at the bottom — however
                 // they came to be away from it — the way back is one circle
-                // floating over the end of the conversation.
+                // floating over the end of the conversation. An older window
+                // offers the rows after it beside that circle.
                 .overlay(alignment: .bottom) {
                     ZStack {
                         if !page.atBottom || session.newerPage.available, page.snapshot?.items.isEmpty == false {
                             PiBackToBottomPill { if session.browsingHistory || session.newerPage.available { onLatest(session.id) } else { page.jumpToLatest() } }
+                                .background(TranscriptEdgeMarker(edge: "newer", kind: "latest", text: "Jump to the latest message", action: {
+                                    if session.browsingHistory || session.newerPage.available { onLatest(session.id) } else { page.jumpToLatest() }
+                                }))
+                                // Beside the circle, not in a row with it: the
+                                // circle stays where it is whatever shows there.
+                                .overlay(alignment: .leading) {
+                                    TranscriptNewerEdge(state: newerBeside, load: { onLoadNewer(session.id) }, reload: { onLatest(session.id) })
+                                        .fixedSize()
+                                        .alignmentGuide(.leading) { $0[.trailing] + 8 }
+                                        .animation(reduceMotion ? nil : PiMotion.quick, value: newerBeside)
+                                }
                                 .padding(.bottom, 12)
                                 .transition(.opacity.combined(with: .offset(y: 6)).combined(with: .scale(scale: 0.92)))
                         }
                     }
                     .animation(reduceMotion ? nil : PiMotion.spring, value: page.atBottom)
                 }
+                .overlay(alignment: .bottom) {
+                    TranscriptNewerEdge(state: newerAbove, load: { onLoadNewer(session.id) }, reload: { onLatest(session.id) })
+                        .frame(maxWidth: 440)
+                        .padding(.horizontal, 16).padding(.bottom, 12 + PiBackToBottomPill.diameter + 8)
+                        .animation(reduceMotion ? nil : PiMotion.quick, value: newerAbove)
+                }
             // Parent panel or status changes must not animate the document's
             // frame. Row disclosures and the Back to bottom pill set their own motion.
             .transaction { $0.animation = nil }
-            if session.newerPage.available { boundaryControl(earlier: false) }
             LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion)
                 .id(session.presentationGeneration)
         }
@@ -1804,27 +1921,20 @@ struct NativeTranscriptView: View {
             page.state = session.state
             page.bind(session)
         }
+        // A read shows at its edge only once it has been slow for a moment.
+        .task(id: session.olderPage.loading) {
+            earlierSlow = false
+            guard session.olderPage.loading else { return }
+            try? await Task.sleep(for: TranscriptEdge.quietLoad)
+            if !Task.isCancelled, session.olderPage.loading { earlierSlow = true }
+        }
+        .task(id: session.newerPage.loading) {
+            newerSlow = false
+            guard session.newerPage.loading else { return }
+            try? await Task.sleep(for: TranscriptEdge.quietLoad)
+            if !Task.isCancelled, session.newerPage.loading { newerSlow = true }
+        }
     }
-    private func boundaryControl(earlier: Bool) -> some View {
-        let boundary = earlier ? session.olderPage : session.newerPage
-        let direction = earlier ? "earlier" : "newer"
-        return VStack(spacing: 3) {
-            HStack(spacing: 6) {
-                if boundary.loading { ProgressView().controlSize(.mini) }
-                Button(boundary.loading ? "Loading \(direction)…" : boundary.error != nil ? "Retry loading \(direction)" : "Load \(direction)") {
-                    if earlier { onLoadEarlier(session.id) } else { onLoadNewer(session.id) }
-                }.buttonStyle(.plain).foregroundStyle(Color.piAccent).disabled(boundary.loading)
-                    .accessibilityIdentifier(earlier ? "loadEarlierHistory" : "loadNewerHistory")
-                if earlier, let input = session.presentation.partialTurnInput {
-                    Button("Earlier work in this turn") { actions.inspect(input) }.buttonStyle(.plain).foregroundStyle(Color.piInkSecondary)
-                }
-            }
-            if let error = boundary.error { Text(error).foregroundStyle(Color.piWarning).textSelection(.enabled) }
-        }.font(PiFont.caption).padding(6).frame(maxWidth: .infinity).background(Color.piContent)
-    }
-
-
-
 }
 
 /// The live bar's slot at the foot of the conversation. The slot itself is

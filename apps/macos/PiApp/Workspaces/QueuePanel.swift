@@ -79,6 +79,9 @@ struct QueuePanel: View {
         // The field opens with the message it is rewriting, whether the pencil
         // opened it or the chat was already editing when the panel appeared.
         .onChange(of: session.queueEditingID, initial: true) { _, id in beginEditing(id) }
+        .onChange(of: editText) { _, text in
+            if let editingID, !prefilling { session.queueEditText = (editingID, text) }
+        }
         .onChange(of: session.queue.count) { _, _ in
             if let editingID, !items.contains(where: { $0.id == editingID }) { session.queueEditingID = nil }
         }
@@ -121,7 +124,9 @@ struct QueuePanel: View {
     /// helper's copy: saving the preview would drop everything past it.
     private func beginEditing(_ id: String?) {
         let token = UUID(); prefill = token
-        guard let id, let item = items.first(where: { $0.id == id }) else { editText = ""; prefilling = false; return }
+        guard let id, let item = items.first(where: { $0.id == id }) else { editText = ""; prefilling = false; session.queueEditText = nil; return }
+        // The rewrite typed before the reader looked at another chat.
+        if let kept = session.queueEditText, kept.id == id { editText = kept.text; prefilling = false; return }
         editText = item.text
         guard item.truncated else { prefilling = false; return }
         prefilling = true

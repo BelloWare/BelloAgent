@@ -165,6 +165,9 @@ extension WorkspaceModel {
                 try requireConnection(lease)
                 dispatched = true
                 if !view.busy { shown = ("queued", view.state); view.state = "queued" }
+                // The branch this makes is the reader's own: the snapshot that
+                // first carries it is adopted where they are (`adoptOwnBranch`).
+                view.pendingBranch = .init(from: view.presentation.identity?.lineage, messageID: messageID, turnID: turnID)
                 _ = try await host.request(Self.editTurnMethod, sessionID: item.id, params: params, commandID: commandID)
                 if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID); pendingIntentsChanged(item.id) }
                 if view.editGeneration == generation, view.editingMessageID == messageID {
@@ -179,12 +182,19 @@ extension WorkspaceModel {
                         draftChanged(view)
                     }
                 }
-                followSubmittedTurn(item.id)
+                // A branch still on its way is followed by the snapshot that
+                // adopts it, so the rows it abandons never scroll past first.
+                // One already adopted, or a page away from the live rows, is
+                // followed the way a sent message is.
+                if view.pendingBranch?.turnID == turnID, !view.browsingHistory, !view.historyState.loading { refresh(item.id) }
+                else { followSubmittedTurn(item.id) }
             } catch {
                 view.notice = error.localizedDescription
                 if view.editGeneration == generation { view.editNotice = error.localizedDescription }
                 if case HostError.rejected(let code, _) = error, code == "journal_uncertain" { view.uncertain = true; view.state = "interrupted" }
                 else if case HostError.rejected(let code, _) = error {
+                    // Refused: no branch was made.
+                    if view.pendingBranch?.turnID == turnID { view.pendingBranch = nil }
                     try? await store.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id)
                     if code == "connection_unavailable" { view.state = "interrupted" } else { undoShownState() }
                 }
@@ -193,6 +203,14 @@ extension WorkspaceModel {
             }
         }
     }
+}
+
+/// An edit on its way to the helper: the branch the page held when it was
+/// sent, the question it replaces and the turn that replaces it.
+struct PendingBranch: Equatable, Sendable {
+    var from: String?
+    var messageID: String
+    var turnID: String
 }
 
 /// Slim banner above the composer field while an earlier message is being edited.

@@ -12,8 +12,7 @@ private actor SummaryProbe: ModelClient {
         requests.append(body); purposes.append(purpose)
         if purpose != "compaction" { return answer("Final continuation") }
         summaryCalls += 1
-        var counter=RequestContextCounter()
-        guard try counter.count(request:body,profile:profile).fits, tools.isEmpty, profile.outputCap != nil else { throw AgentError("test_contract","Oversized or unbounded summary request") }
+        guard try RequestContextCounter().count(messages:messages,profile:profile,request:body,reportedUsage:false).fits, tools.isEmpty, profile.outputCap != nil else { throw AgentError("test_contract","Oversized or unbounded summary request") }
         while holdAt == summaryCalls { held=true; try await Task.sleep(nanoseconds:1_000_000) }
         switch mode {
         case .empty: return answer(" \n ")
@@ -201,7 +200,7 @@ final class CompactionSafetyTests: XCTestCase {
         XCTAssertEqual(state["contextState"]["reason"].text,"compaction-committed")
         XCTAssertTrue(state["contextState"]["currentRequest"].isNull)
         XCTAssertEqual(state["contextState"]["replayRevision"].int,1)
-        XCTAssertEqual(state["compaction"]["after"]["method"].text,"heuristic");await s.close()
+        XCTAssertEqual(state["compaction"]["after"]["requestMethod"].text,"request-utf8-bytes");XCTAssertTrue(state["compaction"]["after"]["lastUsageMessageID"].isNull,"A candidate is never measured by a reply's usage");await s.close()
     }
     func testInvalidSummariesNeverAdoptAndBudgetIsSharedWithRetries() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }

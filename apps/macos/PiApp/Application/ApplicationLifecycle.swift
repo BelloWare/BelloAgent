@@ -46,12 +46,19 @@ final class ApplicationLifecycle: NSObject, NSApplicationDelegate {
         model.installPreparing = true
         Task {
             do {
+                // Sides that were never saved end with the app; what was typed
+                // into them is kept in their parents' drafts.
+                await model.moveUnsavedSideDraftsToParents()
                 try await model.flushDrafts()
                 guard await model.flushReadStates(), await model.flushProjectSidebarState(), await model.flushTopicChanges() else { throw StoreError.unavailable }
                 // Which chat to reopen goes last: flushing the drafts can turn
                 // an unsent New chat into a saved one, and then it is the chat
                 // to reopen. Failing to write it is no reason to stay open.
                 await model.flushSelection()
+                // Saved: from here the app is going. Its helpers stop the way
+                // Stop does and are waited for, so a reply cut off mid-stream
+                // stays in the chat as an interrupted one.
+                await model.stopHostsAndWait()
                 model.shutdown()
                 answer(sender, true)
             } catch {

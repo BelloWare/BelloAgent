@@ -53,7 +53,11 @@ extension WorkspaceModel {
             let known = catalog.error == nil && !catalog.descriptors.isEmpty
             let listed = updated.model.flatMap { alias in !known || catalog.descriptor(for: alias) != nil ? alias : nil }
             applyModelChoice(listed, to: &updated, profile: target)
-            try await store.put(updated, kind: "chat", id: chatID)
+            // A chat never sent has no record yet (`materializeChat`): writing
+            // one here left an empty "New chat" in the sidebar at every launch
+            // once the chat was abandoned. Its first send writes it, with this
+            // connection, from memory.
+            if !pendingChatIDs.contains(chatID) { try await store.put(updated, kind: "chat", id: chatID) }
             if let index = chats.firstIndex(where: { $0.id == chatID }) {
                 chats[index].profileID = updated.profileID
                 chats[index].model = updated.model; chats[index].thinkingLevel = updated.thinkingLevel

@@ -109,10 +109,11 @@ extension WorkspaceModel {
                 // a moved one. A page read under the old name is read again
                 // under the new one instead of being dropped with nothing in
                 // its place.
-                var source = item, page = try await self.readConversationWindow(source, cursor: nil)
+                let held = view.scrollAnchor
+                var source = item, page = try await self.readInitialWindow(source, holding: held)
                 for _ in 0..<3 {
                     guard current(), let now = self.record(id), now.path != source.path else { break }
-                    source = now; page = try await self.readConversationWindow(source, cursor: nil)
+                    source = now; page = try await self.readInitialWindow(source, holding: held)
                 }
                 guard current(), self.record(id)?.path == source.path else { return }
                 self.adoptInitialHistory(page, into: view)
@@ -129,6 +130,21 @@ extension WorkspaceModel {
         }
         navigationTask = task; view.presentation.navigation = task
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+    /// The page a chat opens on: its newest turns, or, when the reader left it
+    /// further back than those, the turns from where they were, read the way
+    /// a jump to a message is (`revealMessage`). Opening on the newest page
+    /// alone dropped that position on every switch back and relaunch. A row
+    /// no longer in the conversation (an edit, another branch) opens on the
+    /// newest page, as before.
+    func readInitialWindow(_ source: ChatRecord, holding anchor: TranscriptAnchor?) async throws -> ConversationHistoryPage {
+        let latest = try await readConversationWindow(source, cursor: nil)
+        guard let anchor, !anchor.followsBottom, !anchor.id.isEmpty, !latest.messages.contains(where: { $0.id == anchor.id }) else { return latest }
+        do {
+            let around = try await readConversationWindow(source, cursor: nil, around: anchor.id)
+            return around.messages.contains(where: { $0.id == anchor.id }) ? around : latest
+        } catch is CancellationError { throw CancellationError() }
+        catch { try Task.checkCancellation(); return latest }
     }
     /// Puts the cursor in a chat's composer: the given chat, else the focused
     /// side, else the selected chat. Every deliberate move between chats calls

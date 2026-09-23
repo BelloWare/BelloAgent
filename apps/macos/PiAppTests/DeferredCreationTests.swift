@@ -123,3 +123,29 @@ final class DeferredCreationTests: XCTestCase {
         model.shutdown()
     }
 }
+
+extension DeferredCreationTests {
+    /// Switching the connection of a chat that was never sent wrote its
+    /// record, so abandoning it left an empty "New chat" in the sidebar after
+    /// every relaunch. The switch is kept in memory until the first send.
+    @MainActor func testSwitchingTheConnectionOfANeverSentChatWritesNothing() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        var other = ProfileRecord(); other.api = "openai-responses"; other.baseUrl = "http://127.0.0.1:2"; other.modelId = "other"; other.name = "Other"
+        let (model, _) = try await model(root: root)
+        let store = try XCTUnwrap(model.store)
+        let second = other
+        try await model.updateConfiguration { $0.profiles.append(VaultProfile(profile: second, apiKey: "synthetic-other")) }
+        let saved = ChatRecord(id: "saved", workspaceID: "project", title: "Saved", path: nil, profileID: model.profileChoice)
+        try await store.put(saved, kind: "chat", id: saved.id); model.chats.append(saved)
+        model.newChat()
+        try await settle(model) { model.selectedID != nil && model.selectedID != "saved" }
+        let id = try XCTUnwrap(model.selectedID)
+        XCTAssertTrue(model.pendingChatIDs.contains(id))
+        await model.setConnection(other.id, for: id)
+        XCTAssertNil(model.error, model.error ?? "")
+        XCTAssertEqual(model.record(id)?.profileID, other.id, "The switch holds for the chat on screen")
+        await model.select("saved")
+        let stored = try await store.list(ChatRecord.self, kind: "chat")
+        XCTAssertEqual(stored.map(\.id), ["saved"], "Abandoning the unsent chat leaves nothing behind")
+    }
+}

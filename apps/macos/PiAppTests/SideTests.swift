@@ -275,3 +275,39 @@ final class SideTests: XCTestCase {
         XCTAssertEqual(parentLeft?.count, 1)
     }
 }
+
+extension SideTests {
+    /// A question typed into a side that was never sent went with the app at
+    /// quit: side drafts are never saved under the side (the policy), and the
+    /// only rescue, moving the text into the parent, ran on host loss alone.
+    @MainActor func testQuitMovesAnUnsentSideDraftIntoItsParentAndWritesNothingForTheSide() async throws {
+        let root = try scratch()
+        func makeModel() async throws -> WorkspaceModel {
+            let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+            try await model.reloadConfiguration()
+            model.chats = [ChatRecord(id: "parent", workspaceID: "project", title: "Parent", path: nil, profileID: "p")]
+            return model
+        }
+        let model = try await makeModel()
+        try await model.store?.put(DraftRecord(id: "parent", text: "Parent draft"), kind: "draft", id: "parent")
+        await model.select("parent")
+        model.openSide(parentID: "parent")
+        let side = try XCTUnwrap(model.sides["parent"]); XCTAssertTrue(side.pending)
+        model.displays[side.id]?.draft = "check the migration"
+        XCTAssertFalse(model.hasActiveWork, "An unsent side asks nothing at quit")
+        let lifecycle = ApplicationLifecycle(); lifecycle.model = model
+        var answers: [Bool] = []
+        lifecycle.answerTermination = { answers.append($0) }
+        XCTAssertEqual(lifecycle.applicationShouldTerminate(NSApp), .terminateLater)
+        for _ in 0..<500 where answers.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(answers, [true])
+        let sideDraft = try await model.store?.get(DraftRecord.self, kind: "draft", id: side.id)
+        XCTAssertNil(sideDraft, "Nothing is written under the side's id")
+        try await model.traces.close(); await model.store?.close()
+
+        let relaunched = try await makeModel()
+        registerWorkspaceFixtureTeardown(relaunched, root: root)
+        await relaunched.select("parent")
+        XCTAssertEqual(relaunched.selected?.draft, "Parent draft\n\ncheck the migration")
+    }
+}

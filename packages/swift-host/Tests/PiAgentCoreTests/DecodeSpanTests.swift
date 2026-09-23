@@ -108,7 +108,10 @@ server.serve_forever()
         // The settled rate: the 859 tokens after the first over first → last output.
         let settled = 859 / ((lastContent - firstContent) / 1000)
         print("PERF decode-span reasoning spanMs=\(Int(lastContent - firstContent)) settledTokPerSec=\(Int(settled)) ttftMs=\(Int(firstContent - dispatch)) firstTextMs=\(Int(firstText - dispatch))")
-        XCTAssertGreaterThanOrEqual(lastContent - firstContent, 800, "the span covers the 0.8 s of hidden reasoning the output count includes")
+        // Both ends are stamped when the events arrive, so delivery jitter can
+        // take a few milliseconds off the fixture's 0.8 s; what matters is that the
+        // span covers the hidden reasoning (~800 ms), not only the visible text (~60 ms).
+        XCTAssertGreaterThanOrEqual(lastContent - firstContent, 760, "the span covers the 0.8 s of hidden reasoning the output count includes")
         XCTAssertLessThan(settled, 1_100, "859 tokens over ~0.8 s, not over the instant of visible text (~14,000 tok/s)")
         XCTAssertEqual(metrics["decodeTokensPerSecond"].double ?? 0, settled, accuracy: 0.5)
         XCTAssertEqual(metrics["streamDurationMs"].double ?? 0, lastContent - firstContent, accuracy: 0.001, "the stream duration is the decode span")

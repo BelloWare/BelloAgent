@@ -172,3 +172,40 @@ extension ConversationPaneTests {
         XCTAssertFalse(field.convert(field.bounds, to: nil).intersects(panel), "The queue panel must not cover the composer")
     }
 }
+
+extension ConversationPaneTests {
+    /// The field rewriting a queued follow-up lives in a panel rebuilt for
+    /// each chat. Looking at another chat and coming back showed the original
+    /// message again, and the rewrite typed so far was gone.
+    @MainActor func testARewriteInProgressSurvivesLookingAtAnotherChat() async throws {
+        let pane = try Pane(width: 900, height: 700); defer { pane.close() }
+        pane.session.queue = [["turnId": .string("q1"), "kind": .string("follow-up"), "text": .string("Short one")]]
+        pane.session.state = "running"
+        await pane.settle(12)
+        pane.session.queueEditingID = "q1"
+        await pane.settle(10)
+        func field() -> NSTextField? { Self.views(NSTextField.self, in: pane.hosted).first { $0.isEditable } }
+        let editing = try XCTUnwrap(field())
+        XCTAssertTrue(pane.window.makeFirstResponder(editing))
+        let editor = try XCTUnwrap(editing.currentEditor() as? NSTextView)
+        editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
+        editor.insertText(", rewritten", replacementRange: editor.selectedRange())
+        await pane.settle(6)
+        XCTAssertEqual(field()?.stringValue, "Short one, rewritten")
+        // Another chat in the pane, then this one again: the panel is rebuilt.
+        let other = SessionDisplay(id: "other")
+        pane.hosted.rootView = ConversationPane(model: pane.model, session: other, chat: ChatRecord(id: "other", workspaceID: pane.chat.workspaceID, title: "Other", path: nil, profileID: pane.chat.profileID), paneWidth: 900)
+        // Long enough for the panel's exit transition to finish: until it
+        // has, coming back would revive the same panel rather than build one.
+        for _ in 0..<4 { await pane.settle(20); try await Task.sleep(for: .milliseconds(150)) }
+        XCTAssertNil(field(), "The other chat has no queue panel")
+        pane.hosted.rootView = ConversationPane(model: pane.model, session: pane.session, chat: pane.chat, paneWidth: 900)
+        await pane.settle(10)
+        XCTAssertEqual(field()?.stringValue, "Short one, rewritten", "The rewrite typed so far is still there")
+        pane.session.queueEditingID = nil
+        await pane.settle(6)
+        XCTAssertNil(pane.session.queueEditText, "Closing the field forgets the rewrite")
+        pane.session.state = "idle"
+        await pane.settle(4)
+    }
+}

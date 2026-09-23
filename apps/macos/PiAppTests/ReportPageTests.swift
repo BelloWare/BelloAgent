@@ -811,3 +811,28 @@ extension ReportPageTests {
         XCTAssertNil(report.sessions, "No query has run yet")
     }
 }
+
+extension ReportPageTests {
+    /// The report's "Requests and session details" section closed every time
+    /// the reader came back from a chat: its state lived in the page, which
+    /// is rebuilt on each return, while the sessions opened inside it stayed.
+    @MainActor func testTheRequestSectionStaysOpenAcrossLeavingAndReturning() async throws {
+        let (model, _) = try makeModel()
+        try await model.reloadConfiguration()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close(); model.report.suspend() }
+        func show() async {
+            window.contentView = NSHostingView(rootView: ReportPage(model: model))
+            window.makeKeyAndOrderFront(nil)
+            for _ in 0..<6 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try? await Task.sleep(for: .milliseconds(10)) }
+        }
+        model.openReport(); await show()
+        model.report.requestListOpen = true; model.report.expandedSessions = ["chat-1"]
+        // Going to a chat takes the page down; coming back builds a new one.
+        model.page = .chats; window.contentView = nil
+        model.openReport(); await show()
+        XCTAssertTrue(model.report.requestListOpen, "The section is still open")
+        XCTAssertEqual(model.report.expandedSessions, ["chat-1"])
+    }
+}

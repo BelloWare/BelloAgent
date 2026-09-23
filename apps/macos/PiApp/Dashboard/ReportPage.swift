@@ -24,7 +24,6 @@ struct ReportPage: View {
     @State private var inspected: DashboardRequest?
     @State private var messageLookup: Task<Void, Never>?
     @State private var routingPalette = MonitorModelPalette()
-    @State private var requestListOpen = false
     init(model: WorkspaceModel) { self.model = model; self.report = model.report }
     /// A page over a controller with its own queries, for tests.
     init(model: WorkspaceModel, report: ReportController) { self.model = model; self.report = report }
@@ -52,7 +51,7 @@ struct ReportPage: View {
                                 activity: { model.menuBarActivity() }, openSession: { id in
                                     Task { if model.side(id) != nil { await model.selectSide(id) } else { await model.select(id) } }
                                 })
-                            DisclosureGroup("Requests and session details", isExpanded: $requestListOpen) {
+                            DisclosureGroup("Requests and session details", isExpanded: $report.requestListOpen) {
                                 requests(active, width: max(1100, min(1280, geometry.size.width) - 2 * PiSpacing.xl)).padding(.top, PiSpacing.md)
                             }.font(PiFont.heading).accessibilityIdentifier("analytics-request-details")
                         }
@@ -72,7 +71,7 @@ struct ReportPage: View {
         .background(Color.piContent)
         .task { await report.prepare() }
         .onChange(of: report.modelSummaries, initial: true) { _, rows in routingPalette.include((rows ?? []).map(\.distributionID)) }
-        .onChange(of: report.grouping) { _, _ in requestListOpen = true }
+        .onChange(of: report.grouping) { _, _ in report.requestListOpen = true }
         .onDisappear { messageLookup?.cancel(); messageLookup = nil; report.suspend() }
         .onExitCommand { model.closeReport() }
         .sheet(item: $inspected) { request in InspectorView(model: model, sessionID: request.sessionID, initialAttemptID: request.id) }

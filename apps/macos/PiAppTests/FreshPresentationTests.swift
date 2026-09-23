@@ -95,7 +95,13 @@ final class FreshPresentationTests: XCTestCase {
         let tail = try FileHandle(forWritingTo: path); try tail.seekToEnd(); try tail.write(contentsOf: Data("{unfinished".utf8)); try tail.close()
         let broken = try await reader.window(path: path.path)
         XCTAssertNotNil(broken.notice)
-        XCTAssertThrowsError(try ConversationHistoryPage(broken))
+        // A cut-off last line no longer hides the chat: every complete record
+        // before it opens read-only, marked as a damaged tail.
+        XCTAssertTrue(broken.incompleteTail)
+        let readable = try ConversationHistoryPage(broken)
+        XCTAssertTrue(readable.damagedTail)
+        XCTAssertEqual(readable.messages.last?.id, broken.messages.last?.id, "the complete prefix is shown")
+        XCTAssertFalse(readable.messages.isEmpty)
     }
     @MainActor func testFreshRevisitAndIdempotentSelectionPreserveDraftAndRuntime() async throws {
         let root = try folder(), path = try journal(40, root: root), model = try await model(root, path: path)

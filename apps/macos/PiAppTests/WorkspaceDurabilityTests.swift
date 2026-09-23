@@ -13,6 +13,7 @@ final class WorkspaceDurabilityTests: XCTestCase {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         let store = try XCTUnwrap(model.store), view = SessionDisplay(id: "chat")
+        view.selectionMetadataLoaded = true
         model.displays[view.id] = view
         let future = Int64(Date().timeIntervalSince1970 * 1_000_000) + 1_000_000_000_000
         try await store.put(DraftRecord(id: view.id, text: "Before clock correction"), kind: "draft", id: view.id, revision: future)
@@ -82,7 +83,7 @@ final class WorkspaceDurabilityTests: XCTestCase {
         let chat = ChatRecord(id: "source", workspaceID: "w", title: "Source", path: root.appendingPathComponent("source.jsonl").path, profileID: profile.id)
         model.workspaces = [WorkspaceRecord(id: "w", path: root.path, trusted: true)]
         model.profiles = [profile]; model.profileChoice = profile.id; model.chats = [chat]; model.selectedID = chat.id
-        model.error = nil; model.continueCopy()
+        model.error = nil; model.recoverCopy(chat.id)
         XCTAssertTrue(model.error?.contains("Desktop storage") == true)
         model.error = nil; model.portableHandoff()
         XCTAssertTrue(model.error?.contains("Desktop storage") == true)
@@ -98,7 +99,7 @@ final class WorkspaceDurabilityTests: XCTestCase {
         let store = try XCTUnwrap(model.store), view = SessionDisplay(id: "side")
         let chat = ChatRecord(id: view.id, workspaceID: "w", title: "Side", path: nil, profileID: "p", toolMode: "read-only", parentSessionID: "parent")
         try await store.put(chat, kind: "chat", id: chat.id)
-        model.chats = [chat]; model.displays[view.id] = view; view.draft = "Unsent side draft"
+        model.chats = [chat]; model.displays[view.id] = view; view.selectionMetadataLoaded = true; view.draft = "Unsent side draft"
         model.sides["parent"] = .init(id: view.id, parentID: "parent", workspaceID: "w", profileID: "p", title: "Side", kept: true)
         await store.close()
         model.closeSide(view.id)

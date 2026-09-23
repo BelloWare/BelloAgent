@@ -233,14 +233,19 @@ struct PreparedContextMetrics {
         } else {
             count = ["tokens": summary["estimatedTokens"] ?? .null, "estimated": .bool(true), "method": .string("heuristic")]
         }
-        guard let tokens = count["tokens"]?.number, tokens.isFinite, tokens >= 0,
-              let capacity = summary["contextWindow"]?.number, capacity.isFinite, capacity > 0 else { return nil }
+        guard let capacity = summary["contextWindow"]?.number, capacity.isFinite, capacity > 0 else { return nil }
         var context = count
-        context["tokens"] = .number(tokens)
+        // After a compaction pi's count is unknown until the next reply: a
+        // pending reading, never a zero.
+        if count["state"]?.string == "post-compaction", count["tokens"] == nil || count["tokens"] == .null {
+            context["tokens"] = .null; context["state"] = .string("post-compaction")
+        } else {
+            guard let tokens = count["tokens"]?.number, tokens.isFinite, tokens >= 0 else { return nil }
+            context["tokens"] = .number(tokens); context["state"] = .string("prepared")
+        }
         context["contextWindow"] = .number(capacity)
         context["outputReserve"] = count["outputBudget"] ?? summary["outputReserve"] ?? .null
         context["estimated"] = .bool(count["estimated"]?.bool ?? true)
-        context["state"] = .string("prepared")
         context["preparation"] = .string(summary["mode"]?.string == "active-context" ? "Prepared running context; unsent draft and queued turns excluded" :
             (summary["draftIncluded"]?.bool == true ? "Prepared next request, including unsent draft and selected skills/images" : "Prepared next request; no draft included"))
         context["source"] = count["source"] ?? .string("Estimated request context")

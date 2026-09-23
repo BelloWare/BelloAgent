@@ -72,7 +72,7 @@ final class ContextScopeTests: XCTestCase {
                 let snapshot=await session.snapshot(["includeMetrics":false])
                 XCTAssertEqual(result["replayRevision"],snapshot["contextState"]["replayRevision"])
                 XCTAssertLessThan(result["seq"].int!,snapshot["seq"].int!,"Event traffic does not invalidate replay identity")
-                XCTAssertTrue(snapshot["contextState"]["count"]["tokens"].isNull,"Preview is observational")
+                XCTAssertEqual(snapshot["contextState"]["count"]["tokens"].int.map { $0 + 2 },result["count"]["tokens"].int,"Preview is observational: the session's count leaves the unsent draft out")
             } catch let error as AgentError {
                 XCTAssertTrue(changesInput); XCTAssertEqual(error.code,"context_changed")
             }

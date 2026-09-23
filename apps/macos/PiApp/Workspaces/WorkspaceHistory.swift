@@ -61,7 +61,7 @@ extension WorkspaceModel {
             observeAssistantOutputs(sessionID: view.id, snapshot: ["assistantMessageCount": .number(Double(count)),
                 "latestAssistantMessageId": page.latestAssistantID.map(WireValue.string) ?? .null])
         }
-        view.observeRetainedFailure(page.failure)
+        view.observeRetainedFailure(page.failure); view.observeRetainedRun(page)
         if let notice = page.notice { view.notice = notice }
         view.presentation.sourceReadyAt = PerformanceProbe.now
         PerformanceProbe.shared.observe("selectionSourceReadyMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
@@ -98,6 +98,9 @@ extension WorkspaceModel {
         guard let view = displays[id], let item = record(id) else { return }
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
         let generation = view.presentationGeneration
+        // The reads of the page being replaced end with it: neither boundary
+        // is left loading, or failed, behind the cover.
+        view.olderPage = .init(); view.newerPage = .init()
         view.historyState = .loading; view.historyProgress = nil; view.browsingHistory = true; view.publishTranscript()
         view.presentation.navigation = Task { [weak self, weak view] in
             guard let self, let view else { return }
@@ -123,16 +126,23 @@ extension WorkspaceModel {
         guard let view = displays[id], let item = record(id), !view.historyState.loading else { return false }
         let boundary = newer ? view.newerPage : view.olderPage
         guard let cursor = boundary.cursor, !boundary.loading else { return false }
-        let generation = view.presentationGeneration
-        if newer { view.newerPage.loading = true; view.newerPage.error = nil }
-        else { view.olderPage.loading = true; view.olderPage.error = nil; view.loadingEarlier = true }
+        let generation = view.presentationGeneration, read = UUID()
+        if newer { view.newerPage.loading = true; view.newerPage.error = nil; view.presentation.newerRead = read }
+        else { view.olderPage.loading = true; view.olderPage.error = nil; view.loadingEarlier = true; view.presentation.olderRead = read }
         let task = Task { [weak self, weak view] () -> Bool in
             guard let self, let view else { return false }
             @MainActor func current() -> Bool { !Task.isCancelled && self.displays[id] === view && view.presentationGeneration == generation }
             defer {
+                // Only the read the flag belongs to ends it. A read whose page
+                // was replaced under it (and read again since) must not end
+                // the read under way now: its spinner would go, and a second
+                // read of the same page would start.
                 if view.presentationGeneration == generation {
-                    if newer { view.newerPage.loading = false; view.presentation.newerTask = nil }
-                    else { view.olderPage.loading = false; view.loadingEarlier = false; view.presentation.olderTask = nil }
+                    if newer, view.presentation.newerRead == read {
+                        view.newerPage.loading = false; view.presentation.newerTask = nil; view.presentation.newerRead = nil
+                    } else if !newer, view.presentation.olderRead == read {
+                        view.olderPage.loading = false; view.loadingEarlier = false; view.presentation.olderTask = nil; view.presentation.olderRead = nil
+                    }
                 }
             }
             do {
@@ -234,15 +244,69 @@ extension WorkspaceModel {
 
     /// A successful submission follows its new turn even from a retained
     /// earlier window or while an old source read is still being hydrated.
-    func followSubmittedTurn(_ id: String) {
+    /// A message drawn on Return follows it before the helper has it, and has
+    /// nothing to fetch yet (`refreshing: false`).
+    func followSubmittedTurn(_ id: String, refreshing: Bool = true) {
         guard let view = displays[id] else { return }
-        if view.browsingHistory || view.historyState.loading || view.newerPage.available ||
-            view.olderPage.loading || view.newerPage.loading {
+        if view.browsingHistory || view.historyState.loading || view.newerPage.available || view.newerPage.loading {
             latest(sessionID: id)
         } else {
+            // An earlier page still on its way is not where the reader is
+            // going, and joining it could push the newest rows out of the
+            // window they are about to follow. It is let go of, rather than
+            // the whole conversation being read again behind the cover.
+            if view.olderPage.loading { view.presentation.olderTask?.cancel() }
             view.scrollAnchor = .init(id: view.messages.last?.id ?? "", offset: 0, followsBottom: true)
             view.viewportRequest += 1; anchorChanged(view)
-            refresh(id)
+            if refreshing { refresh(id) }
         }
     }
+
+    /// The reader's own edit has moved the chat onto a new branch
+    /// (`sendEdit`), and this snapshot is the first to carry it. The page
+    /// takes the new branch as its source where the reader is: the rows the
+    /// edit abandoned leave, the earlier boundary is read from the new
+    /// branch, no newer gap is left behind, and the page goes to the new
+    /// turn. The reader made this change, so nothing reports it to them;
+    /// a change of branch nobody here asked for is still reported.
+    func adoptOwnBranch(_ view: SessionDisplay, rows: [TranscriptMessage], snapshot result: [String: WireValue]) {
+        guard let pending = view.pendingBranch, let incarnation = result["historyIncarnation"]?.string,
+              let lineage = result["historyLineage"]?.string else { return }
+        let held = view.presentation.identity?.lineage
+        if let from = pending.from {
+            // Taken before the edit landed: it is still on its way.
+            guard lineage != from else { return }
+            // Already on the new branch: a reload read it first.
+            if held == lineage { view.pendingBranch = nil; return }
+            // The page went to some other branch meanwhile; not this edit's.
+            guard held == nil || held == from else { return }
+        } else {
+            // The page held no branch when the edit went. Only a snapshot
+            // that shows the new branch beginning, without the question it
+            // replaced, is the edit landing.
+            guard held != lineage, rows.contains(where: { $0.id == lineage && $0.kind == "branch" }),
+                  !rows.contains(where: { $0.id == pending.messageID }) else { return }
+        }
+        view.pendingBranch = nil
+        view.presentation.identity = (incarnation, lineage)
+        // Reads under way on the branch the reader left would only fail on
+        // this one. The earlier boundary is re-pointed as the rows land.
+        view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
+        view.olderPage = .init(cursor: view.olderPage.cursor); view.newerPage = .init()
+        view.pinnedHistoryIDs = []
+        // A window that reaches no row held replaces the rows: nothing
+        // vouches for what would lie between, and the rows before it are
+        // read again from its earlier boundary as the reader goes up.
+        let arriving = Set(rows.map(\.id))
+        if !view.messages.contains(where: { arriving.contains($0.id) }) {
+            view.messages = []; view.presentation.partialTurnInput = nil
+        } else if view.presentation.partialTurnInput == pending.messageID { view.presentation.partialTurnInput = nil }
+        // The reader goes with their edit, to the new turn at the end.
+        view.scrollAnchor = .init(id: "", offset: 0, followsBottom: true)
+        view.viewportRequest += 1; anchorChanged(view)
+    }
+    /// A change of branch nobody here asked for: another copy of the app, or
+    /// a journal changed under the chat. The page stops following the live
+    /// rows and says so once, with the way back.
+    static let branchChangedElsewhere = "This conversation was changed outside this window. Reload to show it as it is now."
 }

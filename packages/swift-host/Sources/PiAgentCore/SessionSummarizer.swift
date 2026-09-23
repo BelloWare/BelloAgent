@@ -16,14 +16,15 @@ extension AgentSession {
             return [source,ChatMessage(role:"user",content:[textBlock(CompactionSourceBuilder.instructions)])]
         }
         func prepare(_ records: [String]) throws -> (Profile,RequestContextCount) {
-            let body=try ProviderClient.requestBody(profile:profile,messages:questions(records),instructions:"",tools:[],sessionID:id)
-            let packed=try contextCounter.count(request:body,profile:profile)
+            let messages=questions(records)
+            let body=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:"",tools:[],sessionID:id)
+            let packed=try contextCounter.count(messages:messages,profile:profile,request:body,reportedUsage:false)
             guard packed.fits else { return (profile,packed) }
             let cap=min(allowedCap,packed.replyRoom)
             var raw=profile.raw;raw["maxOutputTokens"]=JSON(cap);raw["outputCap"]=JSON(cap)
             let dispatch=try Profile(raw)
-            let actual=try ProviderClient.requestBody(profile:dispatch,messages:questions(records),instructions:"",tools:[],sessionID:id)
-            return (dispatch,try contextCounter.count(request:actual,profile:dispatch))
+            let actual=try ProviderClient.requestBody(profile:dispatch,messages:messages,instructions:"",tools:[],sessionID:id)
+            return (dispatch,try contextCounter.count(messages:messages,profile:dispatch,request:actual,reportedUsage:false))
         }
         while true {
             try validateCompaction(revision,profile:originalProfile)
@@ -34,7 +35,7 @@ extension AgentSession {
                 var low=0, high=pending.count-offset
                 while low<high {
                     let mid=(low+high+1)/2, measured=try prepare(Array(pending[offset..<(offset+mid)])).1
-                    if measured.fits && measured.tokens<=capacity { low=mid } else { high=mid-1 }
+                    if measured.fits && measured.requestTokens<=capacity { low=mid } else { high=mid-1 }
                 }
                 if low==0 {
                     // A single record can exceed a small window. Split its data,
@@ -71,7 +72,7 @@ extension AgentSession {
                         operationStatus("Summary request failed: " + error.message)
                         if let attempt=error.attemptID, !compactionAttemptIDs.contains(attempt) { compactionAttemptIDs.append(attempt) }
                         if error.failure?.contextRejection == true {
-                            capacity=min(capacity,max(1,measured.tokens*2/3)); repack=true
+                            capacity=min(capacity,max(1,measured.requestTokens*2/3)); repack=true
                         } else if transient<Self.modelAttempts, Self.isRetryable(error), !Task.isCancelled, compactionPhysicalAttempts<budget {
                             compactionState["phase"]="retrying"; event("compaction_progress")
                             try await Task.sleep(nanoseconds:UInt64(Self.retryDelays[min(transient-1,Self.retryDelays.count-1)]*1_000_000_000))
@@ -101,7 +102,7 @@ extension AgentSession {
                     guard !budgetRetried, allowedCap>effectiveProfile.maxOutput, compactionPhysicalAttempts<budget else {
                         throw summaryFailure("compaction_output_exhausted","Summary generation exhausted its output allowance. No further permitted budget retry remains; choose a larger declared capacity or a smaller handoff.",outcome:outcome)
                     }
-                    capacity=min(capacity,max(1,measured.tokens*2/3));budgetRetried=true
+                    capacity=min(capacity,max(1,measured.requestTokens*2/3));budgetRetried=true
                     // Source reduction can make more of the model's allowance
                     // feasible; a full-cap exhaustion has no larger legal retry.
                     compactionState["phase"]="retrying-output-budget";event("compaction_progress")

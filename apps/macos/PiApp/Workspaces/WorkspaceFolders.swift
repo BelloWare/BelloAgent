@@ -30,6 +30,60 @@ extension WorkspaceModel {
 
     func chatCount(workspaceID: String) -> Int { chats.filter { $0.workspaceID == workspaceID }.count }
 
+    /// A project folder moved or renamed while the app was closed used to
+    /// reach the helper launch, which failed as "The bundled host could not
+    /// start. Reinstall this build." Checked first, it is named instead, and
+    /// the project is marked so its chats offer Locate Folder….
+    func requireProjectFolders(_ workspace: WorkspaceRecord) throws {
+        guard let missing = workspace.roots.first(where: { root in
+            var directory: ObjCBool = false
+            return !FileManager.default.fileExists(atPath: root, isDirectory: &directory) || !directory.boolValue
+        }) else {
+            if missingProjectFolders[workspace.id] != nil { missingProjectFolders.removeValue(forKey: workspace.id) }
+            return
+        }
+        missingProjectFolders[workspace.id] = missing
+        throw HostError.failure("The project folder \(missing) is missing or was moved. Choose Locate Folder… to point the project at where it is now; its chats stay as they are.")
+    }
+
+    /// Points a project at the new place of a folder that was moved, keeping
+    /// the project, its chats and their journals (they live in app storage
+    /// under the project's id, not in the folder).
+    func relocateProjectFolder(_ workspaceID: String, from missing: String, to folder: String) async throws {
+        try await ensureConfiguration()
+        guard let workspace = workspaces.first(where: { $0.id == workspaceID }) else { throw HostError.failure("This project is no longer configured.") }
+        guard workspace.roots.contains(missing) else { throw HostError.failure("That folder is not part of this project.") }
+        try requireIdle(workspaceID)
+        let replacement = URL(fileURLWithPath: folder).resolvingSymlinksInPath().path
+        // Only the new place has to exist now: another folder of the project
+        // may be missing too, and is located on its own.
+        try Self.validateRoots([replacement])
+        let roots = workspace.roots.map { $0 == missing ? replacement : $0 }
+        guard Set(roots).count == roots.count else { throw HostError.failure("That folder is already part of this project.") }
+        if let other = workspaces.first(where: { $0.id != workspaceID && $0.path == replacement }) {
+            throw HostError.failure("\(other.path) is already another project. Choose the folder this project was moved to.")
+        }
+        workspaceChangesInFlight.insert(workspaceID)
+        defer { workspaceChangesInFlight.remove(workspaceID) }
+        try await updateConfiguration { config in
+            guard let index = config.workspaces.firstIndex(where: { $0.id == workspaceID }) else { throw HostError.failure("This project is no longer configured.") }
+            if config.workspaces[index].path == missing { config.workspaces[index].path = replacement }
+            else { config.workspaces[index].paths = config.workspaces[index].paths.map { $0 == missing ? replacement : $0 } }
+        }
+        missingProjectFolders.removeValue(forKey: workspaceID)
+        try await restartWorkspaceHost(workspaceID)
+        for chat in chats where chat.workspaceID == workspaceID { displays[chat.id]?.sendFailure = nil }
+    }
+
+    /// Asks where a moved project folder is now, then points the project there.
+    func locateMissingFolder(_ workspaceID: String) async {
+        guard let missing = missingProjectFolders[workspaceID] else { return }
+        let name = URL(fileURLWithPath: missing).lastPathComponent
+        guard let folder = await Self.chooseFolders(message: "Where is the folder “\(name)” now? It was at \(missing).", multiple: false).first else { return }
+        do { try await relocateProjectFolder(workspaceID, from: missing, to: folder) }
+        catch { self.error = error.localizedDescription }
+    }
+
     /// True while chats or unkept sides of this workspace are running, queued or loading.
     func workspaceHasActiveWork(_ workspaceID: String) -> Bool {
         workspaceChangesInFlight.contains(workspaceID)

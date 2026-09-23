@@ -70,21 +70,22 @@ final class HardeningTests: XCTestCase {
         model.chats = [ChatRecord(id: "fixture", workspaceID: "workspace", title: "fixture", path: path.path, profileID: "profile")]
         try await model.store?.put(TranscriptAnchor(id: "m10", offset: -12, followsBottom: false), kind: "anchor", id: "fixture")
         await model.select("fixture")
-        // An unloaded chat opens at its newest page; an old reading position outside it is dropped.
-        XCTAssertEqual(model.selected?.messages.last?.id, "m99"); XCTAssertEqual(model.selected?.messages.first?.id, "m97"); XCTAssertEqual(model.selected?.before, "m97")
-        XCTAssertFalse(model.selected?.browsingHistory == true); XCTAssertTrue(model.hosts.isEmpty)
-        XCTAssertNil(model.selected?.scrollAnchor, "A position outside the page would leave the reader at the page top")
+        // An unloaded chat opens where the reader left it: the bounded turns
+        // from their row on, detached from the newest turns. No host starts.
+        XCTAssertEqual(model.selected?.messages.first?.id, "m10"); XCTAssertEqual(model.selected?.messages.last?.id, "m12"); XCTAssertEqual(model.selected?.before, "m10")
+        XCTAssertTrue(model.selected?.browsingHistory == true); XCTAssertTrue(model.hosts.isEmpty)
+        XCTAssertEqual(model.selected?.scrollAnchor, TranscriptAnchor(id: "m10", offset: -12, followsBottom: false), "The reading position is kept with its offset")
         XCTAssertLessThanOrEqual(model.selected?.messages.reduce(0) { $0 + $1.text.utf8.count } ?? 0, 300_000)
         // Scrolling up prepends the page before the first row without starting a host.
         let view = try XCTUnwrap(model.selected)
         model.historyViewportReady("fixture", generation: view.presentationGeneration)
         let loaded = await model.loadEarlierPage(sessionID:"fixture")
         XCTAssertTrue(loaded)
-        XCTAssertEqual(view.messages.first?.id, "m94"); XCTAssertEqual(view.messages.last?.id, "m99"); XCTAssertEqual(view.before, "m94")
-        XCTAssertNil(view.scrollAnchor,"A model-only page read leaves viewport ownership to its pane")
+        XCTAssertEqual(view.messages.first?.id, "m7"); XCTAssertEqual(view.messages.last?.id, "m12"); XCTAssertEqual(view.before, "m7")
+        XCTAssertEqual(view.scrollAnchor?.id, "m10", "A model-only page read leaves the viewport and its anchor to the pane")
         XCTAssertTrue(model.hosts.isEmpty)
         model.latest(sessionID: "fixture")
-        for _ in 0..<500 where view.messages.first?.id == "m94" { try await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<500 where view.messages.first?.id == "m7" { try await Task.sleep(for: .milliseconds(10)) }
         await model.select("fixture")
         XCTAssertEqual(model.selected?.messages.last?.id, "m99"); XCTAssertEqual(model.selected?.messages.first?.id, "m97"); XCTAssertFalse(model.selected?.browsingHistory == true)
         let earlier = try await model.history.read(path: path.path, before: "m10")
@@ -162,6 +163,7 @@ final class HardeningTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())), view = SessionDisplay(id: "chat")
         defer { model.shutdown() }
+        view.selectionMetadataLoaded = true
         model.displays["chat"] = view; view.state = "running"; XCTAssertFalse(model.acquireUpdateBarrier())
         view.state = "idle"; view.loading = true; XCTAssertFalse(model.acquireUpdateBarrier()); view.loading = false
         model.sides["chat"] = SideRecord(id: "side", parentID: "chat", workspaceID: "w", profileID: "p", title: "side")
@@ -170,7 +172,7 @@ final class HardeningTests: XCTestCase {
         view.draftBeforeEdit = DraftRecord(id: view.id, text: "Original unsent draft survives update", attachments: [originalAttachment])
         view.editingMessageID = "earlier-user-message"; view.draft = "Edited request survives update"
         model.draftChanged(view) // The install flush must replace this cancelled, debounced edit write.
-        let plain = SessionDisplay(id: "plain"); plain.draft = "Ordinary unsent draft"; model.displays[plain.id] = plain
+        let plain = SessionDisplay(id: "plain"); plain.selectionMetadataLoaded = true; plain.draft = "Ordinary unsent draft"; model.displays[plain.id] = plain
         XCTAssertTrue(model.acquireUpdateBarrier()); XCTAssertTrue(model.installPreparing)
         model.selectedID = "chat"; model.send(); XCTAssertTrue(model.hosts.isEmpty)
         try await model.prepareForInstall()
@@ -197,5 +199,53 @@ final class HardeningTests: XCTestCase {
         try await store.removeAll(kind: "receipt:chat")
         let empty = try await store.list(String.self, kind: "receipt:chat"), other = try await store.list(String.self, kind: "receipt:other")
         XCTAssertTrue(empty.isEmpty); XCTAssertEqual(other, ["other"]); await store.close()
+    }
+}
+
+extension HardeningTests {
+    /// Reading back in a long chat, then looking at another chat and coming
+    /// back (or quitting and reopening), used to land on the newest turns: the
+    /// chat opened on its newest page, and a position outside it was dropped.
+    @MainActor func testAnOlderReadingPositionSurvivesSwitchingAwayAndRelaunching() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("native-reading-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("session.jsonl")
+        var bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"fixture\"}\n".utf8)
+        for index in 0..<100 {
+            let value: [String: Any] = ["type": "message", "id": "m\(index)", "parentId": index == 0 ? NSNull() : "m\(index - 1)" as Any, "message": ["role": index % 2 == 0 ? "user" : "assistant", "content": "Row \(index)"]]
+            bytes.append(try JSONSerialization.data(withJSONObject: value)); bytes.append(10)
+        }
+        try bytes.write(to: path)
+        let chats = [ChatRecord(id: "fixture", workspaceID: "workspace", title: "fixture", path: path.path, profileID: "profile"),
+                     ChatRecord(id: "other", workspaceID: "workspace", title: "other", path: nil, profileID: "profile")]
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        model.chats = chats
+        await model.select("fixture")
+        let view = try XCTUnwrap(model.selected)
+        for _ in 0..<60 where !view.messages.contains(where: { $0.id == "m10" }) {
+            model.historyViewportReady("fixture", generation: view.presentationGeneration)
+            guard await model.loadEarlierPage(sessionID: "fixture") else { break }
+        }
+        XCTAssertTrue(view.messages.contains { $0.id == "m10" }, "Scrolled back to the eleventh row")
+        let reading = TranscriptAnchor(id: "m10", offset: 30, followsBottom: false)
+        view.scrollAnchor = reading; model.anchorChanged(view)
+        await model.select("other"); await model.select("fixture")
+        XCTAssertTrue(model.selected?.messages.contains { $0.id == "m10" } == true, "Coming back reads the turns the reader was in")
+        XCTAssertEqual(model.selected?.scrollAnchor, reading)
+        XCTAssertTrue(model.hosts.isEmpty)
+
+        try await model.flushDrafts(); model.shutdown(); try await model.traces.close(); await model.store?.close()
+        let relaunched = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        relaunched.chats = chats
+        await relaunched.select("fixture")
+        XCTAssertTrue(relaunched.selected?.messages.contains { $0.id == "m10" } == true, "A relaunch opens on the turns the reader was in")
+        XCTAssertEqual(relaunched.selected?.scrollAnchor, reading)
+        XCTAssertLessThanOrEqual(relaunched.selected?.messages.count ?? 0, 60, "Still one bounded page")
+        // A row that is gone opens the newest turns, as before.
+        relaunched.selected?.scrollAnchor = TranscriptAnchor(id: "gone", offset: 0, followsBottom: false)
+        await relaunched.select("other"); await relaunched.select("fixture")
+        XCTAssertEqual(relaunched.selected?.messages.last?.id, "m99")
+        XCTAssertNil(relaunched.selected?.scrollAnchor)
+        relaunched.shutdown(); try await relaunched.traces.close(); await relaunched.store?.close()
     }
 }

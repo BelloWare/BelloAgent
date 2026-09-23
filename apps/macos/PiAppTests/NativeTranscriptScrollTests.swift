@@ -109,6 +109,38 @@ final class NativeTranscriptScrollTests: XCTestCase {
         try await model.traces.close(); await model.store?.close()
     }
 
+    /// A page following its newest row keeps it in sight in the very pass in
+    /// which the viewport gets shorter — the live bar's slot opening under it
+    /// as a run starts is the everyday case. The page used to land on its end
+    /// a run-loop turn later, and the frame drawn in between showed the
+    /// newest row, a message just sent, pushed out of sight.
+    @MainActor func testTheNewestRowStaysInSightInThePassTheViewportShrinks() async throws {
+        let rows: [TranscriptMessage] = (0..<40).map { index in
+            TranscriptMessage(id: "m\(index)", role: index % 2 == 0 ? "user" : "assistant", text: "Row \(index): a paragraph of text that takes a line or two.",
+                              at: Double(index) * 1000, turn: "m\(index - index % 2)")
+        }
+        let pane = try ConversationPaneTests.Pane(messages: rows, height: 760)
+        defer { pane.close() }
+        pane.session.historyState = .ready
+        await pane.settle(40)
+        let scroll = try XCTUnwrap(ConversationPaneTests.views(TranscriptSurfaceMarker.self, in: pane.hosted).first?.enclosingScrollView)
+        let document = try XCTUnwrap(scroll.documentView as? TranscriptNativeDocument)
+        func newestInSight() -> Bool {
+            guard let newest = document.retainedRows.last else { return false }
+            let visible = document.convert(scroll.contentView.bounds, from: scroll.contentView)
+            return newest.superview === document && visible.contains(CGPoint(x: newest.frame.midX, y: newest.frame.maxY - 4))
+        }
+        XCTAssertTrue(newestInSight(), "The page starts on its newest row")
+        for shrink in [120.0, 40.0] {
+            var frame = pane.window.frame
+            frame.size.height -= shrink; frame.origin.y += shrink
+            pane.window.setFrame(frame, display: false)
+            // One pass of layout and display, with nothing deferred run in between.
+            pane.draw()
+            XCTAssertTrue(newestInSight(), "The pass that shrinks the viewport by \(shrink) points still shows the newest row")
+        }
+    }
+
     /// An idle chat whose last turn is taller than the viewport opens at the question that started it, not at the bottom.
     @MainActor func testAnIdleChatOpensAtTheLastQuestionWhenTheLastTurnIsTall() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("native-open-" + UUID().uuidString)

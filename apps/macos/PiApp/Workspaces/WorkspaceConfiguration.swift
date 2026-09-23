@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import os
 
 extension WorkspaceModel {
@@ -102,6 +102,40 @@ extension WorkspaceModel {
         } catch { self.error = "Request archive: " + error.localizedDescription; return false }
     }
     func ensureConfiguration() async throws { if !configurationLoaded { try await reloadConfiguration() } }
+    /// The vault could not be read at launch, most often because the login
+    /// Keychain was locked: every project read "Retained chats" and every chat
+    /// "Project unavailable" until Settings happened to reload it, even after
+    /// the Keychain was unlocked. Each time the app becomes active it tries
+    /// again, until the vault reads.
+    func retryConfigurationWhenActive() {
+        guard configurationRetry == nil, !configurationLoaded else { return }
+        configurationRetry = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.retryConfiguration() }
+        }
+    }
+    /// One more try at the vault, from an activation or the Retry button.
+    func retryConfiguration() {
+        guard !configurationLoaded else { stopConfigurationRetry(); return }
+        guard !configurationRetrying else { return }
+        configurationRetrying = true
+        let failure = error
+        Task {
+            defer { configurationRetrying = false }
+            do {
+                try await reloadConfiguration()
+                stopConfigurationRetry()
+                if error == failure { error = nil }
+                // Launch chose these while there was nothing to choose from;
+                // without them New Chat had no project or connection.
+                if selectedWorkspaceID == nil { selectedWorkspaceID = workspaces.first?.id }
+                if !profiles.contains(where: { $0.id == profileChoice }) { profileChoice = requestProfiles.first?.id ?? "" }
+            } catch { }
+        }
+    }
+    func stopConfigurationRetry() {
+        if let configurationRetry { NotificationCenter.default.removeObserver(configurationRetry) }
+        configurationRetry = nil
+    }
     /// Trusted, tool-free home for chats that belong to no project. It lives in
     /// the app's own state directory, so no user folder is exposed.
     var scratchWorkspace: WorkspaceRecord {

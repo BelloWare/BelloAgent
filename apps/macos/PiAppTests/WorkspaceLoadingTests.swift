@@ -60,7 +60,8 @@ final class WorkspaceLoadingTests: XCTestCase {
         XCTAssertTrue(loaded); XCTAssertEqual(view.messages.count, 11)
         view.scrollAnchor = .init(id: "m990", offset: 17, followsBottom: false)
         await model.select("b"); await model.select("a")
-        XCTAssertEqual(view.messages.count, 5); XCTAssertNil(view.scrollAnchor)
+        // Still one bounded page, read from where the reader was.
+        XCTAssertEqual(view.messages.map(\.id), (990..<996).map { "m\($0)" }); XCTAssertEqual(view.scrollAnchor?.id, "m990")
         XCTAssertTrue(model.hosts.isEmpty)
         print("FRESH selection+revisit source ms \((ProcessInfo.processInfo.systemUptime-started)*1000)")
         try await close(model)
@@ -236,5 +237,68 @@ extension WorkspaceLoadingTests {
         await model.select("a")
         XCTAssertNotEqual(view.historyState, .loading, "Clicking a chat stuck loading reads it again")
         try await close(model)
+    }
+}
+
+extension WorkspaceLoadingTests {
+    /// A selection overtaken before its saved draft is read leaves the chat's
+    /// display alive with an empty composer that is not the user's. Quit and
+    /// update wrote it over the draft on disk.
+    @MainActor func testQuitKeepsTheSavedDraftOfASelectionThatNeverLoadedIt() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await fixture(root: root), store = try XCTUnwrap(model.store)
+        try await store.put(DraftRecord(id: "a", text: "Saved A"), kind: "draft", id: "a")
+        let entered = expectation(description: "Metadata actor held"), gate = SelectionReadGate(entered: entered)
+        let blocker = Task { await store.holdSelectionReads(gate) }
+        await fulfillment(of: [entered], timeout: 2)
+        let first = Task { await model.select("a") }
+        for _ in 0..<500 where model.selectedID != "a" { await Task.yield() }
+        let second = Task { await model.select("b") }
+        for _ in 0..<500 where model.selectedID != "b" { await Task.yield() }
+        gate.resume.signal()
+        await blocker.value; await first.value; await second.value
+        XCTAssertEqual(model.displays["a"]?.selectionMetadataLoaded, false, "The overtaken selection never read A's draft")
+        try await model.flushDrafts()
+        let saved = try await store.get(DraftRecord.self, kind: "draft", id: "a")
+        XCTAssertEqual(saved?.text, "Saved A")
+        try await close(model)
+    }
+
+    /// Closing a saved side before its saved draft was read wrote the empty
+    /// composer over it.
+    @MainActor func testClosingASideBeforeItsDraftLoadedKeepsTheSavedDraft() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await fixture(root: root), store = try XCTUnwrap(model.store)
+        model.chats[1].parentSessionID = "a"
+        try await store.put(DraftRecord(id: "b", text: "Side text"), kind: "draft", id: "b")
+        let view = model.mountSide(model.chats[1], beside: "a")
+        XCTAssertFalse(view.selectionMetadataLoaded)
+        model.closeSide("b")
+        for _ in 0..<500 where model.sides["a"] != nil || view.loading { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertNil(model.sides["a"], "The side closed")
+        let saved = try await store.get(DraftRecord.self, kind: "draft", id: "b")
+        XCTAssertEqual(saved?.text, "Side text")
+        try await close(model)
+    }
+
+    /// A helper event for a chat nobody is showing (a settings change reaches
+    /// every loaded session) builds it an empty display. Quit wrote that
+    /// empty draft over the saved one.
+    @MainActor func testQuitKeepsTheSavedDraftOfADisplayAHelperEventRebuilt() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await fixture(root: root), store = try XCTUnwrap(model.store)
+        try await store.put(DraftRecord(id: "a", text: "keep me"), kind: "draft", id: "a")
+        model.hosts["project"] = HostSupervisor(); model.opened.insert("a")
+        model.refresh("a")
+        XCTAssertEqual(model.displays["a"]?.draft, "")
+        try await model.flushDrafts()
+        let saved = try await store.get(DraftRecord.self, kind: "draft", id: "a")
+        XCTAssertEqual(saved?.text, "keep me")
+        model.hosts.removeAll(); model.opened.removeAll()
+        try await close(model)
+        let reopened = try await fixture(root: root)
+        await reopened.select("a")
+        XCTAssertEqual(reopened.selected?.draft, "keep me")
+        try await close(reopened)
     }
 }

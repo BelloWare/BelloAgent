@@ -447,3 +447,40 @@ private final class TitleGenerationGateway: @unchecked Sendable {
         }
     }
 }
+
+extension TitleGenerationTests {
+    /// A title request the app quit during kept its claim for good: only the
+    /// first send asks for a title, so the chat kept its first-message title,
+    /// and its row, with no recorded end, read as an unknown outcome. A
+    /// suggestions row the rename sheet was using stayed in the list too.
+    @MainActor func testATitleRequestInterruptedByAQuitIsAskedAgainOnTheNextMessage() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let state = root.appendingPathComponent("state")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        let store = MetadataStore(url: state.appendingPathComponent("desktop.sqlite"))
+        let source = ChatRecord(id: "source", workspaceID: "project", title: "First message", path: nil, profileID: "profile")
+        try await store.put(source, kind: "chat", id: source.id)
+        _ = try await store.createTitleTask(task("interrupted"), sourceID: source.id)
+        var suggestions = task("suggestions"); suggestions.title = "Title suggestions"; suggestions.backgroundTask = "title-suggestions"
+        try await store.put(suggestions, kind: "chat", id: suggestions.id)
+        await store.close()
+        var profile = ProfileRecord(); profile.id = "profile"; profile.baseUrl = "http://127.0.0.1:1"; profile.modelId = "fixture"
+        var configuration = VaultConfiguration(); configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic")]; configuration.automaticUpdateChecks = false
+        let model = WorkspaceModel(stateRoot: state, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
+        model.automaticContextOperation = { _, _ in throw CancellationError() }
+        defer { model.report.suspend(); model.shutdown() }
+        await model.restore()
+        XCTAssertFalse(model.chats.contains { $0.id == "suggestions" }, "Launch removes a leftover suggestions row")
+        let listed = try await model.store?.list(ChatRecord.self, kind: "chat") ?? []
+        XCTAssertFalse(listed.contains { $0.id == "suggestions" })
+        XCTAssertEqual(model.record("source")?.titleTaskSessionID, "interrupted", "Launch itself resends nothing")
+        // What sending the next message in the chat does once it is accepted.
+        model.resumeInterruptedTitle("source")
+        for _ in 0..<500 where model.record("source")?.titleTaskSessionID == "interrupted" || !model.titleGenerationTasks.isEmpty {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertNotEqual(model.record("source")?.titleTaskSessionID, "interrupted", "The stale claim is released and a title asked for again")
+        XCTAssertNotNil(model.chats.first { $0.id == "interrupted" }?.backgroundTaskNotice, "The interrupted request says how it ended")
+        try await model.traces.close(); await model.store?.close()
+    }
+}

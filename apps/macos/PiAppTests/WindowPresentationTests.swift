@@ -290,3 +290,41 @@ final class WindowPresentationTests: XCTestCase {
         XCTAssertTrue(hosted.titlebarAppearsTransparent)
     }
 }
+
+extension WindowPresentationTests {
+    /// The zoomed frame is autosaved, but the frame it replaced lived only as
+    /// long as the controller: after a relaunch or a reopened window, double-
+    /// clicking the header of a zoomed window did nothing, every time.
+    @MainActor func testAZoomCanStillBeUndoneAfterTheWindowIsReopenedOrTheAppRelaunched() throws {
+        let suite = "WindowPresentationTests-" + UUID().uuidString, defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 130, width: 900, height: 600), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let chrome = WindowChromeView(frame: .zero)
+        if let content = window.contentView {
+            chrome.frame = NSRect(x: 0, y: content.bounds.maxY - WindowChrome.height, width: content.bounds.width, height: WindowChrome.height)
+            chrome.autoresizingMask = [.width, .minYMargin]; content.addSubview(chrome)
+        }
+        defer { window.close() }
+        func doubleClick(_ controller: WindowPresentationController) throws {
+            XCTAssertNil(controller.handle(try event(.leftMouseDown, clicks: 2, window: window, chrome: chrome)))
+            XCTAssertNil(controller.handle(try event(.leftMouseUp, clicks: 2, window: window, chrome: chrome)))
+        }
+        let first = WindowPresentationController(defaults: defaults); first.attach(window, chrome: chrome)
+        let original = window.frame, available = try XCTUnwrap(window.screen ?? NSScreen.main).visibleFrame
+        try doubleClick(first)
+        XCTAssertEqual(window.frame, available)
+        first.detach()
+        // A reopened window, or a relaunched app, has a new controller.
+        let reopened = WindowPresentationController(defaults: defaults); reopened.attach(window, chrome: chrome)
+        try doubleClick(reopened)
+        XCTAssertEqual(window.frame, WindowPresentationController.constrained(original, to: available), "The zoom is undone")
+        reopened.detach()
+        // Nothing remembered at all: a zoomed window unzooms to its opening size.
+        window.setFrame(available, display: false)
+        let unknown = WindowPresentationController(); unknown.attach(window, chrome: chrome); defer { unknown.detach() }
+        try doubleClick(unknown)
+        XCTAssertNotEqual(window.frame, available)
+        XCTAssertEqual(window.frame.size, WindowPresentationController.constrained(NSRect(origin: .zero, size: WindowPresentationController.defaultSize), to: available).size)
+    }
+}

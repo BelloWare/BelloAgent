@@ -112,7 +112,7 @@ final class WindowLifecycleTests: XCTestCase {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let model = makeModel(root); defer { model.shutdown() }
         let store = try XCTUnwrap(model.store)
-        let view = SessionDisplay(id: "chat"); view.draft = "Last thing typed"
+        let view = SessionDisplay(id: "chat"); view.selectionMetadataLoaded = true; view.draft = "Last thing typed"
         model.displays["chat"] = view
         XCTAssertFalse(model.hasActiveWork)
         let lifecycle = ApplicationLifecycle()

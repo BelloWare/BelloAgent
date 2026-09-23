@@ -26,11 +26,13 @@ extension WorkspaceModel {
             let restored = try await store.loadChats()
             var loaded: VaultConfiguration?
             do { let saved = try await savedConfiguration; applyConfiguration(saved); loaded = saved }
-            catch { configurationLoaded = false; self.error = error.localizedDescription }
+            catch { configurationLoaded = false; self.error = error.localizedDescription; retryConfigurationWhenActive() }
             // A record this build cannot read is no record: the launch opens
             // what it always did.
             let remembered = (try? await savedSelection)?.sanitized
             chats = restored
+            await dropLeftoverTitleSuggestions()
+            await nameUnnamedJournals()
             adoptRememberedSelection(remembered)
             try await restoreTopics()
             try await restoreReadStates()
@@ -66,6 +68,23 @@ extension WorkspaceModel {
                 self.error = "\(unlisted) saved chat\(unlisted == 1 ? "" : "s") could not be listed by this version. Their conversation files are untouched."
             }
         } catch { restoring = false; launching = false; self.error = "Chats could not be restored. \(error.localizedDescription)" }
+    }
+    /// A chat's journal is named in its record only once the helper has made
+    /// it. A crash or a failed write in between left a record with no path
+    /// over a journal that exists: the chat opened as an empty New chat, and
+    /// every send failed with "Session path already exists". Named here, it
+    /// opens with its history and sends. A record with no journal is left as
+    /// it is.
+    func nameUnnamedJournals() async {
+        let unnamed = chats.filter { $0.path == nil && !$0.imported }.map(\.id)
+        for id in unnamed {
+            guard let chat = chats.first(where: { $0.id == id }), chat.path == nil else { continue }
+            let journal = root.appendingPathComponent("Workspaces/\(chat.workspaceID)/Sessions/\(chat.id).jsonl")
+            guard FileManager.default.fileExists(atPath: journal.path) else { continue }
+            var named = chat; named.path = journal.path
+            do { try await store?.put(named, kind: "chat", id: id) } catch { continue }
+            if let index = chats.firstIndex(where: { $0.id == id }), chats[index].path == nil { chats[index].path = journal.path }
+        }
     }
     func pickWorkspace() {
         // A sheet on the main window: choosing a folder must not stop the

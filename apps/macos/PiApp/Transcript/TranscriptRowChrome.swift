@@ -96,6 +96,41 @@ private struct TranscriptRowShimmer: View {
     }
 }
 
+/// The app's own sign that a row has keyboard focus: the row's rounded box
+/// tinted with the accent and traced with a thin accent line, just inside
+/// the row's own bounds. It is the row's shape, never the shape of what the
+/// row happens to be drawing, so nothing inside it (a running call's
+/// shimmer, a summary still being written) can move or resize it.
+struct TranscriptFocusRing: ViewModifier {
+    let shown: Bool
+    /// Built only while it shows: a turn of sixty calls has sixty rows, and
+    /// only one of them can have focus.
+    func body(content: Content) -> some View {
+        content
+            .background {
+                if shown { RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.piAccentSoft).allowsHitTesting(false) }
+            }
+            .overlay {
+                if shown {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color.piAccent.opacity(0.55), lineWidth: 1)
+                        .background(TranscriptFocusMarker())
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+    }
+}
+/// Marks a focus ring in the view tree, so a check can find where it is
+/// and whether it shows. It draws nothing and takes no clicks.
+struct TranscriptFocusMarker: NSViewRepresentable {
+    func makeNSView(context: Context) -> TranscriptFocusMarkerView { TranscriptFocusMarkerView() }
+    func updateNSView(_ view: TranscriptFocusMarkerView, context: Context) {}
+}
+final class TranscriptFocusMarkerView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 /// What Stop leaves behind: the partial answer stays, and this says why it
 /// ends where it does. Amber, because nothing failed — the reader stopped it.
 struct TranscriptStoppedChip: View {
@@ -147,6 +182,10 @@ struct TranscriptWorkRow<Content: View>: View {
     /// toggle draws nothing and says nothing.
     let content: () -> Content
     @State private var hovering = false
+    @FocusState private var focused: Bool
+    /// Whether the row shows that it has focus: only when focus came from the
+    /// keyboard. A click opens the row, and leaves no outline behind.
+    @State private var ringShown = false
     @Environment(\.piReduceMotion) private var reduceMotion
 
     init(icon: String, title: String, summary: String = "", suffix: String? = nil,
@@ -168,6 +207,13 @@ struct TranscriptWorkRow<Content: View>: View {
                 .buttonStyle(.plain)
                 .piPointer()
                 .focusable(expandable)
+                .focused($focused)
+                // The system's ring traces whatever the row draws, a running
+                // call's shimmer included, so it changed width as the shimmer
+                // moved. The row draws its own, over the whole row.
+                .focusEffectDisabled()
+                .modifier(TranscriptFocusRing(shown: ringShown && expandable))
+                .onChange(of: focused) { _, now in ringShown = now && !hovering }
                 .onKeyPress { press in
                     guard expandable, TranscriptRowChrome.activates(press.key) else { return .ignored }
                     toggle(); return .handled
@@ -209,7 +255,10 @@ struct TranscriptWorkRow<Content: View>: View {
         }
         .frame(height: TranscriptRowChrome.height)
         .contentShape(Rectangle())
-        .background(alignment: .leading) { if state == .running { TranscriptRowShimmer() } }
+        // The shimmer's band travels across the row and no further.
+        .background(alignment: .leading) {
+            if state == .running { TranscriptRowShimmer().clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous)) }
+        }
         .background(hovering ? TranscriptPalette.panel : Color.clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
     /// The icon, and the chevron it cross-fades into under the pointer. An open

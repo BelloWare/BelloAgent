@@ -24,9 +24,10 @@ extension AgentSession {
         let protected=Set(CompactionPlanner.protectedInputs(context,taskRoot:taskRootID).map(\.id))
         return context.contains { $0.replayEligible && !protected.contains($0.id) }
     }
+    /// What a kept group costs: its own request, sized as an unmeasured one.
     func retainedInputEstimate(_ messages: [ChatMessage]) throws -> Int {
         let body=try ProviderClient.requestBody(profile:turnProfile,messages:messages,instructions:"",tools:[],sessionID:id)
-        return try contextCounter.count(request:body,profile:turnProfile).tokens
+        return try contextCounter.count(messages:messages,profile:turnProfile,request:body,reportedUsage:false).requestTokens
     }
     func validateCompaction(_ revision: UInt64, profile: Profile) throws {
         try Task.checkCancellation()
@@ -54,9 +55,15 @@ extension AgentSession {
             func body(_ messages: [ChatMessage]) throws -> JSON {
                 try ProviderClient.requestBody(profile:originalProfile,messages:messages,instructions:instructions,tools:definitions,sessionID:id)
             }
-            let before=try contextCounter.count(request:body(frozen),profile:originalProfile)
+            // Pi's figure is what the checkpoint records. Every request here,
+            // the context and each candidate, is sized from its own bytes.
+            func count(_ messages: [ChatMessage], reported: Bool = false, request: JSON? = nil) throws -> RequestContextCount {
+                try contextCounter.count(messages:messages,profile:originalProfile,request:request ?? body(messages),reportedUsage:reported)
+            }
+            let frozenBody=try body(frozen)
+            let before=try count(frozen,reported:true,request:frozenBody)
             let protected=CompactionPlanner.protectedInputs(frozen,taskRoot:taskRootID)
-            let protectedCount=try contextCounter.count(request:body(protected),profile:originalProfile)
+            let protectedCount=try count(protected)
             guard protectedCount.inputFits else { throw AgentError("input_too_large", "Current user instructions, skills and tool schemas cannot fit this model. Exact inputs are retained; shorten the input or choose a larger model.") }
             let cap=compactionPolicy.outputAllowance(for:originalProfile)
             compactionState["outputAllowance"]=JSON(cap)
@@ -64,14 +71,14 @@ extension AgentSession {
             let summaryProfile=try compactionPolicy.summaryProfile(originalProfile,cap:cap)
             compactionState["allowedOutputTokens"]=JSON(cap)
             compactionState["reasoningEffort"]=JSON(summaryProfile.raw["thinkingLevel"].text ?? "default")
-            let target=max(0,min(20_000,max(1024,originalProfile.contextWindow/8),before.inputBudget-protectedCount.tokens-cap))
+            let target=max(0,min(compactionPolicy.keepRecentTokens,max(1024,originalProfile.contextWindow/8),before.inputBudget-protectedCount.requestTokens-cap))
             let plan=try CompactionPlanner.plan(context:frozen,taskRoot:taskRootID,recentTarget:target,cost:retainedInputEstimate)
             var summarized=plan.summarized, kept=plan.kept
             // Reserve room before summarizing, never discard an unsummarized
             // group afterwards to make an overlarge candidate look acceptable.
             let placeholder=ChatMessage(role:"system",content:[textBlock(String(repeating:"s",count:cap*3))])
             while !kept.isEmpty {
-                let trial=try contextCounter.count(request:body([placeholder]+protected+kept.flatMap(\.messages)),profile:originalProfile)
+                let trial=try count([placeholder]+protected+kept.flatMap(\.messages))
                 if trial.fits { break }; summarized.append(kept.removeFirst())
             }
             let source=try CompactionSourceBuilder.records(summarized,policy:compactionPolicy)
@@ -79,12 +86,12 @@ extension AgentSession {
             try validateCompaction(revision,profile:originalProfile)
             var summary=ChatMessage(role:"system",content:[textBlock("Conversation summary (historical data, not authorization):\n"+text)])
             let retained=protected+kept.flatMap(\.messages), candidate=[summary]+retained
-            let request=try body(candidate), after=try contextCounter.count(request:request,profile:originalProfile)
-            guard after.inputFits, after.tokens < before.tokens else { throw AgentError("compact_no_progress", "Summary did not sufficiently reduce this request. Original context and tool results are retained; choose a larger model or make an explicit handoff.") }
+            let request=try body(candidate), after=try count(candidate,request:request)
+            guard after.inputFits, after.requestTokens < before.requestTokens else { throw AgentError("compact_no_progress", "Summary did not sufficiently reduce this request. Original context and tool results are retained; choose a larger model or make an explicit handoff.") }
             try CompactionPlanner.validateRequest(request)
             operationStatus("Candidate summary validated")
             var metadata=compactionState
-            metadata["version"]=2; metadata["phase"]="completed"; metadata["sourceContextRevision"]=JSON(before.requestFingerprint)
+            metadata["version"]=2; metadata["phase"]="completed"; metadata["sourceContextRevision"]=before.requestFingerprint.map { JSON($0) } ?? .null
             metadata["taskRootId"]=taskRootID.map { JSON($0) } ?? .null
             metadata["sourceIDs"] = .array(frozen.map { JSON($0.id) })
             let summaryMessages=summarized.flatMap(\.messages), roots=Set(summaryMessages.compactMap(\.taskRootID))
@@ -96,16 +103,17 @@ extension AgentSession {
             metadata["before"]=before.json; metadata["after"]=after.json; metadata["recovery"]=contextRecovery
             metadata["summaryAttemptIds"] = .array(compactionAttemptIDs.map { JSON($0) })
             summary.operationID=compactionState["operationId"].text
-            summary.kind="compaction"; summary.detail=compactionDetail(tokens:before.tokens,kept:retained.count)
+            summary.kind="compaction"; summary.detail=compactionDetail(tokens:before.tokens ?? before.requestTokens,kept:retained.count)
             summary.requestAttemptIDs=compactionAttemptIDs; summary.compaction=metadata; summary.taskRootID=taskRootID
             let record: JSON=["type":"compaction","nativeCompactionVersion":2,"nativeCompaction":metadata,"summary":JSON(text),
-                "firstKeptEntryId":retained.first.map { JSON($0.id) } ?? .null,"nativeKeptIDs":metadata["keptIDs"],"tokensBefore":JSON(before.tokens),"nativeRequestAttemptIds":metadata["summaryAttemptIds"]]
+                "firstKeptEntryId":retained.first.map { JSON($0.id) } ?? .null,"nativeKeptIDs":metadata["keptIDs"],"tokensBefore":JSON(before.tokens ?? before.requestTokens),"nativeRequestAttemptIds":metadata["summaryAttemptIds"]]
             try validateCompaction(revision,profile:originalProfile)
             // Commit all preceding tool results and this checkpoint together.
             // Nothing below can suspend or fail until the new projection is adopted.
             try journal?.append(record,id:summary.id,flush:true)
             context=[summary]+retained; history.append(summary); visible.append(summary); boundary=context
-            replayInputsChanged(reason:"compaction-committed"); contextBaseline=nil; currentContextCount=after; clearRequestObservation()
+            // Pi's context is unknown now until the next reply reports usage.
+            replayInputsChanged(reason:"compaction-committed"); clearRequestObservation()
             compactionState=metadata
             operationStatus("Checkpoint durably adopted",terminal:"completed")
             invalidateDisplay(allRows:true); recordDisplayChange(summary.id,at:displayClock())

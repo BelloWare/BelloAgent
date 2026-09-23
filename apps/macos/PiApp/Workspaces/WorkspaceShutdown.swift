@@ -15,6 +15,7 @@ extension WorkspaceModel {
             // The host also checks authoritative lane state after all accepted
             // preflight commands finish. Native status can lag an acknowledgement.
             for host in hosts.values where host.isReady { _ = try await host.request("workspace.quiesce") }
+            await moveUnsavedSideDraftsToParents()
             try await flushDrafts()
             for host in hosts.values { try await host.shutdownAndWait() }
             guard await flushProjectSidebarState() else { throw HostError.failure("Project preferences could not be saved in time. Retry the update after storage becomes available.") }
@@ -29,10 +30,19 @@ extension WorkspaceModel {
         }
     }
     func releaseUpdateBarrier() { installPreparing = false }
+    /// Stops every helper and waits for each to exit, all at once and bounded
+    /// by `shutdownAndWait`. A run stopped this way writes its partial reply
+    /// and its final state before its helper exits; an app that answered
+    /// AppKit first took that with it, and the chat came back as a crash.
+    func stopHostsAndWait() async {
+        let stops = hosts.values.map { host in Task { try? await host.shutdownAndWait() } }
+        for stop in stops { await stop.value }
+    }
     func shutdown() {
         // Quit and update have flushed it; whatever changes from here on is
         // the app coming down, not the reader choosing a chat.
         stopRememberingSelection()
+        stopConfigurationRetry()
         navigationTask?.cancel(); navigationTask = nil
         for view in displays.values { view.presentation.cancel() }
         liveActivity.shutdown()

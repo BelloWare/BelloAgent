@@ -57,6 +57,10 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
     @Published private(set) var failure: String?
     @Published var advancedOpen = false
     @Published var detailsOpen = false
+    /// "Requests and session details" is open. Kept here, not in the page,
+    /// which is rebuilt on every return: the sessions expanded inside it came
+    /// back hidden in a closed section.
+    @Published var requestListOpen = false
     @Published var chartMetric = "Output tok/s"
     @Published var latencyMetric = "TTFT"
     /// "requests" lists attempts; "sessions" groups them per chat.

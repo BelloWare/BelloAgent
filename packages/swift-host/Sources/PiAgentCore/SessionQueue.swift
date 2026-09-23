@@ -111,9 +111,7 @@ extension AgentSession {
         guard images.isEmpty || profile.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
         let expanded=(submission.skills.map{$0.expand(turnID:submission.turnID)} + [submission.text]).joined(separator:"\n\n")
         var message=ChatMessage(role:"user",content:[textBlock(expanded)]+images); message.displayText=submission.text; message.id=submission.turnID; message.turn=submission.turnID
-        message.userInput = ["version":1,"attachments":.array(submission.attachments.map { $0.removing(["data"]) }),"skills":.array(submission.skills.map { skill in
-            var selected = skill.selection; selected["name"] = JSON(skill.name); selected["path"] = JSON(skill.path); return selected
-        })]
+        message.userInput = ["version":1,"attachments":.array(submission.attachments.map { $0.removing(["data"]) }),"skills":.array(submission.skills.map(\.recorded))]
         message.taskRootID=newTask ? submission.turnID : taskRootID
         message.taskExecutionID=activeTaskPresentation?.executionID
         message.inputLane=lane

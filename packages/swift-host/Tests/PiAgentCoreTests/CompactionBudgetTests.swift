@@ -9,8 +9,7 @@ private actor BudgetProbe: ModelClient {
     func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
         let body=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID)
         requests.append(body); profiles.append(profile)
-        var counter=RequestContextCounter()
-        guard try counter.count(request:body,profile:profile).fits, tools.isEmpty, profile.maxOutput==profile.outputCap else { throw AgentError("fixture_contract","Summary input plus its actual cap must fit") }
+        guard try RequestContextCounter().count(messages:messages,profile:profile,request:body,reportedUsage:false).fits, tools.isEmpty, profile.maxOutput==profile.outputCap else { throw AgentError("fixture_contract","Summary input plus its actual cap must fit") }
         if mode == .holdRetry && requests.count==2 { held=true;while true { try await Task.sleep(nanoseconds:1_000_000) } }
         var value: JSON=["status":"completed","output":[["type":"message","content":[["type":"output_text","text":"Observed work; preserve the objective."]]]],"usage":["input_tokens":100,"output_tokens":30,"output_tokens_details":["reasoning_tokens":10]]]
         switch mode {

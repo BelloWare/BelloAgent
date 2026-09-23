@@ -25,6 +25,13 @@ struct ConversationHistoryPage: Sendable {
     var latestAssistantID: String?
     var failure: String?
     var taskRecords: [TaskPresentationRecord] = []
+    /// Read from the journal, not from a helper that has the chat open: only
+    /// then is the journal's retained run what the chat's state is.
+    var fromJournal = false
+    var retainedRun: RetainedRun?
+    /// The journal's last record was cut off: this is every complete record,
+    /// shown read-only until a recovered copy is made.
+    var damagedTail = false
 
     init(_ wire: WireValue) throws {
         guard let value = wire.object, value["version"]?.number == 2,
@@ -52,7 +59,7 @@ struct ConversationHistoryPage: Sendable {
         }
     }
     init(_ page: HistoryPage) throws {
-        guard page.notice == nil, let incarnation = page.incarnation, let lineage = page.lineage else {
+        guard page.notice == nil || page.incompleteTail, let incarnation = page.incarnation, let lineage = page.lineage else {
             throw HostError.failure(page.notice ?? "History is not yet available.")
         }
         messages = page.messages; older = page.older; newer = page.newer
@@ -60,6 +67,11 @@ struct ConversationHistoryPage: Sendable {
         notice = page.limitNotice; revision = page.revision; assistantCount = page.assistantMessageCount
         latestAssistantID = page.latestAssistantMessageID; failure = page.failureMessage
         taskRecords = page.taskRecords
+        fromJournal = true; retainedRun = page.retainedRun
+        if page.incompleteTail {
+            damagedTail = true
+            notice = "The last record of this chat was cut off while it was written. Everything before it is shown, read-only."
+        }
     }
     static func cursor(_ value: WireValue?) throws -> ConversationCursor? {
         guard let value, value != .null else { return nil }
@@ -74,6 +86,11 @@ struct ConversationHistoryPage: Sendable {
     var navigation: Task<Void, Never>?
     var olderTask: Task<Bool, Never>?
     var newerTask: Task<Bool, Never>?
+    /// The read each boundary's loading flag belongs to. A read that was
+    /// superseded (its page replaced under it, then read again) finishes
+    /// without clearing the flag of the read that replaced it.
+    var olderRead: UUID?
+    var newerRead: UUID?
     var secondary: Task<Void, Never>?
     var identity: (incarnation: String, lineage: String)?
     var partialTurnInput: String?
@@ -92,4 +109,29 @@ struct ConversationHistoryPage: Sendable {
         automaticFills = 0; startedAt = PerformanceProbe.now; sourceReadyAt = nil; drawOpportunityAt = nil; readyAt = nil
     }
     deinit { navigation?.cancel(); olderTask?.cancel(); newerTask?.cancel(); secondary?.cancel() }
+}
+
+extension SessionDisplay {
+    /// Shows what the journal says was unfinished when the chat's helper last
+    /// stopped, the way the helper restores it when the chat is next used:
+    /// a run that was cut off reads as interrupted, with its outcome uncertain
+    /// and Retry offered, and follow-ups or steering waiting behind it are
+    /// listed, paused, with Resume. Before, such a chat came back idle, and
+    /// its first send was refused for paused messages nobody could see.
+    /// The waiting rows do not count as work in progress: nothing runs until
+    /// the reader resumes, so quit and update do not wait for them.
+    func observeRetainedRun(_ page: ConversationHistoryPage) {
+        if page.fromJournal, damagedTail != page.damagedTail { damagedTail = page.damagedTail }
+        guard page.fromJournal, let run = page.retainedRun, !busy, !loading else { return }
+        beginTranscriptBatch(); defer { endTranscriptBatch() }
+        if queue != run.queue { queue = run.queue }
+        queuePaused = run.queuePaused
+        if run.active {
+            state = "interrupted"; runStatus = "interrupted"; uncertain = true
+            failureMessage = "The previous run was interrupted before it finished. No model or tool request was replayed. Inspect tool effects before continuing."
+            notice = "Previous run interrupted. Outcome uncertain; nothing was replayed."
+        } else if state != "error" {
+            state = "paused"; runStatus = run.runStatus ?? "cancelled"
+        }
+    }
 }

@@ -84,6 +84,20 @@ enum TranscriptRowEstimate {
         }
     }
 
+    /// A user bubble's skill pills: rows of pills, and the gap before the text.
+    /// A pill is its glyph, "/name" and its shortened arguments at 12 points.
+    static func skillPills(_ skills: [TranscriptSkillUse], width: CGFloat, text: Bool) -> CGFloat {
+        guard !skills.isEmpty else { return 0 }
+        var rows: CGFloat = 1, x: CGFloat = 0
+        for use in skills {
+            let label = CGFloat(use.name.count + 1 + SkillPillLabel.arguments(use.arguments).count)
+            let pill = min(width, 31 + label * 12 * characterFactor)
+            if x > 0, x + pill > width { rows += 1; x = 0 }
+            x += pill + TranscriptSkillPills.spacing
+        }
+        return rows * SkillPillFace.height + (rows - 1) * TranscriptSkillPills.spacing + (text ? MessageRowView.skillGap : 0)
+    }
+
     private static func height(of message: TranscriptMessage, width: CGFloat, inline: Bool) -> CGFloat {
         switch message.kind {
         case "compaction", "failure": return 64
@@ -94,6 +108,7 @@ enum TranscriptRowEstimate {
         if message.role == "user" {
             let body = min(width, TranscriptMetrics.proseWidth) - 28
             return prose(message.text, width: max(40, body), size: MarkdownStyle.user.baseSize) + 18 + 14 + 4 + 22
+                + skillPills(message.skills ?? [], width: max(40, body), text: !message.text.isEmpty)
         }
         let body = min(width, TranscriptMetrics.proseWidth)
         var total = prose(message.text, width: max(40, body), size: MarkdownStyle.prose.baseSize)

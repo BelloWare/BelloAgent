@@ -14,13 +14,23 @@ import Glibc
 /// so the compiler can check the `Sendable` conformance.
 final class ProtocolWriter: Sendable {
     let queue=DispatchQueue(label:"pi.native.stdout"), slots=DispatchSemaphore(value:64)
+    private let reader=ReaderState()
+    /// Standard input reached its end: the app closed its side and is going.
+    /// From here a failed write means the reader is gone, not a broken
+    /// protocol, and the helper still has a stopped run's partial reply and
+    /// final state to write to the journal before it exits.
+    func inputEnded() { reader.set(\.inputEnded) }
     func send(_ value:JSON) {
+        guard !reader.gone else { return }
         guard slots.wait(timeout:.now()) == .success else { Self.fail("Native host output backpressure limit reached") }
         queue.async { [self] in
             defer { slots.signal() }
+            guard !reader.gone else { return }
             do {
                 var data=try value.data(); guard data.count<=1048576 else { throw AgentError("frame_limit","Protocol output exceeds frame limit") }
-                data.append(10); try FileHandle.standardOutput.write(contentsOf:data)
+                data.append(10)
+                do { try FileHandle.standardOutput.write(contentsOf:data) }
+                catch { guard reader.inputEnded else { throw error }; reader.set(\.gone); return }
             } catch { Self.fail("Native host protocol output failed") }
         }
     }
@@ -28,6 +38,17 @@ final class ProtocolWriter: Sendable {
     static func fail(_ message:String) -> Never {
         try? FileHandle.standardError.write(contentsOf:Data((message+"\n").utf8)); exit(70)
     }
+}
+
+/// Two flags that only ever turn on, read from the writer queue and set from
+/// the reader task. Every access goes through the lock.
+final class ReaderState: @unchecked Sendable {
+    struct Flags { var inputEnded=false, gone=false }
+    private let lock=NSLock()
+    private var flags=Flags()
+    var inputEnded: Bool { lock.lock(); defer { lock.unlock() }; return flags.inputEnded }
+    var gone: Bool { lock.lock(); defer { lock.unlock() }; return flags.gone }
+    func set(_ flag: WritableKeyPath<Flags,Bool>) { lock.lock(); flags[keyPath:flag]=true; lock.unlock() }
 }
 
 @main struct Main {
@@ -52,6 +73,7 @@ final class ProtocolWriter: Sendable {
         }
         do { try await reader.value }
         catch { try? FileHandle.standardError.write(contentsOf:Data("Invalid or incomplete host protocol; no input payload logged\n".utf8)) }
+        writer.inputEnded()
         await service.shutdown(); writer.drain(); term.cancel(); interrupt.cancel()
     }
 }

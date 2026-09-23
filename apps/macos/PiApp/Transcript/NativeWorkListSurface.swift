@@ -65,6 +65,7 @@ private struct NativeHostedActionRow: View {
             .environment(\.layoutDirection, item.environment.layoutDirection)
             .environment(\.locale, item.environment.locale)
             .disabled(!item.environment.isEnabled)
+            .focusEffectDisabled()
             .piStableLayout()
     }
 }

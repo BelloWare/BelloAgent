@@ -19,6 +19,14 @@ struct NativeComposer: NSViewRepresentable {
     var heightChanged: (CGFloat) -> Void = { _ in }
     /// A changed token moves keyboard focus into the editor once the view is in a window.
     var focusToken = 0
+    /// The selected skills, drawn as tokens that lead the text.
+    var skills: [SkillChip] = []
+    /// Whose selection the tokens are: Backspace and Remove edit it.
+    var skillDisplay: SessionDisplay? = nil
+    var skillsChanged: @MainActor () -> Void = {}
+    var skillPressed: (SkillChip, ComposerSkillToken) -> Void = { _, _ in }
+    var skillHovered: (SkillChip, ComposerSkillToken, Bool) -> Void = { _, _, _ in }
+    var describeSkill: (SkillChip) -> SkillDetail? = { _ in nil }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.borderType = .noBorder
@@ -29,7 +37,8 @@ struct NativeComposer: NSViewRepresentable {
         let editor = ComposerTextView()
         editor.isRichText = false; editor.allowsUndo = true; editor.isAutomaticQuoteSubstitutionEnabled = false
         editor.isAutomaticDashSubstitutionEnabled = false; editor.font = .systemFont(ofSize: 14)
-        editor.drawsBackground = false; editor.textContainerInset = NSSize(width: 10, height: 9)
+        editor.drawsBackground = false; editor.textContainerInset = ComposerTextView.textInset
+        ComposerTextView.applyLineMetrics(to: editor)
         editor.isVerticallyResizable = true; editor.autoresizingMask = [.width]
         editor.textContainer?.widthTracksTextView = true; editor.delegate = context.coordinator
         editor.setAccessibilityLabel(accessibilityLabel); editor.setAccessibilityIdentifier("nativeComposer"); editor.sessionID = sessionID
@@ -56,7 +65,12 @@ struct NativeComposer: NSViewRepresentable {
             if let editor { coordinator?.focusChanged(editor) }
         }
         editor.contentHeightChanged = { [weak coordinator] height in Task { @MainActor in coordinator?.parent.heightChanged(height) } }
+        editor.skillStrip.changed = { [weak coordinator] in coordinator?.parent.skillsChanged() }
+        editor.skillStrip.pressed = { [weak coordinator] in coordinator?.parent.skillPressed($0, $1) }
+        editor.skillStrip.hovered = { [weak coordinator] in coordinator?.parent.skillHovered($0, $1, $2) }
+        editor.skillStrip.describe = { [weak coordinator] in coordinator?.parent.describeSkill($0) }
         editor.string = text; context.coordinator.adopt(text); scroll.documentView = editor
+        editor.skillStrip.display = skillDisplay; editor.skillTokens = skills
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -71,6 +85,7 @@ struct NativeComposer: NSViewRepresentable {
         guard let editor = scroll.documentView as? ComposerTextView else { return }
         editor.sessionID = sessionID
         context.coordinator.applyModelText(text,to:editor)
+        editor.skillStrip.display = skillDisplay; editor.skillTokens = skills
     }
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: NativeComposer
@@ -232,6 +247,40 @@ struct ComposerEditMeasurement {
     /// The chat this editor belongs to (see `WindowPresentationController.redirectTyping`).
     var sessionID = ""
     var completionLocation: ComposerLocation?
+    /// The selected skills drawn as tokens ahead of the text (ComposerSkillTokens.swift).
+    let skillStrip = ComposerSkillStrip()
+    /// Rows of tokens above the text's first line move the text down.
+    override var textContainerOrigin: NSPoint {
+        let origin = super.textContainerOrigin
+        return NSPoint(x: origin.x, y: origin.y + skillTextOffset)
+    }
+    override func setFrameSize(_ newSize: NSSize) {
+        var size = newSize
+        // The text view sizes itself to its text alone; the moved-down text
+        // needs the rows above it as well.
+        if skillTextOffset > 0, isVerticallyResizable, let layout = layoutManager, let container = textContainer {
+            size.height = max(size.height, ceil(layout.usedRect(for: container).height + textContainerInset.height * 2 + skillTextOffset))
+        }
+        let widthChanged = size.width != frame.width
+        super.setFrameSize(size)
+        if widthChanged, !skillStrip.tokens.isEmpty { layoutSkillTokens() }
+    }
+    override func deleteBackward(_ sender: Any?) {
+        if removeLastSkillToken() { return }
+        super.deleteBackward(sender)
+    }
+    override func deleteWordBackward(_ sender: Any?) {
+        if removeLastSkillToken() { return }
+        super.deleteWordBackward(sender)
+    }
+    override func moveLeft(_ sender: Any?) {
+        if focusLastSkillToken() { return }
+        super.moveLeft(sender)
+    }
+    override func accessibilityChildren() -> [Any]? {
+        let children = super.accessibilityChildren() ?? []
+        return skillStrip.tokens.isEmpty ? children : skillStrip.tokens + children
+    }
 
     /// Text and explicit skill authorization form one native undo operation.
     func replaceCompletion(range: NSRange, with replacement: String, skills: [SkillChip],
@@ -275,15 +324,15 @@ struct ComposerEditMeasurement {
     /// its content. A long draft is laid out only as far as the ceiling:
     /// `ensureLayout(for:)` would lay out every line of a 200 KB draft on every
     /// keystroke, which is the whole cost of typing into one.
-    private func reportContentHeight() {
+    func reportContentHeight() {
         guard let container = textContainer, let layout = layoutManager else { return }
         let inset = textContainerInset.height * 2
         let ceiling = max(0, maximumContentHeight - inset)
         layout.ensureLayout(forBoundingRect: CGRect(x: 0, y: 0, width: container.size.width, height: ceiling + 1), in: container)
-        let height = ceil(min(layout.usedRect(for: container).height, ceiling) + inset)
+        let height = ceil(min(layout.usedRect(for: container).height + skillTextOffset, ceiling) + inset)
         if abs(height - reportedHeight) >= 1 { reportedHeight = height; contentHeightChanged?(height) }
     }
-    override func layout() { super.layout(); reportContentHeight() }
+    override func layout() { super.layout(); layoutSkillTokens(); reportContentHeight() }
     override func becomeFirstResponder() -> Bool { let accepted = super.becomeFirstResponder(); if accepted { focused?() }; return accepted }
     var attachFiles: (([URL]) -> Void)?
     struct AttachmentDestination {

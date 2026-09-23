@@ -29,6 +29,7 @@ extension WorkspaceModel {
             try FileManager.default.createDirectory(at: URL(fileURLWithPath: workspace.path, isDirectory: true), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         } else {
             guard configuration.workspaces.contains(workspace), workspace.trusted else { throw HostError.failure("Trust this project in the configuration vault before starting tools.") }
+            try requireProjectFolders(workspace)
         }
         // Any number of projects and chats may be active at once; idle helpers
         // leave on their own after the grace period.
@@ -51,6 +52,10 @@ extension WorkspaceModel {
                 self.displays[chat.id]?.lastSequence = -1
                 if !retired { self.displays[chat.id]?.observeContext([:],baseline:true) }
                 self.displays[chat.id]?.footer.pendingContextSubmission=nil
+                // A message the helper took but never showed is not drawn as
+                // sent any more; its record says the outcome is uncertain. A
+                // send still waiting for its answer settles that itself.
+                if !retired, let view = self.displays[chat.id], !view.loading { view.dropAllSending() }
                 if let view = self.displays[chat.id], view.hasWork, view.state != "error" { view.state = "interrupted"; view.runStatus = "interrupted"; view.queueCount = 0; view.uncertain = true; view.notice = "Host interrupted. Outcome uncertain. No command was replayed."; view.settleInterruptedRows() }
             }
         }
@@ -82,6 +87,51 @@ extension WorkspaceModel {
         return host
     }
     func isSessionOpening(_ id: String) -> Bool { sessionOpenCallers[id, default: 0] > 0 }
+    /// The reader is writing in a chat, or has put the cursor in its
+    /// composer: its project's helper, and the chat's session on it, start
+    /// now if they are not running, so Return does not wait for either.
+    ///
+    /// Only what a send would open anyway is opened, and only when opening is
+    /// harmless: a session that would repair interrupted work waits for an
+    /// explicit send (as the automatic context preview does), and a chat that
+    /// has never been sent — a new chat, a draft side — gets its project's
+    /// helper and nothing else, since nothing is written for it before its
+    /// first message. Typing counts as using the helper: the idle stop of a
+    /// helper that is up starts over.
+    func prewarm(_ id: String) {
+        guard prewarmsHelpers, !accountingStopped, !installPreparing, page == .chats, !prewarming.contains(id),
+              let item = record(id), let view = displays[id], !view.loading, !view.uncertain, view.recovered.isEmpty,
+              view.contextSelectionReady || side(id)?.pending == true,
+              !item.imported, !item.isArchived, !item.isBackgroundTask, !workspaceChangesInFlight.contains(item.workspaceID),
+              let workspace = workspace(for: item.workspaceID), workspace.trusted || workspace.isScratch,
+              let profile = profiles.first(where: { $0.id == item.profileID }), profile.api == LiteLLMConfiguration.supportedAPI else { return }
+        let unsent = pendingChatIDs.contains(id) || side(id)?.pending == true
+        // An unkept side lives in its helper: there is nothing to start for it.
+        if isEphemeral(id), !unsent { return }
+        if let host = hosts[item.workspaceID], host.isReady, unsent || opened.contains(id) {
+            if idleTasks[item.workspaceID] != nil { scheduleIdle(workspaceID: item.workspaceID, host: host) }
+            return
+        }
+        prewarming.insert(id)
+        Task {
+            defer { prewarming.remove(id) }
+            do {
+                let host: HostSupervisor
+                if unsent { host = try await self.host(for: workspace) }
+                else {
+                    if let path = item.path, !(try await history.allowsAutomaticContext(path: path, id: id)) { return }
+                    if try await store?.get(WireValue.self, kind: "handoff", id: id) != nil { return }
+                    // The reads above yield: the chat may have moved on meanwhile.
+                    guard let current = record(id), current.workspaceID == item.workspaceID, current.profileID == item.profileID,
+                          displays[id] === view, !view.loading, !view.uncertain, view.recovered.isEmpty else { return }
+                    host = try await open(current)
+                }
+                scheduleIdle(workspaceID: item.workspaceID, host: host)
+            } catch {
+                // Nothing was asked for: a send reports what went wrong, typing does not.
+            }
+        }
+    }
     func open(_ item: ChatRecord, automaticContext: Bool = false) async throws -> HostSupervisor {
         try Task.checkCancellation()
         guard !accountingStopped else { throw CancellationError() }

@@ -8,7 +8,7 @@ public actor CaptureDelivery {
     private let acknowledgmentTimeoutNanoseconds: UInt64
     private var occupied = false
     private var waiters: [CheckedContinuation<Bool, Never>] = []
-    private var enabled = false, failed = false
+    private var enabled = false, failed = false, closed = false
     private var pending: (String, CheckedContinuation<Bool, Never>)?
     private var deadline: Task<Void, Never>?
     /// Includes the packet awaiting acknowledgment and producers under backpressure.
@@ -17,9 +17,19 @@ public actor CaptureDelivery {
         self.epoch = epoch; self.emit = emit; self.acknowledgmentTimeoutNanoseconds = acknowledgmentTimeoutNanoseconds
     }
     public func enable() { enabled = true }
+    /// The helper is shutting down: its reader stopped acknowledging, and a
+    /// stopped run still has a partial reply and its final state to write.
+    /// The packet in flight and every later one are refused at once instead of
+    /// holding that cleanup for the acknowledgment deadline.
+    public func close() {
+        closed = true
+        let queued = waiters; waiters.removeAll()
+        for waiter in queued { waiter.resume(returning: false) }
+        if let pending { acknowledge(pending.0, accepted: false) }
+    }
     public func send(_ packet: JSON) async -> Bool {
         guard enabled else { return true }
-        guard !failed else { return false }
+        guard !failed, !closed else { return false }
         if occupied {
             // Each producer already awaits its current packet. A busy healthy
             // recorder applies FIFO backpressure; session concurrency must not

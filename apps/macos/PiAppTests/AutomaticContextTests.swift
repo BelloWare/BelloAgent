@@ -285,6 +285,9 @@ final class AutomaticContextTests: XCTestCase {
             $0.resources[workspace.id] = .object(["codexHome": .string(root.appendingPathComponent("empty-codex").path)])
         }
         let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault)
+        // These tests answer for the helper's context preview themselves;
+        // typing must not start a real helper behind them.
+        model.prewarmsHelpers = false
         try await model.reloadConfiguration()
         model.chats = ["a", "b"].map { ChatRecord(id: $0, workspaceID: workspace.id, title: $0, path: nil, profileID: profile.id) }
         for item in model.chats { try await model.store?.put(item, kind: "chat", id: item.id) }

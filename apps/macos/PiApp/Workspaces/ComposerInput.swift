@@ -43,13 +43,23 @@ struct ComposerInput: View {
                 if session.runStatus == "compacting" || session.compactionNotice != nil {
                     CompactionBanner(session: session) { session.compactionNotice = nil }.transition(AnyTransition.move(edge: .top).combined(with: .opacity))
                 }
-                if !session.attachments.isEmpty || !session.skills.isEmpty { chips.padding(.horizontal, PiSpacing.md).padding(.top, PiSpacing.md).transition(.opacity) }
+                if !session.attachments.isEmpty { chips.padding(.horizontal, PiSpacing.md).padding(.top, PiSpacing.md).transition(.opacity) }
                 NativeComposer(text: $draft.text, send: { submit(intent: $0) }, sessionID: session.id, completion: { _ in },
                     locationChanged: { model.composerMoved($0, editor: $1, view: session) },
                     directSlash: { session.directCommand = true }, pasted: { session.directCommand = false; session.completionVisible = false },
-                    completionKey: { model.completionKey($0, modifiers: $1, view: session) }, focused: { if model.focusedSessionID != session.id { model.focusedSessionID = session.id } }, accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer", inputRejected: { session.notice = $0 },
+                    completionKey: { model.completionKey($0, modifiers: $1, view: session) }, focused: { if model.focusedSessionID != session.id { model.focusedSessionID = session.id }; model.prewarm(session.id) }, accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer", inputRejected: { session.notice = $0 },
                     attachFiles: { model.attachImageFiles($0, sessionID: session.id) },
-                    heightChanged: { height in if abs(contentHeight - height) >= 1 { contentHeight = height } }, focusToken: session.composerFocusRequest)
+                    heightChanged: { height in if abs(contentHeight - height) >= 1 { contentHeight = height } }, focusToken: session.composerFocusRequest,
+                    // The selected skills lead the text as tokens (ComposerSkillTokens.swift).
+                    skills: session.skills, skillDisplay: session, skillsChanged: { model.draftChanged(session) },
+                    skillPressed: { chip, token in
+                        SkillPopovers.shared.pressComposer(chip: chip, anchor: token, editor: token.superview as? ComposerTextView, model: model, session: session,
+                                                           reduceMotion: reduceMotion)
+                    },
+                    skillHovered: { chip, token, inside in
+                        SkillPopovers.shared.hoverComposer(inside, chip: chip, anchor: token, session: session, reduceMotion: reduceMotion)
+                    },
+                    describeSkill: { chip in .composer(chip, catalog: session.skillCatalog) })
                     .id(session.id).disabled(!session.draftReady).frame(height: min(maximumHeight, max(minimumHeight, contentHeight)))
                     // The pane is kept across chats, so a switch hands this
                     // bar another chat's draft. That is not typing: saving it
@@ -159,18 +169,14 @@ struct ComposerInput: View {
         }
     }
 
+    /// Attached images. The selected skills are not here: they lead the text
+    /// as tokens inside the editor.
     private var chips: some View {
         PiFlow {
             ForEach(session.attachments) { attachment in
                 PiChip(text: URL(fileURLWithPath: attachment.path).lastPathComponent, icon: "photo", help: attachment.path,
                        action: { NSWorkspace.shared.open(URL(fileURLWithPath: attachment.path)) },
                        remove: { session.attachments.removeAll { $0.id == attachment.id }; model.draftChanged(session) })
-            }
-            ForEach(session.skills) { chip in
-                PiChip(text: "/\(chip.name)" + (chip.arguments.isEmpty ? "" : " · \(String(chip.arguments.prefix(50)))"), icon: "command",
-                       help: "Explicit for this submission · \(chip.path) · \(chip.contentHash)",
-                       action: { model.editSkillArguments(chip, view: session) },
-                       remove: { session.skills.removeAll { $0.id == chip.id }; model.draftChanged(session) })
             }
         }
     }

@@ -85,7 +85,10 @@ extension WorkspaceModel {
     func isPendingEmpty(_ id: String) -> Bool {
         guard pendingChatIDs.contains(id) else { return false }
         guard let view = displays[id] else { return true }
-        return view.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && view.attachments.isEmpty && view.skills.isEmpty
+        // A first message on its way has left the composer empty; the chat
+        // is anything but empty.
+        return !view.loading && view.sendingRows.isEmpty
+            && view.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && view.attachments.isEmpty && view.skills.isEmpty
     }
     func createOnboardingChat() async throws {
         guard !installPreparing, !creatingOnboardingChat else {
@@ -125,27 +128,28 @@ extension WorkspaceModel {
             try await store.put(item, kind: "chat", id: item.id); chats.insert(item, at: 0); await select(item.id); selected?.notice = page.notice ?? "Imported original · Read-only. No historical HTTP capture is available."
         } catch { self.error = "Import could not be read. The original was preserved." } }
     }
-    func continueCopy(recoverTail: Bool = false) {
-        guard let item = chat, let source = item.path, let workspace = workspaces.first(where: { $0.id == item.workspaceID }), requestProfiles.contains(where: { $0.id == profileChoice }) else { error = "Choose a Responses connection for the continued copy"; return }
+    /// Makes a new chat from every complete record of one whose last record
+    /// was cut off while it was written (a power loss, a full disk). The
+    /// helper checks the records and writes the copy under a new identity;
+    /// the original file is left exactly as it is.
+    func recoverCopy(_ id: String) {
+        guard let item = record(id), let source = item.path, let workspace = workspaces.first(where: { $0.id == item.workspaceID }) else { error = "This chat has no saved file to recover."; return }
         guard let store else { error = StoreError.unavailable.localizedDescription; return }
-        let profileID = profileChoice
         Task { do {
             // Asked before anything is created or a helper is started, and as
             // a sheet, so the chats behind it keep running.
-            if recoverTail {
-                switch await questions.confirm(Self.recoveredCopy, about: item.id) {
-                case .yes: break
-                case .no: return
-                case .busy: self.error = PiQuestion.busyNotice; return
-                }
+            switch await questions.confirm(Self.recoveredCopy, about: item.id) {
+            case .yes: break
+            case .no: return
+            case .busy: self.error = PiQuestion.busyNotice; return
             }
-            let host = try await host(for: workspace), id = UUID().uuidString
-            let result = try await host.request(recoverTail ? "session.import.recover" : "session.import.continue", params: ["path": .string(source), "newSessionId": .string(id)]).object ?? [:]
+            let host = try await host(for: workspace), copyID = UUID().uuidString
+            let result = try await host.request("session.recover", params: ["path": .string(source), "newSessionId": .string(copyID)]).object ?? [:]
             guard let path = result["sessionFile"]?.string else { throw StoreError.invalidRecord }
-            var copy = ChatRecord(id: id, workspaceID: item.workspaceID, title: item.title + " — continued", path: path, profileID: profileID, toolMode: item.toolMode)
+            var copy = ChatRecord(id: copyID, workspaceID: item.workspaceID, title: String((item.title + " — recovered").prefix(120)), path: path, profileID: item.profileID, toolMode: item.toolMode, model: item.model, thinkingLevel: item.thinkingLevel, contextWindow: item.contextWindow, maxOutputTokens: item.maxOutputTokens, modelOutputLimit: item.modelOutputLimit, outputBudgetVersion: item.outputBudgetVersion)
             copy.topicID = effectiveTopicID(for: item)
             try await store.put(copy, kind: "chat", id: copy.id); chats.insert(copy, at: 0); await select(copy.id)
-        } catch { self.error = "The source could not be continued safely. Check for an incomplete tail, changed source, or incompatible saved profile. Original preserved." } }
+        } catch { self.error = "The chat could not be recovered. Its file was left as it was. \(error.localizedDescription)" } }
     }
     func portableHandoff() {
         guard let item = chat, let path = item.path, let workspace = workspaces.first(where: { $0.id == item.workspaceID }), requestProfiles.contains(where: { $0.id == profileChoice }) else { error = "Choose a source history and a Responses connection"; return }

@@ -6,6 +6,8 @@ import Foundation
 
 extension WorkspaceModel {
     func draftChanged(_ view: SessionDisplay) {
+        // Writing a message is the moment to have its helper ready.
+        prewarm(view.id)
         scheduleAutomaticContext(view.id, delay: WorkspaceModel.typingPreviewDelay)
         // Unkept side drafts stay in memory by design; on host loss their text
         // is moved into the parent composer instead (discardLostSides).
@@ -48,9 +50,35 @@ extension WorkspaceModel {
             if pendingChatIDs.contains(view.id) {
                 guard !isPendingEmpty(view.id) else { continue }
                 try await materializeChat(view.id)
+            } else if !view.selectionMetadataLoaded {
+                // A display whose saved draft never loaded (a selection that
+                // was overtaken, or one a helper event built for a chat nobody
+                // is showing) holds an empty composer that is not the user's:
+                // writing it erased the draft that is on disk.
+                continue
             }
             try await store.put(view.savedDraft, kind: "draft", id: view.id)
             if let anchor = view.scrollAnchor { try await store.put(anchor, kind: "anchor", id: view.id) }
+        }
+    }
+    /// Quit and update end every side that was never saved, and a side's
+    /// draft is never written under its own id (the side-draft policy). Its
+    /// unsent text goes where losing the host puts it (`discardLostSides`):
+    /// into the parent's composer, which the flush after this saves.
+    func moveUnsavedSideDraftsToParents() async {
+        for info in sides.values where info.pending || !info.kept {
+            guard let side = displays[info.id] else { continue }
+            let text = side.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            side.draft = ""
+            if let parent = displays[info.parentID], parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) {
+                parent.draft += (parent.draft.isEmpty ? "" : "\n\n") + text; parent.directCommand = false
+            } else if let store {
+                // The parent's own draft never loaded here: add to the saved one.
+                var saved = (try? await store.get(DraftRecord.self, kind: "draft", id: info.parentID)) ?? DraftRecord(id: info.parentID, text: "")
+                saved.text += (saved.text.isEmpty ? "" : "\n\n") + text
+                try? await store.put(saved, kind: "draft", id: info.parentID)
+            }
         }
     }
     func anchorChanged(_ view: SessionDisplay) {

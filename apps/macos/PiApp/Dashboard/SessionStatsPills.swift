@@ -201,6 +201,6 @@ struct SessionStatsPills: View {
         return rows
     }
     private func contextNotes(_ meter: ContextMeterPresentation) -> [String] {
-        meter.warnings.isEmpty ? ["The ring uses the helper's matching request count. Explore context for its method, model and uncertainty."] : meter.warnings
+        [ContextMeterPresentation.methodExplanation] + meter.warnings
     }
 }

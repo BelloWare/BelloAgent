@@ -97,7 +97,6 @@ public actor AgentSession {
     /// attempt that produced its reply.
     var modelRequestsMs=0.0, modelReplyMs=0.0
     var cumulativeModelMs: Double? = 0, cumulativeToolMs: Double? = 0
-    var contextBaseline: RequestUsageBaseline?
     var contextMutation: UInt64 = 0
     var contextResetReason = "epoch-reset"
     var taskRootID: String?
@@ -114,6 +113,8 @@ public actor AgentSession {
     let compactionPolicy: CompactionPolicy
     var contextCounter = RequestContextCounter()
     var currentContextCount: RequestContextCount?
+    /// The idle count the snapshot carries, kept until the context or the turn profile changes.
+    var contextInfoCache: (key: String, profile: JSON, value: JSON)?
     var requestObservation: RequestObservation?
     var publishedObservation: JSON = .null, lastRequestObservation: JSON = .null, observationEstimate: JSON = .null
     var observationGeneration: UInt64 = 0, observationRevision: UInt64 = 0
@@ -320,8 +321,8 @@ public actor AgentSession {
     func apply(profile: Profile, apiKey: String) {
         self.profile = profile; self.apiKey = apiKey; pendingConfiguration = nil
         replayInputsChanged()
-        // The count and its usage baseline described requests under the old settings.
-        contextBaseline = nil; currentContextCount = nil; clearRequestObservation()
+        // The count described requests under the old settings.
+        currentContextCount = nil; clearRequestObservation()
         event("configured")
     }
     public var path: String? { journal?.url.path }

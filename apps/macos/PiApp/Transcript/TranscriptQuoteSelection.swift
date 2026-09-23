@@ -35,36 +35,55 @@ final class TranscriptQuoteRegionView: NSView {
     private weak var editor: NSTextView?
     private var range = NSRange(location: NSNotFound, length: 0)
     private(set) var selectedQuote: TranscriptQuote?
-    private(set) var popover: NSPopover?
+    /// The floating "Ask in side chat" bar, while a quotable selection shows it.
+    private(set) var bar: QuoteActionPanel?
+    nonisolated(unsafe) private var windowObservers: [NSObjectProtocol] = []
 
     init(scope: NSView, quote: @escaping (TranscriptQuote) -> Void) {
         self.scope = scope; self.quote = quote
     }
-    deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    deinit {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
+    }
 
     func setEnabled(_ value: Bool) {
         guard enabled != value else { return }
         enabled = value; attach()
     }
     func attach() {
-        guard enabled, scope?.window != nil else {
+        guard enabled, let window = scope?.window else {
             if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+            for observer in windowObservers { NotificationCenter.default.removeObserver(observer) }
+            windowObservers = []
             dismiss(); return
         }
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .keyDown, .keyUp, .scrollWheel]) { [weak self] event in
-            MainActor.assumeIsolated { self?.receive(event) }
-            return event
+            let handled = MainActor.assumeIsolated { self?.receive(event) ?? false }
+            return handled ? nil : event
+        }
+        // The bar floats in a window of its own: it goes when its window
+        // stops being the one in front, or changes size under the selection.
+        for name in [NSWindow.didResignKeyNotification, NSWindow.didResizeNotification, NSWindow.willCloseNotification] {
+            windowObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.dismiss() }
+            })
         }
     }
-    private func receive(_ event: NSEvent) {
-        guard let scope, event.window === scope.window else { return }
+    /// Returns whether the event was the bar's: Return asks, and is not
+    /// passed on.
+    private func receive(_ event: NSEvent) -> Bool {
+        guard let scope, event.window === scope.window else { return false }
         switch event.type {
         case .leftMouseDown, .scrollWheel: dismiss()
         case .keyDown:
             if event.keyCode == 53 { dismiss() }
+            else if bar != nil, [36, 76].contains(event.keyCode), event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+                askInSideChat(); return true
+            }
         case .leftMouseUp, .keyUp:
-            if event.type == .keyUp && event.keyCode == 53 { return }
+            if event.type == .keyUp && [53, 36, 76].contains(event.keyCode) { return false }
             let expected = revision
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.revision == expected else { return }
@@ -72,17 +91,21 @@ final class TranscriptQuoteRegionView: NSView {
             }
         default: break
         }
+        return false
     }
     func dismiss() {
         revision += 1
-        popover?.close(); popover = nil
+        if let bar {
+            bar.parent?.removeChildWindow(bar); bar.orderOut(nil)
+            self.bar = nil
+        }
         selectedQuote = nil; editor = nil
         range = NSRange(location: NSNotFound, length: 0)
     }
 
     /// Finds the actual selection owner, including AppKit's shared field
     /// editor used by SwiftUI Text. Never guess by searching repeated words.
-    private func selection() -> (NSTextView, NSRange, TranscriptQuote, NSRect)? {
+    private func selection() -> (NSTextView, NSRange, TranscriptQuote, (all: NSRect, first: NSRect))? {
         guard enabled, let scope, !scope.isHiddenOrHasHiddenAncestor, let window = scope.window,
               let text = window.firstResponder as? NSTextView else { return nil }
         let owner = text.isFieldEditor ? text.delegate as? NSView : text
@@ -106,20 +129,35 @@ final class TranscriptQuoteRegionView: NSView {
             return nil
         }
         guard let region = findRegion(row) else { return nil }
-        return (text, range, TranscriptQuote(messageID: region.messageID, text: selected), anchor.intersection(scope.visibleRect))
+        return (text, range, TranscriptQuote(messageID: region.messageID, text: selected), Self.screenRects(text, range, first: screenRect))
+    }
+    /// Every line of the selection on screen as one rectangle, and its first
+    /// line: the bar is centred on the one and stands clear of the other.
+    private static func screenRects(_ text: NSTextView, _ range: NSRange, first: NSRect) -> (all: NSRect, first: NSRect) {
+        var all = first, remaining = range
+        for _ in 0..<400 where remaining.length > 0 {
+            var actual = NSRange(location: NSNotFound, length: 0)
+            let line = text.firstRect(forCharacterRange: remaining, actualRange: &actual)
+            guard actual.location != NSNotFound, actual.length > 0 else { break }
+            if !line.isEmpty { all = all.union(line) }
+            let end = actual.location + actual.length
+            remaining = NSRange(location: end, length: max(0, range.location + range.length - end))
+        }
+        return (all, first)
     }
 
     func presentSelection() {
-        guard let scope, let (text, selectedRange, value, anchor) = selection() else { dismiss(); return }
-        if popover?.isShown == true, selectedQuote == value, editor === text, range == selectedRange { return }
+        guard let scope, let window = scope.window, let (text, selectedRange, value, rects) = selection() else { dismiss(); return }
+        if bar?.isVisible == true, selectedQuote == value, editor === text, range == selectedRange { return }
         dismiss()
         editor = text; range = selectedRange; selectedQuote = value
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentViewController = QuoteSelectionContent(quote: value.text) { [weak self] in self?.askInSideChat() }
-        self.popover = popover
-        popover.show(relativeTo: anchor, of: scope, preferredEdge: .maxY)
+        let bar = QuoteActionPanel { [weak self] in self?.askInSideChat() }
+        // A window of its own does not inherit its parent's appearance.
+        bar.appearance = window.effectiveAppearance
+        let visible = window.convertToScreen(scope.convert(scope.visibleRect, to: nil))
+        bar.place(selection: rects.all, firstLine: rects.first, within: visible)
+        window.addChildWindow(bar, ordered: .above)
+        self.bar = bar
     }
 
     func askInSideChat() {
@@ -135,40 +173,77 @@ final class TranscriptQuoteRegionView: NSView {
     }
 }
 
-@MainActor private final class QuoteSelectionContent: NSViewController {
-    private let selectedText: String
-    private let ask: () -> Void
-    init(quote: String, ask: @escaping () -> Void) {
-        selectedText = quote; self.ask = ask
-        super.init(nibName: nil, bundle: nil)
+/// The action a transcript selection offers: one compact bar floating just
+/// above the selection, on the app's own surface. It is a borderless child
+/// window rather than a popover, so it has no arrow and no system material,
+/// and it never takes key status: the selection stays the reader's, Return
+/// (through the selection controller) asks, Escape dismisses.
+@MainActor final class QuoteActionPanel: NSPanel {
+    /// Room around the bar inside the panel, for its shadow.
+    static let margin: CGFloat = 14
+    /// Between the bar and the line it stands above (or below).
+    static let gap: CGFloat = 6
+
+    init(ask: @escaping () -> Void) {
+        super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        isOpaque = false; backgroundColor = .clear; hasShadow = false
+        isReleasedWhenClosed = false; animationBehavior = .none
+        becomesKeyOnlyIfNeeded = true; hidesOnDeactivate = true
+        let host = NSHostingView(rootView: QuoteActionBar(ask: ask).padding(Self.margin))
+        host.sizingOptions = [.intrinsicContentSize]
+        contentView = host
+        setContentSize(host.fittingSize)
     }
-    required init?(coder: NSCoder) { nil }
-    override func loadView() {
-        let view = NSView()
-        let preview = NSTextField(wrappingLabelWithString: String(selectedText.prefix(160)))
-        preview.font = .systemFont(ofSize: 12)
-        preview.textColor = .secondaryLabelColor
-        preview.maximumNumberOfLines = 2
-        preview.lineBreakMode = .byTruncatingTail
-        let button = NSButton(title: "Ask in side chat", target: self, action: #selector(submit))
-        button.bezelStyle = .rounded
-        button.image = NSImage(systemSymbolName: "bubble.left.and.bubble.right", accessibilityDescription: nil)
-        button.imagePosition = .imageLeading
-        button.keyEquivalent = "\r"
-        button.setAccessibilityIdentifier("quoteInSideChat")
-        let stack = NSStackView(views: [preview, button])
-        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
-            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
-            preview.widthAnchor.constraint(equalToConstant: 250)
-        ])
-        self.view = view
-        preferredContentSize = NSSize(width: 278, height: 90)
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
+    /// The bar itself on screen, without the room kept for its shadow.
+    var barFrame: NSRect { frame.insetBy(dx: Self.margin, dy: Self.margin) }
+
+    /// Just above the selection's first line, centred on the selection;
+    /// below its last line when there is no room above. It stays inside the
+    /// part of the conversation that is on screen, and never over the text.
+    func place(selection: NSRect, firstLine: NSRect, within visible: NSRect) {
+        let bar = barFrame.size
+        var x = selection.midX - bar.width / 2
+        x = max(visible.minX + 8, min(x, visible.maxX - 8 - bar.width))
+        var y = firstLine.maxY + Self.gap
+        if y + bar.height > visible.maxY { y = selection.minY - Self.gap - bar.height }
+        setFrameOrigin(NSPoint(x: x - Self.margin, y: y - Self.margin))
     }
-    @objc private func submit() { ask() }
+}
+
+/// The bar's face: the bubble glyph in the accent, the action in the app's
+/// ink, and a quiet key hint. The press, the pointer, the tooltip and the
+/// accessibility action belong to the app's AppKit press target over it.
+private struct QuoteActionBar: View {
+    let ask: () -> Void
+    @State private var hovering = false
+    @State private var arrived = false
+    @Environment(\.piReduceMotion) private var reduceMotion
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "bubble.left.and.bubble.right")
+                .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Color.piAccent)
+            Text("Ask in side chat").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Color.piInk)
+            Text("↩").font(.system(size: 10.5, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(Color.piFill, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(hovering ? Color.piFillStrong : Color.clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .padding(3)
+        .background(Color.piSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(Color.piHairlineStrong, lineWidth: 1))
+        .shadow(color: Color.piShadow, radius: 10, y: 3)
+        .overlay {
+            PiPopoverTrigger(label: "Ask in side chat", identifier: "quoteInSideChat",
+                             help: "Ask about the selected text in a side chat (Return)",
+                             onHover: { hovering = $0 }, onPress: { _ in ask() })
+        }
+        .piAnimation(PiMotion.quick, value: hovering)
+        .scaleEffect(arrived || reduceMotion ? 1 : 0.96)
+        .opacity(arrived || reduceMotion ? 1 : 0)
+        .onAppear { if reduceMotion { arrived = true } else { withAnimation(PiMotion.quick) { arrived = true } } }
+    }
 }

@@ -115,3 +115,57 @@ private final class ReadyFrames: @unchecked Sendable {
     func emit(_ value: JSON) { guard value["kind"].text == "ready" else { return }; lock.lock(); frame = value; lock.unlock() }
     var ready: JSON? { lock.lock(); defer { lock.unlock() }; return frame }
 }
+
+/// A journal whose last record was cut off could not be reopened, and the
+/// recovery the app offered was rejected outright. `session.recover` copies
+/// every complete record to a new chat and leaves the original as it was.
+final class SessionRecoverTests: XCTestCase {
+    private func journal(_ lines: [JSON], tail: String) throws -> Data {
+        var data = Data(); for line in lines { data.append(try line.data()); data.append(10) }
+        data.append(Data(tail.utf8)); return data
+    }
+    private func open(_ root: URL) async throws -> (NativeHostService, URL) {
+        let host = NativeHostService(emit: { _ in }), sessions = root.appendingPathComponent("state/Sessions")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(sessions.path), "mcp": ["servers": [:]]])
+        return (host, sessions)
+    }
+    func testRecoverCopiesTheCompleteRecordsUnderANewIdentityAndLeavesTheOriginal() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (host, sessions) = try await open(root)
+        let header: JSON = ["type": "session", "version": 3, "id": "original", "cwd": JSON(root.path), "timestamp": "2026-09-01T00:00:00Z"]
+        let records: [JSON] = [header,
+            ["type": "custom", "customType": "pi-app.native.v1", "data": ["binding": ["api": "fixture"], "version": 1], "id": "n1", "parentId": .null],
+            ["type": "message", "message": ["role": "user", "content": "Question"], "id": "u1", "parentId": "n1"],
+            ["type": "message", "message": ["role": "assistant", "content": "Answer"], "id": "a1", "parentId": "u1"]]
+        let source = sessions.appendingPathComponent("original.jsonl"), damaged = try journal(records, tail: "{\"type\":\"message\",\"id\":\"x\"")
+        try damaged.write(to: source)
+        let result = try await host.command("session.recover", sessionID: nil, params: ["path": JSON(source.path), "newSessionId": "recovered"])
+        XCTAssertEqual(result["sessionId"].text, "recovered"); XCTAssertEqual(result["records"].int, 3)
+        let copy = try Data(contentsOf: URL(fileURLWithPath: try XCTUnwrap(result["sessionFile"].text)))
+        let lines = copy.split(separator: 10).map { try? JSON.parse(Data($0)) }
+        XCTAssertEqual(copy.last, 10, "The copy ends on a complete record")
+        XCTAssertEqual(lines.count, 4); XCTAssertEqual(lines.first??["id"].text, "recovered")
+        XCTAssertEqual(lines.first??["cwd"].text, root.path, "Only the identity of the header changes")
+        XCTAssertEqual(Array(copy.split(separator: 10).dropFirst()), Array(damaged.split(separator: 10).dropFirst().dropLast()), "Every complete record, byte for byte")
+        XCTAssertEqual(try Data(contentsOf: source), damaged, "The original is untouched")
+        do { _ = try await host.command("session.recover", sessionID: nil, params: ["path": JSON(source.path), "newSessionId": "recovered"]); XCTFail("An existing chat is never replaced") } catch { }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: sessions.path).allSatisfy { !$0.hasPrefix(".recover-") }, "No temporary file is left")
+        await host.shutdown()
+    }
+    func testRecoverRefusesDamageBeforeTheLastRecordAndPathsOutsideTheProject() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (host, sessions) = try await open(root)
+        let broken: [JSON] = [["type": "session", "version": 3, "id": "broken"],
+            ["type": "custom", "customType": "pi-app.native.v1", "data": ["binding": ["api": "fixture"], "version": 1], "id": "n1", "parentId": .null],
+            ["type": "message", "message": ["role": "user", "content": "Question"], "id": "u1", "parentId": "missing"]]
+        let source = sessions.appendingPathComponent("broken.jsonl"); try journal(broken, tail: "{").write(to: source)
+        do { _ = try await host.command("session.recover", sessionID: nil, params: ["path": JSON(source.path), "newSessionId": "copy"]); XCTFail("A broken branch is not recovered") }
+        catch { XCTAssertEqual((error as? AgentError)?.code, "session_damaged") }
+        let outside = root.appendingPathComponent("elsewhere.jsonl"); try Data(contentsOf: source).write(to: outside)
+        do { _ = try await host.command("session.recover", sessionID: nil, params: ["path": JSON(outside.path), "newSessionId": "copy"]); XCTFail("Only the project's own chats") }
+        catch { XCTAssertEqual((error as? AgentError)?.code, "invalid_path") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sessions.appendingPathComponent("copy.jsonl").path))
+        await host.shutdown()
+    }
+}

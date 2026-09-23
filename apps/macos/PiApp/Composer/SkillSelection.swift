@@ -4,6 +4,14 @@ struct SkillChip: Codable, Sendable, Hashable, Identifiable {
     var id: String; var name: String; var path: String; var contentHash: String; var metadataHash: String
     var arguments = ""; var intent = "picker"
     var sourceCharacters: Int?
+    /// What the catalog said about the skill when it was selected, so its
+    /// token can describe it while the catalog is not loaded (a draft
+    /// restored at launch, an edited message). Display only: none of it is
+    /// part of the selection the helper is sent, which is `wire`.
+    var description: String? = nil
+    var scope: String? = nil
+    var policy: String? = nil
+    var sourceRoot: String? = nil
     var wire: WireValue { .object(["id": .string(id), "contentHash": .string(contentHash), "metadataHash": .string(metadataHash), "arguments": .string(arguments), "intent": .string(intent)]) }
 }
 struct SkillDescriptor: Codable, Sendable, Identifiable {
@@ -11,8 +19,14 @@ struct SkillDescriptor: Codable, Sendable, Identifiable {
     var contentHash: String; var metadataHash: String; var policy: String; var reasons: [String]
     var missingDependencies: [[String: String]]
     var sourceCharacters: Int?
+    /// The discovery root the skill was found under (the helper's
+    /// `sourceRoot`): what tells Codex's skills from your own.
+    var sourceRoot: String? = nil
     var canSelect: Bool { ["implicitAllowed", "explicitOnly"].contains(policy) && missingDependencies.isEmpty }
-    var chip: SkillChip { SkillChip(id: id, name: name, path: path, contentHash: contentHash, metadataHash: metadataHash, sourceCharacters: sourceCharacters) }
+    var chip: SkillChip {
+        SkillChip(id: id, name: name, path: path, contentHash: contentHash, metadataHash: metadataHash, sourceCharacters: sourceCharacters,
+                  description: description, scope: scope, policy: policy, sourceRoot: sourceRoot)
+    }
 }
 struct LeadingCommand: Equatable {
     static let reserved = ["side", "fork", "debug", "compact"]

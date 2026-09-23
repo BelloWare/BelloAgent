@@ -36,6 +36,10 @@ public struct ChatMessage: Codable, Sendable {
     public var toolStats: JSON? = nil
     /// "length" when the model stopped at the output budget; nil otherwise.
     public var stopReason: String? = nil
+    /// Assistant rows: the reply's usage in pi's shape (input, output,
+    /// cacheRead, cacheWrite, totalTokens), which the context count anchors on.
+    /// Nil for rows journaled before 0.1.87 and for replies without usage.
+    public var usage: JSON? = nil
     /// The turn this row was appended under: the id of the user message that
     /// started the run. The transcript groups work by it instead of guessing
     /// at boundaries from row order. Nil for rows journaled before 0.1.34.
@@ -68,6 +72,7 @@ public struct ChatMessage: Codable, Sendable {
         if let compaction { value["nativeCompaction"] = compaction }
         if let retainedOutput { value["nativeRetainedOutput"] = JSON(retainedOutput) }
         if let stopReason { value["nativeStopReason"] = JSON(stopReason) }
+        if let usage { value["usage"] = usage }
         if let providerItems { value["nativeProviderItems"] = .array(providerItems) }
         if let providerIdentity { value["nativeProviderIdentity"] = providerIdentity }
         if let providerBinding { value["nativeProviderBinding"] = providerBinding }
@@ -103,6 +108,7 @@ public struct ChatMessage: Codable, Sendable {
         taskExecutionID=pi["nativeTaskExecution"].text
         compaction=pi["nativeCompaction"].isNull ? nil : pi["nativeCompaction"]
         retainedOutput=pi["nativeRetainedOutput"].text; stopReason=pi["nativeStopReason"].text
+        usage=role == "assistant" && !pi["usage"].map.isEmpty ? pi["usage"] : nil
     }
     public func view(toolStates: [String: JSON] = [:], state: String = "complete") -> JSON {
         let tools = content.filter { $0["type"].text == "toolCall" }.map { block -> JSON in
@@ -143,7 +149,24 @@ public struct ChatMessage: Codable, Sendable {
         if let taskRootID { value["taskRootID"] = JSON(taskRootID) }
         if let taskExecutionID { value["taskExecutionID"] = JSON(taskExecutionID) }
         if let modelMs { value["modelMs"] = JSON(modelMs) }
+        if role == "user", let skills = displaySkills { value["skills"] = skills }
         return value
+    }
+    /// The skills a user message was sent with, as its row shows them: the
+    /// explicit selections the model received ahead of the text. Every field
+    /// the row carries is a string, and a recorded entry without an identity
+    /// or a name is left out. Nil when the message used none.
+    var displaySkills: JSON? {
+        let recorded = userInput?["skills"].list ?? []
+        let rows: [JSON] = recorded.compactMap { skill in
+            guard let id = skill["id"].text, let name = skill["name"].text else { return nil }
+            var row: JSON = ["id": JSON(id), "name": JSON(name), "path": JSON(skill["path"].text ?? ""),
+                             "contentHash": JSON(skill["contentHash"].text ?? ""), "metadataHash": JSON(skill["metadataHash"].text ?? ""),
+                             "arguments": JSON(skill["arguments"].text ?? "")]
+            for key in ["description", "scope", "policy"] { if let text = skill[key].text { row[key] = JSON(text) } }
+            return row
+        }
+        return rows.isEmpty ? nil : .array(rows)
     }
 }
 

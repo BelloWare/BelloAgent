@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 public struct NDJSONDecoder {
     private var buffer=Data()
@@ -51,7 +56,7 @@ public actor NativeHostService {
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
             hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true; unknownToolOutcomes = frame["unknownToolOutcomes"].flag == true
-            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":"1.0.0","piBehaviorReference":"0.85.1","limits":["frameBytes":1048576,"captureBytes":134217728],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends"]]); return
+            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":"1.0.0","piBehaviorReference":"0.85.1","limits":["frameBytes":1048576,"captureBytes":134217728],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover"]]); return
         }
         let id=frame["commandId"].text ?? ""
         guard hello, frame["v"].int == 1, frame["kind"].text == "command", frame["hostEpoch"].text == epoch, !id.isEmpty, id.utf8.count <= 128, let method=frame["method"].text, frame["params"].isNull || frame["params"].isObject else { reply(id,.failure(AgentError("invalid_command", "Invalid command or stale host epoch"))); return }
@@ -224,6 +229,7 @@ public actor NativeHostService {
             } catch { await runtimeGate.release(); throw error }
         }
         if method == "session.portable.preview" || method == "session.import.inspect" { return try portable(params) }
+        if method == "session.recover" { return try recoverCopy(params) }
         if method == "session.import.continue" || method == "session.import.recover" { throw AgentError("portable_handoff_required", "Pi journals are preserved read-only. Preview and explicitly create a native portable handoff rather than replaying incompatible provider state.") }
         let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
         if method.hasPrefix("debug.") { return try await traces.command(method,session:id,params:params) }
@@ -360,6 +366,44 @@ public actor NativeHostService {
         }
         return (model,level,try limit("contextWindow",maximum:10_000_000),try limit("maxOutputTokens",maximum:1_000_000),try limit("modelOutputLimit",maximum:1_000_000))
     }
+    /// A journal whose last record was cut off (a power loss or a full disk
+    /// mid-write) cannot be reopened. This copies every complete record,
+    /// checked to be one intact native branch, to a new journal under a new
+    /// session id in the same project, and leaves the original untouched.
+    /// Anything wrong before the last record is still refused.
+    private func recoverCopy(_ params:JSON) throws -> JSON {
+        guard let directory else { throw AgentError("workspace_closed","Open the project before recovering a chat") }
+        let sessions=canonical(directory.path), source=canonical(try required(params["path"],"session path"))
+        guard within(source,sessions) else { throw AgentError("invalid_path","Only this project's own chats can be recovered") }
+        let id=try identity(params["newSessionId"]), destination=sessions.appendingPathComponent(id+".jsonl")
+        let data=try readBounded(source,maximum:128*1024*1024)
+        guard let end=data.lastIndex(of:10) else { throw AgentError("session_damaged","No complete record to recover") }
+        var records:[JSON]=[], last:String?, seen=Set<String>()
+        for line in data[..<end].split(separator:10) {
+            guard line.count <= 32*1024*1024 else { throw AgentError("session_damaged","Journal record exceeds limit") }
+            records.append(try JSON.parse(Data(line)))
+        }
+        guard var header=records.first, header["type"].text == "session", header["version"].int == 3,
+              records.contains(where:{ $0["customType"].text == "pi-app.native.v1" }) else { throw AgentError("legacy_session","Only a native chat can be recovered this way") }
+        for item in records.dropFirst() {
+            let rid=try identity(item["id"])
+            guard seen.insert(rid).inserted, item["parentId"].text == last else { throw AgentError("session_damaged","The journal is damaged before its last record; nothing was recovered") }
+            last=rid
+        }
+        header["id"]=JSON(id)
+        var copy=try header.data(); copy.append(10)
+        if let first=data[..<end].firstIndex(of:10), first < end { copy.append(data[data.index(after:first)...end]) }
+        // Written beside the destination, then linked into place: an existing
+        // chat of that id is never replaced and a failed write leaves nothing.
+        let temporary=sessions.appendingPathComponent(".recover-\(UUID().uuidString).jsonl")
+        let fd=open(temporary.path,O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW,0o600)
+        guard fd >= 0 else { throw AgentError("session_write","Cannot create the recovered copy") }
+        let file=FileHandle(fileDescriptor:fd,closeOnDealloc:true)
+        defer { try? FileManager.default.removeItem(at:temporary) }
+        try file.write(contentsOf:copy); try file.synchronize(); try file.close()
+        guard link(temporary.path,destination.path) == 0 else { throw AgentError("session_exists","A chat with that identity already exists") }
+        return ["sessionId":JSON(id),"sessionFile":JSON(destination.path),"records":JSON(records.count-1),"omittedBytes":JSON(data.count-end-1)]
+    }
     private func portable(_ params:JSON) throws -> JSON {
         let file=canonical(try required(params["path"],"session path")), data=try readBounded(file,maximum:128*1024*1024)
         var records:[String:JSON]=[:], leaf:String?, header:JSON=[:]
@@ -414,7 +458,9 @@ public actor NativeHostService {
         return ["path":JSON(file.path),"sessionId":header["id"],"nativeReplay":false,"damaged":false,"text":JSON(retained),"draft":JSON(retained),"truncated":JSON(retained.utf8.count<text.utf8.count || messages.count>40),"provenance":["sourcePath":JSON(file.path),"sourceSHA256":JSON(sha256(data)),"portable":true],"notice":"Portable text only, active branch and latest compaction. Opaque reasoning, executable state and permissions are not transferred. Original unchanged. Review before sending.","sha256":JSON(sha256(data))]
     }
     public func shutdown() async {
-        closing=true; flushTask?.cancel(); for t in tasks.values { t.cancel() }
+        // Acknowledgments are dropped from here on (see `receive`): a capture
+        // must not hold a stopped run's partial reply and final state.
+        closing=true; await capture.close(); flushTask?.cancel(); for t in tasks.values { t.cancel() }
         for s in sessions.values { await s.stop() }; for s in sessions.values { await s.close() }; await mcp?.close(); sessions.removeAll(); profiles.removeAll(); flush()
     }
 }

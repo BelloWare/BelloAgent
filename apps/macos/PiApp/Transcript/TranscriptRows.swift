@@ -18,6 +18,11 @@ struct TranscriptActions {
     var quoteReply: ((TranscriptQuote) -> Void)? = nil
     /// Created only when Info opens, without observing the entire workspace in a row.
     var turnRequestSource: (() -> TurnRequestSource?)? = nil
+    /// A skill pill in a sent message (the message's id, the skill, the pill)
+    /// was pressed; nil where no popover can open.
+    var skillPressed: ((String, TranscriptSkillUse, NSView) -> Void)? = nil
+    /// The pointer entered or left a sent message's skill pill.
+    var skillHovered: ((String, TranscriptSkillUse, NSView, Bool) -> Void)? = nil
 }
 
 enum TranscriptMetrics {
@@ -63,6 +68,22 @@ struct FigureFlow: View {
                 }
             }
         }
+    }
+}
+
+/// The quiet mark under a message the reader has just sent, until the
+/// helper's own row for it takes its place. A helper that is up takes a
+/// message within a frame or two, so the mark waits before it shows: it is
+/// there for a send that is slow, not a flash on every one that is not.
+struct TranscriptSendingMark: View {
+    static let delay = Duration.milliseconds(400)
+    @State private var shown = false
+    var body: some View {
+        Text("Sending…").font(.system(size: 10.5)).foregroundStyle(TranscriptPalette.faint)
+            .opacity(shown ? 1 : 0).piAnimation(PiMotion.quick, value: shown)
+            .task { if (try? await Task.sleep(for: Self.delay)) != nil { shown = true } }
+            .accessibilityLabel("Sending")
+            .accessibilityIdentifier("messageSending")
     }
 }
 
@@ -116,7 +137,9 @@ extension View {
     /// Details and Edit through the row itself rather than through pills that
     /// only a pointer can reveal.
     @ViewBuilder func transcriptRowActions(_ message: TranscriptMessage, _ actions: TranscriptActions) -> some View {
-        if message.role == "user", message.kind == nil {
+        if message.isSending {
+            accessibilityAction(named: "Copy") { actions.copyMessage(message.id) }
+        } else if message.role == "user", message.kind == nil {
             accessibilityAction(named: "Edit") { actions.edit(message.id) }
                 .accessibilityAction(named: "Copy") { actions.copyMessage(message.id) }
                 .accessibilityAction(named: "Details") { actions.inspect(message.id) }
@@ -548,6 +571,8 @@ struct MessageRowView: View {
     var disclosure = TranscriptRowDisclosure.default
     var toggle: (TranscriptDisclosure.Part) -> Void = { _ in }
     @State private var hovering = false
+    /// Between a user bubble's skill pills and its text.
+    nonisolated static let skillGap: CGFloat = 8
     /// The line under a reply that ended before its natural end: at the output
     /// limit it says what to do next; otherwise it names the provider's reason.
     nonisolated static func earlyEnd(_ stopReason: String?) -> String? {
@@ -586,11 +611,21 @@ struct MessageRowView: View {
             if message.role == "user" {
                 HStack(spacing: 0) {
                     Spacer(minLength: 40)
-                    MarkdownBodyView(source: message.text, style: .user, capsWidth: false)
-                        .equatable()
-                        .padding(.horizontal, 14).padding(.vertical, 9)
-                        .background(TranscriptPalette.userBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .frame(maxWidth: TranscriptMetrics.proseWidth, alignment: .trailing)
+                    // The skills lead the bubble: the model received them
+                    // ahead of the text.
+                    VStack(alignment: .leading, spacing: MessageRowView.skillGap) {
+                        if let skills = message.skills, !skills.isEmpty {
+                            TranscriptSkillPills(messageID: message.id, skills: skills, actions: actions)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if message.skills?.isEmpty != false || !message.text.isEmpty {
+                            MarkdownBodyView(source: message.text, style: .user, capsWidth: false)
+                                .equatable()
+                        }
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(TranscriptPalette.userBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .frame(maxWidth: TranscriptMetrics.proseWidth, alignment: .trailing)
                 }
             } else if message.role == "system" {
                 Text(message.text).font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted).multilineTextAlignment(.center)
@@ -626,12 +661,18 @@ struct MessageRowView: View {
             HStack(alignment: .center, spacing: 10) {
                 if inlineAccounting, let accounting = message.accounting, message.role != "user" { MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(message.id) }) }
                 if message.role != "user" { Spacer(minLength: 0) }
-                if message.role == "user", let at = message.at {
+                if message.isSending {
+                    // Where the time will be, in the same band: the row keeps
+                    // its height when the helper's row takes its place.
+                    TranscriptSendingMark()
+                } else if message.role == "user", let at = message.at {
                     Text(TranscriptActivity.formatClock(at)).font(.system(size: 10.5)).foregroundStyle(TranscriptPalette.faint).monospacedDigit()
                         .opacity(hovering ? 1 : 0).piAnimation(PiMotion.quick, value: hovering)
                         .accessibilityLabel("Sent at \(TranscriptActivity.formatClock(at))")
                 }
-                RowActionsView(message: message, actions: actions, visible: hovering)
+                // Edit and Details act on the helper's copy of a message; a
+                // message still being sent has none yet.
+                RowActionsView(message: message, actions: actions, visible: hovering && !message.isSending)
                 if message.role == "user", inlineAccounting, let accounting = message.accounting { MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(message.id) }, trailing: true) }
             }
             .frame(height: 22)

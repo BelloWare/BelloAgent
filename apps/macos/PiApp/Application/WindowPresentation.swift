@@ -17,7 +17,7 @@ struct WindowChrome: NSViewRepresentable {
     var sidebarWidth: CGFloat = WindowChrome.sidebarWidth
     /// The chat whose composer should receive typing that lands nowhere.
     var focusedSessionID: String? = nil
-    func makeCoordinator() -> WindowPresentationController { WindowPresentationController() }
+    func makeCoordinator() -> WindowPresentationController { WindowPresentationController(defaults: .standard) }
     func makeNSView(context: Context) -> WindowChromeView {
         let view = WindowChromeView()
         view.controller = context.coordinator
@@ -126,7 +126,21 @@ final class ConversationHeaderMarkerView: NSView {
     private weak var chrome: WindowChromeView?
     private var eventMonitor: Any?
     private var keyMonitor: Any?
-    private var restoreFrame: NSRect?
+    /// The frame a double-click zoom replaced, which the next one restores.
+    /// Kept in the defaults as well: the window's zoomed frame is autosaved,
+    /// and without this a relaunch or a reopened window could not be unzoomed.
+    private var restoreFrame: NSRect? {
+        didSet {
+            guard let defaults, restoreFrame != oldValue else { return }
+            if let restoreFrame { defaults.set(NSStringFromRect(restoreFrame), forKey: Self.restoreFrameKey) }
+            else { defaults.removeObject(forKey: Self.restoreFrameKey) }
+        }
+    }
+    private let defaults: UserDefaults?
+    static let restoreFrameKey = "mainWindowZoomRestoreFrame"
+    /// The size the window group opens at (`PiApp`), used to unzoom a window
+    /// with no remembered frame.
+    static let defaultSize = NSSize(width: 1240, height: 800)
     private var consumesSecondMouseUp = false
     /// The chat whose composer takes stray typing; set from the workspace view.
     var focusedSessionID: String?
@@ -135,6 +149,12 @@ final class ConversationHeaderMarkerView: NSView {
     /// that tree holds thousands of rows. Tests pin the count.
     private var resolvedComposer: (sessionID: String, editor: ComposerTextView)?
     private(set) var composerLookups = 0
+
+    /// Without `defaults` the zoom's restore frame lasts as long as this controller.
+    init(defaults: UserDefaults? = nil) {
+        self.defaults = defaults
+        if let saved = defaults?.string(forKey: Self.restoreFrameKey).map(NSRectFromString), saved.width > 0, saved.height > 0 { restoreFrame = saved }
+    }
 
     func attach(_ window: NSWindow?, chrome: WindowChromeView) {
         guard let window else { detach(); return }
@@ -165,7 +185,7 @@ final class ConversationHeaderMarkerView: NSView {
     func detach() {
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
-        eventMonitor = nil; keyMonitor = nil; window = nil; chrome = nil; restoreFrame = nil; consumesSecondMouseUp = false
+        eventMonitor = nil; keyMonitor = nil; window = nil; chrome = nil; consumesSecondMouseUp = false
         resolvedComposer = nil
     }
 
@@ -260,6 +280,11 @@ final class ConversationHeaderMarkerView: NSView {
         if let previous = restoreFrame, Self.approximatelyEqual(window.frame, available) {
             restoreFrame = nil
             window.setFrame(Self.constrained(previous, to: available), display: true, animate: false)
+        } else if Self.approximatelyEqual(window.frame, available) {
+            // Zoomed with nothing remembered (a window from before this was
+            // kept): unzoom to the size the window opens at, centred.
+            let size = Self.defaultSize
+            window.setFrame(Self.constrained(NSRect(x: available.midX - size.width / 2, y: available.midY - size.height / 2, width: size.width, height: size.height), to: available), display: true, animate: false)
         } else {
             restoreFrame = window.frame
             window.setFrame(available, display: true, animate: false)

@@ -36,7 +36,12 @@ struct ContextPresentation: Equatable {
         if submissionPending { return pending("Preparing request input…",reason:"new-request-preparing") }
         if state["version"]?.number == 1 {
             let phase=state["phase"]?.string
+            // A helper that counts as pi does publishes one reading for every
+            // phase: the last reply's reported tokens plus the messages since,
+            // pending after a compaction until the next reply.
+            let counted=state["count"]?.object.flatMap { $0["method"]?.string == "pi-estimate" ? $0 : nil }
             if phase == "current-request" || phase == "preparing" {
+                if let counted { return selected(counted,scope:"current-request",reason:"new-request-preparing") }
                 let current=state["currentRequest"]?.object ?? [:]
                 if current["sessionID"] == state["sessionID"], current["runtimeEpoch"] == state["runtimeEpoch"],
                    current["generation"] == state["generation"], ["turn","title"].contains(current["purpose"]?.string ?? ""), !current.isEmpty,
@@ -46,6 +51,7 @@ struct ContextPresentation: Equatable {
                 return pending("Preparing request input…",reason:"new-request-preparing")
             }
             if phase == "last-request" {
+                if let counted { return selected(counted,scope:"last-request",reason:"request-completed") }
                 if let last=state["lastRequest"]?.object, last["sessionID"] == state["sessionID"],
                    last["runtimeEpoch"] == state["runtimeEpoch"], ["turn","title"].contains(last["purpose"]?.string ?? ""),
                    let count=RequestContextObservation(last).context {
@@ -55,6 +61,7 @@ struct ContextPresentation: Equatable {
             }
             if let preview { return selected(preview,scope:"next-input",reason:"same-input-preview-ready") }
             let reason=state["reason"]?.string ?? "input-changed"
+            if let counted { return selected(counted,scope:"next-input",reason:reason) }
             return pending(reason == "compaction-committed" ? "Preparing compacted input…" : "Preparing next input…",reason:reason)
         }
         // Older helpers can supply estimates without a scoped-state version.

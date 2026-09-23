@@ -117,6 +117,7 @@ extension WorkspaceModel {
                 // it out has an unchanged one: the presentation held stays.
                 let presentation = sequence >= view.lastSequence ? result["taskPresentation"] : nil
                 var incoming: [TranscriptMessage]?, resyncNeeded = false, lifecycle: TaskPresentationProjection?
+                var helperQueue: [[String: WireValue]]?
                 if rows.needed || presentation != nil {
                     let decoder = view.taskPresentationDecoder
                     let decoded = try await Task.detached { () throws -> (rows: [TranscriptMessage]?, resync: Bool, lifecycle: TaskPresentationProjection?, decoder: TaskPresentationDecoder) in
@@ -137,6 +138,12 @@ extension WorkspaceModel {
                 if sequence >= view.lastSequence {
                     view.beginTranscriptBatch()
                     defer { view.endTranscriptBatch() }
+                    // The reader's own edit landing on its new branch is
+                    // adopted here, before anything is matched against the
+                    // branch the page holds, and is never reported.
+                    if let projected = incoming, !view.browsingHistory, view.presentationGeneration == generation {
+                        adoptOwnBranch(view, rows: projected, snapshot: result)
+                    }
                     if let lifecycle, lifecycle.valid, lifecycle.sessionID == id, !resyncNeeded,
                        Double(lifecycle.sequence) == sequence, lifecycle.sourceRevision == result["displayRevision"]?.string,
                        lifecycle.epoch == result["monitoring"]?.object?["epoch"]?.string,
@@ -155,7 +162,9 @@ extension WorkspaceModel {
                     view.observeRunState(result)
                     if wasBusy, view.state == "error" { markRunFailed(sessionID: id) }
                     view.observeRetry(result)
-                    let queue = result["queue"]?.array?.compactMap(\.object) ?? []; if view.queue != queue { view.queue = queue }
+                    let queued = result["queue"]?.array?.compactMap(\.object) ?? []
+                    helperQueue = queued
+                    let queue = view.panelQueue(queued); if view.queue != queue { view.queue = queue }
                     view.queueCount = Int(result["queueCount"]?.number ?? 0)
                     let now = ProcessInfo.processInfo.systemUptime
                     // Phase changes cannot wait for the footer throttle: a
@@ -187,7 +196,7 @@ extension WorkspaceModel {
                     if let projected = incoming, !view.browsingHistory, view.presentationGeneration == generation {
                         let incarnation = result["historyIncarnation"]?.string, lineage = result["historyLineage"]?.string
                         if let held = view.presentation.identity, let lineage, held.lineage != lineage {
-                            view.newerPage.error = "This conversation's branch changed. Use Latest to reload."
+                            view.newerPage.error = Self.branchChangedElsewhere
                             view.browsingHistory = true
                         } else {
                         let overlaps = view.messages.isEmpty || projected.contains { row in view.messages.contains { $0.id == row.id } }
@@ -278,6 +287,12 @@ extension WorkspaceModel {
                     view.receipts = carried.compactMap(\.object); view.commandsRevision = result["commandsRevision"]?.string
                 }
                 let receipts = view.receipts
+                // A message sent from here that the helper took elsewhere —
+                // refused at delivery, removed, or held by a paused queue —
+                // leaves the transcript, and the panel shows it at once.
+                if view.settleSending(receipts: receipts, queued: Set((helperQueue ?? []).compactMap { $0["turnId"]?.string })), let helperQueue {
+                    let queue = view.panelQueue(helperQueue); if view.queue != queue { view.queue = queue }
+                }
                 let revision = view.pendingIntentRevision
                 var intents: [CommandIntent]
                 if let known = view.pendingIntents, known.revision == revision { intents = known.intents }

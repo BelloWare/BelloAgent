@@ -186,6 +186,38 @@ extension WorkspaceModel {
         }
     }
 
+    /// A title request the app quit during never recorded how it ended: its
+    /// claim stayed on the chat, which kept its first-message title for good
+    /// (only the first send asks for one), and its row read as an outcome
+    /// nobody knew. The next message sent in that chat marks the row
+    /// interrupted and asks again, from the first message. Restore itself
+    /// never resends anything.
+    func resumeInterruptedTitle(_ sourceID: String) {
+        guard titleGenerationTasks[sourceID] == nil, let store, let source = record(sourceID), let taskID = source.titleTaskSessionID,
+              source.titleWasEdited != true, source.titleWasGenerated != true,
+              displays[taskID]?.loading != true, !opened.contains(taskID),
+              var task = chats.first(where: { $0.id == taskID }), task.backgroundTask == "session-title", task.backgroundTaskNotice == nil else { return }
+        let input = displays[sourceID]?.messages.first(where: { $0.role == "user" && $0.kind == nil })?.text ?? source.title
+        task.backgroundTaskNotice = "Interrupted when Bello Agent closed. Asked again with the next message."
+        let marked = task
+        titleGenerationTasks[sourceID] = Task { [weak self] in
+            guard let self else { return }
+            do { try await store.put(marked, kind: "chat", id: taskID) } catch { self.titleGenerationTasks[sourceID] = nil; return }
+            if let index = self.chats.firstIndex(where: { $0.id == taskID }) { self.chats[index].backgroundTaskNotice = marked.backgroundTaskNotice }
+            self.titleGenerationTasks[sourceID] = nil
+            self.scheduleTitleGeneration(sourceID: sourceID, input: input)
+        }
+    }
+    /// Title suggestions are asked for while the rename sheet is open and
+    /// their row is removed when it closes; a quit in between left the row
+    /// for good. Launch removes them.
+    func dropLeftoverTitleSuggestions() async {
+        let leftovers = chats.filter { $0.backgroundTask == "title-suggestions" }.map(\.id)
+        guard !leftovers.isEmpty else { return }
+        chats.removeAll { leftovers.contains($0.id) }
+        for id in leftovers { try? await store?.remove(kind: "chat", id: id) }
+    }
+
     /// The chat's action menu asks for a title again, from the first message,
     /// replacing an edited or earlier generated one; failures show in the footer.
     func regenerateTitle(_ chatID: String) {

@@ -27,6 +27,10 @@ struct RememberedSelection: Codable, Sendable, Equatable {
     var shownSides: [String: String]?
     /// True when the open chat's side, rather than the chat, had the keyboard.
     var sideFocused: Bool?
+    /// True when the window showed the usage report, not the chats.
+    var reportOpen: Bool?
+    /// True when background tasks were shown in the sidebar.
+    var showBackgroundTasks: Bool?
     var revision: Int64 = 0
 
     /// The same chat, project, sides and focus, whenever each was written.
@@ -84,6 +88,8 @@ extension WorkspaceModel {
             if let id = selectedID, let side = sides[id], side.kept, focusedSessionID == side.id { value.sideFocused = true }
         }
         value.shownSides = rememberedSides.isEmpty ? nil : rememberedSides
+        value.reportOpen = page == .report ? true : nil
+        value.showBackgroundTasks = showBackgroundSessions ? true : nil
         return value
     }
 
@@ -181,6 +187,7 @@ extension WorkspaceModel {
     /// chat the reader opens from the first painted row brings its side back.
     func adoptRememberedSelection(_ remembered: RememberedSelection?) {
         rememberedSelection = remembered
+        if remembered?.showBackgroundTasks == true { showBackgroundSessions = true }
         savedSelectionRevision = remembered?.revision ?? 0
         rememberedSides = (remembered?.shownSides ?? [:]).filter { parent, side in
             chatRecord(parent) != nil && chatRecord(side).map { $0.parentSessionID == parent && !$0.imported } == true
@@ -218,7 +225,11 @@ extension WorkspaceModel {
         // From here on every change is written. Whatever the reader opened
         // while this was loading is the selection now, and is written first.
         defer { remembersSelection = true; noteSelectionChanged() }
-        guard selectedID == nil, selectionRevision == revision, case let (target, isRemembered)? = launchTarget(remembered) else { return false }
+        guard selectedID == nil, selectionRevision == revision else { return false }
+        // The report comes back over the reopened chat, unless the reader
+        // opened something of their own while launch was reading.
+        func reopenReport() { if remembered?.reportOpen == true, page == .chats { page = .report } }
+        guard case let (target, isRemembered)? = launchTarget(remembered) else { reopenReport(); return false }
         let saved = isRemembered ? target : nil
         let side = saved.flatMap { rememberedSide(of: $0.id) }
         if let saved {
@@ -227,6 +238,7 @@ extension WorkspaceModel {
             revealForLaunch(highlighted)
         }
         await select(target.id, revealInSidebar: false)
+        if selectedID == target.id, selectionRevision == revision + 1 { reopenReport() }
         // The reader may have opened something else while the page loaded.
         guard let saved, selectedID == saved.id else { return true }
         if remembered?.sideFocused == true, let side, sides[saved.id]?.id == side.id, focusedSessionID == saved.id {

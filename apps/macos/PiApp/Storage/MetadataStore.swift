@@ -502,6 +502,25 @@ actor MetadataStore {
         sqlite3_bind_text(statement, 1, kind, -1, transient); sqlite3_bind_text(statement, 2, kind, -1, transient); sqlite3_bind_int(statement, 3, Int32(max(0, keeping)))
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.unavailable }
     }
+    /// A submission and the composer it left, in one commit (one sync of the
+    /// journal): the record that lets a crash flag or recover the message,
+    /// and the draft that no longer holds its text. Either both are on disk
+    /// or neither is, so the text is never in neither place.
+    func recordSubmission(_ intent: CommandIntent, draft: DraftRecord?) throws {
+        try transaction {
+            if let draft { try put(draft, kind: "draft", id: draft.id) }
+            try put(intent, kind: "pending:\(intent.sessionID)", id: intent.id)
+        }
+    }
+    /// A submission the helper never acted on went back into the composer:
+    /// the draft that holds its text again and the end of its record, in one
+    /// commit.
+    func withdrawSubmission(sessionID: String, commandID: String, draft: DraftRecord?) throws {
+        try transaction {
+            if let draft { try put(draft, kind: "draft", id: draft.id) }
+            try remove(kind: "pending:\(sessionID)", id: commandID)
+        }
+    }
     func acknowledgeCommand(sessionID: String, commandID: String) throws {
         let kind = "pending:\(sessionID)"
         guard var intent = try get(CommandIntent.self, kind: kind, id: commandID) else { return }

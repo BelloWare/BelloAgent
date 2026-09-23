@@ -191,7 +191,7 @@ extension ConversationPaneTests {
         pane.model.selectedID = pane.chat.id
         let before = pane.model.chats.count
 
-        pane.model.continueCopy(recoverTail: true)
+        pane.model.recoverCopy(pane.chat.id)
         try await waitFor("The question never appeared") { pane.window.attachedSheet != nil }
         XCTAssertTrue(pane.model.questions.askedIn === pane.window, "The question hangs off the chat's own window")
         XCTAssertTrue(pane.model.hosts.isEmpty, "Nothing is started before the answer")
@@ -211,15 +211,15 @@ extension ConversationPaneTests {
         XCTAssertNil(pane.model.error, pane.model.error ?? "")
         XCTAssertFalse(pane.model.questions.asking)
 
-        // Going ahead resumes the same work: it reaches the import the old
-        // return value reached, and reports what that import made of the file.
-        pane.model.continueCopy(recoverTail: true)
+        // Going ahead resumes the same work: it reaches the helper's recovery,
+        // and reports what the helper made of the file.
+        pane.model.recoverCopy(pane.chat.id)
         try await waitFor("The question never came back") { pane.window.attachedSheet != nil }
         let second = try XCTUnwrap(pane.window.attachedSheet)
         pane.window.endSheet(second, returnCode: .alertFirstButtonReturn)
-        try await waitFor("Going ahead never reached the import", seconds: 90) { pane.model.error != nil }
-        XCTAssertTrue(pane.model.error?.contains("could not be continued safely") == true,
-                      "The resumed task ran the import: “\(pane.model.error ?? "")”")
+        try await waitFor("Going ahead never reached the recovery", seconds: 90) { pane.model.error != nil }
+        XCTAssertTrue(pane.model.error?.contains("could not be recovered") == true,
+                      "The resumed task ran the recovery: “\(pane.model.error ?? "")”")
         for host in pane.model.hosts.values { try? await host.shutdownAndWait() }
     }
 

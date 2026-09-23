@@ -49,7 +49,7 @@ extension AgentSession {
         Self.adoptBranch(plan, history: &history, visible: &visible, context: &context, markerID: markerID)
         prunePresentedTasksAfterBranch()
         invalidateDisplay(allRows: true); replayInputsChanged(); contextRecovery = .null; compactionState = .null
-        boundary = context; contextBaseline = nil; currentContextCount = nil; clearRequestObservation()
+        boundary = context; currentContextCount = nil; clearRequestObservation()
         retrySubmission = nil; activeSubmission = nil; partialID = nil; partialText = ""; partialThinking = ""; resetPartialRow(); currentTurnID = ""; taskRootID = nil
         recordDisplayChange(markerID, at: displayClock())
         event("context.branched",["fromMessageId":JSON(messageID),"kept":JSON(plan.replay.count)])
@@ -61,7 +61,7 @@ extension AgentSession {
         prunePresentedTasksAfterBranch()
         invalidateDisplay(allRows: true)
         replayInputsChanged(); contextRecovery = .null; compactionState = .null
-        boundary=context; contextBaseline=nil; currentContextCount=nil; clearRequestObservation()
+        boundary=context; currentContextCount=nil; clearRequestObservation()
     }
     /// Shared by live edits and journal replay (the synchronous initializer
     /// cannot call isolated methods). The marker is display-only: it joins

@@ -745,3 +745,22 @@ private struct RowBelowTheCaption: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { view }
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
+
+extension SessionUsageTests {
+    /// Session info always opened centred at 980×880: a size and place the
+    /// reader chose were gone the next time, and after every relaunch.
+    @MainActor func testSessionInfoOpensWhereItWasLastLeft() throws {
+        let name = "SessionInfoTests-" + UUID().uuidString, previous = SessionUsageWindowController.frameAutosaveName
+        SessionUsageWindowController.frameAutosaveName = name
+        defer { SessionUsageWindowController.frameAutosaveName = previous; UserDefaults.standard.removeObject(forKey: "NSWindow Frame " + name) }
+        let scope = SessionUsageScope(sessionID: "session-frame", workspaceID: "project-frame")
+        let first = SessionUsageWindowController(scope: scope, title: "Frame", load: { _, _, _ in throw CancellationError() })
+        let window = try XCTUnwrap(first.window)
+        let chosen = NSRect(x: 180, y: 160, width: 820, height: 640)
+        window.setFrame(chosen, display: false)
+        first.close()
+        let second = SessionUsageWindowController(scope: scope, title: "Frame", load: { _, _, _ in throw CancellationError() })
+        defer { second.close() }
+        XCTAssertEqual(try XCTUnwrap(second.window).frame, chosen, "The next one opens at the size and place the last was left")
+    }
+}

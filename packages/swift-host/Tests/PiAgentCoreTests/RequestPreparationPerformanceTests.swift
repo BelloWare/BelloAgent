@@ -13,17 +13,20 @@ final class RequestPreparationPerformanceTests: XCTestCase {
     func testRepeatedCountsRetainActualByteFingerprintAtLargeSizes() throws {
         let profile = try fixtureProfile()
         for mib in [1, 8, 32] {
-            let request: JSON = ["model": JSON(profile.model), "input": [["role": "user", "content": [["type": "input_text", "text": JSON(String(repeating: "abc\n", count: mib * 262_144))]]]], "instructions": "fixture"]
-            var counter = RequestContextCounter()
-            let first = try counter.count(request: request, profile: profile)
+            let messages = [ChatMessage(role: "user", content: [textBlock(String(repeating: "abc\n", count: mib * 262_144))])]
+            let request = try ProviderClient.requestBody(profile: profile, messages: messages, instructions: "fixture", tools: [], sessionID: "perf")
+            let counter = RequestContextCounter()
+            let first = try counter.count(messages: messages, profile: profile)
             let start = ProcessInfo.processInfo.systemUptime
             for _ in 0..<3 {
-                let repeated = try counter.count(request: request, profile: profile)
+                let repeated = try counter.count(messages: messages, profile: profile)
                 XCTAssertEqual(repeated.tokens, first.tokens)
-                XCTAssertEqual(repeated.requestFingerprint, first.requestFingerprint)
+                XCTAssertEqual(repeated.requestTokens, first.requestTokens)
             }
             print("PERF repeated-context MiB=\(mib) meanMs=\((ProcessInfo.processInfo.systemUptime-start)*1000/3)")
-            XCTAssertEqual(first.requestFingerprint, try RequestContextCounter.fingerprint(request, profile: profile))
+            XCTAssertEqual(first.tokens, mib * 262_144, "four characters per token")
+            XCTAssertEqual(try counter.count(messages: messages, profile: profile, request: request).requestFingerprint,
+                           try RequestContextCounter.fingerprint(request, profile: profile))
         }
     }
 }

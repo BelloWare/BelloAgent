@@ -8,7 +8,16 @@ public struct CompactionPolicy: Sendable {
     public var summaryOutputTokens: Int?
     public var excerptBytes = 8192
     public var maximumSourceBytes = 2 * 1024 * 1024
+    /// Pi's compaction reserve and recent-context target (settings-manager.ts).
+    public var reserveTokens = 16_384
+    public var keepRecentTokens = 20_000
     public init() {}
+    /// The threshold settings for one window. From 32,768 tokens up this is
+    /// pi's reserve; a smaller window keeps half of itself for the
+    /// conversation, where pi's fixed reserve would compact after every reply.
+    func settings(autoCompaction: Bool, contextWindow: Int) -> PiContext.Settings {
+        PiContext.Settings(enabled: autoCompaction, reserveTokens: min(reserveTokens, contextWindow / 2), keepRecentTokens: keepRecentTokens)
+    }
     func outputAllowance(for profile: Profile) -> Int {
         // Unknown routes conservatively retain their configured budget; never
         // infer a model ceiling from its name or omit the bound on the wire.

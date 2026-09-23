@@ -49,6 +49,9 @@ enum WorkspacePage: String, Sendable { case chats, report }
     @Published var focusedSessionID: String? { didSet { if focusedSessionID != oldValue { organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } } }
     @Published var selected: SessionDisplay?
     @Published var error: String?
+    /// Projects whose folder was not found when a helper was to start in it,
+    /// by project id: the folder named. The pane offers Locate Folder….
+    @Published var missingProjectFolders: [String: String] = [:]
     /// New chats that exist only on screen until their first message is sent.
     /// Nothing is written for them: no chat record, draft, journal or helper session.
     /// One that gains a record is a chat a relaunch can reopen.
@@ -72,7 +75,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// opened, for that launch only, to show the row of the chat it reopened.
     @Published var launchReveal = SidebarLaunchReveal() { didSet { sidebarIndex.invalidate() } }
     @Published var showArchivedSessions = false
-    @Published var showBackgroundSessions = false { didSet { sidebarIndex.invalidate() } }
+    @Published var showBackgroundSessions = false { didSet { sidebarIndex.invalidate(); if showBackgroundSessions != oldValue { noteSelectionChanged() } } }
     /// Answers the sidebar's own queries once per change: chat lookups, per
     /// group entry lists, the project groups and the keyboard order.
     let sidebarIndex = SidebarIndex()
@@ -123,7 +126,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// Which page the main window shows; the chat pane stays mounted underneath the report.
     @Published var page: WorkspacePage = .chats {
         didSet {
-            if page != oldValue { organizationNavigationRevision &+= 1 }
+            if page != oldValue { organizationNavigationRevision &+= 1; noteSelectionChanged() }
             if page == .report && page != oldValue { messageNavigationRevision += 1 }
         }
     }
@@ -167,6 +170,10 @@ enum WorkspacePage: String, Sendable { case chats, report }
     let vault: ConfigurationVault
     @Published var configuration = VaultConfiguration()
     @Published var configurationLoaded = false
+    /// Set while the vault could not be read at launch: each activation of
+    /// the app tries again (`retryConfigurationWhenActive`).
+    var configurationRetry: NSObjectProtocol?
+    var configurationRetrying = false
     /// Cleared when the desktop database cannot be opened, which `restore()`
     /// finds out without opening SQLite on the main actor at launch.
     private(set) var store: MetadataStore?
@@ -246,6 +253,14 @@ enum WorkspacePage: String, Sendable { case chats, report }
     let questions = PiQuestion()
     /// Test injection for the helper's `queue.read`; production leaves it nil.
     var queueReadOperation: ((String, String) async throws -> [String: WireValue])?
+    /// Test seam: each step of a send as it happens (`WorkspaceRun.swift`),
+    /// so a fixture can time where Return's milliseconds go. Nil in the app.
+    var sendSteps: ((String) -> Void)?
+    /// Owned by `WorkspaceHosts.swift`: chats whose helper `prewarm` is starting.
+    var prewarming: Set<String> = []
+    /// Test seam: whether typing starts a stopped helper (`prewarm`). Fixtures
+    /// that answer for the helper themselves turn it off.
+    var prewarmsHelpers = true
     /// Picker saves are ordered per connection; new chats await its pending choice.
     var overrideWrites: [String: (token: UUID, task: Task<Void, Never>)] = [:]
     /// Owned by `WorkspaceRefresh.swift`: the delayed shutdown of an idle

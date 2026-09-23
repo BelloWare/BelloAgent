@@ -84,6 +84,7 @@ import AppKit
             total += text(message.state) + text(message.stopReason) + text(message.turn)
             total += (message.tools ?? []).reduce(0) { $0 + tool($1) }
             total += (message.accounting?.models?.names ?? []).reduce(0) { $0 + 32 + text($1) }
+            total += (message.skills ?? []).reduce(0) { $0 + 256 + text($1.id) + text($1.name) + text($1.path) + text($1.arguments) + text($1.description) }
         }
         return total
     }
