@@ -274,7 +274,7 @@ public actor TraceStore {
         // follow once the request is on its way: the recorder accepts them
         // any time after `begin`, and a long chat's context must not add
         // those round trips to every request's latency.
-        if !(await sink(["type":"begin", "metadata":metadata(traces[id] ?? t).removing(["messageIds", "outputMessageIds"])])) { traces[id]?.persistenceError="Native request recorder was unavailable at dispatch" }
+        if !(await sink(["type":"begin", "metadata":metadata(traces[id] ?? t, messageIDs:false)])) { traces[id]?.persistenceError="Native request recorder was unavailable at dispatch" }
         else { t.contextLinksPending = true }
         if mode == "persist" { await deliverBytes(id, kind:"request", offset:0, bytes:captured.bytes) }
         return id
@@ -356,7 +356,7 @@ public actor TraceStore {
         guard previousRedactions == 0, trace.responseCredentialRedactions > 0 else { return }
         // Publish the exception before its bytes, including during a live
         // stream or a cancelled tail; the inspector must never label them exact.
-        if !(await sink(["type": "metadata", "metadata": metadata(trace).removing(["messageIds", "outputMessageIds"])])) {
+        if !(await sink(["type": "metadata", "metadata": metadata(trace, messageIDs:false)])) {
             traces[trace.id]?.persistenceError = "Native recorder could not acknowledge response credential masking; body retention stopped"
         }
     }
@@ -374,7 +374,7 @@ public actor TraceStore {
     }
     public func dispatched(_ id: String, at time: Double, wall: Double = Date().timeIntervalSince1970) async {
         traces[id]?.dispatch = time; traces[id]?.dispatchWallTimestamp = wall
-        if let t = traces[id] { _ = await sink(["type":"metadata", "metadata":metadata(t).removing(["messageIds", "outputMessageIds"])]) }
+        if let t = traces[id] { _ = await sink(["type":"metadata", "metadata":metadata(t, messageIDs:false)]) }
         await deliverContextLinks(id)
     }
     private func deliverContextLinks(_ id: String) async {
@@ -423,7 +423,7 @@ public actor TraceStore {
         trace.operation=value
         // Semantic summary validation happens after HTTP completion. Persist
         // its diagnosis too, including attempts that produced no checkpoint.
-        if trace.outcome != "running", !(await sink(["type":"metadata","metadata":metadata(trace).removing(["messageIds","outputMessageIds"])])) {
+        if trace.outcome != "running", !(await sink(["type":"metadata","metadata":metadata(trace, messageIDs:false)])) {
             traces[id]?.persistenceError="Native recorder could not acknowledge compaction outcome metadata"
         }
     }
@@ -432,7 +432,7 @@ public actor TraceStore {
         await flushResponse(id)
         await flushEvents(id)
         traces[id]?.outcome=outcome; traces[id]?.modelOutcome=modelOutcome
-        if let trace = traces[id], !(await sink(["type":"finish", "metadata":metadata(trace).removing(["messageIds", "outputMessageIds"])])) { traces[id]?.persistenceError="Native request finalization was unavailable; durable request remains interrupted" }
+        if let trace = traces[id], !(await sink(["type":"finish", "metadata":metadata(trace, messageIDs:false)])) { traces[id]?.persistenceError="Native request finalization was unavailable; durable request remains interrupted" }
     }
     public func outputs(_ id: String, messageIDs: [String]) async {
         if let trace = traces[id] { trace.outputMessageIDs=Array(Set(trace.outputMessageIDs + messageIDs)).sorted() }
@@ -512,17 +512,23 @@ public actor TraceStore {
                 "inputIncludingCache":t.usage["inputIncludingCache"],"completeness":t.modelOutcome=="completed" ? "complete":"partial",
                 "rateSource":"Gateway-reported output tokens after the first (N − 1, reasoning included) / first output → last output token (the model terminal when no last output was stamped); completed attempts with N ≥ 2 over at least minimumDecodeSpanMs","liveTokenRate":.null]
     }
-    private func metadata(_ t:Trace)->JSON {
-        ["attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
+    /// An attempt's metadata. `messageIDs: false` leaves out the context and
+    /// output id lists: the recorder is sent those as `links` packets, and a
+    /// session snapshot's `latestAttempt` (4 Hz while busy, and every idle
+    /// poll) never reads them, while at 1,000 messages they were ~39 KB.
+    private func metadata(_ t:Trace, messageIDs:Bool = true)->JSON {
+        var value:JSON = ["attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
          "outcome":JSON(t.outcome),"modelOutcome":JSON(t.modelOutcome),"transportOutcome":JSON(t.transportOutcome),"requestHeaders":t.requestHeaders,"responseHeaders":t.headers,"usage":t.usage,"gateway":t.gateway?.json ?? .null,"operation":t.operation,
-         "identity":t.credentials.metadata(t.identity?.json ?? .null),"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"messageIds":.array(t.messageIDs.map { JSON($0) }),"outputMessageIds":.array(t.outputMessageIDs.map { JSON($0) }),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
+         "identity":t.credentials.metadata(t.identity?.json ?? .null),"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
          "rawEventsOmitted":JSON(t.rawEventsDropped),"eventIndexPersistenceError":JSON(t.eventIndexError),
          "request":bodyInfo(t,request:true),"response":bodyInfo(t,request:false),"metrics":metrics(t),"rawEventIndexCount":JSON(t.rawEvents.count),
          "timingVersion":2,"dispatchWallTimestamp":t.dispatchWallTimestamp.map { JSON($0) } ?? .null,
          "timingBoundary":"Monotonic URLSession dispatch, header callback (first HTTP observation), decoded body callbacks, body bytes containing parsed content/terminal, and task completion. Not socket/TLS or paint timing.",
          "timings":["dispatch":t.dispatch.map { JSON($0) } ?? .null,"firstHTTPByte":t.firstHTTPByte.map { JSON($0) } ?? .null,"firstBodyByte":t.firstBodyByte.map { JSON($0) } ?? .null,"firstContent":t.firstContent.map { JSON($0) } ?? .null,"firstText":t.firstText.map { JSON($0) } ?? .null,"lastContent":t.lastContent.map { JSON($0) } ?? .null,"modelComplete":t.completed.map { JSON($0) } ?? .null,"httpEnd":t.eof.map { JSON($0) } ?? .null]]
+        if messageIDs { value["messageIds"] = .array(t.messageIDs.map { JSON($0) }); value["outputMessageIds"] = .array(t.outputMessageIDs.map { JSON($0) }) }
+        return value
     }
-    public func latest(_ session:String)->JSON { guard let id=order.last(where:{traces[$0]?.session==session}),let t=traces[id] else { return .null }; return metadata(t) }
+    public func latest(_ session:String)->JSON { guard let id=order.last(where:{traces[$0]?.session==session}),let t=traces[id] else { return .null }; return metadata(t, messageIDs:false) }
     public func command(_ method:String, session:String, params p:JSON) throws -> JSON {
         let boundary:JSON="Application HTTP boundary after serialization and HTTP decoding, not TLS packets. Gateway upstream traffic is unavailable. Authentication headers are masked; long request tokens retain only their last four characters, and short tokens, cookies and secret response headers are fully masked. Known credential literals in request bodies are labeled SHA-256 fingerprints; response credential echoes are replaced by same-length asterisks. Body transformations are explicit byte-exactness exceptions. Other captured bytes remain untransformed and sensitive."
         if method=="debug.mode" {
@@ -537,7 +543,7 @@ public actor TraceStore {
         if method=="debug.list" {
             let all=order.reversed().compactMap{traces[$0]}.filter{$0.session==session}, offset=try boundedInt(p["offset"])
             let page=Array(all.dropFirst(offset).prefix(64))
-            return ["attempts":.array(page.map(metadata)),"total":JSON(all.count),"next":offset+page.count<all.count ? JSON(offset+page.count):.null,"mode":JSON(mode(session)),"boundary":boundary,"workspaceRetainedBytes":JSON(retainedBytes),"limits":["bodyBytes":JSON(Self.perBodyLimit),"workspaceBytes":JSON(memoryLimit)],"droppedMetadata":JSON(droppedMetadata)]
+            return ["attempts":.array(page.map { metadata($0) }),"total":JSON(all.count),"next":offset+page.count<all.count ? JSON(offset+page.count):.null,"mode":JSON(mode(session)),"boundary":boundary,"workspaceRetainedBytes":JSON(retainedBytes),"limits":["bodyBytes":JSON(Self.perBodyLimit),"workspaceBytes":JSON(memoryLimit)],"droppedMetadata":JSON(droppedMetadata)]
         }
         guard let id=p["attemptId"].text,let t=traces[id],t.session==session else { throw AgentError("capture_unavailable","Attempt is unavailable or belongs to another session") }
         if method=="debug.attempt" { var v=metadata(t); v["boundary"]=boundary;v["requestHash"]=t.mode=="off" ? .null:["sha256":JSON(sha256(t.request)),"scope":"retained bytes"];v["responseHash"]=t.mode=="off" ? .null:["sha256":JSON(sha256(t.response)),"scope":"retained bytes"]; return v }
