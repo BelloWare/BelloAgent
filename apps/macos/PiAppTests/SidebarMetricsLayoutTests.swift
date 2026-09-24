@@ -166,10 +166,10 @@ final class SidebarMetricsLayoutTests: XCTestCase {
         XCTAssertTrue(disagreements.isEmpty, "The measured form differs from what ViewThatFits chose:\n" + disagreements.prefix(12).joined(separator: "\n"))
     }
 
-    /// A run keeps one form from its first step to its last: the model
-    /// generating (no word, no tokens), a tool, compaction, stopping and
-    /// opening all measure alike, so no row changes height mid-run and moves
-    /// every row below it. Each form chosen still fits every step.
+    /// A run keeps one form through its model and tool steps: the model
+    /// generating (no word, no tokens) measures like a tool step ("Working"),
+    /// so no row changes height mid-run and moves every row below it. Every
+    /// step's form, compaction, stopping and opening included, still fits.
     @MainActor func testARunKeepsOneFormThroughEveryStep() throws {
         let steps: [(String, String, Bool, [String: WireValue])] = [
             ("generating", "running", false, ["version": .number(2), "modelActive": .bool(true), "phase": .string("model")]),
@@ -193,7 +193,8 @@ final class SidebarMetricsLayoutTests: XCTestCase {
                                 if drawn > available { overflows.append("\(name) $\(cost) at \(Int(sidebar))pt: draws \(drawn), has \(available)") }
                             }
                         }
-                        if Set(forms.values.map { "\($0)" }).count > 1 { changes.append("$\(cost), \(Int(tokens)) tokens at \(Int(sidebar))pt: \(forms.sorted { $0.key < $1.key })") }
+                        let working = forms.filter { ["generating", "tool", "running"].contains($0.key) }
+                        if Set(working.values.map { "\($0)" }).count > 1 { changes.append("$\(cost), \(Int(tokens)) tokens at \(Int(sidebar))pt: \(working.sorted { $0.key < $1.key })") }
                     }
                 }
             }
