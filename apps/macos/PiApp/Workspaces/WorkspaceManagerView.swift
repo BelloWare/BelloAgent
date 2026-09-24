@@ -100,7 +100,8 @@ struct WorkspaceManagerView: View {
             HStack(spacing: 0) {
                 list.frame(width: 250)
                 Rectangle().fill(Color.piHairline).frame(width: 1)
-                Group {
+                // One pane over the other while they cross, never side by side.
+                ZStack {
                     if let draft = NewWorkspaceDraft.editing($draft) { NewWorkspacePane(model: model, draft: draft, busy: $busy, cancel: { withAnimation { self.draft = nil } }, created: { id in withAnimation { self.draft = nil; selection = id }; report("Project created.", .success) }, failed: { report($0, .danger) })
                             .transition(AnyTransition.move(edge: .trailing).combined(with: .opacity))
                     } else if let selected { detail(selected).id(selected.id).transition(.opacity) }

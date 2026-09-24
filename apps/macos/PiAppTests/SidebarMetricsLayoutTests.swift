@@ -149,7 +149,8 @@ final class SidebarMetricsLayoutTests: XCTestCase {
     /// width and for every shape the figures take.
     @MainActor func testTheMeasuredFormIsTheOneViewThatFitsWouldHaveChosen() throws {
         var disagreements: [String] = [], checks = 0
-        for (name, stats) in Self.figureSets() {
+        // A run is measured for its widest step on purpose; see the next test.
+        for (name, stats) in Self.figureSets() where !(stats.busy || stats.loading) {
             let figures = SidebarMetricsFigures(stats)
             for sidebar in Self.widths {
                 let available = ChatRowMetrics.availableWidth(sidebar: sidebar, indent: 14, depth: 0)
@@ -163,6 +164,43 @@ final class SidebarMetricsLayoutTests: XCTestCase {
         }
         print("PERF sidebar metrics oracle: \(checks) comparisons, \(disagreements.count) disagreements")
         XCTAssertTrue(disagreements.isEmpty, "The measured form differs from what ViewThatFits chose:\n" + disagreements.prefix(12).joined(separator: "\n"))
+    }
+
+    /// A run keeps one form through its model and tool steps: the model
+    /// generating (no word, no tokens) measures like a tool step ("Working"),
+    /// so no row changes height mid-run and moves every row below it. Every
+    /// step's form, compaction, stopping and opening included, still fits.
+    @MainActor func testARunKeepsOneFormThroughEveryStep() throws {
+        let steps: [(String, String, Bool, [String: WireValue])] = [
+            ("generating", "running", false, ["version": .number(2), "modelActive": .bool(true), "phase": .string("model")]),
+            ("tool", "running", false, ["version": .number(2), "modelActive": .bool(false), "phase": .string("tool")]),
+            ("running", "running", false, [:]), ("queued", "queued", false, [:]), ("compacting", "compacting", false, [:]),
+            ("stopping", "stopping", false, [:]), ("opening", "running", true, [:])]
+        var changes: [String] = [], overflows: [String] = []
+        for cost in [0.0042, 12.34, 98_765.43] {
+            for tokens in [12_300.0, 9_876_543.0] {
+                for activity in [5.0, 900.0, 129_600.0] {
+                    let base = Self.stats(cost: cost, tokens: tokens, activity: activity, rate: true)
+                    for sidebar in stride(from: CGFloat(200), through: 420, by: 2) {
+                        let available = ChatRowMetrics.availableWidth(sidebar: sidebar, indent: 14, depth: 0)
+                        var forms: [String: SidebarMetricsForm] = [:]
+                        for (name, state, loading, activity) in steps {
+                            var stats = base; stats.updateActivity(state: state, loading: loading, activity: activity)
+                            let form = SidebarMetricsFigures(stats).form(fitting: available)
+                            forms[name] = form
+                            if form != .stacked, Self.widths.contains(sidebar) {
+                                let drawn = idealWidth(OracleRow(stats: stats, title: "Chat", tokens: form.showsTokens, recency: form.showsRecency))
+                                if drawn > available { overflows.append("\(name) $\(cost) at \(Int(sidebar))pt: draws \(drawn), has \(available)") }
+                            }
+                        }
+                        let working = forms.filter { ["generating", "tool", "running"].contains($0.key) }
+                        if Set(working.values.map { "\($0)" }).count > 1 { changes.append("$\(cost), \(Int(tokens)) tokens at \(Int(sidebar))pt: \(working.sorted { $0.key < $1.key })") }
+                    }
+                }
+            }
+        }
+        XCTAssertTrue(changes.isEmpty, "A run changes its row's form between steps:\n" + changes.prefix(8).joined(separator: "\n"))
+        XCTAssertTrue(overflows.isEmpty, "A run's form does not fit one of its steps:\n" + overflows.prefix(8).joined(separator: "\n"))
     }
 
     /// Whatever form is chosen has to fit, so the last-resort truncation never

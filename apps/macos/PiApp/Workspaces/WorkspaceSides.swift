@@ -213,8 +213,9 @@ extension WorkspaceModel {
     func mountSide(_ child: ChatRecord, beside parentID: String) -> SessionDisplay {
         if let previous = sides[parentID] { displays[previous.id]?.presentation.cancel() }
         let view = displays[child.id] ?? SessionDisplay(id: child.id); view.used = Date(); displays[child.id] = view
+        let cached = view.hasPresentedRows
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
-        view.historyState = .loading; view.draftReady = view.selectionMetadataLoaded
+        view.historyState = .loading; view.refreshingCachedRows = cached; view.draftReady = view.selectionMetadataLoaded
         view.browsingHistory = true; view.publishTranscript()
         var info = SideRecord(id: child.id, parentID: parentID, workspaceID: child.workspaceID, profileID: child.profileID, title: child.title, kept: true, model: child.model, thinkingLevel: child.thinkingLevel, contextWindow: child.contextWindow, maxOutputTokens: child.maxOutputTokens, modelOutputLimit: child.modelOutputLimit, outputBudgetVersion: child.outputBudgetVersion)
         info.topicID = effectiveTopicID(for: child)
@@ -247,7 +248,7 @@ extension WorkspaceModel {
                 self.adoptInitialHistory(page, into: view)
                 if self.opened.contains(id) { self.refresh(id) }
             } catch is CancellationError { }
-            catch { if current() { view.historyState = .failed(error.localizedDescription); view.notice = error.localizedDescription } }
+            catch { if current() { view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false; view.notice = error.localizedDescription } }
         }
         view.presentation.navigation = task
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }

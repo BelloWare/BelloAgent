@@ -404,8 +404,9 @@ private struct PillLabel: View {
             if !compact {
                 Text(text).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.middle)
                     .frame(maxWidth: maxWidth, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                    .contentTransition(.opacity).id(text)
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    // The same label with new words: its text crossfades while the
+                    // chip resizes once, rather than a remove and an insert.
+                    .contentTransition(.opacity)
             }
             if loading { ProgressView().controlSize(.mini).scaleEffect(0.6).frame(width: 10, height: 10).transition(.opacity) }
             Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(Color.piInkTertiary)

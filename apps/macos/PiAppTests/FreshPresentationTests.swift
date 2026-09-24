@@ -140,6 +140,39 @@ final class FreshPresentationTests: XCTestCase {
         XCTAssertEqual(view.messages.count, 6); XCTAssertEqual(view.messages.first?.id, "m34")
         XCTAssertEqual(view.draft, "Do not overwrite this"); XCTAssertTrue(model.hosts.isEmpty)
     }
+    /// Returning to a chat whose rows are cached keeps them on the page while
+    /// the fresh page is read and placed: no cover fades over them. A chat
+    /// never shown is still covered while it loads.
+    @MainActor func testRevisitKeepsCachedRowsUncoveredWhileTheFreshPageLoads() async throws {
+        let root = try folder(), model = try await model(root), gate = Gate()
+        model.historyWindowLoader = { id, _, _, _ in try await gate.read(id) }
+        let first = Task { await model.select("a") }
+        while await gate.count < 1 { await Task.yield() }
+        let view = try XCTUnwrap(model.selected)
+        XCTAssertTrue(ConversationPane.coversTranscript(view), "A chat never shown is covered while it loads")
+        try await gate.finish(0, page: page("cached")); await first.value
+        XCTAssertTrue(ConversationPane.coversTranscript(view), "Its first page is placed behind the cover")
+        model.historyViewportReady("a", generation: view.presentationGeneration)
+        XCTAssertFalse(ConversationPane.coversTranscript(view))
+        let away = Task { await model.select("b") }
+        while await gate.count < 2 { await Task.yield() }
+        try await gate.finish(1, page: page("b")); await away.value
+        let revisit = Task { await model.select("a") }
+        while await gate.count < 3 { await Task.yield() }
+        XCTAssertEqual(view.historyState, .loading)
+        XCTAssertFalse(ConversationPane.coversTranscript(view), "The cached rows were covered while the fresh page was read")
+        XCTAssertEqual(view.presentedMessages.map(\.id), ["cached"], "The cached rows left the page while the fresh page was read")
+        try await gate.finish(2, page: page("fresh")); await revisit.value
+        XCTAssertEqual(view.historyState, .preparing); XCTAssertEqual(view.presentedMessages.map(\.id), ["fresh"])
+        XCTAssertFalse(ConversationPane.coversTranscript(view), "The fresh page was placed behind a cover")
+        model.historyViewportReady("a", generation: view.presentationGeneration)
+        XCTAssertEqual(view.historyState, .ready); XCTAssertFalse(view.refreshingCachedRows)
+        // An explicit reload still reads behind the cover.
+        model.reloadHistory("a")
+        XCTAssertTrue(ConversationPane.coversTranscript(view))
+        while await gate.count < 4 { await Task.yield() }
+        try await gate.finish(3, page: page("reloaded")); await view.presentation.navigation?.value
+    }
     @MainActor func testFailedEarlierRequestCanRetryAtSameBoundary() async throws {
         let root = try folder(), path = try journal(40, root: root), model = try await model(root, path: path)
         await model.select("a")

@@ -26,6 +26,14 @@ struct SidebarMetricsFigures: Equatable {
     var rate: Bool
     var tokens: String?
     var recency: String?
+    /// A run in flight is measured with its working word ("Working") in
+    /// front of its figures even while the model generates and none is
+    /// shown, with the room of the token total it hides kept: the line then
+    /// holds one form through the run's model and tool steps, instead of
+    /// changing height at every switch between them and moving every row
+    /// below it. A longer word of its own (Stopping, Compacting) still counts.
+    var inRun = false
+    var heldTokens: String?
 
     init(_ stats: ChatRowStats) {
         if (stats.busy || stats.loading) && !stats.generating {
@@ -39,7 +47,11 @@ struct SidebarMetricsFigures: Equatable {
         // line itself drops it.
         tokens = stats.busy ? nil : stats.tokensLabel.map { "· " + $0 }
         recency = stats.recencyLabel.map { "· " + $0 }
+        inRun = stats.busy || stats.loading
+        heldTokens = inRun ? stats.tokensLabel.map { "· " + $0 } : nil
     }
+    /// The word a run shows in front of its figures while it works (`PiSessionState.label`).
+    @MainActor static var runStates: [String] { [PiSessionState.label("running"), PiSessionState.label("tool")] }
 
     @MainActor private func width(tokens showTokens: Bool, recency showRecency: Bool) -> CGFloat {
         var total: CGFloat = 0, pieces = 0
@@ -48,10 +60,11 @@ struct SidebarMetricsFigures: Equatable {
             total += value + (pieces > 0 ? Self.spacing : 0)
             pieces += 1
         }
-        add(state.map { PiTextWidth.figure($0, medium: true) } ?? 0)
+        let states = (state.map { [$0] } ?? []) + (inRun ? Self.runStates : [])
+        add(states.map { PiTextWidth.figure($0, medium: true) }.max() ?? 0)
         add(cost.map { PiTextWidth.figure($0) } ?? 0)
         add(rate ? Self.rateWidth : 0)
-        if showTokens { add(tokens.map { PiTextWidth.figure($0) } ?? 0) }
+        if showTokens { add((tokens ?? heldTokens).map { PiTextWidth.figure($0) } ?? 0) }
         if showRecency { add(recency.map { PiTextWidth.figure($0) } ?? 0) }
         return total
     }

@@ -83,6 +83,18 @@ import SwiftUI
     /// a live reading never shows milliseconds, so ticking from one reading
     /// to the next never changes how wide the clock is. The settled reading
     /// keeps its reported precision.
+    /// The footer's run clock ticks from the turn's start, whenever its line
+    /// updates: a schedule from `.now` restarted with every update, and the
+    /// seconds it showed stepped unevenly (12s, 12s, 14s).
+    func testTheRunClockTicksFromTheTurnsStartWhateverTheUpdate() {
+        let timing: [String: WireValue] = ["startedAt": .number(1_000_000)]
+        let wall = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let first = SessionRunLine.clockOrigin(timing, atUptimeMs: 1_012_340, date: wall)
+        let later = SessionRunLine.clockOrigin(timing, atUptimeMs: 1_013_777, date: wall.addingTimeInterval(1.437))
+        XCTAssertEqual(first, later, "Two updates of the line named two different schedules")
+        XCTAssertEqual(first.timeIntervalSinceReferenceDate, 800_000_000 - 12.34 + 0.5, accuracy: 0.001, "Ticks fall half a second into each second of the turn")
+        XCTAssertEqual(SessionRunLine.clockOrigin([:], atUptimeMs: 5, date: wall), wall)
+    }
     func testTheLiveClockCountsWholeSecondsAtOneWidth() {
         var widths: [CGFloat: [Double]] = [:]
         for milliseconds in stride(from: 10_000.0, through: 58_000, by: 375) {

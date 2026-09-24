@@ -80,6 +80,12 @@ struct TranscriptVersionView: Equatable, Sendable {
     let presentation = ConversationPresentation()
     @Published var presentationGeneration = UUID()
     @Published var historyState: ConversationLoadState = .dormant
+    /// A revisit of a chat whose rows were already on the page: they stay
+    /// there, uncovered, while its fresh page is read and placed, instead of
+    /// fading a loading cover over them for the length of the read.
+    @Published var refreshingCachedRows = false
+    /// Rows this display has presented, which a revisit keeps on the page.
+    var hasPresentedRows: Bool { !messages.isEmpty && (presentation.identity != nil || refreshingCachedRows) }
     @Published var historyProgress: String?
     @Published var olderPage = ConversationPageBoundary()
     @Published var newerPage = ConversationPageBoundary()
@@ -158,7 +164,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// where the conversation stopped. Errors live in the flow of the chat,
     /// not in a strip pinned above it.
     var presentedMessages: [TranscriptMessage] {
-        if historyState == .loading { return [] }
+        if historyState == .loading && !refreshingCachedRows { return [] }
         // An earlier version of an edited message, read-only, in place of the
         // latest one and everything after it.
         if let version = versionView {
