@@ -144,7 +144,13 @@ enum WorkspacePage: String, Sendable { case chats, report }
     func openReport() { page = .report }
     func closeReport() { page = .chats }
     func toggleReport() { page = page == .report ? .chats : .report }
-    var conversationCommandsEnabled: Bool { page == .chats && (focusedSessionID ?? selectedID).flatMap(record) != nil }
+    var conversationCommandsEnabled: Bool { page == .chats && !presentsSheet && (focusedSessionID ?? selectedID).flatMap(record) != nil }
+    /// A sheet of the workspace window is up. Its fields own the keyboard:
+    /// the conversation's shortcuts (⌘↩, ⌘., ⌘F) must not act on the chat
+    /// behind it, nor present a second sheet over it.
+    var presentsSheet: Bool {
+        showProfiles || showConversationContent || showResources || showWorkspaceManager || showGit || renameTarget != nil || topicEditor != nil
+    }
     @Published var showResources = false
     @Published var showWorkspaceManager = false
     @Published var resourceCatalog: [SkillDescriptor] = []
