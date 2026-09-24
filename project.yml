@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.96
-    CURRENT_PROJECT_VERSION: 100
+    MARKETING_VERSION: 0.1.97
+    CURRENT_PROJECT_VERSION: 101
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Your messages show as typed and replies can switch to their source, the slash list no longer flickers, sends reuse their connection, side chats reuse the main chat's cache, and many flicker and speed fixes."
+    RELEASE_MESSAGE: "The footer keeps one layout through a run, the composer resizes without lag, long replies keep streaming into view, the Git panel finishes refreshing during builds, and the helper uses less memory over a long day."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO

@@ -1,0 +1,8 @@
+<h2>Bello Agent 0.1.97</h2>
+<ul>
+  <li>The footer keeps one layout through a run. At some window widths it used to switch between one and two rows as the run changed phase or its clock ticked.</li>
+  <li>The composer grows and shrinks with your text as you type, without trailing a frame behind. It goes back to one line when it is cleared, and fits its text again when the window is resized.</li>
+  <li>A very long reply that arrives all at once keeps streaming into view. The chat could stop at the previous answer behind a "newer" button until you pressed it; the missing part is now read in and the chat follows the reply.</li>
+  <li>The Git panel finishes refreshing in big repositories while a build runs. Writes into ignored folders, such as build output, no longer start a refresh, and a refresh under way finishes instead of starting over at every change.</li>
+  <li>Lower memory use over a long day. When more than eight chats are loaded, the helper unloads the idle ones you looked at least recently, and they load again from their saved history when you come back. Context previews are let go of when they expire, and a chat no longer keeps a second copy of its history in memory.</li>
+</ul>
