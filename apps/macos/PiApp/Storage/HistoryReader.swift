@@ -156,7 +156,9 @@ actor HistoryReader {
     private struct Stamp: Equatable {
         var device: Int32; var inode: UInt64; var size: Int64; var modified: Int; var modifiedNS: Int; var changed: Int; var changedNS: Int
     }
-    private struct Index { var stamp: Stamp; var branch: HistoryOffsetIndex; var assistantCount: Int; var latestAssistantID: String?; var sessionID: String?; var automaticContextSafe: Bool; var failureMessage: String?; var taskRecords: [TaskPresentationRecord]; var retainedRun: RetainedRun? }
+    private struct Index { var stamp: Stamp; var branch: HistoryOffsetIndex; var assistantCount: Int; var latestAssistantID: String?; var sessionID: String?; var automaticContextSafe: Bool; var failureMessage: String?; var taskRecords: [TaskPresentationRecord]; var retainedRun: RetainedRun?
+        /// Edited messages' versions, numbered from the branch records as the helper numbers them.
+        var versions = MessageVersionLedger() }
     private var indexes: [String: Index] = [:]
     // As many bounded offset indexes as the workspace keeps transcript pages, so
     // cycling between open chats does not re-index a large journal each time.
@@ -236,6 +238,13 @@ actor HistoryReader {
                 "sourceTextDigest": .string(SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()),
                 "input": message["nativeUserInput"] ?? .null,
                 "legacyInputs": .bool(message["nativeUserInput"] == nil && (expanded != text || blocks.contains { $0.object?["type"]?.string == "image" }))]
+    }
+    /// A retained message's role, from the offset index: any record of the
+    /// journal, in the timeline shown now or in an earlier version.
+    func messageRole(path: String, id: String) throws -> String? {
+        let page = try read(path: path)
+        guard page.notice == nil, let index = indexes[path] else { return nil }
+        return try index.branch.ref(id)?.role
     }
     func searchContent(path: String, query: String, start: Int) throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
@@ -375,8 +384,9 @@ actor HistoryReader {
         else { branch = try HistoryOffsetIndex() }
         var notice: String?, assistantCount = 0, latestAssistantID: String?, failureMessage: String?
         var taskRecords: [TaskPresentationRecord] = [], retainedRun: RetainedRun?, incompleteTail = false
+        var versions = MessageVersionLedger()
         if let cached = indexes[path], cached.stamp == identity {
-            assistantCount = cached.assistantCount; latestAssistantID = cached.latestAssistantID
+            assistantCount = cached.assistantCount; latestAssistantID = cached.latestAssistantID; versions = cached.versions
             failureMessage = cached.failureMessage; retainedRun = cached.retainedRun
             taskRecords = cached.taskRecords
             if targetTurns != nil && cached.sessionID == nil { notice = "History has no valid session header. Its source was left untouched." }
@@ -436,6 +446,7 @@ actor HistoryReader {
                             if callCount > 100_000 { contextSafe = false }
                             contextMessages[id] = (callCount <= 100_000 ? calls : [], value.message?.role == "toolResult" ? value.message?.toolCallId : nil)
                             roles[id]=value.message?.role
+                            if value.message?.role == "user" { versions.recorded(userMessage: id) }
                             replayNodes[id] = ReplayNode(id: id, role: value.message?.role ?? "", eligible: value.message?.nativeReplayEligible != false,
                                 summary: value.message?.nativeKind == "compaction", dependencies: value.message?.nativeCompaction?.dependencyIDs, summarized: value.message?.nativeCompaction?.summarySourceIDs,
                                 calls: calls, result: value.message?.toolCallId)
@@ -459,6 +470,7 @@ actor HistoryReader {
                             orderedContext=[id]+kept; contextIDs=Set(orderedContext)
                             contextMessages[id] = ([], nil); contextIDs.insert(id)
                         } else if value.type == "branch" {
+                            versions.branched(from: value.fromMessageId ?? "")
                             let kept = value.keptIds ?? [], keptSet = Set(kept)
                             if let branch = value.historicalBranch {
                                 let plan = try EditReplayPlan.restore(branch, nodes: replayNodes, visible: selectedTimeline, context: orderedContext)
@@ -521,7 +533,7 @@ actor HistoryReader {
         let activeResults = Set(contextIDs.compactMap { contextMessages[$0]?.result })
         retainedRun = lastWork?.retained(unanswered: activeCalls.subtracting(activeResults))
         if notice == nil { indexes[path] = Index(stamp: identity, branch: branch, assistantCount: assistantCount, latestAssistantID: latestAssistantID,
-                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords, retainedRun: retainedRun) }
+                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords, retainedRun: retainedRun, versions: versions) }
         }
         recency.removeAll { $0 == path }; recency.append(path)
         while recency.count > Self.retainedIndexes { indexes.removeValue(forKey: recency.removeFirst()) }
@@ -594,6 +606,9 @@ actor HistoryReader {
                 let row = value["message"]?.object ?? [:]
                 if let result = ToolResultRecord.of(row) { toolResults[ref.id] = result.record }
                 message = TranscriptMessage.project(id: ref.id, message: row)
+                if message.role == "user", let ids = versions.versions(of: ref.id), let at = ids.firstIndex(of: ref.id) {
+                    message.versions = MessageVersionMark(index: at + 1, count: ids.count, ids: ids.count <= 64 ? ids : nil)
+                }
             }
             if ref.adopted { message.responseTimeline?.finish("completed"); message.detail="Compaction · Checkpoint durably adopted" }
             if ref.presentation, message.responseTimeline?.terminal == nil { message.detail=(message.detail ?? "Operation") + " · no terminal receipt" }

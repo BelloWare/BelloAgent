@@ -55,6 +55,16 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// has a notice of its own (`cost_limit`: a stop at the chat's cost limit).
     /// Display only, like `foldGroup`.
     var failureCode: String? = nil
+    /// User rows of an edited message: which version this is, of how many,
+    /// and every version's message id, oldest first. Nil for a message never
+    /// edited, and from helpers before 0.1.93.
+    var versions: MessageVersionMark? = nil
+    /// Rows of an earlier version (`session.version.page`): every request the
+    /// row came from, so its Details open the Inspector at those requests.
+    var requestAttemptIDs: [String]? = nil
+    /// Display only, set by the app: this row belongs to an earlier version on
+    /// screen in place of the latest one, and is read-only.
+    var earlierVersion: Bool? = nil
     static func project(id: String, message: [String: WireValue]) -> TranscriptMessage {
         let stopReason = message["nativeStopReason"]?.string ?? message["stopReason"]?.string
         let content = message["content"], blocks = content?.array ?? []
@@ -99,6 +109,16 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         if role == "assistant" { result.reply = ReplyRecord.journaled(message) }
         return result
     }
+}
+
+/// Where an edited message's row stands among its versions: the `‹ 2 / 2 ›`
+/// its switcher shows, and every version's message id, oldest first.
+struct MessageVersionMark: Codable, Sendable, Equatable {
+    var index: Int
+    var count: Int
+    var ids: [String]? = nil
+    /// Whether the switcher can page: a well-formed mark with its ids.
+    var usable: Bool { count > 1 && (1...count).contains(index) && ids?.count == count }
 }
 
 /// One reply's request as the helper recorded it, in the shape its display
@@ -290,7 +310,22 @@ extension TranscriptMessage {
             row.skills = try skills.map(skill)
         }
         row.reply = try reply(fields["reply"])
+        row.versions = try versionMark(fields["versions"])
+        if let list = fields["requestAttemptIDs"], list != .null {
+            guard let attempts = list.array else { throw Unexpected.shape }
+            row.requestAttemptIDs = try attempts.map { try string($0) }
+        }
         return row
+    }
+    private static func versionMark(_ value: WireValue?) throws -> MessageVersionMark? {
+        guard let value, value != .null else { return nil }
+        guard let fields = value.object, let index = try optionalInt(fields["index"]), let count = try optionalInt(fields["count"]) else { throw Unexpected.shape }
+        var mark = MessageVersionMark(index: index, count: count)
+        if let list = fields["ids"], list != .null {
+            guard let ids = list.array else { throw Unexpected.shape }
+            mark.ids = try ids.map { try string($0) }
+        }
+        return mark
     }
     private static func reply(_ value: WireValue?) throws -> ReplyRecord? {
         guard let value, value != .null else { return nil }

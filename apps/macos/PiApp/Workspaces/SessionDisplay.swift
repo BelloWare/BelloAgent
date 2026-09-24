@@ -30,6 +30,49 @@ import Combine
 }
 @MainActor final class ComposerDraft: ObservableObject { @Published var text = "" }
 
+/// An earlier version of an edited message, on screen in place of the latest
+/// one: which version, the rows read of it so far, and the tasks their turn
+/// cards read.
+struct TranscriptVersionView: Equatable, Sendable {
+    /// The latest version's message: the row of `messages` whose switcher was used.
+    var latestID: String
+    /// The version shown, 1-based, of `count`; every version's message id,
+    /// oldest first; and which of them `latestID` is, the one the chat holds.
+    var index: Int
+    var count: Int
+    var ids: [String]
+    var live: Int
+    var rows: [TranscriptMessage] = []
+    var tasks: [TaskPresentationRecord] = []
+    var loading = true
+    var failure: String? = nil
+    var shownID: String { ids[index - 1] }
+    /// The quiet banner above the version, then its rows: the first carries
+    /// the switcher, every one is read-only.
+    var presented: [TranscriptMessage] {
+        var banner = TranscriptMessage(id: "version-banner:" + latestID, role: "system", text: "Earlier version", kind: "versionBanner")
+        banner.detail = "replies from before your edit"
+        var shown = [banner]
+        if rows.isEmpty {
+            var placeholder = TranscriptMessage(id: "version-reading:" + shownID, role: "system", text: failure ?? "Reading this version…", kind: "notice")
+            placeholder.earlierVersion = true
+            shown.append(placeholder)
+        } else { shown += rows }
+        return shown
+    }
+    /// A page of the helper's rows as this view shows them.
+    /// `first`: the page that starts the version, whose first row, the
+    /// version's own message, carries the switcher.
+    static func readOnly(_ rows: [TranscriptMessage], index: Int, count: Int, ids: [String], first: Bool = true) -> [TranscriptMessage] {
+        rows.enumerated().map { offset, row in
+            var row = row
+            row.earlierVersion = true
+            row.versions = first && offset == 0 && row.role == "user" ? MessageVersionMark(index: index, count: count, ids: ids) : nil
+            return row
+        }
+    }
+}
+
 @MainActor final class SessionDisplay: ObservableObject {
     /// Committed activity only: text, draft, selection and context rendering do not enter this stream.
     let activityChanges = PassthroughSubject<Void, Never>()
@@ -116,7 +159,13 @@ import Combine
     /// not in a strip pinned above it.
     var presentedMessages: [TranscriptMessage] {
         if historyState == .loading { return [] }
-        var rows = messages
+        // An earlier version of an edited message, read-only, in place of the
+        // latest one and everything after it.
+        if let version = versionView {
+            let latest = Self.hidingBranchMarkers(messages)
+            if let at = latest.firstIndex(where: { $0.id == version.latestID }) { return Array(latest[..<at]) + version.presented }
+        }
+        var rows = Self.hidingBranchMarkers(messages)
         for row in sendingRows where !messages.reversed().contains(where: { $0.id == row.id }) { rows.append(row) }
         if let retryNotice { rows.append(TranscriptMessage(id: "notice:retry:" + id, role: "system", text: retryNotice, kind: "notice")) }
         if let failureMessage {
@@ -167,10 +216,39 @@ import Combine
     /// The last limit sent to the helper for this chat, so a snapshot that
     /// shows another one (a change the helper missed) is answered once.
     var costLimitSent: CostLimit?
+    /// The marker an edit leaves is drawn by the edited message's version
+    /// switcher instead, once the helper numbers its versions. A marker
+    /// with no numbered message after it (an older helper, or an edit not
+    /// delivered yet) still shows.
+    nonisolated static func hidingBranchMarkers(_ rows: [TranscriptMessage]) -> [TranscriptMessage] {
+        guard rows.contains(where: { $0.kind == "branch" }) else { return rows }
+        var kept: [TranscriptMessage] = []
+        kept.reserveCapacity(rows.count)
+        for (index, row) in rows.enumerated() {
+            if row.kind == "branch", let next = rows[(index + 1)...].first(where: { $0.kind != "branch" }), next.role == "user", next.versions != nil { continue }
+            kept.append(row)
+        }
+        return kept
+    }
+    /// An earlier version of an edited message shown in place of the latest,
+    /// read-only; nil shows the latest. The composer and the model's context
+    /// always stay on the latest version.
+    @Published var versionView: TranscriptVersionView? { didSet { if versionView != oldValue { publishTranscript() } } }
+    /// The edited message ⌥← and ⌥→ act on: the one whose switcher was used last.
+    var versionFocus: String?
+    /// The read of the version on screen.
+    var versionLoad: Task<Void, Never>?
     func publishTranscript() {
         guard transcriptBatchDepth == 0 else { return }
         let rows = presentedMessages
-        let input = TranscriptPresentationInput(messages:rows, lifecycle:taskPresentation)
+        var lifecycle = taskPresentation
+        // The turn cards of an earlier version read its own tasks.
+        if let version = versionView, !version.tasks.isEmpty, var merged = lifecycle {
+            let held = Set(merged.recent.map(\.key))
+            merged.recent += version.tasks.filter { !held.contains($0.key) }
+            lifecycle = merged
+        }
+        let input = TranscriptPresentationInput(messages:rows, lifecycle:lifecycle)
         if presentationChanges.value != input { presentationChanges.send(input) }
         if transcriptChanges.value != rows { transcriptChanges.send(rows) }
     }

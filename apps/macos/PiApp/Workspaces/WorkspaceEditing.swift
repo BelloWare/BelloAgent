@@ -148,6 +148,7 @@ extension WorkspaceModel {
         if let timeline = view.editSourceTimeline { params["editSourceTimeline"] = .string(timeline) }
         if let digest = view.editSourceTextDigest { params["editSourceTextDigest"] = .string(digest) }
         let generation = view.editGeneration
+        latestVersion(sessionID: id)
         view.loading = true; view.editSubmitting = true; view.compactionNotice = nil
         Task {
             defer { view.loading = false; view.editSubmitting = false }

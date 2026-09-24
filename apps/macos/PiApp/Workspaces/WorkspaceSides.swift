@@ -400,17 +400,31 @@ extension WorkspaceModel {
             if selectedID == parentID || focusedSessionID == parentID { await select(fork.id) }
         } catch { self.error = error.localizedDescription } }
     }
-    @discardableResult func createFork(parentID: String) async throws -> ChatRecord {
+    /// `/fork` copies the whole conversation into a chat of its own. With
+    /// `atMessageID` ("Fork from here" on a reply) the copy ends at that reply
+    /// and its tools, and the new chat, "‹title› · fork", nests under this one.
+    @discardableResult func createFork(parentID: String, atMessageID: String? = nil) async throws -> ChatRecord {
         guard !installPreparing, let parent = record(parentID), !parent.imported, !isEphemeral(parentID), let store else {
             throw HostError.failure("Choose a saved native session before forking its context.")
         }
         let id = UUID().uuidString
-        var fork = ChatRecord(id: id, workspaceID: parent.workspaceID, title: String((parent.title + " — fork").prefix(120)), path: nil, profileID: parent.profileID, toolMode: parent.toolMode, connectionTest: parent.connectionTest, model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
+        let title = atMessageID == nil ? parent.title + " — fork" : parent.title + " · fork"
+        var fork = ChatRecord(id: id, workspaceID: parent.workspaceID, title: String(title.prefix(120)), path: nil, profileID: parent.profileID, toolMode: parent.toolMode, connectionTest: parent.connectionTest, model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
         fork.topicID = effectiveTopicID(for: parent)
+        if atMessageID != nil { fork.parentSessionID = parent.id }
         fork.path = root.appendingPathComponent("Workspaces/\(parent.workspaceID)/Sessions/fork_\(id).jsonl").path
         try await store.put(SideKeepIntent(chat: fork), kind: "side-keep", id: id)
         let host = try await open(parent)
-        let result = try await host.request("session.fork", sessionID: parentID, params: ["forkSessionId": .string(id), "costLimit": costLimit(for: fork).wire]).object ?? [:]
+        var params: [String: WireValue] = ["forkSessionId": .string(id), "costLimit": costLimit(for: fork).wire]
+        if let atMessageID { params["atMessageId"] = .string(atMessageID) }
+        let result: [String: WireValue]
+        do { result = try await host.request("session.fork", sessionID: parentID, params: params).object ?? [:] }
+        catch {
+            // Refused before a file was written (a reply whose tools still
+            // run): no copy to recover, so no recovery intent is left behind.
+            if let path = fork.path, !FileManager.default.fileExists(atPath: path) { try? await store.remove(kind: "side-keep", id: id) }
+            throw error
+        }
         guard result["sessionId"]?.string == id else { throw HostError.failure("The fork identity changed. Its recovery intent was preserved.") }
         try await registerKeptSide(id: id, path: result["path"]?.string)
         let view = SessionDisplay(id: id); displays[id] = view; opened.insert(id)

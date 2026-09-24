@@ -20,7 +20,10 @@ alone, then the parallel lane in `PI_TEST_WORKERS` clones of the test host,
 8 by default; see "Test lanes" in [Swift-Test-Handoff.md](Swift-Test-Handoff.md)),
 then runs the screenshot gallery with the helper, wire and script tests
 alongside it. Every check runs even after a failure, so one pass reports them
-all; logs go to `$PI_BUILD_ROOT/verify-logs`.
+all; logs go to `$PI_BUILD_ROOT/verify-logs`. A release that touches
+compaction, turns or requests also runs the opt-in live test,
+`scripts/live-compaction-e2e.py`, against the owner's gateway (see "Live
+end-to-end (opt-in)" in [Swift-Test-Handoff.md](Swift-Test-Handoff.md)).
 
 App staging builds only the Swift helper: there is no package manager step,
 no downloaded runtime and no transcript asset build since 0.1.38. Swift builds
@@ -34,7 +37,21 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.92/build 96 is publicly released** at
+**Bello Agent 0.1.93/build 97 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.93](https://github.com/BelloWare/BelloAgent/tree/v0.1.93) and website commit
+`06005aca8c9e20a156ae74707924aed6307a9256`. The signed/notarized DMG is **10,722,736 bytes (10.23 MiB)**;
+SHA-256 `c205aff7e7a12ee09f133673b7698c29c0fd6b6e6b17c443049dbfe844f53b6a`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-09-24 03:57:13 UTC**. An edited message keeps its earlier versions to read, any finished reply can start a
+fork, the Session Inspector names each summary request of a compaction, and a chat keeps following
+after a reply longer than its page. The release gate passed 1,554 native tests, 100 gallery
+screenshots, 424 helper tests and the wire, concurrent, acceptance and Python checks. Its one
+failure, a terminal test, exposed a focus race that this release fixes, and every terminal class
+passed after the fix. See the
+[0.1.93 validation record](validation/Bello-Agent-0.1.93-2026-09-24.md).
+
+**Bello Agent 0.1.92/build 96 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.92](https://github.com/BelloWare/BelloAgent/tree/v0.1.92) and website commit
 `82de1e8141c79d34adce9e6507aee626e2c0a124`. The signed/notarized DMG is **10,569,473 bytes (10.08 MiB)**;

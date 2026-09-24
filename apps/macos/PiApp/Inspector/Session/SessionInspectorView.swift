@@ -104,10 +104,13 @@ private struct InspectorNavigator: View {
                                          open: { inspector.select(.turn(turn.id)) })
                             .id(turn.id)
                         if inspector.expanded.contains(turn.id) {
-                            ForEach(Array(turn.requests.enumerated()), id: \.element.id) { offset, row in
-                                InspectorRequestNavRow(row: row, number: offset + 1, kind: inspector.index.kind(of: row.id),
-                                                       selected: inspector.page == .request(row.id)) { inspector.select(.request(row.id)) }
-                                    .id(row.id)
+                            InspectorEntryRows(inspector: inspector, entries: turn.entries, indent: 26)
+                            // An edited turn's earlier versions, each with the requests it made.
+                            ForEach(turn.earlier) { version in
+                                InspectorVersionNavRow(version: version, prompt: inspector.prompts[version.id],
+                                                       selected: inspector.page == .turn(version.id)) { inspector.select(.turn(version.id)) }
+                                    .id(version.id)
+                                InspectorEntryRows(inspector: inspector, entries: version.entries, indent: 40)
                             }
                         }
                     }
@@ -234,6 +237,121 @@ private struct InspectorTurnRow: View {
     }
 }
 
+/// A turn's requests as the navigator lists them: each request on its own
+/// row, and each compaction's summary requests under one Compaction row,
+/// named for what each summarized once a page of that compaction has opened.
+private struct InspectorEntryRows: View {
+    @ObservedObject var inspector: SessionInspectorModel
+    let entries: [InspectorTurn.Entry]
+    let indent: CGFloat
+    var body: some View {
+        ForEach(entries) { entry in
+            switch entry {
+            case .request(let row, let number):
+                InspectorRequestNavRow(row: row, number: number, kind: inspector.index.kind(of: row.id),
+                                       selected: inspector.page == .request(row.id), indent: indent) { inspector.select(.request(row.id)) }
+                    .id(row.id)
+            case .compaction(let group):
+                InspectorCompactionNavRow(group: group, expanded: inspector.expanded.contains(group.id),
+                                          selected: group.requests.contains { inspector.page == .request($0.id) }, indent: indent,
+                                          toggle: { inspector.toggle(group.id) },
+                                          open: { if let first = group.requests.first { inspector.select(.request(first.id)) } })
+                    .id(group.id)
+                if inspector.expanded.contains(group.id) {
+                    ForEach(Array(group.requests.enumerated()), id: \.element.id) { offset, row in
+                        InspectorRequestNavRow(row: row, number: group.first + offset,
+                                               kind: inspector.summaryLabel(row.id) ?? "summary request \(offset + 1)",
+                                               selected: inspector.page == .request(row.id), indent: indent + 16) { inspector.select(.request(row.id)) }
+                            .id(row.id)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One compaction: "Compaction · 2 requests", folding its summary requests.
+private struct InspectorCompactionNavRow: View {
+    let group: InspectorCompaction
+    let expanded: Bool
+    let selected: Bool
+    let indent: CGFloat
+    let toggle: () -> Void
+    let open: () -> Void
+    private var cost: String? {
+        let reported = group.requests.compactMap(\.cost)
+        return reported.isEmpty ? nil : compactGatewayUSD(reported.reduce(0, +))
+    }
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: toggle) {
+                Image(systemName: "chevron.right").font(.system(size: 8.5, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .frame(width: 16, height: 30).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).piPointer()
+            .accessibilityLabel(expanded ? "Hide this compaction's requests" : "Show this compaction's requests")
+            PiSelectableRow(selected: selected && !expanded, action: open) {
+                // The title always reads whole; the cost follows where it fits.
+                ViewThatFits(in: .horizontal) {
+                    line(cost: true)
+                    line(cost: false)
+                }
+            }
+        }
+        .padding(.leading, indent - 16)
+        .frame(height: 30)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(group.title)
+        .accessibilityIdentifier("inspector-compaction-row")
+    }
+    private func line(cost showsCost: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.down.right.and.arrow.up.left").font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(group.requests.contains(where: \.failed) ? Color.piDanger : Color.piInkSecondary)
+            Text(group.title).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.piInk).lineLimit(1).fixedSize()
+            Spacer(minLength: 4)
+            if showsCost, let cost { Text(cost).font(.system(size: 10.5)).monospacedDigit().foregroundStyle(Color.piInkTertiary).fixedSize() }
+        }
+    }
+}
+
+/// An earlier version of an edited turn, under the turn as it stands: which
+/// version it was, the first line of what it asked, what its requests cost.
+private struct InspectorVersionNavRow: View {
+    let version: InspectorTurn
+    let prompt: String?
+    let selected: Bool
+    let action: () -> Void
+    private var label: String {
+        guard let mark = version.version else { return "Earlier version" }
+        return "Version \(mark.index) of \(mark.count)"
+    }
+    private var line: String {
+        let first = prompt.flatMap { $0.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) }?.trimmingCharacters(in: .whitespaces)
+        return [first, version.summary].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
+    }
+    var body: some View {
+        PiSelectableRow(selected: selected, action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: "clock.arrow.circlepath").font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(selected ? Color.piAccent : Color.piInkTertiary)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(label).font(.system(size: 12, weight: .medium)).foregroundStyle(Color.piInk).lineLimit(1)
+                    Text(line).font(PiFont.micro).foregroundStyle(Color.piInkTertiary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.leading, 26)
+        .frame(height: 36)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Earlier version: " + label + (line.isEmpty ? "" : ", " + line))
+        .accessibilityIdentifier("inspector-version-row")
+    }
+}
+
 /// One request of a turn: its number, what kind of request it was, the model
 /// that answered and what went in and out.
 private struct InspectorRequestNavRow: View {
@@ -241,6 +359,7 @@ private struct InspectorRequestNavRow: View {
     let number: Int
     let kind: String
     let selected: Bool
+    var indent: CGFloat = 26
     let action: () -> Void
     private var model: String { row.model ?? row.alias ?? "" }
     private var kindColor: Color { row.source == .record ? .piInkTertiary : .piInk }
@@ -250,7 +369,7 @@ private struct InspectorRequestNavRow: View {
     }
     var body: some View {
         PiSelectableRow(selected: selected, action: action) { content }
-            .padding(.leading, 26)
+            .padding(.leading, indent)
             .frame(height: 30)
             .accessibilityLabel(accessibility)
             .accessibilityIdentifier("inspector-request-row")

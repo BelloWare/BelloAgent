@@ -42,6 +42,9 @@ public actor AgentSession {
     // visible: the displayed timeline, i.e. history minus tails abandoned by
     // turn.edit branches. boundary: the latest complete side-chat boundary.
     var journal: SessionJournal?, history: [ChatMessage]=[], context: [ChatMessage]=[], boundary: [ChatMessage]=[], visible: [ChatMessage]=[]
+    /// Edited messages' versions, and the rows the versions an edit hid read
+    /// as (SessionVersions.swift). Derived from the journal's branch records.
+    var versions = MessageVersionStore()
     var queue: [Submission]=[], steering: [Submission]=[], events: [JSON]=[]
     /// Command receipts. Every change advances `commandsGeneration`, the
     /// revision a reader sends back to be spared receipts it already holds.
@@ -208,6 +211,7 @@ public actor AgentSession {
             if item["type"].text == "message" {
                 let message=try ChatMessage(id:required(item["id"],"message id"),pi:item["message"]); history.append(message); if !["execution","requestLedger"].contains(message.kind ?? "") { context.append(message) }; visible.append(message)
                 if message.role=="assistant" { assistantMessageCount += 1; latestAssistantMessageID=message.id }
+                if message.role=="user" { versions.ledger.recorded(userMessage: message.id) }
                 for attempt in message.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(message.id) }
             } else if item["type"].text == "compaction" {
                 let restored=try CompactionCheckpoint.restore(item,context:context)
@@ -224,6 +228,8 @@ public actor AgentSession {
             } else if item["type"].text == "branch" {
                 // Replay an edit: the live context becomes exactly the kept ids and
                 // the abandoned tail leaves the displayed timeline, never the journal.
+                // What it hides stays readable as the edited message's earlier version.
+                versions.hide(from: item["fromMessageId"].text ?? "", visible: visible, history: history)
                 if !item["nativeBranchVersion"].isNull {
                     let plan = try Self.restoreBranch(item, history: history, visible: visible, context: context)
                     Self.adoptBranch(plan, history: &history, visible: &visible, context: &context, markerID: try identity(item["id"]))

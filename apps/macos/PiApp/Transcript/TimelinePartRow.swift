@@ -126,6 +126,7 @@ struct ResponseHeaderRow: View {
     let collapsed: Bool
     var toggleCollapsed: () -> Void = {}
     @State private var hovering = false
+    @Environment(\.transcriptForks) private var forks
     /// A response with nothing inside to fold keeps a short strip rather than
     /// a line of text: its words are the response, and a line naming them
     /// would be noise above every reply. The strip's height comes from the
@@ -169,10 +170,9 @@ struct ResponseHeaderRow: View {
         .onHover { hovering = $0 }
         .padding(.top, compact ? 0 : 4).padding(.bottom, collapsed ? 10 : compact ? 0 : 2)
         .contextMenu {
-            Button(collapsed ? "Show This Response" : "Fold This Response to One Line", action: toggleCollapsed)
-            Divider()
-            Button("Copy Reply") { actions.copyMessage(message.id) }
-            Button("Request Details") { actions.inspect(message.id) }
+            PiMenuContent { [actions, message, collapsed, toggleCollapsed, forks] in
+                ReplyMenu.entries(message, actions: actions, forks: forks, fold: (collapsed ? "Show This Response" : "Fold This Response to One Line", toggleCollapsed))
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Response · \(summary)")

@@ -93,6 +93,108 @@ first 100 of its 400 identical rows (`PI_PERF_SCROLL_SAMPLE_ROWS`, 0 for the
 whole page). Fixtures that page past both resident caps lower them through
 `TranscriptPaging.residentCaps`.
 
+## Live end-to-end (opt-in)
+
+`scripts/live-compaction-e2e.py` runs the release helper against a real
+LiteLLM gateway and a real model. Every other helper test answers from a fake
+gateway that replies at once and never reasons. That is how 0.1.90 shipped
+summaries capped at 13,107 output tokens: at high effort a real model spent
+the cap on reasoning, each summary stopped at it and was rejected, and the run
+looped.
+
+**When.** Before any release that touches compaction, turns or requests
+(`SessionCompaction`, `CompactionPlanner`, `SessionSummarizer`, `SessionRun`,
+`Providers`, `ResponsesInput`, `RequestContext` and the like). It is billed to
+the owner's gateway key, so `scripts/verify-release.sh` does not run it. Run it
+on the release candidate's helper once the gate has passed, and cite its report
+in the validation record.
+
+**Run.** The configuration comes only from the environment:
+
+```sh
+PI_BUILD_ROOT=… PI_LIVE_BASE_URL=https://gateway.example.com/v1 PI_LIVE_API_KEY=… \
+PI_LIVE_MODEL=gpt-5.1 PI_LIVE_CONTEXT_WINDOW=128000 \
+  python3 scripts/live-compaction-e2e.py
+```
+
+- **`PI_LIVE_CONTEXT_WINDOW`** can be left out when the bundled model catalog
+  lists the model. It must not exceed the model's own window. The scenarios
+  scale with it, so a 128,000-token window is the cheap test; the catalog's
+  1,048,576 costs several times more.
+- **`PI_LIVE_MODEL_OUTPUT_LIMIT`** defaults to the catalog's figure. With no
+  figure, no limit is sent, as the app sends none.
+- **`PI_LIVE_THINKING`** defaults to `high`.
+- **`PI_LIVE_MAX_COST_USD`** defaults to 5.
+
+The helper is `$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host`,
+unless `--helper` names another. The key reaches the helper over its wire
+protocol only. It is never printed or written, and every report file is
+scanned for it.
+
+**What it runs.** Each scenario seeds a tool-heavy session built from this
+repository's own text: tasks of `read` and `bash` rounds with assistant text,
+written into a journal the helper created. The script then opens the session
+and drives it over the wire, as the app does.
+
+- **compact-now.** "Compact now" at about 75% of the window, then a turn that
+  must start from the summary.
+- **mid-run.** One turn, with the real read-only tools in a temporary
+  workspace, is told to read ten 28 KB files one at a time. The threshold is
+  crossed between rounds, the helper compacts, and the turn must finish with
+  its answer.
+- **over-window.** "Compact now" on a history larger than the window, so it
+  is summarized in chained chunks, then a turn from the summary.
+
+**What must hold.** Every scenario checks each of these:
+
+- every compaction completes, and its summary becomes the live context;
+- no summary request ends at `max_output_tokens`;
+- every summary request leaves at least a quarter of the window for its
+  output, or the model's own limit when that is lower;
+- the context estimate after each compaction is under the threshold;
+- no loop: a bounded number of summary requests, no summary asked again after
+  an answer, and no compaction tried again after one failed;
+- the run ends idle;
+- the reported cost stays under the cap.
+
+The mid-run scenario also checks that the compaction came between rounds and
+that the turn then answered. The other two check that the next turn starts
+from the summary, and over-window that its chunks chain.
+
+**Cost.** The cap is the helper's own per-chat cost limit. The helper stops
+a chat before its next request once the spend reaches the limit, but a request
+already sent finishes. So each session opens with the budget that is left,
+less the dearest request so far. If a completed request's cost goes
+unreported, the run stops, because the cap could not hold. At a
+128,000-token window the three scenarios send about 20 requests: about
+900,000 input tokens, most of the mid-run turn's cached, and 7 summaries. The
+fixture prices that run at $2.29 at GPT-5-class rates, with 20,000 reasoning
+tokens a summary. Expect about $1–3 at such prices, well under the $5 default.
+
+**Output.** Each scenario prints its checks and a table of its requests:
+purpose, input, cached and output tokens, reasoning, `max_output_tokens`,
+stop reason, duration and cost. The same goes to
+`$PI_BUILD_ROOT/live-e2e/<UTC timestamp>/report.txt`, and in full to
+`report.json`. A failed scenario also keeps its session journal there. The
+exit status is non-zero on any failure.
+
+**Free rehearsal.** `--fixture` runs the same scenarios against
+`fixtures/native/reasoning_gateway.py`, a loopback gateway whose model
+reasons in proportion to the effort: 20,000 tokens at high for a summary, a
+tenth of that for a turn. A request whose `max_output_tokens` cannot hold the
+reasoning and the answer ends `incomplete` at `max_output_tokens`, as the
+Responses API ends it. `--fixture-summary-limit 13107` caps every summary as
+0.1.90 did, and that run must fail. `scripts/tests/test_live_compaction_e2e.py`
+runs both against the release helper when one is built, so the gate's script
+tests cover the harness, and skips them otherwise. On 2026-09-24 the fixture
+run took 2 s:
+
+- 0.1.92's helper passed;
+- 0.1.90's helper failed all three scenarios: its summaries stopped at 13,107
+  tokens, and mid-run it asked for the same summary three times;
+- 0.1.91's helper failed over-window, because each chunk left only 13,107
+  tokens.
+
 ## 0.1.84 routing analytics and retained token splits
 
 Use `CompactTurnReportTests`, `GatewayAccountingTests`, `ReportPageTests`,

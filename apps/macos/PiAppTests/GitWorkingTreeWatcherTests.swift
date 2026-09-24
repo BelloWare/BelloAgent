@@ -85,7 +85,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
         for name in ["a.txt", "b.txt"] { try "one\ntwo\n".write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8) }
 
-        let controller = GitController(roots: [root.path])
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
         try await eventually("read two changed files") { controller.status.entries.count == 2 && !controller.loading }
         controller.selection = GitController.Selection(path: "a.txt", staged: false)
         try await eventually("read a.txt") { !controller.diffLoading && controller.diff.first?.path == "a.txt" }
@@ -198,7 +198,9 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         try start(root)
         try "seed\n".write(to: root.appendingPathComponent("seed.txt"), atomically: true, encoding: .utf8)
         try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
-        let controller = GitController(roots: [root.path])
+        // Stopped when the test ends, so nothing of it is still winding down
+        // in the test that runs next.
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
         try await eventually("settle") { controller.repositoryRoot != nil && !controller.loading }
         try await Task.sleep(for: .milliseconds(1_200))
         let before = controller.automaticRefreshes
@@ -232,7 +234,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         try start(root)
         try "seed\n".write(to: root.appendingPathComponent("seed.txt"), atomically: true, encoding: .utf8)
         try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
-        let controller = GitController(roots: [root.path])
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
         try await eventually("settle") { controller.repositoryRoot != nil && !controller.loading }
 
         for attempt in 0..<3 {
@@ -355,17 +357,29 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         try start(root)
         try "seed\n".write(to: root.appendingPathComponent("seed.txt"), atomically: true, encoding: .utf8)
         try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
-        let before = GitWorkingTreeWatcher.liveStreamCount
+        // This repository's streams only. The process-wide count also held
+        // the stream of a panel an earlier test let go of; when that one
+        // closed in the middle of this test, the count could never come back
+        // to where it started, and the wait below ran out under load. Here a
+        // panel elsewhere is open when this test starts and closes halfway,
+        // as that one did.
+        let elsewhere = try repository("git-watch-elsewhere"); defer { try? FileManager.default.removeItem(at: elsewhere) }
+        let other = GitWorkingTreeWatcher(root: elsewhere.path) {}
+        other.start(); defer { other.stop() }
+        XCTAssertEqual(GitWorkingTreeWatcher.liveStreamCount(under: elsewhere.path), 1)
+        XCTAssertEqual(GitWorkingTreeWatcher.liveStreamCount(under: root.path), 0)
 
         var controller: GitController? = GitController(roots: [root.path])
         weak var observed = controller
         try await eventually("start a watch") { controller?.isWatching == true }
-        XCTAssertEqual(GitWorkingTreeWatcher.liveStreamCount, before + 1)
+        XCTAssertEqual(GitWorkingTreeWatcher.liveStreamCount(under: root.path), 1)
         try await eventually("settle") { controller?.loading == false }
 
         controller = nil
+        other.stop()
+        XCTAssertEqual(GitWorkingTreeWatcher.liveStreamCount(under: elsewhere.path), 0)
         try await eventually("let the panel go", timeout: 10) { observed == nil }
-        try await eventually("stop its stream with it", timeout: 10) { GitWorkingTreeWatcher.liveStreamCount == before }
+        try await eventually("stop its stream with it", timeout: 10) { GitWorkingTreeWatcher.liveStreamCount(under: root.path) == 0 }
         try await eventually("leave no git behind", timeout: 10) { self.gitChildren().isEmpty }
     }
 

@@ -147,7 +147,9 @@ extension AgentSession {
                           "durationMs": stats["durationMs"], "truncated": JSON(inputTruncated || keptOutput.utf8.count < output.utf8.count),
                           "path": stats["path"], "added": stats["added"], "removed": stats["removed"]], fields)
         }
-        return message.view(toolStates: states)
+        var row = message.view(toolStates: states)
+        if let mark = versionMark(message) { row["versions"] = mark }
+        return row
     }
     /// What the live bar says the session is doing right now, in the order a
     /// reader cares about: a stopped run before a busy one, and what the run
@@ -218,6 +220,11 @@ extension AgentSession {
             value["historyIncarnation"] = JSON(displayEpoch); value["historyLineage"] = JSON(lineage)
             value["historyOlder"] = projection.start > 0 && projection.start < visible.count ?
                 ["incarnation":JSON(displayEpoch),"lineage":JSON(lineage),"entry":JSON(visible[projection.start].id)] : .null
+            // The row the page starts right after. A reply longer than the
+            // page leaves no room for itself once rows follow it; a reader
+            // whose last row is this one joins the page on, rather than
+            // taking the missing overlap for a gap.
+            value["historyFollows"] = projection.start > 0 && projection.start <= visible.count ? JSON(visible[projection.start - 1].id) : .null
         }
         // A completed compaction is a committed summary in active context, not
         // merely the end of a failed/cancelled attempt or a historical row.

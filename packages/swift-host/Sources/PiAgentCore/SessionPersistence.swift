@@ -8,14 +8,40 @@ extension AgentSession {
     /// Clone the complete retained journal without replaying a queued command.
     /// A running source contributes its latest complete model/tool boundary;
     /// later source records remain inspectable in the clone's original history.
-    public func fork(to newID: String) throws -> JSON {
+    ///
+    /// `messageID` forks at one assistant reply instead, in the timeline shown
+    /// now or in an earlier version of an edited message: the clone holds the
+    /// journal only up to that reply and the results of the tools it called,
+    /// and its context is what replaying those records gives, so the edits and
+    /// compactions in effect then are the ones it has. A reply a later
+    /// compaction summarized comes back with its whole context.
+    public func fork(to newID: String, at messageID: String? = nil) throws -> JSON {
         guard !closed, let journal, !ephemeral else { throw AgentError("session_unavailable", "Save this session before forking its context") }
         _ = try identity(JSON(newID))
         guard newID != id else { throw AgentError("session_conflict", "A fork needs a new session identity") }
-        let source=try journal.records(), temporary=directory.appendingPathComponent(".fork-\(UUID().uuidString).jsonl")
+        var source=try journal.records()
+        let temporary=directory.appendingPathComponent(".fork-\(UUID().uuidString).jsonl")
         let destination=directory.appendingPathComponent("fork_"+newID+".jsonl")
         var origin=sideSeed().info; origin["relationship"]="fork"
         origin["omittedIncompleteEntries"]=JSON(max(0,context.count-boundary.count))
+        var contextIDs=boundary.map(\.id), timeline=EditReplayPlan.forkTimeline(visible:visible.map(\.id),boundary:contextIDs)
+        if let messageID {
+            let end=try forkPoint(messageID, in: source)
+            source=Array(source[...end])
+            // The same reducer every journal is replayed with, stopped at the reply.
+            let state: ConversationReplay
+            do { state=try ConversationReplay(source) }
+            catch { throw AgentError("fork_target", "The conversation up to that reply cannot be rebuilt: \(error.localizedDescription)") }
+            contextIDs=state.context.map(\.id)
+            timeline=EditReplayPlan.forkTimeline(visible:state.visible.map(\.id),boundary:contextIDs)
+            guard contextIDs.contains(messageID), timeline.contains(messageID) else {
+                throw AgentError("fork_target", "That reply is not part of the conversation it belongs to, so it cannot be forked.")
+            }
+            origin["forkedAtMessageId"]=JSON(messageID)
+            origin["cutoffEntryId"]=contextIDs.last.map { JSON($0) } ?? .null
+            origin["contextRevision"]=JSON(sha256(Data(contextIDs.joined(separator:"\n").utf8)))
+            origin["omittedIncompleteEntries"]=0
+        }
         do {
             let prepared=try SessionJournal(url:temporary,id:newID,cwd:cwd,binding:profile.binding,create:true)
             for record in source {
@@ -26,7 +52,7 @@ extension AgentSession {
                 // and all message bytes, but never authorize its command twice.
                 try prepared.append(record.removing(["id","parentId","timestamp","nativeState"]),id:try identity(record["id"]))
             }
-            try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(boundary.map { JSON($0.id) }),"visibleIDs":.array(EditReplayPlan.forkTimeline(visible:visible.map(\.id),boundary:boundary.map(\.id)).map { JSON($0) })]])
+            try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(contextIDs.map { JSON($0) }),"visibleIDs":.array(timeline.map { JSON($0) })]])
             try prepared.append(["type":"custom","customType":"pi-app.fork-origin.v1","data":origin])
             var fresh = SessionSpend().record; fresh["source"] = "fork"
             try prepared.append(["type":"custom","customType":JSON(SessionSpend.recordType),"data":fresh])
@@ -34,6 +60,34 @@ extension AgentSession {
             try prepared.publish(to:destination)
         } catch { try? FileManager.default.removeItem(at:temporary); try? FileManager.default.removeItem(atPath:temporary.path+".lock"); throw error }
         return ["accepted":true,"sessionId":JSON(newID),"path":JSON(destination.path),"origin":origin]
+    }
+    /// The last journal record a fork at `messageID` keeps: the reply itself,
+    /// or the last result of the tools it called, so the fork starts after
+    /// its whole tool batch. A batch still running is refused; one a crash
+    /// left without results is kept, and the fork records their outcome as
+    /// unknown when it opens, as any reopened chat does.
+    func forkPoint(_ messageID: String, in records: [JSON]) throws -> Int {
+        guard let start = records.firstIndex(where: { $0["type"].text == "message" && $0["id"].text == messageID }) else {
+            throw AgentError("fork_target", "That reply is not in this conversation's journal yet.")
+        }
+        let reply = try ChatMessage(id: messageID, pi: records[start]["message"])
+        guard reply.role == "assistant", reply.kind == nil else { throw AgentError("fork_target", "Choose one of the assistant's replies to fork from.") }
+        guard reply.replayEligible else {
+            throw AgentError("fork_target", "That reply was stopped before it finished, so it is not part of the conversation. Fork from an earlier reply.")
+        }
+        var pending = Set(reply.content.filter { $0["type"].text == "toolCall" }.compactMap { $0["id"].text }), end = start, index = start + 1
+        while !pending.isEmpty, index < records.count {
+            let record = records[index]; index += 1
+            guard record["type"].text == "message" else { continue }
+            let role = record["message"]["role"].text
+            if role == "toolResult", let call = record["message"]["toolCallId"].text, pending.remove(call) != nil { end = index - 1; continue }
+            // The batch is over once the next reply or message begins.
+            if role == "assistant" || role == "user" { break }
+        }
+        if !pending.isEmpty, runTask != nil, context.contains(where: { $0.id == messageID }) {
+            throw AgentError("fork_tools_running", "That reply's tools are still running. Fork from it once they finish.")
+        }
+        return end
     }
     func savedState(active: Bool? = nil) throws -> JSON {
         let value: JSON = ["active":JSON(active ?? (runTask != nil)),"queue":.array(queue.map(\.savedValue)),"steering":.array(steering.map(\.savedValue)),"commands":.array(Array(commands.suffix(128))),"queuePaused":JSON(queuePaused),"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode),"runStatus":JSON(runStatus),"errorMessage":errorMessage.map { JSON($0) } ?? .null,"errorCode":errorCode.map { JSON($0) } ?? .null,"timing":["modelMs":cumulativeModelMs.map { JSON($0) } ?? .null,"toolMs":cumulativeToolMs.map { JSON($0) } ?? .null]]
@@ -66,6 +120,7 @@ extension AgentSession {
         var record: JSON=["type":"message","message":message.pi]; for (key,value) in extra.map { record[key]=value }
         try journal?.append(record,id:message.id,flush:journalFlushesEachRecord)
         toolHistory.append(message, at: history.count); history.append(message); context.append(message); visible.append(message); currentContextCount=nil
+        if message.role == "user" { versions.ledger.recorded(userMessage: message.id) }
         observePresentedMessage(message)
         if message.replayEligible { replayInputsChanged() }
         invalidateDisplay(message.id)

@@ -43,6 +43,16 @@ struct InspectorShowInChat: View {
     }
 }
 
+/// "Fork from here": a new chat that ends at the reply this request produced.
+struct InspectorForkFromHere: View {
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) { Label("Fork from here", systemImage: "arrow.triangle.branch") }
+            .buttonStyle(.piGhost).help("A new chat, nested under this one, that ends at the reply this request produced")
+            .accessibilityIdentifier("inspector-fork-from-here")
+    }
+}
+
 /// A heading inside a page: a title and what it covers.
 struct InspectorSectionTitle: View {
     let title: String

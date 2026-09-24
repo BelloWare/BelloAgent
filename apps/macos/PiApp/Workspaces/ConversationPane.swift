@@ -56,13 +56,17 @@ struct ConversationPane: View {
                                                                 guard let session else { return }
                                                                 SkillPopovers.shared.hoverSent(inside, use: use, anchor: anchor, session: session)
                                                             },
-                                                            costLimit: { [weak model] action, anchor in model?.costLimitNotice(action, sessionID: session.id, anchor: anchor) }),
+                                                            costLimit: { [weak model] action, anchor in model?.costLimitNotice(action, sessionID: session.id, anchor: anchor) },
+                                                            fork: forkAction,
+                                                            switchVersion: { [weak model] messageID, step in model?.showVersion(sessionID: session.id, messageID: messageID, step: step) },
+                                                            latestVersion: { [weak model] in model?.latestVersion(sessionID: session.id) }),
                                  onAnchorChanged: { anchor in session.scrollAnchor = anchor; model.anchorChanged(session) },
                                  onReadReply: { sessionID, messageID in model.acknowledgeVisibleReply(sessionID: sessionID, messageID: messageID) },
                                  onLoadEarlier: { sessionID in model.loadEarlier(sessionID: sessionID) },
                                  onLoadNewer: { model.loadNewer(sessionID: $0) },
                                  onLatest: { model.latest(sessionID: $0) },
                                  onViewportReady: { model.historyViewportReady($0, generation: $1) })
+                .environment(\.transcriptForks, model.canForkFromReply(session.id))
                 // A card whose arguments the host had to cut asks it for the
                 // rest when the reader opens it.
                 .task(id: session.id) {
@@ -158,6 +162,13 @@ struct ConversationPane: View {
     private var quoteReplyAction: ((TranscriptQuote) -> Void)? {
         guard model.canQuoteReply(session.id) else { return nil }
         return { quote in model.openQuotedSide(parentID: session.id, quote: quote) }
+    }
+
+    /// "Fork from here" on a reply. The rows offer it where
+    /// `transcriptForks` says the chat can fork.
+    private var forkAction: ((String) -> Void)? {
+        let id = session.id
+        return { [weak model] messageID in model?.forkFromReply(sessionID: id, messageID: messageID) }
     }
 
     /// Plain words for what the side shares; the identifiers stay in the tooltip.

@@ -147,6 +147,19 @@ final class UIScreenshotTests: XCTestCase {
         }
         // Only the cost-limit scenes, the Session Inspector's Overview of the
         // chat under a limit among them.
+        // Only the versions and fork scenes, and the compaction's requests.
+        if testEnvironment("PI_APP_UI_GALLERY_VERSIONS_ONLY") == "1" {
+            if testEnvironment("PI_APP_UI_GALLERY_COMPACTION_ONLY") != "1" {
+                try await captureVersionAndForkScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                                      workspaceID: workspace.id, profileID: connections[0].profile.id)
+            }
+            try await captureCompactionRequestScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                                     workspaceID: workspace.id, profileID: connections[0].profile.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         if testEnvironment("PI_APP_UI_GALLERY_COST_ONLY") == "1" {
             try await captureCostLimitScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                              workspaceID: workspace.id, profileID: connections[0].profile.id)
@@ -301,6 +314,10 @@ final class UIScreenshotTests: XCTestCase {
         try await captureCostLimitScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                          workspaceID: workspace.id, profileID: connections[0].profile.id)
         try await captureSkillScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
+        try await captureVersionAndForkScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                              workspaceID: workspace.id, profileID: connections[0].profile.id)
+        try await captureCompactionRequestScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                                 workspaceID: workspace.id, profileID: connections[0].profile.id)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
         let fresh = WorkspaceModel(stateRoot: folder.appendingPathComponent("onboarding-state"), vault: freshVault)
@@ -501,6 +518,94 @@ final class UIScreenshotTests: XCTestCase {
             try await settle(1.0)
             try captureWithPopovers(window, to: gallery.appendingPathComponent("17d-skills-popover-\(name).png"))
             popovers.close(); try await settle(0.4)
+        }
+    }
+
+    /// 19 · Versions and forks. A question edited once shows `‹ 1 / 2 ›` on
+    /// its earlier version, under the banner, read-only (19a); "Fork from
+    /// here" on the latest reply opens "‹title› · fork", nested under the chat
+    /// in the sidebar, its transcript ending at that reply (19b).
+    @MainActor private func captureVersionAndForkScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                        appearances: [(String, NSAppearance.Name)], workspaceID: String, profileID: String) async throws {
+        let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "Retry budget", path: nil, profileID: profileID, toolMode: "editing")
+        model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+        await model.select(chat.id); try await settle(0.8)
+        let session = try XCTUnwrap(model.displays[chat.id])
+        session.draft = "How many **retries** should `PaymentClient` allow?"
+        model.send(sessionID: chat.id)
+        try await waitIdle(session, model: model, minimumMessages: 2)
+        let original = try XCTUnwrap(session.messages.last { $0.role == "user" }?.id)
+        model.editMessage(original, sessionID: chat.id)
+        try await until("the edit to load") { !session.editPreparing && session.editingMessageID == original }
+        session.draft = "How many **retries** should `PaymentClient` allow for queued follow-ups?"
+        model.sendEdit(sessionID: chat.id)
+        try await until("the edited question to settle", seconds: 90) {
+            !session.editSubmitting && !session.hasWork && !session.loading && session.editingMessageID == nil
+                && session.messages.contains { $0.versions?.index == 2 } && session.messages.last?.role == "assistant"
+        }
+        let edited = try XCTUnwrap(session.messages.last { $0.versions?.usable == true })
+        model.showVersion(sessionID: chat.id, messageID: edited.id, step: -1)
+        try await until("version 1 to be read") { session.versionView?.loading == false && !(session.versionView?.rows.isEmpty ?? true) }
+        XCTAssertNil(session.versionView?.failure, session.versionView?.failure ?? "")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("19a-version-earlier-\(name).png"))
+        }
+        model.latestVersion(sessionID: chat.id); try await settle(0.6)
+        let reply = try XCTUnwrap(session.messages.last { $0.role == "assistant" && $0.kind == nil }?.id)
+        model.forkFromReply(sessionID: chat.id, messageID: reply)
+        try await until("the fork to open", seconds: 60) { model.selectedID != chat.id && model.chats.contains { $0.parentSessionID == chat.id } }
+        let fork = try XCTUnwrap(model.chats.first { $0.parentSessionID == chat.id })
+        XCTAssertEqual(fork.title, "Retry budget · fork")
+        let forked = try XCTUnwrap(model.displays[fork.id])
+        try await until("the fork's transcript") { forked.historyState != .loading && forked.messages.last?.id == reply }
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("19b-fork-from-here-\(name).png"))
+        }
+    }
+
+    /// 20 · A split-turn compaction in the Session Inspector: one Compaction
+    /// row holding its two summary requests, named "earlier history" and
+    /// "start of this turn", and the second one's page with its instruction
+    /// first on the Conversation tab.
+    @MainActor private func captureCompactionRequestScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                           appearances: [(String, NSAppearance.Name)], workspaceID: String, profileID: String) async throws {
+        let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "Summarize the retry work", path: nil, profileID: profileID, toolMode: "editing")
+        model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+        await model.select(chat.id); try await settle(0.6)
+        let session = try XCTUnwrap(model.displays[chat.id])
+        session.draft = "Which retries does `PaymentClient` make today?"
+        model.send(sessionID: chat.id)
+        try await waitIdle(session, model: model, minimumMessages: 2)
+        // A turn larger than the recent tail a compaction keeps: compacting
+        // splits it, so the compaction asks for the history and the start of the turn.
+        session.draft = "bulk 120"
+        model.send(sessionID: chat.id)
+        try await waitIdle(session, model: model, minimumMessages: 4)
+        model.action("context.compact", sessionID: chat.id)
+        // The scene is the request log, so the compaction is followed there.
+        let controller = try openInspector(model, session, at: .latestRequest)
+        defer { controller.close(); window.makeKeyAndOrderFront(nil) }
+        let inspector = controller.inspector, panel = try XCTUnwrap(controller.window)
+        try await until("the compaction's two requests, settled", seconds: 90) {
+            !session.hasWork && !session.loading && inspector.indexLoaded && inspector.index.turns.contains {
+                $0.entries.contains { if case .compaction(let group) = $0 { group.requests.count == 2 && !group.requests.contains(where: \.running) } else { false } }
+            }
+        }
+        let group = try XCTUnwrap(inspector.index.turns.flatMap(\.entries).compactMap { entry -> InspectorCompaction? in
+            if case .compaction(let group) = entry, group.requests.count == 2 { return group } else { return nil }
+        }.last)
+        inspector.select(.request(group.requests[1].id))
+        try await until("both summary requests named", seconds: 30) {
+            inspector.summaryLabel(group.requests[0].id) != nil && inspector.summaryLabel(group.requests[1].id) != nil
+                && inspector.request.conversation.value?.summary != nil
+        }
+        XCTAssertEqual(inspector.summaryLabel(group.requests[0].id), "earlier history")
+        XCTAssertEqual(inspector.summaryLabel(group.requests[1].id), "start of this turn")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(panel, to: gallery.appendingPathComponent("20-compaction-requests-\(name).png"))
         }
     }
 

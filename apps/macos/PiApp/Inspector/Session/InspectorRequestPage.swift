@@ -48,7 +48,9 @@ struct InspectorRequestPage: View {
         if row.wall > 0 { context.append(Date(timeIntervalSince1970: row.wall).formatted(date: .omitted, time: .standard)) }
         return VStack(alignment: .leading, spacing: 10) {
             InspectorPageHeader(title, subtitle: context.joined(separator: " · ")) {
-                PiBadge(text: inspector.index.kind(of: row.id), tone: .neutral)
+                // A summary request says which part of its compaction it is.
+                PiBadge(text: inspector.summaryLabel(row.id).map { "compaction · " + $0 } ?? inspector.index.kind(of: row.id), tone: .neutral)
+                    .accessibilityIdentifier("inspector-request-kind")
                 if let status = request.metadata["status"]?.nonnegativeInteger {
                     PiBadge(text: "HTTP \(status)", tone: status >= 400 ? .danger : .success)
                 }
@@ -63,6 +65,9 @@ struct InspectorRequestPage: View {
                 PiIconButton(symbol: "chevron.right", label: "Next request (⌘])", size: 26) { inspector.step(1) }
                     .disabled(inspector.index.adjacent(to: row.id, step: 1) == nil)
                 InspectorShowInChat { inspector.showInChat() }
+                if row.purpose == "turn", !row.running, inspector.workspace?.canForkFromReply(inspector.scope.sessionID) == true {
+                    InspectorForkFromHere { inspector.forkFromRequest(row.id) }
+                }
             }
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 InspectorFigureStrip(figures: row.figures)
@@ -153,6 +158,12 @@ struct InspectorRequestPage: View {
     @ViewBuilder private func conversation(_ row: InspectorRequestRow) -> some View {
         let document = request.conversation.value
         VStack(alignment: .leading, spacing: 0) {
+            // A summary request's instruction comes last in its prompt, after
+            // the whole conversation and far past any preview: it is shown first.
+            if let summary = document?.summary {
+                SummaryInstructionCard(summary: summary, label: inspector.summaryLabel(row.id))
+                    .padding(.horizontal, compact ? PiSpacing.lg : PiSpacing.xl).padding(.top, 12)
+            }
             if let document {
                 banner(document, row: row)
                     .padding(.horizontal, compact ? PiSpacing.lg : PiSpacing.xl).padding(.top, 12).padding(.bottom, 8)

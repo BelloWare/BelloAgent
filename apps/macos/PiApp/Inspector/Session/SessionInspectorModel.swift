@@ -33,6 +33,13 @@ import AppKit
     @Published private(set) var work: [String: WireValue] = [:]
     /// The Overview's ledger of every request, built with the index.
     @Published private(set) var ledger = SessionRequestLedger(history: SessionTimingHistory())
+    /// Earlier versions of the chat's edited turns, which the navigator nests
+    /// under the turn as it stands.
+    @Published private(set) var versions = InspectorVersionMap()
+    /// What each summary request asked for, read from its body when a page of
+    /// its compaction opens; the navigator names a compaction's requests from
+    /// these and never reads a body itself.
+    @Published private(set) var summaryKinds: [String: SummaryRequestKind] = [:]
 
     let usage: SessionUsageController
     let request: InspectorRequestModel
@@ -54,6 +61,9 @@ import AppKit
     private var summarizing: Task<Void, Never>?
     private var prompting: Task<Void, Never>?
     private var lookups: Task<Void, Never>?
+    private var versionReads: Task<Void, Never>?
+    private var summaryReads: Task<Void, Never>?
+    private var summaryObservation: AnyCancellable?
     private var observations: Set<AnyCancellable> = []
     private var signature: String?
     private var lastRead: (rows: [InspectorRequestRow], live: [InspectorRequestRow], older: Int) = ([], [], 0)
@@ -69,8 +79,13 @@ import AppKit
         request = InspectorRequestModel(archive: archive, sessionID: scope.sessionID, workspace: workspace, cache: cache)
         next = NextRequestModel(sessionID: scope.sessionID, workspace: workspace, cache: cache)
         usage.$snapshot.dropFirst().sink { [weak self] _ in self?.inputsChanged() }.store(in: &observations)
+        // The request on screen names its own part as soon as its body is read.
+        summaryObservation = request.$conversation.sink { [weak self] load in
+            guard let summary = load.value?.summary, let id = self?.request.row?.id else { return }
+            Task { @MainActor [weak self] in self?.learn(summary.kind, for: id) }
+        }
     }
-    deinit { poll?.cancel(); reading?.cancel(); building?.cancel(); summarizing?.cancel(); prompting?.cancel(); lookups?.cancel() }
+    deinit { poll?.cancel(); reading?.cancel(); building?.cancel(); summarizing?.cancel(); prompting?.cancel(); lookups?.cancel(); versionReads?.cancel(); summaryReads?.cancel() }
 
     /// The chat's loaded conversation, when the app has it open.
     var display: SessionDisplay? { workspace?.displays[scope.sessionID] }
@@ -121,15 +136,22 @@ import AppKit
     }
 
     private func show(_ page: InspectorPage) {
-        if case .turn(let id) = page { expanded.insert(id) }
-        if case .request(let id) = page, let turn = index.turn(containing: id) { expanded.insert(turn.id) }
+        // An earlier version opens under the turn as it stands.
+        if case .turn(let id) = page { expanded.insert(index.turn(id)?.version?.latest ?? id) }
+        if case .request(let id) = page, let turn = index.turn(containing: id) {
+            expanded.insert(turn.version?.latest ?? turn.id)
+            if turn.version != nil { expanded.insert(turn.id) }
+            if let group = index.compaction(containing: id) { expanded.insert(group.id) }
+        }
         if self.page != page { self.page = page }
         syncPage()
     }
 
     /// What the transcript knows about a message: its request, its role, its turn.
     private func hint(for focus: InspectorFocus) -> InspectorMessageHint? {
-        guard case .message(let id) = focus, let message = display?.messages.first(where: { $0.id == id }) else { return nil }
+        // The rows on screen, an earlier version's included, then the page.
+        guard case .message(let id) = focus,
+              let message = display?.presentedMessages.first(where: { $0.id == id }) ?? display?.messages.first(where: { $0.id == id }) else { return nil }
         return InspectorMessageHint(id: id, role: message.role, attempt: message.reply?.attempt, turn: message.turn ?? (message.role == "user" ? id : nil))
     }
 
@@ -178,6 +200,7 @@ import AppKit
             let previous = index.predecessor(of: id)
             request.open(row, predecessor: previous, previousLabel: previous.map { label(of: $0, from: row) })
             request.setActive(visible)
+            if visible, let group = index.compaction(containing: id) { readSummaryKinds(group) }
         } else { request.setActive(false) }
         let latest = index.latestRequestID.flatMap(index.request)
         next.setActive(visible && page == .nextRequest, previous: latest, previousLabel: latest.map { label(of: $0, from: nil) })
@@ -202,8 +225,8 @@ import AppKit
         guard self.visible != visible else { return }
         self.visible = visible
         usage.setVisible(visible)
-        if visible { startPolling(); refreshSummaries() }
-        else { poll?.cancel(); poll = nil; reading?.cancel(); reading = nil; summarizing?.cancel(); prompting?.cancel() }
+        if visible { startPolling(); refreshSummaries(); refreshVersions() }
+        else { poll?.cancel(); poll = nil; reading?.cancel(); reading = nil; summarizing?.cancel(); prompting?.cancel(); versionReads?.cancel() }
         syncPage()
     }
 
@@ -267,9 +290,9 @@ import AppKit
     }
 
     private func rebuildIndex() async {
-        let read = lastRead, records = summaries.mapValues(\.accounting.recordLines)
+        let read = lastRead, records = summaries.mapValues(\.accounting.recordLines), versions = versions
         let (built, ledger) = await Task.detached(priority: .userInitiated) { () -> (InspectorIndex, SessionRequestLedger) in
-            let index = InspectorIndex(archived: read.rows, live: read.live, records: records, olderRequests: read.older)
+            let index = InspectorIndex(archived: read.rows, live: read.live, records: records, olderRequests: read.older, versions: versions)
             let samples = index.requests.filter { $0.source != .record }.sorted { ($0.wall, $0.id) < ($1.wall, $1.id) }.map(\.sample)
             let history = SessionTimingHistory(samples: samples.filter { $0.outcome == "completed" }, hasOlderRequests: read.older > 0,
                                                ledgerSamples: samples, hasOlderLedgerRequests: read.older > 0)
@@ -298,7 +321,7 @@ import AppKit
             .sink { [weak self] _ in self?.signature = nil; self?.read(force: false); self?.inputsChanged() }.store(in: &observations)
         footer.$turnTiming.removeDuplicates().sink { [weak self] timing in self?.work = timing; self?.inputsChanged() }.store(in: &observations)
         display?.presentationChanges.dropFirst().debounce(for: .seconds(1), scheduler: RunLoop.main)
-            .sink { [weak self] _ in self?.refreshSummaries() }.store(in: &observations)
+            .sink { [weak self] _ in self?.refreshSummaries(); self?.refreshVersions() }.store(in: &observations)
     }
 
     private func inputsChanged() {
@@ -330,6 +353,48 @@ import AppKit
 
     /// The loaded conversation's turns as the transcript sums them: their
     /// outcome, clocks and the requests only the replies recorded.
+    /// The chat's edited turns and their earlier versions: every one the
+    /// helper numbers when it has the chat open, else the ones on the page.
+    func refreshVersions() {
+        guard visible else { return }
+        let marks = (display?.messages ?? []).compactMap { row -> (String, MessageVersionMark)? in
+            guard row.role == "user", let mark = row.versions, mark.usable else { return nil }
+            return (row.id, mark)
+        }
+        let workspace = workspace, sessionID = scope.sessionID
+        versionReads?.cancel()
+        versionReads = Task { [weak self] in
+            let groups = await workspace?.messageVersionGroups(sessionID: sessionID)
+            guard !Task.isCancelled, let self else { return }
+            let map = Self.versionMap(marks: marks, groups: groups)
+            guard map != self.versions else { return }
+            self.versions = map
+            if self.indexLoaded { await self.rebuildIndex() }
+        }
+    }
+
+    /// Every turn of every earlier version, keyed to the turn it nests under.
+    nonisolated static func versionMap(marks: [(String, MessageVersionMark)], groups: [[String: WireValue]]?) -> InspectorVersionMap {
+        var map = InspectorVersionMap()
+        for (latest, mark) in marks {
+            guard let ids = mark.ids else { continue }
+            for (offset, id) in ids.enumerated() where id != latest {
+                map.earlier[id] = .init(latest: latest, index: offset + 1, count: ids.count, version: id)
+            }
+        }
+        for group in groups ?? [] {
+            let versions = group["versions"]?.array?.compactMap(\.object) ?? []
+            guard let current = versions.last(where: { $0["live"]?.bool == true }), let latest = current["messageId"]?.string else { continue }
+            for version in versions where version["messageId"]?.string != latest {
+                guard let id = version["messageId"]?.string, let index = version["index"]?.number.flatMap({ Int(exactly: $0) }) else { continue }
+                let entry = InspectorVersionMap.Entry(latest: latest, index: index, count: versions.count, version: id)
+                map.earlier[id] = entry
+                for turn in version["turns"]?.array?.compactMap(\.string) ?? [] where turn != latest && map.earlier[turn] == nil { map.earlier[turn] = entry }
+            }
+        }
+        return map
+    }
+
     private func refreshSummaries() {
         guard visible, let display else { return }
         let messages = display.presentedMessages, lifecycle = display.taskPresentation
@@ -372,7 +437,7 @@ import AppKit
         var missing: [String] = []
         let loaded = Dictionary(display?.messages.filter { $0.role == "user" }.map { ($0.id, $0.text) } ?? [], uniquingKeysWith: { first, _ in first })
         var found: [String: String] = [:]
-        for turn in index.turns.reversed() where !turn.isOther && prompts[turn.id] == nil {
+        for turn in index.turns.flatMap({ [$0] + $0.earlier }).reversed() where !turn.isOther && prompts[turn.id] == nil {
             if let text = loaded[turn.id] { found[turn.id] = RequestDocument.prefix(text as NSString, limit: RequestDocument.previewLimit) }
             else if missing.count < 200 { missing.append(turn.id) }
         }
@@ -390,6 +455,54 @@ import AppKit
                 if batch.count >= 20 { self?.prompts.merge(batch) { $1 }; batch.removeAll() }
             }
             if !batch.isEmpty { self?.prompts.merge(batch) { $1 } }
+        }
+    }
+
+    // MARK: Summary requests
+
+    /// What a compaction's summary request is: "earlier history", "part 2
+    /// of 2", "start of this turn". Nil until a page of its compaction has
+    /// been opened and the bodies read.
+    func summaryLabel(_ requestID: String) -> String? {
+        guard let group = index.compaction(containing: requestID), let at = group.requests.firstIndex(where: { $0.id == requestID }) else { return nil }
+        return SummaryRequestLabel.label(at: at, kinds: group.requests.map { summaryKinds[$0.id] })
+    }
+    private func learn(_ kind: SummaryRequestKind, for id: String) {
+        if summaryKinds[id] != kind { summaryKinds[id] = kind }
+    }
+    /// A page of a compaction opened: the kinds of all its requests, each read
+    /// from its body off the main actor, the way the page reads its own.
+    private func readSummaryKinds(_ group: InspectorCompaction) {
+        let missing = group.requests.filter { summaryKinds[$0.id] == nil && $0.source != .record }
+        guard !missing.isEmpty else { return }
+        summaryReads?.cancel()
+        let archive = archive, sessionID = scope.sessionID, cache = request.cache, workspace = workspace, override = request.sourceOverride
+        summaryReads = Task { [weak self] in
+            for row in missing {
+                guard !Task.isCancelled else { return }
+                let sources = override.map { find in find(row, "request").map { [$0] } ?? [] }
+                    ?? InspectorBodies.sources(row, archive: archive, workspace: workspace, sessionID: sessionID)
+                guard let summary = try? await InspectorBodies.summary(row, sources: sources, cache: cache) else { continue }
+                guard !Task.isCancelled, let self else { return }
+                self.learn(summary.kind, for: row.id)
+            }
+        }
+    }
+
+    // MARK: Fork from here
+
+    /// "Fork from here" on a request's page: a new chat that ends at the
+    /// reply this request produced, opened in the main window.
+    func forkFromRequest(_ attemptID: String) {
+        guard let workspace else { return }
+        let sessionID = scope.sessionID
+        Task { [weak self] in
+            guard let reply = await workspace.replyID(forAttempt: attemptID, sessionID: sessionID) else {
+                self?.focusNotice = "This request left no reply in the chat to fork from."
+                return
+            }
+            self?.bringMainWindowForward()
+            workspace.forkFromReply(sessionID: sessionID, messageID: reply)
         }
     }
 
@@ -413,11 +526,14 @@ import AppKit
     }
 
     private func reveal(_ workspace: WorkspaceModel, _ sessionID: String, _ message: String?) {
-        // The app's main window: the one that is not an Inspector and can be main.
+        bringMainWindowForward()
+        Task { _ = await workspace.revealMessage(sessionID: sessionID, messageID: message) }
+    }
+    /// The app's main window: the one that is not an Inspector and can be main.
+    private func bringMainWindowForward() {
         if let window = NSApp.windows.first(where: { !($0.windowController is SessionInspectorWindowController) && $0.canBecomeMain && ($0.isVisible || $0.isMiniaturized) }) {
             if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
         }
-        Task { _ = await workspace.revealMessage(sessionID: sessionID, messageID: message) }
     }
 }

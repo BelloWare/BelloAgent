@@ -3,10 +3,12 @@ import Foundation
 /// How a live page from the helper joins the rows already on screen. The
 /// helper sends only the newest window of a conversation; rows the reader
 /// scrolled up to (prepended from an earlier page) stay in front of it as long
-/// as the two still touch. Missing overlap preserves the reader's range until
-/// an explicit source handoff, gap load, or validated branch reload.
+/// as the two still touch: they share a row, or the page starts right after
+/// the last row shown (`follows`, the helper's `historyFollows`). Missing
+/// overlap preserves the reader's range until an explicit source handoff, gap
+/// load, or validated branch reload.
 enum TranscriptPaging {
-    static func merge(previous: [TranscriptMessage], live: [TranscriptMessage]) -> [TranscriptMessage] {
+    static func merge(previous: [TranscriptMessage], live: [TranscriptMessage], follows: String? = nil) -> [TranscriptMessage] {
         guard !previous.isEmpty else { return live }
         guard let firstLive = live.first else { return previous }
         let liveIDs = Set(live.map(\.id))
@@ -17,7 +19,16 @@ enum TranscriptPaging {
         // the same byte budget. A live window extending before the saved
         // window still overlaps it and must publish its updated/new replies.
         if let first = previous.first, liveIDs.contains(first.id) { return live }
+        // A page with no room left for the row before it (a reply longer
+        // than the page) still touches the rows shown when it starts right
+        // after the last of them.
+        if Self.joins(previous, follows: follows) { return previous.filter { !liveIDs.contains($0.id) } + live }
         return previous
+    }
+    /// Whether a live page that starts right after the row `follows` carries
+    /// on from the last of `shown`.
+    static func joins(_ shown: [TranscriptMessage], follows: String?) -> Bool {
+        follows != nil && shown.last?.id == follows
     }
     static func size(_ message: TranscriptMessage) -> Int {
         let tools = (message.tools ?? []).reduce(0) { $0 + $1.input.utf8.count + $1.output.utf8.count }

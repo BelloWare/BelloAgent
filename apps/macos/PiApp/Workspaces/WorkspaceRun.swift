@@ -32,6 +32,8 @@ extension WorkspaceModel {
             return
         }
         guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), !item.isBackgroundTask, let view = displays[id], (!view.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !view.skills.isEmpty), !view.loading, !installPreparing, side(id)?.keeping != true else { return }
+        // A message goes to the latest version, and the transcript returns to it.
+        latestVersion(sessionID: id)
         guard !item.isArchived else { view.notice = Self.archivedNotice; return }
         guard let store else { error = "Desktop storage is unavailable. Resolve the storage error before sending."; return }
         if resolveLeadingCommand(view, steer: steer) { return }

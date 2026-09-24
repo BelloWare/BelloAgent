@@ -38,6 +38,10 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// Deterministic source delay/failure seam. Production uses the live helper
     /// or the shared read-only history actor below, without launching a runtime.
     var historyWindowLoader: (@Sendable (String, ConversationCursor?, Bool, String?) async throws -> ConversationHistoryPage)?
+    /// Test seam: an earlier version's rows (`readVersionPage`) without a helper.
+    var versionPageLoader: (@Sendable (String, String) async throws -> (rows: [TranscriptMessage], tasks: [TaskPresentationRecord]))?
+    /// Chats a "Fork from here" is being made from, so a second press waits for the first.
+    var forkingReplies: Set<String> = []
     var organizationNavigationRevision = 0
     var organizationPresentationRevision = 0
     let organizationScheduler = SessionOrganizationScheduler()

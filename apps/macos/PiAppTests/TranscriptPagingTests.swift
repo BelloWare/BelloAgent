@@ -18,6 +18,16 @@ final class TranscriptPagingTests: XCTestCase {
         XCTAssertEqual(TranscriptPaging.merge(previous: shown, live: []).map(\.id), ["a", "b", "c"])
     }
 
+    func testALivePageThatStartsRightAfterTheLastShownRowJoinsIt() {
+        let shown = ["a", "b", "long"].map(row)
+        XCTAssertEqual(TranscriptPaging.merge(previous: shown, live: ["q", "r"].map(row), follows: "long").map(\.id), ["a", "b", "long", "q", "r"],
+                       "A page with no room for the long reply before it carries on from that reply")
+        XCTAssertEqual(TranscriptPaging.merge(previous: shown, live: ["q", "r"].map(row), follows: "b").map(\.id), ["a", "b", "long"],
+                       "A page that starts after an earlier row leaves a gap: the rows shown stay until a validated reload")
+        XCTAssertTrue(TranscriptPaging.joins(shown, follows: "long"))
+        XCTAssertFalse(TranscriptPaging.joins(shown, follows: nil)); XCTAssertFalse(TranscriptPaging.joins([], follows: "long"))
+    }
+
     func testLiveWindowStartingBeforeSmallerSavedWindowStillUpdatesItsTail() {
         let shown = ["c", "d"].map(row)
         var live = ["a", "b", "c", "d", "e"].map(row)

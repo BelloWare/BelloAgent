@@ -46,6 +46,7 @@ extension AgentSession {
             if journal.writeOutcomeUncertain { throw AgentError("journal_uncertain", "The edit may have been saved, but journal synchronization failed. Reopen or recover the preserved journal before sending again.") }
             throw error
         }
+        versions.hide(from: messageID, visible: visible, history: history)
         Self.adoptBranch(plan, history: &history, visible: &visible, context: &context, markerID: markerID)
         prunePresentedTasksAfterBranch()
         invalidateDisplay(allRows: true); replayInputsChanged(); contextRecovery = .null; compactionState = .null; requestExclusions = []

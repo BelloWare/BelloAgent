@@ -191,7 +191,10 @@ final class TranscriptNativeScrollView: NSScrollView {
         inspectTurn: { [weak self] in self?.current.inspectTurn?($0) },
         skillPressed: { [weak self] in self?.current.skillPressed?($0, $1, $2) },
         skillHovered: { [weak self] in self?.current.skillHovered?($0, $1, $2, $3) },
-        costLimit: { [weak self] in self?.current.costLimit?($0, $1) }
+        costLimit: { [weak self] in self?.current.costLimit?($0, $1) },
+        fork: { [weak self] in self?.current.fork?($0) },
+        switchVersion: { [weak self] in self?.current.switchVersion?($0, $1) },
+        latestVersion: { [weak self] in self?.current.latestVersion?() }
     )
 }
 

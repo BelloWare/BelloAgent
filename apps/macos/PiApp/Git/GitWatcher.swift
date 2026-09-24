@@ -19,7 +19,7 @@ import CoreServices
     let gitDirectory: String?
     private let interval: TimeInterval
     private let onChange: () -> Void
-    private let handle = GitWatchStream()
+    private let handle: GitWatchStream
     private(set) var bridge: GitWatchBridge?
     private var generation = UUID()
     private let queue = DispatchQueue(label: "com.belloware.PiApp.git.watch", qos: .utility)
@@ -34,6 +34,13 @@ import CoreServices
     var isWatching: Bool { handle.isRunning }
     /// Streams open in this process, so a test can prove none was left behind.
     nonisolated static var liveStreamCount: Int { GitWatchStream.liveCount }
+    /// Streams open on one repository. A test proves its own panel left none
+    /// behind with this, not with the process-wide count: a panel an earlier
+    /// test let go of can still be winding down, and its stream closing in
+    /// the middle of the next test moved that count under it.
+    nonisolated static func liveStreamCount(under root: String) -> Int {
+        GitWatchStream.liveCount(under: URL(fileURLWithPath: root, isDirectory: true).resolvingSymlinksInPath().path)
+    }
 
     init(root: String, interval: TimeInterval = 1, onChange: @escaping () -> Void) {
         let resolved = URL(fileURLWithPath: root, isDirectory: true).resolvingSymlinksInPath().path
@@ -41,6 +48,7 @@ import CoreServices
         self.gitDirectory = Self.gitDirectory(under: resolved)
         self.interval = interval
         self.onChange = onChange
+        self.handle = GitWatchStream(root: resolved)
     }
 
     /// The directory holding this working tree's git state, when it is not a
@@ -163,15 +171,18 @@ import CoreServices
 /// without being stopped; the stream is not a Sendable type, and a nonisolated
 /// deinit may not reach into main-actor state.
 final class GitWatchStream: @unchecked Sendable {
+    /// The repository the stream is on, for the per-repository count.
+    let root: String
     private let lock = NSLock()
     private var stream: FSEventStreamRef?
+    init(root: String = "") { self.root = root }
     var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return stream != nil }
     func adopt(_ value: FSEventStreamRef) {
-        lock.lock(); let previous = stream; stream = value; if previous == nil { Self.count(1) }; lock.unlock()
+        lock.lock(); let previous = stream; stream = value; if previous == nil { Self.count(1, root) }; lock.unlock()
         if let previous { FSEventStreamStop(previous); FSEventStreamInvalidate(previous); FSEventStreamRelease(previous) }
     }
     func stop() {
-        lock.lock(); let current = stream; stream = nil; if current != nil { Self.count(-1) }; lock.unlock()
+        lock.lock(); let current = stream; stream = nil; if current != nil { Self.count(-1, root) }; lock.unlock()
         guard let current else { return }
         FSEventStreamStop(current); FSEventStreamInvalidate(current); FSEventStreamRelease(current)
     }
@@ -179,12 +190,21 @@ final class GitWatchStream: @unchecked Sendable {
     /// told to stop still leaves nothing running behind it.
     deinit { stop() }
 
-    /// Streams open right now, so a test can prove none was left behind.
+    /// Streams open right now, in all and per repository, so a test can prove
+    /// none was left behind.
     private static let liveLock = NSLock()
     nonisolated(unsafe) private static var live = 0
+    nonisolated(unsafe) private static var liveByRoot: [String: Int] = [:]
     // Taken while the instance lock is held; nothing takes them the other way.
-    private static func count(_ delta: Int) { liveLock.lock(); live += delta; liveLock.unlock() }
+    private static func count(_ delta: Int, _ root: String) {
+        liveLock.lock()
+        live += delta
+        let open = (liveByRoot[root] ?? 0) + delta
+        liveByRoot[root] = open > 0 ? open : nil
+        liveLock.unlock()
+    }
     static var liveCount: Int { liveLock.lock(); defer { liveLock.unlock() }; return live }
+    static func liveCount(under root: String) -> Int { liveLock.lock(); defer { liveLock.unlock() }; return liveByRoot[root] ?? 0 }
 }
 
 /// Carries FSEvents' C callback to Swift. The stream owns a reference to it and

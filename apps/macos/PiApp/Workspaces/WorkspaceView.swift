@@ -17,7 +17,9 @@ struct WorkspaceView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
-                WindowChrome(sidebarWidth: sidebarWidth, focusedSessionID: model.focusedSessionID ?? model.selectedID).frame(height: WindowChrome.height)
+                WindowChrome(sidebarWidth: sidebarWidth, focusedSessionID: model.focusedSessionID ?? model.selectedID,
+                             stepVersion: { [weak model] session, step in model?.stepVersion(sessionID: session, step: step) ?? false })
+                    .frame(height: WindowChrome.height)
                 WorkspaceSidebar(model: model, width: sidebarWidth)
             }.frame(width: sidebarWidth)
             SidebarResizeHandle(width: sidebarWidth, dragging: $draggingSidebarWidth) { storedSidebarWidth = Double($0) }

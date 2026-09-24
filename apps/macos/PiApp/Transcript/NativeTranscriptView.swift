@@ -1033,10 +1033,12 @@ struct TranscriptRowEnvironment: Equatable {
     var layoutDirection: LayoutDirection
     var locale: Locale
     var isEnabled: Bool
+    /// Whether the chat's replies offer "Fork from here" (`transcriptForks`).
+    var forks: Bool
     init(_ values: EnvironmentValues = EnvironmentValues()) {
         colorScheme = values.colorScheme; contrast = values.colorSchemeContrast
         dynamicTypeSize = values.dynamicTypeSize; layoutDirection = values.layoutDirection; locale = values.locale
-        isEnabled = values.isEnabled
+        isEnabled = values.isEnabled; forks = values.transcriptForks
     }
     /// Whether a row measured under these values is as tall under those.
     /// The type size, the writing direction and the locale decide how text
@@ -1095,6 +1097,7 @@ private struct TranscriptHostedRow: View {
         .environment(\.dynamicTypeSize, environment.dynamicTypeSize)
         .environment(\.layoutDirection, environment.layoutDirection)
         .environment(\.locale, environment.locale)
+        .environment(\.transcriptForks, environment.forks)
         .disabled(!environment.isEnabled)
         // No control in a row draws the system's focus ring; the ones that
         // take focus on purpose draw their own (`TranscriptFocusRing`).
@@ -1589,7 +1592,10 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
                                       inspectTurn: { [weak self] in self?.actions.inspectTurn?($0) },
                                       skillPressed: { [weak self] in self?.actions.skillPressed?($0, $1, $2) },
                                       skillHovered: { [weak self] in self?.actions.skillHovered?($0, $1, $2, $3) },
-                                      costLimit: { [weak self] in self?.actions.costLimit?($0, $1) })
+                                      costLimit: { [weak self] in self?.actions.costLimit?($0, $1) },
+                                      fork: { [weak self] in self?.actions.fork?($0) },
+                                      switchVersion: { [weak self] in self?.actions.switchVersion?($0, $1) },
+                                      latestVersion: { [weak self] in self?.actions.latestVersion?() })
         let key = workListKey
         let known = workList?.key == key ? workList?.height : nil
         if known != nil { workListReuses += 1 }

@@ -200,7 +200,9 @@ extension WorkspaceModel {
                             view.newerPage.error = Self.branchChangedElsewhere
                             view.browsingHistory = true
                         } else {
-                        let overlaps = view.messages.isEmpty || projected.contains { row in view.messages.contains { $0.id == row.id } }
+                        let follows = result["historyFollows"]?.string
+                        let overlaps = view.messages.isEmpty || TranscriptPaging.joins(view.messages, follows: follows)
+                            || projected.contains { row in view.messages.contains { $0.id == row.id } }
                         if !overlaps, let last = view.messages.last, let incarnation, let lineage {
                             view.newerPage = .init(cursor: .init(incarnation: incarnation, lineage: lineage, entry: last.id))
                             view.browsingHistory = true
@@ -208,7 +210,7 @@ extension WorkspaceModel {
                         view.historyRevision = nil
                         view.projectedRows = projected
                         // Rows the reader scrolled up to stay in front of the helper's window.
-                        var messages = TranscriptPaging.window(TranscriptPaging.merge(previous: view.messages, live: projected), keepingEarlier: false)
+                        var messages = TranscriptPaging.window(TranscriptPaging.merge(previous: view.messages, live: projected, follows: follows), keepingEarlier: false)
                         var protected = view.pinnedHistoryIDs
                         if let anchor = view.scrollAnchor, !anchor.followsBottom,
                            view.messages.contains(where: { $0.id == anchor.id }) { protected.insert(anchor.id) }

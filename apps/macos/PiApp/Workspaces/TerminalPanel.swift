@@ -62,7 +62,13 @@ import AppKit
         NSSound.beep()
     }
 
-    func focus() { view.window?.makeFirstResponder(view) }
+    /// Gives the shell the keyboard: now if its view is in a window, else as
+    /// soon as the panel puts it in one. The panel asks right after swapping
+    /// sessions (another project, Restart), which can be before SwiftUI has
+    /// added the new view; asking only then used to leave the keyboard nowhere.
+    func focus() {
+        if let window = view.window { window.makeFirstResponder(view) } else { view.focusWhenInWindow = true }
+    }
     func applyColors() { view.needsDisplay = true }
 }
 

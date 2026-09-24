@@ -17,6 +17,9 @@ struct WindowChrome: NSViewRepresentable {
     var sidebarWidth: CGFloat = WindowChrome.sidebarWidth
     /// The chat whose composer should receive typing that lands nowhere.
     var focusedSessionID: String? = nil
+    /// ⌥← and ⌥→ outside text: a step through an edited message's versions
+    /// in that chat. True when the chat had one to step through.
+    var stepVersion: (@MainActor (String?, Int) -> Bool)? = nil
     func makeCoordinator() -> WindowPresentationController { WindowPresentationController(defaults: .standard) }
     func makeNSView(context: Context) -> WindowChromeView {
         let view = WindowChromeView()
@@ -27,6 +30,7 @@ struct WindowChrome: NSViewRepresentable {
     func updateNSView(_ view: WindowChromeView, context: Context) {
         if view.sidebarWidth != sidebarWidth { view.sidebarWidth = sidebarWidth; view.needsDisplay = true }
         context.coordinator.focusedSessionID = focusedSessionID
+        context.coordinator.stepVersion = stepVersion
         context.coordinator.attach(view.window, chrome: view)
     }
     static func dismantleNSView(_ view: WindowChromeView, coordinator: WindowPresentationController) { coordinator.detach() }
@@ -144,6 +148,8 @@ final class ConversationHeaderMarkerView: NSView {
     private var consumesSecondMouseUp = false
     /// The chat whose composer takes stray typing; set from the workspace view.
     var focusedSessionID: String?
+    /// ⌥← and ⌥→ outside text step through an edited message's versions.
+    var stepVersion: (@MainActor (String?, Int) -> Bool)?
     /// The composer found for the focused chat, kept so repeated typing outside
     /// a text view does not walk the window's view tree — with a long chat open
     /// that tree holds thousands of rows. Tests pin the count.
@@ -177,7 +183,9 @@ final class ConversationHeaderMarkerView: NSView {
             return consumed ? nil : event
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            // The event is never swallowed: at most the first responder moves before it is delivered.
+            // ⌥← and ⌥→ outside text switch versions; that event is taken.
+            if MainActor.assumeIsolated({ self?.switchVersion(event) == true }) { return nil }
+            // Any other event is never swallowed: at most the first responder moves before it is delivered.
             _ = MainActor.assumeIsolated { self?.redirectTyping(event) != nil }
             return event
         }
@@ -187,6 +195,27 @@ final class ConversationHeaderMarkerView: NSView {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         eventMonitor = nil; keyMonitor = nil; window = nil; chrome = nil; consumesSecondMouseUp = false
         resolvedComposer = nil
+    }
+
+    // MARK: ⌥← and ⌥→ switch versions
+
+    /// ⌥← and ⌥→ show the version before or after of the edited message the
+    /// reader used last, except where those keys move through text: the
+    /// composer, a field, the terminal.
+    func switchVersion(_ event: NSEvent) -> Bool {
+        guard let window, event.window === window, window.attachedSheet == nil,
+              let step = Self.versionStep(keyCode: event.keyCode, modifiers: event.modifierFlags),
+              !Self.takesText(window.firstResponder), let stepVersion else { return false }
+        return stepVersion(focusedSessionID, step)
+    }
+    /// −1 for ⌥←, +1 for ⌥→, nil for any other key or modifier.
+    static func versionStep(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Int? {
+        guard modifiers.intersection([.command, .control, .shift, .option]) == .option else { return nil }
+        switch keyCode {
+        case 123: return -1
+        case 124: return 1
+        default: return nil
+        }
     }
 
     // MARK: Typing lands in the composer

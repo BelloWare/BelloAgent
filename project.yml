@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.92
-    CURRENT_PROJECT_VERSION: 96
+    MARKETING_VERSION: 0.1.93
+    CURRENT_PROJECT_VERSION: 97
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Summaries of very long chats are no longer held to 13,107 tokens: each part now has a quarter of the window for its reasoning and summary."
+    RELEASE_MESSAGE: "Edited messages keep their earlier versions, any reply can start a fork, the Session Inspector names each compaction request, and a chat keeps following after a very long reply."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO
@@ -30,6 +30,7 @@ targets:
       - apps/macos/PiApp
       - packages/swift-host/Sources/PiAgentCore/HistoryWindowPolicy.swift
       - packages/swift-host/Sources/PiAgentCore/EditReplayPlan.swift
+      - packages/swift-host/Sources/PiAgentCore/MessageVersions.swift
       - packages/swift-host/Sources/PiAgentCore/TaskPresentation.swift
       - packages/swift-host/Sources/PiAgentCore/ResponseTimeline.swift
       - path: catalogs/bello-agent.models.json

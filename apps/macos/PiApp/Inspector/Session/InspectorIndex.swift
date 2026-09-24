@@ -68,6 +68,10 @@ struct InspectorRequestRow: Sendable, Equatable, Identifiable {
     var routedVia: String? = nil
     /// The figures came from the reply's own record: the log's row has none.
     var recordFigures = false
+    /// The compaction a summary request belongs to, when the helper's own
+    /// record of it names one (a request the helper still holds). The log's
+    /// typed columns do not carry it.
+    var operation: String? = nil
 
     var running: Bool { ["running", "streaming"].contains(outcome) }
     var failed: Bool { ["failed", "interrupted", "cancelled", "error"].contains(outcome) }
@@ -134,6 +138,7 @@ struct InspectorRequestRow: Sendable, Equatable, Identifiable {
             duration: dispatch.flatMap { start in complete.flatMap { $0 >= start ? $0 - start : nil } },
             http: valid(metrics["httpDurationMs"]?.number), source: .live)
         result.routedVia = GatewayModelIdentity.routedVia(PayloadArchive.reportedModels(metadata).compactMap(GatewayModelIdentity.modelName), answered: identity.displayName)
+        result.operation = metadata["operation"]?.object?["operationId"]?.string
         return result
     }
 
@@ -152,14 +157,56 @@ struct InspectorRequestRow: Sendable, Equatable, Identifiable {
     }
 }
 
+/// Earlier versions of edited turns: for each turn of an earlier version,
+/// the turn as it stands now that the version nests under, which version it
+/// was, of how many, and that version's own message (its first turn).
+struct InspectorVersionMap: Sendable, Equatable {
+    struct Entry: Sendable, Equatable {
+        var latest: String
+        var index: Int
+        var count: Int
+        var version: String
+    }
+    var earlier: [String: Entry] = [:]
+    var isEmpty: Bool { earlier.isEmpty }
+}
+
+/// Which earlier version of an edited turn a turn of the index is.
+struct InspectorTurnVersion: Sendable, Equatable {
+    var index: Int
+    var count: Int
+    /// The turn as it stands now, which this version nests under.
+    var latest: String
+}
+
 /// A turn: the user's message and every request it led to. Requests that
 /// belong to no turn gather in one group after the turns.
 struct InspectorTurn: Sendable, Equatable, Identifiable {
     static let otherID = "aux"
     var id: String
     /// 1 for the session's first turn; 0 for the group of other requests.
+    /// An earlier version has the number of the turn it nests under.
     var number: Int
     var requests: [InspectorRequestRow]
+    /// Set on an earlier version of an edited turn.
+    var version: InspectorTurnVersion? = nil
+    /// An edited turn's earlier versions, oldest first, each with every
+    /// request it made (the replies that followed it included).
+    var earlier: [InspectorTurn] = []
+    /// The turn's requests as the navigator lists them: the summary requests
+    /// of one compaction under one entry.
+    var entries: [Entry] = []
+    enum Entry: Sendable, Equatable, Identifiable {
+        /// A request and its number in the turn.
+        case request(InspectorRequestRow, number: Int)
+        case compaction(InspectorCompaction)
+        var id: String {
+            switch self {
+            case .request(let row, _): return row.id
+            case .compaction(let group): return group.id
+            }
+        }
+    }
     var isOther: Bool { id == Self.otherID }
     var started: Double? { requests.first { $0.wall > 0 }?.wall }
     var running: Bool { requests.contains(where: \.running) }
@@ -176,21 +223,63 @@ struct InspectorTurn: Sendable, Equatable, Identifiable {
     }
 }
 
-/// The session's requests, grouped into turns in the order they ran.
+/// The summary requests of one compaction: a run of adjacent compaction
+/// requests within a turn, split where the helper's record names two
+/// different compactions. Read from the log's typed columns only; which part
+/// each request is comes from its body, when its page opens.
+struct InspectorCompaction: Sendable, Equatable, Identifiable {
+    /// "compaction:" and its first request's id.
+    var id: String
+    var requests: [InspectorRequestRow]
+    /// The number of its first request in the turn; the others follow it.
+    var first: Int
+    /// "Compaction · 2 requests"
+    var title: String { "Compaction · \(requests.count) request" + (requests.count == 1 ? "" : "s") }
+
+    /// A turn's requests with each compaction's under one entry. A lone
+    /// summary request is a compaction of one request too.
+    static func entries(of requests: [InspectorRequestRow]) -> [InspectorTurn.Entry] {
+        var entries: [InspectorTurn.Entry] = [], run: [InspectorRequestRow] = [], start = 0
+        func close() {
+            guard let first = run.first else { return }
+            entries.append(.compaction(InspectorCompaction(id: "compaction:" + first.id, requests: run, first: start + 1))); run = []
+        }
+        for (offset, row) in requests.enumerated() {
+            if row.purpose == "compaction" {
+                if let last = run.last, let before = last.operation, let now = row.operation, before != now { close() }
+                if run.isEmpty { start = offset }
+                run.append(row)
+            } else {
+                close(); entries.append(.request(row, number: offset + 1))
+            }
+        }
+        close()
+        return entries
+    }
+}
+
+/// The session's requests, grouped into turns in the order they ran. An
+/// edited turn's earlier versions nest under it.
 struct InspectorIndex: Sendable, Equatable {
     private(set) var turns: [InspectorTurn] = []
-    /// Every request in navigation order: turn by turn, then the others.
+    /// Every request in navigation order: turn by turn, each turn's earlier
+    /// versions after it, then the others.
     private(set) var requests: [InspectorRequestRow] = []
     /// Retained requests older than the ones read.
     var olderRequests = 0
-    /// Where each request sits: its turn's index in `turns` and its own in that turn.
+    /// The turns in navigation order: each turn, then its earlier versions.
+    private var flat: [InspectorTurn] = []
+    /// Where each request sits: its turn's index in `flat` and its own in that turn.
     private var positions: [String: Location] = [:]
     private var turnIndex: [String: Int] = [:]
+    /// The compaction each summary request belongs to.
+    private var compactions: [String: InspectorCompaction] = [:]
     private struct Location: Sendable, Equatable { var turn: Int; var request: Int; var order: Int }
     var isEmpty: Bool { requests.isEmpty }
 
     init() {}
-    init(archived: [InspectorRequestRow], live: [InspectorRequestRow] = [], records: [String: [TurnRequestLine]] = [:], olderRequests: Int = 0) {
+    init(archived: [InspectorRequestRow], live: [InspectorRequestRow] = [], records: [String: [TurnRequestLine]] = [:], olderRequests: Int = 0,
+         versions: InspectorVersionMap = InspectorVersionMap()) {
         self.olderRequests = olderRequests
         var rows = Self.merge(durable: archived, live: live)
         var listed = Dictionary(rows.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
@@ -216,17 +305,54 @@ struct InspectorIndex: Sendable, Equatable {
             if grouped[turn] == nil { order.append(turn) }
             grouped[turn, default: []].append(row)
         }
-        var turns = order.enumerated().map { InspectorTurn(id: $0.element, number: $0.offset + 1, requests: grouped[$0.element] ?? []) }
+        // A turn of an earlier version nests under the turn as it stands,
+        // when that turn has requests of its own; every turn of one version
+        // (its replies can run on into later turns) is one entry.
+        let nests: (String) -> InspectorVersionMap.Entry? = { id in
+            guard let entry = versions.earlier[id], entry.latest != id, grouped[entry.latest] != nil, versions.earlier[entry.latest] == nil else { return nil }
+            return entry
+        }
+        var turns: [InspectorTurn] = []
+        for id in order where nests(id) == nil { turns.append(InspectorTurn(id: id, number: turns.count + 1, requests: grouped[id] ?? [])) }
+        var aliases: [String: String] = [:]
+        if !versions.isEmpty {
+            let numbers = Dictionary(turns.map { ($0.id, $0.number) }, uniquingKeysWith: { first, _ in first })
+            var earlier: [String: [Int: InspectorTurn]] = [:]
+            for id in order {
+                guard let entry = nests(id) else { continue }
+                var version = earlier[entry.latest]?[entry.index]
+                    ?? InspectorTurn(id: entry.version, number: numbers[entry.latest] ?? 0, requests: [],
+                                     version: InspectorTurnVersion(index: entry.index, count: entry.count, latest: entry.latest))
+                version.requests += grouped[id] ?? []
+                version.requests.sort { ($0.wall, $0.id) < ($1.wall, $1.id) }
+                earlier[entry.latest, default: [:]][entry.index] = version
+                if id != entry.version { aliases[id] = entry.version }
+            }
+            for index in turns.indices {
+                turns[index].earlier = (earlier[turns[index].id] ?? [:]).sorted { $0.key < $1.key }.map(\.value)
+            }
+        }
         if !others.isEmpty { turns.append(InspectorTurn(id: InspectorTurn.otherID, number: 0, requests: others)) }
+        for index in turns.indices {
+            turns[index].entries = InspectorCompaction.entries(of: turns[index].requests)
+            for version in turns[index].earlier.indices {
+                turns[index].earlier[version].entries = InspectorCompaction.entries(of: turns[index].earlier[version].requests)
+            }
+        }
         self.turns = turns
+        flat = turns.flatMap { [$0] + $0.earlier }
+        for turn in flat {
+            for case .compaction(let group) in turn.entries { for row in group.requests { compactions[row.id] = group } }
+        }
         var sequence: [InspectorRequestRow] = []
-        for (turnOffset, turn) in turns.enumerated() {
+        for (turnOffset, turn) in flat.enumerated() {
             turnIndex[turn.id] = turnOffset
             for (requestOffset, row) in turn.requests.enumerated() {
                 positions[row.id] = Location(turn: turnOffset, request: requestOffset, order: sequence.count)
                 sequence.append(row)
             }
         }
+        for (alias, version) in aliases { turnIndex[alias] = turnIndex[version] }
         requests = sequence
     }
 
@@ -244,12 +370,14 @@ struct InspectorIndex: Sendable, Equatable {
         return rows.values.sorted { ($0.wall, $0.id) < ($1.wall, $1.id) }
     }
 
-    func request(_ id: String) -> InspectorRequestRow? { positions[id].map { turns[$0.turn].requests[$0.request] } }
-    func turn(_ id: String) -> InspectorTurn? { turnIndex[id].map { turns[$0] } }
-    func turn(containing requestID: String) -> InspectorTurn? { positions[requestID].map { turns[$0.turn] } }
+    func request(_ id: String) -> InspectorRequestRow? { positions[id].map { flat[$0.turn].requests[$0.request] } }
+    /// The compaction a summary request is part of.
+    func compaction(containing requestID: String) -> InspectorCompaction? { compactions[requestID] }
+    func turn(_ id: String) -> InspectorTurn? { turnIndex[id].map { flat[$0] } }
+    func turn(containing requestID: String) -> InspectorTurn? { positions[requestID].map { flat[$0.turn] } }
     /// `(2, 3)` for the second of a turn's three requests.
     func position(of requestID: String) -> (index: Int, count: Int)? {
-        positions[requestID].map { ($0.request + 1, turns[$0.turn].requests.count) }
+        positions[requestID].map { ($0.request + 1, flat[$0.turn].requests.count) }
     }
     /// The request `step` places away in navigation order.
     func adjacent(to requestID: String, step: Int) -> String? {
@@ -265,7 +393,7 @@ struct InspectorIndex: Sendable, Equatable {
     /// compared with the previous request of its own kind.
     func predecessor(of requestID: String) -> InspectorRequestRow? {
         guard let location = positions[requestID] else { return nil }
-        let row = turns[location.turn].requests[location.request]
+        let row = flat[location.turn].requests[location.request]
         let conversation = row.purpose == "turn"
         let earlier = requests[..<location.order].reversed().filter { $0.source != .record && $0.api == row.api }
         if conversation { return earlier.first { $0.purpose == "turn" } }
@@ -274,7 +402,7 @@ struct InspectorIndex: Sendable, Equatable {
     /// "first request", "tool round", "retry", "compaction"…
     func kind(of requestID: String) -> String {
         guard let location = positions[requestID] else { return "request" }
-        let turn = turns[location.turn], row = turn.requests[location.request]
+        let turn = flat[location.turn], row = turn.requests[location.request]
         switch row.purpose {
         case "turn": break
         case "connection-test": return "connection test"

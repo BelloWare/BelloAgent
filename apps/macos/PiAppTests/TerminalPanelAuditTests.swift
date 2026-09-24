@@ -227,6 +227,23 @@ final class TerminalPanelAuditTests: TerminalPanelTestCase {
         XCTAssertEqual(TerminalRegistry.shared.openWorkspaceIDs, [first.id, second.id], "both shells are still there")
     }
 
+    /// The panel asks for the keyboard right after it swaps sessions (another
+    /// project, Restart), which can be before SwiftUI has put the new view in
+    /// the window. The shell takes the keyboard once it is there; asking only
+    /// then used to leave the keyboard nowhere, every time after Restart.
+    @MainActor func testAShellAskedForTheKeyboardBeforeItIsShownTakesItWhenShown() async throws {
+        TerminalRegistry.shared.shutdown()
+        let session = TerminalRegistry.shared.session(for: workspace("focus-" + UUID().uuidString))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 300))
+        defer { window.contentView = nil; window.close(); TerminalRegistry.shared.shutdown() }
+        XCTAssertNil(session.view.window)
+        session.focus()
+        window.contentView?.addSubview(session.view)
+        try await eventually("give the shell the keyboard once its view is in the window") { window.firstResponder === session.view }
+    }
+
     /// What the emulator costs per megabyte of output and what the scrollback
     /// of several terminals costs in memory. Printed for the release record.
     func testEmulatorThroughputAndScrollbackFootprint() {

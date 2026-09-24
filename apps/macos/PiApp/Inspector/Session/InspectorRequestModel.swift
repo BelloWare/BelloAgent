@@ -46,7 +46,7 @@ enum InspectorLoad<Value> {
     let archive: PayloadArchive
     let sessionID: String
     weak var workspace: WorkspaceModel?
-    private let cache: InspectorDocumentCache
+    let cache: InspectorDocumentCache
     private(set) var predecessor: InspectorRequestRow?
     private(set) var active = false
     private var generation = 0
@@ -320,6 +320,23 @@ enum InspectorLoad<Value> {
         if row.source != .live { sources.append(.archive(archive, attemptID: row.id, kind: "request")) }
         if let workspace { sources.append(.live(workspace, sessionID: sessionID, attemptID: row.id, kind: "request")) }
         return sources
+    }
+
+    /// What a summary request asked for, from the first source that still
+    /// holds its body: the same parse, and the same cached document, as its
+    /// page's. Nil for a body that is not a summary request.
+    static func summary(_ row: InspectorRequestRow, sources: [CapturedBodySource], cache: InspectorDocumentCache) async throws -> SummaryRequestInfo? {
+        for source in sources {
+            try Task.checkCancellation()
+            guard let before = try? await source.metadata(), MessageBodyReader.canReadRetained(before.body["state"]?.string ?? "") else { continue }
+            let key = InspectorDocumentCache.Key(attempt: row.id, kind: "request", revision: CapturedBodyReader.revision(before))
+            if case .request(let cached)? = await cache.value(key) { return cached.summary }
+            let (bytes, _) = try await CapturedBodyReader.readBytes(kind: "request", source: source)
+            let document = try await CapturedBodyWorker.shared.run { try RequestDocument.parse(bytes) }
+            await cache.store(.request(document), for: key, cost: bytes.count + document.items.count * 1_024)
+            return document.summary
+        }
+        return nil
     }
 
     /// The digests of the request a delta compares with, from the first source

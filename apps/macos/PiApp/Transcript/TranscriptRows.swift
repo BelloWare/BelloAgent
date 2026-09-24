@@ -26,6 +26,13 @@ struct TranscriptActions {
     /// The cost-limit notice: raise the limit (the editor opens over the
     /// button it passes), or continue a run stopped there.
     var costLimit: ((CostLimitNoticeAction, NSView?) -> Void)? = nil
+    /// "Fork from here" on a reply: a new chat that ends at it. The rows
+    /// offer it where the pane's `transcriptForks` says the chat can fork.
+    var fork: ((String) -> Void)? = nil
+    /// An edited message's switcher: the version this many steps away (‹ −1, › +1).
+    var switchVersion: ((String, Int) -> Void)? = nil
+    /// The earlier-version banner's Back to latest.
+    var latestVersion: (() -> Void)? = nil
 }
 
 enum TranscriptMetrics {
@@ -116,12 +123,14 @@ private struct RowActionsView: View {
     let actions: TranscriptActions
     let visible: Bool
     @Environment(\.piReduceMotion) private var reduceMotion
+    @Environment(\.transcriptForks) private var forks
     var body: some View {
         HStack(spacing: 4) {
             if visible {
-                if message.role == "user" && message.kind == nil { pill("Edit", accent: true) { actions.edit(message.id) } }
+                if MessageRowView.editable(message) { pill("Edit", accent: true) { actions.edit(message.id) } }
                 pill("Copy") { actions.copyMessage(message.id) }
                 pill("Details") { actions.inspect(message.id) }
+                if ReplyMenu.forks(message, enabled: forks), let fork = actions.fork { pill("Fork from here") { fork(message.id) } }
             }
         }
         .frame(height: 22)
@@ -139,13 +148,17 @@ extension View {
     /// The row's actions, for readers who never hover: VoiceOver reaches Copy,
     /// Details and Edit through the row itself rather than through pills that
     /// only a pointer can reveal.
-    @ViewBuilder func transcriptRowActions(_ message: TranscriptMessage, _ actions: TranscriptActions) -> some View {
+    @ViewBuilder func transcriptRowActions(_ message: TranscriptMessage, _ actions: TranscriptActions, forks: Bool = false) -> some View {
         if message.isSending {
             accessibilityAction(named: "Copy") { actions.copyMessage(message.id) }
-        } else if message.role == "user", message.kind == nil {
+        } else if MessageRowView.editable(message) {
             accessibilityAction(named: "Edit") { actions.edit(message.id) }
                 .accessibilityAction(named: "Copy") { actions.copyMessage(message.id) }
                 .accessibilityAction(named: "Details") { actions.inspect(message.id) }
+        } else if ReplyMenu.forks(message, enabled: forks), let fork = actions.fork {
+            accessibilityAction(named: "Copy") { actions.copyMessage(message.id) }
+                .accessibilityAction(named: "Details") { actions.inspect(message.id) }
+                .accessibilityAction(named: "Fork from here") { fork(message.id) }
         } else {
             accessibilityAction(named: "Copy") { actions.copyMessage(message.id) }
                 .accessibilityAction(named: "Details") { actions.inspect(message.id) }
@@ -596,8 +609,14 @@ struct MessageRowView: View {
     var disclosure = TranscriptRowDisclosure.default
     var toggle: (TranscriptDisclosure.Part) -> Void = { _ in }
     @State private var hovering = false
+    @Environment(\.transcriptForks) private var forks
     /// Between a user bubble's skill pills and its text.
     nonisolated static let skillGap: CGFloat = 8
+    /// Whether a row offers Edit: a message the reader sent, in the latest
+    /// version. An earlier version on screen is read-only.
+    nonisolated static func editable(_ message: TranscriptMessage) -> Bool {
+        message.role == "user" && message.kind == nil && message.earlierVersion != true
+    }
     /// The line under a reply that ended before its natural end: at the output
     /// limit it says what to do next; otherwise it names the provider's reason.
     nonisolated static func earlyEnd(_ stopReason: String?) -> String? {
@@ -618,6 +637,7 @@ struct MessageRowView: View {
         case "requestInfo": if !disclosure.responseFolded { RequestTimelineInfo(message:message, actions:actions) }
         case "compaction": CompactionRowView(message: message, actions: actions, open: disclosure.compaction, toggle: { toggle(.compaction(message.id)) })
         case "branch": BranchRowView(message: message)
+        case "versionBanner": VersionBannerRow(message: message, actions: actions)
         case "failure":
             if message.failureCode?.hasPrefix(SessionDisplay.costLimitCode) == true { CostLimitNoticeRow(message: message, actions: actions) }
             else { FailureRowView(message: message, actions: actions) }
@@ -688,6 +708,10 @@ struct MessageRowView: View {
             HStack(alignment: .center, spacing: 10) {
                 if inlineAccounting, let accounting = message.accounting, accounting.requests > 0, message.role != "user" { MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(message.id) }) }
                 if message.role != "user" { Spacer(minLength: 0) }
+                // An edited message's versions, where the edit's marker row used to be.
+                if message.role == "user", let mark = message.versions, mark.usable, let step = actions.switchVersion {
+                    VersionSwitcher(messageID: message.id, mark: mark) { step(message.id, $0) }
+                }
                 if message.isSending {
                     // Where the time will be, in the same band: the row keeps
                     // its height when the helper's row takes its place.
@@ -708,7 +732,7 @@ struct MessageRowView: View {
         .onHover { hovering = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(message.role) message")
-        .transcriptRowActions(message, actions)
+        .transcriptRowActions(message, actions, forks: forks)
     }
 }
 
@@ -1072,6 +1096,7 @@ struct BlockRowView: View {
     var foldInMotion = false
     @State private var hovering = false
     @Environment(\.piReduceMotion) private var reduceMotion
+    @Environment(\.transcriptForks) private var forks
     private var open: Bool { disclosure.work }
     var body: some View {
         if block.presentation == .turnFold, let spec = block.foldSummary, let group = block.foldControl {
@@ -1096,10 +1121,9 @@ struct BlockRowView: View {
             // above a plain answer is short, so the reader need not aim at it.
             partRow(part: part, message: message)
                 .contextMenu {
-                    Button("Fold This Response to One Line") { toggle(.responseLine(response)) }
-                    Divider()
-                    Button("Copy Reply") { actions.copyMessage(message.id) }
-                    Button("Request Details") { actions.inspect(message.id) }
+                    PiMenuContent { [actions, toggle, forks] in
+                        ReplyMenu.entries(message, actions: actions, forks: forks, fold: ("Fold This Response to One Line", { toggle(.responseLine(response)) }))
+                    }
                 }
         } else if let part = block.part, let message = block.message {
             partRow(part: part, message: message)
@@ -1189,6 +1213,7 @@ struct BlockRowView: View {
             }
             if let message = block.message {
                 MessageRowView(message: message, actions: actions, inlineAccounting: false, disclosure: disclosure, toggle: toggle).equatable()
+                    .contextMenu { PiMenuContent { [actions, forks] in ReplyMenu.entries(message, actions: actions, forks: forks) } }
             }
             // A reply inside a multi-reply turn keeps its own figures; the turn line closes the turn.
             if block.presentation != .work, !block.live, !merged, hasUsage { replyFigures(tokens: tokens) }

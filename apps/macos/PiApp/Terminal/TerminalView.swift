@@ -51,6 +51,20 @@ import SwiftUI
     override var acceptsFirstResponder: Bool { true }
     override var isOpaque: Bool { true }
 
+    /// The shell was asked for the keyboard before this view was in a window
+    /// (`TerminalSession.focus`); it takes the keyboard once it is.
+    var focusWhenInWindow = false
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard focusWhenInWindow, window != nil else { return }
+        focusWhenInWindow = false
+        // After the SwiftUI update that added the view, not inside it.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            window.makeFirstResponder(self)
+        }
+    }
+
     // MARK: Metrics and colours
 
     private func measureFont() {

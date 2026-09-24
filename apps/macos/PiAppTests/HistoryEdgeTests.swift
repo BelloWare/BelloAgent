@@ -317,7 +317,11 @@ final class HistoryEditTests: HistoryEdgeTestCase, SerialTestLane {
         let shown = page.snapshot?.messages ?? []
         XCTAssertTrue(shown.contains { $0.role == "user" && $0.text == edited }, "The edited question shows")
         XCTAssertTrue(shown.contains { $0.role == "assistant" && $0.text.contains(edited) }, "Its new reply shows")
-        XCTAssertTrue(shown.contains { $0.kind == "branch" }, "The branch marker shows where the edit began")
+        // Since 0.1.93 the edited question's version switcher stands where the
+        // edit's marker row did.
+        XCTAssertTrue(shown.contains { $0.role == "user" && $0.text == edited && $0.versions?.index == 2 && $0.versions?.count == 2 },
+                      "The edited question carries its versions where the edit began")
+        XCTAssertFalse(shown.contains { $0.kind == "branch" }, "The switcher replaces the marker row")
         XCTAssertFalse(shown.contains { abandoned.contains($0.id) }, "Nothing the edit abandoned is left on the page")
         XCTAssertTrue(page.atBottom, "The page follows the new reply to its end")
         XCTAssertFalse(live.session.browsingHistory)
@@ -372,6 +376,36 @@ extension HistoryEdgeTests {
             XCTAssertNil(chat.view.olderPage.error, "Round \(round): \(chat.view.olderPage.error ?? "")")
         }
         XCTAssertTrue(problems.isEmpty, "\(problems.count) of \(passes) passes went wrong:\n" + problems.prefix(12).joined(separator: "\n"))
+    }
+
+    /// A reply longer than the helper's page (about 250 KiB) is the only
+    /// older row the next page has room for, and the rows after it push it
+    /// out. That page starts right after the reply, which the chat already
+    /// holds: the chat joins the two and keeps following, rather than
+    /// stopping behind Load newer as it did before 0.1.93.
+    @MainActor func testTheRowsAfterAReplyLongerThanAPageStillArrive() async throws {
+        let live = try await ConversationPaneTests.LiveChat()
+        var closed = false
+        defer { if !closed { Task { await live.close() } } }
+        await live.settle(20)
+        await live.send("bulk 300")
+        await live.waitUntil("The long reply never arrived") {
+            !live.session.hasWork && !live.session.loading
+                && live.session.messages.contains { $0.role == "assistant" && $0.text.utf8.count > 280 * 1024 }
+        }
+        let long = try XCTUnwrap(live.session.messages.last { $0.role == "assistant" }).id
+        await live.send("After the long reply")
+        await live.waitUntil("The question after the long reply and its answer never reached the chat") {
+            !live.session.hasWork && !live.session.loading
+                && live.session.messages.contains { $0.role == "assistant" && $0.text.contains("After the long reply") }
+        }
+        XCTAssertFalse(live.session.browsingHistory, "The chat still follows the conversation")
+        XCTAssertFalse(live.session.newerPage.available, "Nothing waits behind Load newer")
+        let ids = live.session.messages.map(\.id)
+        XCTAssertEqual(ids.filter { $0 == long }.count, 1, "The long reply shows once")
+        XCTAssertTrue(ids.firstIndex(of: long).map { $0 < ids.count - 2 } ?? false, "The question and its answer follow the long reply")
+        closed = true
+        await live.close()
     }
 
 }

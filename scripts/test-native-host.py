@@ -580,6 +580,66 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(reopened['messages'][2]['id'],ledger['id'])
         self.peer.command('session.message.read',{'messageId':first},session)
         self.peer.command('session.close',session=session)
+    def test_message_versions_list_and_page_an_earlier_version_over_the_wire(self):
+        # Additive since 0.1.93: an edited message's row says which version it
+        # is, session.versions lists them and session.version.page reads the
+        # rows of one, in the transcript's own row format.
+        for capability in ('message-versions','fork-at-message'): self.assertIn(capability, self.peer.ready['capabilities'])
+        session='versions'; self.open(model='text',session=session)
+        first=str(uuid.uuid4()); self.peer.command('turn.submit',{'clientTurnId':first,'text':'first question'},session); self.settled(session)
+        second=str(uuid.uuid4()); self.peer.command('turn.submit',{'clientTurnId':second,'text':'second question'},session); self.settled(session)
+        original=next(a for a in self.peer.command('debug.list',session=session)['attempts'] if a['turnId']==second)['attemptId']
+        edited=str(uuid.uuid4()); self.peer.command('turn.edit',{'messageId':second,'clientTurnId':edited,'text':'second question, edited'},session)
+        value=self.settled(session); self.assertEqual(value['state'],'idle')
+        rows={m['id']:m for m in value['messages']}
+        self.assertEqual(rows[edited]['versions'],{'index':2,'count':2,'ids':[second,edited]})
+        self.assertNotIn('versions',rows[first])
+        listed=self.peer.command('session.versions',{'messageId':edited},session)
+        self.assertEqual([v['messageId'] for v in listed['versions']],[second,edited]); self.assertEqual(listed['current'],2)
+        self.assertEqual([v['live'] for v in listed['versions']],[False,True]); self.assertEqual(listed['versions'][0]['text'],'second question')
+        self.assertEqual(self.peer.command('session.versions',session=session)['groups'][0]['group'],second)
+        self.assertEqual(self.peer.command('session.versions',{'messageId':first},session)['versions'],[])
+        page=self.peer.command('session.version.page',{'messageId':second},session)
+        self.assertEqual([m.get('kind') for m in page['messages']],[None,'requestLedger',None])
+        self.assertEqual(page['messages'][0]['text'],'second question'); self.assertIsNone(page['next']); self.assertEqual(page['total'],3)
+        reply=page['messages'][2]; self.assertEqual(reply['role'],'assistant')
+        self.assertEqual(reply['requestAttemptIDs'],[original]); self.assertEqual(reply['reply']['attempt'],original)
+        self.assertEqual(page['messages'][1]['requestAttemptIDs'],[original])
+        self.peer.command('session.version.page',{'messageId':first},session,fail=True)
+        # Reopened, the same journal lists the same versions: nothing was rewritten to show them.
+        path=value['path']; before=pathlib.Path(path).read_bytes(); self.peer.command('session.close',session=session)
+        self.open(model='text',session=session,path=path)
+        again=self.peer.command('session.versions',{'messageId':second},session)
+        self.assertEqual([v['messageId'] for v in again['versions']],[second,edited])
+        self.assertEqual(pathlib.Path(path).read_bytes(),before)
+        self.peer.command('session.close',session=session)
+    def test_fork_at_a_reply_keeps_the_journal_up_to_it_and_its_tool_batch(self):
+        session='forked'; self.open(model='tool',session=session)
+        turns=[str(uuid.uuid4()) for _ in range(3)]
+        for index,turn in enumerate(turns):
+            self.peer.command('turn.submit',{'clientTurnId':turn,'text':'question %d'%index},session); self.assertEqual(self.settled(session)['state'],'idle')
+        value=self.peer.command('session.snapshot',session=session)
+        replies=[m for m in value['messages'] if m['role']=='assistant']
+        # The fixture calls a tool in the first turn only.
+        calling=next(m for m in replies if m['turn']==turns[0] and m['tools'])
+        answer=next(m for m in replies if m['turn']==turns[0] and not m['tools'])
+        fork=self.peer.command('session.fork',{'forkSessionId':'at-reply','atMessageId':calling['id']},session)
+        self.assertEqual(fork['origin']['forkedAtMessageId'],calling['id'])
+        journal=[json.loads(line) for line in pathlib.Path(fork['path']).read_bytes().split(b'\n') if line]
+        ids={r.get('id') for r in journal}
+        self.assertFalse(ids & set(turns[1:])); self.assertNotIn(answer['id'],ids,'the reply after the tool batch is later')
+        messages=[r for r in journal if r.get('type')=='message']
+        self.assertEqual(messages[-1]['message']['role'],'toolResult','the fork starts after the tool batch')
+        copied=self.peer.command('session.snapshot',session='at-reply')
+        self.assertEqual(copied['state'],'idle'); self.assertEqual(copied['queueCount'],0)
+        self.assertEqual([m['id'] for m in copied['messages'] if m['role']=='user'],turns[:1])
+        self.assertEqual([m['id'] for m in copied['messages'] if m['role']=='assistant'][-1],calling['id'])
+        self.peer.command('session.fork',{'forkSessionId':'at-user','atMessageId':turns[1]},session,fail=True)
+        self.peer.command('session.fork',{'forkSessionId':'at-nothing','atMessageId':str(uuid.uuid4())},session,fail=True)
+        # The fork answers from where it starts.
+        self.peer.command('turn.submit',{'clientTurnId':str(uuid.uuid4()),'text':'fork question'},'at-reply')
+        self.assertEqual(self.settled('at-reply')['state'],'idle')
+        for name in ('at-reply',session): self.peer.command('session.close',session=name)
     def test_responses_capacity_overrides_reach_all_tool_rounds(self):
         for api in ['openai-responses']:
             session = 'limits-'+api; self.open(api=api,model='text',session=session)

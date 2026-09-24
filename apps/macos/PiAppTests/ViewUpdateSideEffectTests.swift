@@ -44,6 +44,25 @@ final class ViewUpdateSideEffectTests: XCTestCase {
         XCTAssertEqual(issues, [], "Side effects inside SwiftUI updates while a reply streamed")
     }
 
+    /// Switching an edited message to an earlier version and back swaps the
+    /// rows under the page, and each switcher's marker learns its message in
+    /// its own update: nothing is published from inside one.
+    @MainActor func testSwitchingVersionsPublishesNothingDuringAViewUpdate() async throws {
+        let pane = try await MessageVersionTranscriptTests.pane(); defer { pane.close() }
+        let start = Date()
+        let document = try MessageVersionTranscriptTests.document(pane)
+        document.actionRelay.forwarded.switchVersion?("u2b", -1)
+        await MessageVersionTranscriptTests.shown(pane, version: 1)
+        document.actionRelay.forwarded.switchVersion?("u2", 1)
+        await MessageVersionTranscriptTests.shown(pane, version: nil)
+        XCTAssertTrue(pane.model.stepVersion(sessionID: pane.chat.id, step: -1))
+        await MessageVersionTranscriptTests.shown(pane, version: 1)
+        document.actionRelay.forwarded.latestVersion?()
+        await MessageVersionTranscriptTests.shown(pane, version: nil)
+        let issues = try SwiftUIRuntimeIssues.since(start)
+        XCTAssertEqual(issues, [], "Side effects inside SwiftUI updates while versions switched")
+    }
+
     /// Opening the report hides the conversation's native views and takes the
     /// keyboard from the composer. Doing that inside the window's update made
     /// the composer's text view commit a Core Animation transaction that laid

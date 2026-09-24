@@ -65,4 +65,27 @@ final class FullDisplayTests: XCTestCase {
         let snapshot=await session.snapshot(["includeMetrics":false])
         XCTAssertEqual(snapshot["messages"].list.last?["text"].text,large)
     }
+
+    /// A reply longer than the page leaves no room for itself once a row
+    /// follows it. The page names the row it starts right after, so a reader
+    /// that holds the reply joins the two instead of seeing a gap.
+    func testAPageWithNoRoomForTheReplyBeforeItNamesThatReply() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let large=String(repeating:"Complete saved response 🙂\n",count:12_000)+"TAIL"
+        var first=ChatMessage(role:"user",content:[textBlock("Question")]); first.id="u"
+        var reply=ChatMessage(role:"assistant",content:[textBlock(large)]); reply.id="a"
+        var next=ChatMessage(role:"user",content:[textBlock("And then?")]); next.id="u2"
+        let session=try AgentSession(id:"follows",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore(),seed:[first,reply,next],autoCompaction:false)
+        addTeardownBlock { await session.close() }
+        let snapshot=await session.snapshot(["includeMetrics":false])
+        XCTAssertEqual(snapshot["messages"].list.map { $0["id"].text },["u2"],"The long reply does not fit beside the row after it")
+        XCTAssertEqual(snapshot["historyFollows"].text,"a")
+        XCTAssertEqual(snapshot["historyOlder"]["entry"].text,"u2")
+
+        let short=try AgentSession(id:"whole",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root.appendingPathComponent("short"),readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore(),seed:[first,next],autoCompaction:false)
+        addTeardownBlock { await short.close() }
+        let whole=await short.snapshot(["includeMetrics":false])
+        XCTAssertEqual(whole["messages"].list.count,2)
+        XCTAssertEqual(whole["historyFollows"],.null,"A page that starts the conversation follows nothing")
+    }
 }
