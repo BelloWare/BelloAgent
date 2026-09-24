@@ -44,6 +44,33 @@ final class ViewUpdateSideEffectTests: XCTestCase {
         XCTAssertEqual(issues, [], "Side effects inside SwiftUI updates while a reply streamed")
     }
 
+    /// Switching a reply to its markdown source and back rebuilds the reply's
+    /// row, re-measures it and moves the rows under it, all from the click
+    /// (`ReplySource`): nothing is published from inside a SwiftUI update.
+    @MainActor func testSwitchingAReplyToItsSourcePublishesNothingDuringAViewUpdate() async throws {
+        let sections = (0..<12).map { "## Part \($0)\nParagraph \($0) with **bold**, `code` and a [link](https://example.com)." }
+        let pane = try ConversationPaneTests.Pane(messages: [
+            TranscriptMessage(id: "u1", role: "user", text: "Write it **all** out,\n- as typed.", at: 1_000, turn: "u1"),
+            TranscriptMessage(id: "a1", role: "assistant", text: sections.joined(separator: "\n\n"), state: "complete", at: 2_000, turn: "u1"),
+            TranscriptMessage(id: "u2", role: "user", text: "And a short one.", at: 3_000, turn: "u2"),
+            TranscriptMessage(id: "a2", role: "assistant", text: "A short **reply**.", state: "complete", at: 4_000, turn: "u2")
+        ])
+        defer { pane.close() }
+        await pane.settle(12)
+        let document = try XCTUnwrap(descendants(TranscriptNativeDocument.self, in: pane.hosted).first)
+        let rows = ["a1", "a2"].compactMap { id in document.retainedRows.first { ReplySource.replyID(of: $0.contentItem) == id } }
+        XCTAssertEqual(rows.count, 2, "Both replies have a row of text")
+        let start = Date()
+        for _ in 0..<2 {
+            for (row, id) in zip(rows, ["a1", "a2"]) {
+                row.toggleDisclosure(.source(id)); await pane.settle(6)
+                row.toggleDisclosure(.source(id)); await pane.settle(6)
+            }
+        }
+        let issues = try SwiftUIRuntimeIssues.since(start)
+        XCTAssertEqual(issues, [], "Side effects inside SwiftUI updates while replies switched to their source and back")
+    }
+
     /// Switching an edited message to an earlier version and back swaps the
     /// rows under the page, and each switcher's marker learns its message in
     /// its own update: nothing is published from inside one.

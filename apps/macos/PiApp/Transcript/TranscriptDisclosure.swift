@@ -25,7 +25,10 @@ enum ToolOccurrence {
         /// `turnFold` is the end-of-turn fold: closed, which is its default,
         /// means the turn's work is behind its one line, and opening it shows
         /// the turn exactly as it read while it ran.
-        enum Kind: Hashable { case work, tool, reasoning, compaction, response, responseLine, turnFold }
+        /// `source` is a reply read as its markdown source rather than
+        /// rendered: open means raw. It is keyed by the reply, so every part
+        /// of its text switches together.
+        enum Kind: Hashable { case work, tool, reasoning, compaction, response, responseLine, turnFold, source }
         let kind: Kind
         let id: String
         static func work(_ id: String) -> Part { Part(kind: .work, id: id) }
@@ -35,14 +38,18 @@ enum ToolOccurrence {
         static func response(_ id: String) -> Part { Part(kind: .response, id: id) }
         static func responseLine(_ id: String) -> Part { Part(kind: .responseLine, id: id) }
         static func turnFold(_ id: String) -> Part { Part(kind: .turnFold, id: id) }
+        static func source(_ id: String) -> Part { Part(kind: .source, id: id) }
         /// Work, tool details, reasoning and compaction notes open only on
         /// request; a response's own fold is closed, which means nothing is
-        /// hidden, and opening it is what collapses the response.
+        /// hidden, and opening it is what collapses the response. A reply
+        /// reads rendered until the reader asks for its source.
         var openByDefault: Bool { false }
         /// A fold that spans more rows than the one it was clicked in. The
         /// conversation republishes for these, so every row of the response
-        /// reaches its new height in the same layout pass.
-        var spansRows: Bool { kind == .response || kind == .responseLine || kind == .turnFold }
+        /// reaches its new height in the same layout pass. A reply read in
+        /// order has a row for each part of its text, and they switch
+        /// between rendered and source together.
+        var spansRows: Bool { kind == .response || kind == .responseLine || kind == .turnFold || kind == .source }
     }
     /// Only what the reader actually changed, so a long conversation keeps no
     /// entry for the rows it never touched.
@@ -92,6 +99,10 @@ struct TranscriptRowDisclosure: Equatable {
     var foldedAway = false
     /// Only a turn's fold control reads this: whether its turn is open.
     var turnFoldOpen = false
+    /// The reader switched this row's reply to its markdown source. Only a
+    /// row that draws a reply's text reads it (`ReplySource.replyID`), so
+    /// switching one reply re-measures that reply's rows and no others.
+    var raw = false
     /// Full argument documents fetched for this row's open cards. They belong
     /// here for the same reason the open set does: the row is re-measured in
     /// the pass that learns a card now has more to show.
@@ -116,6 +127,7 @@ struct TranscriptRowDisclosure: Equatable {
         // Until the reader has changed something, every row is at the default,
         // and a streaming delta need not walk each row's tools to find that out.
         guard store.changedCount > 0 || (inputs?.count ?? 0) > 0 else { return value }
+        if let reply = ReplySource.replyID(of: item) { value.raw = store.isOpen(.source(reply)) }
         switch item {
         case .message(let message):
             // A response's accounting line is part of the response and folds
