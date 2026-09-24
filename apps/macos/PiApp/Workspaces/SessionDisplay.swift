@@ -290,7 +290,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     var composerLocation: ComposerLocation?
     weak var composerEditor: ComposerTextView?
     var completionParse: Task<Void, Never>?
-    var codeClassification: (generation: UUID, revision: UInt64, offset: Int, outside: Bool)?
+    /// What `SlashCompletionToken.outsideCode` said about the draft `text`
+    /// before the slash at `offset`. The answer depends on that prefix alone,
+    /// so it stands for every later edit that leaves the prefix unchanged.
+    var codeClassification: (generation: UUID, revision: UInt64, offset: Int, text: String, outside: Bool)?
     @Published var state = "idle" { didSet { if state != oldValue { activityChanges.send() } } }
     @Published var runStatus = "idle" { didSet { if runStatus != oldValue { activityChanges.send() } } }
     /// Bumped when the pane should move keyboard focus into the composer.

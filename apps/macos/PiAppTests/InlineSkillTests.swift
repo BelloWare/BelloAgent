@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import Combine
 import SwiftUI
 @testable import PiApp
 
@@ -113,6 +114,60 @@ final class InlineSkillTests: XCTestCase {
         XCTAssertLessThan(samples.sorted()[95], 5)
         #endif
     }
+    /// Typing "/sk", then "i", then Backspace must leave the list shown. The
+    /// code-span cache was keyed on the draft revision, so every keystroke
+    /// missed it: the list was hidden at once and shown again a turn later by
+    /// the background classification, and the owner saw it flicker.
+    @MainActor func testTypingInsideTheSlashTokenNeverHidesTheList() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())); defer { model.shutdown() }
+        let view = SessionDisplay(id: "a"); model.displays[view.id] = view
+        model.chats = [ChatRecord(id: view.id, workspaceID: "w", title: "A", profileID: "p")]
+        let all = [skill("s1", name: "skill-review"), skill("s2", name: "skim-notes"), skill("s3", name: "sketch")]
+        view.skillCatalog = SkillCatalog(state: .ready, scope: model.skillScope(sessionID: view.id, workspaceID: "w"), revision: "v1", entries: all.map(SkillSearch.Entry.init))
+        let hosted = NSHostingView(rootView: NativeComposer(text: Binding(get: { view.draft }, set: { view.draft = $0 }), send: { _ in XCTFail("Typing must not submit") }, sessionID: view.id,
+            locationChanged: { model.composerMoved($0, editor: $1, view: view) }))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = hosted; window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        func find(_ node: NSView) -> ComposerTextView? {
+            if let editor = node as? ComposerTextView { return editor }
+            return node.subviews.lazy.compactMap { find($0) }.first
+        }
+        hosted.layoutSubtreeIfNeeded(); let editor = try XCTUnwrap(find(hosted)); window.makeFirstResponder(editor)
+        /// One keystroke, then everything it schedules: the location hop and
+        /// any background classification.
+        func key(_ edit: () -> Void) async throws {
+            let before = view.composerLocation?.draftRevision
+            edit()
+            for _ in 0..<400 where view.composerLocation?.draftRevision == before { try await Task.sleep(for: .milliseconds(5)) }
+            await view.completionParse?.value
+            for _ in 0..<10 { try await Task.sleep(for: .milliseconds(5)) }
+        }
+        try await key { editor.insertText("/sk", replacementRange: editor.selectedRange()) }
+        for _ in 0..<200 where !view.completionVisible { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(view.completionVisible); XCTAssertEqual(model.completions(view).map(\.name), ["sketch", "skill-review", "skim-notes"])
+        var shown: [Bool] = []
+        let watch = view.$completionVisible.dropFirst().sink { shown.append($0) }; defer { watch.cancel() }
+        try await key { editor.insertText("i", replacementRange: editor.selectedRange()) }
+        XCTAssertEqual(view.draft, "/ski")
+        // "sketch" stays on its path, under skills/, behind the two names "ski" starts.
+        XCTAssertEqual(model.completions(view).map(\.name), ["skill-review", "skim-notes", "sketch"])
+        try await key { editor.deleteBackward(nil) }
+        XCTAssertEqual(view.draft, "/sk"); XCTAssertEqual(model.completions(view).count, 3)
+        XCTAssertTrue(view.completionVisible)
+        XCTAssertFalse(shown.contains(false), "The list hid and showed again while typing inside its token: \(shown)")
+        // An edit before the slash still asks again: the cache holds only for
+        // the text its answer was about.
+        try await key {
+            editor.insertText("`x ", replacementRange: NSRange(location: 0, length: 0))
+            editor.setSelectedRange(NSRange(location: 6, length: 0))
+        }
+        XCTAssertEqual(view.draft, "`x /sk")
+        XCTAssertFalse(view.completionVisible); XCTAssertNil(view.completionToken)
+    }
+
     @MainActor func testMountedCaretSelectionBeyondEightAndStaleAcceptance() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
