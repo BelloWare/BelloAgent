@@ -103,8 +103,9 @@ final class CompactionSafetyTests: XCTestCase {
         let checkpoint:JSON=["id":"summary","summary":"Earlier work","nativeKeptIDs":.array(uncertainMessages.map { JSON($0.id) })]
         let restored=try CompactionCheckpoint.restore(checkpoint,context:uncertainMessages)
         XCTAssertEqual(restored.kept.last?.toolStats?["outcome"].text,"unknown")
-        // Pi's text keeps each requested call's arguments; ours names an outcome other than completed.
-        XCTAssertEqual(CompactionSourceBuilder.serialize(uncertainMessages).joined(separator:"\n\n"),"[Assistant tool calls]: write(value=0); edit(value=1)\n\n[Tool result]: written\n\n[Tool result]: (outcome: unknown) written")
+        // Pi's text keeps each requested call's arguments, and a result's text
+        // whatever its outcome (0.1.94 dropped our outcome label).
+        XCTAssertEqual(CompactionSourceBuilder.serialize(uncertainMessages).joined(separator:"\n\n"),"[Assistant tool calls]: write(value=0); edit(value=1)\n\n[Tool result]: written\n\n[Tool result]: written")
     }
     func testSuccessfulToolOutputCanMentionUncertainOutcomes() throws {
         let assistant=toolReply(["read"]).message
@@ -112,7 +113,7 @@ final class CompactionSafetyTests: XCTestCase {
         result.toolCallId="call-0";result.toolName="read";result.toolStats=["outcome":"completed"]
         let groups=try CompactionPlanner.groups([assistant,result])
         XCTAssertEqual(groups[0].messages.last?.text,result.text)
-        XCTAssertEqual(CompactionSourceBuilder.serialize(groups[0].messages).last,"[Tool result]: "+result.text,"The recorded outcome, not the text, decides the label")
+        XCTAssertEqual(CompactionSourceBuilder.serialize(groups[0].messages).last,"[Tool result]: "+result.text)
     }
     func testManualAndAutomaticCompactionAllowUnknownOutcomesWithoutReplayingTools() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
@@ -138,7 +139,7 @@ final class CompactionSafetyTests: XCTestCase {
             let summaries=zip(requests,purposes).filter { $0.1=="compaction" }.map(\.0)
             XCTAssertFalse(summaries.isEmpty)
             let source=summaries.flatMap { $0["input"].list }.flatMap { $0["content"].list }.compactMap { $0["text"].text }.joined()
-            XCTAssertTrue(source.contains("[Tool result]: (outcome: unknown) Interrupted before the result was recorded. Outcome unknown."))
+            XCTAssertTrue(source.contains("[Tool result]: Interrupted before the result was recorded. Outcome unknown."))
             XCTAssertTrue(summaries.allSatisfy { $0["tools"].list.isEmpty })
             XCTAssertEqual(purposes.filter { $0=="turn" }.count,automatic ? 1:0)
             await s.close()
@@ -333,28 +334,27 @@ final class CompactionSafetyTests: XCTestCase {
         let restored=await reopened.context,calls=await replay.count
         XCTAssertEqual(restored.map(\.id),messages.map(\.id));XCTAssertEqual(calls,0);await reopened.close()
     }
-    func testUTF8RetainedResultPagesAndScopeDoNotInvokeTools() async throws {
+    /// A result over 64 KB, from a tool that does not cut its own output (an
+    /// MCP server), reaches the model as its first 32 KB and pi's note naming
+    /// the file that holds all of it, which read can open. No history_read
+    /// reference follows it (removed in 0.1.94, as pi has none).
+    func testALargeResultNamesTheFileThatHoldsItWhole() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let s=try session(root,client:SummaryProbe(),messages:seed(count:0))
-        let text=String(repeating:"🙂漢é",count:20000),call=ToolCall(id:"retained",name:"read",arguments:[:])
+        let text=String(repeating:"🙂漢é",count:20000),call=ToolCall(id:"large",name:"read",arguments:[:])
         try await s.append(toolReply(["read"]).message)
         try await s.recordTool(call,result:resultText(text),started:nowMS(),state:"completed")
-        let message=await s.history.last!, reference=CompactionSourceBuilder.reference(message)
-        var cursor=0, data=Data()
-        while true {
-            let result=try await s.historyRead(["reference":JSON(reference),"cursor":JSON(cursor),"maxBytes":8191])
-            let page=try JSON.parse(Data(result["content"].list[0]["text"].text!.utf8)),part=page["text"].text!
-            XCTAssertLessThanOrEqual(part.utf8.count,8191);data.append(contentsOf:part.utf8)
-            if page["complete"].flag == true { break }
-            let next=page["nextCursor"].int!;XCTAssertGreaterThan(next,cursor);cursor=next
-        }
-        XCTAssertEqual(try JSON.parse(data)["content"].list[0]["text"].text,text)
-        let other=try session(root,client:SummaryProbe(),messages:seed(count:0))
-        let denied=try await other.historyRead(["reference":JSON(reference)])
-        XCTAssertEqual(denied["isError"].flag,true)
-        try FileManager.default.removeItem(at:root.appendingPathComponent("state/tool-output/"+message.retainedOutput!))
-        let missing=try await s.historyRead(["reference":JSON(reference)])
-        XCTAssertTrue(missing.encoded().contains("unavailable"));await s.close();await other.close()
+        let message=await s.history.last!, sent=message.text
+        XCTAssertEqual(message.content.count,1,"The text alone, with no reference block after it")
+        XCTAssertNil(message.retainedOutput)
+        let note=try XCTUnwrap(sent.range(of:"\n\n[Output truncated. Full output: "),sent.suffix(200).description)
+        let shown=String(sent[..<note.lowerBound])
+        XCTAssertLessThanOrEqual(shown.utf8.count,32768); XCTAssertTrue(text.hasPrefix(shown))
+        XCTAssertTrue(sent.hasSuffix("]"))
+        let file=URL(fileURLWithPath:String(sent[note.upperBound...].dropLast()))
+        XCTAssertEqual(file.deletingLastPathComponent().lastPathComponent,"tool-output")
+        XCTAssertEqual(try String(contentsOf:file,encoding:.utf8),text,"The file holds the whole result")
+        await s.close()
     }
     func testMalformedCheckpointCannotReorderOrReachAnotherBranch() throws {
         let messages=seed(count:2),ids=messages.map { JSON($0.id) }
@@ -366,23 +366,21 @@ final class CompactionSafetyTests: XCTestCase {
         }
         record["nativeCompactionVersion"]=99;XCTAssertThrowsError(try CompactionCheckpoint.restore(record,context:messages))
     }
-    func testVersionedForkAndKeptSideHaveIndependentRecoveryAndScopedReferences() async throws {
+    func testVersionedForkAndKeptSideHaveIndependentRecovery() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let messages=seed(count:4,bytes:4000),s=try session(root,client:SummaryProbe(),messages:messages,policy:Self.smallTail)
         _=try await s.keep(whenFinished:false)
         try await s.compact();try await eventually { !(await s.isRunning) }
-        let captured=await s.sideSeed(),reference=CompactionSourceBuilder.reference(messages[1]),context=await s.context
+        let captured=await s.sideSeed(),context=await s.context
         let side=try session(root,client:SummaryProbe(),messages:captured.messages)
-        let missing=try await side.historyRead(["reference":JSON(reference)])
-        XCTAssertTrue(missing.encoded().contains("unavailable"),"Side snapshot must never search the parent's full history")
         let saved=try await side.keep(whenFinished:false),sideID=await side.id;await side.close()
         let reopened=try AgentSession(id:sideID,profile:await side.profile,apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:SummaryProbe(),tools:RecordingTools(),traces:TraceStore(),resumePath:saved["path"].text)
         let restored=await reopened.context
         XCTAssertEqual(restored.map(\.id),context.map(\.id));XCTAssertEqual(restored.first?.compaction?["version"].int,2)
         let fork=try await s.fork(to:"versioned-fork")
         let clone=try AgentSession(id:"versioned-fork",profile:await s.profile,apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:SummaryProbe(),tools:RecordingTools(),traces:TraceStore(),resumePath:fork["path"].text)
-        let available=try await clone.historyRead(["reference":JSON(reference)]),recovery=await clone.contextRecovery
-        XCTAssertFalse(available["isError"].flag ?? false);XCTAssertTrue(recovery.isNull)
+        let recovery=await clone.contextRecovery
+        XCTAssertTrue(recovery.isNull)
         // Editing the task root also abandons summaries derived from its work.
         _=try await s.edit(fromMessageID:"root",input:Submission(commandID:"replace",turnID:"replace",text:"New objective"));try await eventually { !(await s.isRunning) }
         let edited=await s.context

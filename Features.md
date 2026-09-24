@@ -98,7 +98,10 @@ assistant/call/result groups are retained or summarized together. Recorded unkno
 outcomes and warning phrases in tool output do not block compaction; their recorded
 status and evidence remain available to the summary. Large sources use bounded evidence excerpts and
 chunk/merge requests, with eight physical summary attempts per operation.
-`history_read` retrieves retained evidence in UTF-8 pages without rerunning tools.
+A tool result over 64 KB (from a tool that does not cut its own output, such as an
+MCP server) reaches the model as its first 32 KB and pi's note naming the saved file
+that holds all of it, which `read` can open; there is no `history_read` tool (removed
+in 0.1.94 to match pi).
 Summary output has no fixed 4,096-token cap: use the selected model ceiling,
 clipped to the actual summary request's remaining capacity; use the configured
 output budget when the catalog has no ceiling. Preserve the session's reasoning

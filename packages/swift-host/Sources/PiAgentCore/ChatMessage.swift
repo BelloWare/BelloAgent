@@ -54,7 +54,9 @@ public struct ChatMessage: Codable, Sendable {
     public var inputLane: String? = nil
     /// Versioned checkpoint metadata also survives saved-side message records.
     public var compaction: JSON? = nil
-    /// App-owned retained output file, never an arbitrary model-selected path.
+    /// The saved output file of a result cut before 0.1.94, for its removed
+    /// history_read tool. Nothing sets it now; it is kept so those saved
+    /// records read and write back unchanged.
     public var retainedOutput: String? = nil
     public var text: String { content.filter { $0["type"].text == "text" }.compactMap { $0["text"].text }.joined() }
     public var thinking: String { content.filter { $0["type"].text == "thinking" }.compactMap { $0["thinking"].text }.joined() }

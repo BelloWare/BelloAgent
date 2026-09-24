@@ -17,7 +17,7 @@ final class ContextPreviewTests: XCTestCase {
         let body = try JSON.parse(Data(read["text"].text!.utf8))
         XCTAssertTrue(RequestContextCounter.systemPrompt(body)!.contains("Follow the fixture instructions."))
         XCTAssertEqual(body["input"].list.last?["content"].list.first?["text"].text,"An unsent question 🙂")
-        XCTAssertEqual(body["tools"].list.map { $0["name"].text! },["first","second","history_read"])
+        XCTAssertEqual(body["tools"].list.map { $0["name"].text! },["first","second"])
         let beforeCount = await client.count, beforeTools = await tools.calls, status = await session.snapshot()
         XCTAssertEqual(beforeCount,0); XCTAssertTrue(beforeTools.isEmpty); XCTAssertEqual(status["queueCount"].int,0)
         XCTAssertEqual(status["seq"].int,0); XCTAssertEqual(status["messages"].list.count,0)

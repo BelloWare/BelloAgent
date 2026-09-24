@@ -79,7 +79,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 else:
                     assert '[Assistant tool calls]: write(' in prompt and 'read(part=1)' in prompt
                     assert 'READ_STAGE_COMPLETE' in prompt and 'COUNTER_APPENDED_ONCE' in prompt
-                    assert '[history_read: history:' in prompt
+                    # Pi cuts a long result at 2,000 characters and names nothing to recall it by.
+                    assert '[history_read:' not in prompt and 'Additional focus' not in prompt
                     text = 'ORIGINAL GOLDEN OBJECTIVE carried. COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE. Do not rerun the mutation.'
                 output = message(text)
             elif sid == 'compaction-sibling':
@@ -87,7 +88,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 output = message('Sibling unaffected')
             else:
                 assert 'ORIGINAL GOLDEN OBJECTIVE' in joined
-                assert {t['name'] for t in body['tools']} == {'write', 'read', 'history_read'}
+                assert {t['name'] for t in body['tools']} == {'write', 'read'}
                 # Pi replays a checkpoint as its compaction summary message.
                 if any(t.startswith('The conversation history before this point was compacted into the following summary:') for t in texts):
                     if len(json.dumps(history, ensure_ascii=False, separators=(',', ':')).encode()) > 1500:

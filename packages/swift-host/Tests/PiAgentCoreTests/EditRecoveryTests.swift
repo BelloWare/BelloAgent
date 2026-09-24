@@ -112,18 +112,4 @@ extension EditRecoveryTests {
             await reopened.close()
         }
     }
-    func testIndependentSummaryCannotRecallDiscardedFutureFromItsBroadSourceList() async throws {
-        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let client = ScriptClient([answer(String(repeating: "early task evidence ", count: 500)), answer("target reply"), answer("safe earlier summary"), answer("edited reply")])
-        let session = try AgentSession(id: "recall", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)
-        for id in ["first", "target"] {
-            _ = try await session.submit(Submission(commandID: id, turnID: id, text: id), steer: false); try await eventually { !(await session.isRunning) }
-        }
-        try await session.compact(); try await eventually { !(await session.isRunning) }
-        _ = try await session.edit(fromMessageID: "target", input: Submission(commandID: "replacement", turnID: "replacement", text: "replacement")); try await eventually { !(await session.isRunning) }
-        let sources = await session.retainedHistorySources()
-        XCTAssertTrue(sources.values.contains { $0.id == "first" }); XCTAssertFalse(sources.values.contains { $0.id == "target" })
-        XCTAssertFalse(sources.values.contains { $0.text == "target reply" })
-        await session.close()
-    }
 }

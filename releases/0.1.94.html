@@ -1,0 +1,5 @@
+<h2>Bello Agent 0.1.94</h2>
+<ul>
+  <li>Compaction now sends exactly pi's summary request. Tool results are cut at 2,000 characters with nothing of ours added, no recall tags and no outcome labels, and the summary prompt carries no extra instruction of ours, so summary requests are smaller.</li>
+  <li>The history_read tool is gone, as pi has none. A tool result over 64 KB, which only MCP tools produce, now shows its first 32 KB and names the saved file with the rest, which the model opens with read, the way pi names a long command's full output.</li>
+</ul>

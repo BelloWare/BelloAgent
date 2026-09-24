@@ -101,20 +101,12 @@ enum CompactionSourceBuilder {
     /// Ours: a turn prefix too large for one request continues in the next,
     /// the way pi's update prompt continues a summary.
     static let turnPrefixUpdatePrompt = "The messages above are NEW messages from the same turn prefix, to incorporate into the existing prefix summary provided in <previous-summary> tags.\n\n" + turnPrefixPrompt
-    /// Ours, as pi's customInstructions: a truncated result stays recallable.
-    static let referenceFocus = "Keep the history_read references of truncated tool results that may be needed; history_read returns the recorded text without running the tool again."
-    static let referenceMarker = "[history_read: "
     static let toolResultMaxChars = 2000
     static let noPriorHistory = "No prior history."
     static let splitTurnSeparator = "\n\n---\n\n**Turn Context (split turn):**\n\n"
 
-    static func reference(_ message: ChatMessage) -> String {
-        "history:" + sha256(Data((message.id+":"+(message.retainedOutput ?? "message")).utf8))
-    }
-
     /// serializeConversation, one entry per part pi writes; pi joins them
-    /// with a blank line. Ours: a tool outcome other than completed is named,
-    /// and a truncated result carries its history_read reference.
+    /// with a blank line.
     static func serialize(_ messages: [ChatMessage]) -> [String] {
         var parts: [String]=[]
         for message in messages {
@@ -126,11 +118,9 @@ enum CompactionSourceBuilder {
                 if message.content.contains(where: { $0["type"].text == "text" }) { parts.append("[Assistant]: "+text(message,separator:"\n")) }
                 if !calls.isEmpty { parts.append("[Assistant tool calls]: "+calls.joined(separator:"; ")) }
             case "toolResult":
-                let content=text(message,separator:""), outcome=message.toolStats?["outcome"].text.flatMap { $0 == "completed" ? nil : $0 }
-                guard !content.isEmpty || outcome != nil else { continue }
-                let (kept,truncated)=truncate(content)
-                let label=outcome.map { "(outcome: \($0)) " } ?? "", recall=truncated ? "\n\(referenceMarker)\(reference(message))]" : ""
-                parts.append("[Tool result]: \(label)\(kept)\(recall)")
+                let content=text(message,separator:"")
+                guard !content.isEmpty else { continue }
+                parts.append("[Tool result]: "+truncate(content).0)
             default:
                 let content=text(message,separator:"")
                 if !content.isEmpty { parts.append("[User]: "+content) }
@@ -164,9 +154,8 @@ enum CompactionSourceBuilder {
         var text="<conversation>\n"+parts.joined(separator:"\n\n")+"\n</conversation>\n\n"
         if let previous { text += "<previous-summary>\n"+previous+"\n</previous-summary>\n\n" }
         text += turnPrefix ? (previous == nil ? turnPrefixPrompt : turnPrefixUpdatePrompt) : (previous == nil ? summarizationPrompt : updatePrompt)
-        // Pi's customInstructions, then ours for history_read references.
-        let extra=[focus, parts.contains(where: { $0.contains(referenceMarker) }) ? referenceFocus : nil].compactMap { $0 }
-        if !extra.isEmpty { text += "\n\nAdditional focus: "+extra.joined(separator:" ") }
+        // Pi's customInstructions.
+        if let focus { text += "\n\nAdditional focus: "+focus }
         return text
     }
     /// A part too long for the room left is cut after `fraction` of it and

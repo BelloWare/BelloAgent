@@ -58,9 +58,10 @@ extension AgentSession {
         guard let schema=await sessionDefinitions().first(where: { $0.name == call.name })?.schema else { return call }
         return ToolCall(id:call.id,name:call.name,arguments:PiProviderRules.coerceArguments(call.arguments,schema:schema))
     }
+    /// The tools a request offers: the session's own, as pi offers its tools.
+    func sessionDefinitions() async -> [ToolDefinition] { await tools.definitions(readOnly:readOnly) }
     func invokeTool(_ call: ToolCall) async throws -> JSON {
         let prepared=await piPrepared(call)
-        if call.name == "history_read", !titleTask, !(tools is DisabledTools) { showToolInvocation(call); toolInvocationsBegan.insert(call.id); return try historyRead(prepared.arguments) }
         let update: @Sendable (JSON) async -> Void = { [weak self] update in await self?.toolUpdate(call.id,update) }
         guard !readOnly, Self.isEditing(call) else { showToolInvocation(call); toolInvocationsBegan.insert(call.id); return try await tools.invoke(prepared,readOnly:readOnly,onUpdate:update) }
         try await editingGate.acquire()
@@ -111,21 +112,22 @@ extension AgentSession {
             return describe(block)
         }.joined(separator:"\n")
         if text.isEmpty && images.isEmpty { text=result.encoded() }
-        var retained: String?
+        // Pi's agent loop takes a tool's result whole; pi's own tools cut
+        // theirs and name the file that holds the rest. Ours do the same, so
+        // this cut is for a tool that returns more (an MCP server): the text
+        // is saved whole, and pi's note names the file the model can read.
         if text.utf8.count > 65536 {
             let folder=directory.appendingPathComponent("tool-output"); try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
-            let file=folder.appendingPathComponent(UUID().uuidString+".json"); let bytes=try result.data(); guard bytes.count <= 16*1024*1024 else { throw AgentError("tool_output_limit", "Tool result exceeds 16 MiB; remote effects may have completed") }
+            let file=folder.appendingPathComponent(UUID().uuidString+".txt"), bytes=Data(text.utf8)
+            guard bytes.count <= 16*1024*1024 else { throw AgentError("tool_output_limit", "Tool result exceeds 16 MiB; remote effects may have completed") }
             try bytes.write(to:file); try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:file.path)
-            retained=file.lastPathComponent
-            text=preview(text,bytes:32768)+"\n[Large result retained. Invocation already completed; use history_read with its retained reference for bounded pages.]"
+            text=preview(text,bytes:32768)+"\n\n[Output truncated. Full output: \(file.path)]"
         }
         // An image-only result carries only its images, as the tool returned it.
         var message=ChatMessage(role:"toolResult",content:(text.isEmpty && !images.isEmpty ? [] : [textBlock(text)])+images); message.toolCallId=call.id; message.toolName=call.name; message.isError=result["isError"].flag ?? false
         // The card names each image the model receives beside the text.
         let shown=images.isEmpty ? text : ([text]+images.map(describe)).filter { !$0.isEmpty }.joined(separator:"\n")
         if !images.isEmpty { message.displayText=shown }
-        message.retainedOutput=retained
-        if retained != nil { message.content.append(textBlock("Retained reference: "+CompactionSourceBuilder.reference(message))) }
         message.requestAttemptIDs=currentAttemptIDs
         let durationMs=started.map { nowMS()-$0 }
         if countsTime, let durationMs { turnToolMs += durationMs; cumulativeToolMs = ObservedDuration.adding(cumulativeToolMs, durationMs) }

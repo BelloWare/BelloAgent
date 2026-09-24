@@ -141,7 +141,7 @@ final class CompactionPiTests: XCTestCase {
         XCTAssertEqual(body["input"].list.count,2)
         let prompt=try XCTUnwrap(body["input"].list.last?["content"].list.first?["text"].text)
         let expected="<conversation>\n[User]: \(long)\n\n[Assistant tool calls]: read(path=\"a.txt\")\n\n[Tool result]: 🙂" + String(repeating:"y",count:1_997) +
-            "\n\n[... 6 more characters truncated]\n[history_read: \(CompactionSourceBuilder.reference(calls[1]))]\n\n[Assistant]: Read it.\n</conversation>\n\nThe messages above are a conversation to summarize."
+            "\n\n[... 6 more characters truncated]\n\n[Assistant]: Read it.\n</conversation>\n\nThe messages above are a conversation to summarize."
         XCTAssertTrue(prompt.hasPrefix(expected),prompt)
         XCTAssertFalse(prompt.contains("tail"))
         XCTAssertEqual(context.map(\.id).dropFirst(),["next"])
@@ -173,7 +173,7 @@ final class CompactionPiTests: XCTestCase {
         XCTAssertEqual(context.dropFirst().map(\.id),(6..<10).flatMap { ["call-r\($0)","result-r\($0)"] },"Four reads are the tail; the request is in the prefix summary")
         XCTAssertEqual(bodies.count,1,"No history precedes the turn")
         XCTAssertGreaterThanOrEqual(bodies.first?["max_output_tokens"].int ?? 0,8_192,"The model's limit, never below pi's 0.5 × reserve for a turn prefix")
-        XCTAssertTrue(prompts.first?.contains("Be concise. Focus on what's needed to understand the kept suffix.\n\nAdditional focus: Keep the history_read references") == true)
+        XCTAssertTrue(prompts.first?.hasSuffix("Be concise. Focus on what's needed to understand the kept suffix.") == true,"Pi's prompt, with no focus of ours after it")
         XCTAssertTrue(prompts.first?.hasPrefix("<conversation>\n[User]: Inspect the reads.") == true)
         XCTAssertTrue(context.first?.text.contains("No prior history.\n\n---\n\n**Turn Context (split turn):**\n\nSUMMARY 1\n\n<read-files>\nf0\nf1\nf2\nf3\nf4\nf5\n</read-files>") == true,context.first?.text ?? "")
         await s.close()

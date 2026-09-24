@@ -230,7 +230,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         CONTRACT.validate_request('POST', self.path, dict(self.headers), body,
                                   api_key='fixture-secret', model='auto-router', max_output_tokens=4096,
                                   custom_headers={'X-Fixture-Contract': 'owner-sample-v1'}, native_items='portable',
-                                  expected_tool_names=['read','ls','find','grep','write','edit','bash','mcp','history_read'])
+                                  expected_tool_names=['read','ls','find','grep','write','edit','bash','mcp'])
         variants = {f'fixture: owner-sample {transport} {cost}': (transport, cost, False)
                     for transport in ('json', 'sse') for cost in ('null', 'paid', 'zero')}
         variants.update({f'fixture: owner-billing {transport}': (transport, 'null', True) for transport in ('json','sse')})
@@ -272,7 +272,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         CONTRACT.validate_request('POST', self.path, dict(self.headers), body, api_key='fixture-secret',
                                   model=body['model'], max_output_tokens=4096,
                                   custom_headers={'X-Fixture-Contract': 'strict-v1'}, native_items=native_policy,
-                                  expected_tool_names=[] if semantic['is_compaction'] else ['read','ls','find','grep','write','edit','bash','mcp','history_read'])
+                                  expected_tool_names=[] if semantic['is_compaction'] else ['read','ls','find','grep','write','edit','bash','mcp'])
         prompt = semantic['user_texts'][0] if semantic['is_compaction'] else semantic['latest_text']
         history = body['input' if responses else 'messages']
         tool_result = history[-1].get('type') == 'function_call_output' if responses else any(block.get('type') == 'tool_result' for block in history[-1]['content'])

@@ -1101,14 +1101,16 @@ summary, which is historical data, never replaces the user's instructions.
 
 `CompactionSourceBuilder` serializes pi's `[User]`/`[Assistant]`/`[Assistant
 thinking]`/`[Assistant tool calls]`/`[Tool result]` text with each tool result
-cut to 2,000 characters. Ours only: an outcome other than completed is named,
-and a cut result carries its scoped `history_read` reference. Each request is
-pi's: its summarization system prompt, one message of `<conversation>` text,
-`<previous-summary>` with pi's update prompt when a summary exists, and pi's
-file lists appended to the result. The cap is pi's `min(0.8 × reserve, the
-model's output limit)`, 0.5 × for a turn prefix, reserved whole on every
-request; the session's model and reasoning effort are unchanged and no tools
-are sent. There is no source-size limit: a source too long for one request is
+cut to 2,000 characters, exactly as pi writes it: no outcome label and no
+recall reference (0.1.94 removed our `history_read` tool, its references and
+their focus line). Each request is pi's: its summarization system prompt, one
+message of `<conversation>` text, `<previous-summary>` with pi's update prompt
+when a summary exists, `Additional focus:` only for a `/compact` focus, and
+pi's file lists appended to the result. Since 0.1.91 a summary request sends no
+output cap of its own: the model's limit applies, and each request keeps free
+pi's share or a quarter of the window, whichever is more, within that limit
+(`CompactionPolicy.summaryRoom`, 0.1.92); the session's model and reasoning
+effort are unchanged and no tools are sent. There is no source-size limit: a source too long for one request is
 summarized in consecutive chunks, each chunk's summary becoming the next
 chunk's previous summary (pi's own update), with a part longer than a request
 cut and continued. Each chunk may use eight physical requests, including
