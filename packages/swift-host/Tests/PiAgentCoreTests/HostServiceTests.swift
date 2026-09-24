@@ -50,6 +50,37 @@ final class HostServiceTests: XCTestCase {
         await host.shutdown()
     }
 
+    /// The chat's capture mode rides on its open: the reply names the mode
+    /// applied, so the app sends no `debug.mode` before its first turn. A
+    /// mode the helper does not know opens nothing.
+    func testSessionOpenAppliesTheCaptureModeItCarries() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let replies = HostReplies(), host = NativeHostService(emit: { replies.emit($0) })
+        await host.receive(["v": 1, "kind": "hello", "major": 1]); let epoch = await host.epoch
+        func send(_ id: String, _ method: String, _ params: JSON = [:], session: String? = nil) async -> JSON {
+            var frame: JSON = ["v": 1, "kind": "command", "hostEpoch": JSON(epoch), "commandId": JSON(id), "method": JSON(method), "params": params]
+            if let session { frame["sessionId"] = JSON(session) }
+            await host.receive(frame); return await replies.reply(id)
+        }
+        _ = await send("workspace", "workspace.open", ["cwd": JSON(root.path), "directory": JSON(root.appendingPathComponent("state").path)])
+        let profile = try fixtureProfile().raw
+        let refused = await send("bad", "session.open", ["profile": profile, "apiKey": "fixture", "captureMode": "everything"], session: "s")
+        XCTAssertEqual(refused["ok"].flag, false, refused.encoded())
+        XCTAssertEqual(refused["result"]["code"].text, "invalid_mode")
+        let missing = await send("status", "session.status", [:], session: "s")
+        XCTAssertEqual(missing["result"]["code"].text, "session_missing", "a refused mode opens no session")
+        let opened = await send("open", "session.open", ["profile": profile, "apiKey": "fixture", "captureMode": "off"], session: "s")
+        XCTAssertEqual(opened["ok"].flag, true, opened.encoded())
+        XCTAssertEqual(opened["result"]["captureMode"].text, "off")
+        let listed = await send("list", "debug.list", [:], session: "s")
+        XCTAssertEqual(listed["ok"].flag, true, listed.encoded())
+        let again = await send("reopen", "session.open", ["profile": profile, "apiKey": "fixture", "captureMode": "memory"], session: "s")
+        XCTAssertEqual(again["result"]["captureMode"].text, "memory", "an open of a loaded session applies the mode too")
+        let plain = await send("plain", "session.open", ["profile": profile, "apiKey": "fixture"], session: "s")
+        XCTAssertEqual(plain["result"]["captureMode"].text, "memory", "an open without a mode reports the one in force, which the app compares")
+        await host.shutdown()
+    }
+
     /// The app opts in to the recorded tool outcomes in its hello; the ready
     /// frame says the helper offers them, and every chat it opens uses them.
     func testTheHelloChoosesTheToolCardStatesEveryChatReports() async throws {
