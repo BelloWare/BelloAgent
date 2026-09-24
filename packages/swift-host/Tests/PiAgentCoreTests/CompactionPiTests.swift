@@ -80,28 +80,24 @@ final class CompactionPiTests: XCTestCase {
         await s.close()
     }
 
-    func testHistoryFarBeyondTheOldTwoMiBSourceCapCompacts() async throws {
+    func testHistoryFarBeyondTheOldTwoMiBSourceCapCompactsInOneRequest() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        // One task of 400 reads, 24,000 characters each: 9.6 MB of history.
-        let seed=[user("task","Survey every file.")]+(0..<400).flatMap { read("r\($0)",path:"src/f\($0).swift",output:"R\($0) "+String(repeating:"x",count:24_000),root:"task") }
-        XCTAssertGreaterThan(seed.reduce(0) { $0+$1.text.utf8.count },3*2*1024*1024)
+        // One task of 120 reads, 24,000 characters each: 2.9 MB of history.
+        let seed=[user("task","Survey every file.")]+(0..<120).flatMap { read("r\($0)",path:"src/f\($0).swift",output:"R\($0) "+String(repeating:"x",count:24_000),root:"task") }
+        XCTAssertGreaterThan(seed.reduce(0) { $0+$1.text.utf8.count },2*1024*1024)
         let client=PiSummaryClient(), s=try session(root,client,seed:seed,window:200_000)
         let state=try await compact(s), context=await s.context, prompts=await client.prompts
         XCTAssertEqual(state["compaction"]["phase"].text,"completed")
         XCTAssertEqual(context.first?.kind,"compaction")
-        XCTAssertGreaterThan(prompts.count,1,"The source is larger than one request, so it is summarized in chained chunks")
-        for (n,prompt) in prompts.enumerated() { XCTAssertEqual(prompt.contains("<previous-summary>\nSUMMARY \(n)\n</previous-summary>"),n>0) }
+        XCTAssertEqual(prompts.count,1,"A compaction is one request")
+        let prompt=try XCTUnwrap(prompts.first)
+        XCTAssertFalse(prompt.contains("<previous-summary>"))
         // Each result appears once, cut to 2,000 characters: "Rn " and the x's after it.
-        // A result split between chunks continues at the start of the next one.
-        let results=prompts.flatMap { $0.components(separatedBy:"[Tool result]: R").dropFirst() }
-        XCTAssertEqual(results.map { Int($0.prefix { $0 != " " }) ?? -1 },Array(0..<397))
-        var lengths: [Int]=[]
-        for prompt in prompts {
-            if let mark=prompt.range(of:"[continued]: "), !lengths.isEmpty { lengths[lengths.count-1] += prompt[mark.upperBound...].prefix { $0 == "x" }.count }
-            lengths += prompt.components(separatedBy:"[Tool result]: R").dropFirst().map { $0.drop { $0 != " " }.dropFirst().prefix { $0 == "x" }.count }
-        }
-        XCTAssertEqual(lengths,(0..<397).map { 2000-2-String($0).count })
-        XCTAssertEqual(context.dropFirst().map(\.id),(397..<400).flatMap { ["call-r\($0)","result-r\($0)"] },"The task's request is summarized in the turn prefix")
+        let results=prompt.components(separatedBy:"[Tool result]: R").dropFirst()
+        XCTAssertEqual(results.map { Int($0.prefix { $0 != " " }) ?? -1 },Array(0..<117))
+        XCTAssertEqual(results.map { $0.drop { $0 != " " }.dropFirst().prefix { $0 == "x" }.count },(0..<117).map { 2000-2-String($0).count })
+        XCTAssertEqual(context.dropFirst().map(\.id),(117..<120).flatMap { ["call-r\($0)","result-r\($0)"] },"The task's request is summarized in the turn prefix")
+        XCTAssertTrue(context.first?.text.contains("No prior history.\n\n---\n\n**Turn Context (split turn):**\n\nSUMMARY 1") == true)
         XCTAssertTrue(context.first?.text.contains("<read-files>\nsrc/f0.swift\nsrc/f1.swift") == true,"Pi's file lists close the summary")
         await s.close()
     }
@@ -179,33 +175,40 @@ final class CompactionPiTests: XCTestCase {
         await s.close()
     }
 
-    /// Each chunk of a history too large for one request leaves a quarter of
-    /// the window for its summary, reasoning included, not pi's 13,107 tokens.
-    func testChunksLeaveAQuarterOfTheWindowForTheirSummary() async throws {
+    /// A split turn with history before it: one request summarizes both,
+    /// the turn's start in <turn-prefix> with pi's turn-prefix prompt last,
+    /// where pi sends a second request for it.
+    func testSplitTurnAfterHistoryIsSummarizedInTheSameRequest() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        let client=PiSummaryClient(), s=try session(root,client,seed:tasks("C",30,chars:16_000),modelOutputLimit:100_000)
+        // Three earlier tasks, then one turn of ten reads of 4,000 tokens each.
+        let seed=tasks("H",3,chars:8_000)+[user("task","Inspect the reads.")]+(0..<10).flatMap { read("r\($0)",path:"f\($0)",output:String(repeating:"o",count:16_000),root:"task") }
+        let client=PiSummaryClient(), s=try session(root,client,seed:seed,modelOutputLimit:100_000)
         _=try await compact(s)
-        let bodies=await client.bodies
-        XCTAssertGreaterThanOrEqual(bodies.count,2)
-        XCTAssertTrue(bodies.allSatisfy { ($0["max_output_tokens"].int ?? 0) >= 25_000 }, bodies.map { String($0["max_output_tokens"].int ?? -1) }.joined(separator:", "))
+        let context=await s.context, bodies=await client.bodies, prompts=await client.prompts
+        XCTAssertEqual(bodies.count,1,"A compaction is one request")
+        XCTAssertEqual(context.dropFirst().map(\.id),(6..<10).flatMap { ["call-r\($0)","result-r\($0)"] })
+        let prompt=try XCTUnwrap(prompts.first)
+        XCTAssertTrue(prompt.hasPrefix("<conversation>\n[User]: H0 u"),String(prompt.prefix(80)))
+        XCTAssertTrue(prompt.contains("\n</conversation>\n\n<turn-prefix>\n[User]: Inspect the reads.\n\n[Assistant tool calls]: read(path=\"f0\")"))
+        XCTAssertTrue(prompt.contains("\n</turn-prefix>\n\n"+CompactionSourceBuilder.summarizationPrompt+"\n\n"+CompactionSourceBuilder.splitTurnPrompt))
+        XCTAssertTrue(prompt.hasSuffix("Be concise. Focus on what's needed to understand the kept suffix."))
+        XCTAssertFalse(prompt.contains("read(path=\"f6\")"),"The kept reads are not summarized")
+        XCTAssertGreaterThanOrEqual(bodies.first?["max_output_tokens"].int ?? 0,13_107+8_192,"Room for both of pi's caps")
+        XCTAssertEqual(context.first?.text.hasPrefix(CompactionCheckpoint.replayPrefix+"SUMMARY 1\n\n<read-files>"),true,context.first?.text ?? "")
         await s.close()
     }
 
-    func testHistoryTooLargeForOneRequestIsSummarizedInChainedChunks() async throws {
+    /// Nothing is ever split into chunks: a history too large for one
+    /// request is refused before anything is sent, and the context stays.
+    func testHistoryTooLargeForOneRequestIsRefusedAndKept() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        let client=PiSummaryClient(), s=try session(root,client,seed:tasks("C",30,chars:16_000),modelOutputLimit:100_000)
-        _=try await compact(s)
-        let prompts=await client.prompts, bodies=await client.bodies, context=await s.context
-        XCTAssertGreaterThanOrEqual(prompts.count,2)
-        // Each chunk carries the model's limit, clipped to its window, never below the summary's room.
-        XCTAssertTrue(bodies.allSatisfy { ($0["max_output_tokens"].int ?? 0) >= 13_107 && ($0["max_output_tokens"].int ?? 0) <= 100_000 })
-        XCTAssertFalse(prompts[0].contains("<previous-summary>")); XCTAssertTrue(prompts[0].hasSuffix("Preserve exact file paths, function names, and error messages."))
-        for n in 1..<prompts.count {
-            XCTAssertTrue(prompts[n].contains("\n</conversation>\n\n<previous-summary>\nSUMMARY \(n)\n</previous-summary>\n\nThe messages above are NEW conversation messages"))
-        }
-        for n in 0..<25 { XCTAssertEqual(prompts.filter { $0.contains("[User]: C\(n) u") }.count,1,"C\(n) is summarized exactly once") }
-        XCTAssertEqual(context.first?.text.hasSuffix("SUMMARY \(prompts.count)"),true)
-        XCTAssertEqual(context.dropFirst().first?.id,"C25")
+        let seed=tasks("C",30,chars:16_000)
+        let client=PiSummaryClient(), s=try session(root,client,seed:seed,modelOutputLimit:100_000)
+        try await s.compact(); try await eventually { !(await s.isRunning) }
+        let state=await s.snapshot(), context=await s.context, bodies=await client.bodies
+        XCTAssertEqual(state["compaction"]["errorCode"].text,"compaction_too_large")
+        XCTAssertEqual(bodies.count,0,"Nothing was sent")
+        XCTAssertEqual(context.map(\.id),seed.map(\.id))
         await s.close()
     }
 

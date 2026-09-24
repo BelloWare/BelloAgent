@@ -60,32 +60,40 @@ class FixtureRunTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stdout[-6000:] + done.stderr[-3000:])
         self.assertTrue(report["passed"])
         scenarios = {scenario["scenario"]: scenario for scenario in report["scenarios"]}
-        self.assertEqual(list(scenarios), ["compact-now", "mid-run", "over-window"])
-        for scenario in report["scenarios"]:
-            summaries = [row for row in scenario["requests"] if row["purpose"] == "compaction"]
-            self.assertTrue(summaries, scenario["scenario"])
+        self.assertEqual(list(scenarios), ["compact-now", "mid-run", "too-large"])
+        cfg = harness.Config(window=report["contextWindow"], limit=report["modelOutputLimit"])
+        for name in ("compact-now", "mid-run"):
+            summaries = [row for row in scenarios[name]["requests"] if row["purpose"] == "compaction"]
+            self.assertTrue(summaries, name)
             # Each summary reasoned as a real model does at high effort, and still finished.
             self.assertTrue(all(row["reasoningTokens"] >= 20_000 and row["stopReason"] == "completed" for row in summaries), summaries)
-            self.assertTrue(all(row["effectiveMaxOutputTokens"] >= report["contextWindow"] // 4 for row in summaries))
-            self.assertEqual([point["phase"] for point in scenario["checkpoints"]], ["completed"])
+            self.assertTrue(all(row["effectiveMaxOutputTokens"] >= cfg.summary_room(row["kind"]) for row in summaries))
+            # A compaction is one request.
+            self.assertEqual(len(summaries), len({row["operation"] for row in summaries}), summaries)
+            self.assertEqual([point["phase"] for point in scenarios[name]["checkpoints"]], ["completed"])
         self.assertEqual(scenarios["mid-run"]["checkpoints"][0]["reason"], "threshold")
-        chunks = [row for row in scenarios["over-window"]["requests"] if row["kind"] in ("history", "history-update")]
-        self.assertGreaterEqual(len(chunks), 2, "the history larger than the window is summarized in chained chunks")
+        split = [row["kind"] for row in scenarios["mid-run"]["requests"] if row["purpose"] == "compaction"]
+        self.assertTrue(split and split[0].endswith("+turn-prefix"), "the turn's start is summarized with the history, in one request")
+        # Too large for one request: refused, and nothing is sent or written.
+        self.assertEqual((scenarios["too-large"]["requests"], scenarios["too-large"]["checkpoints"]), ([], []))
+        self.assertTrue(all(check["passed"] for check in scenarios["too-large"]["checks"]), scenarios["too-large"]["checks"])
         self.assertLess(report["costUSD"], report["costCapUSD"])
         # The fixture's key stands in for a real one: it is never printed or written.
         self.assertNotIn(harness.FIXTURE["key"], done.stdout + done.stderr + written)
 
-    def test_a_summary_capped_at_13107_tokens_fails_every_scenario(self):
+    def test_a_summary_capped_at_13107_tokens_fails_every_scenario_that_summarizes(self):
         done, report, _ = run_fixture("--fixture-summary-limit", "13107")
         self.assertEqual(done.returncode, 1, done.stdout[-6000:] + done.stderr[-3000:])
         self.assertFalse(report["passed"])
-        self.assertEqual(len(report["scenarios"]), 3)
-        for scenario in report["scenarios"]:
-            failed = {check["name"].split(" (")[0] for check in scenario["checks"] if not check["passed"]}
-            self.assertLessEqual({"compaction completed and its summary adopted", "no summary request ended at max_output_tokens",
-                                  "every summary request leaves at least 32,000 output tokens", "the run ends idle"}, failed, scenario["scenario"])
-            stopped = [row for row in scenario["requests"] if row["purpose"] == "compaction" and row["stopReason"] == "max_output_tokens"]
+        scenarios = {scenario["scenario"]: scenario for scenario in report["scenarios"]}
+        self.assertEqual(list(scenarios), ["compact-now", "mid-run", "too-large"])
+        for name in ("compact-now", "mid-run"):
+            failed = {check["name"].split(" (")[0] for check in scenarios[name]["checks"] if not check["passed"]}
+            self.assertLessEqual({"compaction completed and its summary adopted", "no summary request ended at max_output_tokens", "the run ends idle"}, failed, name)
+            stopped = [row for row in scenarios[name]["requests"] if row["purpose"] == "compaction" and row["stopReason"] == "max_output_tokens"]
             self.assertTrue(stopped and all(row["reasoningTokens"] == 13_107 for row in stopped))
+        # The refusal sends no summary, so the cap cannot touch it.
+        self.assertTrue(scenarios["too-large"]["passed"], scenarios["too-large"]["checks"])
 
 
 def summary_request(limit, effort="high"):
@@ -151,12 +159,10 @@ class ReasoningGatewayTests(unittest.TestCase):
 
 class SummaryPromptTests(unittest.TestCase):
     def test_the_kind_is_the_prompt_at_the_end_even_when_the_conversation_quotes_another(self):
-        quoted = "[Tool result]: This is the PREFIX of a turn that was too large to keep. <previous-summary>"
+        quoted = "[Tool result]: This is the PREFIX of a turn that was too large to keep. <previous-summary> <turn-prefix>"
         cases = {"history": "The messages above are a conversation to summarize.",
                  "history-update": "The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.",
-                 "turn-prefix": "This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.",
-                 "turn-prefix-update": "The messages above are NEW messages from the same turn prefix, to incorporate into the existing prefix summary "
-                                       "provided in <previous-summary> tags.\n\nThis is the PREFIX of a turn that was too large to keep."}
+                 "turn-prefix": "This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained."}
         for kind, tail in cases.items():
             previous = "<previous-summary>\nEarlier summary\n</previous-summary>\n\n" if kind.endswith("update") else ""
             prompt = f"<conversation>\n[User]: hello\n\n{quoted}\n</conversation>\n\n{previous}{tail}"
@@ -164,6 +170,17 @@ class SummaryPromptTests(unittest.TestCase):
             self.assertEqual(parsed, kind)
             self.assertEqual(conversation, f"[User]: hello\n\n{quoted}")
             self.assertEqual(earlier, "Earlier summary" if previous else None)
+
+    def test_a_split_turn_summarized_in_the_same_request_is_read_with_the_history(self):
+        """A compaction is one request: a split turn's prefix follows the history in
+        <turn-prefix>, and the split-turn instruction ends the prompt."""
+        split = reasoning_gateway.SPLIT_TURN + " The SUFFIX (recent work) is retained after this summary."
+        for kind, previous in (("history+turn-prefix", None), ("history-update+turn-prefix", "Earlier summary")):
+            tail = ("The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags."
+                    if previous else "The messages above are a conversation to summarize.")
+            prompt = ("<conversation>\n[User]: hello\n</conversation>\n\n<turn-prefix>\n[User]: the turn\n</turn-prefix>\n\n"
+                      + (f"<previous-summary>\n{previous}\n</previous-summary>\n\n" if previous else "") + tail + "\n\n" + split)
+            self.assertEqual(reasoning_gateway.parse_summary_prompt(prompt), (kind, "[User]: hello\n\n[User]: the turn", previous))
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -184,7 +201,9 @@ class ConfigurationTests(unittest.TestCase):
         with self.environment(PI_LIVE_BASE_URL="https://gateway.example/v1", PI_LIVE_API_KEY="k" * 20, PI_LIVE_MODEL="unlisted-model",
                               PI_LIVE_CONTEXT_WINDOW="128000", PI_LIVE_THINKING="medium", PI_LIVE_MAX_COST_USD="2.5"):
             cfg = harness.load_config(self.arguments())
-        self.assertEqual((cfg.window, cfg.limit, cfg.thinking, cfg.max_cost, cfg.quarter, cfg.threshold), (128_000, None, "medium", 2.5, 32_000, 111_616))
+        self.assertEqual((cfg.window, cfg.limit, cfg.thinking, cfg.max_cost, cfg.threshold), (128_000, None, "medium", 2.5, 111_616))
+        # Pi's summary cap, with the turn-prefix cap when a split turn's start is in the same request.
+        self.assertEqual([cfg.summary_room(kind) for kind in ("history", "history-update+turn-prefix", "turn-prefix")], [13_107, 21_299, 8_192])
         with self.environment():
             with self.assertRaisesRegex(harness.Failure, "PI_LIVE_BASE_URL"):
                 harness.load_config(self.arguments())

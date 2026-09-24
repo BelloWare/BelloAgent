@@ -23,7 +23,7 @@ private actor GoldenCompactionTools: ToolExecuting {
 }
 
 final class CompactionGatewayTests: XCTestCase {
-    func testStreamingChainedSummaryAndOutputExhaustionRetainEveryAttemptAndEffort() async throws {
+    func testStreamingSummaryAndOutputExhaustionRetainEveryAttemptAndEffort() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         var repo=URL(fileURLWithPath:#filePath);for _ in 0..<5 { repo.deleteLastPathComponent() }
         let server=Process();server.executableURL=URL(fileURLWithPath:"/usr/bin/python3");server.arguments=[repo.appendingPathComponent("fixtures/native/compaction_gateway.py").path,root.path]
@@ -33,8 +33,9 @@ final class CompactionGatewayTests: XCTestCase {
         let port=try XCTUnwrap(JSON.parse(Data(contentsOf:ready))["port"].int)
         var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["contextWindow"]=16000;raw["modelOutputLimit"]=32768;raw["thinkingLevel"]="high"
         var user=ChatMessage(role:"user",content:[textBlock("Preserve the objective.")]);user.id="root";user.taskRootID="root"
-        // Two answers of 6,750 tokens each: more than one 16,000-token request can summarize.
-        let seed=[user]+(0..<2).map { _ in var evidence=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"observed ",count:3000))]);evidence.taskRootID="root";return evidence }
+        // Two answers of 2,250 tokens each: the second is kept, and the task's
+        // start is summarized in one request of a 16,000-token window.
+        let seed=[user]+(0..<2).map { _ in var evidence=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"observed ",count:1000))]);evidence.taskRootID="root";return evidence }
         let traces=TraceStore()
         func attempts(_ id: String) async throws -> [JSON] { try await traces.command("debug.list",session:id,params:[:])["attempts"].list }
         func records() throws -> [JSON] { try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) } }
@@ -56,15 +57,15 @@ final class CompactionGatewayTests: XCTestCase {
 
         let s=try AgentSession(id:"compaction-budget",profile:Profile(raw),apiKey:"synthetic-compaction-key",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:ProviderClient(traces:traces),tools:RecordingTools(),traces:traces,seed:seed)
         try await s.compact();try await eventually { !(await s.isRunning) }
-        let state=await s.snapshot(),context=await s.context,chained=try await attempts("compaction-budget")
+        let state=await s.snapshot(),context=await s.context,sent=try await attempts("compaction-budget")
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
         XCTAssertEqual(context.first?.kind,"compaction");XCTAssertTrue(context.filter { $0.role=="user" }.isEmpty,"Pi replays no input verbatim")
-        XCTAssertGreaterThan(chained.count,1,"Each chunk updates the summary so far, each packed to leave its summary room")
+        XCTAssertEqual(sent.count,1,"A compaction is one request")
         XCTAssertTrue(try records().allSatisfy { $0["status"].int==200 })
         var output=0
-        for attempt in chained { try await captured("compaction-budget",attempt); output += attempt["usage"]["output"].int ?? 0 }
+        for attempt in sent { try await captured("compaction-budget",attempt); output += attempt["usage"]["output"].int ?? 0 }
         let total=await s.cumulativeUsage
-        XCTAssertEqual(total.output,output);XCTAssertEqual(state["compaction"]["attemptOutcomes"].list.count,chained.count)
+        XCTAssertEqual(total.output,output);XCTAssertEqual(state["compaction"]["attemptOutcomes"].list.count,sent.count)
         XCTAssertTrue(state["requestObservation"].isNull,"Summary usage must not replace normal-request context usage")
         let operations = await s.history.filter { $0.kind == "execution" && $0.operationID != nil }
         XCTAssertEqual(operations.count,1)

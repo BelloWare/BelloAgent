@@ -140,26 +140,32 @@ and drives it over the wire, as the app does.
   must start from the summary.
 - **mid-run.** One turn, with the real read-only tools in a temporary
   workspace, is told to read ten 28 KB files one at a time. The threshold is
-  crossed between rounds, the helper compacts, and the turn must finish with
-  its answer.
-- **over-window.** "Compact now" on a history larger than the window, so it
-  is summarized in chained chunks, then a turn from the summary.
+  crossed between rounds, the helper compacts in one request that summarizes
+  the history and the turn's start, and the turn must finish with its answer.
+- **too-large.** "Compact now" on a history too large for one summary
+  request. A compaction is one request and never chunks, so it is refused
+  before anything is sent, and the context stays as it was.
 
-**What must hold.** Every scenario checks each of these:
+**What must hold.** Every scenario that summarizes checks each of these:
 
 - every compaction completes, and its summary becomes the live context;
+- one summary request per compaction (a retry sends the same input again);
 - no summary request ends at `max_output_tokens`;
-- every summary request leaves at least a quarter of the window for its
-  output, or the model's own limit when that is lower;
+- every summary request leaves room for pi's summary cap (0.8 × the reserve,
+  plus 0.5 × the reserve when a split turn's start is in it), within the
+  model's own limit;
 - the context estimate after each compaction is under the threshold;
 - no loop: a bounded number of summary requests, no summary asked again after
   an answer, and no compaction tried again after one failed;
 - the run ends idle;
 - the reported cost stays under the cap.
 
-The mid-run scenario also checks that the compaction came between rounds and
-that the turn then answered. The other two check that the next turn starts
-from the summary, and over-window that its chunks chain.
+The mid-run scenario also checks that the compaction came between rounds,
+that the split turn's start was summarized in the same request, and that the
+turn then answered. Compact-now checks that the next turn starts from the
+summary. Too-large checks that the compaction was refused with
+`compaction_too_large`, that nothing was sent, and that no checkpoint was
+written.
 
 **Cost.** The cap is the helper's own per-chat cost limit. The helper stops
 a chat before its next request once the spend reaches the limit, but a request

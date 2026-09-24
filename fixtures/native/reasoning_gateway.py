@@ -61,29 +61,34 @@ HISTORICAL_TOOLS = {
 
 
 # Pi's summary prompts (CompactionSourceBuilder), by the words each begins with.
-SUMMARY_PROMPTS = (("turn-prefix-update", "The messages above are NEW messages from the same turn prefix"),
-                   ("history-update", "The messages above are NEW conversation messages to incorporate"),
+SUMMARY_PROMPTS = (("history-update", "The messages above are NEW conversation messages to incorporate"),
                    ("history", "The messages above are a conversation to summarize."),
                    ("turn-prefix", "This is the PREFIX of a turn that was too large to keep."))
+# Ours: a compaction is one request, so a split turn's prefix comes in the
+# history's request, in <turn-prefix>, with this instruction last.
+SPLIT_TURN = "The messages in <turn-prefix> are the PREFIX of a turn that was too large to keep."
 
 
 def parse_summary_prompt(prompt):
-    """Splits pi's summary prompt into its kind, its conversation text and the
-    previous summary it updates. The fixed prompt comes last, so the last one
-    found is the request's own; a conversation can quote any of them."""
+    """Splits a summary prompt into its kind, its conversation text (a split
+    turn's prefix after the history) and the previous summary it updates. The
+    fixed prompt comes last, so the last one found is the request's own; a
+    conversation can quote any of them. A request that also summarizes a
+    split turn's prefix is "<kind>+turn-prefix"."""
     position, kind = max((prompt.rfind(start), kind) for kind, start in SUMMARY_PROMPTS)
     if position < 0:
         return None, prompt, None
-    if kind == "turn-prefix":
-        update = prompt.rfind(SUMMARY_PROMPTS[0][1], 0, position)
-        if update >= 0 and position - update < 400:
-            position, kind = update, "turn-prefix-update"
-    head, previous = prompt[:position], None
+    head, previous, prefix = prompt[:position], None, None
     if head.endswith("\n</previous-summary>\n\n"):
         begin = head.rfind("<previous-summary>\n")
         previous, head = head[begin + len("<previous-summary>\n"):-len("\n</previous-summary>\n\n")], head[:begin]
+    if kind != "turn-prefix" and head.endswith("\n</turn-prefix>\n\n") and prompt.rfind(SPLIT_TURN) > position:
+        begin = head.rfind("<turn-prefix>\n")
+        prefix, head = head[begin + len("<turn-prefix>\n"):-len("\n</turn-prefix>\n\n")], head[:begin]
+        kind += "+turn-prefix"
     head = head[len("<conversation>\n"):] if head.startswith("<conversation>\n") else head
-    return kind, head[:-len("\n</conversation>\n\n")] if head.endswith("\n</conversation>\n\n") else head, previous
+    conversation = head[:-len("\n</conversation>\n\n")] if head.endswith("\n</conversation>\n\n") else head
+    return kind, conversation if prefix is None else conversation + "\n\n" + prefix, previous
 
 
 def tokens(text):
@@ -222,7 +227,7 @@ class ReasoningGateway:
 
     def summarize(self, prompt, input_tokens):
         """A structured summary in pi's format that keeps the task, files and markers."""
-        _, conversation, previous = parse_summary_prompt(prompt)
+        kind, conversation, previous = parse_summary_prompt(prompt)
         previous = previous or ""
         users = [part[len("[User]: "):] for part in conversation.split("\n\n") if part.startswith("[User]: ")]
         task = next((user for user in users if TASK_TAG in user), None) or next((line for line in previous.split("\n") if TASK_TAG in line), None)
@@ -242,6 +247,10 @@ class ReasoningGateway:
         while sum(len(line) + 1 for line in lines) < target and notes:
             lines.append("- Evidence: " + notes[(index * 7919) % len(notes)][:160])
             index += 1
+        if kind and kind.endswith("+turn-prefix"):
+            # The split turn's section, as the one request asks for it.
+            lines += ["", "---", "", "**Turn Context (split turn):**", "", "## Original Request", goal.replace("\n", " "), "",
+                      "## Early Progress", f"- [x] Read {len(files)} files", "", "## Context for Suffix", "- The kept messages continue this turn"]
         return "\n".join(lines)
 
     @staticmethod

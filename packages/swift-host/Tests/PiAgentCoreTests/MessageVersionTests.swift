@@ -114,7 +114,7 @@ final class MessageVersionTests: XCTestCase {
     func testAnEditAfterACompactionKeepsTheSummaryInTheEarlierVersion() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let session = try chat.session(replies: [answer(String(repeating: "first evidence ", count: 400)), answer(String(repeating: "second evidence ", count: 400)),
-                                                 answer("the summary"), answer("the split turn's prefix"), answer("third answer"), answer("edited second answer"),
+                                                 answer("the summary\n\n---\n\n**Turn Context (split turn):**\n\nthe split turn's prefix"), answer("third answer"), answer("edited second answer"),
                                                  answer("edited again answer")], keepRecentTokens: 1)
         try await send(session, "u1", "first question")
         try await send(session, "u2", "second question")
