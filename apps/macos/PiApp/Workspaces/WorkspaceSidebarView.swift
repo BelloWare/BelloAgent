@@ -70,6 +70,7 @@ struct WorkspaceSidebar: View {
             .piAnimation(PiMotion.base, value: model.hasMarkedSessions)
             .piAnimation(PiMotion.glide, value: model.organizationPresentationRevision)
             .environment(\.piSelectionNamespace, selectionGlide)
+            .modifier(SidebarMinuteClock())
             .overlay {
                 if model.sidebarProjects.isEmpty {
                     VStack(spacing: 10) {

@@ -40,14 +40,23 @@ struct ChatRowStats: Equatable {
     var generating = false
     var timing: SessionTimingHistory?
     /// Seconds since 1970 of the latest request or message, for the "3m ago" stamp.
-    var lastActivity: Double?
-    init(totals: GatewayTotals?, timing: SessionTimingHistory? = nil) {
+    private(set) var lastActivity: Double?
+    /// "3m ago", "2h ago", "yesterday", or a short date, as of when the row
+    /// was built; nil without any activity. Stored rather than worked out on
+    /// reading, so a row whose stamp now reads differently compares unequal
+    /// and is drawn again: one that held only the time kept "just now".
+    private(set) var recencyLabel: String?
+    init(totals: GatewayTotals?, timing: SessionTimingHistory? = nil, now: Date = Date()) {
         self.timing = timing
-        lastActivity = totals?.lastActivity
         costUSD = totals?.costUSD; cacheHits = totals?.cacheHits ?? 0; cacheMisses = totals?.cacheMisses ?? 0; requests = totals?.requests ?? 0
         tokens = totals?.tokens?.total; tokenSamples = totals?.tokens?.samples ?? 0
         inputTokens = totals?.tokens?.input; outputTokens = totals?.tokens?.output; cachedTokens = totals?.cacheReadTokens
         inputSamples = totals?.tokens?.inputSamples ?? 0; outputSamples = totals?.tokens?.outputSamples ?? 0; cachedSamples = totals?.cacheReadSamples ?? 0
+        noteActivity(totals?.lastActivity, now: now)
+    }
+    mutating func noteActivity(_ seconds: Double?, now: Date = Date()) {
+        lastActivity = seconds
+        recencyLabel = seconds.flatMap { $0.isFinite && $0 > 0 ? ChatRowStats.relative(Date(timeIntervalSince1970: $0), now: now) : nil }
     }
     var hasActivity: Bool { requests > 0 || busy || loading || tokens != nil || timing?.latest != nil }
     /// "12k in · 8.1k cached · 2.4k out". Unreported usage reads n/a, never zero.
@@ -69,11 +78,6 @@ struct ChatRowStats: Equatable {
         if tokens >= 1_000_000 { return String(format: "%.1fM tok", tokens / 1_000_000) }
         if tokens >= 1_000 { return String(format: "%.1fk tok", tokens / 1000) }
         return String(format: "%.0f tok", tokens)
-    }
-    /// "3m ago", "2h ago", "yesterday", or a short date; nil without any activity.
-    var recencyLabel: String? {
-        guard let lastActivity, lastActivity.isFinite, lastActivity > 0 else { return nil }
-        return ChatRowStats.relative(Date(timeIntervalSince1970: lastActivity))
     }
     static func relative(_ date: Date, now: Date = Date()) -> String {
         let seconds = max(0, now.timeIntervalSince(date))
@@ -123,12 +127,13 @@ struct ChatRow: View {
     var toggle: () -> Void = {}
     private var symbol: String { chat.imported ? "doc.text" : chat.parentSessionID != nil ? "arrow.triangle.branch" : chat.connectionTest == true ? "checkmark.seal" : chat.toolMode == "read-only" ? "eye" : "bubble.left" }
     private var archiveAction: (() -> Void)? { chat.isBackgroundTask || chat.connectionTest == true ? nil : { model.toggleSessionArchive(chat.id) } }
+    @Environment(\.sidebarMinute) private var minute
     var body: some View {
         if live, let display = model.displays[chat.id] {
             LiveChatRow(session: display, footer: display.footer, title: chat.title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: unreadCount, unreadFailure: unreadFailure, hasSide: hasSide, expanded: expanded, available: available, toggle: toggle, pinned: chat.isPinned, archived: chat.isArchived, archive: archiveAction)
         } else {
             RetainedAccountingRow(accounting: model.chatAccounting.row(for: chat.id)) { totals in
-                ChatRowBody(stats: ChatRowStats(totals: totals), title: chat.title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: unreadCount, unreadFailure: unreadFailure, hasSide: hasSide, expanded: expanded, pinned: chat.isPinned, available: available, archived: chat.isArchived, archive: archiveAction).equatable()
+                ChatRowBody(stats: ChatRowStats(totals: totals, now: minute ?? Date()), title: chat.title, subtitle: subtitle, symbol: symbol, selected: selected, unreadCount: unreadCount, unreadFailure: unreadFailure, hasSide: hasSide, expanded: expanded, pinned: chat.isPinned, available: available, archived: chat.isArchived, archive: archiveAction).equatable()
             }
         }
     }
@@ -157,12 +162,14 @@ private struct LiveChatRow: View {
     var pinned = false
     var archived = false
     var archive: (() -> Void)? = nil
+    @Environment(\.sidebarMinute) private var minute
     private var stats: ChatRowStats {
-        var value = ChatRowStats(totals: footer.gateway, timing: footer.timing)
+        let now = minute ?? Date()
+        var value = ChatRowStats(totals: footer.gateway, timing: footer.timing, now: now)
         value.updateActivity(state: session.state, loading: session.loading, activity: session.activity)
         value.costLimited = session.failureCode == SessionDisplay.costLimitCode
         // A message that just landed is more recent than the last retained request.
-        if let at = session.messages.last(where: { $0.at != nil })?.at { value.lastActivity = max(value.lastActivity ?? 0, at / 1_000) }
+        if let at = session.messages.last(where: { $0.at != nil })?.at { value.noteActivity(max(value.lastActivity ?? 0, at / 1_000), now: now) }
         return value
     }
     var body: some View { row }
@@ -346,5 +353,21 @@ struct SideRow: View {
         } else {
             ChatRowBody(stats: ChatRowStats(totals: nil), title: title, subtitle: subtitle, symbol: "arrow.triangle.branch", selected: selected, unreadCount: unreadCount, available: available).equatable()
         }
+    }
+}
+
+/// The minute the sidebar's "3m ago" stamps are worked out against, from one
+/// clock around the list. Only the rows read it, and a row whose stamp still
+/// reads the same compares equal and is not drawn again.
+private struct SidebarMinuteKey: EnvironmentKey { static let defaultValue: Date? = nil }
+extension EnvironmentValues {
+    var sidebarMinute: Date? {
+        get { self[SidebarMinuteKey.self] }
+        set { self[SidebarMinuteKey.self] = newValue }
+    }
+}
+struct SidebarMinuteClock: ViewModifier {
+    func body(content: Content) -> some View {
+        TimelineView(.everyMinute) { context in content.environment(\.sidebarMinute, context.date) }
     }
 }

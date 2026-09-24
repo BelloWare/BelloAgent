@@ -70,7 +70,8 @@ struct ComposerInput: View {
                     // The keyboard hints are the empty composer's placeholder; they leave once typing starts.
                     .overlay(alignment: .topLeading) {
                         if draft.text.isEmpty && session.skills.isEmpty {
-                            Text("Message… " + ComposerSubmissionIntent.hint(running: session.busy)).font(.system(size: 14)).foregroundStyle(Color.piInkTertiary)
+                            Text("Message… " + ComposerSubmissionIntent.hint(queues: queues, onBar: queues && !editing && barForm.runControls.showsHint))
+                                .font(.system(size: 14)).foregroundStyle(Color.piInkTertiary)
                                 .padding(.leading, 15).padding(.top, 9).allowsHitTesting(false).accessibilityHidden(true)
                         }
                     }

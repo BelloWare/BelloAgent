@@ -323,6 +323,30 @@ final class ForkFromReplyTests: XCTestCase {
         await live.close()
     }
 
+    /// "Fork from here" from the Inspector works for a chat with no display
+    /// (not shown this launch, or let go after eight others), and a reader
+    /// who moved to another chat while the fork was made stays there.
+    @MainActor func testForkFromHereNeedsNoDisplayAndLeavesAReaderWhoMovedOn() async throws {
+        let live = try await ConversationPaneTests.LiveChat()
+        var closed = false
+        defer { if !closed { Task { await live.close() } } }
+        await live.settle(20)
+        await live.send("First question for the fork")
+        await live.waitUntil("The first turn never finished") { !live.session.hasWork && live.session.messages.contains { $0.role == "assistant" } }
+        let reply = try XCTUnwrap(live.session.messages.last { $0.role == "assistant" && $0.kind == nil }?.id)
+        let other = ChatRecord(id: UUID().uuidString, workspaceID: live.chat.workspaceID, title: "Elsewhere", path: nil, profileID: live.chat.profileID)
+        live.model.chats.append(other); try await live.model.store?.put(other, kind: "chat", id: other.id)
+        live.model.displays.removeValue(forKey: live.chat.id)
+        live.model.forkFromReply(sessionID: live.chat.id, messageID: reply)
+        await live.model.select(other.id)
+        await live.waitUntil("The fork was never made") { live.model.chats.contains { $0.parentSessionID == live.chat.id } }
+        await live.settle(10)
+        XCTAssertEqual(live.model.selectedID, other.id, "A reader who moved on is not pulled to the fork")
+        XCTAssertNil(live.model.error, live.model.error ?? "")
+        closed = true
+        await live.close()
+    }
+
     /// The Inspector's request page forks from the reply its request produced.
     @MainActor func testTheRequestPageFindsTheReplyItsRequestProduced() async throws {
         var reply = TranscriptMessage(id: "a1", role: "assistant", text: "Done.", state: "complete", turn: "u1")

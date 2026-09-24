@@ -281,6 +281,26 @@ extension WorkspaceLoadingTests {
         try await close(model)
     }
 
+    /// Closing a saved side writes its draft before it lets go. A second side
+    /// opened on the same chat during that write was the one removed.
+    @MainActor func testClosingASideLeavesASideOpenedDuringItsCloseInPlace() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await fixture(root: root)
+        model.chats[1].parentSessionID = "a"
+        var second = ChatRecord(id: "c", workspaceID: "project", title: "C", path: nil, profileID: "profile"); second.parentSessionID = "a"
+        model.chats.append(second)
+        let first = model.mountSide(model.chats[1], beside: "a")
+        first.selectionMetadataLoaded = true
+        model.closeSide("b")
+        _ = model.mountSide(second, beside: "a")
+        model.focusedSessionID = "c"
+        for _ in 0..<500 where first.loading { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertFalse(first.loading)
+        XCTAssertEqual(model.sides["a"]?.id, "c", "The side opened meanwhile stays open")
+        XCTAssertEqual(model.focusedSessionID, "c", "and keeps the cursor")
+        try await close(model)
+    }
+
     /// A helper event for a chat nobody is showing (a settings change reaches
     /// every loaded session) builds it an empty display. Quit wrote that
     /// empty draft over the saved one.

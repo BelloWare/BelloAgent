@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 
 struct WindowActivityGuard: NSViewRepresentable {
-    @ObservedObject var model: WorkspaceModel
+    let model: WorkspaceModel
     func makeCoordinator() -> Coordinator { Coordinator(model) }
     func makeNSView(context: Context) -> HookView {
         let view = HookView(); view.attached = { [weak coordinator = context.coordinator] window in coordinator?.attach(window) }; return view

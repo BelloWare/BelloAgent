@@ -106,6 +106,24 @@ final class SidebarMetricsLayoutTests: XCTestCase {
     /// mid-compaction said "compacting" in lower case beside its cost. Every
     /// state a row can show is now a word a reader already knows, and none of
     /// the wire names survives into the line.
+    /// A row's "3m ago" stamp is part of what the row is compared on. It was
+    /// worked out from the clock when read, so an idle row, equal to itself on
+    /// every pass, kept "just now" until something else about it changed.
+    @MainActor func testTheRecencyStampIsComparedSoItMovesOnWithTheClock() {
+        let start = Date()
+        var totals = GatewayTotals(requests: 1, costSamples: 1, costUSD: 0.01)
+        totals.lastActivity = start.timeIntervalSince1970 - 5
+        let fresh = ChatRowStats(totals: totals, now: start)
+        let later = ChatRowStats(totals: totals, now: start.addingTimeInterval(3 * 60))
+        XCTAssertEqual(fresh.recencyLabel, "just now")
+        XCTAssertEqual(later.recencyLabel, "3m ago")
+        XCTAssertNotEqual(fresh, later, "A row whose stamp reads differently is drawn again")
+        XCTAssertEqual(ChatRowStats(totals: totals, now: start.addingTimeInterval(20)), fresh, "and one whose stamp reads the same is not")
+        let before = ChatRowBody(stats: fresh, title: "A", subtitle: "", symbol: "bubble.left", selected: false)
+        let after = ChatRowBody(stats: later, title: "A", subtitle: "", symbol: "bubble.left", selected: false)
+        XCTAssertFalse(before == after)
+    }
+
     @MainActor func testRunStatesReachTheRowAsWordsAReaderKnows() {
         let expected: [(String, Bool, String)] = [
             ("queued", false, "Waiting"), ("running", false, "Working"), ("tool", false, "Working"),
