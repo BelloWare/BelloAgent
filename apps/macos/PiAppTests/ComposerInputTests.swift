@@ -297,3 +297,23 @@ extension ConversationPaneTests {
         XCTAssertEqual(editor.string, "", "paging must not type into the side's draft")
     }
 }
+
+/// Views that must change in place rather than be removed and inserted
+/// again: each would otherwise replay a transition the reader sees as a
+/// flicker. Read from the source, as `BlockingAlertTests` reads it.
+extension ConversationPaneTests {
+    static func appSource(_ path: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("PiApp")
+        return try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+    }
+    /// The code from `start` to the first `end` after it.
+    static func excerpt(_ source: String, from start: String, to end: String) throws -> Substring {
+        let from = try XCTUnwrap(source.range(of: start), "\(start) not found")
+        let to = try XCTUnwrap(source.range(of: end, range: from.upperBound..<source.endIndex), "\(end) not found after \(start)")
+        return source[from.lowerBound..<to.upperBound]
+    }
+    func testLiveTurnBarKeepsItsIdentityAcrossPresentations() throws {
+        let body = try Self.excerpt(Self.appSource("Transcript/NativeTranscriptView.swift"), from: "LiveTurnBarSlot(turn:", to: "}")
+        XCTAssertFalse(body.contains(".id("), "A new presentation of the chat replays the live turn bar's entrance")
+    }
+}

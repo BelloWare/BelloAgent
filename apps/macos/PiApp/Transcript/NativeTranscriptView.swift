@@ -1929,8 +1929,10 @@ struct NativeTranscriptView: View {
             // Parent panel or status changes must not animate the document's
             // frame. Row disclosures and the Back to bottom pill set their own motion.
             .transaction { $0.animation = nil }
+            // Not re-identified by the presentation generation: a new page of
+            // the same chat (a revisit, a reload, an earlier version) keeps the
+            // bar where it stands instead of replaying its entrance.
             LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion)
-                .id(session.presentationGeneration)
         }
         // The run state is read where it is used, never from the value this
         // body happened to be built with: a task runs a turn of the run loop
