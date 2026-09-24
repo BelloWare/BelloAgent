@@ -316,4 +316,10 @@ extension ConversationPaneTests {
         let body = try Self.excerpt(Self.appSource("Transcript/NativeTranscriptView.swift"), from: "LiveTurnBarSlot(turn:", to: "}")
         XCTAssertFalse(body.contains(".id("), "A new presentation of the chat replays the live turn bar's entrance")
     }
+    func testModelChipChangesItsLabelInPlace() throws {
+        let label = try Self.excerpt(Self.appSource("Workspaces/ModelSwitchControls.swift"), from: "Text(text).font(.system(size: 12, weight: .medium))", to: "if loading")
+        XCTAssertTrue(label.contains(".contentTransition(.opacity)"))
+        XCTAssertFalse(label.contains(".id(text)"), "A new model name removes the chip's label and inserts another")
+        XCTAssertFalse(label.contains(".transition("), "The chip's label is replaced, not changed")
+    }
 }
