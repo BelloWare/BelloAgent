@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import PiApp
 
@@ -24,6 +25,35 @@ final class AutomaticContextTests: XCTestCase {
         await model.select("a"); await presentationReady(model)
         XCTAssertNil(model.automaticContextTask, "Reopening a tab reuses its matching fresh estimate")
         XCTAssertEqual(calls, 1); XCTAssertTrue(model.hosts.isEmpty)
+        try await close(model)
+    }
+
+    /// Every keystroke restarts the pending estimate. Restarting it used to
+    /// clear the footer's "calculating" flag and set it again, two publishes
+    /// of the footer per key, each redrawing the composer's context pill, the
+    /// cost-limit control and the chat's sidebar row with nothing changed.
+    @MainActor func testTypingDoesNotRepublishTheFooterForEveryKeystroke() async throws {
+        let model = try await fixture(); defer { model.shutdown() }
+        model.automaticContextOperation = { _, _ in Self.summary(tokens: 400) }
+        await model.select("a"); await presentationReady(model)
+        if let pending = model.automaticContextTask { await pending.task.value }
+        let display = try XCTUnwrap(model.selected)
+        XCTAssertFalse(display.footer.preparingContext)
+        var publishes = 0
+        let observation = display.footer.objectWillChange.sink { publishes += 1 }
+        defer { observation.cancel() }
+        let keystrokes = 40
+        for index in 0..<keystrokes {
+            display.draft += String(index % 10)
+            model.draftChanged(display)
+            XCTAssertTrue(display.footer.preparingContext, "The estimate stays pending while the draft changes")
+        }
+        let pending = try XCTUnwrap(model.automaticContextTask)
+        XCTAssertEqual(pending.signature.params["text"], .string(display.draft), "The pending estimate is for the latest draft")
+        print("PERF footerPublishesPerKeystroke \(Double(publishes) / Double(keystrokes)) (\(publishes) for \(keystrokes) keystrokes)")
+        XCTAssertLessThanOrEqual(publishes, 1, "Only the first keystroke turns the estimate on")
+        model.cancelAutomaticContext()
+        XCTAssertFalse(display.footer.preparingContext, "Cancelling still clears it")
         try await close(model)
     }
 

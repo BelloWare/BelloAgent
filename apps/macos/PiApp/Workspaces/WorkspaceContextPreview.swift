@@ -110,15 +110,19 @@ extension WorkspaceModel {
         guard matchingPreparedContext(view) == nil else { cancelAutomaticContext(id); return }
         let signature = automaticContextSignature(item, view: view)
         if let pending = automaticContextTask, pending.id == id, pending.signature == signature { return }
-        cancelAutomaticContext()
+        // A keystroke restarts this chat's own estimate, which stays
+        // "calculating" throughout: clearing the flag and setting it again
+        // published the footer twice per key, redrawing the context pill,
+        // the cost-limit control and the sidebar row with nothing changed.
+        if let pending = automaticContextTask, pending.id == id { automaticContextTask = nil; pending.task.cancel() } else { cancelAutomaticContext() }
         let token = UUID(), operation = automaticContextOperation
-        view.footer.preparingContext = true
+        if !view.footer.preparingContext { view.footer.preparingContext = true }
         let task = Task { [weak self, weak view] in
             // Coalesce rapid edits and tab traversal before opening the helper.
             do { try await Task.sleep(for: delay) } catch { return }
             guard let self, let view else { return }
             defer {
-                if automaticContextTask?.token == token { automaticContextTask = nil; view.footer.preparingContext = false }
+                if automaticContextTask?.token == token { automaticContextTask = nil; if view.footer.preparingContext { view.footer.preparingContext = false } }
             }
             do {
                 try requireAutomaticContext(id)
@@ -152,7 +156,7 @@ extension WorkspaceModel {
     func cancelAutomaticContext(_ id: String? = nil) {
         guard let pending = automaticContextTask, id == nil || pending.id == id else { return }
         automaticContextTask = nil; pending.task.cancel()
-        displays[pending.id]?.footer.preparingContext = false
+        if let footer = displays[pending.id]?.footer, footer.preparingContext { footer.preparingContext = false }
     }
     func readPreparedContext(_ id: String, revision: String, section: String? = nil, offset: Int = 0, itemOffset: Int = 0) async throws -> [String: WireValue] {
         var params: [String: WireValue] = ["revision":.string(revision),"offset":.number(Double(offset)),"itemOffset":.number(Double(itemOffset))]
