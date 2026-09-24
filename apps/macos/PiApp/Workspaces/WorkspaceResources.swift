@@ -170,16 +170,24 @@ extension WorkspaceModel {
             if view.completionVisible != outside { view.completionVisible = outside }
             if outside { updateCompletionSelection(view); Task { await loadSkillCatalog(sessionID: view.id) } }
         }
-        if let cached = view.codeClassification, cached.generation == location.editorGeneration, cached.revision == location.draftRevision, cached.offset == token.replacementRangeUTF16.location { apply(cached.outside); return }
+        // Typing or deleting inside the token leaves the text before its slash
+        // alone, and that text is all the classification reads. Keying the
+        // cache on the draft revision missed on every keystroke, so the list
+        // was hidden here and shown again a turn later by the background
+        // pass: it flickered, and the transcript above it shrank and grew.
+        let offset = token.replacementRangeUTF16.location, text = view.draft
+        if let cached = view.codeClassification, cached.generation == location.editorGeneration, cached.offset == offset,
+           cached.revision == location.draftRevision || cached.text.utf16.prefix(offset).elementsEqual(text.utf16.prefix(offset)) {
+            apply(cached.outside); return
+        }
         // Classify immutable native-owned draft off the UI actor, only after
         // the local 64-character token passed. Late results cannot authorize.
-        let text = view.draft
         view.completionToken = nil; if view.completionVisible { view.completionVisible = false }
         view.completionParse = Task { [weak view] in
             let work = Task.detached(priority: .userInitiated) { SlashCompletionToken.outsideCode(text, before: token.replacementRangeUTF16.location) }
             let outside = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
             guard let view, !Task.isCancelled, view.composerLocation == location, view.draft == text else { return }
-            view.codeClassification = (location.editorGeneration, location.draftRevision, token.replacementRangeUTF16.location, outside)
+            view.codeClassification = (location.editorGeneration, location.draftRevision, offset, text, outside)
             apply(outside)
         }
     }
