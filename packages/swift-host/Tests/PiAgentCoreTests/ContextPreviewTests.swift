@@ -54,6 +54,23 @@ final class ContextPreviewTests: XCTestCase {
         await session.stop(); try await eventually { !(await session.isRunning) }; await session.close()
     }
 
+    func testAPreviewIsReleasedAtItsExpiryWithoutBeingReadAgain() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let saved = ContextPreview.lifetime; defer { ContextPreview.lifetime = saved }
+        let session = try AgentSession(id:"expiring",profile:fixtureProfile(),apiKey:"synthetic-secret-for-preview",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore(),seed:[ChatMessage(role:"user",content:[textBlock("kept")])],autoCompaction:false)
+        ContextPreview.lifetime = 0.2
+        _ = try await session.prepareContext([:])
+        try await eventually { !(await session.holdsPreparedContext) }
+        // An older preview's expiry leaves the one that replaced it alone.
+        _ = try await session.prepareContext(["text":"first"])
+        ContextPreview.lifetime = 60
+        let newer = try await session.prepareContext(["text":"second"])
+        try await Task.sleep(for:.milliseconds(600))
+        let read = try await session.readPreparedContext(["revision":newer["revision"],"section":"request"])
+        XCTAssertTrue(read["text"].text!.contains("second"))
+        await session.close()
+    }
+
     func testAllContextPagesAndOpaqueProviderStateRemainInspectableWithStaleSnapshotRejection() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         var raw = try fixtureProfile().raw; raw["routing"] = ["replayPolicy":"pinned","expectedModel":"fixture-model","replayContract":"fixture-stable"]

@@ -132,7 +132,29 @@ extension WorkspaceModel {
             }
         }
     }
+    /// Unloads the helper session of a chat whose display was let go of.
+    /// Without it the helper kept every chat visited loaded (its messages,
+    /// pages and tool state) for as long as it ran, which over a day of use
+    /// only grew. The journal stays, and the next open reads it back. The
+    /// helper refuses a session with work; that one stays loaded, and the
+    /// next `session.open` is answered by it. A chat an Inspector window is
+    /// open on keeps its session, which that window reads.
+    func releaseHelperSession(_ id: String) {
+        guard opened.contains(id), sessionOpenings[id] == nil, sessionClosings[id] == nil, !isEphemeral(id),
+              SessionInspectorWindows.shared.controller(sessionID: id) == nil,
+              let item = record(id), let host = hosts[item.workspaceID], host.isReady else { return }
+        opened.remove(id)
+        let token = UUID()
+        let task = Task { [weak self] in
+            _ = try? await host.request("session.close", sessionID: id)
+            if self?.sessionClosings[id]?.token == token { self?.sessionClosings.removeValue(forKey: id) }
+        }
+        sessionClosings[id] = (token, task)
+    }
     func open(_ item: ChatRecord, automaticContext: Bool = false) async throws -> HostSupervisor {
+        // A close sent when the chat's display was let go of lands first, so
+        // this open is not answered by the session being unloaded.
+        if let closing = sessionClosings[item.id] { await closing.task.value }
         try Task.checkCancellation()
         guard !accountingStopped else { throw CancellationError() }
         if automaticContext { try requireAutomaticContext(item.id) }

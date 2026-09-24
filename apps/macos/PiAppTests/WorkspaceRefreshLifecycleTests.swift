@@ -503,6 +503,39 @@ extension WorkspaceRefreshLifecycleTests {
         try await f.host.shutdownAndWait()
     }
 
+    /// A chat whose display is let go of has its idle helper session closed
+    /// too: the helper kept every chat visited loaded for as long as it ran.
+    /// A busy chat keeps its session, and a closed chat's next open waits for
+    /// the close before it asks for the session again.
+    @MainActor func testEvictingAnIdleDisplayClosesItsHelperSessionBeforeItOpensAgain() async throws {
+        let f = try await fixture()
+        var profile = ProfileRecord(); profile.id = "profile"; profile.baseUrl = "http://127.0.0.1:1"; profile.modelId = "fixture"
+        f.model.profiles = [profile]
+        for index in 0..<9 {
+            let id = "other-\(index)"
+            f.model.chats.append(ChatRecord(id: id, workspaceID: "project", title: id, path: nil, profileID: "profile"))
+            let display = SessionDisplay(id: id); display.used = Date(timeIntervalSince1970: Double(index))
+            f.model.displays[id] = display; f.model.opened.insert(id)
+        }
+        f.model.displays["other-1"]?.state = "running"
+        let selection = Task { await f.model.select("other-8") }
+        defer { selection.cancel() }
+        try await wait { f.commands.frames.filter { $0["method"]?.string == "session.close" }.count == 2 }
+        let closes = f.commands.frames.filter { $0["method"]?.string == "session.close" }
+        XCTAssertEqual(closes.map { $0["sessionId"]?.string }, ["other-0", "other-2"], "The two oldest idle chats are let go of; the running one is not")
+        XCTAssertEqual(f.model.opened, Set([f.chat.id] + (1...8).filter { $0 != 2 }.map { "other-\($0)" }))
+        let reopened = RefreshCommandLog(), other = try XCTUnwrap(f.model.record("other-0"))
+        let reopen = Task { @MainActor in _ = try? await f.model.open(other); reopened.frames.append([:]) }
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertTrue(reopened.frames.isEmpty, "The open waits for the close in flight")
+        XCTAssertFalse(f.commands.frames.contains { $0["method"]?.string == "session.open" })
+        try reply(closes[0], on: f.host, result: ["accepted": .bool(true)])
+        try await wait { !reopened.frames.isEmpty }
+        await reopen.value
+        XCTAssertNil(f.model.sessionClosings["other-0"])
+        try await f.host.shutdownAndWait()
+    }
+
     /// ⌘. on a chat with nothing running has nothing to stop. It used to show
     /// "Stopping" and ask the helper anyway, which left the chat "Paused".
     @MainActor func testStopOnAnIdleChatAsksNothingAndLeavesItIdle() async throws {

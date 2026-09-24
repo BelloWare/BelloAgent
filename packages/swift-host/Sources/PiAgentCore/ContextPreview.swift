@@ -3,6 +3,9 @@ import Foundation
 /// A read-only, immutable rendering of the provider request builder. This is
 /// deliberately separate from the transport archive: it was never dispatched.
 struct ContextPreview: Sendable {
+    /// How long a prepared preview stays readable, and held. A variable only
+    /// so a test can wait out an expiry without waiting five minutes.
+    nonisolated(unsafe) static var lifetime: TimeInterval = 300
     let revision: String
     let createdAt: Date
     let body: JSON

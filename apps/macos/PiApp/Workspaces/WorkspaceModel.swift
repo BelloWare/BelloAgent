@@ -245,6 +245,9 @@ enum WorkspacePage: String, Sendable { case chats, report }
     var boundHostConnections: [String: UUID] = [:]
     /// Owned by `WorkspaceHosts.swift`: one in-flight `session.open` per chat.
     var sessionOpenings: [String: (token: UUID, task: Task<Void, Error>)] = [:]
+    /// Owned by `WorkspaceHosts.swift`: a `session.close` sent when a chat's
+    /// display was let go of, which the chat's next open waits for.
+    var sessionClosings: [String: (token: UUID, task: Task<Void, Never>)] = [:]
     /// Owned by `WorkspaceHosts.swift`: how many callers are waiting on that
     /// open, so the last one out cleans up.
     var sessionOpenCallers: [String: Int] = [:]

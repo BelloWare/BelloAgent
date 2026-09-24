@@ -29,7 +29,11 @@ final class SessionJournal {
     private(set) var appends = 0, synchronizations = 0
     private let beforeAppend: @Sendable (JSON) throws -> Void
     private let beforeSynchronize: @Sendable () throws -> Void
-    let loaded: [JSON]
+    /// The records read at open, handed over once (`takeLoaded`). Kept here
+    /// they were a second, parsed copy of the whole journal for as long as
+    /// the session stayed loaded.
+    private(set) var loaded: [JSON]
+    func takeLoaded() -> [JSON] { defer { loaded = [] }; return loaded }
     init(url: URL, id: String, cwd: URL, binding: JSON, create: Bool, beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeSynchronize: @escaping @Sendable () throws -> Void = {}) throws {
         self.url=url; self.beforeAppend=beforeAppend; self.beforeSynchronize=beforeSynchronize
         try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])

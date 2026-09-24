@@ -69,7 +69,8 @@ final class AcceptanceTests: XCTestCase {
         let path = await first.path; await first.close()
         let nextClient = ScriptClient([answer("steering answer"), answer("follow-up answer")])
         let resumed = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: directory, readOnly: true, resources: resources, client: nextClient, tools: tools, traces: traces, resumePath: path, autoCompaction: false)
-        let paused = await resumed.snapshot(), initialCount = await nextClient.count
+        let paused = await resumed.snapshot(), initialCount = await nextClient.count, heldRecords = await resumed.journalLoadedRecordCount
+        XCTAssertEqual(heldRecords, 0, "The journal's parsed records are handed over at open, not kept as a second copy")
         XCTAssertEqual(paused["state"].text, "paused"); XCTAssertEqual(paused["queueCount"].int, 2); XCTAssertEqual(initialCount, 0)
         XCTAssertTrue(paused["commands"].list.filter { $0["turnId"].text?.hasPrefix("removed-") == true }.allSatisfy { $0["status"].text == "removed" })
         try await resumed.resumeQueue(); try await eventually { !(await resumed.isRunning) }

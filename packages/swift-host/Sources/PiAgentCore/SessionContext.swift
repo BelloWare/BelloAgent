@@ -114,13 +114,21 @@ extension AgentSession {
             "credentialsRedacted":JSON(safe != body), "dispatched":false]
         let prepared = try ContextPreview(body:safe,metadata:metadata,sources:snapshot.sources.map(credentials.metadata))
         preparedContext = prepared
+        // Let go of when it expires, read again or not. Expiry was checked
+        // only on a read, so the automatic preview of every chat visited (up
+        // to 32 MiB of request) stayed held while its session was loaded.
+        let revision = prepared.revision, lifetime = ContextPreview.lifetime
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(lifetime))
+            await self?.clearPreparedContext(revision)
+        }
         return try prepared.summary()
     }
     public func readPreparedContext(_ params: JSON) throws -> JSON {
         guard let prepared = preparedContext, prepared.revision == params["revision"].text else {
             throw AgentError("context_preview_expired", "This context snapshot expired or was replaced. Refresh to inspect the current context.")
         }
-        guard Date().timeIntervalSince(prepared.createdAt) <= 300 else {
+        guard Date().timeIntervalSince(prepared.createdAt) <= ContextPreview.lifetime else {
             preparedContext = nil; throw AgentError("context_preview_expired", "This context snapshot expired. Refresh to inspect the current context.")
         }
         if params["section"].isNull { return try prepared.summary(offset:boundedInt(params["itemOffset"],maximum:100_004)) }
