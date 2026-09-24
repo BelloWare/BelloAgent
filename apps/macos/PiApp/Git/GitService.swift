@@ -501,6 +501,13 @@ actor GitService {
         return entries
     }
 
+    /// What the repository ignores, relative to its top: an ignored directory
+    /// is one entry ending in "/" (`--directory` does not descend into it), so
+    /// even a large `node_modules` costs one line.
+    func ignoredPaths(in root: String) async throws -> [String] {
+        let output = try require(await run(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], in: root), "Listing ignored paths")
+        return output.text.split(separator: "\0").map(String.init).filter { !$0.isEmpty }
+    }
     func branches(in root: String) async throws -> [String] {
         let output = try require(await run(["branch", "--list", "--format=%(refname:short)"], in: root), "Listing branches")
         return output.text.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
