@@ -332,7 +332,12 @@ final class SendImmediacyTests: XCTestCase {
         XCTAssertTrue(display.panelQueue(queued).isEmpty, "Being picked up, it is not also a queued follow-up")
         display.loading = true; display.state = "running"
         XCTAssertFalse(display.settleSending(receipts: [], queued: ["t1"]), "A queue that is about to deliver it keeps it on the page")
-        display.loading = false; display.state = "paused"
+        // A snapshot between the helper queueing it and dispatching it: idle,
+        // with the message still queued. It stays where it was drawn.
+        display.loading = false; display.state = "idle"
+        XCTAssertFalse(display.settleSending(receipts: [], queued: ["t1"]), "An idle helper about to dispatch it keeps it on the page")
+        XCTAssertEqual(display.presentedMessages.map(\.id), ["u0", "t1"])
+        display.state = "paused"; display.queuePaused = true
         XCTAssertTrue(display.settleSending(receipts: [], queued: ["t1"]), "A paused queue holding it takes it off the page")
         XCTAssertTrue(display.sendingRows.isEmpty); XCTAssertEqual(display.panelQueue(queued).count, 1, "The panel shows it instead")
         display.state = "running"

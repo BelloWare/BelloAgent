@@ -55,7 +55,55 @@ final class HTTPIngressBudget: @unchecked Sendable {
     var accounting: (used: Int, peak: Int) { lock.lock(); defer { lock.unlock() }; return (used, high) }
 }
 
-/// One delegate/URLSession per request. No global URL interception and no unbounded tee.
+/// Long-lived ephemeral URL sessions for model requests: one per origin and
+/// connection identity (the credential and configured headers), so requests
+/// and tool rounds reuse keep-alive connections the way pi's fetch does
+/// instead of paying DNS, TCP and TLS every time. No cookies, URL cache or
+/// credential storage. The session has no delegate: each task's `HTTPStream`
+/// is its own (`URLSessionTask.delegate`). A transport failure drops the
+/// session, and a changed base URL or header set gets a session of its own.
+final class HTTPSessionPool: @unchecked Sendable {
+    static let shared = HTTPSessionPool()
+    static let capacity = 8
+    private let lock = NSLock()
+    private var sessions: [String: (session: URLSession, queue: OperationQueue)] = [:]
+    private var recency: [String] = []
+    private var made = 0
+    /// Sessions this pool has created, for tests.
+    var created: Int { lock.lock(); defer { lock.unlock() }; return made }
+    func session(for key: String) -> (session: URLSession, queue: OperationQueue) {
+        lock.lock(); defer { lock.unlock() }
+        if let existing = sessions[key] { recency.removeAll { $0 == key }; recency.append(key); return existing }
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = HTTPStream.idleTimeout; config.timeoutIntervalForResource = HTTPStream.totalTimeout
+        config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.urlCache = nil
+        let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
+        let entry = (session: URLSession(configuration: config, delegate: nil, delegateQueue: queue), queue: queue)
+        sessions[key] = entry; recency.append(key); made += 1
+        while recency.count > Self.capacity { sessions.removeValue(forKey: recency.removeFirst())?.session.finishTasksAndInvalidate() }
+        return entry
+    }
+    /// Drops a session after a transport failure; its running tasks finish.
+    func discard(_ session: URLSession) {
+        lock.lock()
+        let key = sessions.first { $0.value.session === session }?.key
+        if let key { sessions.removeValue(forKey: key); recency.removeAll { $0 == key } }
+        lock.unlock()
+        if key != nil { session.finishTasksAndInvalidate() }
+    }
+    /// The origin and every header but the per-request ones.
+    static func key(_ request: URLRequest, perRequest: Set<String>) -> String {
+        let url = request.url
+        let origin = "\(url?.scheme ?? "")://\(url?.host ?? ""):\(url?.port ?? -1)"
+        let headers = (request.allHTTPHeaderFields ?? [:]).filter { !perRequest.contains($0.key.lowercased()) }
+            .map { "\($0.key.lowercased()):\($0.value)" }.sorted()
+        return ([origin] + headers).joined(separator: "\n")
+    }
+}
+
+/// One delegate per request; model requests share a pooled session
+/// (`HTTPSessionPool`), others get a session of their own. No global URL
+/// interception and no unbounded tee.
 ///
 /// Concurrency: `@unchecked` because URLSession calls its delegate from its own
 /// queue. The invariant is that every mutable property except `continuation` is
@@ -77,6 +125,10 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
     private var timingRuns: [(end: Int, at: Double)] = []
     private var completed = false, completionError: Error?
     private var delegateQueue: OperationQueue?
+    private var pool: HTTPSessionPool?
+    private var reused: Bool?
+    /// Whether the request went out on a connection an earlier one opened.
+    var reusedConnection: Bool? { lock.lock(); defer { lock.unlock() }; return reused }
     init(budget: HTTPIngressBudget = .shared, bufferLimit: Int = 4 * 1024 * 1024, responseLimit: Int = 64 * 1024 * 1024) {
         self.budget = budget; self.bufferLimit = max(1, bufferLimit); self.responseLimit = max(1, responseLimit)
         super.init()
@@ -128,7 +180,7 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
     /// URL session's own week-long bound stays.
     static let idleTimeout: TimeInterval = 300
     static let totalTimeout: TimeInterval = 604_800
-    func start(_ request: URLRequest, configuration: URLSessionConfiguration? = nil) -> AsyncThrowingStream<HTTPPart, Error> {
+    func start(_ request: URLRequest, configuration: URLSessionConfiguration? = nil, pool: HTTPSessionPool? = nil, connection: String? = nil) -> AsyncThrowingStream<HTTPPart, Error> {
         // The queue retains whole, ordered delegate chunks. Byte admission is
         // bounded BEFORE yield, independent of a slow capture acknowledgement.
         // Suspend at 1 MiB with 3 MiB headroom for callbacks already in flight;
@@ -136,13 +188,24 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
         AsyncThrowingStream(bufferingPolicy: .unbounded) { continuation in
             self.continuation=continuation
             continuation.onTermination = { [weak self] _ in self?.cancel() }
-            let config = configuration ?? URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest=Self.idleTimeout; config.timeoutIntervalForResource=Self.totalTimeout
-            config.httpCookieStorage=nil; config.urlCredentialStorage=nil; config.urlCache=nil
-            let queue=OperationQueue(); queue.maxConcurrentOperationCount=1
-            let session=URLSession(configuration: config, delegate:self, delegateQueue:queue)
-            let task=session.dataTask(with: request)
-            lock.lock(); self.session=session; self.task=task; self.delegateQueue=queue; lock.unlock()
+            let session: URLSession, queue: OperationQueue, task: URLSessionDataTask
+            if let pool, configuration == nil {
+                // A pooled session is shared: the idle bound travels with the
+                // request, the session keeps the same bounds, and this stream is
+                // the task's own delegate, with its own parser state.
+                var request = request; request.timeoutInterval = Self.idleTimeout
+                let shared = pool.session(for: connection ?? HTTPSessionPool.key(request, perRequest: []))
+                session = shared.session; queue = shared.queue
+                task = session.dataTask(with: request); task.delegate = self
+            } else {
+                let config = configuration ?? URLSessionConfiguration.ephemeral
+                config.timeoutIntervalForRequest=Self.idleTimeout; config.timeoutIntervalForResource=Self.totalTimeout
+                config.httpCookieStorage=nil; config.urlCredentialStorage=nil; config.urlCache=nil
+                queue=OperationQueue(); queue.maxConcurrentOperationCount=1
+                session=URLSession(configuration: config, delegate:self, delegateQueue:queue)
+                task=session.dataTask(with: request)
+            }
+            lock.lock(); self.session=session; self.task=task; self.delegateQueue=queue; self.pool = configuration == nil ? pool : nil; lock.unlock()
             ended.enter()
             lock.lock(); observed["dispatch"] = JSON(nowMS()); observed["dispatchWallTimestamp"] = JSON(Date().timeIntervalSince1970); lock.unlock()
             task.resume()
@@ -201,10 +264,18 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
         observed["httpEnd"] = JSON(nowMS())
         observed["transportOutcome"] = JSON(ingressFailure != nil ? "error" : error == nil ? "eof" : (error as? URLError)?.code == .cancelled ? "cancelled" : "error")
         completed = true; completionError = error
+        let pool = self.pool
         self.task=nil; self.session=nil; lock.unlock()
         ended.leave()
         flushBody()
-        session.finishTasksAndInvalidate()
+        if let pool {
+            // A connection or TLS failure drops the shared session: the next
+            // request opens a fresh one. A cancelled request leaves it be.
+            if let failure = error as? URLError, failure.code != .cancelled { pool.discard(session) }
+        } else { session.finishTasksAndInvalidate() }
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        lock.lock(); reused = metrics.transactionMetrics.last?.isReusedConnection; lock.unlock()
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         // A configured endpoint must not redirect credentials to another route or origin.

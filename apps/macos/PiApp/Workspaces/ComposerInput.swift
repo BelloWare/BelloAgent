@@ -24,7 +24,7 @@ struct ComposerInput: View {
     /// A draft of any size is checked for its first non-whitespace character;
     /// trimming a long draft would copy it on every keystroke.
     private var canSend: Bool { session.draftReady && !((!draft.text.contains { !$0.isWhitespace } && session.skills.isEmpty) || session.loading || model.installPreparing || (editing && model.editBlocker(session) != nil)) }
-    private var queues: Bool { !editing && (session.busy || !session.queue.isEmpty) }
+    private var queues: Bool { !editing && (session.busy || !session.queue.isEmpty || !session.sendingRows.isEmpty) }
     @State private var sendPulse = false
     private func submit(intent: ComposerSubmissionIntent = .followUp) {
         guard model.page == .chats else { return }

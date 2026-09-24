@@ -33,6 +33,9 @@ final class HostSupervisor: ObservableObject {
     }
     private var queuedRequests: [QueuedRequest] = []
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
+    /// Connections waiting for a stopping helper to exit.
+    private var exitWaiters: [CheckedContinuation<Void, Never>] = []
+    private func resumeExitWaiters() { let waiters = exitWaiters; exitWaiters.removeAll(); for waiter in waiters { waiter.resume() } }
     private var handshakeWatchdog: Task<Void, Never>?
     private var closing = false
     private(set) var clockOffset = 0.0
@@ -58,8 +61,14 @@ final class HostSupervisor: ObservableObject {
             // host "is stopping". The previous transport always reaches its
             // exit: stop() terminates and then kills it on its own deadlines.
             guard transport != nil else { throw HostError.failure("Project host is stopping") }
-            var waited = 0
-            while closing, waited < 400 { try await Task.sleep(for: .milliseconds(20)); waited += 1 }
+            // Its exit resumes this at once (see `receive`); the deadline is
+            // only a backstop, since stop() kills the helper within five seconds.
+            let backstop = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(8)); self?.resumeExitWaiters()
+            }
+            await withCheckedContinuation { exitWaiters.append($0) }
+            backstop.cancel()
+            try Task.checkCancellation()
             if isReady { return }
             guard !closing else { throw HostError.failure("The previous project host did not exit. Try again.") }
         }
@@ -217,6 +226,7 @@ final class HostSupervisor: ObservableObject {
             self.connectionID = nil
             fail(code == 0 ? "Runtime stopped" : "Runtime interrupted (\(code)). No request was replayed.")
             transport = nil; ownership = nil; epoch = nil; closing = false
+            resumeExitWaiters()
         case .frame(let frame):
             guard !closing, transport != nil else { return }
             guard frame["v"]?.number == 1 else { fail("Incompatible host protocol"); shutdown(); return }
