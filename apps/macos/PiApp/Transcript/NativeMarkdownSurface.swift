@@ -1,16 +1,15 @@
 import AppKit
 import SwiftUI
 
-/// A long reply retains every block and its measured or provisional height, while only the part
-/// near the outer conversation viewport participates in native scrolling.
-/// This is not another scroll view and does not truncate the source or copy
-/// targets. Small replies keep the simpler SwiftUI stack.
+/// A rendered reply: one TextKit text holding every block of it, so a
+/// selection runs across paragraphs, list items, headings, code and tables,
+/// and a copy is the text it covers (`MarkdownTextDocument.swift`).
+///
+/// The surface reads the message itself (`StreamingMarkdownState`), so a token
+/// extends the reply without SwiftUI rebuilding anything: the text changes
+/// only from the first character that reads differently, TextKit lays out
+/// again only from there, and a selection above it stays as it was.
 struct NativeMarkdownSurface: NSViewRepresentable {
-    nonisolated static let minimumBlockCount = 8
-    /// The message's markdown source. The surface reads it itself, so a token
-    /// can extend the reply without SwiftUI rebuilding anything: the row's
-    /// tree is untouched and only the block still open is read and measured
-    /// again. Nothing here parses inside a view body.
     let source: String
     let style: MarkdownStyle
     let capsWidth: Bool
@@ -20,9 +19,9 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     /// carrying it.
     var identity: String = ""
     /// The reader is reading this reply as its source (`ReplySource`). The
-    /// surface keeps every block and every height it measured, but draws
+    /// surface keeps its text and every height it measured, but draws
     /// nothing and takes no room, so switching back finds the rendered reply
-    /// exactly as the reader left it rather than standing at estimates.
+    /// exactly as the reader left it.
     var parked = false
 
     func makeNSView(context: Context) -> NativeMarkdownContainer {
@@ -40,431 +39,253 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     }
 }
 
-private struct NativeMarkdownItem: Equatable {
-    var block: MarkdownBlock
-    var style: MarkdownStyle
-    var capsWidth: Bool
-    var caret: Bool
-    var headingTarget: MarkdownCopyTarget?
-    var environment: TranscriptRowEnvironment
-
-    func hasSameGeometry(as other: Self) -> Bool {
-        guard block == other.block, style == other.style, capsWidth == other.capsWidth,
-              environment.hasSameGeometry(as: other.environment) else { return false }
-        // Code switches from a continuous stream to bounded source sections
-        // at completion. That is a local layout dependency, unlike a caret.
-        if case .code = block { return caret == other.caret }
-        return true
+/// The reply's text. Only what the reader selected is its own: a right-click
+/// elsewhere is the row's, and a copy is the reply's text as it reads —
+/// list items with their markers, table cells split by tabs, blocks by a
+/// blank line — without the page's own labels.
+@MainActor final class MarkdownTextView: NSTextView {
+    // TextKit's back-pointers are weak. Own the storage before constructing
+    // the text view, including the interval before super.init adopts it.
+    private var ownedStorage: NSTextStorage?
+    /// Room above the first line: a reply that opens with a fence, a heading
+    /// or a table keeps the padding those have above their text, which
+    /// TextKit gives no paragraph at the very top.
+    var topInset: CGFloat = 0 {
+        didSet { if topInset != oldValue { invalidateTextContainerOrigin(); needsDisplay = true } }
     }
-}
-
-private struct NativeHostedMarkdownBlock: View {
-    let item: NativeMarkdownItem
-    let width: CGFloat
-    let decoration: MarkdownBlockDecoration
-    var nativeCodeChoice: Bool? = nil
-    /// The scale the block is drawn at, for a host measured before its
-    /// surface has a window: SwiftUI would otherwise lay the text out at 1x,
-    /// taller than it draws, and the block would carry the difference as blank.
-    var displayScale: CGFloat = 2
-    var body: some View {
-        MarkdownBlockView(block: item.block, style: item.style, capsWidth: item.capsWidth,
-                          caret: item.caret, headingTarget: nil, nativeCodeChoice: nativeCodeChoice, decoration: decoration)
-            .frame(width: width, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
-            .environment(\.colorScheme, item.environment.colorScheme)
-            .environment(\.dynamicTypeSize, item.environment.dynamicTypeSize)
-            .environment(\.layoutDirection, item.environment.layoutDirection)
-            .environment(\.locale, item.environment.locale)
-            .environment(\.displayScale, displayScale)
-            .disabled(!item.environment.isEnabled)
-            .piStableLayout()
+    override var textContainerOrigin: NSPoint { NSPoint(x: 0, y: topInset) }
+    var didDraw: (() -> Void)?
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        didDraw?()
     }
-}
-
-@MainActor private final class NativeMarkdownBlockHost {
-    private(set) var view: NSHostingView<NativeHostedMarkdownBlock>?
-    private var item: NativeMarkdownItem
-    private var nativeCodeChoice: Bool?
-    private let decoration: MarkdownBlockDecoration
-    private weak var selectionEditor: NSTextView?
-    private var restoredSelection: (range: NSRange, original: NSRange, rendered: String)?
-    private var selectionRevision = 0
-    private var reconciliation: MarkdownSelection.Reconciliation?
-    private var width: CGFloat = TranscriptMetrics.pageWidth
-    private var sizes: [CGSize] = []
-    var frame = CGRect.zero
-    private(set) var measurementCount = 0
-    var displayScale: CGFloat = 2 {
-        didSet {
-            guard displayScale != oldValue else { return }
-            sizes.removeAll(keepingCapacity: true)
-            view?.rootView = hosted
+    convenience init() { self.init(frame: .zero, textContainer: nil) }
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        let resolved: NSTextContainer
+        if let container { resolved = container }
+        else {
+            let storage = NSTextStorage(), manager = MarkdownTextLayoutManager()
+            ownedStorage = storage
+            resolved = NSTextContainer(containerSize: NSSize(width: TranscriptMetrics.pageWidth, height: CGFloat.greatestFiniteMagnitude))
+            storage.addLayoutManager(manager); manager.addTextContainer(resolved)
         }
+        super.init(frame: frameRect, textContainer: resolved)
+        isEditable = false; isSelectable = true; isRichText = true; importsGraphics = false
+        drawsBackground = false; textContainerInset = .zero
+        isVerticallyResizable = false; isHorizontallyResizable = false
+        usesFontPanel = false; usesFindBar = false; isAutomaticLinkDetectionEnabled = false
+        textContainer?.lineFragmentPadding = 0
+        textContainer?.widthTracksTextView = false
+        textContainer?.heightTracksTextView = false
+        layoutManager?.allowsNonContiguousLayout = false
+        linkTextAttributes = [.foregroundColor: NSColor(TranscriptPalette.accent), .cursor: NSCursor.pointingHand]
+        setAccessibilityLabel("Reply")
     }
-    private var hosted: NativeHostedMarkdownBlock {
-        NativeHostedMarkdownBlock(item: item, width: width, decoration: decoration, nativeCodeChoice: nativeCodeChoice, displayScale: displayScale)
-    }
+    required init?(coder: NSCoder) { nil }
 
-    init(item: NativeMarkdownItem) {
-        self.item = item
-        decoration = MarkdownBlockDecoration(caret: item.caret, target: item.headingTarget)
-        if case .code(_, let code) = item.block {
-            nativeCodeChoice = NativeCodeText.enabled && (item.caret || code.utf8.count >= NativeCodeText.minimumBytes)
-        } else { nativeCodeChoice = nil }
-    }
-    private func host() -> NSHostingView<NativeHostedMarkdownBlock> {
-        if let view { return view }
-        let next = NSHostingView(rootView: hosted)
-        next.safeAreaRegions = []; next.sizingOptions = [.intrinsicContentSize]
-        view = next; applyAppearance()
-        return next
-    }
-    /// Geometry and source outlive the expensive native tree. No sizing
-    /// surrogate is shared, and a selected owner is excluded by the caller.
-    func releaseDetachedHost() { if view?.superview == nil { view = nil } }
-    /// Whether this is the block a streaming reply is still being written into.
-    var hasCaret: Bool { item.caret }
-    @discardableResult func update(_ item: NativeMarkdownItem,
-                                  source: () -> (previous: MarkdownSelection.Source?, current: MarkdownSelection.Source)? = { nil }) -> Bool {
-        guard self.item != item else { return false }
-        decoration.update(caret: item.caret, target: item.headingTarget)
-        guard !self.item.hasSameGeometry(as: item) else {
-            // A colour scheme, a contrast or an enabled state: painted again,
-            // measured the same.
-            let repaint = self.item.environment != item.environment
-            self.item = item
-            if repaint {
-                view?.rootView = hosted
-                applyAppearance()
+    /// The copy actions assistive technology offers for the text: each
+    /// fence's code, and each heading's section, as their buttons copy them.
+    var copyTargets: () -> [MarkdownCopyTarget] = { [] }
+    override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
+        var actions: [NSAccessibilityCustomAction] = []
+        if let storage = textStorage {
+            var fences: [MarkdownCodeMark] = []
+            storage.enumerateAttribute(.piCodeBlock, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+                if let mark = value as? MarkdownCodeMark, fences.last !== mark { fences.append(mark) }
             }
-            return false
+            for (index, mark) in fences.enumerated() {
+                let name = fences.count == 1 ? "Copy code" : "Copy code \(index + 1)"
+                actions.append(NSAccessibilityCustomAction(name: name) { [weak mark] in
+                    guard let mark else { return false }
+                    NSPasteboard.general.clearContents()
+                    return NSPasteboard.general.setString(mark.code, forType: .string)
+                })
+            }
         }
-        selectionRevision &+= 1
-        restoredSelection = nil; selectionEditor = nil
-        if case .paragraph(let oldText) = self.item.block, case .paragraph(let newText) = item.block {
-            let old = String(oldText.characters), new = String(newText.characters)
-            if !new.hasUTF8Prefix(old) {
-                reconciliation = source().map {
-                    MarkdownSelection.Reconciliation(previous: old, source: $0.current, previousSource: $0.previous,
-                                                     rendered: new, keepsSoftBreaks: item.style.keepsSoftBreaks)
+        for target in copyTargets() {
+            actions.append(NSAccessibilityCustomAction(name: target.label) {
+                NSPasteboard.general.clearContents()
+                return NSPasteboard.general.setString(target.text, forType: .string)
+            })
+        }
+        return (super.accessibilityCustomActions() ?? []) + actions
+    }
+    /// A right-click on a selection is the text's own: Copy, Look Up. Any
+    /// other is the row's, as it is on the rest of the row: a reply's menu.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        selectedRange().length > 0 ? super.menu(for: event) : nil
+    }
+    override var writablePasteboardTypes: [NSPasteboard.PasteboardType] { [.string] }
+    override func writeSelection(to pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        guard type == .string else { return false }
+        return pboard.setString(copyText(selectedRanges.map(\.rangeValue)), forType: .string)
+    }
+    override func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        guard types.contains(.string) else { return false }
+        pboard.declareTypes([.string], owner: nil)
+        return pboard.setString(copyText(selectedRanges.map(\.rangeValue)), forType: .string)
+    }
+    /// The reply's text over `ranges`, as a copy gives it.
+    func copyText(_ ranges: [NSRange]) -> String {
+        guard let storage = textStorage else { return "" }
+        let text = storage.string as NSString
+        var result = ""
+        for range in ranges {
+            let clipped = NSIntersectionRange(range, NSRange(location: 0, length: storage.length))
+            guard clipped.length > 0 else { continue }
+            if !result.isEmpty { result += "\n" }
+            var skippedMarker = NSRange(location: NSNotFound, length: 0)
+            storage.enumerateAttributes(in: clipped) { attributes, run, _ in
+                if attributes[.piChrome] != nil { return }
+                if let marker = attributes[.piListMarker] as? String {
+                    // A marker counts once, however the selection cuts it.
+                    var whole = NSRange()
+                    _ = storage.attribute(.piListMarker, at: run.location, effectiveRange: &whole)
+                    guard whole != skippedMarker else { return }
+                    skippedMarker = whole
+                    result += marker
+                    return
                 }
-            }
-            if let editor = view?.window?.firstResponder as? NSTextView,
-               textOwners.contains(where: { ($0 as? NSTextField)?.currentEditor() === editor }),
-               !new.hasUTF8Prefix(old), let range = reconciliation?.range(editor.selectedRange()) {
-                selectionEditor = editor
-                restoredSelection = (range, editor.selectedRange(), new)
+                let piece = text.substring(with: run)
+                if piece == "\n", let copy = attributes[.piBlockBreak] as? String { result += copy; return }
+                result += piece
             }
         }
-        // Retain the mounted leaf decision across idle host reclamation. A
-        // completed short fence that began live must recreate the same TextKit
-        // renderer, so its cached exact height still describes the new host.
-        if case .code(_, let code) = item.block {
-            if case .code = self.item.block {} else {
-                nativeCodeChoice = NativeCodeText.enabled && (item.caret || code.utf8.count >= NativeCodeText.minimumBytes)
-            }
-        } else { nativeCodeChoice = nil }
-        self.item = item
-        sizes.removeAll(keepingCapacity: true)
-        view?.rootView = hosted
-        applyAppearance()
-        // The field editor is updated by SwiftUI after the hosting root. A
-        // bounded next-run-loop correction preserves the same editor without
-        // replacing its contents or taking focus from a newer reader gesture.
-        scheduleSelectionRestore(revision: selectionRevision, remaining: 2)
-        return true
-    }
-    private func applyAppearance() {
-        // colorSchemeContrast is read-only in SwiftUI's public environment.
-        // The native appearance carries contrast across this hosting boundary.
-        let dark = item.environment.colorScheme == .dark
-        let increased = item.environment.contrast == .increased
-        let name: NSAppearance.Name = increased ? (dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua) : (dark ? .darkAqua : .aqua)
-        view?.appearance = NSAppearance(named: name)
-    }
-    func estimate(width: CGFloat) -> CGFloat {
-        switch item.block {
-        case .paragraph(let text): return TranscriptRowEstimate.prose(String(text.characters), width: min(width, TranscriptMetrics.proseWidth), size: item.style.baseSize)
-        case .heading(let level, let text, _): return TranscriptRowEstimate.prose(String(text.characters), width: width, size: item.style.baseSize * (level == 1 ? 1.5 : 1.3)) + 10
-        case .code(_, let code): return min(12_000, CGFloat(code.utf8.filter { $0 == 10 }.count + 1) * 18 + 40)
-        case .table(_, _, let rows): return CGFloat(rows.count + 1) * 28 + 20
-        case .list(_, _, let items): return CGFloat(items.count) * 40
-        case .quote(let blocks): return CGFloat(blocks.count) * 60
-        }
-    }
-    /// This block's exact size at a width. Measured in `surface`'s window when
-    /// it has one: detached, SwiftUI lays text out as if at 1x — even told the
-    /// display's scale, a line lands half a point apart — which is taller
-    /// than it draws, and the block would carry the difference as blank.
-    func measure(width: CGFloat, in surface: NSView? = nil) -> CGSize {
-        if let cached = sizes.last(where: { $0.width == width }) { return cached }
-        if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownBlocksMeasured += 1 }
-        setWidth(width)
-        let view = host()
-        let visiting = surface?.window != nil && view.superview == nil
-        if visiting, let surface { surface.addSubview(view) }
-        defer { if visiting { view.removeFromSuperview() } }
-        // Exact: SwiftUI lays text out on the pixel grid, and rounding to
-        // half a point only drops the arithmetic's noise. The page rounds the
-        // bottom of each block, or of a list drawn in segments, to a whole
-        // point below it; the host is exactly as tall as what it draws.
-        let size = CGSize(width: width, height: max(1, (view.fittingSize.height * 2).rounded() / 2))
-        if sizes.count == 4 { sizes.removeFirst() }
-        sizes.append(size)
-        measurementCount += 1
-        restoreSelection()
-        return size
-    }
-    struct CharacterAnchor: Equatable { var owner: Int; var range: NSRange; var displacement: CGFloat; var rendered: String }
-    private var textOwners: [NSView] {
-        func visit(_ view: NSView) -> [NSView] {
-            if view is NSTextView || view is NSTextField { return [view] }
-            return view.subviews.flatMap { visit($0) }
-        }
-        return view.map { visit($0) } ?? []
-    }
-    func characterAnchor(in surface: NSView, viewportTop: CGFloat) -> CharacterAnchor? {
-        // Cached exact descriptors can outlive a detached native host. Its
-        // accessibility rectangles are not in this surface's current geometry.
-        guard let view, view.superview === surface, view.frame == frame,
-              let window = surface.window else { return nil }
-        for (ordinal, owner) in textOwners.enumerated() where owner.window === window {
-            let rect = surface.convert(owner.bounds, from: owner)
-            guard viewportTop >= rect.minY, viewportTop < rect.maxY else { continue }
-            let screen = window.convertPoint(toScreen: surface.convert(NSPoint(x: rect.minX + 2, y: viewportTop + 2), to: nil))
-            var range = owner.accessibilityRange(for: screen)
-            // SwiftUI's selectable NSTextField exposes character rectangles,
-            // but its point-to-range API returns an empty insertion range.
-            // Search those actual AppKit layout rectangles by line, rather
-            // than estimating a character from bytes, height, or line count.
-            if range.length == 0, let field = owner as? NSTextField {
-                let source = field.stringValue as NSString
-                var lower = 0, upper = source.length
-                while lower < upper {
-                    let probe = source.rangeOfComposedCharacterSequence(at: lower + (upper - lower) / 2)
-                    let frame = owner.accessibilityFrame(for: probe)
-                    guard !frame.isEmpty else { break }
-                    let local = surface.convert(window.convertFromScreen(frame), from: nil)
-                    if local.maxY <= viewportTop + 2 { lower = NSMaxRange(probe) }
-                    else { upper = max(lower, probe.location) }
-                }
-                if lower < source.length { range = source.rangeOfComposedCharacterSequence(at: lower) }
-            }
-            guard range.location != NSNotFound, range.length > 0 else { continue }
-            let screenRect = owner.accessibilityFrame(for: range)
-            guard !screenRect.isEmpty else { continue }
-            let local = surface.convert(window.convertFromScreen(screenRect), from: nil)
-            return CharacterAnchor(owner: ordinal, range: range, displacement: local.minY - viewportTop, rendered: (owner as? NSTextField)?.stringValue ?? (owner as? NSTextView)?.string ?? "")
-        }
-        return nil
-    }
-    func characterTop(_ anchor: CharacterAnchor, in surface: NSView) -> CGFloat? {
-        guard let view, view.superview === surface, view.frame == frame,
-              let owner = textOwners.indices.contains(anchor.owner) ? textOwners[anchor.owner] : nil,
-              let window = surface.window, owner.window === window else { return nil }
-        let rendered = (owner as? NSTextField)?.stringValue ?? (owner as? NSTextView)?.string ?? ""
-        let range: NSRange
-        if !rendered.hasUTF8Prefix(anchor.rendered), let mapped = reconciliation?.range(anchor.range, from: anchor.rendered, to: rendered) {
-            range = mapped
-        } else { range = anchor.range }
-        let screen = owner.accessibilityFrame(for: range)
-        guard !screen.isEmpty else { return nil }
-        return surface.convert(window.convertFromScreen(screen), from: nil).minY - anchor.displacement
-    }
-    func exactMeasurement(width: CGFloat) -> CGSize? { sizes.last { $0.width == width } }
-    func setWidth(_ width: CGFloat) {
-        guard self.width != width else { return }
-        self.width = width
-        view?.rootView = hosted
-    }
-    func place(in container: NSView) {
-        setWidth(frame.width)
-        let view = host()
-        if view.frame != frame { view.frame = frame }
-        if view.superview !== container { container.addSubview(view) }
-        restoreSelection()
-    }
-    private func restoreSelection() {
-        guard let selection=restoredSelection, let editor=selectionEditor,
-              view?.window?.firstResponder === editor else { return }
-        // Do not modify attributed content or take first responder away from
-        // the user. SwiftUI owns the text update; we restore only its selection.
-        guard editor.string == selection.rendered else { return }
-        let length = editor.string.utf16.count
-        let clippedStart = min(selection.original.location, length)
-        let clipped = NSRange(location: clippedStart, length: min(selection.original.length, length - clippedStart))
-        guard [selection.original, selection.range, clipped].contains(editor.selectedRange()) else {
-            restoredSelection = nil; selectionEditor = nil
-            return
-        }
-        editor.setSelectedRange(selection.range); restoredSelection=nil; selectionEditor=nil
-    }
-    private func scheduleSelectionRestore(revision: Int, remaining: Int) {
-        guard restoredSelection != nil, remaining > 0 else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.selectionRevision == revision else { return }
-            self.restoreSelection()
-            self.scheduleSelectionRestore(revision: revision, remaining: remaining - 1)
-        }
+        return result
     }
 }
 
+/// A rendered reply's surface: the text, and the controls that sit on it.
 @MainActor final class NativeMarkdownContainer: NSView {
-    /// How many items of a list one block host draws. A longer list is drawn
-    /// as consecutive segments of this many items, spaced as its items are, so
-    /// a token on its last item rebuilds and measures one segment, not the
-    /// list. A test seam: `.max` draws every list whole.
-    static var listSegmentLength = 16
-    /// The space between two blocks, and between two segments of one list,
-    /// which is the space between the list's items.
-    static let blockSpacing: CGFloat = 10
-    static let listItemSpacing: CGFloat = 4
-    private final class Layout {
-        let width: CGFloat
-        /// Each block's exact height, and the space above it as this layout
-        /// added it up: the spacing, and after a block — or a list drawn in
-        /// segments — whatever takes its bottom to a whole point.
-        var heights: [CGFloat] = []
-        var gaps: [CGFloat] = []
-        /// That rounding after the last block.
-        var trailing: CGFloat = 0
-        var total: CGFloat = 0
-        var validPrefix = 0
-        var provisional: Set<Int> = []
-        /// No provisional block is at or past this index.
-        var provisionalBound = 0
-        init(width: CGFloat) { self.width = width }
-        func insertProvisional(_ index: Int) { provisional.insert(index); provisionalBound = max(provisionalBound, index + 1) }
-        /// Drops what a change from `index` on has made stale.
-        func invalidate(from index: Int) {
-            validPrefix = min(validPrefix, index)
-            if provisionalBound > index { provisional = provisional.filter { $0 < index }; provisionalBound = index }
-        }
-    }
-    /// One block as drawn: a record of the reading, or one segment of a long list in it.
-    private struct Placement {
+    /// One block of the reply in the text — or one item of a list at the
+    /// reply's top level, so a token on a long list sets one item again —
+    /// and the characters it fills, the line break before it included.
+    private struct Segment {
         var identity: MarkdownBlockIdentity
-        var range: Range<Int>?
-        var heading: Bool
-        /// Drawn as one of several segments of a list.
-        var segmented: Bool
-        /// Continues the list the block above began: it sits as far below it
-        /// as the list's items sit from each other, and the list's bottom is
-        /// rounded to a whole point only after its last segment.
-        var continues: Bool
+        var block: MarkdownBlock
+        var item: ItemPlace?
+        var record: Int
+        var sourceRange: Range<Int>?
+        var range: NSRange
+        var tail: Tail
+        var headings: Int
+        /// For a paragraph that now reads differently from how it read (a
+        /// reference defined later, a mark closed): how its old characters
+        /// map to its new ones, through the source, for a selection or a
+        /// reading position inside it.
+        var reconciliation: MarkdownSelection.Reconciliation? = nil
+    }
+    /// Where a list item stands in its list: its number, the list's marker
+    /// column, and whether it is the list's first.
+    private struct ItemPlace: Equatable {
+        var ordered: Bool
+        var number: Int
+        var column: CGFloat
+        var first: Bool
+    }
+    /// What the text is made of: the reading's records, a top-level list
+    /// taken item by item.
+    private struct Unit {
+        var identity: MarkdownBlockIdentity
+        var block: MarkdownBlock
+        var item: ItemPlace?
+        var record: Int
+        var sourceRange: Range<Int>?
+    }
+    /// How a block's last paragraph ended: what the next block is set below.
+    private struct Tail {
+        var spacing: MarkdownTextTail
+        var breakCopy: String
+        var attributes: [NSAttributedString.Key: Any]
     }
     /// What an update draws with besides the blocks: when these are what the
-    /// last update drew with, the blocks it did not change keep their hosts.
+    /// last update drew with, the blocks it did not change keep their text.
     private struct Inputs: Equatable {
         var style: MarkdownStyle
         var capsWidth: Bool
         var streaming: Bool
         var headings: [MarkdownCopyTarget]
         var environment: TranscriptRowEnvironment
+        func hasSameText(as other: Inputs) -> Bool {
+            style == other.style && capsWidth == other.capsWidth && environment.hasSameGeometry(as: other.environment)
+        }
     }
-    private var blocks: [NativeMarkdownBlockHost] = []
-    private var placements: [Placement] = []
-    /// Which block an identity is, where each record of the reading begins
-    /// among the blocks, and how many headings come before each block.
-    private var positions: [MarkdownBlockIdentity: Int] = [:]
-    private var recordStarts: [Int] = [0]
-    private var headingsBefore: [Int] = [0]
+    let textView = MarkdownTextView()
+    private let builder = MarkdownTextBuilder()
+    private var segments: [Segment] = []
+    private var recordIdentities: [MarkdownBlockIdentity] = []
+    private var identitySet = Set<MarkdownBlockIdentity>()
     private var lastInputs: Inputs?
-    /// Whether the last update drew this surface's own reading, whose
-    /// unchanged prefix the next one can then take on trust.
-    private var drewReading = false
-    private var priorSourceText: String?
-    var blockOwnerIdentities: [ObjectIdentifier] { blocks.map(ObjectIdentifier.init) }
-    private var layouts: [Layout] = []
-    private var laidOutWidth: CGFloat?
-    private var layoutDirtyFrom: Int? = 0
-    private(set) var aggregateMeasurementVisits = 0
-    private(set) var framePlacements = 0
-    /// Blocks the last update compared with what they were: a token's should
-    /// not grow with the reply.
+    /// Heights measured at each width the page asked about, for this text.
+    private var sizes: [CGSize] = []
+    /// Evidence for regressions: how many full layouts the text has had, and
+    /// how many characters the last update replaced.
+    private(set) var layoutPasses = 0
+    private(set) var lastReplacedLength = 0
+    private(set) var lastReplacedLocation = 0
     private(set) var reconciledBlockVisits = 0
     private var invalidationScheduled = false
-    private var applyingLayout = false
-    private var resolvingViewport = false
-    /// Deterministic native regression seam between measuring a viewport and
-    /// the hosting parent's deferred intrinsic-height adoption.
-    var didPrepareVisibleBlocks: (() -> Void)?
-    var willPrepareVisibleBlocks: (() -> Void)?
-    var didDrawPreparedContent: (() -> Void)?
-    private var resolveScheduled = false
-    private var loadingSection: NSProgressIndicator?
-    /// The hosts in the view tree, and the ones with a native tree out of it,
-    /// which the idle scheduler reclaims once they are far from the viewport.
-    private var mountedHosts: [ObjectIdentifier: NativeMarkdownBlockHost] = [:]
-    private var detachedHosts: [ObjectIdentifier: NativeMarkdownBlockHost] = [:]
-    var hasProvisionalGeometry: Bool { !isParked && layouts.last?.provisional.isEmpty == false }
-    var visibleContentPrepared: Bool {
-        if isParked { return true }
-        guard let clip = observedClip, let layout = layouts.last(where: { $0.width == bounds.width }) else { return blocks.isEmpty }
-        let viewport = convert(clip.bounds, from: clip)
-        guard !resolveScheduled else { return false }
-        return !onScreen(viewport).contains { layout.provisional.contains($0) }
+    private var hoverArea: NSTrackingArea?
+    private var toolbar: NSHostingView<MarkdownCodeToolbar>?
+    private weak var toolbarMark: MarkdownCodeMark?
+    private var headingAction: NSHostingView<MarkdownHeadingAction>?
+    private var headingActionIndex: Int?
+    private var tableActions: [ObjectIdentifier: NSHostingView<MarkdownTableAction>] = [:]
+    /// How many tables are drawn as a preview: they have a control beside them.
+    private var largeTables = 0
+    private var hasLargeTables: Bool { largeTables > 0 }
+    private static func isLargeTable(_ block: MarkdownBlock) -> Bool {
+        if case .table(_, let header, let rows) = block { return MarkdownTablePresentation.isLarge(header: header, rows: rows) }
+        return false
     }
-    var provisionalBlockCount: Int { layouts.last?.provisional.count ?? 0 }
-    /// A logical source/block identity, independent of estimated row heights.
-    struct LogicalAnchor: Equatable { var block: MarkdownBlockIdentity; var offset: CGFloat; fileprivate var character: NativeMarkdownBlockHost.CharacterAnchor? = nil; var sourceUTF16Range: NSRange? { character?.range } }
-    var logicalAnchor: LogicalAnchor? {
-        guard let clip = observedClip else { return nil }
-        let y = convert(clip.bounds, from: clip).minY
-        let index = firstBlock(below: y)
-        guard index < blocks.count else { return nil }
-        return LogicalAnchor(block: placements[index].identity, offset: blocks[index].frame.minY - y)
-    }
-    var preparedLogicalAnchor: LogicalAnchor? {
-        guard let clip = observedClip else { return nil }
-        let viewport = convert(clip.bounds, from: clip)
-        guard let index = onScreen(viewport).first(where: { blocks[$0].exactMeasurement(width: bounds.width) != nil }) else { return nil }
-        return LogicalAnchor(block: placements[index].identity, offset: blocks[index].frame.minY - viewport.minY,
-                             character: blocks[index].characterAnchor(in: self, viewportTop: viewport.minY))
-    }
-    func displacement(of anchor: LogicalAnchor) -> CGFloat? {
-        guard let clip = observedClip, let top = top(for: anchor) else { return nil }
-        return top - convert(clip.bounds, from: clip).minY
-    }
-    private weak var observedClip: NSClipView?
-    nonisolated(unsafe) private var boundsObserver: NSObjectProtocol?
-    nonisolated(unsafe) private var frameObservers: [NSObjectProtocol] = []
+    /// Where the pointer last was over this reply, to put its control back
+    /// after the text under it changed.
+    private var hoverPoint: NSPoint?
+    private let caret = MarkdownCaretView()
     override var isFlipped: Bool { true }
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: layouts.last(where: { $0.width == bounds.width && $0.validPrefix == blocks.count && $0.heights.count == blocks.count })?.total ?? NSView.noIntrinsicMetric)
-    }
-    /// Evidence for regressions: pure scrolling must reuse exact measurements.
-    var blockMeasurementCount: Int { blocks.reduce(0) { $0 + $1.measurementCount } }
-    var retainedBlockCount: Int { blocks.count }
-    var hostedBlockCount: Int { blocks.reduce(0) { $0 + ($1.view == nil ? 0 : 1) } }
-    var mountedBlockCount: Int { blocks.reduce(0) { $0 + ($1.view?.superview === self ? 1 : 0) } }
 
-    deinit {
-        if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
-        for observer in frameObservers { NotificationCenter.default.removeObserver(observer) }
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        textView.frame = bounds
+        textView.copyTargets = { [weak self] in self?.lastInputs?.headings ?? [] }
+        addSubview(textView)
+        caret.isHidden = true
+        addSubview(caret)
     }
+    required init?(coder: NSCoder) { nil }
 
-    /// Parked while the reader reads this reply as its source: every block
-    /// and every height stays, nothing is mounted or drawn, and the surface
-    /// takes no room. Unparked, it is the rendered reply it was, at the
-    /// heights it had, so the reader's place comes back with it.
+    /// Whether the text has a height it might still correct: never, now that
+    /// the whole reply is laid out as one text.
+    var hasProvisionalGeometry: Bool { false }
+    /// Whether what is on screen is drawn at its own measure.
+    var visibleContentPrepared: Bool {
+        isParked || textView.textContainer?.containerSize.width == bounds.width || bounds.width == 0
+    }
+    var provisionalBlockCount: Int { 0 }
+    /// Told each time the text is drawn: the reading position must already
+    /// be where it belongs by then.
+    var didDrawPreparedContent: (() -> Void)? {
+        get { textView.didDraw }
+        set { textView.didDraw = newValue }
+    }
+    var retainedBlockCount: Int { segments.count }
+    /// The text: every block of the reply, as one selectable text.
+    var textLength: Int { textView.textStorage?.length ?? 0 }
+
+    // MARK: Parking
+
+    /// Parked while the reader reads this reply as its source: the text and
+    /// its heights stay, nothing is drawn, and the surface takes no room.
     private(set) var isParked = false
     func park(_ parked: Bool) {
         guard parked != isParked else { return }
         isParked = parked
-        if parked {
-            for (key, host) in mountedHosts {
-                if host.view?.superview === self { host.view?.removeFromSuperview() }
-                if host.view != nil { detachedHosts[key] = host }
-            }
-            mountedHosts = [:]
-            loadingSection?.stopAnimation(nil); loadingSection?.removeFromSuperview()
-            TranscriptIdleScheduler.shared.cancel(self)
-        }
+        textView.isHidden = parked
+        if parked { hideControls(); caret.isHidden = true }
         needsLayout = true
     }
+
+    // MARK: Reading
 
     /// The reading of this message, owned here rather than by a view body, so
     /// that a token can extend it without SwiftUI running at all.
@@ -473,10 +294,11 @@ private struct NativeHostedMarkdownBlock: View {
                                  environment: TranscriptRowEnvironment, identity: String)?
     /// Which reply this surface carries, for the row handing it a token.
     var readingIdentity: String? { readingContext?.identity }
-    /// How many tokens this surface has taken without SwiftUI rebuilding the
-    /// row, and how many blocks each of them had to read again.
+    /// How many tokens this surface has taken without SwiftUI rebuilding the row.
     private(set) var appendCount = 0
     private var appending = false
+    private var drewReading = false
+    private var priorSourceText: String?
 
     /// The message as it stands. Called by SwiftUI when anything other than
     /// the arriving text changes: the appearance, the width, the reply
@@ -484,11 +306,9 @@ private struct NativeHostedMarkdownBlock: View {
     func read(source: String, style: MarkdownStyle, capsWidth: Bool, streaming: Bool,
               headings: [MarkdownCopyTarget], environment: TranscriptRowEnvironment, identity: String) {
         // A token can reach this surface directly, ahead of the view that
-        // carries the same text. A view update that is a token behind must not
-        // rewind the reading — that would throw away every block of it and
-        // rebuild the lot. While a reply arrives its text only grows, so the
-        // longer of the two is the one to read, and everything else in the
-        // update (the appearance, the width, the copy targets) still applies.
+        // carries the same text. A view update that is a token behind must
+        // not rewind the reading; while a reply arrives its text only grows,
+        // so the longer of the two is the one to read.
         var source = source
         if streaming, identity == readingContext?.identity, source != reading.source, reading.source.hasUTF8Prefix(source) {
             source = reading.source
@@ -502,159 +322,283 @@ private struct NativeHostedMarkdownBlock: View {
                   inputs: Inputs(style: style, capsWidth: capsWidth, streaming: streaming, headings: headings, environment: environment))
         drewReading = true
     }
-    /// A token arrived: this reply's text grew by a suffix. The block still
-    /// open is read again and measured again; every block above it keeps the
-    /// exact height it already had, and no SwiftUI tree is rebuilt. Returns
-    /// how much taller the message became, or nil when this surface is not
-    /// the one carrying that reply.
+
+    /// A token arrived: this reply's text grew by a suffix. Only what reads
+    /// differently is set again and laid out again. Returns how much taller
+    /// the message became, or nil when this surface is not the one carrying
+    /// that reply.
     func appendStreaming(_ next: String, identity: String) -> CGFloat? {
         let appendStarted = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownAppendSeconds += TranscriptLayoutClock.now - appendStarted } }
-        // A pass already running owns this geometry: a block being prepared
-        // for the viewport is part way through re-placing every block. Such a
-        // token takes the ordinary path rather than changing the ground under
-        // that pass.
         guard let context = readingContext, context.streaming, context.identity == identity, !identity.isEmpty,
-              bounds.width > 0, !applyingLayout, !resolvingViewport,
-              next.utf8.count > reading.source.utf8.count, !reading.source.isEmpty, next.hasUTF8Prefix(reading.source) else { return nil }
-        let before = exactLayout(width: bounds.width).total
+              bounds.width > 0, next.utf8.count > reading.source.utf8.count, !reading.source.isEmpty,
+              next.hasUTF8Prefix(reading.source) else { return nil }
+        let before = measure(width: bounds.width).height
         appending = true
         read(source: next, style: context.style, capsWidth: context.capsWidth, streaming: true,
              headings: context.headings, environment: context.environment, identity: identity)
         appending = false
-        let after = exactLayout(width: bounds.width).total
+        let after = measure(width: bounds.width).height
         if abs(bounds.height - after) > 0.01 { setFrameSize(NSSize(width: bounds.width, height: after)) }
-        // The blocks are placed by this surface's own layout, in the pass the
-        // page is already about to run: the page has the new height now, from
-        // the measurement above, and the reader's position is corrected in
-        // that same pass rather than a frame later.
         needsLayout = true
         appendCount += 1
         return after - before
     }
 
+    /// Draws a list of blocks that is not this surface's own reading (tests,
+    /// and bodies handed their blocks).
     func update(blocks source: [MarkdownBlock], style: MarkdownStyle, capsWidth: Bool, streaming: Bool,
-                headings: [MarkdownCopyTarget], environment: TranscriptRowEnvironment, identities: [MarkdownBlockIdentity]? = nil, sourceText: String? = nil, sourceRanges: [Range<Int>]? = nil) {
+                headings: [MarkdownCopyTarget], environment: TranscriptRowEnvironment, identities: [MarkdownBlockIdentity]? = nil,
+                sourceText: String? = nil, sourceRanges: [Range<Int>]? = nil) {
         let ids = identities?.count == source.count ? identities! : source.indices.map { MarkdownBlockIdentity(generation: 0, sourceOffset: $0) }
         let records = source.indices.map { index in
             StreamingMarkdownRecord(id: ids[index], range: sourceRanges.flatMap { $0.indices.contains(index) ? $0[index] : nil } ?? 0..<0,
                                     block: source[index], provisional: false)
         }
         drewReading = false
-        reconcile(records, unchangedPrefix: 0, sourceText: sourceText, hasRanges: sourceRanges != nil,
+        reconcile(records, unchangedPrefix: 0, sourceText: sourceText,
                   inputs: Inputs(style: style, capsWidth: capsWidth, streaming: streaming, headings: headings, environment: environment))
     }
 
-    /// Draws `records`: every one, a long list as segments. The records before
-    /// `unchangedPrefix` are the ones the last update drew, unchanged, so their
-    /// blocks keep their hosts without being looked at; the last of them is
-    /// compared again, since it may have just stopped being the reply's last
-    /// block and so lost its caret. Everything after is matched by identity,
-    /// so a block keeps its host, its selection and its exact heights.
-    private func reconcile(_ records: [StreamingMarkdownRecord], unchangedPrefix: Int, sourceText: String?, hasRanges: Bool = true, inputs: Inputs) {
+    /// Sets the text for `records`. The records before `unchangedPrefix` are
+    /// the ones the last update drew, unchanged; the rest are compared with
+    /// the blocks drawn, and the text is replaced only from the first
+    /// character that reads differently.
+    private func reconcile(_ records: [StreamingMarkdownRecord], unchangedPrefix: Int, sourceText: String?, inputs: Inputs) {
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownUpdateSeconds += TranscriptLayoutClock.now - clock } }
+        guard let storage = textView.textStorage else { return }
         enclosingScrollView?.transcriptReading.capture(self)
-        let keep = inputs == lastInputs ? max(0, min(unchangedPrefix, recordStarts.count - 1, records.count) - 1) : 0
-        let keepBlocks = recordStarts[keep]
-        // The blocks from `keep` on: identities made unique, a duplicate
-        // taking the next component, and a long list cut into segments.
-        var drawn: [(block: MarkdownBlock, placement: Placement)] = []
-        var starts: [Int] = []
-        var seen = Set<MarkdownBlockIdentity>()
-        let length = max(1, Self.listSegmentLength)
-        for index in keep..<records.count {
-            let record = records[index]
+        applyAppearance(inputs.environment)
+        let sameText = lastInputs.map { $0.hasSameText(as: inputs) } ?? false
+        // The records the reading says are unchanged keep their text without
+        // being looked at; the rest are taken apart into units and compared.
+        let keepRecords = sameText ? min(unchangedPrefix, records.count, recordIdentities.count) : 0
+        // Identities made unique, as the reading can repeat one; the records
+        // kept keep theirs, so a token does not walk the reply for this.
+        for id in recordIdentities[keepRecords...] { identitySet.remove(id) }
+        recordIdentities.removeSubrange(keepRecords...)
+        for record in records[keepRecords...] {
             var id = record.id
-            while !seen.insert(id).inserted || (positions[id].map { $0 < keepBlocks } ?? false) { id.component += 1 }
-            starts.append(keepBlocks + drawn.count)
-            let range: Range<Int>? = hasRanges ? record.range : nil
-            if case .list(let ordered, let start, let items) = record.block, items.count > length {
-                var first = 0, segment = 0
-                while first < items.count {
-                    let last = min(items.count, first + length)
-                    var part = id; part.segment = segment
-                    drawn.append((.list(ordered: ordered, start: start + first, items: Array(items[first..<last])),
-                                  Placement(identity: part, range: range, heading: false, segmented: true, continues: segment > 0)))
-                    first = last; segment += 1
+            while !identitySet.insert(id).inserted { id.component += 1 }
+            recordIdentities.append(id)
+        }
+        let identities = recordIdentities
+        // Found from the end: a token changes the reply's last records, and a
+        // search from the start would walk every block of a long reply.
+        var keep = segments.count
+        while keep > 0, segments[keep - 1].record >= keepRecords { keep -= 1 }
+        let context = MarkdownTextContext(style: inputs.style, capsWidth: inputs.capsWidth)
+        var units: [Unit] = []
+        for index in keepRecords..<records.count {
+            let record = records[index]
+            let range: Range<Int>? = record.range.isEmpty ? nil : record.range
+            if case .list(let ordered, let start, let items) = record.block, !items.isEmpty {
+                let column = builder.markerColumn(ordered: ordered, start: start, count: items.count, style: inputs.style)
+                for (item, blocks) in items.enumerated() {
+                    var id = identities[index]; id.segment = item + 1
+                    units.append(Unit(identity: id, block: .list(ordered: ordered, start: start + item, items: [blocks]),
+                                      item: ItemPlace(ordered: ordered, number: start + item, column: column, first: item == 0),
+                                      record: index, sourceRange: range))
                 }
             } else {
-                var heading = false
-                if case .heading = record.block { heading = true }
-                drawn.append((record.block, Placement(identity: id, range: range, heading: heading, segmented: false, continues: false)))
+                units.append(Unit(identity: identities[index], block: record.block, item: nil, record: index, sourceRange: range))
             }
         }
-        let oldCount = blocks.count, count = keepBlocks + drawn.count
-        var old: [MarkdownBlockIdentity: Int] = [:]
-        for index in keepBlocks..<oldCount { old[placements[index].identity] = index }
-        var changedFrom = count == oldCount ? count : min(count, oldCount)
-        var next: [NativeMarkdownBlockHost] = []
-        next.reserveCapacity(drawn.count)
-        var headingIndex = headingsBefore[keepBlocks]
-        let scale = displayScale
-        var nextHeadings: [Int] = []
-        nextHeadings.reserveCapacity(drawn.count + 1)
-        for (offset, entry) in drawn.enumerated() {
-            let index = keepBlocks + offset
-            nextHeadings.append(headingIndex)
-            var target: MarkdownCopyTarget?
-            if entry.placement.heading {
-                if inputs.headings.indices.contains(headingIndex) { target = inputs.headings[headingIndex] }
-                headingIndex += 1
-            }
-            let item = NativeMarkdownItem(block: entry.block, style: inputs.style, capsWidth: inputs.capsWidth,
-                                          caret: inputs.streaming && index == count - 1, headingTarget: target, environment: inputs.environment)
+        var compared = 0
+        while sameText, compared < units.count, keep < segments.count, segments[keep].identity == units[compared].identity,
+              segments[keep].item == units[compared].item, segments[keep].block == units[compared].block {
             reconciledBlockVisits += 1
-            if let prior = old.removeValue(forKey: entry.placement.identity) {
-                let host = blocks[prior], was = placements[prior]
-                let range = entry.placement.range, priorSource = priorSourceText
-                let updated = host.update(item, source: {
-                    guard let sourceText, let range, let current = MarkdownSelection.Source(sourceText, bytes: range) else { return nil }
-                    let previous = priorSource.flatMap { text in was.range.flatMap { MarkdownSelection.Source(text, bytes: $0) } }
-                    return (previous, current)
-                })
-                host.displayScale = scale
-                if updated || prior != index || was.continues != entry.placement.continues || was.segmented != entry.placement.segmented {
-                    changedFrom = min(changedFrom, index)
-                }
-                next.append(host)
+            segments[keep].record = units[compared].record
+            keep += 1; compared += 1
+        }
+        let oldCount = segments.count
+        guard compared < units.count || keep < oldCount || !sameText else {
+            lastInputs = inputs; priorSourceText = sourceText
+            updateCaret()
+            return
+        }
+        // A token on the fence at the reply's end sets only the code it adds.
+        if sameText, compared == units.count - 1, keep == oldCount - 1, extendOpenFence(units[compared], at: keep, storage: storage, inputs: inputs) {
+            finish(inputs: inputs, sourceText: sourceText)
+            return
+        }
+        let editStart = keep < oldCount ? segments[keep].range.location : storage.length
+        // The paragraphs about to be set again, as they read now.
+        var former: [MarkdownBlockIdentity: (text: String, content: NSRange, source: Range<Int>?)] = [:]
+        for index in keep..<oldCount {
+            guard case .paragraph = segments[index].block else { continue }
+            let content = contentRange(index)
+            former[segments[index].identity] = ((storage.string as NSString).substring(with: content), content, segments[index].sourceRange)
+        }
+        var tail = keep > 0 ? segments[keep - 1].tail : nil
+        var headings = keep > 0 ? segments[keep - 1].headings : 0
+        var previousItem = keep > 0 ? segments[keep - 1].item.map { _ in segments[keep - 1].record } : nil
+        let replacement = NSMutableAttributedString()
+        var built: [Segment] = []
+        for unit in units[compared...] {
+            reconciledBlockVisits += 1
+            var headingIndex: Int?
+            if unit.item == nil, case .heading = unit.block { headingIndex = headings; headings += 1 }
+            let first = keep + built.count == 0
+            let paragraphs: [MarkdownTextParagraph]
+            if let item = unit.item, case .list(_, _, let items) = unit.block {
+                paragraphs = builder.listItem(items[0], number: item.number, ordered: item.ordered, column: item.column, identity: unit.identity,
+                                              context: context, gap: item.first ? (first ? 0 : MarkdownTextLayout.blockGap) : MarkdownTextLayout.listItemGap)
             } else {
-                let host = NativeMarkdownBlockHost(item: item)
-                host.displayScale = scale
-                next.append(host)
-                changedFrom = min(changedFrom, index)
+                paragraphs = builder.paragraphs(unit.block, identity: unit.identity, context: context,
+                                                gap: first ? 0 : MarkdownTextLayout.blockGap, headingIndex: headingIndex)
             }
+            guard !paragraphs.isEmpty else {
+                // A block with nothing to show (an empty table) keeps its place.
+                built.append(Segment(identity: unit.identity, block: unit.block, item: unit.item, record: unit.record, sourceRange: nil,
+                                     range: NSRange(location: editStart + replacement.length, length: 0),
+                                     tail: tail ?? Tail(spacing: MarkdownTextTail(lineSpacing: 0, bottomPad: 0), breakCopy: "", attributes: [:]),
+                                     headings: headings))
+                continue
+            }
+            // Between two items of one list a copy puts one line break.
+            let sibling = unit.item != nil && !(unit.item?.first ?? true) && previousItem == unit.record
+            let (text, end) = MarkdownTextAssembler.text(paragraphs, after: tail?.spacing, leadingBreak: sibling ? "\n" : tail?.breakCopy,
+                                                         leadingAttributes: tail?.attributes ?? [:])
+            let location = editStart + replacement.length
+            replacement.append(text)
+            let last = paragraphs[paragraphs.count - 1]
+            var attributes = last.marks
+            if text.length > 0 {
+                for key in [NSAttributedString.Key.font, .paragraphStyle] {
+                    if let value = text.attribute(key, at: text.length - 1, effectiveRange: nil) { attributes[key] = value }
+                }
+            }
+            let segmentTail = Tail(spacing: end ?? MarkdownTextTail(lineSpacing: 0, bottomPad: 0), breakCopy: last.breakCopy, attributes: attributes)
+            built.append(Segment(identity: unit.identity, block: unit.block, item: unit.item, record: unit.record, sourceRange: unit.sourceRange,
+                                 range: NSRange(location: location, length: text.length), tail: segmentTail, headings: headings))
+            tail = segmentTail
+            previousItem = unit.item != nil ? unit.record : nil
         }
-        nextHeadings.append(headingIndex)
-        // Hosts no longer drawn leave the view tree and every list of them.
-        for (_, index) in old {
-            let host = blocks[index]
-            host.view?.removeFromSuperview()
-            mountedHosts[ObjectIdentifier(host)] = nil; detachedHosts[ObjectIdentifier(host)] = nil
+        // A paragraph that reads differently maps its old characters to its
+        // new ones through the source.
+        for index in built.indices {
+            guard case .paragraph = built[index].block, let old = former[built[index].identity] else { continue }
+            let skip = built[index].range.length > 0 && keep + index > 0 ? 1 : 0
+            let local = NSRange(location: built[index].range.location - editStart + skip, length: max(0, built[index].range.length - skip))
+            let text = (replacement.string as NSString).substring(with: local)
+            guard text != old.text, !text.hasUTF8Prefix(old.text), let sourceText, let range = built[index].sourceRange,
+                  let current = MarkdownSelection.Source(sourceText, bytes: range) else { continue }
+            let previous = priorSourceText.flatMap { prior in old.source.flatMap { MarkdownSelection.Source(prior, bytes: $0) } }
+            built[index].reconciliation = MarkdownSelection.Reconciliation(previous: old.text, source: current, previousSource: previous,
+                                                                          rendered: text, keepsSoftBreaks: inputs.style.keepsSoftBreaks)
         }
-        for index in keepBlocks..<oldCount where positions[placements[index].identity] == index { positions[placements[index].identity] = nil }
-        blocks.replaceSubrange(keepBlocks..., with: next)
-        placements.replaceSubrange(keepBlocks..., with: drawn.map(\.placement))
-        headingsBefore.replaceSubrange(keepBlocks..., with: nextHeadings)
-        recordStarts.replaceSubrange(keep..., with: starts + [count])
-        for index in keepBlocks..<count { positions[placements[index].identity] = index }
-        priorSourceText = sourceText
-        lastInputs = inputs
-        guard changedFrom < count || oldCount != count else { return }
-        // Completed blocks retain their exact width-specific heights. Only the
-        // changed suffix participates in aggregate sizing and frame placement.
-        for layout in layouts { layout.invalidate(from: changedFrom) }
-        layoutDirtyFrom = min(layoutDirtyFrom ?? changedFrom, changedFrom)
+        // Only the characters that read differently are replaced: a token
+        // that extends the last block adds its own characters, and TextKit
+        // lays out again from there, not the reply.
+        let oldRange = NSRange(location: editStart, length: storage.length - editStart)
+        let common = Self.commonPrefix(storage, oldRange, replacement)
+        // And the characters at the end that read the same: a block that
+        // changed in the middle (a reference defined late) is replaced alone,
+        // and what follows it keeps its characters, and a selection in it.
+        let suffix = Self.commonSuffix(storage, NSRange(location: oldRange.location + common, length: oldRange.length - common),
+                                       replacement, NSRange(location: common, length: replacement.length - common))
+        let replaced = NSRange(location: editStart + common, length: oldRange.length - common - suffix)
+        let inserted = replacement.attributedSubstring(from: NSRange(location: common, length: replacement.length - common - suffix))
+        let shift = inserted.length - replaced.length
+        lastReplacedLocation = replaced.location; lastReplacedLength = inserted.length
+        if replaced.length > 0 || inserted.length > 0 {
+            let selections = textView.selectedRanges.map(\.rangeValue)
+            storage.beginEditing()
+            storage.replaceCharacters(in: replaced, with: inserted)
+            storage.endEditing()
+            // A selection above the change is untouched; one inside a
+            // paragraph that reads differently follows its characters; any
+            // other keeps what of it still fits the text.
+            let length = storage.length
+            let kept = selections.map { range -> NSValue in
+                if NSMaxRange(range) <= replaced.location { return NSValue(range: range) }
+                if range.location >= NSMaxRange(replaced) { return NSValue(range: NSRange(location: range.location + shift, length: range.length)) }
+                for (offset, segment) in built.enumerated() {
+                    guard let reconciliation = segment.reconciliation, let old = former[segment.identity],
+                          range.location >= old.content.location, NSMaxRange(range) <= NSMaxRange(old.content),
+                          let mapped = reconciliation.range(NSRange(location: range.location - old.content.location, length: range.length)) else { continue }
+                    let skip = segment.range.length > 0 && keep + offset > 0 ? 1 : 0
+                    return NSValue(range: NSRange(location: segment.range.location + skip + mapped.location, length: mapped.length))
+                }
+                let location = min(range.location, length)
+                return NSValue(range: NSRange(location: location, length: min(range.length, length - location)))
+            }
+            if kept.map(\.rangeValue) != textView.selectedRanges.map(\.rangeValue) { textView.selectedRanges = kept }
+            sizes.removeAll(keepingCapacity: true)
+        }
+        largeTables += built.reduce(0) { $0 + (Self.isLargeTable($1.block) ? 1 : 0) }
+            - segments[keep...].reduce(0) { $0 + (Self.isLargeTable($1.block) ? 1 : 0) }
+        segments.replaceSubrange(keep..., with: built)
+        if !appending { builder.retain(segments.map(\.identity)) }
+        finish(inputs: inputs, sourceText: sourceText)
+    }
+
+    /// A token on the fence still being written at the reply's end: the code
+    /// it adds is appended, and colour is set again only from the scanner's
+    /// last neutral point, not over the whole fence.
+    private func extendOpenFence(_ unit: Unit, at index: Int, storage: NSTextStorage, inputs: Inputs) -> Bool {
+        let segment = segments[index]
+        guard segment.identity == unit.identity, segment.item == nil, unit.item == nil, NSMaxRange(segment.range) == storage.length,
+              case .code(let oldLanguage, let oldCode) = segment.block, case .code(let language, let code) = unit.block,
+              oldLanguage == language, code.utf8.count > oldCode.utf8.count, code.hasUTF8Prefix(oldCode) else { return false }
+        let context = MarkdownTextContext(style: inputs.style, capsWidth: inputs.capsWidth)
+        let (paragraph, reading) = builder.code(language: language, code: code, identity: unit.identity, context: context,
+                                                gap: index == 0 ? 0 : MarkdownTextLayout.blockGap)
+        let codeStart = segment.range.location + (index > 0 ? 1 : 0)
+        let oldLength = storage.length - codeStart, text = reading.text
+        guard codeStart < storage.length, text.length > oldLength, reading.recolorFrom <= oldLength else { return false }
+        let first = storage.attribute(.paragraphStyle, at: codeStart, effectiveRange: nil)
+        let rest = MarkdownTextAssembler.style(paragraph, after: nil, firstLine: false)
+        let firstLineEnd = (text.string as NSString).range(of: "\n").location
+        let from = codeStart + reading.recolorFrom
+        // TextKit moves a selection to the end of text appended while the
+        // view holds it; the reader's selection stays where they made it.
+        let selections = textView.selectedRanges.map(\.rangeValue)
+        storage.beginEditing()
+        storage.replaceCharacters(in: NSRange(location: storage.length, length: 0), with: (text.string as NSString).substring(from: oldLength))
+        text.enumerateAttributes(in: NSRange(location: reading.recolorFrom, length: text.length - reading.recolorFrom)) { attributes, range, _ in
+            var dressed = attributes
+            dressed[.piCodeBlock] = reading.mark
+            storage.setAttributes(dressed, range: NSRange(location: codeStart + range.location, length: range.length))
+        }
+        storage.addAttribute(.paragraphStyle, value: rest, range: NSRange(location: from, length: storage.length - from))
+        if let first, firstLineEnd == NSNotFound || codeStart + firstLineEnd >= from {
+            let end = firstLineEnd == NSNotFound ? storage.length : min(storage.length, codeStart + firstLineEnd + 1)
+            if end > from { storage.addAttribute(.paragraphStyle, value: first, range: NSRange(location: from, length: end - from)) }
+        }
+        storage.endEditing()
+        let length = storage.length
+        let kept = selections.map { range -> NSValue in
+            let location = min(range.location, length)
+            return NSValue(range: NSRange(location: location, length: min(range.length, length - location)))
+        }
+        if kept.map(\.rangeValue) != textView.selectedRanges.map(\.rangeValue) { textView.selectedRanges = kept }
+        lastReplacedLocation = from; lastReplacedLength = storage.length - from
+        segments[index].block = unit.block; segments[index].record = unit.record
+        segments[index].range.length = storage.length - segments[index].range.location
+        sizes.removeAll(keepingCapacity: true)
+        return true
+    }
+
+    /// What every change of the text ends with.
+    private func finish(inputs: Inputs, sourceText: String?) {
+        if lastInputs?.style.id != inputs.style.id {
+            textView.setAccessibilityLabel(inputs.style.id.hasPrefix("reasoning") ? "Reasoning" : inputs.style.id.hasPrefix("summary") ? "Summary" : "Reply")
+        }
+        lastInputs = inputs; priorSourceText = sourceText
+        textView.topInset = firstInset()
+        updateCaret()
+        refreshHover()
         needsLayout = true
         // A token's own pass has already told the row how much taller the
-        // message became, and the row has already had the page placed around
-        // it. Advertising a new intrinsic size here would put the whole row
-        // through SwiftUI a second time for the same text.
-        guard !appending else { return }
-        // Input changes can arrive during a parent's fittingSize pass. Let
-        // SwiftUI finish that update before advertising a new intrinsic size.
-        guard !invalidationScheduled else { return }
+        // message became. Advertising a new intrinsic size here would put the
+        // whole row through SwiftUI a second time for the same text.
+        guard !appending, !invalidationScheduled else { return }
         invalidationScheduled = true
+        // Input changes can arrive during a parent's sizing pass. Let SwiftUI
+        // finish that update before advertising a new intrinsic size.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.invalidationScheduled = false
@@ -662,296 +606,431 @@ private struct NativeHostedMarkdownBlock: View {
         }
     }
 
-    /// The scale this surface draws at, or will once it is in a window.
-    private var displayScale: CGFloat { window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2 }
-    /// Drawn at a new scale: every block is measured again at it.
-    private func adoptDisplayScale() {
-        let scale = displayScale
-        guard blocks.contains(where: { $0.displayScale != scale }) else { return }
-        for block in blocks { block.displayScale = scale }
-        layouts.removeAll(); laidOutWidth = nil; layoutDirtyFrom = 0
-        needsLayout = true
-        invalidateIntrinsicContentSize()
-    }
-    override func viewDidChangeBackingProperties() {
-        super.viewDidChangeBackingProperties()
-        adoptDisplayScale()
-    }
-    /// What takes the bottom of the run of blocks ending at `index` — one
-    /// block, or every segment of one list — to a whole point.
-    private func rounding(afterRunEndingAt index: Int, _ layout: Layout) -> CGFloat {
-        var bottom = layout.heights[index], block = index
-        while block > 0, placements[block].continues { bottom += layout.gaps[block] + layout.heights[block - 1]; block -= 1 }
-        return max(0, (bottom - 0.001).rounded(.up) - bottom)
+    /// How many characters at the start of `old` (a range of `storage`) and
+    /// `new` are the same characters, dressed the same.
+    private static func commonPrefix(_ storage: NSTextStorage, _ old: NSRange, _ new: NSAttributedString) -> Int {
+        let limit = min(old.length, new.length)
+        guard limit > 0 else { return 0 }
+        let oldText = storage.string as NSString, newText = new.string as NSString
+        var same = 0
+        let chunk = 4_096
+        var mine = [unichar](repeating: 0, count: chunk), theirs = [unichar](repeating: 0, count: chunk)
+        while same < limit {
+            let count = min(chunk, limit - same)
+            oldText.getCharacters(&mine, range: NSRange(location: old.location + same, length: count))
+            newText.getCharacters(&theirs, range: NSRange(location: same, length: count))
+            var index = 0
+            while index < count, mine[index] == theirs[index] { index += 1 }
+            same += index
+            if index < count { break }
+        }
+        // The same characters can be dressed differently: a word that has
+        // just become a keyword, a run that has just become bold.
+        var location = 0
+        while location < same {
+            var mineRun = NSRange(), theirRun = NSRange()
+            let a = storage.attributes(at: old.location + location, effectiveRange: &mineRun)
+            let b = new.attributes(at: location, effectiveRange: &theirRun)
+            guard NSDictionary(dictionary: a).isEqual(to: b) else { return location }
+            let next = min(NSMaxRange(mineRun) - old.location, NSMaxRange(theirRun))
+            guard next > location else { break }
+            location = next
+        }
+        return min(location, same)
     }
 
-    private func exactLayout(width: CGFloat) -> Layout {
-        let layout: Layout
-        if let cached = layouts.last(where: { $0.width == width }) { layout = cached }
-        else {
-            layout = Layout(width: width)
-            if layouts.count == 4 { layouts.removeFirst() }
-            layouts.append(layout)
+    /// How many characters at the end of `old` (a range of `storage`) and of
+    /// `newRange` in `new` are the same characters, dressed the same.
+    private static func commonSuffix(_ storage: NSTextStorage, _ old: NSRange, _ new: NSAttributedString, _ newRange: NSRange) -> Int {
+        let limit = min(old.length, newRange.length)
+        guard limit > 0 else { return 0 }
+        let oldText = storage.string as NSString, newText = new.string as NSString
+        var same = 0
+        let chunk = 4_096
+        var mine = [unichar](repeating: 0, count: chunk), theirs = [unichar](repeating: 0, count: chunk)
+        while same < limit {
+            let count = min(chunk, limit - same)
+            oldText.getCharacters(&mine, range: NSRange(location: NSMaxRange(old) - same - count, length: count))
+            newText.getCharacters(&theirs, range: NSRange(location: NSMaxRange(newRange) - same - count, length: count))
+            var index = count - 1
+            while index >= 0, mine[index] == theirs[index] { index -= 1 }
+            same += count - 1 - index
+            if index >= 0 { break }
         }
-        guard layout.validPrefix < blocks.count || layout.heights.count != blocks.count else { return layout }
-        let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
-        defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownLayoutSeconds += TranscriptLayoutClock.now - clock } }
-        let prefix = min(layout.validPrefix, blocks.count, layout.heights.count)
-        layout.total -= layout.heights[prefix...].reduce(0, +) + layout.gaps[prefix...].reduce(0, +) + layout.trailing
-        layout.heights.removeSubrange(prefix...); layout.gaps.removeSubrange(prefix...); layout.trailing = 0
-        for index in prefix..<blocks.count {
-            let block = blocks[index]
-            // Descriptor estimates never enter a shared exact-size cache.
-            // A giant message prepares a few blocks, then only the viewport.
-            let known = block.exactMeasurement(width: width)
-            // The block a streaming reply is still being written into is the
-            // one the reader is watching, and a token has just changed it: it
-            // is measured, never stood at an estimate the row would then carry
-            // until its next full measurement.
-            let deferred = known == nil && blocks.count > 32 && index >= 6 && block.view?.superview == nil && !block.hasCaret
-            var height: CGFloat
-            if let known { height = known.height }
-            else if deferred { height = max(20, block.estimate(width: width)) }
-            else {
-                height = block.measure(width: width, in: self).height
-                if block.view?.superview !== self { detachedHosts[ObjectIdentifier(block)] = block }
-            }
-            if deferred { layout.insertProvisional(index) } else { layout.provisional.remove(index) }
-            // A segment sits below the one before it as the list's items sit
-            // from each other; any other block below the whole point the run
-            // above it ends on.
-            let gap = index == 0 ? 0 : placements[index].continues ? Self.listItemSpacing
-                : Self.blockSpacing + rounding(afterRunEndingAt: index - 1, layout)
-            layout.heights.append(height); layout.gaps.append(gap); layout.total += height + gap
-            aggregateMeasurementVisits += 1
+        var matched = 0
+        while matched < same {
+            var mineRun = NSRange(), theirRun = NSRange()
+            let a = storage.attributes(at: NSMaxRange(old) - matched - 1, effectiveRange: &mineRun)
+            let b = new.attributes(at: NSMaxRange(newRange) - matched - 1, effectiveRange: &theirRun)
+            guard NSDictionary(dictionary: a).isEqual(to: b) else { return matched }
+            let back = min(NSMaxRange(old) - matched - mineRun.location, NSMaxRange(newRange) - matched - theirRun.location)
+            guard back > 0 else { break }
+            matched += back
         }
-        layout.trailing = blocks.isEmpty ? 0 : rounding(afterRunEndingAt: blocks.count - 1, layout)
-        layout.total += layout.trailing
-        layout.validPrefix = blocks.count
-        return layout
+        return min(matched, same)
     }
+
+    /// The room above the first line, which TextKit gives no paragraph at
+    /// the very top: a fence's padding, a heading's, a table's.
+    private func firstInset() -> CGFloat {
+        guard let first = segments.first else { return 0 }
+        switch first.block {
+        case .code: return MarkdownTextLayout.codeTop
+        case .heading: return MarkdownTextLayout.headingTop
+        case .table(_, let header, let rows): return MarkdownTablePresentation.isLarge(header: header, rows: rows) ? 0 : MarkdownTextLayout.tablePad
+        default: return 0
+        }
+    }
+    /// The room below the last line: a fence's padding, a table's.
+    private func lastInset() -> CGFloat { segments.last?.tail.spacing.bottomPad ?? 0 }
+
+    private func applyAppearance(_ environment: TranscriptRowEnvironment) {
+        // Colours are dynamic and resolve against the appearance the text is
+        // drawn in; the row's colour scheme and contrast decide it.
+        let dark = environment.colorScheme == .dark
+        let increased = environment.contrast == .increased
+        let name: NSAppearance.Name = increased ? (dark ? .accessibilityHighContrastDarkAqua : .accessibilityHighContrastAqua) : (dark ? .darkAqua : .aqua)
+        if appearance?.name != name { appearance = NSAppearance(named: name); textView.needsDisplay = true }
+    }
+
+    // MARK: Measuring
+
+    /// Replies longer than this are not laid out again while the window is
+    /// being resized: they keep their height until the resize ends.
+    static let liveResizeLength = 200_000
 
     func measure(width proposed: CGFloat?) -> CGSize {
         if proposed == 0 { return .zero }
         let width = proposed.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? (bounds.width > 0 ? bounds.width : TranscriptMetrics.pageWidth)
-        return CGSize(width: width, height: exactLayout(width: width).total)
-    }
-    /// Puts every block from `first` down where the layout says it goes.
-    private func place(from first: Int, layout: Layout) {
-        guard first < blocks.count else { return }
-        var y: CGFloat = first > 0 ? blocks[first - 1].frame.maxY + layout.gaps[first] : 0
-        for index in first..<blocks.count {
-            framePlacements += 1
-            blocks[index].frame = CGRect(x: 0, y: y, width: bounds.width, height: layout.heights[index])
-            y += layout.heights[index] + (index + 1 < blocks.count ? layout.gaps[index + 1] : 0)
+        if let size = sizes.last(where: { $0.width == width }) { return size }
+        guard let storage = textView.textStorage, storage.length > 0, let container = textView.textContainer,
+              let manager = textView.layoutManager else { return CGSize(width: width, height: 0) }
+        if inLiveResize || window?.inLiveResize == true, storage.length > Self.liveResizeLength, let last = sizes.last {
+            return CGSize(width: width, height: last.height)
         }
+        let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
+        defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownLayoutSeconds += TranscriptLayoutClock.now - clock } }
+        if container.containerSize.width != width { container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude) }
+        manager.ensureLayout(for: container)
+        layoutPasses += 1
+        let used = manager.usedRect(for: container)
+        let height = ceil(textView.topInset + used.maxY + lastInset())
+        let size = CGSize(width: width, height: max(1, height))
+        if sizes.count == 4 { sizes.removeFirst() }
+        sizes.append(size)
+        return size
     }
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: sizes.last(where: { $0.width == bounds.width })?.height ?? NSView.noIntrinsicMetric)
+    }
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        guard textLength > Self.liveResizeLength else { return }
+        sizes.removeAll(); needsLayout = true
+        invalidateIntrinsicContentSize()
+    }
+
     override func layout() {
         super.layout()
-        guard bounds.width > 0, !applyingLayout else { return }
-        applyingLayout = true
-        defer { applyingLayout = false }
-        if laidOutWidth != bounds.width || layoutDirtyFrom != nil {
-            let layout = exactLayout(width: bounds.width)
-            place(from: laidOutWidth == bounds.width ? min(layoutDirtyFrom ?? 0, blocks.count) : 0, layout: layout)
-            laidOutWidth = bounds.width; layoutDirtyFrom = nil
+        guard bounds.width > 0 else { return }
+        if textView.frame != bounds { textView.frame = bounds }
+        let deferResize = (inLiveResize || window?.inLiveResize == true) && textLength > Self.liveResizeLength
+        if !deferResize, textView.textContainer?.containerSize.width != bounds.width {
+            textView.textContainer?.containerSize = NSSize(width: bounds.width, height: CGFloat.greatestFiniteMagnitude)
         }
-        bindViewport()
+        placeTableActions()
+        updateCaret()
         enclosingScrollView?.transcriptReading.geometryChanged()
-        mountVisibleBlocks()
-    }
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if window != nil { adoptDisplayScale() }
-        bindViewport()
-        mountVisibleBlocks()
     }
     override func viewWillDraw() {
         super.viewWillDraw()
         enclosingScrollView?.transcriptReading.restore()
     }
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        didDrawPreparedContent?()
-    }
-    private func bindViewport() {
-        let clip = enclosingScrollView?.contentView
-        guard observedClip !== clip else { return }
-        if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
-        for observer in frameObservers { NotificationCenter.default.removeObserver(observer) }
-        frameObservers = []
-        boundsObserver = nil; observedClip = clip
-        guard let clip else { return }
-        clip.postsBoundsChangedNotifications = true
-        boundsObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: clip, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.mountVisibleBlocks() }
-        }
-        // A hosting ancestor can adopt its new intrinsic height without
-        // relaying out this already-sized child. Its coordinate rebase still
-        // changes the text under the viewport, so observe just this chain.
-        var ancestor = superview
-        while let view = ancestor, view !== clip {
-            view.postsFrameChangedNotifications = true
-            frameObservers.append(NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.scheduleFrameCorrection() }
-            })
-            ancestor = view.superview
-        }
-    }
-    private func scheduleFrameCorrection() { enclosingScrollView?.transcriptReading.geometryChanged() }
-
-    /// The first block reaching below `y`. The blocks are placed top to
-    /// bottom, so finding it is a bisection, not a walk down the reply.
-    private func firstBlock(below y: CGFloat) -> Int {
-        var low = 0, high = min(blocks.count, layoutDirtyFrom ?? blocks.count)
-        while low < high {
-            let middle = (low + high) / 2
-            if blocks[middle].frame.maxY > y { high = middle } else { low = middle + 1 }
-        }
-        return low
-    }
-    /// The blocks in `rect`: the placed ones found by bisection, and any not
-    /// yet placed since the last change, by where they stood.
-    private func onScreen(_ rect: CGRect) -> [Int] {
-        guard !rect.isNull, !blocks.isEmpty else { return [] }
-        let placed = min(blocks.count, layoutDirtyFrom ?? blocks.count)
-        var result: [Int] = []
-        var index = firstBlock(below: rect.minY)
-        while index < placed, blocks[index].frame.minY < rect.maxY {
-            if blocks[index].frame.intersects(rect) { result.append(index) }
-            index += 1
-        }
-        for index in placed..<blocks.count where blocks[index].frame.intersects(rect) { result.append(index) }
-        return result
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateCaret()
     }
 
-    private func resolveVisibleBlocks(in viewport: CGRect) {
-        guard !resolvingViewport, !viewport.isNull, let layout = layouts.last(where: { $0.width == bounds.width }),
-              !layout.provisional.isEmpty else { return }
-        let candidates = onScreen(viewport).filter { layout.provisional.contains($0) }
-        guard !candidates.isEmpty else { loadingSection?.removeFromSuperview(); return }
-        if candidates.count > 4 {
-            let spinner = loadingSection ?? NSProgressIndicator()
-            spinner.style = .spinning; spinner.controlSize = .small; spinner.isIndeterminate = true
-            spinner.setAccessibilityLabel("Preparing this section")
-            spinner.frame = CGRect(x: 8, y: max(viewport.minY + 8, blocks[candidates[4]].frame.minY), width: 16, height: 16)
-            if spinner.superview == nil { addSubview(spinner) }
-            spinner.startAnimation(nil); loadingSection = spinner
-        } else { loadingSection?.stopAnimation(nil); loadingSection?.removeFromSuperview() }
-        resolvingViewport = true
-        // Several native layout passes can happen before SwiftUI adopts the
-        // new intrinsic height. Keep one logical position through that batch,
-        // unless the reader has moved the clip in the meantime.
-        enclosingScrollView?.transcriptReading.capture(self)
-        willPrepareVisibleBlocks?()
-        let totalBefore = layout.total
-        let prepared = Array(candidates.prefix(4))
-        for index in prepared {
-            _ = blocks[index].measure(width: bounds.width, in: self)
-            if blocks[index].view?.superview !== self { detachedHosts[ObjectIdentifier(blocks[index])] = blocks[index] }
-            layout.provisional.remove(index)
-        }
-        // The layout takes their heights from here down — including where a
-        // list drawn in segments now ends — and the blocks are placed again.
-        let changedFrom = prepared.min() ?? blocks.count
-        layout.validPrefix = min(layout.validPrefix, changedFrom)
-        _ = exactLayout(width: bounds.width)
-        let resolved = layout.total - totalBefore
-        layoutDirtyFrom = min(layoutDirtyFrom ?? changedFrom, changedFrom)
-        // Reposition descriptors synchronously, but ask the enclosing hosting
-        // row to resize after this native layout callback has returned.
-        place(from: changedFrom, layout: layout)
-        enclosingScrollView?.transcriptReading.capture(self)
-        didPrepareVisibleBlocks?()
-        // The row this reply is drawn in is as tall as the rest of it plus
-        // this text, so it changes by exactly as much. It hears of it here:
-        // nothing the hosting tree reports afterwards reaches it.
-        if abs(resolved) > 0.01 {
-            var ancestor = superview
-            while let view = ancestor, !(view is TranscriptRowContainer) { ancestor = view.superview }
-            (ancestor as? TranscriptRowContainer)?.surfaceResolved(resolved)
-        }
-        enclosingScrollView?.transcriptReading.geometryChanged()
-        resolvingViewport = false
-        guard !resolveScheduled else { return }
-        resolveScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.resolveScheduled = false
-            self.resolvingViewport = true
-            self.invalidateIntrinsicContentSize()
-            self.needsLayout = true
-            self.superview?.layoutSubtreeIfNeeded()
-            self.enclosingScrollView?.transcriptReading.geometryChanged()
-            self.resolvingViewport = false
-            self.mountVisibleBlocks()
-        }
+    // MARK: Reading position
+
+    /// Where the reader's line is, in the reply: a block and a character in
+    /// it, independent of the heights around it.
+    struct CharacterAnchor: Equatable {
+        /// The character, from the start of its block's text.
+        var offset: Int
+        /// Its block's text when it was taken: a block that reads differently
+        /// since maps it through the source.
+        var rendered: String
+        /// How far its line's top stood below the reader's line.
+        var displacement: CGFloat
+        /// Where it came from in the message's source, when known.
+        var range: NSRange?
     }
-    /// The coordinator asks after both descriptor and hosting geometry have
-    /// landed. If a block disappeared, use its nearest surviving predecessor,
-    /// then successor; never substitute the newest response.
+    struct LogicalAnchor: Equatable {
+        var block: MarkdownBlockIdentity
+        var offset: CGFloat
+        var character: CharacterAnchor? = nil
+        var sourceUTF16Range: NSRange? { character?.range }
+    }
+    private var observedClip: NSClipView? { enclosingScrollView?.contentView }
+    var logicalAnchor: LogicalAnchor? { preparedLogicalAnchor }
+    var preparedLogicalAnchor: LogicalAnchor? {
+        guard !isParked, let clip = observedClip else { return nil }
+        let top = convert(clip.bounds, from: clip).minY
+        return anchor(at: top)
+    }
+    private func anchor(at top: CGFloat) -> LogicalAnchor? {
+        guard let manager = textView.layoutManager as? MarkdownTextLayoutManager, let container = textView.textContainer,
+              let storage = textView.textStorage, storage.length > 0, !segments.isEmpty else { return nil }
+        let point = NSPoint(x: 1, y: max(0, top - textView.topInset))
+        let glyph = manager.glyphIndex(for: point, in: container)
+        let character = min(manager.characterIndexForGlyph(at: glyph), storage.length - 1)
+        guard let index = segments.lastIndex(where: { $0.range.location <= character }) ?? segments.indices.first else { return nil }
+        let segment = segments[index], content = contentRange(index)
+        let line = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let lineTop = line.minY + textView.topInset
+        let blockTop = segmentTop(index) ?? lineTop
+        let offset = max(0, character - content.location)
+        var source: NSRange?
+        if let text = priorSourceText, let bytes = segment.sourceRange, let located = MarkdownSelection.Source(text, bytes: bytes) {
+            source = NSRange(location: located.range.location + offset, length: 1)
+        }
+        return LogicalAnchor(block: segment.identity, offset: blockTop - top,
+                             character: CharacterAnchor(offset: offset, rendered: (storage.string as NSString).substring(with: content),
+                                                        displacement: lineTop - top, range: source))
+    }
+    /// A segment's own characters, without the line break before it.
+    private func contentRange(_ index: Int) -> NSRange {
+        let range = segments[index].range
+        let skip = index > 0 && range.length > 0 ? 1 : 0
+        return NSRange(location: range.location + skip, length: range.length - skip)
+    }
+    private func segmentTop(_ index: Int) -> CGFloat? {
+        guard let manager = textView.layoutManager, segments.indices.contains(index), let storage = textView.textStorage else { return nil }
+        let location = min(segments[index].range.location + (index > 0 ? 1 : 0), max(0, storage.length - 1))
+        let glyph = manager.glyphIndexForCharacter(at: location)
+        guard glyph < manager.numberOfGlyphs else { return nil }
+        return manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY + textView.topInset
+    }
+    func displacement(of anchor: LogicalAnchor) -> CGFloat? {
+        guard let clip = observedClip, let top = top(for: anchor) else { return nil }
+        return top - convert(clip.bounds, from: clip).minY
+    }
+    /// Where the reader's line should be for the anchor to stand where it
+    /// stood. If its block is gone, the nearest one before it stands in.
     func top(for anchor: LogicalAnchor) -> CGFloat? {
-        let index = positions[anchor.block] ?? placements.lastIndex(where: {
+        let index = segments.firstIndex(where: { $0.identity == anchor.block }) ?? segments.lastIndex(where: {
             $0.identity.generation == anchor.block.generation && $0.identity.sourceOffset <= anchor.block.sourceOffset
-        }) ?? placements.firstIndex(where: { $0.identity.generation == anchor.block.generation })
-        guard let index, blocks.indices.contains(index) else { return nil }
-        if let character = anchor.character, placements[index].identity == anchor.block,
-           let top = blocks[index].characterTop(character, in: self) { return top }
-        return blocks[index].frame.minY - anchor.offset
-    }
-    private func containsSelection(_ block: NativeMarkdownBlockHost, responder: NSView?) -> Bool {
-        guard let view = block.view, let responder else { return false }
-        if responder === view || responder.isDescendant(of: view) { return true }
-        if let editor = responder as? NSTextView, editor.isFieldEditor, let owner = editor.delegate as? NSView {
-            return owner === view || owner.isDescendant(of: view)
-        }
-        return false
-    }
-    private func mountVisibleBlocks() {
-        guard laidOutWidth != nil, !isParked else { return }
-        let viewport: CGRect
-        if let clip = observedClip {
-            viewport = convert(clip.bounds, from: clip)
-        } else if window != nil {
-            viewport = visibleRect
-        } else {
-            // An offscreen retained transcript row is detached as a whole.
-            // Keep its data and exact sizes, but no native text views mounted.
-            viewport = .null
-        }
-        let visible = viewport.isNull ? viewport : viewport.insetBy(dx: 0, dy: -max(120, viewport.height / 4))
-        resolveVisibleBlocks(in: visible)
-        let provisional = layouts.last(where: { $0.width == bounds.width })?.provisional ?? []
-        // The blocks on screen, found by bisection; a block holding the
-        // reader's selection stays, wherever it is.
-        var wanted: [ObjectIdentifier: NativeMarkdownBlockHost] = [:]
-        for index in onScreen(visible) where !provisional.contains(index) { wanted[ObjectIdentifier(blocks[index])] = blocks[index] }
-        let responder = window?.firstResponder as? NSView
-        for (key, host) in mountedHosts where wanted[key] == nil && containsSelection(host, responder: responder) { wanted[key] = host }
-        for (key, host) in mountedHosts where wanted[key] == nil {
-            if host.view?.superview === self { host.view?.removeFromSuperview() }
-            if host.view != nil { detachedHosts[key] = host }
-        }
-        for (key, host) in wanted { host.place(in: self); detachedHosts[key] = nil }
-        mountedHosts = wanted
-        // Reclaim distant trees only during the shared input-quiet budget.
-        // Measurements stay exact. Visible/nearby trees and selection owners
-        // survive; reconstruction is required only after travelling well away.
-        let retention = viewport.isNull ? viewport : viewport.insetBy(dx: 0, dy: -max(720, viewport.height * 3))
-        let candidates = detachedHosts.values.filter { $0.view != nil && $0.view?.superview == nil && (retention.isNull || !$0.frame.intersects(retention)) }
-        guard !candidates.isEmpty else { TranscriptIdleScheduler.shared.cancel(self); return }
-        var cursor = 0
-        TranscriptIdleScheduler.shared.request(self, after: ProcessInfo.processInfo.systemUptime + TranscriptNativeDocument.sliceQuietPeriod) { [weak self] in
-            guard let self else { return false }
-            let responder = self.window?.firstResponder as? NSView
-            while cursor < candidates.count {
-                let block = candidates[cursor]; cursor += 1
-                guard block.view != nil, block.view?.superview == nil, !self.containsSelection(block, responder: responder) else { continue }
-                block.releaseDetachedHost()
-                self.detachedHosts[ObjectIdentifier(block)] = nil
-                return cursor < candidates.count
+        }) ?? segments.firstIndex(where: { $0.identity.generation == anchor.block.generation })
+        guard let index, let manager = textView.layoutManager, let storage = textView.textStorage, storage.length > 0 else { return nil }
+        if let character = anchor.character, segments[index].identity == anchor.block {
+            let content = contentRange(index)
+            var offset = character.offset
+            let current = (storage.string as NSString).substring(with: content)
+            if current != character.rendered, !current.hasUTF8Prefix(character.rendered),
+               let mapped = segments[index].reconciliation?.range(NSRange(location: character.offset, length: 1), from: character.rendered, to: current) {
+                offset = mapped.location
             }
-            return false
+            let location = min(content.location + offset, storage.length - 1)
+            let glyph = manager.glyphIndexForCharacter(at: location)
+            if glyph < manager.numberOfGlyphs {
+                let line = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                return line.minY + textView.topInset - character.displacement
+            }
         }
+        guard let top = segmentTop(index) else { return nil }
+        return top - anchor.offset
+    }
+
+    // MARK: Controls
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area); hoverArea = area
+    }
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        let point = convert(event.locationInWindow, from: nil)
+        hoverPoint = point
+        hover(at: point)
+    }
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        hoverPoint = nil
+        hideControls()
+    }
+    private func refreshHover() {
+        guard toolbar?.superview != nil || headingAction?.superview != nil else { return }
+        if let hoverPoint { hover(at: hoverPoint) } else { hideControls() }
+    }
+    /// The control for what the pointer is over: a fence's toolbar, a
+    /// heading's copy button. They exist only while the pointer is there.
+    private func hover(at point: NSPoint) {
+        guard !isParked, let manager = textView.layoutManager as? MarkdownTextLayoutManager, let container = textView.textContainer,
+              let storage = textView.textStorage, storage.length > 0 else { hideControls(); return }
+        let local = NSPoint(x: point.x, y: point.y - textView.topInset)
+        let glyph = manager.glyphIndex(for: local, in: container)
+        let character = min(manager.characterIndexForGlyph(at: glyph), storage.length - 1)
+        // The fence under the pointer, its padding included.
+        if let mark = storage.attribute(.piCodeBlock, at: character, effectiveRange: nil) as? MarkdownCodeMark {
+            let extent = MarkdownTextLayoutManager.extent(of: mark, key: .piCodeBlock, around: NSRange(location: character, length: 1), in: storage)
+            if let panel = manager.panelRect(for: extent, indent: mark.indent, container: container)?.offsetBy(dx: 0, dy: textView.topInset),
+               panel.contains(point) {
+                showToolbar(mark, panel: panel)
+                hideHeadingAction()
+                return
+            }
+        }
+        hideToolbar()
+        if let index = storage.attribute(.piHeading, at: character, effectiveRange: nil) as? Int,
+           let targets = lastInputs?.headings, targets.indices.contains(index) {
+            var run = NSRange()
+            _ = storage.attribute(.piHeading, at: character, longestEffectiveRange: &run, in: NSRange(location: 0, length: storage.length))
+            if let box = manager.textBox(forCharacters: run)?.offsetBy(dx: 0, dy: textView.topInset),
+               point.y >= box.minY - 4, point.y <= box.maxY + 4 {
+                showHeadingAction(targets[index], index: index, box: box)
+                return
+            }
+        }
+        hideHeadingAction()
+    }
+    private func hideControls() { hideToolbar(); hideHeadingAction() }
+    private func showToolbar(_ mark: MarkdownCodeMark, panel: NSRect) {
+        // Made again on each move: the copy is of the code as it now reads.
+        let content = MarkdownCodeToolbar(language: mark.language, code: mark.code, environment: lastInputs?.environment ?? TranscriptRowEnvironment())
+        let view: NSHostingView<MarkdownCodeToolbar>
+        if let toolbar { view = toolbar; if toolbarMark !== mark || !toolbarShows(mark.code) { view.rootView = content } }
+        else { view = NSHostingView(rootView: content); view.sizingOptions = [.intrinsicContentSize]; toolbar = view }
+        toolbarMark = mark
+        let size = view.fittingSize
+        view.frame = NSRect(x: panel.maxX - 8 - size.width, y: panel.minY + 5, width: size.width, height: 20)
+        if view.superview !== self { addSubview(view, positioned: .above, relativeTo: textView) }
+    }
+    private func hideToolbar() { toolbar?.removeFromSuperview(); toolbarMark = nil }
+    private func showHeadingAction(_ target: MarkdownCopyTarget, index: Int, box: NSRect) {
+        let content = MarkdownHeadingAction(target: target, environment: lastInputs?.environment ?? TranscriptRowEnvironment())
+        let view: NSHostingView<MarkdownHeadingAction>
+        if let headingAction { view = headingAction; if headingActionIndex != index { view.rootView = content } }
+        else { view = NSHostingView(rootView: content); view.sizingOptions = [.intrinsicContentSize]; headingAction = view }
+        headingActionIndex = index
+        let size = view.fittingSize
+        let trailing = min(bounds.width, lastInputs?.capsWidth == false ? bounds.width : TranscriptMetrics.proseWidth) + 30
+        view.frame = NSRect(x: trailing - size.width, y: box.midY - size.height / 2, width: size.width, height: size.height)
+        if view.superview !== self { addSubview(view, positioned: .above, relativeTo: textView) }
+    }
+    private func hideHeadingAction() { headingAction?.removeFromSuperview(); headingActionIndex = nil }
+
+    /// "Open full table" beside a large table's preview line: a control, so
+    /// it is always there, not only under the pointer.
+    private func toolbarShows(_ code: String) -> Bool { toolbar?.rootView.code.hasSameUTF8(as: code) ?? false }
+    private func placeTableActions() {
+        guard hasLargeTables || !tableActions.isEmpty else { return }
+        guard hasLargeTables, let manager = textView.layoutManager as? MarkdownTextLayoutManager, let storage = textView.textStorage, !isParked else {
+            for view in tableActions.values { view.removeFromSuperview() }
+            tableActions = [:]; return
+        }
+        var wanted: [ObjectIdentifier: (MarkdownTableMark, NSRect)] = [:]
+        storage.enumerateAttribute(.piChrome, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard value != nil, let mark = storage.attribute(.piTable, at: range.location, effectiveRange: nil) as? MarkdownTableMark,
+                  mark.large, let box = manager.textBox(forCharacters: range) else { return }
+            wanted[ObjectIdentifier(mark)] = (mark, box.offsetBy(dx: 0, dy: textView.topInset))
+        }
+        for (key, view) in tableActions where wanted[key] == nil { view.removeFromSuperview(); tableActions[key] = nil }
+        for (key, entry) in wanted {
+            let view = tableActions[key] ?? NSHostingView(rootView: MarkdownTableAction(mark: entry.0, environment: lastInputs?.environment ?? TranscriptRowEnvironment()))
+            view.sizingOptions = [.intrinsicContentSize]
+            let size = view.fittingSize
+            let right = min(bounds.width, lastInputs?.capsWidth == false ? bounds.width : TranscriptMetrics.proseWidth)
+            view.frame = NSRect(x: right - size.width, y: entry.1.midY - size.height / 2, width: size.width, height: size.height)
+            if view.superview !== self { addSubview(view, positioned: .above, relativeTo: textView) }
+            tableActions[key] = view
+        }
+    }
+
+    /// The caret after the last word while a reply is still being written,
+    /// in a paragraph or heading, as the rows drew it.
+    private func updateCaret() {
+        guard let inputs = lastInputs, inputs.streaming, !isParked, let last = segments.last,
+              let manager = textView.layoutManager as? MarkdownTextLayoutManager, let storage = textView.textStorage,
+              storage.length > 0, manager.numberOfGlyphs > 0 else { caret.isHidden = true; return }
+        switch last.block { case .paragraph, .heading: break; default: caret.isHidden = true; return }
+        guard textView.textContainer?.containerSize.width == bounds.width || bounds.width == 0 else { caret.isHidden = true; return }
+        let glyph = manager.numberOfGlyphs - 1
+        let used = manager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+        let advance = manager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textView.textContainer!).maxX
+        let size = inputs.style.baseSize
+        let x = advance + 5
+        caret.frame = NSRect(x: x, y: used.maxY + textView.topInset - size, width: 2, height: size)
+        caret.isHidden = false
+        caret.blink(!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    }
+}
+
+/// The blinking bar at the end of a reply still being written.
+@MainActor final class MarkdownCaretView: NSView {
+    private var blinking = false
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(TranscriptPalette.accent).cgColor
+        setAccessibilityElement(false)
+    }
+    required init?(coder: NSCoder) { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance { layer?.backgroundColor = NSColor(TranscriptPalette.accent).cgColor }
+    }
+    func blink(_ on: Bool) {
+        guard on != blinking else { return }
+        blinking = on
+        guard let layer else { return }
+        layer.removeAnimation(forKey: "blink")
+        guard on else { layer.opacity = 1; return }
+        let animation = CAKeyframeAnimation(keyPath: "opacity")
+        animation.values = [1, 1, 0, 0]; animation.keyTimes = [0, 0.5, 0.5, 1]
+        animation.duration = 1; animation.repeatCount = .infinity
+        layer.add(animation, forKey: "blink")
+    }
+}
+
+/// A fence's toolbar: its language and a copy of its whole code.
+struct MarkdownCodeToolbar: View {
+    let language: String?
+    let code: String
+    let environment: TranscriptRowEnvironment
+    var body: some View {
+        HStack(spacing: 6) {
+            if let language {
+                Text(language.lowercased()).font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(TranscriptPalette.faint).accessibilityLabel("Language \(language)")
+            }
+            CopyButton(target: MarkdownCopyTarget(kind: .code, label: "Copy code", text: code), visible: true)
+        }
+        .frame(height: 20)
+        .environment(\.colorScheme, environment.colorScheme)
+    }
+}
+
+/// A heading's copy button: its section, as markdown.
+struct MarkdownHeadingAction: View {
+    let target: MarkdownCopyTarget
+    let environment: TranscriptRowEnvironment
+    var body: some View {
+        CopyButton(target: target, visible: true).environment(\.colorScheme, environment.colorScheme)
+    }
+}
+
+/// "Open full table" for a table shown as a preview.
+struct MarkdownTableAction: View {
+    let mark: MarkdownTableMark
+    let environment: TranscriptRowEnvironment
+    var body: some View {
+        Button("Open full table") { MarkdownTableWindow.open(header: mark.header, rows: mark.rows) }
+            .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(TranscriptPalette.accent)
+            .piPointer()
+            .environment(\.colorScheme, environment.colorScheme)
     }
 }

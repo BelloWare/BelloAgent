@@ -223,13 +223,9 @@ struct TranscriptPillStyle: ButtonStyle {
 
 // MARK: - Markdown body
 
-/// A rendered markdown body: paragraphs, headings with copy controls, code
-/// blocks with their toolbar, lists, quotes and tables.
-/// Whether this body has reached its native surface. Once it has, it keeps
-/// it: a reply that streamed and then settled must not have its selectable
-/// text replaced by another kind of leaf.
-@MainActor final class MarkdownSurfaceChoice { var native = false }
-
+/// A rendered markdown body: one selectable text holding every block of
+/// the message (`NativeMarkdownSurface`), with the whole message's copy
+/// control on hover.
 struct MarkdownBodyView: View {
     let source: String
     var style: MarkdownStyle = .prose
@@ -238,60 +234,27 @@ struct MarkdownBodyView: View {
     var copyTargets: [MarkdownCopyTarget] = []
     var sourceIdentity = ""
     /// The reader is reading this reply as its source: the body keeps its
-    /// place and its native surface's measurements, but draws nothing and
-    /// takes no room until it is shown again.
+    /// place and its text's measurements, but draws nothing and takes no
+    /// room until it is shown again.
     var parked = false
-    @State private var choice = MarkdownSurfaceChoice()
     @State private var hovering = false
     var body: some View {
-        // A reply that is still arriving is read by its own native surface,
-        // which owns that reading: nothing here reads it, so a token does not
-        // run this body at all. A parked body reads nothing either: the
-        // surface it chose keeps its own reading.
-        let blocks = streaming || parked ? [] : TranscriptMarkdown.blocks(source, style: style)
-        let native = usesNativeSurface(blockCount: blocks.count)
+        // The surface reads the message itself, so a token does not run this
+        // body at all, and nothing here parses.
         let headings = copyTargets.filter { if case .section = $0.kind { return true }; return false }
         let introduction = copyTargets.first { $0.kind == .introduction || $0.kind == .whole }
-        Group {
-            if native {
-                NativeMarkdownSurface(source: source, style: style, capsWidth: capsWidth, streaming: streaming,
-                                      headings: headings, identity: sourceIdentity, parked: parked)
-                    .frame(minHeight: source.isEmpty && streaming ? 22 : nil)
-                    .overlay(alignment: .leading) { if source.isEmpty && streaming { WaitingDots() } }
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    if blocks.isEmpty && streaming { WaitingDots() }
-                    ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-                        let isLast = index == blocks.count - 1
-                        MarkdownBlockView(block: block, style: style, capsWidth: capsWidth, caret: streaming && isLast,
-                                          headingTarget: headingTarget(block, headings: headings, blocks: blocks, index: index)).equatable()
-                    }
-                }
+        NativeMarkdownSurface(source: source, style: style, capsWidth: capsWidth, streaming: streaming,
+                              headings: headings, identity: sourceIdentity, parked: parked)
+            .frame(minHeight: source.isEmpty && streaming ? 22 : nil)
+            .overlay(alignment: .leading) { if source.isEmpty && streaming { WaitingDots() } }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .topTrailing) {
+                // An overlay never changes the row's layout, so the control can
+                // wait until the pointer is actually over this message.
+                if let introduction, !streaming, !parked, hovering { CopyButton(target: introduction, visible: hovering).offset(y: -3) }
             }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .topTrailing) {
-            // An overlay never changes the row's layout, so the control can
-            // wait until the pointer is actually over this message.
-            if let introduction, !streaming, !parked, hovering { CopyButton(target: introduction, visible: hovering).offset(y: -3) }
-        }
-        .onHover { hovering = $0 }
-        .textSelection(.enabled)
-        .piStableLayout()
-    }
-    /// A long message, and every message that streams, is drawn by the native
-    /// surface; a short settled one keeps the cheaper SwiftUI stack. The
-    /// decision sticks, so a reply that streamed keeps the same selectable
-    /// text when it settles.
-    private func usesNativeSurface(blockCount: Int) -> Bool {
-        if streaming || blockCount >= NativeMarkdownSurface.minimumBlockCount { choice.native = true }
-        return choice.native
-    }
-    /// The nth heading block copies the nth heading section the scanner found.
-    private func headingTarget(_ block: MarkdownBlock, headings: [MarkdownCopyTarget], blocks: [MarkdownBlock], index: Int) -> MarkdownCopyTarget? {
-        guard case .heading = block, !headings.isEmpty else { return nil }
-        let position = blocks[...index].filter { if case .heading = $0 { return true }; return false }.count - 1
-        return headings.indices.contains(position) ? headings[position] : nil
+            .onHover { hovering = $0 }
+            .piStableLayout()
     }
 }
 
@@ -316,143 +279,6 @@ struct WaitingDots: View {
             }
         }
     }
-}
-
-/// Actions and transient paint travel independently of the selectable text's
-/// native root and exact geometry. Copy always resolves the newest payload.
-///
-/// `update` is called while SwiftUI updates the row — and, for a streaming
-/// reply, while it updates the whole window (`TranscriptScrollSurface`). A
-/// publish from there is a change made during a view update: it scheduled
-/// the block hosts' own updates from inside the window's, and the text view
-/// it touched committed a Core Animation transaction that laid the window out
-/// again in the middle of its update. So a change is published on the next
-/// turn of the run loop, the newest one winning.
-@MainActor final class MarkdownBlockDecoration: ObservableObject {
-    @Published private(set) var caret = false
-    @Published private(set) var target: MarkdownCopyTarget?
-    private var pending: (caret: Bool, target: MarkdownCopyTarget?)?
-    /// A decoration drawn from the start with these values; nothing observes
-    /// it yet, so nothing is published.
-    init(caret: Bool = false, target: MarkdownCopyTarget? = nil) { self.caret = caret; self.target = target }
-    func update(caret: Bool, target: MarkdownCopyTarget?) {
-        let scheduled = pending != nil
-        pending = (caret, target)
-        guard !scheduled else { return }
-        if pending?.caret == self.caret, pending?.target == self.target { pending = nil; return }
-        DispatchQueue.main.async { [weak self] in self?.flush() }
-    }
-    /// Publishes the newest values now. Called on the turn after `update`.
-    func flush() {
-        guard let next = pending else { return }
-        pending = nil
-        if caret != next.caret { caret = next.caret }
-        if target != next.target { target = next.target }
-    }
-}
-
-private struct MarkdownSectionAction: View {
-    @ObservedObject var decoration: MarkdownBlockDecoration
-    let hovering: Bool
-    var body: some View {
-        if let target = decoration.target { CopyButton(target: target, visible: hovering) }
-    }
-}
-
-private struct MarkdownCaret: View {
-    let size: CGFloat
-    @Environment(\.piReduceMotion) private var reduceMotion
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.5)) { context in
-            Rectangle().fill(TranscriptPalette.accent).frame(width: 2, height: size)
-                .opacity(reduceMotion || Int(context.date.timeIntervalSinceReferenceDate * 2) % 2 == 0 ? 1 : 0)
-        }.offset(x: 5).allowsHitTesting(false).accessibilityHidden(true)
-    }
-}
-private struct MarkdownLiveDecoration: View {
-    @ObservedObject var decoration: MarkdownBlockDecoration
-    let size: CGFloat
-    var body: some View { if decoration.caret { MarkdownCaret(size: size) } }
-}
-
-struct MarkdownBlockView: View {
-    let block: MarkdownBlock
-    let style: MarkdownStyle
-    let capsWidth: Bool
-    var caret = false
-    var headingTarget: MarkdownCopyTarget? = nil
-    var nativeCodeChoice: Bool? = nil
-    var decoration: MarkdownBlockDecoration? = nil
-    @State private var hovering = false
-    @Environment(\.piReduceMotion) private var reduceMotion
-    var body: some View {
-        switch block {
-        case .paragraph(let text):
-            proseText(text).frame(maxWidth: capsWidth ? TranscriptMetrics.proseWidth : .infinity, alignment: .leading)
-        case .heading(_, let text, _):
-            proseText(text)
-            .overlay(alignment: .trailing) {
-                Group {
-                    if let decoration { MarkdownSectionAction(decoration: decoration, hovering: hovering) }
-                    else if let headingTarget { CopyButton(target: headingTarget, visible: hovering) }
-                }.offset(x: 30)
-            }
-            .padding(.top, 6)
-            .frame(maxWidth: capsWidth ? TranscriptMetrics.proseWidth : .infinity, alignment: .leading)
-            .onHover { hovering = $0 }
-        case .code(let language, let code):
-            CodeBlockView(language: language, code: code, size: style.baseSize * 0.86, streaming: caret, nativeChoice: nativeCodeChoice).equatable()
-        case .list(let ordered, let start, let items):
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    MarkdownListItemView(marker: ordered ? "\(start + index)." : "•", item: item, style: style).equatable()
-                }
-            }
-            .padding(.leading, 4)
-            .frame(maxWidth: capsWidth ? TranscriptMetrics.proseWidth : .infinity, alignment: .leading)
-        case .quote(let inner):
-            HStack(alignment: .top, spacing: 12) {
-                RoundedRectangle(cornerRadius: 1.5).fill(TranscriptPalette.hairStrong).frame(width: 3)
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(inner.enumerated()), id: \.offset) { _, nested in MarkdownBlockView(block: nested, style: MarkdownStyle(id: style.id + ".quote", baseSize: style.baseSize, keepsSoftBreaks: style.keepsSoftBreaks, textColor: TranscriptPalette.muted, codeBackground: style.codeBackground, linkColor: style.linkColor), capsWidth: false).equatable() }
-                }
-            }
-            .frame(maxWidth: capsWidth ? TranscriptMetrics.proseWidth : .infinity, alignment: .leading)
-        case .table(let alignments, let header, let rows):
-            MarkdownTableView(alignments: alignments, header: header, rows: rows)
-        }
-    }
-    @ViewBuilder private func proseText(_ text: AttributedString) -> some View {
-        Text(text).lineSpacing(style.baseSize * 0.35)
-            .overlay(alignment: .bottomTrailing) {
-                // Blinking changes only this decoration. The selectable text
-                // field and its attributed string do not change on a blink or
-                // when the reply finishes.
-                if let decoration { MarkdownLiveDecoration(decoration: decoration, size: style.baseSize) }
-                else if caret { MarkdownCaret(size: style.baseSize) }
-            }
-
-    }
-}
-
-/// One item of a list: its marker and its blocks. Its own view, compared by
-/// value, so a token on the item still arriving does not run the body of
-/// every item above it — the items a reply has finished keep the very same
-/// blocks from token to token, and comparing them is one pointer check.
-private struct MarkdownListItemView: View, Equatable {
-    let marker: String
-    let item: [MarkdownBlock]
-    let style: MarkdownStyle
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(marker).font(.system(size: style.baseSize)).foregroundStyle(style.textColor).frame(minWidth: 16, alignment: .trailing)
-                .textSelection(.disabled)
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(item.enumerated()), id: \.offset) { _, nested in MarkdownBlockView(block: nested, style: style, capsWidth: false).equatable() }
-            }
-        }
-    }
-    nonisolated static func == (a: Self, b: Self) -> Bool { a.marker == b.marker && a.style == b.style && a.item == b.item }
 }
 
 /// The transcript's own disclosure line: the same chevron a turn's work header
@@ -593,54 +419,6 @@ struct CopyButton: View {
         .piAnimation(PiMotion.quick, value: visible || copied || hovering)
         .onHover { hovering = $0 }
         .help(target.label).accessibilityLabel(target.label)
-    }
-}
-
-private struct MarkdownTableView: View {
-    let alignments: [MarkdownAlignment]
-    let header: [AttributedString]
-    let rows: [[AttributedString]]
-    private func alignment(_ column: Int) -> Alignment {
-        guard alignments.indices.contains(column) else { return .leading }
-        switch alignments[column] { case .center: return .center; case .right: return .trailing; case .left: return .leading }
-    }
-    private var large: Bool { MarkdownTablePresentation.isLarge(header: header, rows: rows) }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-        if large {
-            HStack {
-                Text("Preview · first \(min(rows.count, MarkdownTablePresentation.previewRows)) of \(rows.count.formatted()) rows · up to 8 columns")
-                    .font(.system(size: 11)).foregroundStyle(TranscriptPalette.muted)
-                Spacer()
-                Button("Open full table") { MarkdownTableWindow.open(header: header, rows: rows) }.buttonStyle(.plain)
-            }.textSelection(.disabled)
-        }
-        ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
-                if !header.isEmpty {
-                    GridRow { ForEach(Array((large ? Array(header.prefix(MarkdownTablePresentation.previewColumns)) : header).enumerated()), id: \.offset) { index, cell in cellView(cell, column: index, header: true) } }
-                }
-                ForEach(Array((large ? Array(rows.prefix(MarkdownTablePresentation.previewRows)) : rows).enumerated()), id: \.offset) { _, row in
-                    GridRow { ForEach(Array((large ? Array(row.prefix(MarkdownTablePresentation.previewColumns)) : row).enumerated()), id: \.offset) { index, cell in cellView(cell, column: index, header: false) } }
-                }
-            }
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(TranscriptPalette.hair, lineWidth: 1))
-        }
-        .padding(.vertical, 2)
-        }
-    }
-    private func cellView(_ cell: AttributedString, column: Int, header: Bool) -> some View {
-        Text(header ? bolded(cell) : cell)
-            .lineLimit(large ? 3 : nil)
-            .frame(maxWidth: large ? 320 : .infinity, alignment: alignment(column))
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(header ? TranscriptPalette.panel : Color.clear)
-            .overlay(Rectangle().stroke(TranscriptPalette.hair, lineWidth: 0.5))
-    }
-    private func bolded(_ text: AttributedString) -> AttributedString {
-        var copy = text
-        copy.font = .system(size: 13, weight: .semibold)
-        return copy
     }
 }
 
@@ -1394,11 +1172,6 @@ extension MarkdownBodyView: Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.source == b.source && a.style == b.style && a.capsWidth == b.capsWidth && a.streaming == b.streaming && a.copyTargets == b.copyTargets && a.sourceIdentity == b.sourceIdentity
             && a.parked == b.parked
-    }
-}
-extension MarkdownBlockView: Equatable {
-    nonisolated static func == (a: Self, b: Self) -> Bool {
-        a.block == b.block && a.style == b.style && a.capsWidth == b.capsWidth && a.caret == b.caret && a.headingTarget == b.headingTarget && a.nativeCodeChoice == b.nativeCodeChoice && a.decoration === b.decoration
     }
 }
 extension CodeBlockView: Equatable {

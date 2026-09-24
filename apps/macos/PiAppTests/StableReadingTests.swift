@@ -18,36 +18,29 @@ final class StableReadingTests: XCTestCase {
             stage.page.presentationInterval = 0; stage.page.state = "running"
             await stage.settle(turns: 2)
             let body = try XCTUnwrap(descendants(NativeMarkdownContainer.self, stage.document).first)
-            var held: NativeMarkdownContainer.LogicalAnchor?
             var drawCount = 0
-            body.didPrepareVisibleBlocks = {
-                guard let prepared = body.preparedLogicalAnchor else { return }
-                body.didPrepareVisibleBlocks = nil
-                held = stage.scroll.transcriptReading.readingAnchor ?? prepared
-                // This is the real SessionDisplay -> TranscriptPage -> native
-                // document path while the child's parent correction is pending.
-                session.messages[1].text += "\n\nNew tail during measurement."
-                stage.refresh()
-            }
             stage.readerScroll(to: stage.document.frame.height * 0.4)
-            for _ in 0..<8 where held == nil {
-                await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
-                stage.window.displayIfNeeded()
-            }
-            let anchor = try XCTUnwrap(held)
+            await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+            stage.window.displayIfNeeded()
+            stage.scroll.transcriptReading.capture(body)
+            let anchor = try XCTUnwrap(stage.scroll.transcriptReading.readingAnchor ?? body.preparedLogicalAnchor)
+            // The real SessionDisplay -> TranscriptPage -> native document
+            // path, while the row's own height adoption is still pending.
+            session.messages[1].text += "\n\nNew tail during measurement."
+            stage.refresh()
             body.didDrawPreparedContent = {
                 drawCount += 1
                 XCTAssertEqual(body.displacement(of: anchor) ?? .infinity, 0, accuracy: 1 / stage.window.backingScaleFactor)
             }
-            var editor: NSText?
-            if selected, let field = descendants(NSTextField.self, body).first(where: { $0.isSelectable && $0.stringValue.hasPrefix("Paragraph") }) {
-                field.selectText(nil); editor = field.currentEditor(); editor?.selectedRange = NSRange(location: 0, length: 5)
+            var text: MarkdownTextView?
+            if selected, let reply = descendants(MarkdownTextView.self, body).first {
+                stage.window.makeFirstResponder(reply); reply.setSelectedRange(NSRange(location: 0, length: 5)); text = reply
             }
             for i in 0..<12 {
                 await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
                 session.messages[1].text += "\n\nTail \(i)."
                 stage.refresh(); stage.window.displayIfNeeded()
-                if let editor { XCTAssertTrue(stage.window.firstResponder === editor); XCTAssertEqual(editor.selectedRange, NSRange(location: 0, length: 5)) }
+                if let text { XCTAssertTrue(stage.window.firstResponder === text); XCTAssertEqual(text.selectedRange(), NSRange(location: 0, length: 5)) }
             }
             XCTAssertGreaterThan(drawCount, 0)
             print("READING_MIDDLE selected=\(selected) drawOpportunities=\(drawCount) sourceBytes=\(source.utf8.count)")
@@ -155,13 +148,13 @@ final class StableReadingTests: XCTestCase {
         defer { window.contentView = nil; window.close() }
         scroll.contentView.scroll(to: NSPoint(x: 0, y: body.frame.height * 0.4))
         for _ in 0..<8 { body.needsLayout = true; body.layoutSubtreeIfNeeded() }
-        let provisional = body.provisionalBlockCount, measured = body.blockMeasurementCount
+        let passes = body.layoutPasses, length = body.textLength
         let mounted = body.subviews.filter { !($0 is NSProgressIndicator) }.map(ObjectIdentifier.init)
         body.update(blocks: blocks, style: .prose, capsWidth: true, streaming: false,
                     headings: TranscriptCopy.targets(in: source).filter { if case .section = $0.kind { return true }; return false }, environment: .init())
         _ = body.measure(width: 620)
-        XCTAssertLessThanOrEqual(body.provisionalBlockCount, provisional, "Copy and caret cannot make exact blocks provisional")
-        XCTAssertEqual(body.blockMeasurementCount, measured, "Metadata does not measure settled text")
+        XCTAssertEqual(body.layoutPasses, passes, "Copy targets and the caret do not lay the settled text out again")
+        XCTAssertEqual(body.textLength, length)
         XCTAssertEqual(body.subviews.filter { !($0 is NSProgressIndicator) }.map(ObjectIdentifier.init), mounted)
     }
 

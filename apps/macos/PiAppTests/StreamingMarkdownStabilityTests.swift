@@ -104,20 +104,20 @@ extension StreamingMarkdownStabilityTests {
         var source="```swift\nlet selected = 1\n"
         await update(source,true)
         let container=try XCTUnwrap(descendants(NativeMarkdownContainer.self,host).first)
-        let owner=try XCTUnwrap(descendants(TranscriptCodeTextView.self,host).first)
+        let owner=try XCTUnwrap(descendants(MarkdownTextView.self,host).first)
         XCTAssertTrue(window.makeFirstResponder(owner))
-        let selection=NSRange(location:4,length:8); owner.setSelectedRange(selection)
-        let blockID=container.blockOwnerIdentities.first
+        let selection=(owner.string as NSString).range(of:"selected"); owner.setSelectedRange(selection)
         source += String(repeating:"// long line 中文🙂\n",count:1000)
         await update(source,true)
-        XCTAssertTrue(descendants(TranscriptCodeTextView.self,host).contains { $0 === owner })
-        XCTAssertEqual(owner.selectedRange(),selection); XCTAssertEqual(container.blockOwnerIdentities.first,blockID)
+        XCTAssertTrue(descendants(MarkdownTextView.self,host).contains { $0 === owner })
+        XCTAssertEqual(owner.selectedRange(),selection)
         source += "```\n\nFinished."
         await update(source,true); await update(source,false)
         XCTAssertTrue(descendants(NativeMarkdownContainer.self,host).first === container)
-        XCTAssertTrue(descendants(TranscriptCodeTextView.self,host).contains { $0 === owner })
-        XCTAssertEqual(owner.selectedRange(),selection); XCTAssertEqual(container.blockOwnerIdentities.first,blockID)
-        XCTAssertFalse(owner.string.contains("```")); XCTAssertTrue(owner.string.contains("long line 中文🙂"))
+        XCTAssertTrue(descendants(MarkdownTextView.self,host).contains { $0 === owner }, "the fence and what follows it are one text")
+        XCTAssertEqual(owner.selectedRange(),selection)
+        XCTAssertEqual((owner.string as NSString).substring(with:owner.selectedRange()),"selected")
+        XCTAssertFalse(owner.string.contains("```")); XCTAssertTrue(owner.string.contains("long line 中文🙂")); XCTAssertTrue(owner.string.hasSuffix("Finished."))
     }
     @MainActor func testPresentationHasOneTrailingUpdateAndFlushesFirstFinalAndRebind() async throws {
         let session=SessionDisplay(id:"a"), page=TranscriptPage()
@@ -147,35 +147,28 @@ extension StreamingMarkdownStabilityTests {
         let host=NSHostingView(rootView:AnyView(EmptyView()))
         window.contentView=host; window.makeKeyAndOrderFront(nil)
         defer { window.contentView=nil; window.close() }
-        var old:[Double]=[], current:[Double]=[]
+        var cold:[Double]=[]
         for index in 0..<20 {
             let source="A short plain answer \(index)."
-            var start=ProcessInfo.processInfo.systemUptime
-            host.rootView=AnyView(VStack(alignment:.leading,spacing:10) {
-                MarkdownBlockView(block:TranscriptMarkdown.blocks(source)[0],style:.prose,capsWidth:true,caret:true)
-            }.textSelection(.enabled))
-            _=host.fittingSize; host.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-            old.append((ProcessInfo.processInfo.systemUptime-start)*1000)
-            start=ProcessInfo.processInfo.systemUptime
+            host.rootView=AnyView(EmptyView()); host.layoutSubtreeIfNeeded()
+            let start=ProcessInfo.processInfo.systemUptime
             host.rootView=AnyView(MarkdownBodyView(source:source,streaming:true))
             _=host.fittingSize; host.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-            current.append((ProcessInfo.processInfo.systemUptime-start)*1000)
+            cold.append((ProcessInfo.processInfo.systemUptime-start)*1000)
         }
-        print(String(format:"REVIEW short-answer container: SwiftUI stack %.2f ms mean; persistent native %.2f ms mean (20 cold short answers)",old.reduce(0,+)/20,current.reduce(0,+)/20))
-        func fields(_ view:NSView)->[NSTextField] {
-            if let field=view as? NSTextField { return [field] }
-            var result:[NSTextField]=[]
-            for child in view.subviews { result.append(contentsOf:fields(child)) }
-            return result
+        print(String(format:"REVIEW short-answer text: %.2f ms mean (20 cold short answers)",cold.reduce(0,+)/20))
+        func texts(_ view:NSView)->[MarkdownTextView] {
+            if let text=view as? MarkdownTextView { return [text] }
+            return view.subviews.flatMap { texts($0) }
         }
-        let field=try XCTUnwrap(fields(host).first { $0.isSelectable && $0.stringValue.hasPrefix("A short plain answer") })
-        field.selectText(nil)
-        let editor=try XCTUnwrap(field.currentEditor()); editor.selectedRange=NSRange(location:2,length:5)
+        let text=try XCTUnwrap(texts(host).first { $0.string.hasPrefix("A short plain answer") })
+        window.makeFirstResponder(text)
+        text.setSelectedRange(NSRange(location:2,length:5))
         try await Task.sleep(for:.milliseconds(550)); host.layoutSubtreeIfNeeded()
-        XCTAssertTrue(field.currentEditor() === editor); XCTAssertEqual(editor.selectedRange,NSRange(location:2,length:5))
+        XCTAssertEqual(text.selectedRange(),NSRange(location:2,length:5))
         host.rootView=AnyView(MarkdownBodyView(source:"A short plain answer 19.",streaming:false)); host.layoutSubtreeIfNeeded()
-        XCTAssertTrue(field.currentEditor() === editor,"Completion removes the decorative caret without replacing selectable prose")
-        XCTAssertEqual(editor.selectedRange,NSRange(location:2,length:5))
+        XCTAssertTrue(texts(host).first === text,"Completion removes the caret without replacing the selectable text")
+        XCTAssertEqual(text.selectedRange(),NSRange(location:2,length:5))
     }
 }
 
@@ -193,19 +186,19 @@ extension StreamingMarkdownStabilityTests {
         let host=NSHostingView(rootView:MarkdownBodyView(source:raw,streaming:true))
         window.contentView=host; window.makeKeyAndOrderFront(nil)
         defer { window.contentView=nil; window.close() }
-        func fields(_ view:NSView)->[NSTextField] {
-            if let field=view as? NSTextField { return [field] }
-            return view.subviews.flatMap { fields($0) }
+        func texts(_ view:NSView)->[MarkdownTextView] {
+            if let text=view as? MarkdownTextView { return [text] }
+            return view.subviews.flatMap { texts($0) }
         }
         _=host.fittingSize; host.layoutSubtreeIfNeeded()
-        let field=try XCTUnwrap(fields(host).first { $0.stringValue == rendered })
-        field.selectText(nil)
-        let editor=try XCTUnwrap(field.currentEditor()); editor.selectedRange=(rendered as NSString).range(of:"bold")
+        let text=try XCTUnwrap(texts(host).first { $0.string == rendered })
+        window.makeFirstResponder(text)
+        text.setSelectedRange((rendered as NSString).range(of:"bold"))
         host.rootView=MarkdownBodyView(source:raw,streaming:false)
         for _ in 0..<3 { _=host.fittingSize; host.layoutSubtreeIfNeeded(); window.displayIfNeeded(); await Task.yield() }
-        XCTAssertTrue(field.currentEditor() === editor)
-        XCTAssertEqual(editor.string,rendered)
-        XCTAssertEqual(editor.selectedRange,(rendered as NSString).range(of:"bold"))
+        XCTAssertTrue(texts(host).first === text)
+        XCTAssertEqual(text.string,rendered)
+        XCTAssertEqual(text.selectedRange(),(rendered as NSString).range(of:"bold"))
         }
     }
 }

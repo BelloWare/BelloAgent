@@ -27,9 +27,7 @@ final class TranscriptQuoteSelectionTests: XCTestCase {
         defer { stage.close() }
         stage.actions.quoteReply = { model.openQuotedSide(parentID: parent.id, quote: $0) }
         stage.refresh(); await stage.settle()
-        let field = try XCTUnwrap(views(NSTextField.self, in: stage.document).first { $0.isSelectable && $0.stringValue.contains("A precise answer") })
-        field.selectText(nil)
-        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        let editor = try answer(in: stage)
         let range = (editor.string as NSString).range(of: "中文🙂 and repeated answer")
         editor.setSelectedRange(range)
         let before = stage.document.frame.height
@@ -64,9 +62,7 @@ final class TranscriptQuoteSelectionTests: XCTestCase {
         let user = try XCTUnwrap(views(NSTextField.self, in: stage.document).first { $0.isSelectable && $0.stringValue == "Question" })
         user.selectText(nil); stage.document.quoteSelection.presentSelection()
         XCTAssertNil(stage.document.quoteSelection.bar)
-        let assistant = try XCTUnwrap(views(NSTextField.self, in: stage.document).first { $0.isSelectable && $0.stringValue.contains("A precise answer") })
-        assistant.selectText(nil)
-        let editor = try XCTUnwrap(assistant.currentEditor() as? NSTextView)
+        let editor = try answer(in: stage)
         editor.setSelectedRange(NSRange(location: 0, length: 0)); stage.document.quoteSelection.presentSelection()
         XCTAssertNil(stage.document.quoteSelection.bar)
         editor.setSelectedRange(NSRange(location: 0, length: 8)); stage.document.quoteSelection.presentSelection()
@@ -77,11 +73,15 @@ final class TranscriptQuoteSelectionTests: XCTestCase {
         stage.document.quoteSelection.askInSideChat(); XCTAssertTrue(emitted.isEmpty)
     }
 
+    /// The answer's text, one selectable text, holding the keyboard.
+    @MainActor private func answer(in stage: TranscriptStreamingStressTests.Stage) throws -> MarkdownTextView {
+        let text = try XCTUnwrap(views(MarkdownTextView.self, in: stage.document).first { $0.string.contains("A precise answer") })
+        stage.window.makeFirstResponder(text)
+        return text
+    }
     /// A selection in an answer, on screen, and the rectangle it covers.
     @MainActor private func selected(_ phrase: String, in stage: TranscriptStreamingStressTests.Stage) throws -> (editor: NSTextView, selection: NSRect, firstLine: NSRect) {
-        let field = try XCTUnwrap(views(NSTextField.self, in: stage.document).first { $0.isSelectable && $0.stringValue.contains("A precise answer") })
-        field.selectText(nil)
-        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        let editor = try answer(in: stage)
         let range = (editor.string as NSString).range(of: phrase)
         editor.setSelectedRange(range)
         var actual = NSRange(location: NSNotFound, length: 0)
@@ -158,7 +158,7 @@ final class TranscriptQuoteSelectionTests: XCTestCase {
         let stage = TranscriptStreamingStressTests.Stage(session); defer { stage.close() }
         var emitted: [TranscriptQuote] = []
         stage.actions.quoteReply = { emitted.append($0) }; stage.refresh(); await stage.settle()
-        let code = try XCTUnwrap(views(TranscriptCodeTextView.self, in: stage.document).first)
+        let code = try XCTUnwrap(views(MarkdownTextView.self, in: stage.document).first, "the fence is in the reply's text")
         stage.window.makeFirstResponder(code)
         let range = (code.string as NSString).range(of: "result")
         code.setSelectedRange(range)
