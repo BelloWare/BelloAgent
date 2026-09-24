@@ -36,6 +36,25 @@ final class CaptureTraceTests: XCTestCase {
         let empty=try await traces.command("debug.list",session:"s",params:[:]);XCTAssertEqual(empty["total"].int,0)
     }
 
+    /// A session snapshot's `latestAttempt` (4 Hz while busy, every idle
+    /// poll) leaves out the context and output id lists, which nothing reads
+    /// from it; the inspector's own reads of the attempt still carry them.
+    func testLatestAttemptLeavesOutMessageIDs() async throws {
+        let traces = TraceStore(), ids = (0..<1000).map { "message-\($0)-0123456789abcdef" }
+        let id = await traces.begin(session: "s", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: Data("{}".utf8), headers: [:], messageIDs: ids)
+        await traces.finish(id, outcome: "completed", modelOutcome: "completed")
+        let latest = await traces.latest("s")
+        XCTAssertEqual(latest["attemptId"].text, id)
+        XCTAssertNil(latest.map["messageIds"]); XCTAssertNil(latest.map["outputMessageIds"])
+        let attempt = try await traces.command("debug.attempt", session: "s", params: ["attemptId": JSON(id)])
+        XCTAssertEqual(attempt["messageIds"].list.count, 1000, "the inspector's attempt read still links its context")
+        let listed = try await traces.command("debug.list", session: "s", params: [:])
+        XCTAssertEqual(listed["attempts"].list.first?["messageIds"].list.count, 1000)
+        let slim = try latest.data().count, full = try attempt.removing(["boundary", "requestHash", "responseHash"]).data().count
+        print("PERF latestAttempt contextIds=1000 bytesBefore=\(full) bytesAfter=\(slim)")
+        XCTAssertLessThan(slim, full - 20_000)
+    }
+
     /// A request's context links (every message id it carries) are sent to
     /// the recorder after the request is dispatched, not awaited before it:
     /// the recorder acknowledges each packet, and a long chat's context takes
