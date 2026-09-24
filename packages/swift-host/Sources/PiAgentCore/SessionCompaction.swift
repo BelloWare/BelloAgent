@@ -14,7 +14,18 @@ extension AgentSession {
     public func compact(commandID: String = UUID().uuidString, overrides: JSON = [:], focus: String? = nil) async throws {
         let focus=focus?.trimmingCharacters(in:.whitespacesAndNewlines)
         guard (focus?.utf8.count ?? 0) <= 4096 else { throw AgentError("invalid_params", "A compaction focus is limited to 4 KB") }
-        if runTask != nil { stop(); await runTask?.value }
+        // Stopping the turn pauses the queue; that pause is compaction's own,
+        // so the queue it paused is released when compaction launches, and
+        // what arrives during "Compacting…" is delivered after it, as in pi.
+        // A Stop while the turn winds down cancels the compaction instead.
+        var releaseQueue = false
+        if runTask != nil {
+            let wasPaused = queuePaused
+            stop(); let stops = stopCount
+            await runTask?.value
+            guard stopCount == stops else { throw AgentError("compaction_cancelled", "Compaction was cancelled because the chat was stopped") }
+            releaseQueue = !wasPaused
+        }
         guard runTask == nil else { throw AgentError("session_busy", "The running turn did not stop, so the chat was not compacted") }
         let selected = try NativeHostService.turnOverrides(overrides)
         // Validate before changing the command or persisted state. Missing
@@ -25,6 +36,7 @@ extension AgentSession {
                               model:selected.model,thinkingLevel:selected.thinkingLevel,contextWindow:selected.contextWindow,
                               maxOutputTokens:selected.maxOutputTokens,modelOutputLimit:selected.modelOutputLimit)
         compactionFocus=focus?.isEmpty == false ? focus : nil
+        if releaseQueue, state != "error" { queuePaused=false }
         activeSubmission=intent; currentTurnID=intent.turnID; commandState(intent,"queued"); try persistState(); launch(compactOnly:true)
     }
     /// Pi's prepareCompaction finds something to summarize.

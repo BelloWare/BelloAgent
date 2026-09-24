@@ -54,7 +54,7 @@ public actor AgentSession {
     /// sequence and display revision of the snapshot that carried it.
     var presentedTasks: TaskPresentationProjection?
     var presentedTasksGeneration: UInt64 = 0
-    var runTask: Task<Void,Never>?, state="idle", runStatus="idle", errorMessage: String?, queuePaused=false
+    var runTask: Task<Void,Never>?, state="idle", runStatus="idle", errorMessage: String?, queuePaused=false, stopCount=0
     /// The code of the error that ended the last run, when it failed: the app
     /// draws a `cost_limit` stop as a notice with a way to raise the limit.
     var errorCode: String?
@@ -377,7 +377,9 @@ public actor AgentSession {
     /// The submission of a turn that failed or was stopped, kept so a retry
     /// sends the same request: its model, reasoning effort and budgets.
     var retrySubmission: Submission?
-    public func stop() { queuePaused=true; runTask?.cancel(); if runTask != nil { state="stopping" } else if state != "error" { state="paused" }; event("state") }
+    /// Stops the run and pauses the queue. `stopCount` lets work that awaited
+    /// a run winding down tell that the chat was stopped again meanwhile.
+    public func stop() { stopCount &+= 1; queuePaused=true; runTask?.cancel(); if runTask != nil { state="stopping" } else if state != "error" { state="paused" }; event("state") }
     public func unloadIfIdle() -> Bool { guard isIdle, !ephemeral else { return false }; closed=true; journal=nil; return true }
     public func close() async { closed=true; stop(); await runTask?.value; journal=nil }
 }
