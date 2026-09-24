@@ -17,6 +17,8 @@ public struct ProviderClient: ModelClient {
     /// Profile custom headers can never replace transport, authentication or
     /// session/turn correlation headers.
     public static let transportOwnedHeaders: Set<String> = ["host","content-length","transfer-encoding","connection","authorization","x-api-key","x-session-id","x-turn-id"]
+    /// Headers that name one request's session or turn, not the connection.
+    static let perRequestHeaders: Set<String> = ["x-session-id","x-turn-id","session_id","x-client-request-id"]
     /// Identities are already restricted to `[A-Za-z0-9._:-]`; anything else
     /// (a synthetic auxiliary id, for example) is reduced to that header-safe
     /// alphabet so a value can never inject a header line.
@@ -148,7 +150,9 @@ public struct ProviderClient: ModelClient {
         var providerFailure:AgentError?
         do {
             try Task.checkCancellation()
-            let parts = stream.start(request)
+            // Model requests share a keep-alive session per gateway and
+            // credential; the correlation headers change with every request.
+            let parts = stream.start(request, pool: .shared, connection: HTTPSessionPool.key(request, perRequest: Self.perRequestHeaders))
             observation.phase="awaiting"; observation.sourceEvent="dispatch"
             let dispatch = stream.observation()
             await traces.dispatched(attempt, at: dispatch["dispatch"].double ?? nowMS(), wall: dispatch["dispatchWallTimestamp"].double ?? Date().timeIntervalSince1970)
