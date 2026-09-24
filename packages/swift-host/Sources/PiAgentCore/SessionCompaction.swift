@@ -100,7 +100,7 @@ extension AgentSession {
             let cap=compactionPolicy.summaryTokens(for:originalProfile), prefixCap=compactionPolicy.summaryTokens(for:originalProfile,turnPrefix:true)
             compactionState["outputAllowance"]=JSON(cap)
             compactionState["outputAllowanceSource"]=JSON(originalProfile.modelOutputLimit.map { $0 < cap + 1 } == true ? "model-output-limit" : "pi-reserve-share")
-            let summaryProfile=try compactionPolicy.summaryProfile(originalProfile,cap:cap)
+            let summaryProfile=try compactionPolicy.summaryProfile(originalProfile,cap:compactionPolicy.summaryRoom(for:originalProfile))
             compactionState["allowedOutputTokens"]=JSON(cap)
             compactionState["reasoningEffort"]=JSON(summaryProfile.raw["thinkingLevel"].text ?? "default")
             let planned=try compactionPlan(frozen,profile:originalProfile,recovering:reason == "context-rejection"), source=planned.source, keep=planned.keep
@@ -120,7 +120,7 @@ extension AgentSession {
             let summarizedIDs=(plan.previous.map { [$0.id] } ?? [])+plan.summarized.map(\.id), replayed=Set(plan.protected.map(\.id))
             func generate(_ messages: [ChatMessage], previous: String?, turnPrefix: Bool) async throws -> String {
                 try await summarize(CompactionSourceBuilder.serialize(messages),previous:previous,turnPrefix:turnPrefix,
-                                    profile:turnPrefix ? compactionPolicy.summaryProfile(originalProfile,cap:prefixCap) : summaryProfile,
+                                    profile:turnPrefix ? compactionPolicy.summaryProfile(originalProfile,cap:compactionPolicy.summaryRoom(for:originalProfile,turnPrefix:true)) : summaryProfile,
                                     originalProfile:originalProfile,revision:revision,sourceIDs:summarizedIDs,focus:turnPrefix ? nil : focus)
             }
             // Pi's compact(): the history since the last checkpoint updates its

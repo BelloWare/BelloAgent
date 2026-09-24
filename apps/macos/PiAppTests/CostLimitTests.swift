@@ -206,6 +206,8 @@ final class CostLimitTests: XCTestCase {
         for round in 0..<3 {
             try await chat.sendAndWait("wire paid \(round)") { rows in rows.filter { $0.text == "Wire reply." }.count == round + 2 }
         }
+        // Each reply's cost ends its stream, after its text: wait for the last one.
+        try await chat.waitUntil("every reply's spend is counted") { abs((chat.session.footer.cost.spentUSD ?? 0) - 0.016) < 1e-9 }
         XCTAssertEqual(chat.session.footer.cost.spentUSD ?? 0, 0.016, accuracy: 1e-9)
         XCTAssertEqual(chat.session.footer.cost.limit, .unlimited)
         XCTAssertNil(chat.session.failureMessage)

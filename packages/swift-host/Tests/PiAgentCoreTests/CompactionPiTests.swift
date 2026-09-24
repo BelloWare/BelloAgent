@@ -179,6 +179,18 @@ final class CompactionPiTests: XCTestCase {
         await s.close()
     }
 
+    /// Each chunk of a history too large for one request leaves a quarter of
+    /// the window for its summary, reasoning included, not pi's 13,107 tokens.
+    func testChunksLeaveAQuarterOfTheWindowForTheirSummary() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=PiSummaryClient(), s=try session(root,client,seed:tasks("C",30,chars:16_000),modelOutputLimit:100_000)
+        _=try await compact(s)
+        let bodies=await client.bodies
+        XCTAssertGreaterThanOrEqual(bodies.count,2)
+        XCTAssertTrue(bodies.allSatisfy { ($0["max_output_tokens"].int ?? 0) >= 25_000 }, bodies.map { String($0["max_output_tokens"].int ?? -1) }.joined(separator:", "))
+        await s.close()
+    }
+
     func testHistoryTooLargeForOneRequestIsSummarizedInChainedChunks() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=PiSummaryClient(), s=try session(root,client,seed:tasks("C",30,chars:16_000),modelOutputLimit:100_000)

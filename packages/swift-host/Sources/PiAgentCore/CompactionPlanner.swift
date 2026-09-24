@@ -28,6 +28,14 @@ public struct CompactionPolicy: Sendable {
         let reserve=settings(autoCompaction:true,contextWindow:profile.contextWindow).reserveTokens
         return max(1,min(reserve*(turnPrefix ? 5 : 8)/10,profile.modelOutputLimit ?? Int.max))
     }
+    /// The room a summary request keeps free for its output, reasoning
+    /// included: pi's share of the reserve, or a quarter of the window when
+    /// that is more, within the model's own limit. The chunks of a history too
+    /// large for one request are packed beside it, so no chunk is held to
+    /// pi's 13,107 tokens.
+    func summaryRoom(for profile: Profile, turnPrefix: Bool = false) -> Int {
+        max(summaryTokens(for: profile, turnPrefix: turnPrefix), min(profile.modelOutputLimit ?? Int.max, profile.contextWindow / 4))
+    }
     /// A summary request's profile. `cap` is the room its request keeps free
     /// for the summary; unlike pi's summary maxTokens it is not sent. The
     /// request carries the model's own output limit, clipped to the window as
