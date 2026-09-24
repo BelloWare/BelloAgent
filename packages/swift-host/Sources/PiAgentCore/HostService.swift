@@ -121,7 +121,9 @@ public actor NativeHostService {
     /// Test seam: a loaded session.
     func loadedSession(_ id: String) -> AgentSession? { sessions[id] }
     private func mark(_ id:String,_ seq:Int) async {
-        if let session=sessions[id], !(await session.isEphemeral) { sideParents.removeValue(forKey:id) }
+        // Only a side chat can stop being one (it was kept); every other
+        // session's events skip the hop to its actor, once per streamed token.
+        if sideParents[id] != nil, let session=sessions[id], !(await session.isEphemeral) { sideParents.removeValue(forKey:id) }
         dirty[id]=max(seq,dirty[id] ?? 0)
         // Owned by `flushTask` and cancelled by `shutdown`, which then flushes
         // once itself, so a pending coalescing window cannot outlive the host.
