@@ -14,9 +14,6 @@ struct ComposerInput: View {
     /// The pane this bar sits in, for `ComposerBarMetrics`.
     let paneWidth: CGFloat
     @Environment(\.piReduceMotion) private var reduceMotion
-    @State private var contentHeight: CGFloat = 0
-    private let minimumHeight: CGFloat = 44
-    private let maximumHeight: CGFloat = 240
     init(model: WorkspaceModel, session: SessionDisplay, paneWidth: CGFloat) {
         self.model = model; self.session = session; self.draft = session.composerDraft; self.paneWidth = paneWidth
     }
@@ -48,7 +45,7 @@ struct ComposerInput: View {
                     directSlash: { if !session.directCommand { session.directCommand = true } }, pasted: { session.directCommand = false; session.completionVisible = false },
                     completionKey: { model.completionKey($0, modifiers: $1, view: session) }, focused: { if model.focusedSessionID != session.id { model.focusedSessionID = session.id }; model.prewarm(session.id) }, accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer", inputRejected: { session.notice = $0 },
                     attachFiles: { model.attachImageFiles($0, sessionID: session.id) },
-                    heightChanged: { height in if abs(contentHeight - height) >= 1 { contentHeight = height } }, focusToken: session.composerFocusRequest,
+                    focusToken: session.composerFocusRequest,
                     // The selected skills lead the text as tokens (ComposerSkillTokens.swift).
                     skills: session.skills, skillDisplay: session, skillsChanged: { model.draftChanged(session) },
                     skillPressed: { chip, token in
@@ -59,7 +56,8 @@ struct ComposerInput: View {
                         SkillPopovers.shared.hoverComposer(inside, chip: chip, anchor: token, session: session, reduceMotion: reduceMotion)
                     },
                     describeSkill: { chip in .composer(chip, catalog: session.skillCatalog) })
-                    .id(session.id).disabled(!session.draftReady).frame(height: min(maximumHeight, max(minimumHeight, contentHeight)))
+                    // Its height is its own (`ComposerScrollView`), in step with the text.
+                    .id(session.id).disabled(!session.draftReady).fixedSize(horizontal: false, vertical: true)
                     // The pane is kept across chats, so a switch hands this
                     // bar another chat's draft. That is not typing: saving it
                     // wrote the unchanged draft back on every click.
