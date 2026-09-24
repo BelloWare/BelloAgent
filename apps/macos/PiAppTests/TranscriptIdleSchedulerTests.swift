@@ -35,6 +35,27 @@ final class TranscriptIdleSchedulerTests: XCTestCase {
         XCTAssertEqual(order, ["main", "side"], "The other pane is first next time")
         XCTAssertEqual(scheduler.longestUnit, 0.003, accuracy: 0.00001)
     }
+    /// A reply's tokens each move the quiet deadline later. They may hold
+    /// reconciliation back for a moment, never for the whole reply.
+    @MainActor func testAStreamOfChangesDefersReconciliationOnlySoLong() {
+        var now = 10.0, calls = 0
+        let scheduler = TranscriptIdleScheduler(automatic: false, clock: { now }, visible: { _ in true })
+        let owner = NSView()
+        let step = { calls += 1; now += 0.001; return false }
+        // A token every 40 ms, each asking for quiet 150 ms after it.
+        while now < 10.0 + TranscriptIdleScheduler.longestDeferral + 0.1 {
+            scheduler.request(owner, after: now + TranscriptNativeDocument.sliceQuietPeriod, step: step)
+            now += 0.04
+            scheduler.runReady()
+            if calls > 0 { break }
+        }
+        XCTAssertEqual(calls, 1, "tokens kept deferring the history's measurement for the whole reply")
+        XCTAssertLessThanOrEqual(now, 10.0 + TranscriptIdleScheduler.longestDeferral + 0.05)
+        // Finished work starts a new wait: a single change still waits for quiet.
+        scheduler.request(owner, after: now + TranscriptNativeDocument.sliceQuietPeriod, step: step)
+        now += 0.1; scheduler.runReady()
+        XCTAssertEqual(calls, 1, "a single change must still wait for its quiet period")
+    }
     @MainActor func testQuietDeadlineMovesAndInputAndVisibilityPauseOptionalWork() {
         var now = 10.0, visible = true, calls = 0
         let scheduler = TranscriptIdleScheduler(automatic: false, clock: { now }, visible: { _ in visible })
