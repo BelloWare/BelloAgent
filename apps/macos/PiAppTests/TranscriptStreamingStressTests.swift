@@ -1649,9 +1649,9 @@ final class TranscriptPageStressTests: TranscriptStressTestCase {
         assertStacked(stage, "after the fence closed")
     }
 
-    /// A long reply crosses from the plain stack into the native markdown
-    /// surface while it is still arriving. Nothing may jump at the crossing.
-    @MainActor func testAReplyCrossingIntoTheNativeMarkdownSurfaceDoesNotJump() async throws {
+    /// A long reply grows block by block below the reader, as one text.
+    /// Nothing the reader is reading may move while it arrives or settles.
+    @MainActor func testALongReplyGrowingBelowTheReaderDoesNotMoveThem() async throws {
         let session = SessionDisplay(id: "surface")
         session.messages = Self.history(turns: 8)
         var live = TranscriptMessage(id: "stream:surface", role: "assistant", text: "", at: 9_000, turn: "u-surface")
@@ -1666,19 +1666,16 @@ final class TranscriptPageStressTests: TranscriptStressTestCase {
         let parked = stage.scrollY
         let screenY = try XCTUnwrap(stage.row("hu1")).frame.minY - stage.scrollY
 
-        var crossed = false
-        for index in 0..<(NativeMarkdownSurface.minimumBlockCount + 8) {
+        for index in 0..<16 {
             live.text += "Paragraph \(index) of the report, long enough to wrap in this pane.\n\n"
             session.messages[session.messages.count - 1] = live
             stage.refresh()
             let blocks = TranscriptMarkdown.streamingBlocks(live.text).count
-            if blocks >= NativeMarkdownSurface.minimumBlockCount { crossed = true }
             assertStacked(stage, "at \(blocks) blocks")
             XCTAssertEqual(stage.scrollY, parked, accuracy: 1.5, "the reply moved the reader at \(blocks) blocks")
             XCTAssertEqual(try XCTUnwrap(stage.row("hu1")).frame.minY - stage.scrollY, screenY, accuracy: 1.5,
                            "the reply moved the row the reader was reading at \(blocks) blocks")
         }
-        XCTAssertTrue(crossed, "the fixture must cross the native surface's block threshold")
         live.state = nil
         session.messages[session.messages.count - 1] = live
         stage.refresh()

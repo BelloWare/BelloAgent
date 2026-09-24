@@ -63,7 +63,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data); self.wfile.flush()
             if pause: time.sleep(pause)
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Gateway)
-(root / 'ready.json').write_text(json.dumps({'port': server.server_address[1]}))
+(root / 'ready.tmp').write_text(json.dumps({'port': server.server_address[1]})); (root / 'ready.tmp').replace(root / 'ready.json')
 server.serve_forever()
 """#
 

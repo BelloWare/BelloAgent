@@ -113,7 +113,7 @@ final class TranscriptQuoteRegionView: NSView {
         let range = text.selectedRange(), source = text.string as NSString
         guard range.location != NSNotFound, range.length > 0, range.location <= source.length,
               range.length <= source.length - range.location else { return nil }
-        let selected = source.substring(with: range)
+        let selected = Self.quoted(text, range)
         guard !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         var ancestor: NSView? = owner
         while ancestor != nil && !(ancestor is TranscriptRowContainer) { ancestor = ancestor?.superview }
@@ -130,6 +130,12 @@ final class TranscriptQuoteRegionView: NSView {
         }
         guard let region = findRegion(row) else { return nil }
         return (text, range, TranscriptQuote(messageID: region.messageID, text: selected), Self.screenRects(text, range, first: screenRect))
+    }
+    /// The selected text as it reads: a reply's text gives it as a copy
+    /// does, its list markers and table cells written out.
+    private static func quoted(_ text: NSTextView, _ range: NSRange) -> String {
+        if let reply = text as? MarkdownTextView { return reply.copyText([range]) }
+        return (text.string as NSString).substring(with: range)
     }
     /// Every line of the selection on screen as one rectangle, and its first
     /// line: the bar is centred on the one and stands clear of the other.
@@ -166,7 +172,7 @@ final class TranscriptQuoteRegionView: NSView {
               // text has not been replaced before acting on the retained quote.
               range.location <= (editor.string as NSString).length,
               range.length <= (editor.string as NSString).length - range.location,
-              (editor.string as NSString).substring(with: range) == saved.text,
+              Self.quoted(editor, range) == saved.text,
               scope?.window != nil, scope?.isHiddenOrHasHiddenAncestor == false else { dismiss(); return }
         dismiss()
         quote(saved)

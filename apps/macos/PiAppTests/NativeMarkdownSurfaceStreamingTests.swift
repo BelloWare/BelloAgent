@@ -24,6 +24,8 @@ final class NativeMarkdownSurfaceStreamingTests: XCTestCase {
         var blocks = 0
         /// Blocks the surface compared with what they were, per token.
         var visitsPerToken = 0.0
+        /// Characters of the reply's text each token set again.
+        var replaced: [Int] = []
         static func median(_ values: [Double]) -> Double { values.isEmpty ? 0 : values.sorted()[values.count / 2] }
         var frame: Double { Self.median(frames) }
         var append: Double { Self.median(appends) }
@@ -73,6 +75,7 @@ final class NativeMarkdownSurfaceStreamingTests: XCTestCase {
             run.frames.append(ProcessInfo.processInfo.systemUptime - start)
             run.appends.append(TranscriptLayoutClock.markdownAppendSeconds)
             run.updates.append(TranscriptLayoutClock.markdownUpdateSeconds)
+            run.replaced.append(surface.lastReplacedLength)
             if index % 8 == 7 { await Task.yield() }
         }
         run.tokensOnTheFastPath = row.streamingAppendCount - appendsBefore
@@ -120,8 +123,8 @@ final class NativeMarkdownSurfaceStreamingTests: XCTestCase {
     }
 
     /// A token on an open list of 8 KB costs what one on 1 KB costs: the list
-    /// is read an item at a time, and drawn in segments of which only the
-    /// last — the one holding the item still arriving — is rebuilt and measured.
+    /// is read an item at a time, set as text an item at a time, and a token
+    /// sets again only the item still arriving.
     @MainActor func testATokenOnAnOpenListCostsTheSameAtOneAndEightKilobytes() async throws {
         func list(_ bytes: Int) -> String {
             var lines: [String] = [], size = 0
@@ -138,10 +141,10 @@ final class NativeMarkdownSurfaceStreamingTests: XCTestCase {
                          bytes, run.blocks, run.frame * 1000, run.append * 1000, tokens.count))
         }
         let short = try XCTUnwrap(runs[1_024]), long = try XCTUnwrap(runs[7_600])
-        // The shape: the list is drawn in segments, and a token compares the
-        // open list's segments — sixteen items each — not its items.
-        XCTAssertGreaterThan(long.blocks, 8, "an 8 KB list is drawn in segments")
-        XCTAssertLessThan(long.visitsPerToken, 16, "a token compared \(long.visitsPerToken) blocks")
+        // The shape: the list is set as text an item at a time, and a token
+        // sets again only the item it changes.
+        XCTAssertGreaterThan(long.blocks, 100, "an 8 KB list is set an item at a time")
+        XCTAssertLessThan(Run.median(long.replaced.map(Double.init)), 120, "a token set \(Run.median(long.replaced.map(Double.init))) characters again")
         XCTAssertLessThan(long.append, short.append * 2 + 0.000_3,
                           String(format: "a token on an 8 KB list cost %.3f ms in the surface against %.3f ms on 1 KB", long.append * 1000, short.append * 1000))
         XCTAssertLessThan(long.frame, short.frame * 2 + 0.000_5,
@@ -162,91 +165,27 @@ final class NativeMarkdownSurfaceStreamingTests: XCTestCase {
         return item
     }.joined(separator: "\n")
 
-    /// The text a surface draws, where it draws it: every text field in it,
-    /// in the surface's own coordinates.
-    @MainActor private func drawn(_ surface: NSView) -> [(text: String, frame: CGRect)] {
-        descendants(NSTextField.self, in: surface).map { ($0.stringValue, surface.convert($0.bounds, from: $0)) }
-            .sorted { $0.frame.minY != $1.frame.minY ? $0.frame.minY < $1.frame.minY : $0.frame.minX < $1.frame.minX }
-    }
-
-    /// A surface holding one block, measured and laid out in a window tall
-    /// enough that every block is on screen, as a reply's surface is measured
-    /// in the window it is drawn in.
-    @MainActor private func surface(_ blocks: [MarkdownBlock], segments: Int) async -> (surface: NativeMarkdownContainer, window: NSWindow) {
-        let prior = NativeMarkdownContainer.listSegmentLength
-        NativeMarkdownContainer.listSegmentLength = segments
-        defer { NativeMarkdownContainer.listSegmentLength = prior }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 1_800), styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        let content = FlippedView(frame: NSRect(x: 0, y: 0, width: 700, height: 1_800))
-        window.contentView = content
-        window.orderFront(nil)
-        let surface = NativeMarkdownContainer(frame: NSRect(x: 0, y: 0, width: 700, height: 1))
-        content.addSubview(surface)
-        surface.update(blocks: blocks, style: .prose, capsWidth: true, streaming: false, headings: [], environment: TranscriptRowEnvironment())
-        let height = surface.measure(width: 700).height
-        surface.frame = NSRect(x: 0, y: 0, width: 700, height: height)
-        for _ in 0..<3 { surface.layoutSubtreeIfNeeded(); window.displayIfNeeded(); await Task.yield() }
-        return (surface, window)
-    }
-
-    private final class FlippedView: NSView { override var isFlipped: Bool { true } }
-
-    /// Drawn in segments, a long list is the same list: every item's text in
-    /// the same place to the fraction of a point, the items as far apart as in
-    /// one list, the list as tall, and the same pixels.
-    @MainActor func testALongListDrawnInSegmentsIsDrawnExactlyAsOneList() async throws {
-        let blocks = TranscriptMarkdown.parse(Self.longList)
-        guard blocks.count == 1, case .list(true, 7, let items) = blocks[0] else { return XCTFail("the fixture is one ordered list") }
-        XCTAssertEqual(items.count, 50)
-        let whole = await surface(blocks, segments: .max)
-        defer { whole.window.contentView = nil; whole.window.close() }
-        let parts = await surface(blocks, segments: 16)
-        defer { parts.window.contentView = nil; parts.window.close() }
-        XCTAssertEqual(whole.surface.retainedBlockCount, 1)
-        XCTAssertEqual(parts.surface.retainedBlockCount, 4, "fifty items are four segments of at most sixteen")
-        XCTAssertEqual(parts.surface.measure(width: 700).height, whole.surface.measure(width: 700).height, "the segmented list is exactly as tall")
-        let one = drawn(whole.surface), segmented = drawn(parts.surface)
-        XCTAssertEqual(segmented.map(\.text), one.map(\.text), "the same text, in the same order, markers and numbers included")
-        XCTAssertGreaterThan(one.count, 50, "every item's text, and the nested items'")
-        for (a, b) in zip(one, segmented) {
-            XCTAssertEqual(b.frame.minY, a.frame.minY, accuracy: 0.01, "\(a.text.debugDescription) moved")
-            XCTAssertEqual(b.frame.minX, a.frame.minX, accuracy: 0.01, "\(a.text.debugDescription) moved")
-            XCTAssertEqual(b.frame.height, a.frame.height, accuracy: 0.01, "\(a.text.debugDescription) changed height")
-            XCTAssertEqual(b.frame.width, a.frame.width, accuracy: 0.01, "\(a.text.debugDescription) changed width")
+    /// A list the reply streams an item at a time reads, and is dressed,
+    /// exactly as the same list drawn whole: the same markers and numbers, the
+    /// same indents, the same space between items, the same copy.
+    @MainActor func testAListStreamedItemByItemIsTheSameListAsOneDrawnWhole() async throws {
+        let final = Self.longList
+        let whole = MarkdownTextSurfaceTests.surface(final)
+        let bytes = Array(final.utf8)
+        var index = min(bytes.count, 40)
+        let streamed = MarkdownTextSurfaceTests.surface(String(decoding: bytes[..<index], as: UTF8.self), streaming: true)
+        while index < bytes.count {
+            index = min(bytes.count, index + 17)
+            _ = streamed.0.appendStreaming(String(decoding: bytes[..<index], as: UTF8.self), identity: "reply")
         }
-        // The pixels, as the window server has them once both are on screen.
-        try await Task.sleep(for: .milliseconds(300))
-        whole.window.displayIfNeeded(); parts.window.displayIfNeeded()
-        let first = try XCTUnwrap(capture(whole.window)), second = try XCTUnwrap(capture(parts.window))
-        XCTAssertEqual(first.width, second.width); XCTAssertEqual(first.height, second.height)
-        let differing = pixelsDiffering(first, second)
-        print("PERF a 50-item list in four segments against one list: \(differing) of \(first.width * first.height) pixels differ")
-        XCTAssertEqual(differing, 0, "the segmented list must draw the same pixels as one list")
-    }
-
-    /// A window's pixels, from the window server.
-    @MainActor private func capture(_ window: NSWindow) -> CGImage? {
-        typealias ListImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
-        guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage") else { return nil }
-        let create = unsafeBitCast(symbol, to: ListImage.self)
-        return create(.null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber),
-                      CGWindowImageOption.boundsIgnoreFraming.rawValue)?.takeRetainedValue()
-    }
-    private func pixelsDiffering(_ a: CGImage, _ b: CGImage) -> Int {
-        func rgba(_ image: CGImage) -> [UInt8] {
-            var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
-            let context = CGContext(data: &bytes, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
-                                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-            context?.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-            return bytes
-        }
-        let x = rgba(a), y = rgba(b)
-        var count = 0
-        for pixel in stride(from: 0, to: min(x.count, y.count), by: 4) where x[pixel] != y[pixel] || x[pixel + 1] != y[pixel + 1] || x[pixel + 2] != y[pixel + 2] {
-            count += 1
-        }
-        return count
+        streamed.0.read(source: final, style: .prose, capsWidth: true, streaming: false, headings: [], environment: TranscriptRowEnvironment(), identity: "reply")
+        XCTAssertEqual(streamed.0.textView.string, whole.0.textView.string)
+        XCTAssertEqual(MarkdownTextSurfaceTests.dress(streamed.0), MarkdownTextSurfaceTests.dress(whole.0))
+        XCTAssertEqual(streamed.0.measure(width: 760).height, whole.0.measure(width: 760).height)
+        let all = { (surface: NativeMarkdownContainer) in surface.textView.copyText([NSRange(location: 0, length: surface.textLength)]) }
+        XCTAssertEqual(all(streamed.0), all(whole.0))
+        XCTAssertTrue(all(whole.0).hasPrefix("7. Step 7:"), String(all(whole.0).prefix(40)))
+        withExtendedLifetime((whole.1, streamed.1)) {}
     }
 
     /// Selecting in an item the reply has already moved past, then streaming
@@ -261,24 +200,22 @@ final class NativeMarkdownSurfaceStreamingTests: XCTestCase {
         defer { window.contentView = nil; window.close() }
         for _ in 0..<4 { host.layoutSubtreeIfNeeded(); window.displayIfNeeded(); await Task.yield() }
         let surface = try XCTUnwrap(descendants(NativeMarkdownContainer.self, in: host).first)
-        XCTAssertGreaterThan(surface.retainedBlockCount, 1, "a 40-item list is drawn in segments")
-        let field = try XCTUnwrap(descendants(NSTextField.self, in: surface).first { $0.stringValue.hasPrefix("item 3 with") && $0.isSelectable })
-        field.selectText(nil)
-        let editor = try XCTUnwrap(field.currentEditor())
-        let selected = (field.stringValue as NSString).range(of: "code")
-        editor.selectedRange = selected
-        let owners = surface.blockOwnerIdentities
+        XCTAssertGreaterThan(surface.retainedBlockCount, 1, "a 40-item list is set an item at a time")
+        let text = surface.textView
+        window.makeFirstResponder(text)
+        let item = (text.string as NSString).range(of: "item 3 with")
+        let selected = (text.string as NSString).range(of: "code", range: NSRange(location: item.location, length: 40))
+        text.setSelectedRange(selected)
         for round in 0..<30 {
             source += ["\n- item next", " with", " `code`", " and", " **bold**", " text"][round % 6]
             XCTAssertNotNil(surface.appendStreaming(source, identity: "list"), "token \(round) extends the surface")
             host.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             await Task.yield()
         }
-        XCTAssertTrue(field.currentEditor() === editor, "the selection's field keeps its editor")
-        XCTAssertEqual(editor.selectedRange, selected, "the selection stays on the same characters")
-        XCTAssertTrue(descendants(NSTextField.self, in: surface).contains { $0 === field }, "the field holding the selection is the same field")
-        XCTAssertEqual(surface.blockOwnerIdentities.first, owners.first, "the segment holding the selection is the same segment")
-        // Copying the reply copies its source, whatever the segments.
+        XCTAssertTrue(window.firstResponder === text, "the text holding the selection keeps it")
+        XCTAssertEqual(text.selectedRange(), selected, "the selection stays on the same characters")
+        XCTAssertTrue(descendants(MarkdownTextView.self, in: surface).first === text, "the same text")
+        // Copying the reply from its menu copies its source.
         host.rootView = MarkdownBodyView(source: source, streaming: false, sourceIdentity: "list")
         for _ in 0..<3 { host.layoutSubtreeIfNeeded(); window.displayIfNeeded(); await Task.yield() }
         let whole = TranscriptCopy.targets(in: source).first { $0.kind == .whole || $0.kind == .introduction }

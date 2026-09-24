@@ -75,42 +75,32 @@ final class NativeMarkdownViewportTests: XCTestCase {
         return (model, window, scroll, hosted)
     }
 
-    @MainActor func testLargeMarkdownScrollKeepsExactHeightAndSelectedTextWithFewMountedBlocks() async throws {
+    @MainActor func testLargeMarkdownScrollKeepsExactHeightAndSelectedText() async throws {
         let (_, window, outer, hosted) = fixture()
         defer { window.contentView = nil; window.close() }
         await settle(hosted, scroll: outer, window: window)
         let body = try XCTUnwrap(descendants(NativeMarkdownContainer.self, in: hosted).first)
-        XCTAssertEqual(body.retainedBlockCount, 160, "Every heading, paragraph, code fence, and table remains available")
-        XCTAssertLessThan(body.mountedBlockCount, 30, "Native views are bounded by the viewport, not the whole answer")
+        XCTAssertEqual(body.retainedBlockCount, 160, "Every heading, paragraph, code fence, and table is in the text")
+        XCTAssertEqual(descendants(MarkdownTextView.self, in: body).count, 1, "The whole answer is one text")
         let initialHeight = hosted.frame.height
         XCTAssertGreaterThan(initialHeight, 10 * outer.contentView.bounds.height)
-        let field = try XCTUnwrap(descendants(NSTextField.self, in: body).first { $0.stringValue.hasPrefix("Selectable paragraph 0 ") && $0.isSelectable })
-        field.selectText(nil)
-        let editor = try XCTUnwrap(field.currentEditor())
-        editor.selectedRange = NSRange(location: 0, length: 10)
-        let selection = editor.selectedRange
+        let text = body.textView
+        XCTAssertTrue(window.makeFirstResponder(text))
+        let selection = NSRange(location: (text.string as NSString).range(of: "Selectable paragraph 0 ").location, length: 10)
+        text.setSelectedRange(selection)
         await nextMainTurn()
-        let measured = body.blockMeasurementCount
-        for _ in 0..<160 where body.hostedBlockCount >= 40 {
-            try await Task.sleep(for: .milliseconds(16))
-            TranscriptIdleScheduler.shared.runReady()
-        }
-        XCTAssertLessThan(body.hostedBlockCount, 40, "Distant native trees are released after the shared idle budget; all block records remain")
-        XCTAssertEqual(body.retainedBlockCount, 160)
-        XCTAssertTrue(field.currentEditor() === editor, "Idle reclamation must keep the selected field alive")
+        let passes = body.layoutPasses
 
         await scroll(to: initialHeight - outer.contentView.bounds.height, scroll: outer, hosted: hosted, window: window)
-        XCTAssertTrue(window.firstResponder === editor)
-        XCTAssertTrue(field.currentEditor() === editor, "A selected native field stays attached even outside the viewport")
-        XCTAssertEqual(editor.selectedRange, selection)
-        XCTAssertTrue(descendants(NSTextField.self, in: body).contains { $0.stringValue.contains("let result39 = inspect(index: 39)") }, "The end of the full answer renders without truncation or a Show More gate")
-        XCTAssertLessThan(body.mountedBlockCount, 30)
+        XCTAssertTrue(window.firstResponder === text)
+        XCTAssertEqual(text.selectedRange(), selection)
+        XCTAssertTrue(text.string.contains("let result39 = inspect(index: 39)"), "The end of the full answer renders without truncation or a Show More gate")
         XCTAssertEqual(hosted.frame.height, initialHeight, accuracy: 0.5)
 
         await scroll(to: 0, scroll: outer, hosted: hosted, window: window)
-        XCTAssertTrue(field.currentEditor() === editor)
-        XCTAssertEqual(editor.selectedRange, selection)
-        XCTAssertLessThan(body.blockMeasurementCount - measured, 20, "Only newly visited blocks are measured; the unchanged middle stays provisional")
+        XCTAssertTrue(window.firstResponder === text)
+        XCTAssertEqual(text.selectedRange(), selection)
+        XCTAssertEqual(body.layoutPasses, passes, "Scrolling lays nothing out again")
         XCTAssertEqual(outer.contentView.bounds.minY, 0, accuracy: 0.5)
         XCTAssertEqual(hosted.frame.height, initialHeight, accuracy: 0.5)
 
@@ -126,61 +116,57 @@ final class NativeMarkdownViewportTests: XCTestCase {
         }
     }
 
-    @MainActor func testLargeMarkdownAppendAndWidthChangeRetainTheSelectedNativeField() async throws {
+    @MainActor func testLargeMarkdownAppendAndWidthChangeRetainTheSelection() async throws {
         let (model, window, outer, hosted) = fixture()
         defer { window.contentView = nil; window.close() }
         await settle(hosted, scroll: outer, window: window)
         let body = try XCTUnwrap(descendants(NativeMarkdownContainer.self, in: hosted).first)
-        let field = try XCTUnwrap(descendants(NSTextField.self, in: body).first { $0.stringValue.hasPrefix("Selectable paragraph 0 ") && $0.isSelectable })
-        field.selectText(nil)
-        let editor = try XCTUnwrap(field.currentEditor())
-        editor.selectedRange = NSRange(location: 11, length: 9)
-        let selected = editor.selectedRange
-        let originalHeight = hosted.frame.height
-        let beforeAppendMeasurements = body.blockMeasurementCount
+        let text = body.textView
+        XCTAssertTrue(window.makeFirstResponder(text))
+        let selected = NSRange(location: (text.string as NSString).range(of: "Selectable paragraph 0 ").location + 11, length: 9)
+        text.setSelectedRange(selected)
+        let originalHeight = hosted.frame.height, originalLength = body.textLength
 
         model.source += "\n\n" + Self.section(40)
         await settle(hosted, scroll: outer, window: window)
         XCTAssertTrue(descendants(NativeMarkdownContainer.self, in: hosted).first === body)
-        XCTAssertTrue(field.currentEditor() === editor)
-        XCTAssertTrue(window.firstResponder === editor)
-        XCTAssertEqual(editor.selectedRange, selected)
+        XCTAssertTrue(window.firstResponder === text)
+        XCTAssertEqual(text.selectedRange(), selected)
         XCTAssertEqual(body.retainedBlockCount, 164)
         XCTAssertGreaterThan(hosted.frame.height, originalHeight)
-        XCTAssertLessThanOrEqual(body.blockMeasurementCount - beforeAppendMeasurements, 8, "Appending four blocks must not remeasure all settled paragraphs")
+        XCTAssertGreaterThanOrEqual(body.lastReplacedLocation, originalLength - 1, "Appending four blocks sets only their text")
 
         let wideHeight = hosted.frame.height
         model.width = 340
         await settle(hosted, scroll: outer, window: window)
         XCTAssertGreaterThan(hosted.frame.height, wideHeight, "The exact height follows the real narrower text wrapping")
-        XCTAssertTrue(field.currentEditor() === editor, "Reflow preserves the native field and its selection")
-        XCTAssertEqual(editor.selectedRange, selected)
+        XCTAssertTrue(window.firstResponder === text, "Reflow keeps the text and its selection")
+        XCTAssertEqual(text.selectedRange(), selected)
     }
-    @MainActor func testSelectedCodeSurvivesAppendScrollAndReflowInsideItsHostedBlock() async throws {
+    @MainActor func testSelectedCodeSurvivesAppendScrollAndReflow() async throws {
         let (model, window, outer, hosted) = fixture(largeCode: true)
         defer { window.contentView = nil; window.close() }
         await settle(hosted, scroll: outer, window: window)
         let body = try XCTUnwrap(descendants(NativeMarkdownContainer.self, in: hosted).first)
-        let code = try XCTUnwrap(descendants(TranscriptCodeTextView.self, in: body).first { $0.string.hasPrefix("let result0 =") })
-        XCTAssertTrue(window.makeFirstResponder(code))
-        let selected = (code.string as NSString).range(of: "result0")
-        code.setSelectedRange(selected)
+        let text = body.textView
+        XCTAssertTrue(window.makeFirstResponder(text))
+        let selected = (text.string as NSString).range(of: "result0")
+        text.setSelectedRange(selected)
         await scroll(to: hosted.frame.height - outer.contentView.bounds.height, scroll: outer, hosted: hosted, window: window)
-        XCTAssertTrue(window.firstResponder === code)
-        XCTAssertTrue(code.isDescendant(of: body), "Selection retains a code block outside the viewport")
+        XCTAssertTrue(window.firstResponder === text)
         model.source = model.source.replacingOccurrences(of: "print(result0)", with: "print(result0)\nprint(\"appended 中文🙂\")")
         model.source += "\n\n" + Self.section(40)
         await settle(hosted, scroll: outer, window: window)
-        XCTAssertTrue(code.string.contains("appended 中文🙂"))
-        XCTAssertEqual(code.selectedRange(), selected)
-        XCTAssertTrue(window.firstResponder === code)
+        XCTAssertTrue(text.string.contains("appended 中文🙂"))
+        XCTAssertEqual(text.selectedRange(), selected)
+        XCTAssertTrue(window.firstResponder === text)
         model.width = 340
         await settle(hosted, scroll: outer, window: window)
-        XCTAssertTrue(window.firstResponder === code)
-        XCTAssertEqual(code.selectedRange(), selected)
+        XCTAssertTrue(window.firstResponder === text)
+        XCTAssertEqual(text.selectedRange(), selected)
         let board = NSPasteboard(name: .init("hosted-code-copy-" + UUID().uuidString))
         defer { board.releaseGlobally() }
-        XCTAssertTrue(code.writeSelection(to: board, types: code.writablePasteboardTypes))
+        XCTAssertTrue(text.writeSelection(to: board, types: text.writablePasteboardTypes))
         XCTAssertEqual(board.string(forType: .string), "result0")
     }
 
@@ -189,7 +175,6 @@ final class NativeMarkdownViewportTests: XCTestCase {
         defer { window.contentView = nil; window.close() }
         await settle(hosted, scroll: outer, window: window)
         let body = try XCTUnwrap(descendants(NativeMarkdownContainer.self, in: hosted).first)
-        XCTAssertGreaterThan(body.provisionalBlockCount, 80)
         outer.transcriptReading.readerMoved()
         outer.contentView.scroll(to: NSPoint(x: 0, y: hosted.frame.height * 0.45))
         hosted.layoutSubtreeIfNeeded()

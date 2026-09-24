@@ -59,12 +59,12 @@ final class ReplySourceTests: XCTestCase {
     @MainActor private func textRows(_ stage: TranscriptStreamingStressTests.Stage, of reply: String) -> [TranscriptRowContainer] {
         stage.rows.filter { ReplySource.replyID(of: $0.contentItem) == reply }
     }
-    /// Waits until a rendered surface has measured every block it is going
-    /// to near the viewport: it prepares a few at a time, a pass after another.
+    /// Waits until a rendered surface has laid out its text at the width
+    /// the page gives it.
     @MainActor private func settled(_ surface: NativeMarkdownContainer, _ stage: TranscriptStreamingStressTests.Stage) async {
-        var measured = -1
-        for _ in 0..<40 where measured != surface.blockMeasurementCount {
-            measured = surface.blockMeasurementCount
+        var passes = -1
+        for _ in 0..<40 where passes != surface.layoutPasses {
+            passes = surface.layoutPasses
             await stage.settle(turns: 3)
         }
     }
@@ -177,7 +177,7 @@ final class ReplySourceTests: XCTestCase {
         await settled(surface, stage)
         let above = stage.rows.prefix { $0 !== row }.map(\.frame)
         let top = row.frame.minY - stage.scrollY, rendered = row.frame.height
-        let measured = surface.blockMeasurementCount, estimated = surface.provisionalBlockCount
+        let passes = surface.layoutPasses
 
         row.toggleDisclosure(.source("a1"))
         stage.draw()
@@ -186,7 +186,7 @@ final class ReplySourceTests: XCTestCase {
         XCTAssertEqual(views(TranscriptPlainTextView.self, in: row).count, 1)
         XCTAssertTrue(leaf.string == Self.longReply, "the source is the reply exactly as it arrived")
         XCTAssertTrue(leaf.font?.isFixedPitch == true, "in a monospaced face")
-        XCTAssertTrue(surface.isParked && surface.mountedBlockCount == 0 && surface.frame.height == 0,
+        XCTAssertTrue(surface.isParked && surface.textView.isHidden && surface.frame.height == 0,
                       "and nothing of it is rendered: the rendered surface waits, parked, taking no room")
         XCTAssertTrue(views(NSTextField.self, in: row).filter(\.isSelectable).isEmpty, "the source is the only text")
         XCTAssertLessThanOrEqual(row.hostedFittingHeight, row.frame.height + 0.5, "the row was re-measured in the pass that switched it")
@@ -212,8 +212,7 @@ final class ReplySourceTests: XCTestCase {
         XCTAssertFalse(stage.session.disclosure.isOpen(.source("a1")))
         XCTAssertTrue(views(TranscriptPlainTextView.self, in: row).isEmpty, "View rendered puts the rendered reply back")
         XCTAssertTrue(views(NativeMarkdownContainer.self, in: row).first === surface && !surface.isParked, "the same surface")
-        XCTAssertEqual(surface.blockMeasurementCount - measured, estimated - surface.provisionalBlockCount,
-                       "with every height it had measured: nothing is measured again, only blocks still at estimates are prepared")
+        XCTAssertEqual(surface.layoutPasses, passes, "with the height it had measured: its text is not laid out again")
         XCTAssertEqual(stage.rows.prefix { $0 !== row }.map(\.frame), above, "the rows above still have not moved")
         XCTAssertEqual(row.frame.minY - stage.scrollY, top, accuracy: 1, "the reply is where it was")
         assertStacked(stage, "rendered again")

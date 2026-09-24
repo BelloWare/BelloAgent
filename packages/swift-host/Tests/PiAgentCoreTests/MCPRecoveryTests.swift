@@ -61,7 +61,7 @@ class MCP(http.server.BaseHTTPRequestHandler):
         self.reply(200, {'jsonrpc': '2.0', 'id': request['id'], 'result': {'content': [{'type': 'text', 'text': 'echo ' + mode}], 'isError': False}})
         if mode == 'restart': sessions.clear()
 server = http.server.HTTPServer(('127.0.0.1', 0), MCP)
-(state / 'ready.json').write_text(json.dumps({'port': server.server_address[1]}))
+(state / 'ready.tmp').write_text(json.dumps({'port': server.server_address[1]})); (state / 'ready.tmp').replace(state / 'ready.json')
 server.serve_forever()
 """#
 

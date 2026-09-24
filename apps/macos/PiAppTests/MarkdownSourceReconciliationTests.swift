@@ -57,27 +57,31 @@ final class MarkdownSourceReconciliationTests: XCTestCase {
         let host = NSHostingView(rootView: MarkdownBodyView(source: original, streaming: true, sourceIdentity: "reply"))
         window.contentView = host; window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
-        func fields(_ view: NSView) -> [NSTextField] {
-            if let field = view as? NSTextField { return [field] }
-            return view.subviews.flatMap { fields($0) }
+        func texts(_ view: NSView) -> [MarkdownTextView] {
+            if let text = view as? MarkdownTextView { return [text] }
+            return view.subviews.flatMap { texts($0) }
         }
         _ = host.fittingSize; host.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-        let first = try XCTUnwrap(fields(host).first { $0.stringValue.contains("[label][ref]") })
-        let unchanged = fields(host).first { $0.stringValue == "Unchanged paragraph." }
-        if hasFollowingParagraph { XCTAssertNotNil(unchanged) }
-        first.selectText(nil)
-        let editor = try XCTUnwrap(first.currentEditor())
-        editor.selectedRange = (first.stringValue as NSString).range(of: "label")
+        // The whole reply is one text; the paragraph still says [label][ref].
+        let reply = try XCTUnwrap(texts(host).first)
+        XCTAssertEqual(texts(host).count, 1)
+        // While it streams, each settled part is read alone: the reference
+        // is defined in a later part, so the link reads as it was typed.
+        XCTAssertTrue(reply.string.contains("[label][ref]"), reply.string)
+        window.makeFirstResponder(reply)
+        let label = (reply.string as NSString).range(of: "label")
+        reply.setSelectedRange(label)
         host.rootView = MarkdownBodyView(source: completed, streaming: false, sourceIdentity: "reply")
         _ = host.fittingSize; host.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         for _ in 0..<2 {
             await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
             host.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         }
-        XCTAssertTrue(first.currentEditor() === editor)
-        XCTAssertEqual(first.stringValue, "First strong with label here.")
-        XCTAssertEqual(editor.selectedRange, (first.stringValue as NSString).range(of: "label"), "Resolve document-scoped references without moving the selected source text")
-        if let unchanged { XCTAssertTrue(fields(host).contains { $0 === unchanged }, "A dependent paragraph cannot replace an unaffected paragraph's owner") }
+        XCTAssertTrue(texts(host).first === reply, "the same text")
+        XCTAssertTrue(reply.string.hasPrefix("First strong with label here."), reply.string)
+        XCTAssertEqual((reply.string as NSString).substring(with: reply.selectedRange()), "label",
+                       "Resolve document-scoped references without moving the selected source text")
+        if hasFollowingParagraph { XCTAssertTrue(reply.string.contains("Unchanged paragraph."), "the paragraph after it is kept") }
     }
 
     @MainActor func testLateReferenceDefinitionKeepsUnselectedMiddleCharacterAtDrawTime() async throws {

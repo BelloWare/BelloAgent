@@ -4,28 +4,31 @@ import XCTest
 @testable import PiApp
 
 final class NativeMarkdownSizingTests: XCTestCase {
-    @MainActor func testStreamingTailUpdatesOnlyItsAggregateSuffix() {
+    /// A change to the reply's last block sets that block's text again, not
+    /// the 299 above it; a new width lays the text out once.
+    @MainActor func testStreamingTailUpdatesOnlyItsOwnText() {
         let body = NativeMarkdownContainer()
         var blocks = (0..<300).map { MarkdownBlock.paragraph(AttributedString("Completed paragraph \($0).")) }
         let environment = TranscriptRowEnvironment()
         body.update(blocks: blocks, style: .prose, capsWidth: true, streaming: true, headings: [], environment: environment)
         let original = body.measure(width: 600)
         body.frame = CGRect(origin: .zero, size: original); body.layoutSubtreeIfNeeded()
-        let owners = body.blockOwnerIdentities, before = body.aggregateMeasurementVisits, frames = body.framePlacements
+        let settled = (body.textView.string as NSString).range(of: "Completed paragraph 299.").location
+        let passes = body.layoutPasses
         blocks[299] = .paragraph(AttributedString(String(repeating: "Tail continues with more text. ", count: 20)))
         body.update(blocks: blocks, style: .prose, capsWidth: true, streaming: true, headings: [], environment: environment)
         let resized = body.measure(width: 600)
         body.frame.size.height = resized.height; body.layoutSubtreeIfNeeded()
         XCTAssertGreaterThan(resized.height, original.height)
-        XCTAssertEqual(body.aggregateMeasurementVisits - before, 1)
-        XCTAssertEqual(body.framePlacements - frames, 1)
-        XCTAssertEqual(body.blockOwnerIdentities, owners)
-        // A width change rebuilds every descriptor, with only its initial band measured exactly.
+        XCTAssertGreaterThanOrEqual(body.lastReplacedLocation, settled, "only the last block's text was set again")
+        XCTAssertEqual(body.layoutPasses - passes, 1)
         _ = body.measure(width: 500)
-        XCTAssertEqual(body.aggregateMeasurementVisits - before, 301)
+        XCTAssertEqual(body.layoutPasses - passes, 2, "a width lays the text out once")
+        XCTAssertEqual(body.measure(width: 500).height, body.measure(width: 500).height)
+        XCTAssertEqual(body.layoutPasses - passes, 2, "and a width it knows is not laid out again")
     }
 
-    @MainActor func testManyBlockAnswerPreparesVisibleGeometryAndKeepsFullCopySource() throws {
+    @MainActor func testManyBlockAnswerIsOneTextMeasuredOnceAndKeepsFullCopySource() throws {
         let source = (0..<160).map { index in
             """
             ## Section \(index)
@@ -48,26 +51,17 @@ final class NativeMarkdownSizingTests: XCTestCase {
                     environment: TranscriptRowEnvironment())
         let start = ProcessInfo.processInfo.systemUptime
         let size = body.measure(width: 620)
-        print("REVIEW Markdown \(source.utf8.count) bytes / \(parsed.count) blocks: initial sizing \((ProcessInfo.processInfo.systemUptime - start) * 1000) ms, retained hosts \(body.hostedBlockCount)")
-        XCTAssertEqual(body.hostedBlockCount, 6)
-        XCTAssertEqual(body.blockMeasurementCount, 6)
+        print("REVIEW Markdown \(source.utf8.count) bytes / \(parsed.count) blocks: initial sizing \((ProcessInfo.processInfo.systemUptime - start) * 1000) ms as one text")
+        XCTAssertEqual(body.layoutPasses, 1)
         XCTAssertEqual(body.measure(width: 620), size)
-        XCTAssertEqual(body.blockMeasurementCount, 6, "A repeated width keeps provisional blocks separate from exact measurements")
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 620, height: 560))
-        body.frame = NSRect(origin: .zero, size: size); scroll.documentView = body
-        let window = NSWindow(contentRect: scroll.frame, styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = scroll; window.makeKeyAndOrderFront(nil)
-        defer { window.contentView = nil; window.close() }
-        for position in [0.0, 0.5, 1.0, 0.0] {
-            scroll.contentView.scroll(to: NSPoint(x: 0, y: (size.height - 560) * position))
-            body.needsLayout = true; body.layoutSubtreeIfNeeded()
-            XCTAssertLessThan(body.mountedBlockCount, 40)
-            for host in body.subviews where !(host is NSProgressIndicator) {
-                XCTAssertEqual(host.frame.height, ceil(host.fittingSize.height), accuracy: 1,
-                               "Every mounted block must have exact native geometry")
-            }
-        }
+        XCTAssertEqual(body.layoutPasses, 1, "A repeated width is not laid out again")
+        // Every block of it is in the one text a selection runs across.
+        let text = body.textView
+        text.setSelectedRange(NSRange(location: 0, length: (text.string as NSString).length))
+        let copied = text.copyText(text.selectedRanges.map(\.rangeValue))
+        XCTAssertTrue(copied.hasPrefix("Section 0\n\nA selectable paragraph"))
+        XCTAssertTrue(copied.contains("let value159 = inspect(\"159\")"))
+        XCTAssertTrue(copied.hasSuffix("Index\t159"), String(copied.suffix(40)))
         // Section controls keep their existing 64 KiB scan limit. Large
         // messages still use the transcript's source-based whole-message copy.
         XCTAssertTrue(TranscriptCopy.targets(in: source).isEmpty)
@@ -76,9 +70,11 @@ final class NativeMarkdownSizingTests: XCTestCase {
         let sections = targets.filter { if case .section = $0.kind { return true }; return false }
         XCTAssertEqual(sections.count, 120)
         XCTAssertTrue(sections.last?.text.contains("let value119") == true,
-                      "Copy targets include the end of the source, independent of mounted views")
+                      "Copy targets include the end of the source, independent of the view")
     }
 
+    /// A 2,500-line fence is shown whole — one text, laid out once — and a
+    /// 1,500-row table keeps its bounded inline preview.
     @MainActor func testSingleCodeFenceAndTableHaveSeparateMeasuredCosts() {
         let code = "~~~swift\n" + (0..<2500).map { "let value\($0) = inspect(index: \($0))" }.joined(separator: "\n") + "\n~~~"
         let table = "| Key | Value |\n| --- | --- |\n" + (0..<1500).map { "| Field \($0) | A measured value for row \($0) |" }.joined(separator: "\n")
@@ -90,8 +86,9 @@ final class NativeMarkdownSizingTests: XCTestCase {
             let size = body.measure(width: 620)
             print("REVIEW single \(label): \(source.utf8.count) bytes, sizing \((ProcessInfo.processInfo.systemUptime - started) * 1000) ms, height \(size.height)")
             if label == "table" { XCTAssertLessThan(size.height, 1500, "Large tables intentionally render a bounded inline preview") }
-            else { XCTAssertLessThan(size.height, 8000, "A huge fence uses bounded source sections with full copy") }
+            else { XCTAssertTrue(body.textView.string.contains("let value2499"), "the whole fence is in the text") }
             XCTAssertEqual(body.measure(width: 620), size)
+            XCTAssertEqual(body.layoutPasses, 1)
         }
     }
     @MainActor func testFullTableUsesVisibleCellsAndKeepsTheLastCellAndCompleteCopy() throws {

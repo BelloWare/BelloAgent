@@ -197,8 +197,13 @@ final class TimelineStreamingFastPathTests: XCTestCase {
     }
 
     @MainActor private func shows(_ row: TranscriptRowContainer, _ word: String) -> Bool {
-        func fields(_ view: NSView) -> [NSTextField] { (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { fields($0) } }
-        return fields(row).contains { $0.stringValue.contains(word) }
+        // A reply's words are one TextKit text; other rows' are SwiftUI's fields.
+        func texts(_ view: NSView) -> [String] {
+            if let field = view as? NSTextField { return [field.stringValue] }
+            if let text = view as? NSTextView { return [text.string] }
+            return view.subviews.flatMap { texts($0) }
+        }
+        return texts(row).contains { $0.contains(word) }
     }
 
     @MainActor func testATimelineReplyTakesTheStreamingFastPaths() async throws {

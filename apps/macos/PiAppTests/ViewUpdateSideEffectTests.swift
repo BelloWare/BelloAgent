@@ -162,31 +162,6 @@ final class ViewUpdateSideEffectTests: XCTestCase {
         XCTAssertEqual(issues, [], "Side effects inside SwiftUI updates while the Changes panel opened and loaded")
     }
 
-    /// The caret and copy target of a reply's block are published on the turn
-    /// after the update that changed them, and only when they did change.
-    @MainActor func testTheReplyDecorationPublishesOnTheTurnAfterItChanges() async throws {
-        let decoration = MarkdownBlockDecoration()
-        var published = 0
-        let subscription = decoration.objectWillChange.sink { published += 1 }
-        defer { subscription.cancel() }
-        decoration.update(caret: true, target: nil)
-        XCTAssertEqual(published, 0, "Nothing is published from inside the update that asked")
-        XCTAssertFalse(decoration.caret)
-        try await Task.sleep(for: .milliseconds(30))
-        XCTAssertEqual(published, 1)
-        XCTAssertTrue(decoration.caret)
-        // Several changes in one update publish once, with the newest values.
-        decoration.update(caret: false, target: nil)
-        decoration.update(caret: true, target: nil)
-        decoration.update(caret: false, target: nil)
-        try await Task.sleep(for: .milliseconds(30))
-        XCTAssertEqual(published, 2)
-        XCTAssertFalse(decoration.caret)
-        // Values it already shows publish nothing.
-        decoration.update(caret: false, target: nil)
-        try await Task.sleep(for: .milliseconds(30))
-        XCTAssertEqual(published, 2)
-    }
 
     /// "Show all" in the Inspector puts a text in place: the outline's rows
     /// change and a Turn page's prompt card grows when the text arrives from

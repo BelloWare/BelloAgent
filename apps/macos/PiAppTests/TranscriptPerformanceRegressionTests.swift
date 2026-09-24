@@ -103,11 +103,11 @@ final class TranscriptPerformanceRegressionTests: XCTestCase {
         NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         let row = try XCTUnwrap(descendants(TranscriptRowContainer.self, in: hosted).first { $0.itemID == "block:m1" })
-        let field = try XCTUnwrap(textFields(in: row).first { $0.stringValue == "Stable selectable prose." && $0.isSelectable })
-        field.selectText(nil)
-        let editor = try XCTUnwrap(field.currentEditor())
-        editor.selectedRange = NSRange(location: 0, length: 6)
-        let selectedRange = editor.selectedRange
+        // The reply's prose is one TextKit text, selectable across its blocks.
+        let editor = try XCTUnwrap(descendants(MarkdownTextView.self, in: row).first { $0.string.hasPrefix("Stable selectable prose.") })
+        window.makeFirstResponder(editor)
+        editor.setSelectedRange(NSRange(location: 0, length: 6))
+        let selectedRange = editor.selectedRange()
         let rowFrame = try XCTUnwrap(page.rowFrame(of: row.itemID))
         scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: rowFrame.minY))
         NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
@@ -125,8 +125,7 @@ final class TranscriptPerformanceRegressionTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(30))
             hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             XCTAssertTrue(window.firstResponder === editor)
-            XCTAssertTrue(field.currentEditor() === editor)
-            XCTAssertEqual(editor.selectedRange, selectedRange)
+            XCTAssertEqual(editor.selectedRange(), selectedRange)
             XCTAssertEqual(scroll.contentView.bounds.origin.y, origin, accuracy: 0.5)
             XCTAssertEqual(try XCTUnwrap(page.rowFrame(of: row.itemID)), rowFrame)
         }
@@ -138,8 +137,8 @@ final class TranscriptPerformanceRegressionTests: XCTestCase {
         let oldWidth = row.frame.width
         window.setContentSize(NSSize(width: 650, height: 700))
         try await settle(hosted, window: window) { row.frame.width < oldWidth && row.measurementCount > (counts[row.itemID] ?? 0) }
-        XCTAssertTrue(field.currentEditor() === editor, "Reflow keeps the same selectable native text")
-        XCTAssertEqual(editor.selectedRange, selectedRange)
+        XCTAssertTrue(window.firstResponder === editor, "Reflow keeps the same selectable native text")
+        XCTAssertEqual(editor.selectedRange(), selectedRange)
         session.scrollAnchor = TranscriptAnchor(id: "m1", offset: 12, followsBottom: false)
         session.messages.insert(contentsOf: [TranscriptMessage(id: "earlier-user", role: "user", text: "Earlier question"),
                                             TranscriptMessage(id: "earlier-answer", role: "assistant", text: String(repeating: "Earlier paragraph.\n\n", count: 10))], at: 0)
@@ -148,8 +147,8 @@ final class TranscriptPerformanceRegressionTests: XCTestCase {
             guard let frame = page.rowFrame(of: row.itemID), page.rowFrame(of: "earlier-user") != nil else { return false }
             return abs(scroll.contentView.bounds.origin.y - (frame.minY - 12)) < 1
         }
-        XCTAssertTrue(field.currentEditor() === editor, "Prepending earlier history must keep the selected native field")
-        XCTAssertEqual(editor.selectedRange, selectedRange)
+        XCTAssertTrue(window.firstResponder === editor, "Prepending earlier history must keep the selected native text")
+        XCTAssertEqual(editor.selectedRange(), selectedRange)
     }
 
     @MainActor func testDisclosureChangesTheExactHeightWithoutChangingRowContentOrWidth() async throws {
@@ -229,13 +228,21 @@ final class TranscriptPerformanceRegressionTests: XCTestCase {
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         try await Task.sleep(for: .milliseconds(100))
         hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-        let selectable = textFields(in: hosted).filter(\.isSelectable).map(\.stringValue)
+        // Every block is in the one selectable text; the toolbar and copy
+        // controls are not text, and a copy of the list gives its markers
+        // as text, not the drawn bullets.
+        let texts = descendants(MarkdownTextView.self, in: hosted)
+        XCTAssertEqual(texts.count, 1, "The reply is one selectable text")
+        let reply = try XCTUnwrap(texts.first)
+        XCTAssertTrue(reply.isSelectable)
         for text in ["Selectable prose.", "First selectable item", "Second selectable item", "let selectableCode = 42", "Header", "Selectable cell"] {
-            XCTAssertTrue(selectable.contains(text), "Content must retain native text selection: \(text)")
+            XCTAssertTrue(reply.string.contains(text), "Content must retain native text selection: \(text)")
         }
-        XCTAssertFalse(selectable.contains("•"), "Decorative list markers do not need native selection fields")
-        XCTAssertFalse(selectable.contains("swift"), "The language toolbar is a label; the code remains selectable")
-        XCTAssertFalse(selectable.contains("Copy"), "Copy controls must not inherit content selection")
+        let copied = reply.copyText([NSRange(location: 0, length: (reply.string as NSString).length)])
+        XCTAssertTrue(copied.contains("- First selectable item\n- Second selectable item"), copied)
+        XCTAssertFalse(copied.contains("•"), "Decorative list markers are not copied")
+        XCTAssertFalse(reply.string.contains("swift"), "The language toolbar is a label; the code remains selectable")
+        XCTAssertFalse(textFields(in: hosted).filter(\.isSelectable).contains { $0.stringValue.contains("Copy") }, "Copy controls must not inherit content selection")
     }
 
     func testAttributedSyntaxKeepsUnicodeAndColorsTheFollowingTokensExactly() {

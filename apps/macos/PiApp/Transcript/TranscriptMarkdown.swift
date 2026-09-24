@@ -346,16 +346,23 @@ enum TranscriptMarkdown {
             if intent.contains(.lineBreak) { text = "\n" }
             if run.imageURL != nil { text = "[Image not loaded" + (text.isEmpty ? "]" : ": \(text)]") }
             var fragment = AttributedString(text)
-            let weight: Font.Weight = heading || intent.contains(.stronglyEmphasized) ? .semibold : .regular
+            let strong = heading || intent.contains(.stronglyEmphasized), italic = intent.contains(.emphasized)
+            let weight: Font.Weight = strong ? .semibold : .regular
+            // The face is named twice: as SwiftUI's font, and as a value the
+            // TextKit text a reply is drawn in turns into its own font
+            // (`MarkdownTextBuilder.appKit`).
             if intent.contains(.code) {
                 fragment.font = .system(size: size * 0.9, weight: weight, design: .monospaced)
                 fragment.backgroundColor = style.codeBackground
+                fragment[MarkdownFontAttribute.self] = MarkdownFontSpec(size: size * 0.9, semibold: strong, monospaced: true, italic: italic)
             } else if heading {
                 fragment.font = .system(size: size, weight: weight, design: .serif)
+                fragment[MarkdownFontAttribute.self] = MarkdownFontSpec(size: size, semibold: true, serif: true)
             } else {
-                fragment.font = intent.contains(.emphasized) ? .system(size: size, weight: weight).italic() : .system(size: size, weight: weight)
+                fragment.font = italic ? .system(size: size, weight: weight).italic() : .system(size: size, weight: weight)
+                fragment[MarkdownFontAttribute.self] = MarkdownFontSpec(size: size, semibold: strong, italic: italic)
             }
-            if intent.contains(.emphasized) && intent.contains(.code) { fragment.font = .system(size: size * 0.9, weight: weight, design: .monospaced).italic() }
+            if italic && intent.contains(.code) { fragment.font = .system(size: size * 0.9, weight: weight, design: .monospaced).italic() }
             fragment.foregroundColor = style.textColor
             if intent.contains(.strikethrough) { fragment.strikethroughStyle = .single }
             if run.imageURL == nil, let link = run.link, let safe = safeURL(link.absoluteString) {

@@ -370,8 +370,8 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         print(String(format: "PERF streaming row: %.1f SwiftUI sizing passes per delta costing %.1f ms",
                      Double(TranscriptLayoutClock.rowSizingPasses) / Double(deltas),
                      TranscriptLayoutClock.rowSizingSeconds * 1000 / Double(deltas)))
-        print(String(format: "PERF streaming row's markdown: %d blocks retained, %d mounted, %d block measurements over %d deltas, container update %.1f ms, block layout %.1f ms per delta",
-                     container?.retainedBlockCount ?? 0, container?.mountedBlockCount ?? 0, TranscriptLayoutClock.markdownBlocksMeasured,
+        print(String(format: "PERF streaming row's markdown: %d blocks, %d full text layouts, %d block measurements over %d deltas, container update %.1f ms, text layout %.1f ms per delta",
+                     container?.retainedBlockCount ?? 0, container?.layoutPasses ?? 0, TranscriptLayoutClock.markdownBlocksMeasured,
                      deltas, TranscriptLayoutClock.markdownUpdateSeconds * 1000 / Double(deltas),
                      TranscriptLayoutClock.markdownLayoutSeconds * 1000 / Double(deltas)))
         print("PERF streaming delta into \(rows) rows — worst \(worst.line)")

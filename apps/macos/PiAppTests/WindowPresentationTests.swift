@@ -227,6 +227,10 @@ final class WindowPresentationTests: XCTestCase {
         XCTAssertFalse(WindowPresentationController.shouldRedirectTyping(characters: "\u{F702}", modifiers: [.function], responderTakesText: false), "Arrow keys navigate")
         XCTAssertFalse(WindowPresentationController.shouldRedirectTyping(characters: "\u{7F}", modifiers: plain, responderTakesText: false))
         XCTAssertFalse(WindowPresentationController.shouldRedirectTyping(characters: nil, modifiers: plain, responderTakesText: false))
+        // A reply's text can be selected, not typed into: typing goes to the composer.
+        let reply = MarkdownTextView(), field = NSTextView()
+        XCTAssertFalse(WindowPresentationController.takesText(reply), "A read-only text does not take typing")
+        XCTAssertTrue(WindowPresentationController.takesText(field), "An editable text does")
         XCTAssertFalse(WindowPresentationController.shouldRedirectTyping(characters: "a", modifiers: plain, responderTakesText: true), "A text field or the terminal keeps what is typed into it")
         XCTAssertTrue(WindowPresentationController.takesText(NSTextView(frame: .zero)))
         XCTAssertTrue(WindowPresentationController.takesText(NSTextField(frame: .zero)))

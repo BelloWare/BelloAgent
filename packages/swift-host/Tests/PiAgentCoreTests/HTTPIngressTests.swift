@@ -35,7 +35,8 @@ final class HTTPIngressTests: XCTestCase {
             self.end_headers(); self.wfile.write(body)
         def log_message(self, *args): pass
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    with open(os.path.join(sys.argv[1], "ready.json"), "w") as ready: json.dump({"port": server.server_address[1]}, ready)
+    with open(os.path.join(sys.argv[1], "ready.tmp"), "w") as ready: json.dump({"port": server.server_address[1]}, ready)
+    os.replace(os.path.join(sys.argv[1], "ready.tmp"), os.path.join(sys.argv[1], "ready.json"))
     server.serve_forever()
     """
     /// Model requests share one keep-alive session per gateway and
@@ -54,7 +55,6 @@ final class HTTPIngressTests: XCTestCase {
         defer { server.terminate(); server.waitUntilExit() }
         let ready = root.appendingPathComponent("ready.json")
         for _ in 0..<1000 where !FileManager.default.fileExists(atPath: ready.path) { try await Task.sleep(for: .milliseconds(10)) }
-        try await Task.sleep(for: .milliseconds(20))
         let port = try XCTUnwrap(JSON.parse(Data(contentsOf: ready))["port"].int)
         let pool = HTTPSessionPool()
         func send(_ turn: String, key: String = "fixture-key") async throws -> HTTPStream {

@@ -40,18 +40,17 @@ extension ConversationPaneTests {
         NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
         await live.settle(10)
         let surface = try XCTUnwrap(Self.views(NativeMarkdownContainer.self, in: row).first, "The reply is rendered by its native surface")
-        /// The surface prepares the blocks near the viewport a few at a time,
-        /// a pass after another; wait for the last of them.
+        /// Waits until the reply's text is laid out at the width it is given.
         func settled() async {
-            var measured = -1
-            for _ in 0..<40 where measured != surface.blockMeasurementCount {
-                measured = surface.blockMeasurementCount
+            var passes = -1
+            for _ in 0..<40 where passes != surface.layoutPasses {
+                passes = surface.layoutPasses
                 await live.settle(3)
             }
         }
         await settled()
         let offset = clip.bounds.minY, top = row.frame.minY - clip.bounds.minY
-        let measured = surface.blockMeasurementCount, estimated = surface.provisionalBlockCount
+        let passes = surface.layoutPasses
         let above = document.retainedRows.prefix { $0 !== row }.map(\.frame)
         XCTAssertFalse(above.isEmpty, "The earlier turn is above the reply")
         func assertInPlace(_ when: String, file: StaticString = #filePath, line: UInt = #line) {
@@ -73,7 +72,7 @@ extension ConversationPaneTests {
         let leaves = Self.views(TranscriptPlainTextView.self, in: row)
         XCTAssertEqual(leaves.count, 1, "The source is one text")
         XCTAssertTrue(leaves.first?.string == reply.text, "The source is the reply exactly as it arrived")
-        XCTAssertTrue(surface.isParked && surface.mountedBlockCount == 0 && surface.frame.height == 0,
+        XCTAssertTrue(surface.isParked && surface.textView.isHidden && surface.frame.height == 0,
                       "Nothing of it is rendered: the rendered reply waits, parked, taking no room")
         XCTAssertLessThanOrEqual(row.hostedFittingHeight, row.frame.height + 0.5, "The reply was re-measured for its source")
         assertInPlace("In its source")
@@ -90,8 +89,7 @@ extension ConversationPaneTests {
         XCTAssertTrue(Self.views(TranscriptPlainTextView.self, in: row).isEmpty, "The rendered reply is back")
         XCTAssertTrue(Self.views(NativeMarkdownContainer.self, in: row).first === surface && !surface.isParked,
                       "The same surface, with everything it had measured")
-        XCTAssertEqual(surface.blockMeasurementCount - measured, estimated - surface.provisionalBlockCount,
-                       "Nothing it had measured is measured again: only blocks still at estimates are prepared")
+        XCTAssertEqual(surface.layoutPasses, passes, "Nothing it had laid out is laid out again")
         assertInPlace("Rendered again")
         XCTAssertNil(live.model.error, live.model.error ?? "")
         closed = true

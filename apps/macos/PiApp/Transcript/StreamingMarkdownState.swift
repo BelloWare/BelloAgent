@@ -37,7 +37,6 @@ final class StreamingMarkdownState {
     /// the reply's end, so a surface redraws from here and never walks the
     /// blocks before it.
     private(set) var unchangedPrefix = 0
-    private(set) var usesNative = false
     private var messageID = ""
     private var style: MarkdownStyle?
     private var wasStreaming: Bool?
@@ -123,7 +122,6 @@ final class StreamingMarkdownState {
             settledRecordCount = 0
             cuts = .init()
         }
-        usesNative = usesNative || streaming || records.count >= NativeMarkdownSurface.minimumBlockCount
         return records
     }
 

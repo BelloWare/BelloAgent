@@ -252,9 +252,12 @@ final class ConversationHeaderMarkerView: NSView {
         if scalar.value < 0x20 || scalar.value == 0x7F || (0xF700...0xF8FF).contains(scalar.value) { return false }
         return !CharacterSet.whitespacesAndNewlines.contains(scalar)
     }
-    /// Text views, field editors and the terminal already take typing.
+    /// Text views, field editors and the terminal already take typing. A
+    /// text the reader can only select (a reply, a source view) does not:
+    /// typing there goes to the composer, as it does elsewhere in the chat.
     static func takesText(_ responder: NSResponder?) -> Bool {
         guard let view = responder as? NSView else { return false }
+        if let text = view as? NSTextView, !text.isEditable { return false }
         if view is NSText || view is NSTextField { return true }
         return String(describing: type(of: view)).contains("Terminal")
     }

@@ -294,12 +294,6 @@ final class StableToolPresentationTests: XCTestCase {
     }
 
     @MainActor func testNativeSelectionAndDrawGeometrySurviveToolFragmentsAndLateAccounting() async throws {
-        func fields(_ view: NSView) -> [NSTextField] {
-            if let field = view as? NSTextField { return [field] }
-            var result: [NSTextField] = []
-            for child in view.subviews { result += fields(child) }
-            return result
-        }
         let session = SessionDisplay(id:"phase-fixture")
         session.taskPresentation = projection(task())
         session.messages = [row("u","Task",role:"user",state:"complete"),row("a","Stable selectable prose.")]
@@ -308,9 +302,10 @@ final class StableToolPresentationTests: XCTestCase {
         defer { stage.close() }
         stage.page.presentationInterval = 0; await stage.settle()
         let body = try XCTUnwrap(stage.row("block:a"))
-        let field = try XCTUnwrap(fields(body).first { $0.isSelectable && $0.stringValue == "Stable selectable prose." })
-        field.selectText(nil)
-        let editor = try XCTUnwrap(field.currentEditor()); editor.selectedRange = NSRange(location:0,length:6)
+        // The reply's prose is one TextKit text, selectable across its blocks.
+        func texts(_ view: NSView) -> [MarkdownTextView] { (view as? MarkdownTextView).map { [$0] } ?? view.subviews.flatMap { texts($0) } }
+        let editor = try XCTUnwrap(texts(body).first { $0.string == "Stable selectable prose." })
+        stage.window.makeFirstResponder(editor); editor.setSelectedRange(NSRange(location:0,length:6))
         let origin = body.frame.origin, measures = body.measurementCount, header = try XCTUnwrap(stage.workRow)
         let headerHeight = header.frame.height
         var samples: [Double] = []
@@ -324,10 +319,10 @@ final class StableToolPresentationTests: XCTestCase {
             XCTAssertTrue(stage.row("block:a") === body)
             XCTAssertEqual(body.frame.origin,origin); XCTAssertEqual(body.measurementCount,measures)
             XCTAssertEqual(header.frame.height,headerHeight)
-            XCTAssertTrue(field.currentEditor() === editor); XCTAssertEqual(editor.selectedRange,NSRange(location:0,length:6))
+            XCTAssertTrue(stage.window.firstResponder === editor); XCTAssertEqual(editor.selectedRange(),NSRange(location:0,length:6))
             try await Task.sleep(for:.milliseconds(16))
         }
-        XCTAssertEqual((editor.string as NSString).substring(with:editor.selectedRange),"Stable")
+        XCTAssertEqual((editor.string as NSString).substring(with:editor.selectedRange()),"Stable")
         let sorted = samples.sorted()
         print("TOOL_NATIVE_DRAW samples=\(samples.count) medianMs=\(sorted[15]) p95Ms=\(sorted[28]) maxMs=\(sorted.last ?? 0) proseOriginChanges=0 proseRemeasures=0 selectionPreserved=1")
     }
