@@ -168,14 +168,20 @@ final class WorkspaceConcurrencyTests: XCTestCase {
         let opening = Task { try await model.open(chat) }
         await fulfillment(of: [entered], timeout: 3)
         model.shutdown(); storage.resume.signal()
-        do { _ = try await opening.value; XCTFail("A credential read completing after shutdown must not open a host") }
+        do { _ = try await opening.value; XCTFail("A credential read completing after shutdown must not open a session") }
         catch { XCTAssertTrue(error is CancellationError) }
-        XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.opened.isEmpty)
+        // The project's helper starts alongside the credential read, so one
+        // may have been starting when teardown began: teardown stops it, no
+        // session opens, and nothing starts after.
+        func stopped() -> Bool { model.hosts.values.allSatisfy { !$0.isReady && $0.helperProcessIdentifier == nil } }
+        for _ in 0..<300 where !stopped() { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(stopped(), "Teardown stops a helper that started during the credential read"); XCTAssertTrue(model.opened.isEmpty)
         XCTAssertNil(model.record(chat.id)?.path)
         XCTAssertEqual(model.displays[chat.id]?.draft, "Unsent draft for \(chat.id)")
+        let known = model.hosts.count
         do { _ = try await model.host(for: try XCTUnwrap(model.workspaces.first)); XCTFail("Terminal shutdown rejects later direct host requests too") }
         catch { XCTAssertTrue(error is CancellationError) }
-        XCTAssertTrue(model.hosts.isEmpty)
+        XCTAssertEqual(model.hosts.count, known); XCTAssertTrue(stopped(), "Nothing starts after teardown")
     }
 
     @MainActor func testConnectionSwitchCannotOvertakeAnOpeningSession() async throws {

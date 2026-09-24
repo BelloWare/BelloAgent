@@ -26,7 +26,7 @@ import AppKit
     /// A 120 Hz display's frame, in seconds.
     static let frameInterval = 1.0 / 120
 
-    init(width: CGFloat = 1280, height: CGFloat = 820) async throws {
+    init(width: CGFloat = 1280, height: CGFloat = 820, storage: ((Data) -> any VaultStorage)? = nil) async throws {
         var repository = URL(fileURLWithPath: #filePath)
         for _ in 0..<4 { repository.deleteLastPathComponent() }
         let script = repository.appendingPathComponent("fixtures/native/ui-gateway.py")
@@ -50,13 +50,14 @@ import AppKit
         profile.api = "openai-responses"; profile.baseUrl = base; profile.modelId = "ui-fixture"; profile.catalogUrl = base + "/catalog"
         profile.name = "Fixture"; profile.contextWindow = 2_000_000; profile.maxOutputTokens = 300_000; profile.modelOutputLimit = 300_000
         self.profile = profile
+        let makeStorage: (Data) -> any VaultStorage = storage ?? { MemoryVaultStorage($0) }
         var configuration = VaultConfiguration()
         configuration.workspaces = [workspace]
         configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-loopback-only-key")]
         configuration.automaticUpdateChecks = false
         configuration.resources[workspace.id] = .object(["codexHome": .string(root.appendingPathComponent("codex").path)])
         model = WorkspaceModel(stateRoot: root.appendingPathComponent("app-state"),
-                               vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
+                               vault: ConfigurationVault(storage: makeStorage(try JSONEncoder().encode(configuration))))
         await model.restore()
         model.selectedWorkspaceID = workspace.id; model.profileChoice = profile.id
         let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspace.id, title: "Latency", path: nil, profileID: profile.id)
@@ -222,7 +223,53 @@ import AppKit
     }
 }
 
+/// A vault whose reads can be held, to see what a send does while Keychain answers.
+final class GatedVaultStorage: VaultStorage, @unchecked Sendable {
+    private let inner: MemoryVaultStorage
+    private let lock = NSLock()
+    private var gate: DispatchSemaphore?
+    private var waiting = 0
+    init(_ bytes: Data) { inner = MemoryVaultStorage(bytes) }
+    var isHoldingRead: Bool { lock.lock(); defer { lock.unlock() }; return waiting > 0 }
+    func hold() { lock.lock(); gate = DispatchSemaphore(value: 0); lock.unlock() }
+    func release() { lock.lock(); let held = gate; gate = nil; lock.unlock(); held?.signal() }
+    func read() throws -> Data? {
+        lock.lock(); let held = gate; if held != nil { waiting += 1 }; lock.unlock()
+        // Bounded: a test that never releases fails on its own assertions, not a hang.
+        if let held { _ = held.wait(timeout: .now() + 20); lock.lock(); waiting -= 1; lock.unlock() }
+        return try inner.read()
+    }
+    func replace(expected: Data?, with replacement: Data) throws { try inner.replace(expected: expected, with: replacement) }
+}
+
 final class SendLatencyTests: XCTestCase {
+    /// A send to a chat whose project helper is not running starts that
+    /// helper while the profile's credential is read, instead of after: the
+    /// helper is up while the read is still held. The session, which is
+    /// what takes the credential, opens only once the read has answered.
+    @MainActor func testColdSendStartsTheHelperWhileTheCredentialIsRead() async throws {
+        var gated: GatedVaultStorage?
+        let bench = try await SendBench(storage: { bytes in let storage = GatedVaultStorage(bytes); gated = storage; return storage })
+        let storage = try XCTUnwrap(gated)
+        var closed = false
+        defer { if !closed { storage.release(); Task { await bench.close() } } }
+        // Nothing may be running yet: a helper started by selecting the chat
+        // would make the send find it ready.
+        if let host = bench.host, host.isReady { try await host.shutdownAndWait() }
+        await bench.waitUntil("A previous helper never stopped", seconds: 10) { bench.host?.isReady != true && !bench.model.opened.contains(bench.chatID) }
+        let item = try XCTUnwrap(bench.model.chatRecord(bench.chatID))
+        storage.hold()
+        let opening = Task { @MainActor in try await bench.model.open(item) }
+        await bench.waitUntil("The helper did not start while the credential was read", seconds: 15) { bench.host?.isReady == true && bench.model.boundHostConnections[bench.workspace.id] != nil }
+        XCTAssertTrue(storage.isHoldingRead, "The credential read was still held while the helper started")
+        XCTAssertFalse(bench.model.opened.contains(bench.chatID), "No session opens before its credential is read")
+        storage.release()
+        _ = try await opening.value
+        XCTAssertTrue(bench.model.opened.contains(bench.chatID))
+        closed = true
+        await bench.close()
+    }
+
     private static func median(_ values: [Double]) -> Double {
         let sorted = values.sorted(); guard !sorted.isEmpty else { return .nan }
         return sorted.count % 2 == 1 ? sorted[sorted.count / 2] : (sorted[sorted.count / 2 - 1] + sorted[sorted.count / 2]) / 2
@@ -280,8 +327,13 @@ final class SendLatencyTests: XCTestCase {
             ("spawn+workspace.open", "draftWritten", "reply:workspace.open"), ("spawn+workspace.open*", "prewarm", "reply:workspace.open"),
             ("session.open", "reply:workspace.open", "reply:session.open")]
 
+        // The first message after launch: no session, and a helper that only
+        // the typing before Return has started.
+        let first = await bench.measure("First message after launch")
+        await bench.waitForQuiet()
+        report("firstAfterLaunch", [first], breakdown: coldSteps)
+
         // Warm helper, short chat.
-        await bench.sendAndWait("Warm up the helper")
         var warm: [SendBench.Timeline] = []
         for index in 0..<samples {
             warm.append(await bench.measure("Warm short chat \(index)"))
