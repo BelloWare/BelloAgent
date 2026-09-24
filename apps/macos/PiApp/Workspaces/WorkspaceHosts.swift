@@ -152,20 +152,9 @@ extension WorkspaceModel {
         }
         try await materializeChat(item.id)
         guard !item.imported, let workspace = workspace(for: item.workspaceID), workspace.trusted else { throw HostError.failure("This chat needs its saved profile and trusted project. Imported originals cannot be written.") }
-        // The project's helper starts while the credential, handoff and cost
-        // reads below run: starting it (spawn, handshake, workspace.open)
-        // takes none of them. The credential first goes out with
-        // session.open, after it and the connection lease are checked.
-        let starting = Task { try await self.host(for: workspace) }
-        var used = false
-        defer {
-            // An open that stopped before it used the helper leaves it to idle
-            // out, as a helper started by typing does.
-            if !used { Task { if !self.accountingStopped, let host = try? await starting.value { self.scheduleIdle(workspaceID: item.workspaceID, host: host) } } }
-        }
         let credential = try await credentials(for: profile)
         // A read already dispatched to Keychain may finish after shutdown.
-        // It must not open a session once terminal teardown has begun.
+        // It must not create a new helper once terminal teardown has begun.
         try Task.checkCancellation()
         guard !accountingStopped else { throw CancellationError() }
         try requireConnection(lease)
@@ -174,27 +163,7 @@ extension WorkspaceModel {
         do { if key.isEmpty { throw HostError.failure("Save an API key in Keychain for this profile") } }
         catch let error as HostError { throw error }
         catch { throw HostError.failure("The profile key is unavailable or Keychain access is locked. Review this profile in Settings.") }
-        // What the session opens with, read while the helper starts.
-        func sessionParams() async throws -> [String: WireValue] {
-            var wire = profile.wire.object ?? [:]
-            if let headers = credential["headers"] { wire["headers"] = headers }
-            var params: [String: WireValue] = ["profile": .object(wire), "apiKey": .string(key), "toolMode": .string(item.toolMode)]
-            if let handoff = try await store.get(WireValue.self, kind: "handoff", id: item.id) { params["handoff"] = handoff }
-            // The chat's cost limit, which the helper checks before every model request.
-            params.merge(await costLimitParams(for: item)) { _, limit in limit }
-            if item.connectionTest == true || workspace.isScratch { params["connectionTest"] = .bool(true) }
-            if item.backgroundTask == "session-title" { params["backgroundTask"] = .string("session-title") }
-            if let path = item.path { params["path"] = .string(path) }
-            // The capture mode rides on the open (the helper echoes it); a
-            // helper that does not echo it is sent `debug.mode` after.
-            let preference = try await capturePreference(sessionID: item.id)
-            params["captureMode"] = .string(preference.mode)
-            return params
-        }
-        var prepared: [String: WireValue]?
-        if sessionOpenings[item.id] == nil, !opened.contains(item.id) { prepared = try await sessionParams() }
-        let host = try await starting.value
-        used = true
+        let host = try await host(for: workspace)
         defer { if automaticContext { scheduleIdle(workspaceID: item.workspaceID, host: host) } }
         try Task.checkCancellation()
         guard !accountingStopped else { throw CancellationError() }
@@ -205,10 +174,17 @@ extension WorkspaceModel {
         if let pending = sessionOpenings[item.id] {
             try await pending.task.value
         } else if !opened.contains(item.id) {
-            let params: [String: WireValue]
-            if let prepared { params = prepared } else { params = try await sessionParams() }
+            var wire = profile.wire.object ?? [:]
+            if let headers = credential["headers"] { wire["headers"] = headers }
+            var params: [String: WireValue] = ["profile": .object(wire), "apiKey": .string(key), "toolMode": .string(item.toolMode)]
+            if let handoff = try await store.get(WireValue.self, kind: "handoff", id: item.id) { params["handoff"] = handoff }
+            // The chat's cost limit, which the helper checks before every model request.
+            params.merge(await costLimitParams(for: item)) { _, limit in limit }
             if automaticContext { try requireAutomaticContext(item.id) }
-            // Reading the parameters may have yielded. Recheck immediately
+            if item.connectionTest == true || workspace.isScratch { params["connectionTest"] = .bool(true) }
+            if item.backgroundTask == "session-title" { params["backgroundTask"] = .string("session-title") }
+            if let path = item.path { params["path"] = .string(path) }
+            // Loading a retained handoff above yields too. Recheck immediately
             // before installing the shared operation, without another await.
             if let pending = sessionOpenings[item.id] {
                 try await pending.task.value
@@ -224,24 +200,16 @@ extension WorkspaceModel {
                             chats[index].path = path
                             // Always retry this durable write on a later open after a
                             // storage failure, even though the in-memory path is known.
-                            // The saved record decides, not the one in memory: a
-                            // reopened chat's record usually holds the path already,
-                            // and reading it costs far less than a durable rewrite.
-                            if try await store.get(ChatRecord.self, kind: "chat", id: item.id)?.path != path,
-                               let current = chats.first(where: { $0.id == item.id }) {
-                                try await store.put(current, kind: "chat", id: item.id)
-                            }
+                            try await store.put(chats[index], kind: "chat", id: item.id)
                         }
                         observeAssistantOutputs(sessionID: item.id, snapshot: initial.object ?? [:])
                         observeSessionCompletion(sessionID: item.id, snapshot: initial.object ?? [:], baseline: true)
                         displays[item.id]?.observeCompaction(initial.object ?? [:], baseline: true)
                         displays[item.id]?.observeContext(initial.object ?? [:], baseline: true)
-                        let mode = params["captureMode"]?.string ?? "memory"
-                        if initial.object?["captureMode"]?.string != mode {
-                            _ = try await host.request("debug.mode", sessionID: item.id, params: ["mode": .string(mode)])
-                        }
+                        let preference = try await capturePreference(sessionID: item.id)
+                        _ = try await host.request("debug.mode", sessionID: item.id, params: ["mode": .string(preference.mode)])
                         opened.insert(item.id)
-                        displays[item.id]?.captureMode = mode; displays[item.id]?.captureAvailable = true
+                        displays[item.id]?.captureMode = preference.mode; displays[item.id]?.captureAvailable = true
                         displays[item.id]?.lastSequence = -1
                     }
                 }
