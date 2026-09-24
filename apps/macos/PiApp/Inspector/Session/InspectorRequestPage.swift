@@ -10,7 +10,6 @@ struct InspectorRequestPage: View {
     @State private var more = false
     @State private var evidence = false
     @State private var events = false
-    @StateObject private var full = InspectorFullText()
 
     var body: some View {
         if let row = request.row {
@@ -27,10 +26,8 @@ struct InspectorRequestPage: View {
                     case .raw: InspectorRawTab(inspector: inspector, request: request, compact: compact)
                     }
                 }
-                InspectorFullTextPane(full: full)
             }
-            .onChange(of: row.id) { _, _ in full.close(); events = false }
-            .onChange(of: request.tab) { _, _ in full.close() }
+            .onChange(of: row.id) { _, _ in events = false }
             .accessibilityIdentifier("inspector-request")
         } else {
             InspectorPlaceholder(symbol: "arrow.up.arrow.down", title: "Choose a request", message: "Every request of this session is in the list on the left.")
@@ -158,19 +155,13 @@ struct InspectorRequestPage: View {
     @ViewBuilder private func conversation(_ row: InspectorRequestRow) -> some View {
         let document = request.conversation.value
         VStack(alignment: .leading, spacing: 0) {
-            // A summary request's instruction comes last in its prompt, after
-            // the whole conversation and far past any preview: it is shown first.
-            if let summary = document?.summary {
-                SummaryInstructionCard(summary: summary, label: inspector.summaryLabel(row.id))
-                    .padding(.horizontal, compact ? PiSpacing.lg : PiSpacing.xl).padding(.top, 12)
-            }
             if let document {
                 banner(document, row: row)
                     .padding(.horizontal, compact ? PiSpacing.lg : PiSpacing.xl).padding(.top, 12).padding(.bottom, 8)
             }
             ZStack {
-                InspectorItemsOutline(content: document.map { outlineContent($0, row: row) } ?? .empty) { target, title in
-                    if let document { open(target, title: title, request: document) }
+                InspectorItemsOutline(content: document.map { outlineContent($0, row: row) } ?? .empty) { target in
+                    document.map { Self.wholeText(target, of: $0) }
                 }
                 .padding(.horizontal, compact ? PiSpacing.sm : PiSpacing.md)
                 .opacity(document == nil || document?.notice != nil ? 0 : 1)
@@ -210,15 +201,24 @@ struct InspectorRequestPage: View {
     private func outlineContent(_ document: RequestDocument, row: InspectorRequestRow) -> InspectorOutlineContent {
         let delta = request.delta
         let grouped = delta.map { !$0.first } ?? false
+        // A summary request's instruction comes last in its prompt, after the
+        // whole conversation and far past any preview: it is the first row.
         return InspectorOutlineContent(key: row.id + ":request:\(document.bytes)", sections: document.sections, items: document.items,
                                        shared: grouped ? delta?.shared : nil, marksNew: grouped,
-                                       openLast: grouped ? min(delta?.added ?? 0, 8) : 2)
+                                       openLast: grouped ? min(delta?.added ?? 0, 8) : 2,
+                                       summary: document.summary.map { InspectorSummaryHeading($0, label: inspector.summaryLabel(row.id)) })
     }
 
-    private func open(_ target: InspectorOutlineTarget, title: String, request document: RequestDocument) {
+    /// Reads a request item's or section's whole text on the capture worker.
+    static func wholeText(_ target: InspectorOutlineTarget, of document: RequestDocument) -> InspectorWholeText {
         switch target {
-        case .item(let index): full.open(title: title, render: { try document.fullText(item: index) })
-        case .section(let kind): full.open(title: title, render: { try document.fullText(section: kind) })
+        case .item(let index): return { try document.fullText(item: index) }
+        case .section(let kind): return { try document.fullText(section: kind) }
+        case .instruction:
+            // All of it, from the prompt: the heading keeps its first characters.
+            let kept = document.summary?.instruction ?? ""
+            guard let item = document.summary?.item else { return { kept } }
+            return { try SummaryRequestInfo.read(prompt: document.fullText(item: item), limit: .max)?.instruction ?? kept }
         }
     }
 
@@ -239,8 +239,9 @@ struct InspectorRequestPage: View {
                 }
                 ZStack {
                     InspectorItemsOutline(content: document.map { InspectorOutlineContent(key: row.id + ":response:\(request.responseBytes)", sections: [], items: $0.items,
-                                                                                           shared: nil, marksNew: false, openLast: min($0.items.count, 6)) } ?? .empty) { target, title in
-                        if let document, case .item(let index) = target { full.open(title: title, render: { try document.fullText(item: index) }) }
+                                                                                           shared: nil, marksNew: false, openLast: min($0.items.count, 6)) } ?? .empty) { target in
+                        guard let document, case .item(let index) = target else { return nil }
+                        return { try document.fullText(item: index) }
                     }
                     .padding(.horizontal, compact ? PiSpacing.sm : PiSpacing.md)
                     .opacity(document?.items.isEmpty == false ? 1 : 0)

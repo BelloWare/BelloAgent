@@ -50,7 +50,8 @@ Every link goes through `WorkspaceModel.openInspector(session:focus:)`
     counted".
 - **Turn:**
   - the outcome, start and duration;
-  - the prompt (Show all pages in the whole text);
+  - the prompt, whose Show all opens all of it in place in its card, laid out
+    off the main thread, with Show less to fold it;
   - `TurnReportMetrics`, or the index's own token bars when the turn is not
     loaded in the chat;
   - the turn's requests as `TurnRequestLine`s, with per-model subtotals.
@@ -94,8 +95,20 @@ Every link goes through `WorkspaceModel.openInspector(session:focus:)`
   assembled and parsed on `CapturedBodyWorker` with cancellation, and a read
   for a page the reader has left never lands.
 - Documents keep previews only: 2,000 characters and 24 lines wrapped at 100
-  columns, prepared off the main thread. An item's whole text opens in a paged
-  viewer on demand.
+  columns, prepared off the main thread.
+- Show all opens an item's or a section's whole text in place of its preview,
+  in the outline (`InspectorExpandedText.swift`): read on the capture worker,
+  laid out by TextKit 1 on its own worker, and handed to a selectable, never
+  editable text view in one row; Show less folds it back. Nothing above the item
+  moves and the view keeps its place; folding from the end of a long text keeps
+  its link where the reader clicked. The text view is configured before its
+  layout is attached and lets go of it before it moves, so the main thread's
+  cost does not grow with the text. A new width is laid out on the worker, the
+  line at the top of the view kept there. A text longer than 1M characters is
+  laid out a step at a time, and its row says how much of it is shown. There is
+  no separate full-text pane.
+- A summary request's instruction is the outline's first row, open, with its
+  lines under it; Show all puts all of it in place.
 - `InspectorDocumentCache` keeps 24 documents, up to 192 MB, keyed by attempt,
   kind and retained-bytes revision. It also keeps the digests of 512
   predecessors, so the request before is parsed once.

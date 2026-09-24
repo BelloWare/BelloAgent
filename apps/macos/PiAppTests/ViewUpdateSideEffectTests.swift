@@ -161,6 +161,44 @@ final class ViewUpdateSideEffectTests: XCTestCase {
         XCTAssertEqual(published, 2)
     }
 
+    /// "Show all" in the Inspector puts a text in place: the outline's rows
+    /// change and a Turn page's prompt card grows when the text arrives from
+    /// its worker, never from inside the update that asked for it; a new width
+    /// is laid out again the same way.
+    @MainActor func testShowingATextWholeInPlacePublishesNothingDuringAViewUpdate() async throws {
+        let fixture = try await InspectorExpandFixture(body: InspectorExpandBodies.request(result: InspectorExpandInPlaceTests.result))
+        defer { fixture.close() }
+        let model = InspectorPromptExpansion()
+        let whole = InspectorExpandBodies.toolResult(lines: 200)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 640), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: ScrollView { InspectorPromptCard(preview: String(whole.prefix(2_000)), model: model, showAll: {}).padding(24) })
+        window.orderFront(nil)
+        defer { model.collapse(); window.contentView = nil; window.close() }
+        for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+        let start = Date()
+        try await fixture.showAll("item:3")
+        try await fixture.showAll("section:system")
+        fixture.window.setContentSize(NSSize(width: 600, height: 820))
+        try await fixture.wait("the texts laid out to the new width") {
+            fixture.coordinator.expansions.values.allSatisfy { !$0.laying && ($0.layout?.width ?? 0) < 600 }
+        }
+        await fixture.settle()
+        fixture.coordinator.showLess(.item(3)); fixture.coordinator.showLess(.section(.system))
+        await fixture.settle()
+        model.show { (whole, (whole as NSString).length, (whole as NSString).length) }
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline, model.expansion?.layout == nil { try await Task.sleep(for: .milliseconds(20)) }
+        for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertNotNil(model.expansion?.layout, "The prompt opened in its card")
+        window.setContentSize(NSSize(width: 600, height: 640))
+        for _ in 0..<20 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+        model.collapse()
+        for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+        let issues = try SwiftUIRuntimeIssues.since(start)
+        XCTAssertEqual(issues, [], "Side effects inside SwiftUI updates while texts opened in place and folded")
+    }
+
     /// Return in a choice list saves the highlighted choice. SwiftUI runs key
     /// handlers inside its update of the list, so the caller's model — here a
     /// published selection — is changed on the next turn, not from there.

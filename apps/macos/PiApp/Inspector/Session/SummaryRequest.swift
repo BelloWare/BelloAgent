@@ -1,4 +1,4 @@
-import SwiftUI
+import Foundation
 
 /// What one compaction summary request asked the model to do, read from its
 /// body. A compaction can make several: the history before the kept messages
@@ -18,8 +18,15 @@ enum SummaryRequestKind: String, Sendable, Equatable {
 struct SummaryRequestInfo: Sendable, Equatable {
     var kind: SummaryRequestKind
     /// The prompt's instruction: what follows the conversation, and the
-    /// summary so far when there is one. At most `instructionLimit` characters.
+    /// summary so far when there is one. At most `instructionLimit`
+    /// characters; "Show all" reads it whole from the prompt (`item`).
     var instruction: String
+    /// The instruction's first lines, wrapped as an item's preview is.
+    var lines: [String] = []
+    /// The whole instruction's length, in UTF-16 units.
+    var characters = 0
+    /// Which of the request's items is the prompt the instruction ends.
+    var item: Int? = nil
 
     static let instructionLimit = 4_000
     /// Pi's summarization system prompt opens with this.
@@ -38,7 +45,7 @@ struct SummaryRequestInfo: Sendable, Equatable {
     /// far, then the instruction. The later of the two closing tags ends
     /// what came before the instruction; either one may occur, quoted, inside
     /// what it closes, and only the last occurrence is the real end.
-    static func read(prompt: String) -> SummaryRequestInfo? {
+    static func read(prompt: String, limit: Int = instructionLimit) -> SummaryRequestInfo? {
         let conversation = prompt.range(of: "</conversation>", options: .backwards)
         let previous = prompt.range(of: "</previous-summary>", options: .backwards)
         let end: Range<String.Index>, update: Bool
@@ -51,7 +58,10 @@ struct SummaryRequestInfo: Sendable, Equatable {
         let instruction = prompt[end.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
         let kind: SummaryRequestKind = instruction.contains(turnPrefixMarker) ? .turnStart
             : update && instruction.hasPrefix(updateMarker) ? .update : .earlierHistory
-        return SummaryRequestInfo(kind: kind, instruction: String(instruction.prefix(instructionLimit)))
+        let kept = String(instruction.prefix(limit))
+        return SummaryRequestInfo(kind: kind, instruction: kept,
+                                  lines: RequestDocument.wrap(RequestDocument.prefix(kept as NSString, limit: RequestDocument.previewLimit)),
+                                  characters: (instruction as NSString).length)
     }
 }
 
@@ -78,61 +88,28 @@ enum SummaryRequestLabel {
     }
 }
 
-/// The top of a summary request's Conversation tab: which part of its
-/// compaction it is, and the instruction its prompt ends with.
-struct SummaryInstructionCard: View {
-    let summary: SummaryRequestInfo
+/// How the Conversation tab heads a summary request: the outline's first row,
+/// which part of its compaction it is and what that part summarizes, and the
+/// instruction its prompt ends with under it, shown whole in place on "Show
+/// all".
+struct InspectorSummaryHeading: Equatable {
+    var info: SummaryRequestInfo
     /// "part 2 of 2" once the compaction's other requests are read.
-    let label: String?
-    private var name: String {
-        label ?? {
-            switch summary.kind {
-            case .earlierHistory: return "earlier history"
-            case .update: return "update"
-            case .turnStart: return "start of this turn"
-            }
-        }()
-    }
-    private var subject: String {
-        switch summary.kind {
-        case .earlierHistory: return "Summarizes the history before the messages the compaction keeps."
-        case .update: return "Folds new messages into the summary so far, given in <previous-summary>."
-        case .turnStart: return "Summarizes the start of a turn too large to keep whole; its recent work is kept."
-        }
-    }
-    var body: some View {
-        PiCard(padding: PiSpacing.md, sunken: true) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    PiIconBadge(symbol: "arrow.down.right.and.arrow.up.left", tone: .accent, size: 22)
-                    Text("Summary request").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Color.piInk)
-                    PiBadge(text: name, tone: .accent).accessibilityIdentifier("summary-request-kind")
-                    Spacer(minLength: 0)
-                }
-                Text(subject).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                Text("Instruction").font(PiFont.micro).tracking(0.5).foregroundStyle(Color.piInkTertiary)
-                ScrollView {
-                    Text(summary.instruction).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Color.piInk)
-                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: 150)
-                .accessibilityIdentifier("summary-request-instruction")
-            }
-        }
-        .background(SummaryInstructionMarker(name: name))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("summary-request-card")
-    }
-}
+    var name: String
+    var subject: String
 
-/// Marks the summary card in the view tree, with the name it shows, so a
-/// check can find it. Draws nothing and takes no clicks.
-struct SummaryInstructionMarker: NSViewRepresentable {
-    let name: String
-    func makeNSView(context: Context) -> SummaryInstructionMarkerView { SummaryInstructionMarkerView() }
-    func updateNSView(_ view: SummaryInstructionMarkerView, context: Context) { if view.name != name { view.name = name } }
-}
-final class SummaryInstructionMarkerView: NSView {
-    var name = ""
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    init(_ info: SummaryRequestInfo, label: String?) {
+        self.info = info
+        switch info.kind {
+        case .earlierHistory:
+            name = label ?? "earlier history"
+            subject = "Summarizes the history before the messages the compaction keeps."
+        case .update:
+            name = label ?? "update"
+            subject = "Folds new messages into the summary so far, given in <previous-summary>."
+        case .turnStart:
+            name = label ?? "start of this turn"
+            subject = "Summarizes the start of a turn too large to keep whole; its recent work is kept."
+        }
+    }
 }
