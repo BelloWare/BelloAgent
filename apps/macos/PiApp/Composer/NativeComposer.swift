@@ -226,7 +226,12 @@ struct ComposerEditMeasurement {
         didSet {
             let clamped = min(Self.maximumHeight, max(Self.minimumHeight, fieldHeight))
             if clamped != fieldHeight { fieldHeight = clamped; return }
-            if fieldHeight != oldValue { invalidateIntrinsicContentSize() }
+            guard fieldHeight != oldValue else { return }
+            invalidateIntrinsicContentSize()
+            // A height that changes inside a layout pass (the window resized
+            // and the text or its tokens rewrapped) is not taken up by the
+            // pass that is running, so it is asked for again after it.
+            DispatchQueue.main.async { [weak self] in self?.invalidateIntrinsicContentSize() }
         }
     }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: fieldHeight) }
