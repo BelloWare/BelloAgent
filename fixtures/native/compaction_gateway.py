@@ -60,13 +60,15 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 assert instructions.startswith('You are a context summarization assistant.')
                 prompt = texts[0]
                 assert prompt.startswith('<conversation>\n') and '\n</conversation>\n\n' in prompt
-                # Pi's cap: 0.8 × the reserve (half of these small windows), never the chat's output budget.
-                assert 0 < body['max_output_tokens'] <= (6400 if sid.startswith('compaction-budget') else 3200)
+                # Ours: a summary carries the model's own output limit, never a
+                # summary cap, clipped to the window as pi clips any request.
+                # An unknown model ceiling sends no limit, as for any request.
+                assert body.get('max_output_tokens') is None or body['max_output_tokens'] > 0
                 if sid.startswith('compaction-budget'):
                     assert body['reasoning']['effort'] == 'high'
-                    assert body['max_output_tokens'] == 6400
-                    # Pi's estimate of the request, characters over four, leaves the cap's room.
-                    assert (len(prompt) + len(instructions)) / 4 + body['max_output_tokens'] < 16000
+                    # Pi's estimate of the request, characters over four, and its
+                    # limit fit the 16,000-token window.
+                    assert (len(prompt) + len(instructions)) / 4 + body['max_output_tokens'] <= 16000
                     incomplete = sid == 'compaction-budget-exhausted'
                     text = 'Observed evidence retained. Continue the original objective.'
                 elif '<previous-summary>' in prompt:

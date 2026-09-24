@@ -159,7 +159,7 @@ final class CompactionPiTests: XCTestCase {
         XCTAssertEqual(kept.first?.id,"T6","The cut is at a turn start")
         XCTAssertEqual(kept.reduce(0) { $0+PiContext.estimateTokens($1) },20_000)
         XCTAssertEqual(bodies.count,1); XCTAssertFalse(context.first?.text.contains("Turn Context") ?? true)
-        XCTAssertEqual(bodies.first?["max_output_tokens"].int,13_107,"0.8 × pi's 16,384-token reserve")
+        XCTAssertGreaterThanOrEqual(bodies.first?["max_output_tokens"].int ?? 0,13_107,"The model's limit, never below pi's 0.8 × 16,384 share")
         await s.close()
     }
 
@@ -172,7 +172,7 @@ final class CompactionPiTests: XCTestCase {
         let context=await s.context, bodies=await client.bodies, prompts=await client.prompts
         XCTAssertEqual(context.dropFirst().map(\.id),(6..<10).flatMap { ["call-r\($0)","result-r\($0)"] },"Four reads are the tail; the request is in the prefix summary")
         XCTAssertEqual(bodies.count,1,"No history precedes the turn")
-        XCTAssertEqual(bodies.first?["max_output_tokens"].int,8_192,"0.5 × pi's reserve for a turn prefix")
+        XCTAssertGreaterThanOrEqual(bodies.first?["max_output_tokens"].int ?? 0,8_192,"The model's limit, never below pi's 0.5 × reserve for a turn prefix")
         XCTAssertTrue(prompts.first?.contains("Be concise. Focus on what's needed to understand the kept suffix.\n\nAdditional focus: Keep the history_read references") == true)
         XCTAssertTrue(prompts.first?.hasPrefix("<conversation>\n[User]: Inspect the reads.") == true)
         XCTAssertTrue(context.first?.text.contains("No prior history.\n\n---\n\n**Turn Context (split turn):**\n\nSUMMARY 1\n\n<read-files>\nf0\nf1\nf2\nf3\nf4\nf5\n</read-files>") == true,context.first?.text ?? "")
@@ -185,7 +185,8 @@ final class CompactionPiTests: XCTestCase {
         _=try await compact(s)
         let prompts=await client.prompts, bodies=await client.bodies, context=await s.context
         XCTAssertGreaterThanOrEqual(prompts.count,2)
-        XCTAssertTrue(bodies.allSatisfy { $0["max_output_tokens"].int == 13_107 })
+        // Each chunk carries the model's limit, clipped to its window, never below the summary's room.
+        XCTAssertTrue(bodies.allSatisfy { ($0["max_output_tokens"].int ?? 0) >= 13_107 && ($0["max_output_tokens"].int ?? 0) <= 100_000 })
         XCTAssertFalse(prompts[0].contains("<previous-summary>")); XCTAssertTrue(prompts[0].hasSuffix("Preserve exact file paths, function names, and error messages."))
         for n in 1..<prompts.count {
             XCTAssertTrue(prompts[n].contains("\n</conversation>\n\n<previous-summary>\nSUMMARY \(n)\n</previous-summary>\n\nThe messages above are NEW conversation messages"))

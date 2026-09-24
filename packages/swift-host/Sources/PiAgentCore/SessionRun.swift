@@ -100,6 +100,9 @@ extension AgentSession {
                 // Pi's _overflowRecoveryAttempted: one compact-and-retry until a
                 // user message arrives or a reply completes.
                 var overflowRecoveryAttempted=false
+                // Ours: a mid-run compaction the next measurement still finds over the
+                // threshold freed no room; compacting again would loop.
+                var compactedWithoutRelief=false
                 // The context before this round's steering or follow-up joined it:
                 // pi checks the threshold before pending messages are injected.
                 var undelivered: [ChatMessage]?
@@ -134,10 +137,23 @@ extension AgentSession {
                     // Pi never refuses a request on its estimate: a request the gateway
                     // rejects as too long is compacted and retried once below.
                     let thresholdTokens=resumingFailedRequest ? nil : rounds == 1 ? PiContext.promptThresholdTokens(priorContext) : PiContext.contextUsage(beforeDelivery)?.tokens
-                    if let thresholdTokens, PiContext.shouldCompact(thresholdTokens,contextWindow:turnProfile.contextWindow,settings:compactionSettings), canCompact {
-                        // Pi reports a failed threshold compaction and sends the request anyway.
-                        do { try await compactContext(reason:"threshold") }
-                        catch where !(error is CancellationError) && !Task.isCancelled {}
+                    let overThreshold=thresholdTokens.map { PiContext.shouldCompact($0,contextWindow:turnProfile.contextWindow,settings:compactionSettings) }
+                    if overThreshold == false { compactedWithoutRelief=false }
+                    if overThreshold == true, rounds > 1, compactedWithoutRelief {
+                        throw AgentError("compact_no_progress", "Compacting did not bring this chat back under its context limit: the latest work alone is too large to keep. Continue in a new chat, or compact with a focus (/compact …).")
+                    }
+                    if overThreshold == true, canCompact {
+                        if rounds == 1 {
+                            // Pi reports a failed threshold compaction and sends the request anyway.
+                            do { try await compactContext(reason:"threshold") }
+                            catch where !(error is CancellationError) && !Task.isCancelled {}
+                        } else {
+                            // Ours: mid-run, pi's next round would try the same failing
+                            // summary again, billing a summary and a full request every
+                            // round. The run stops with the compaction's error instead.
+                            try await compactContext(reason:"threshold")
+                            compactedWithoutRelief=true
+                        }
                         if !drained && !resumingFailedRequest, try await drainSteering() { overflowRecoveryAttempted=false }
                         resourceSnapshot=appliedSnapshot ?? resourceSnapshot
                         definitions=await sessionDefinitions()

@@ -29,14 +29,18 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             # Pi sends a summary with cacheRetention "none" and a turn with the session's cache key.
             assert ('prompt_cache_key' in body) == (not summary)
             if summary:
-                # Pi's cap: min(0.8 × the 16,384-token reserve, the model's output limit);
-                # 0.5 × for a split turn's prefix. An unknown limit bounds nothing.
+                # Ours: no summary cap. A summary carries the model's own output limit
+                # (the chosen 16,000 here), clipped to the window; an unknown one sends none.
                 prompt = history[0]['content'][0]['text']
                 prefix = 'This is the PREFIX of a turn that was too large to keep.' in prompt
                 expected = ('connection-default', 'low') if sid == 'default' else ('chosen-' + sid, 'high')
                 assert body['model'] == expected[0], 'Compaction lost selected model: ' + body['model']
                 assert body['reasoning']['effort'] == expected[1], 'Compaction lost effort'
-                assert body['max_output_tokens'] == (8192 if prefix else 13107), 'Compaction lost pi summary cap'
+                limit = body.get('max_output_tokens')
+                if sid == 'default':
+                    assert limit is None, 'Compaction sent a limit the model does not declare: ' + str(limit)
+                else:
+                    assert limit is not None and 0 < limit <= 16000, 'Compaction lost the model\'s own limit: ' + str(limit)
                 assert system['content'].startswith('You are a context summarization assistant.')
                 assert len(history) == 1 and prompt.startswith('<conversation>\n')
                 text = 'Preserve the original objective. Verified evidence was retained.'

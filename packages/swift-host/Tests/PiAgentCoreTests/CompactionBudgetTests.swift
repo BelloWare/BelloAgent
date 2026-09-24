@@ -9,7 +9,10 @@ private actor BudgetProbe: ModelClient {
     func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
         let body=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID)
         requests.append(body); profiles.append(profile)
-        guard try RequestContextCounter().count(messages:messages,profile:profile,request:body,reportedUsage:false).fits, tools.isEmpty, profile.maxOutput==profile.outputCap else { throw AgentError("fixture_contract","Summary input plus its actual cap must fit") }
+        // The summary's room is kept free, and the output limit it carries is
+        // the model's, clipped as pi clips any request.
+        let count=try RequestContextCounter().count(messages:messages,profile:profile,request:body,reportedUsage:false)
+        guard count.fits, tools.isEmpty, profile.wireOutputLimit.map({ $0 <= max(profile.maxOutput,PiContext.outputRoom(contextWindow:profile.contextWindow,requestTokens:count.requestTokens)) }) ?? true else { throw AgentError("fixture_contract","Summary input plus its actual cap must fit") }
         if mode == .holdSecond && requests.count==2 { held=true;while true { try await Task.sleep(nanoseconds:1_000_000) } }
         var value: JSON=["status":"completed","output":[["type":"message","content":[["type":"output_text","text":"Observed work; preserve the objective."]]]],"usage":["input_tokens":100,"output_tokens":30,"output_tokens_details":["reasoning_tokens":10]]]
         switch mode {
@@ -61,7 +64,7 @@ final class CompactionBudgetTests: XCTestCase {
         let (session,client,_)=try setup(root,mode:.completedAtCap)
         try await session.compact();try await eventually { !(await session.isRunning) }
         let requests=await client.requests,snapshot=await session.snapshot(),profile=await session.profile
-        XCTAssertEqual(requests.map { $0["max_output_tokens"].int },[13107],"min(0.8 × 16,384, the model's 100,000)")
+        XCTAssertEqual(requests.map { $0["max_output_tokens"].int },[100000],"The model's own 100,000, not a 13,107-token summary cap")
         XCTAssertEqual(requests.map { $0["reasoning"]["effort"].text },["high"])
         let request=try XCTUnwrap(requests.first),input=request["input"].list
         XCTAssertEqual(RequestContextCounter.systemPrompt(request),CompactionSourceBuilder.systemPrompt)
@@ -81,8 +84,8 @@ final class CompactionBudgetTests: XCTestCase {
             let state=await s.snapshot(),context=await s.context,calls=await c.requests,usage=await s.cumulativeUsage
             XCTAssertEqual(context.map(\.id),seed.map(\.id));XCTAssertEqual(calls.count,1,"Pi never retries a length stop")
             XCTAssertEqual(state["compaction"]["errorCode"].text,"compaction_output_exhausted")
-            XCTAssertEqual(state["compaction"]["lastAttempt"]["reasoningTokens"].int,13107)
-            XCTAssertEqual(usage.output,13107,"A failed summary still consumed its reported output, including reasoning once")
+            XCTAssertEqual(state["compaction"]["lastAttempt"]["reasoningTokens"].int,100000)
+            XCTAssertEqual(usage.output,100000,"A failed summary still consumed its reported output, including reasoning once")
             XCTAssertTrue(state["preflightError"].text?.contains("budget-1") == true);await s.close()
         }
     }
@@ -107,7 +110,8 @@ final class CompactionBudgetTests: XCTestCase {
         let texts=requests.map { $0["input"].list.last?["content"].list.first?["text"].text ?? "" }
         XCTAssertEqual(result,"Observed work; preserve the objective.")
         XCTAssertEqual(requests.count,2)
-        XCTAssertTrue(requests.allSatisfy { $0["max_output_tokens"].int==13107 && $0["reasoning"]["effort"].text=="high" })
+        // Each chunk carries the model's limit, clipped to its window, and never less than the summary's room.
+        XCTAssertTrue(requests.allSatisfy { ($0["max_output_tokens"].int ?? 0) >= 13107 && $0["reasoning"]["effort"].text=="high" })
         XCTAssertTrue(texts[1].contains("[continued]: e"));XCTAssertTrue(texts[1].contains("<previous-summary>\nObserved work; preserve the objective.\n</previous-summary>"))
         XCTAssertEqual(texts.map { $0.split(whereSeparator: { $0 != "e" }).map(\.count).max() ?? 0 }.reduce(0,+),320000,"Nothing is dropped between chunks")
         await s.close()

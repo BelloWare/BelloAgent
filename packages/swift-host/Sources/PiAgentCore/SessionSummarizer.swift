@@ -40,7 +40,7 @@ extension AgentSession {
         return try contextCounter.count(messages:messages,profile:profile,request:body,reportedUsage:false)
     }
 
-    /// Ours: consecutive chunks, each packed to fit beside the whole cap.
+    /// Ours: consecutive chunks, each packed to fit beside its summary's room.
     func chained(_ parts: [String], previous: String?, turnPrefix: Bool, profile: Profile, originalProfile: Profile, revision: UInt64, sourceIDs: [String], used spent: Int = 0, focus: String? = nil) async throws -> String {
         let budget=max(1,compactionPolicy.maximumAttempts)
         var pending=parts, offset=0, summary=previous, capacity=Int.max
@@ -63,7 +63,7 @@ extension AgentSession {
             while count>0, try !fits(measure(pending[offset..<(offset+count)])) { count=count*3/4 }
             if count==0 {
                 guard pending[offset].utf8.count>512, let halves=CompactionSourceBuilder.split(pending[offset],fraction:0.5) else {
-                    throw AgentError("compaction_window_too_small","The summary prompt\(summary == nil ? "" : " and the summary so far") leave no room for history beside the \(profile.maxOutput)-token summary cap in this model's window. Original context is retained; choose a model with a larger window.")
+                    throw AgentError("compaction_window_too_small","The summary prompt\(summary == nil ? "" : " and the summary so far") leave no room for history beside the \(profile.maxOutput)-token summary room in this model's window. Original context is retained; choose a model with a larger window.")
                 }
                 pending.replaceSubrange(offset...offset,with:halves); continue
             }
@@ -100,7 +100,12 @@ extension AgentSession {
             let start=nowMS(); var requestMs: Double?
             defer { let ms=requestMs ?? (nowMS()-start); turnModelMs += ms; cumulativeModelMs=ObservedDuration.adding(cumulativeModelMs,ms) }
             do {
-                let reply=try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:CompactionSourceBuilder.systemPrompt,tools:[],sessionID:id,turnID:currentTurnID,purpose:"compaction",onObservation:{ [weak self] in await self?.compactionObservation($0) },onDelta:{ [weak self] in await self?.compactionDelta($0) })
+                // The model's output limit, clipped as pi clips any request, and
+                // never below the summary's room its source was packed beside.
+                let count=try summaryCount(messages,profile:profile)
+                let room=max(profile.maxOutput,PiContext.outputRoom(contextWindow:profile.contextWindow,requestTokens:count.requestTokens))
+                let dispatched=try profile.wireOutputLimit.map { $0 > room ? try profile.capped(room) : profile } ?? profile
+                let reply=try await client.complete(profile:dispatched,apiKey:apiKey,messages:messages,instructions:CompactionSourceBuilder.systemPrompt,tools:[],sessionID:id,turnID:currentTurnID,purpose:"compaction",onObservation:{ [weak self] in await self?.compactionObservation($0) },onDelta:{ [weak self] in await self?.compactionDelta($0) })
                 requestMs=nowMS()-start
                 return try await received(reply,cap:profile.maxOutput,revision:revision,originalProfile:originalProfile)
             } catch let error as AgentError {
@@ -145,7 +150,7 @@ extension AgentSession {
         }
         // Pi: a length stop is a partial summary and never a checkpoint.
         if reply.terminal?.outputExhausted == true {
-            throw summaryFailure("compaction_output_exhausted","Summary generation hit its \(cap)-token cap, so the summary is incomplete and was not adopted.",outcome:outcome)
+            throw summaryFailure("compaction_output_exhausted","Summary generation hit the model's output limit, so the summary is incomplete and was not adopted.",outcome:outcome)
         }
         guard !reply.truncated, reply.message.stopReason != "length", reply.terminal?.status != "incomplete" else {
             throw summaryFailure("compaction_incomplete","Summary generation ended incompletely for a non-token or unknown reason. Inspect the captured response.",outcome:outcome)

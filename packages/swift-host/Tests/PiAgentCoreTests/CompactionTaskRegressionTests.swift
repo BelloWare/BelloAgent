@@ -28,7 +28,7 @@ final class CompactionTaskRegressionTests: XCTestCase {
         XCTAssertEqual(profiles.map(\.model),["earlier-model","earlier-model","selected-model"])
         XCTAssertEqual(profiles.last?.raw["thinkingLevel"].text,"high")
         XCTAssertEqual(profiles.last?.contextWindow,60000)
-        XCTAssertEqual(profiles.last?.wireOutputLimit,8192,"Pi's turn-prefix cap, 0.5 × 16,384, within the selected 16,000")
+        XCTAssertEqual(profiles.last?.wireOutputLimit,16000,"The selected model's own 16,000, never a summary cap")
         XCTAssertEqual(profiles.last?.modelOutputLimit,16000)
         await session.close()
     }

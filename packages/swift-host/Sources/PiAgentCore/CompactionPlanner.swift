@@ -28,12 +28,14 @@ public struct CompactionPolicy: Sendable {
         let reserve=settings(autoCompaction:true,contextWindow:profile.contextWindow).reserveTokens
         return max(1,min(reserve*(turnPrefix ? 5 : 8)/10,profile.modelOutputLimit ?? Int.max))
     }
-    /// A summary request's profile: `cap` is its output limit and the room its
-    /// request keeps free. A gateway that omits output limits gets the request
-    /// without one, as pi sends it.
+    /// A summary request's profile. `cap` is the room its request keeps free
+    /// for the summary; unlike pi's summary maxTokens it is not sent. The
+    /// request carries the model's own output limit, clipped to the window as
+    /// any request is, so the chat's reasoning cannot use up a summary's cap
+    /// before the summary is written.
     func summaryProfile(_ original: Profile, cap: Int) throws -> Profile {
         var raw=original.raw
-        raw["maxOutputTokens"]=JSON(cap);raw["outputCap"]=JSON(cap)
+        raw["maxOutputTokens"]=JSON(cap)
         return try Profile(raw)
     }
 }

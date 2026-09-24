@@ -12,7 +12,10 @@ private actor SummaryProbe: ModelClient {
         requests.append(body); purposes.append(purpose)
         if purpose != "compaction" { return answer("Final continuation") }
         summaryCalls += 1
-        guard try RequestContextCounter().count(messages:messages,profile:profile,request:body,reportedUsage:false).fits, tools.isEmpty, profile.outputCap != nil else { throw AgentError("test_contract","Oversized or unbounded summary request") }
+        // Packed beside the summary's room; any limit it carries is the model's,
+        // clipped as the helper clips it, and an unknown ceiling sends none.
+        let count=try RequestContextCounter().count(messages:messages,profile:profile,request:body,reportedUsage:false)
+        guard count.fits, tools.isEmpty, profile.wireOutputLimit.map({ $0 <= max(profile.maxOutput,PiContext.outputRoom(contextWindow:profile.contextWindow,requestTokens:count.requestTokens)) }) ?? true else { throw AgentError("test_contract","Oversized or unbounded summary request") }
         while holdAt == summaryCalls { held=true; try await Task.sleep(nanoseconds:1_000_000) }
         switch mode {
         case .empty: return answer(" \n ")
@@ -72,7 +75,7 @@ final class CompactionSafetyTests: XCTestCase {
         let client=SummaryProbe(),s=try AgentSession(id:"large-summary",profile:Profile(raw),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),seed:seed(count:8,bytes:12000))
         try await s.compact();try await eventually { !(await s.isRunning) }
         let requests=await client.requests, snapshot=await s.snapshot()
-        XCTAssertEqual(requests.map { $0["max_output_tokens"].int },[8192],"Pi's turn-prefix cap, 0.5 × 16,384, not the old hard-coded 4096")
+        XCTAssertEqual(requests.map { $0["max_output_tokens"].int },[32768],"The model's own limit, never a summary cap or the old hard-coded 4096")
         XCTAssertEqual(snapshot["state"].text,"idle",snapshot["preflightError"].encoded());await s.close()
     }
     private func seed(count:Int=6, bytes:Int=4000) -> [ChatMessage] {

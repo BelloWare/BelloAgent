@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.90
-    CURRENT_PROJECT_VERSION: 94
+    MARKETING_VERSION: 0.1.91
+    CURRENT_PROJECT_VERSION: 95
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "A Session Inspector for every chat, a cost limit per chat, compaction that no longer freezes, and requests, turns and compaction that follow pi exactly."
+    RELEASE_MESSAGE: "Compaction no longer loops: summaries use the model's own output limit, and a compaction that fails or frees no room stops the run with a clear message."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO

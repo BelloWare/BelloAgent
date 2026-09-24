@@ -59,7 +59,7 @@ final class CompactionGatewayTests: XCTestCase {
         let state=await s.snapshot(),context=await s.context,chained=try await attempts("compaction-budget")
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
         XCTAssertEqual(context.first?.kind,"compaction");XCTAssertTrue(context.filter { $0.role=="user" }.isEmpty,"Pi replays no input verbatim")
-        XCTAssertGreaterThan(chained.count,1,"Each chunk updates the summary so far, at pi's 6,400-token cap")
+        XCTAssertGreaterThan(chained.count,1,"Each chunk updates the summary so far, each packed to leave its summary room")
         XCTAssertTrue(try records().allSatisfy { $0["status"].int==200 })
         var output=0
         for attempt in chained { try await captured("compaction-budget",attempt); output += attempt["usage"]["output"].int ?? 0 }
@@ -78,7 +78,7 @@ final class CompactionGatewayTests: XCTestCase {
         XCTAssertTrue(retained["text"].text?.contains("Timeline evidence") == true)
         await s.close()
 
-        // Pi: a summary stopped at its cap is incomplete and never a checkpoint.
+        // A summary stopped at the model's output limit is incomplete and never a checkpoint.
         let exhausted=try AgentSession(id:"compaction-budget-exhausted",profile:Profile(raw),apiKey:"synthetic-compaction-key",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:ProviderClient(traces:traces),tools:RecordingTools(),traces:traces,seed:seed)
         try await exhausted.compact();try await eventually { !(await exhausted.isRunning) }
         let failed=await exhausted.snapshot(),unchanged=await exhausted.context,stopped=try await attempts("compaction-budget-exhausted")
@@ -86,7 +86,8 @@ final class CompactionGatewayTests: XCTestCase {
         XCTAssertEqual(unchanged.map(\.id),seed.map(\.id));XCTAssertEqual(stopped.count,1)
         for attempt in stopped { try await captured("compaction-budget-exhausted",attempt) }
         XCTAssertEqual(failed["compaction"]["lastAttempt"]["reason"].text,"max_output_tokens")
-        let spent=await exhausted.cumulativeUsage;XCTAssertEqual(spent.output,6400)
+        // The whole limit the request carried went to reasoning.
+        let spent=await exhausted.cumulativeUsage;XCTAssertEqual(spent.output,stopped.first?["usage"]["output"].int ?? -1)
         await exhausted.close()
     }
     func testOneTaskCompactsRecoversAgainstIndependentGatewayAndReopensWithoutRepeatingTools() async throws {

@@ -81,7 +81,7 @@ final class PiParityTests: XCTestCase {
         _=try await s.submit(Submission(commandID:"c",turnID:"t",text:"next"),steer:false)
         let state=try await settle(s), summaries=await client.summaryBodies, turns=await client.turnBodies
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
-        XCTAssertEqual(summaries.map { $0["max_output_tokens"].int },[13_107])
+        XCTAssertEqual(summaries.map { $0["max_output_tokens"].int },[nil],"No summary cap: an unknown model ceiling sends no limit, as for any request")
         XCTAssertEqual(summaries.first?["reasoning"]["effort"].text,"high")
         XCTAssertTrue(summaries.first?["prompt_cache_key"].isNull == true,"A summary is sent with cacheRetention none")
         XCTAssertEqual(turns.first?["prompt_cache_key"].text,"pi-session","A turn routes to the session's prompt cache")
@@ -111,7 +111,7 @@ final class PiParityTests: XCTestCase {
         let summaries=await client.summaryBodies.filter { !$0.encoded().contains("This is the PREFIX of a turn") }
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
         XCTAssertGreaterThan(summaries.count,1)
-        XCTAssertTrue(summaries.allSatisfy { $0["max_output_tokens"].int == 13_107 })
+        XCTAssertTrue(summaries.allSatisfy { ($0["max_output_tokens"].int ?? Int.max) >= 13_107 },"Never below the summary's room")
         await s.close()
     }
 
@@ -432,6 +432,40 @@ final class PiParityTests: XCTestCase {
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
         XCTAssertEqual(state["compaction"]["phase"].text,"failed")
         XCTAssertEqual(state["messages"].list.last?["text"].text,"answered")
+        await s.close()
+    }
+
+    /// Ours: mid-run, a failed threshold compaction stops the run. Pi sends the
+    /// next request anyway, and its next round tries the same failing summary.
+    func testAFailedThresholdCompactionMidRunStopsTheRunInsteadOfLooping() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        var measured=toolReply(["first"]); measured.usage=["input":30_000,"output":100,"inputIncludingCache":30_000]
+        let client=PurposeClient(turns:[.success(measured),.success(answer("never sent"))],summaries:[.failure(AgentError("provider_http","Provider returned HTTP 400. Bad request."))])
+        // About 16,000 tokens of history: under the 23,616-token threshold, past the kept tail.
+        let s=try session(root,client,profile:profile(window:40_000),seed:tasks("A",4,chars:16_000))
+        _=try await s.submit(Submission(commandID:"c",turnID:"t",text:"go"),steer:false)
+        let state=try await settle(s), purposes=await client.purposes
+        XCTAssertEqual(purposes,["turn","compaction"],"No request follows the failed summary")
+        XCTAssertEqual(state["state"].text,"error")
+        XCTAssertEqual(state["errorCode"].text,"provider_http")
+        await s.close()
+    }
+
+    /// Ours: a mid-run compaction the next measurement still finds over the
+    /// threshold freed no room; the run stops instead of compacting every round.
+    func testACompactionThatFreesNoRoomStopsTheRunInsteadOfLooping() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        func measuredCall(_ id: String) -> ModelReply {
+            var message=ChatMessage(role:"assistant",content:[["type":"toolCall","id":JSON(id),"name":"first","arguments":[:]]])
+            message.providerItems=[["type":"function_call","id":JSON("item-"+id),"call_id":JSON(id),"name":"first","arguments":"{}"]]
+            return ModelReply(message:message,calls:[ToolCall(id:id,name:"first",arguments:[:])],usage:["input":30_000,"output":100,"inputIncludingCache":30_000])
+        }
+        let client=PurposeClient(turns:[.success(measuredCall("a")),.success(measuredCall("b")),.success(answer("never sent"))],summaries:[.success(answer("SUMMARY"))])
+        let s=try session(root,client,profile:profile(window:40_000),seed:tasks("A",4,chars:16_000))
+        _=try await s.submit(Submission(commandID:"c",turnID:"t",text:"go"),steer:false)
+        let state=try await settle(s), purposes=await client.purposes
+        XCTAssertEqual(purposes,["turn","compaction","turn"],"No second compaction and no further request")
+        XCTAssertEqual(state["errorCode"].text,"compact_no_progress")
         await s.close()
     }
 

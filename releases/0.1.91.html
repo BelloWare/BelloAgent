@@ -1,0 +1,5 @@
+<h2>Bello Agent 0.1.91</h2>
+<ul>
+  <li>Compaction no longer loops. A summary now gets the model's own output limit instead of a 13,107-token cap, so your chat's reasoning can no longer use up the summary's room before it is written.</li>
+  <li>If a compaction fails during a run, or leaves the chat still over its limit, the run stops with a clear message instead of trying again every round. Continue in a new chat, or compact with a focus (<code>/compact …</code>).</li>
+</ul>

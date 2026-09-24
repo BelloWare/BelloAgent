@@ -190,6 +190,9 @@ final class CostLimitTests: XCTestCase {
             chat.replies.contains { $0.method == "session.configure" && $0.params["costLimit"] == .object(["usd": .number(0.003)]) }
         }
         try await chat.sendAndWait("wire paid") { $0.contains { $0.text == "Wire reply." } }
+        // The reply's cost arrives with the end of its stream, after its text: send
+        // at the limit only once that spend is counted and the run has ended.
+        try await chat.waitUntil("the reply's spend is counted") { (chat.session.footer.cost.spentUSD ?? 0) >= 0.004 && chat.session.state == "idle" }
         chat.send("wire paid again")
         try await chat.waitUntil("the refused message shows the notice") { chat.session.presentedMessages.last?.failureCode == "cost_limit" }
         let notice = try XCTUnwrap(chat.session.presentedMessages.last)

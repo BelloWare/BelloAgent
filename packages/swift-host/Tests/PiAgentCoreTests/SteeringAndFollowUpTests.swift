@@ -15,7 +15,10 @@ final class SteeringAndFollowUpTests: XCTestCase {
         _ = try await session.submit(Submission(commandID:"c3",turnID:"t3",text:"steer"),steer:true)
         await client.release();try await eventually { !(await session.isRunning) }
         let requests=await client.requests,executed=await tools.calls
-        XCTAssertEqual(executed,["first","second"]);XCTAssertEqual(requests.count,3)
+        // A reply's calls run together (pi), so they may begin in either order;
+        // their results reach the next request in call order.
+        XCTAssertEqual(executed.sorted(),["first","second"]);XCTAssertEqual(requests.count,3)
+        XCTAssertEqual(requests[1].filter{$0.role=="toolResult"}.map(\.toolCallId),["call-0","call-1"])
         XCTAssertEqual(requests[1].filter{$0.role=="user"}.map(\.text),["initial","steer"])
         XCTAssertEqual(requests[1].filter{$0.role=="toolResult"}.count,2)
         XCTAssertEqual(requests[2].filter{$0.role=="user"}.map(\.text),["initial","steer","queued"])
