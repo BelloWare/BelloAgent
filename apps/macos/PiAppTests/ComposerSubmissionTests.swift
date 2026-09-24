@@ -32,6 +32,47 @@ final class ComposerSubmissionTests: XCTestCase {
         key(36, .command, editor: editor); XCTAssertTrue(intents.isEmpty)
     }
 
+    /// AppKit offers a ⌘ key to the window's views, then to the menu bar, and
+    /// only then to keyDown. The composer being typed in claims ⌘↩ at the
+    /// first step, so no menu's ⌘↩ can turn a steer into a queued follow-up,
+    /// as the Conversation menu's did before 0.1.95.
+    @MainActor func testTheFocusedComposerClaimsCommandReturnBeforeTheMenuBar() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 200), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 200)); window.contentView = content
+        let editor = ComposerTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 100)), other = ComposerTextView(frame: NSRect(x: 0, y: 100, width: 400, height: 100))
+        editor.isRichText = false; other.isRichText = false
+        content.addSubview(editor); content.addSubview(other)
+        var intents: [ComposerSubmissionIntent] = [], elsewhere: [ComposerSubmissionIntent] = []
+        editor.send = { intents.append($0) }; other.send = { elsewhere.append($0) }
+        XCTAssertTrue(window.makeFirstResponder(editor))
+        func equivalent(_ code: UInt16, _ flags: NSEvent.ModifierFlags) -> Bool {
+            window.performKeyEquivalent(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber,
+                                                               context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: code)!)
+        }
+        for code: UInt16 in [36, 76] {
+            XCTAssertTrue(equivalent(code, .command), "The composer takes ⌘↩ before the menu bar is asked")
+            XCTAssertEqual(intents, [.steer]); intents.removeAll()
+            for flags: NSEvent.ModifierFlags in [[], [.command, .shift], [.command, .option], [.command, .control]] {
+                XCTAssertFalse(equivalent(code, flags), "Only ⌘↩ is claimed: \(flags.rawValue)")
+            }
+        }
+        XCTAssertTrue(intents.isEmpty)
+        XCTAssertTrue(elsewhere.isEmpty, "A composer nobody is typing in claims nothing")
+    }
+
+    /// The menu bar's ⌘↩ is the composer's send-or-steer, for when the
+    /// keyboard is elsewhere; it used to be "Send / Queue Follow-up".
+    @MainActor func testTheMenuBarGivesCommandReturnToSendOrSteer() throws {
+        let menus = (NSApp.mainMenu?.items ?? []).compactMap(\.submenu)
+        menus.forEach { $0.update() }
+        let items = menus.flatMap(\.items)
+        guard items.contains(where: { $0.title == "Send / Queue Follow-up" }) else { throw XCTSkip("This test host has no Conversation menu") }
+        let bound = items.filter { $0.keyEquivalent == "\r" && $0.keyEquivalentModifierMask.intersection([.command, .shift, .option, .control]) == .command }
+        XCTAssertEqual(bound.map(\.title), ["Send / Steer Current Run"])
+    }
+
     @MainActor func testUncommittedSkillAndNonChatPageCannotSubmit() async throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent(UUID().uuidString)
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

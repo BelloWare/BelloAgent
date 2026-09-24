@@ -92,9 +92,12 @@ extension FocusedValues {
                 // The menu is rebuilt on every publish of the model: each fold
                 // availability is read once per build, from the rows.
                 let foldsTurns = commandModel.canFoldTurns, foldsResponses = commandModel.canFoldResponses
-                Button("Send / Queue Follow-up") { commandModel.send() }.keyboardShortcut(.return, modifiers: .command).disabled(!commandModel.conversationCommandsEnabled)
+                // Return in the composer sends or queues; ⌘↩ sends or steers,
+                // here and in the composer alike (`submitComposer`).
+                Button("Send / Queue Follow-up") { commandModel.send() }.disabled(!commandModel.conversationCommandsEnabled)
                 Button("Open Side") { commandModel.openSide() }.disabled(!commandModel.conversationCommandsEnabled)
-                Button("Steer Current Run") { commandModel.send(steer: true) }.disabled(!commandModel.conversationCommandsEnabled)
+                Button("Send / Steer Current Run") { commandModel.submitFocusedComposer(intent: .steer) }
+                    .keyboardShortcut(.return, modifiers: .command).disabled(!commandModel.conversationCommandsEnabled)
                 Button("Stop") { commandModel.stop(sessionID: commandModel.focusedSessionID) }.keyboardShortcut(".")
                 Button("Resume Follow-ups") { commandModel.action("queue.resume", sessionID: commandModel.focusedSessionID) }.disabled(!commandModel.conversationCommandsEnabled)
                 Button("Compact Now") { commandModel.action("context.compact", sessionID: commandModel.focusedSessionID) }.disabled(!commandModel.conversationCommandsEnabled)

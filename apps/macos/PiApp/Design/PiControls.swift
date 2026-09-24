@@ -336,11 +336,19 @@ struct PiSelectableRow<Content: View>: View {
 struct PiFlow: Layout {
     var spacing: CGFloat = 6
     var rowSpacing: CGFloat = 6
+    /// A subview's own width, or the row's when it is wider than a whole row:
+    /// a `ViewThatFits` then chooses its shorter form rather than run off the
+    /// edge, and anything else is laid out within the row.
+    private func size(of subview: LayoutSubview, row width: CGFloat) -> CGSize {
+        let ideal = subview.sizeThatFits(.unspecified)
+        guard width.isFinite, ideal.width > width else { return ideal }
+        return subview.sizeThatFits(ProposedViewSize(width: width, height: nil))
+    }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .infinity
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, maxX: CGFloat = 0
         for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+            let size = size(of: subview, row: width)
             if x > 0 && x + size.width > width { x = 0; y += rowHeight + rowSpacing; rowHeight = 0 }
             x += size.width + spacing; rowHeight = max(rowHeight, size.height); maxX = max(maxX, x - spacing)
         }
@@ -349,7 +357,7 @@ struct PiFlow: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
         for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+            let size = size(of: subview, row: bounds.width)
             if x > 0 && x + size.width > bounds.width { x = 0; y += rowHeight + rowSpacing; rowHeight = 0 }
             subview.place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + y), proposal: ProposedViewSize(size))
             x += size.width + spacing; rowHeight = max(rowHeight, size.height)

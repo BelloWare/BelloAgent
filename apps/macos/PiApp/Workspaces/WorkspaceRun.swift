@@ -22,6 +22,11 @@ extension WorkspaceModel {
         send(steer: intent == .steer && view.busy, sessionID: sessionID)
     }
 
+    /// The Conversation menu's ⌘↩: what ⌘↩ does in the focused chat's composer.
+    func submitFocusedComposer(intent: ComposerSubmissionIntent) {
+        guard let id = focusedSessionID ?? selectedID else { return }
+        submitComposer(intent: intent, sessionID: id)
+    }
     func send(steer: Bool = false, sessionID: String? = nil) {
         // Global commands target the visible conversation. Explicit session
         // submissions already accepted by an asynchronous side flow continue.

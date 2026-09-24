@@ -128,7 +128,22 @@ final class MetricPillsTests: XCTestCase {
         var totals = GatewayTotals(requests: 1, costSamples: 0, cacheReadTokens: 4, cacheReadSamples: 1)
         totals.tokens = GatewayTokenTotals(input: 1_000, output: 10, total: 1_010, inputSamples: 1, outputSamples: 1, samples: 1)
         totals.inputSplit = GatewayTokenSplit(total: 1_000, part: 4, samples: 1)
-        XCTAssertEqual(SessionStatsPresentation(gateway: totals, work: nil).usageLabel, "1K tok · Cache hit <1%")
+        XCTAssertEqual(SessionStatsPresentation(gateway: totals, work: nil).usageLabel, "1K tok · 996 uncached · 4 cached · 10 out · Cache hit 0.40%")
+        totals.tokens?.input = 1_000_000; totals.inputSplit = GatewayTokenSplit(total: 1_000_000, part: 4, samples: 1)
+        XCTAssertEqual(SessionStatsPresentation(gateway: totals, work: nil).cacheHit, "<0.01", "Two places still never write a real hit as zero")
+    }
+
+    /// The session's cache hit always has two decimal places (the owner asked
+    /// for them), and still never rounds a partial hit up to a full one.
+    func testTheSessionCacheHitHasTwoDecimalPlaces() {
+        XCTAssertEqual(MetricFormat.paddedCacheHitPercent(read: 50, prompt: 100), "50.00")
+        XCTAssertEqual(MetricFormat.paddedCacheHitPercent(read: 7_594, prompt: 10_000), "75.94")
+        XCTAssertEqual(MetricFormat.paddedCacheHitPercent(read: 505, prompt: 1_000), "50.50")
+        XCTAssertEqual(MetricFormat.paddedCacheHitPercent(read: 100, prompt: 100), "100.00")
+        XCTAssertEqual(MetricFormat.paddedCacheHitPercent(read: 0, prompt: 100), "0.00")
+        XCTAssertEqual(MetricFormat.paddedCacheHitPercent(read: 99_996, prompt: 100_000), "99.996", "Never rounded up to a full hit")
+        XCTAssertEqual(MetricFormat.paddedCacheHitPercent(read: 4, prompt: 1_000_000), "<0.01")
+        XCTAssertNil(MetricFormat.paddedCacheHitPercent(read: 10, prompt: 0))
     }
 
     /// The context dialog's detail line and the ring it explains agree to the
@@ -245,7 +260,8 @@ final class MetricPillsTests: XCTestCase {
     func testSessionPillsReadAsTheOwnerAskedFor() throws {
         let stats = SessionStatsPresentation(gateway: fixtureSession(), work: fixtureWork())
         XCTAssertEqual(stats.gaugeLabel, "1 turn 2 steps · 34 tok/s")
-        XCTAssertEqual(stats.usageLabel, "15.8K tok · Cache hit 50% · $0.0025")
+        XCTAssertEqual(stats.usageLabel, "15.8K tok · 6K uncached · 6K cached · 3.8K out (900 reasoning) · Cache hit 50.00% · $0.0025")
+        XCTAssertEqual(stats.tokenSplit, ["6K uncached", "6K cached", "3.8K out (900 reasoning)"], "The parts add up to the total: 6K + 6K + 3.8K")
         XCTAssertTrue(stats.hasUsage); XCTAssertTrue(stats.hasTimeDialog)
         // What the usage pill opens leads with the exact total.
         let tokens = SessionTokenCharts(inputs: SessionStatsInputs(gateway: fixtureSession()), history: nil)
@@ -275,7 +291,7 @@ final class MetricPillsTests: XCTestCase {
     /// the rest of the output as the parts of that total.
     func testTokenUsagePopoverCarriesEveryBucketWithItsCost() throws {
         let tokens = SessionTokenCharts(inputs: SessionStatsInputs(gateway: fixtureSession(), work: fixtureWork()), history: fixtureHistory())
-        XCTAssertEqual(tokens.hero.map(\.value), ["15,800", "$0.0025", "50%"])
+        XCTAssertEqual(tokens.hero.map(\.value), ["15,800", "$0.0025", "50.00%"])
         XCTAssertEqual(figure("tokens", in: tokens.hero)?.caption, "12,000 in · 3,800 out")
         XCTAssertNil(tokens.coverage, "Every request reported every figure")
         let parts = Dictionary(uniqueKeysWithValues: (tokens.composition?.parts ?? []).map { ($0.id, $0.value) })
@@ -336,7 +352,7 @@ final class MetricPillsTests: XCTestCase {
         gateway.cacheWriteTokens = 600; gateway.cacheWriteSamples = 2
         let session = SessionStatsPresentation(gateway: gateway, work: nil)
         XCTAssertEqual(session.totalTokens, 15_800)
-        XCTAssertEqual(session.cacheHit, "50")
+        XCTAssertEqual(session.cacheHit, "50.00")
         var summary = fixtureTurn()
         summary.accounting.cacheWrite = 600
         let turn = TurnPillsPresentation(summary)
@@ -355,10 +371,12 @@ final class MetricPillsTests: XCTestCase {
         gateway.inputSplit = GatewayTokenSplit(total: 1_000, part: 900, samples: 1)
         gateway.uncachedInputReportedTokens = 100; gateway.uncachedInputSamples = 1
         let session = SessionStatsPresentation(gateway: gateway, work: nil)
-        XCTAssertEqual(session.cacheHit, "90")
-        XCTAssertEqual(session.usageLabel, "3.3K tok · Cache hit 90% · $0.003")
+        XCTAssertEqual(session.cacheHit, "90.00")
+        // One request of three reported its cache use: the input does not
+        // split, since its parts would not add up to the total.
+        XCTAssertEqual(session.usageLabel, "3.3K tok · 3K in · 300 out · Cache hit 90.00% · $0.003")
         let popover = SessionTokenCharts(inputs: SessionStatsInputs(gateway: gateway), history: nil)
-        XCTAssertEqual(figure("cache", in: popover.hero)?.value, "90%")
+        XCTAssertEqual(figure("cache", in: popover.hero)?.value, "90.00%")
         XCTAssertEqual(popover.coverage, "1 of 3 requests reported their cache use; the figures count only those.")
 
         var summary = fixtureTurn()

@@ -37,7 +37,20 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.94/build 98 is publicly released** at
+**Bello Agent 0.1.95/build 99 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.95](https://github.com/BelloWare/BelloAgent/tree/v0.1.95) and website commit
+`293b9bf8eb6ec73530ca37c951d9e3a79be7fb07`. The signed/notarized DMG is **10,720,890 bytes (10.22 MiB)**;
+SHA-256 `efeee3e07362f365534e50eca53cb8ae0a2ae752ed6bbba87ca1c5e8740ffe37`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-09-24 09:26:56 UTC**. ⌘↩ steers a running chat again: the Conversation menu had taken the key for "Send /
+Queue Follow-up". The session's usage pill splits its tokens into uncached input, cached input
+and output with its reasoning, and its cache hit has two decimal places. The full gate passed:
+1,559 native tests, 100 gallery screenshots, 423 helper tests and the wire, concurrent, acceptance
+and Python checks. See the
+[0.1.95 validation record](validation/Bello-Agent-0.1.95-2026-09-24.md).
+
+**Bello Agent 0.1.94/build 98 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.94](https://github.com/BelloWare/BelloAgent/tree/v0.1.94) and website commit
 `b09bcd5db59f0f40fb84a0823433ba2d374cf30e`. The signed/notarized DMG is **10,714,670 bytes (10.22 MiB)**;

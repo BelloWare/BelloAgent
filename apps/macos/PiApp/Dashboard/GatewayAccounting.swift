@@ -314,9 +314,10 @@ struct GatewayTotals: Codable, Sendable, Equatable {
     /// every reported read over every reported input divided two different
     /// populations, diluting the share (or, when reads came from requests
     /// whose input went unreported, hiding it).
+    /// Two decimal places, as the session pill and the Inspector show it.
     var cacheHitPercent: String? {
         guard let split = GatewayTokenSplit.reported(self, input: true) else { return nil }
-        return MetricFormat.cacheHitPercent(read: split.part, prompt: split.total)
+        return MetricFormat.paddedCacheHitPercent(read: split.part, prompt: split.total)
     }
     /// The requests the cache hit covers.
     var cacheHitSamples: Int { GatewayTokenSplit.reported(self, input: true)?.samples ?? 0 }

@@ -50,9 +50,34 @@ struct SessionStatsPresentation: Equatable {
 
     var totalTokens: Double? { gateway.billedTotalTokens }
     var cacheHit: String? { gateway.cacheHitPercent }
-    private var usageParts: [String] {
+    /// The total's parts, as the turn's usage dialog lists them: input as
+    /// uncached and cached, then output with its reasoning part. Cached input
+    /// is part of the input and reasoning part of the output; neither is
+    /// added again. `3.2K uncached · 10.1K cached · 2.5K out (1.2K reasoning)`
+    ///
+    /// The input splits only when every request that reported its input also
+    /// reported its cache use (the cache hit's pairs are then all the input);
+    /// otherwise the parts would not add up to the total, and it reads `in`.
+    var tokenSplit: [String] {
+        var parts: [String] = []
+        if let t = gateway.tokens, t.inputSamples > 0, let input = TranscriptActivity.reported(t.input) {
+            if let split = GatewayTokenSplit.reported(gateway, input: true), split.samples == t.inputSamples, split.total == input {
+                parts.append(MetricFormat.tokens(split.total - split.part) + " uncached")
+                parts.append(MetricFormat.tokens(split.part) + " cached")
+            } else {
+                parts.append(MetricFormat.tokens(input) + " in")
+            }
+        }
+        if let t = gateway.tokens, t.outputSamples > 0, let output = TranscriptActivity.reported(t.output) {
+            let reasoning = (t.reasoningSamples ?? 0) > 0 ? TranscriptActivity.reported(t.reasoning) : nil
+            parts.append(MetricFormat.tokens(output) + " out" + (reasoning.map { " (\(MetricFormat.tokens($0)) reasoning)" } ?? ""))
+        }
+        return parts
+    }
+    private func usageParts(split: Bool) -> [String] {
         var parts: [String] = []
         if let total = totalTokens { parts.append(MetricFormat.tokenCount(total)) }
+        if split { parts += tokenSplit }
         if let cacheHit { parts.append("Cache hit \(cacheHit)%") }
         return parts
     }
@@ -70,13 +95,18 @@ struct SessionStatsPresentation: Equatable {
     }
     /// The spend is at 80% of the chat's limit or more.
     var costWarning: Bool { cost?.warning(spent: spent) ?? false }
-    /// `15.8K tok · Cache hit 50% · $0.0025`
-    var usageLabel: String { (usageParts + [costFigure].compactMap { $0 }).joined(separator: " · ") }
+    /// `15.8K tok · 3.2K uncached · 10.1K cached · 2.5K out (1.2K reasoning) · Cache hit 75.94% · $0.0025`
+    var usageLabel: String { (usageParts(split: true) + [costFigure].compactMap { $0 }).joined(separator: " · ") }
     /// What the pill draws: the reading, with the cost apart, in warning
     /// ink, once it nears the limit.
-    var usageFace: (label: String, warningTail: String?) {
-        guard costWarning, let figure = costFigure else { return (usageLabel, nil) }
-        return (usageParts.joined(separator: " · "), figure)
+    var usageFace: (label: String, warningTail: String?) { face(split: true) }
+    /// The same pill without the token split, for a pane too narrow for it:
+    /// `15.8K tok · Cache hit 50.00% · $0.0025`.
+    var compactUsageFace: (label: String, warningTail: String?) { face(split: false) }
+    private func face(split: Bool) -> (label: String, warningTail: String?) {
+        let parts = usageParts(split: split)
+        guard costWarning, let figure = costFigure else { return ((parts + [costFigure].compactMap { $0 }).joined(separator: " · "), nil) }
+        return (parts.joined(separator: " · "), figure)
     }
     /// A session whose requests all settled without billing keeps its counts
     /// and drops this pill rather than showing an empty one.
@@ -125,15 +155,23 @@ struct SessionStatsPills: View {
             }
             if stats.hasUsage {
                 // Near the chat's cost limit, the spend is apart, in warning ink.
-                let face = stats.usageFace
-                PiStatButton(symbol: "cylinder.split.1x2", label: face.label, warningTail: face.warningTail,
-                             accessibility: "Token usage: " + stats.usageLabel, identifier: "session-stats-usage",
-                             help: "Gateway-reported usage and cost for this session's retained requests, and its cost limit. Opens the Session Inspector.") { open(.overview) }
+                // The token split where the pane has room for it; a narrower
+                // pane keeps the total, the cache hit and the cost whole.
+                ViewThatFits(in: .horizontal) {
+                    usagePill(stats, face: stats.usageFace)
+                    usagePill(stats, face: stats.compactUsageFace)
+                }
             }
             contextPill
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sessionStatsPills")
+    }
+
+    private func usagePill(_ stats: SessionStatsPresentation, face: (label: String, warningTail: String?)) -> some View {
+        PiStatButton(symbol: "cylinder.split.1x2", label: face.label, warningTail: face.warningTail,
+                     accessibility: "Token usage: " + stats.usageLabel, identifier: "session-stats-usage",
+                     help: "Gateway-reported usage and cost for this session's retained requests, and its cost limit. Uncached and cached input make up the input; reasoning is part of the output. Opens the Session Inspector.") { open(.overview) }
     }
 
     /// A 14 pt ring and its reading. A conversation whose context has not been

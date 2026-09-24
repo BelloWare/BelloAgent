@@ -71,6 +71,18 @@ enum MetricFormat {
         return "99.999999999"
     }
 
+    /// The same honest figure written with at least `decimals` places, so a
+    /// reading keeps its width: `50.00`, `75.94`, `100.00`. More places only
+    /// where honest rounding needs them (`99.996`); `<0.01` stays as it is.
+    static func paddedCacheHitPercent(read: Double, prompt: Double, decimals: Int = 2) -> String? {
+        guard let text = cacheHitPercent(read: read, prompt: prompt, decimals: decimals) else { return nil }
+        guard !text.hasPrefix("<") else { return text }
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        let fraction = parts.count > 1 ? String(parts[1]) : ""
+        guard fraction.count < decimals else { return text }
+        return String(parts[0]) + "." + fraction + String(repeating: "0", count: decimals - fraction.count)
+    }
+
     /// The context ring's reading, without a sign. The same honest rounding as
     /// a cache hit, and a context that holds something but very little reads
     /// `<1` rather than `0`, so an occupied window never looks empty. The

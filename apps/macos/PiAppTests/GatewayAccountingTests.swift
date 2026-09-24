@@ -394,11 +394,11 @@ final class GatewayAccountingTests: XCTestCase {
         // unpaired counters (a cache read with no input, an input with no
         // cache read, a read larger than its input) are not in the share.
         let pill = SessionStatsPresentation(gateway: session.session, work: nil)
-        XCTAssertEqual(pill.cacheHit, "60")
+        XCTAssertEqual(pill.cacheHit, "60.00")
         // The token usage popover the pill opens says the same: 60%, from the
         // two requests of five that reported both counters.
         let popover = SessionTokenCharts(inputs: SessionStatsInputs(gateway: session.session), history: nil)
-        XCTAssertEqual(popover.hero.first { $0.id == "cache" }?.value, "60%")
+        XCTAssertEqual(popover.hero.first { $0.id == "cache" }?.value, "60.00%")
         XCTAssertEqual(popover.coverage, "Tokens reported by 4 of 5 requests, cache use by 2 of 5; the figures count only those.")
         try await archive.close()
         try await archive.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)

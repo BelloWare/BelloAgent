@@ -445,6 +445,18 @@ struct ComposerEditMeasurement {
             PerformanceProbe.shared.observe("nativeHandlerToDrawMs", milliseconds: value.handler)
         }
     }
+    /// ⌘↩ steers a running chat and sends an idle one, as the hint under the
+    /// composer says. AppKit offers a ⌘ key to the window's views and then to
+    /// the menu bar before keyDown, and the Conversation menu's ⌘↩ used to
+    /// take it there: the message was queued as a follow-up instead. The
+    /// composer the reader is typing in claims ⌘↩ first; keyDown decides.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if [36, 76].contains(event.keyCode), event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
+           window?.firstResponder === self {
+            keyDown(with: event); return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
     override func keyDown(with event: NSEvent) {
         let sends = [36, 76].contains(event.keyCode) && !event.modifierFlags.contains(.shift) && !hasMarkedText()
         if PerformanceProbe.shared.enabled && !event.modifierFlags.contains(.command) && !sends {

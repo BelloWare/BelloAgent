@@ -452,8 +452,12 @@ final class SessionTimingTests: XCTestCase {
             XCTAssertNotNil(rendered.range(of: #"\b(19|2[0-9])s\b"#, options: .regularExpression),
                             "The elapsed clock must stay visible at \(width)pt. OCR: \(rendered)")
             XCTAssertTrue(rendered.contains("bash"), "The current action must stay visible at \(width)pt. OCR: \(rendered)")
-            XCTAssertTrue(rendered.contains("15.8k tok") && rendered.contains("cache hit 50%") && rendered.contains("$0.0025"),
+            XCTAssertTrue(rendered.contains("15.8k tok") && rendered.contains("cache hit 50.00%") && rendered.contains("$0.0025"),
                           "The usage pill keeps tokens, cache hit and cost at \(width)pt. OCR: \(rendered)")
+            // The token split shows where the pane has room for it; a narrow
+            // pane drops the split, never the cost.
+            XCTAssertEqual(rendered.contains("6k uncached") && rendered.contains("6k cached") && rendered.contains("3.8k out"), width == 1_000,
+                           "The token split shows at 1000pt only. OCR: \(rendered)")
             XCTAssertTrue(rendered.contains("34 tok/s"), "The settled session rate stays on the gauge pill at \(width)pt. OCR: \(rendered)")
             XCTAssertFalse(rendered.contains("latest"), "The live latest/average rates left the footer. OCR: \(rendered)")
             XCTAssertFalse(rendered.contains("avg "), "The live latest/average rates left the footer. OCR: \(rendered)")
