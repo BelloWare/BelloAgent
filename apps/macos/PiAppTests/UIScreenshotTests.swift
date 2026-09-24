@@ -519,6 +519,23 @@ final class UIScreenshotTests: XCTestCase {
             try captureWithPopovers(window, to: gallery.appendingPathComponent("17d-skills-popover-\(name).png"))
             popovers.close(); try await settle(0.4)
         }
+        // 17e · The slash list, typed as a reader would: "/" at the start of
+        // the draft, then "re" narrows the commands and skills it offers.
+        let editor = try XCTUnwrap(descendants(ComposerTextView.self, in: window.contentView ?? NSView()).first, "The composer's editor is on screen")
+        window.makeFirstResponder(editor)
+        session.directCommand = true
+        editor.insertText("/re", replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        let listed = Date().addingTimeInterval(5)
+        while Date() < listed, !session.completionVisible { try await settle(0.05) }
+        XCTAssertTrue(session.completionVisible, "The slash list opened")
+        XCTAssertFalse(model.completions(session).isEmpty, "The slash list offers the catalog's matches")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("17e-skills-slash-\(name).png"))
+        }
+        editor.insertText("", replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        session.directCommand = false; try await settle(0.3)
+        XCTAssertFalse(session.completionVisible, "Clearing the draft closed the slash list")
     }
 
     /// 19 · Versions and forks. A question edited once shows `‹ 1 / 2 ›` on

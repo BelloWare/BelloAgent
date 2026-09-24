@@ -168,6 +168,39 @@ final class InlineSkillTests: XCTestCase {
         XCTAssertFalse(view.completionVisible); XCTAssertNil(view.completionToken)
     }
 
+    /// The list floats over the transcript: opening it must not change the
+    /// composer's height, or the transcript above resizes with every change.
+    @MainActor func testSlashListDoesNotResizeTheComposer() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())); defer { model.shutdown() }
+        let view = SessionDisplay(id: "a"); model.displays[view.id] = view
+        model.chats = [ChatRecord(id: view.id, workspaceID: "w", title: "A", profileID: "p")]
+        view.skillCatalog = SkillCatalog(state: .ready, scope: model.skillScope(sessionID: view.id, workspaceID: "w"), revision: "v1",
+                                         entries: (0..<5).map { skill("s\($0)", name: "review-\($0)") }.map(SkillSearch.Entry.init))
+        let hosted = NSHostingView(rootView: ComposerInput(model: model, session: view, paneWidth: 900))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = hosted; window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        /// SwiftUI applies a published change on a later turn; measure after it.
+        func settle() async throws { for _ in 0..<6 { hosted.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(20)) } }
+        try await settle()
+        let closed = hosted.fittingSize.height
+        view.draft = "/rev"
+        view.completionToken = SlashCompletionToken.local(in: "/rev", at: ComposerLocation(sessionID: view.id, editorGeneration: UUID(), draftRevision: 1,
+                                                                                            selectedRangeUTF16: NSRange(location: 4, length: 0), markedRangeUTF16: nil), directInput: false)
+        view.completionVisible = true
+        XCTAssertEqual(model.completions(view).count, 5)
+        try await settle()
+        XCTAssertEqual(hosted.fittingSize.height, closed, accuracy: 0.5, "Opening the slash list resized the composer")
+        view.completionToken = SlashCompletionToken.local(in: "/review-1", at: ComposerLocation(sessionID: view.id, editorGeneration: UUID(), draftRevision: 2,
+                                                                                                 selectedRangeUTF16: NSRange(location: 9, length: 0), markedRangeUTF16: nil), directInput: false)
+        view.completionIndex += 1
+        try await settle()
+        XCTAssertEqual(model.completions(view).count, 1)
+        XCTAssertEqual(hosted.fittingSize.height, closed, accuracy: 0.5, "Filtering the slash list resized the composer")
+    }
+
     @MainActor func testMountedCaretSelectionBeyondEightAndStaleAcceptance() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
