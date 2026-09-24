@@ -37,7 +37,20 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.98/build 102 is publicly released** at
+**Bello Agent 0.1.99/build 103 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.99](https://github.com/BelloWare/BelloAgent/tree/v0.1.99) and website commit
+`ec385ad`. The signed/notarized DMG is **10,843,011 bytes (10.34 MiB)**;
+SHA-256 `161128eea9dc46f378d6100e7b53b8fea0bfc286c37fe0d6e61b8716730d2227`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-09-24 19:41:00 UTC**. A compaction is one summary request: a split turn's start is summarized with the history,
+and nothing is chunked. A history one request cannot hold is refused before anything is sent,
+with the context unchanged. The gate passed 1,615 native tests, 435 helper
+tests and the script checks; the gallery's compaction scene and one load-sensitive wire test were
+fixed after it and pass (112 screenshots; 3 of 3).
+See the [0.1.99 validation record](validation/Bello-Agent-0.1.99-2026-09-25.md).
+
+**Bello Agent 0.1.98/build 102 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.98](https://github.com/BelloWare/BelloAgent/tree/v0.1.98) and website commit
 `ebbd7f5`. The signed/notarized DMG is **10,855,712 bytes (10.35 MiB)**;

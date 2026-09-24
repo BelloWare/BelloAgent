@@ -1,0 +1,6 @@
+<h2>Bello Agent 0.1.99</h2>
+<ul>
+  <li>Compacting a chat is always one request. When the recent messages it keeps begin in the middle of a long turn, the start of that turn is summarized in the same request instead of a second one, and a long history is no longer summarized in chunks.</li>
+  <li>If a chat's history is too large for one summary request, which can happen after switching to a model with a much smaller window, compaction stops before sending anything and says why. The chat is left as it was.</li>
+  <li>The compaction status no longer counts chunks, and the Session Inspector names a combined summary request "earlier history and start of this turn".</li>
+</ul>
