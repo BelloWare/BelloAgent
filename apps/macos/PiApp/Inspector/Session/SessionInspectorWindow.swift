@@ -68,6 +68,12 @@ import SwiftUI
         if let display = model.displays[scope.sessionID] { inspector.observe(footer: display.footer, display: display) }
     }
 
+    /// Follows the chat's display as the workspace holds it now.
+    func follow(_ display: SessionDisplay?) {
+        guard !isClosed else { return }
+        inspector.follow(display)
+    }
+
     func windowDidMiniaturize(_ notification: Notification) { guard !isClosed else { return }; inspector.setVisible(false) }
     func windowDidDeminiaturize(_ notification: Notification) { guard !isClosed else { return }; inspector.setVisible(isOnScreen) }
     func windowDidChangeOcclusionState(_ notification: Notification) { guard !isClosed else { return }; inspector.setVisible(isOnScreen) }
@@ -128,6 +134,22 @@ import SwiftUI
         controller.present(focus)
         return controller
     }
+
+    /// A project window's displays changed: each Inspector follows its chat's
+    /// display as it is now, on the next turn, never from inside the change,
+    /// which can come from anywhere the workspace installs or evicts one.
+    func displaysChanged() {
+        guard !entries.isEmpty, !following else { return }
+        following = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.following = false
+            for entry in self.entries {
+                if let owner = entry.owner { entry.controller.follow(owner.displays[entry.scope.sessionID]) }
+            }
+        }
+    }
+    private var following = false
 
     func closeAll(owner: AnyObject) {
         for entry in entries where entry.owner == nil || entry.owner === owner { entry.controller.close() }
