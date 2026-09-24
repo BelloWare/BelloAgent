@@ -241,6 +241,8 @@ struct ContentGeometry: Equatable {
         // would not have shown until the helper's own row arrived.
         let added = messages.reversed().prefix { $0.isSending || $0.role == "system" && ["notice", "failure"].contains($0.kind ?? "")
             && ($0.id.hasPrefix("notice:retry:") || $0.id.hasPrefix("failure:")) }.count
+        // Nothing added is the common case: the page itself, not a copy of it.
+        guard added > 0 else { return TranscriptPaging.window(messages, keepingEarlier: true) }
         return TranscriptPaging.window(Array(messages.dropLast(added)), keepingEarlier: true) + messages.suffix(added)
     }
 

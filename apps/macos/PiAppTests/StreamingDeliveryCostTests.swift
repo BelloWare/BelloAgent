@@ -29,6 +29,27 @@ final class StreamingDeliveryCostTests: XCTestCase {
         (try? JSONDecoder().decode([TranscriptMessage].self, from: JSONEncoder().encode(WireValue.array(rows)))) ?? []
     }
 
+    /// A page that fits its resident window is the page itself: every
+    /// token passes through the window twice (the refresh and the page), and
+    /// copying the page row by row retained every field of every row.
+    func testAPageThatFitsItsWindowIsNotCopied() {
+        let page = Self.decoded(Self.page(streaming: "token"))
+        XCTAssertEqual(page.count, Self.rowCount + 1)
+        func storage(_ rows: [TranscriptMessage]) -> UnsafeRawPointer? { rows.withUnsafeBufferPointer { UnsafeRawPointer($0.baseAddress) } }
+        for keepingEarlier in [true, false] {
+            let windowed = TranscriptPaging.window(page, keepingEarlier: keepingEarlier)
+            XCTAssertEqual(windowed, page)
+            XCTAssertEqual(storage(windowed), storage(page), "a page that fits was copied (keepingEarlier: \(keepingEarlier))")
+        }
+        XCTAssertEqual(storage(TranscriptPage.displayPage(page)), storage(page), "the page's display page copied a page that fits")
+        // A page past the caps is still cut at the same edge as before.
+        let caps = TranscriptPaging.residentCaps
+        defer { TranscriptPaging.residentCaps = caps }
+        TranscriptPaging.residentCaps = (rows: 10, bytes: caps.bytes)
+        XCTAssertEqual(TranscriptPaging.window(page, keepingEarlier: true).map(\.id), page.prefix(10).map(\.id))
+        XCTAssertEqual(TranscriptPaging.window(page, keepingEarlier: false).map(\.id), page.suffix(10).map(\.id))
+    }
+
     /// The stages a delta passes through, each timed on its own.
     func testPerDeltaStageCosts() throws {
         let rounds = 60
