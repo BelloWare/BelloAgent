@@ -1097,7 +1097,7 @@ private struct TranscriptHostedRow: View {
                 // spacing reserved around every message would otherwise leave
                 // fourteen points of blank where the fold swallowed the row.
                 let blank = drawsNothing(message)
-                MessageRowView(message: message, actions: actions, disclosure: disclosure, toggle: toggle).equatable()
+                MessageRowView(message: message, actions: actions, disclosure: disclosure, toggle: toggle, switchesSource: true).equatable()
                     .padding(.top, blank ? 0 : (message.role == "user" ? 14 : 4))
                     .padding(.bottom, blank ? 0 : (message.role == "user" ? 4 : 10))
             case .block(let block):
@@ -1334,7 +1334,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     /// answer is kept rather than counting the row's characters again.
     func estimatedHeight(width: CGFloat) -> CGFloat {
         if let estimate, estimate.width == width { return estimate.height }
-        let height = TranscriptRowEstimate.height(of: item, width: width)
+        let height = TranscriptRowEstimate.height(of: item, width: width, raw: disclosure.raw)
         estimate = (width, height)
         return height
     }
@@ -1640,6 +1640,12 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     /// hosting view to notice its own intrinsic size changed.
     func toggleDisclosure(_ part: TranscriptDisclosure.Part) {
         guard let disclosureStore else { return }
+        // Switching a reply between rendered and its source takes away the
+        // text a selection in it lives in. The selection ends here, in the
+        // click, rather than when its view goes: that is inside the update
+        // that removes it, and moving the first responder there lays the
+        // window out in the middle of SwiftUI's update.
+        if part.kind == .source { releaseSelection(inReply: part.id) }
         disclosureStore.toggle(part)
         // A card the reader just opened whose arguments the host had to cut
         // asks for the rest, once. The card draws the inline document until it
@@ -1661,6 +1667,14 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         measuring = false
         invalidateIntrinsicContentSize()
         onDisclosureChanged?()
+    }
+    /// Ends a selection held in any row that draws this reply's text.
+    private func releaseSelection(inReply id: String) {
+        guard let window, let document = superview else { return }
+        let rows = document.subviews.compactMap { $0 as? TranscriptRowContainer }
+        if rows.contains(where: { ReplySource.replyID(of: $0.item) == id && $0.ownsFirstResponder }) {
+            window.makeFirstResponder(nil)
+        }
     }
     func measure(width proposed: CGFloat?) -> CGSize {
         // SwiftUI probes zero while discovering minimum sizes. It is not the

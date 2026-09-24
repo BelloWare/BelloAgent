@@ -17,6 +17,11 @@ struct TimelinePartRow: View {
     var cardOpen = false
     var fetched: ToolInputDocument? = nil
     var toggleCard: () -> Void = {}
+    /// Whether the reader switched this reply to its markdown source, and the
+    /// row's way to switch it; nil where no conversation disclosure is
+    /// reachable, as in an execution record's parts.
+    var raw = false
+    var toggleRow: ((TranscriptDisclosure.Part) -> Void)? = nil
     var source: TranscriptMessage {
         var value = message
         value.kind = nil; value.role = "assistant"; value.text = part.text
@@ -78,7 +83,9 @@ struct TimelinePartRow: View {
     }
     var body: some View {
         if ["text","refusal"].contains(part.part.kind) {
-            MessageRowView(message:source,actions:actions,inlineAccounting:false).equatable().padding(.bottom,10)
+            MessageRowView(message:source,actions:actions,inlineAccounting:false,
+                           disclosure:TranscriptRowDisclosure(raw:raw),toggle:toggleRow ?? { _ in },switchesSource:toggleRow != nil)
+                .equatable().padding(.bottom,10)
         } else if let card {
             // The call, where it was made. Its arguments are the card's own
             // details, so the raw document is not shown a second time.

@@ -160,6 +160,15 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // Only a message as typed and a reply read as its source.
+        if testEnvironment("PI_APP_UI_GALLERY_LITERAL_ONLY") == "1" {
+            try await captureLiteralTextScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                               workspaceID: workspace.id, profileID: connections[0].profile.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         if testEnvironment("PI_APP_UI_GALLERY_COST_ONLY") == "1" {
             try await captureCostLimitScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                              workspaceID: workspace.id, profileID: connections[0].profile.id)
@@ -318,6 +327,8 @@ final class UIScreenshotTests: XCTestCase {
                                               workspaceID: workspace.id, profileID: connections[0].profile.id)
         try await captureCompactionRequestScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                                  workspaceID: workspace.id, profileID: connections[0].profile.id)
+        try await captureLiteralTextScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                           workspaceID: workspace.id, profileID: connections[0].profile.id)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
         let fresh = WorkspaceModel(stateRoot: folder.appendingPathComponent("onboarding-state"), vault: freshVault)
@@ -580,6 +591,69 @@ final class UIScreenshotTests: XCTestCase {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
             try capture(window, to: gallery.appendingPathComponent("19b-fork-from-here-\(name).png"))
         }
+    }
+
+    /// 21 · A message exactly as it was typed: Markdown's characters, indented
+    /// lines and a blank line read literally in the bubble, while the reply
+    /// that echoes them renders them. 21b · That reply switched to its source,
+    /// one monospaced text in the code panel.
+    @MainActor private func captureLiteralTextScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                     appearances: [(String, NSAppearance.Name)], workspaceID: String, profileID: String) async throws {
+        let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "Keep it literal", path: nil, profileID: profileID, toolMode: "editing")
+        model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+        await model.select(chat.id); try await settle(0.8)
+        let session = try XCTUnwrap(model.displays[chat.id])
+        session.draft = """
+        Keep these exactly as I typed them:
+        **not bold**, `not code`, _not italic_
+        # not a heading
+        - not a list item
+            indented four spaces
+        [not a link](https://example.com)
+
+        after a blank line
+        """
+        model.send(sessionID: chat.id)
+        try await waitIdle(session, model: model, minimumMessages: 2)
+        let typed = try XCTUnwrap(session.messages.last { $0.role == "user" })
+        XCTAssertTrue(typed.text.contains("**not bold**"), "the message keeps its characters")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("21-literal-message-\(name).png"))
+        }
+        // View raw on the reply, as its pill, its menu and its accessibility action do.
+        let reply = try XCTUnwrap(session.messages.last { $0.role == "assistant" && $0.kind == nil }?.id)
+        session.disclosure.setOpen(true, .source(reply))
+        try await settle(0.6)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("21b-reply-raw-\(name).png"))
+        }
+        session.disclosure.setOpen(false, .source(reply)); try await settle(0.6)
+        // 21c · A long paste and its reply's source: both long enough to be
+        // TextKit's rather than SwiftUI's, where the paste ends and the source begins.
+        let steps = (1...48).map { "- [ ] **step \($0)** run `swift test --filter Retry\($0)` # then read the log" }
+        session.draft = "A long paste, exactly as typed:\n" + steps.joined(separator: "\n")
+        model.send(sessionID: chat.id)
+        try await waitIdle(session, model: model, minimumMessages: 4)
+        let long = try XCTUnwrap(session.messages.last { $0.role == "assistant" && $0.kind == nil }?.id)
+        session.disclosure.setOpen(true, .source(long))
+        try await settle(0.6)
+        let scroll = try XCTUnwrap(descendants(TranscriptNativeScrollView.self, in: window.contentView ?? NSView()).first)
+        let row = try XCTUnwrap(descendants(TranscriptRowContainer.self, in: scroll).first { ReplySource.replyID(of: $0.contentItem) == long })
+        let clip = scroll.contentView
+        let y = max(0, row.frame.minY - clip.bounds.height * 0.45)
+        scroll.readerWillNavigate(upward: y < clip.bounds.minY)
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: y))
+        scroll.reflectScrolledClipView(clip)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("21c-long-paste-source-\(name).png"))
+        }
+        session.disclosure.setOpen(false, .source(long)); try await settle(0.6)
     }
 
     /// 20 · A split-turn compaction in the Session Inspector: one Compaction
