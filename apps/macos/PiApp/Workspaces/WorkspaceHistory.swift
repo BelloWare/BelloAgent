@@ -116,6 +116,30 @@ extension WorkspaceModel {
     }
     func loadEarlier(sessionID: String? = nil) { Task { _ = await loadEarlierPage(sessionID: sessionID) } }
     func loadNewer(sessionID: String) { Task { _ = await loadHistoryPage(sessionID, newer: true) } }
+    /// A live page that does not join the rows a chat shows leaves a gap. A
+    /// reply longer than the page starts it after the message it answers,
+    /// and a chat that sent that message a moment ago may not have its row
+    /// yet. A reader at the live end has the gap read in at once, which
+    /// returns the chat to the live tail. Before, the gap waited behind the
+    /// "newer" edge until they pressed it, and the reply being written never
+    /// appeared. A page not yet presented, or a read already under way, is
+    /// waited out for up to two seconds first.
+    func fillLiveGap(_ id: String) {
+        Task { [weak self] in
+            var reads = 0, waits = 0
+            while reads < 4 {
+                guard let self, let view = self.displays[id], view.browsingHistory, view.newerPage.cursor != nil,
+                      view.newerPage.error == nil, view.scrollAnchor?.followsBottom != false else { return }
+                if view.historyState.loading || view.newerPage.loading {
+                    waits += 1
+                    guard waits <= 40 else { return }
+                    try? await Task.sleep(for: .milliseconds(50)); continue
+                }
+                guard await self.loadHistoryPage(id, newer: true) else { return }
+                reads += 1
+            }
+        }
+    }
     func loadEarlierPage(sessionID: String? = nil, startingTurnOnly: Bool = false) async -> Bool {
         guard let id = sessionID ?? selectedID else { return false }
         return await loadHistoryPage(id, newer: false)

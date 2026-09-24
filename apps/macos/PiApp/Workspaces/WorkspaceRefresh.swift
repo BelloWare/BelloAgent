@@ -209,6 +209,7 @@ extension WorkspaceModel {
                         if !overlaps, let last = view.messages.last, let incarnation, let lineage {
                             view.newerPage = .init(cursor: .init(incarnation: incarnation, lineage: lineage, entry: last.id))
                             view.browsingHistory = true
+                            if view.scrollAnchor?.followsBottom != false { fillLiveGap(id) }
                         }
                         view.historyRevision = nil
                         view.projectedRows = projected
