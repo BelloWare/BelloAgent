@@ -349,24 +349,35 @@ struct ContentGeometry: Equatable {
             preserveReadingPositionForLayout()
         }
         let page = Self.displayPage(messages)
-        let patched = snapshot.flatMap { current in
-            Self.sameLifecycle(current.lifecycle, input.lifecycle) ? TranscriptActivity.patched(current.items, from: current.messages, to: page) : nil
+        let patch = snapshot.flatMap { current in
+            Self.sameLifecycle(current.lifecycle, input.lifecycle) ? TranscriptActivity.patch(current.items, from: current.messages, to: page) : nil
         }
         // A page short of the conversation's newest row — cut by the resident
         // window, or a history window with newer rows after it — may end in
         // the middle of a turn; that turn folds only on its task's receipt.
-        let items = patched ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle,
-                                                         complete: page.count == messages.count && !session.newerPage.available)
-        guard Set(page.map(\.id)).count == page.count, Set(items.map(\.id)).count == items.count else {
-            projectionError = "This conversation contains conflicting row identities. The last valid page is retained; inspect the session file to repair it. No history was deleted."
-            return
+        let items = patch?.items ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle,
+                                                              complete: page.count == messages.count && !session.newerPage.available)
+        // A token keeps every row's identity and place (see `patch`), all of
+        // them already proved unique and already seen by the page presented.
+        // Hashing every id of a long chat again, twice for uniqueness and
+        // twice for what is new, was most of what a token cost the page.
+        let sameIdentities = patch != nil && initialized
+        if !sameIdentities {
+            if TranscriptLayoutClock.recording { TranscriptLayoutClock.identityWalks += 1 }
+            guard Set(page.map(\.id)).count == page.count, Set(items.map(\.id)).count == items.count else {
+                projectionError = "This conversation contains conflicting row identities. The last valid page is retained; inspect the session file to repair it. No history was deleted."
+                return
+            }
         }
         if projectionError != nil { projectionError = nil }
-        if let current = snapshot, current.messages == page, current.lifecycle == input.lifecycle, initialized { return }
+        if let current = snapshot, current.lifecycle == input.lifecycle, initialized,
+           patch.map({ !$0.changed }) ?? (current.messages == page) { return }
         var fresh: Set<String> = []
-        for message in page {
-            if initialized, !seen.contains(message.id) { fresh.insert(message.id) }
-            seen.insert(message.id)
+        if !sameIdentities {
+            for message in page {
+                if initialized, !seen.contains(message.id) { fresh.insert(message.id) }
+                seen.insert(message.id)
+            }
         }
         if !initialized {
             if let anchor = session.scrollAnchor {
@@ -394,8 +405,10 @@ struct ContentGeometry: Equatable {
         firstRow = page.first?.id ?? ""
         // A single bounded plan supplies stable identities for both initial
         // history and incremental updates; the native document reuses hosts.
-        let ids = Set(items.map(\.id))
-        frames = frames.filter { ids.contains($0.key) }
+        if !sameIdentities {
+            let ids = Set(items.map(\.id))
+            frames = frames.filter { ids.contains($0.key) }
+        }
         sequence += 1
         lastPresentationAt = ProcessInfo.processInfo.systemUptime
         let next = Snapshot(sessionID: session.id, generation: generation, messages: page, items: items, fresh: fresh, sequence: sequence, lifecycle: input.lifecycle, liveTurn: TaskTranscriptPlan.live(input.lifecycle, messages: messages),

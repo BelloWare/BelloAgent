@@ -110,6 +110,10 @@ enum TranscriptPaging {
     /// many times the page walked every row to forget what left it.
     static var disclosureReads = 0
     static var disclosurePrunes = 0
+    /// Whole-page identity walks: the page or the document hashing every
+    /// row's id to prove the ids unique, or to find rows that came or went.
+    /// A token keeps every row's identity, so it must take none.
+    static var identityWalks = 0
     /// What a reply's native surface spent taking tokens, and the part of it
     /// that was the markdown reading of the text, so a fixture can tell the
     /// surface's own share from the parser's.
@@ -125,7 +129,7 @@ enum TranscriptPaging {
         rowAttachmentSeconds = 0; rowDetachmentSeconds = 0
         placementSeconds = 0; validationSeconds = 0; intrinsicInvalidations = 0
         streamingAppends = 0; streamingEstimates = 0; streamingRebuilds = 0
-        disclosureReads = 0; disclosurePrunes = 0
+        disclosureReads = 0; disclosurePrunes = 0; identityWalks = 0
         markdownAppendSeconds = 0; markdownReadingSeconds = 0
     }
 }
