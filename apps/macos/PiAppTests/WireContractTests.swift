@@ -359,7 +359,10 @@ final class WireContractTests: XCTestCase {
         let terminal = try XCTUnwrap(timings["modelComplete"]?.number)
         let span = try XCTUnwrap(chat.session.footer.timing.latest?.streamingMilliseconds)
         XCTAssertEqual(span, last - first, accuracy: 1e-6, "The archived decode span is first → last output")
-        XCTAssertGreaterThanOrEqual(span, 950); XCTAssertLessThan(span, 1_500, "The model generated for one second")
+        // About the one second the model generated. Under the gate's parallel
+        // load its events can arrive half a second early or late; the span still
+        // stops short of the two seconds the gateway held the terminal event.
+        XCTAssertGreaterThanOrEqual(span, 500); XCTAssertLessThan(span, 1_900, "The model generated for one second, never the held two")
         XCTAssertGreaterThanOrEqual(terminal - last, 1_900, "The gateway held the terminal event two seconds after the last token")
         let decode = 100 / (span / 1_000), diluted = 101 / ((terminal - first) / 1_000)
         print("PERF held-terminal decodeTokPerSec=\(String(format: "%.1f", decode)) dividedToTerminal=\(String(format: "%.1f", diluted)) spanMs=\(Int(span)) heldMs=\(Int(terminal - last))")

@@ -657,9 +657,9 @@ final class UIScreenshotTests: XCTestCase {
     }
 
     /// 20 · A split-turn compaction in the Session Inspector: one Compaction
-    /// row holding its two summary requests, named "earlier history" and
-    /// "start of this turn", and the second one's page with its instruction
-    /// first on the Conversation tab.
+    /// row holding its one summary request, named "earlier history and start
+    /// of this turn", and its page with its instruction first on the
+    /// Conversation tab.
     @MainActor private func captureCompactionRequestScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                            appearances: [(String, NSAppearance.Name)], workspaceID: String, profileID: String) async throws {
         let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "Summarize the retry work", path: nil, profileID: profileID, toolMode: "editing")
@@ -670,7 +670,8 @@ final class UIScreenshotTests: XCTestCase {
         model.send(sessionID: chat.id)
         try await waitIdle(session, model: model, minimumMessages: 2)
         // A turn larger than the recent tail a compaction keeps: compacting
-        // splits it, so the compaction asks for the history and the start of the turn.
+        // splits it, so the compaction's one request asks for the history and
+        // the start of the turn.
         session.draft = "bulk 120"
         model.send(sessionID: chat.id)
         try await waitIdle(session, model: model, minimumMessages: 4)
@@ -679,21 +680,19 @@ final class UIScreenshotTests: XCTestCase {
         let controller = try openInspector(model, session, at: .latestRequest)
         defer { controller.close(); window.makeKeyAndOrderFront(nil) }
         let inspector = controller.inspector, panel = try XCTUnwrap(controller.window)
-        try await until("the compaction's two requests, settled", seconds: 90) {
+        try await until("the compaction's request, settled", seconds: 90) {
             !session.hasWork && !session.loading && inspector.indexLoaded && inspector.index.turns.contains {
-                $0.entries.contains { if case .compaction(let group) = $0 { group.requests.count == 2 && !group.requests.contains(where: \.running) } else { false } }
+                $0.entries.contains { if case .compaction(let group) = $0 { group.requests.count == 1 && !group.requests.contains(where: \.running) } else { false } }
             }
         }
         let group = try XCTUnwrap(inspector.index.turns.flatMap(\.entries).compactMap { entry -> InspectorCompaction? in
-            if case .compaction(let group) = entry, group.requests.count == 2 { return group } else { return nil }
+            if case .compaction(let group) = entry, group.requests.count == 1 { return group } else { return nil }
         }.last)
-        inspector.select(.request(group.requests[1].id))
-        try await until("both summary requests named", seconds: 30) {
-            inspector.summaryLabel(group.requests[0].id) != nil && inspector.summaryLabel(group.requests[1].id) != nil
-                && inspector.request.conversation.value?.summary != nil
+        inspector.select(.request(group.requests[0].id))
+        try await until("the summary request named", seconds: 30) {
+            inspector.summaryLabel(group.requests[0].id) != nil && inspector.request.conversation.value?.summary != nil
         }
-        XCTAssertEqual(inspector.summaryLabel(group.requests[0].id), "earlier history")
-        XCTAssertEqual(inspector.summaryLabel(group.requests[1].id), "start of this turn")
+        XCTAssertEqual(inspector.summaryLabel(group.requests[0].id), "earlier history and start of this turn")
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
             try capture(panel, to: gallery.appendingPathComponent("20-compaction-requests-\(name).png"))
