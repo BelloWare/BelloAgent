@@ -42,6 +42,11 @@ import CoreServices
         GitWatchStream.liveCount(under: URL(fileURLWithPath: root, isDirectory: true).resolvingSymlinksInPath().path)
     }
 
+    /// What the repository ignores, as the last refresh read it. A build or an
+    /// install writing into an ignored folder (`node_modules`, `build/`,
+    /// `DerivedData`) changes nothing the panel shows, and used to refresh it
+    /// every second for as long as it ran.
+    nonisolated let ignored = GitIgnoredPaths()
     init(root: String, interval: TimeInterval = 1, onChange: @escaping () -> Void) {
         let resolved = URL(fileURLWithPath: root, isDirectory: true).resolvingSymlinksInPath().path
         self.root = resolved
@@ -70,13 +75,13 @@ import CoreServices
 
     func start() {
         guard !handle.isRunning else { return }
-        let root = root, gitDirectory = gitDirectory, generation = UUID()
+        let root = root, gitDirectory = gitDirectory, ignored = ignored, generation = UUID()
         self.generation = generation
         let bridge = GitWatchBridge { @Sendable [weak self] paths, flags in
             // The folder this stream is on stopped being the project's folder:
             // it was renamed, moved or deleted under the panel.
             let moved = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0 }
-            guard moved || paths.contains(where: { Self.isInteresting($0, under: root, gitDirectory: gitDirectory) }) else { return }
+            guard moved || paths.contains(where: { Self.isInteresting($0, under: root, gitDirectory: gitDirectory) && !ignored.covers($0) }) else { return }
             Task { @MainActor [weak self] in
                 guard let self, self.generation == generation, self.handle.isRunning else { return }
                 if moved { self.rootChanged() } else { self.changed() }
@@ -245,4 +250,31 @@ private func gitWatchCallback(_ stream: ConstFSEventStreamRef, _ info: UnsafeMut
     let bridge = Unmanaged<GitWatchBridge>.fromOpaque(info).takeUnretainedValue()
     let list = (unsafeBitCast(paths, to: NSArray.self) as? [String]) ?? []
     bridge.deliver(list, (0..<count).map { flags[$0] })
+}
+
+/// The ignored paths of one working tree, read by the FSEvents queue and set
+/// on the main actor.
+final class GitIgnoredPaths: @unchecked Sendable {
+    private let lock = NSLock()
+    private var directories: [String] = []
+    private var files: Set<String> = []
+    /// `relative` as `git ls-files --ignored --directory` lists it under `root`.
+    func update(root: String, relative: [String]) {
+        let root = Self.comparable(root)
+        var directories: [String] = [], files: Set<String> = []
+        for entry in relative {
+            if entry.hasSuffix("/") { directories.append(root + "/" + entry) } else { files.insert(root + "/" + entry) }
+        }
+        lock.lock(); self.directories = directories; self.files = files; lock.unlock()
+    }
+    func covers(_ path: String) -> Bool {
+        let path = Self.comparable(path)
+        lock.lock(); defer { lock.unlock() }
+        if files.contains(path) { return true }
+        let directory = path.hasSuffix("/") ? path : path + "/"
+        return directories.contains { directory.hasPrefix($0) }
+    }
+    /// One spelling of a path: `resolvingSymlinksInPath` drops a leading
+    /// "/private" (the root reads "/var/…") while FSEvents keeps it.
+    static func comparable(_ path: String) -> String { path.hasPrefix("/private/") ? String(path.dropFirst("/private".count)) : path }
 }

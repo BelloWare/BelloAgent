@@ -84,8 +84,15 @@ struct MetricsFooter: View {
         HStack(spacing: PiSpacing.md) {
             pills(compact: false).frame(maxWidth: .infinity, alignment: .leading)
             // The clock and the action get their room first; the pills wrap
-            // into whatever is left rather than pushing them off the bar.
-            if full { runLine.fixedSize().layoutPriority(2) }
+            // into whatever is left rather than pushing them off the bar. The
+            // room is one fixed slot: sized by its text, the line widened and
+            // narrowed with each phase ("Generating response…", "Running
+            // bash…") and clock step, and the footer switched between one row
+            // and two in the middle of a run.
+            if full, session.busy {
+                SessionRunLine(session: session, footer: footer)
+                    .frame(width: Self.runSlot, alignment: .leading).layoutPriority(2)
+            }
             if full && !session.notice.isEmpty { noticeLine.layoutPriority(2) }
             // An AppKit press target over the badge, as over the pills beside it.
             PiBadge(text: full ? (session.captureAvailable ? "" : "Next: ") + captureTitle : "", tone: captureTone, icon: session.captureAvailable ? "record.circle.fill" : "record.circle")
@@ -105,6 +112,10 @@ struct MetricsFooter: View {
         if session.busy { SessionRunLine(session: session, footer: footer) }
     }
     private var captureTitle: String { session.captureMode == "off" ? "Capture off" : session.captureMode == "persist" ? "Persist locally" : "Session memory" }
+    /// The one-row form's room for the run line: the clock's template and a
+    /// phase such as "Generating response…". A longer action ends in "…" and
+    /// is whole in the line's help; on its own row it takes the full width.
+    static let runSlot: CGFloat = 220
     private var captureTone: PiTone { session.captureMode == "memory" ? .info : .neutral }
 }
 
@@ -311,14 +322,18 @@ struct SessionRunLine: View {
         TimelineView(.periodic(from: Self.clockOrigin(footer.turnTiming, atUptimeMs: ProcessInfo.processInfo.systemUptime * 1_000, date: Date()), by: 1)) { _ in
             HStack(spacing: 6) {
                 if let elapsed = Self.elapsed(footer.turnTiming, atUptimeMs: ProcessInfo.processInfo.systemUptime * 1_000) {
-                    Text(elapsed).monospacedDigit().lineLimit(1).fixedSize()
-                        .frame(minWidth: 34, alignment: .leading)
+                    // As wide as "00m 00s" from the first second on, so no
+                    // clock step (9s → 10s → 1m 00s) moves what follows it.
+                    ZStack(alignment: .leading) {
+                        Text("00m 00s").hidden()
+                        Text(elapsed)
+                    }.monospacedDigit().lineLimit(1).fixedSize()
                 }
                 Text(action).lineLimit(1).truncationMode(.tail)
             }
             .font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
         }
-        .help("The turn under way: elapsed time and the current action")
+        .help("The turn under way: " + action)
         .accessibilityIdentifier("session-run-line")
         .accessibilityLabel(action)
     }

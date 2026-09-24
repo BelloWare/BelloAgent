@@ -206,7 +206,7 @@ public actor AgentSession {
         // A journal this runtime creates counts every attempt from its first;
         // a reopened one does when it holds a cost record (below).
         spendTracked = resumePath == nil
-        for item in opened.loaded {
+        for item in opened.takeLoaded() {
             if item["customType"].text == SessionSpend.recordType { spend.add(record: item["data"]); spendTracked = true; continue }
             if item["type"].text == "message" {
                 let message=try ChatMessage(id:required(item["id"],"message id"),pi:item["message"]); history.append(message); if !["execution","requestLedger"].contains(message.kind ?? "") { context.append(message) }; visible.append(message)

@@ -225,6 +225,84 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         XCTAssertTrue(GitWorkingTreeWatcher.isInteresting(repository + "/src/Thing.swift", under: repository))
     }
 
+    /// A build or an install writing into an ignored folder changes nothing
+    /// the panel shows. It used to refresh the panel every second for as
+    /// long as it ran: every path outside `.git` counted.
+    @MainActor func testWritesIntoAnIgnoredFolderCauseNoRefresh() async throws {
+        let root = try repository("git-watch-ignored"); defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        try "node_modules/\nbuild/\n*.log\n".write(to: root.appendingPathComponent(".gitignore"), atomically: false, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Ignore"], in: root)
+        let modules = root.appendingPathComponent("node_modules/pkg", isDirectory: true)
+        try FileManager.default.createDirectory(at: modules, withIntermediateDirectories: true)
+        try "0\n".write(to: modules.appendingPathComponent("index.js"), atomically: false, encoding: .utf8)
+        try "log\n".write(to: root.appendingPathComponent("run.log"), atomically: false, encoding: .utf8)
+        let controller = GitController(roots: [root.path]); defer { controller.stop() }
+        try await eventually("settle") { controller.repositoryRoot != nil && !controller.loading }
+        try await Task.sleep(for: .milliseconds(1_500))
+        let before = controller.automaticRefreshes
+        for index in 0..<20 {
+            try "\(index)\n".write(to: modules.appendingPathComponent("file\(index).js"), atomically: false, encoding: .utf8)
+            try "log \(index)\n".write(to: root.appendingPathComponent("run.log"), atomically: false, encoding: .utf8)
+            try await Task.sleep(for: .milliseconds(60))
+        }
+        try await Task.sleep(for: .milliseconds(2_000))
+        XCTAssertEqual(controller.automaticRefreshes, before, "writes into ignored paths refresh nothing")
+        // A new ignored folder is not in the last read of what is ignored:
+        // its first change refreshes once, which learns it, and then it is quiet.
+        let build = root.appendingPathComponent("build/out", isDirectory: true)
+        try FileManager.default.createDirectory(at: build, withIntermediateDirectories: true)
+        try "o\n".write(to: build.appendingPathComponent("first.o"), atomically: false, encoding: .utf8)
+        try await Task.sleep(for: .milliseconds(2_000))
+        let learned = controller.automaticRefreshes
+        XCTAssertLessThanOrEqual(learned - before, 1, "a new ignored folder costs at most one refresh")
+        for index in 0..<20 {
+            try "\(index)\n".write(to: build.appendingPathComponent("unit\(index).o"), atomically: false, encoding: .utf8)
+            try await Task.sleep(for: .milliseconds(60))
+        }
+        try await Task.sleep(for: .milliseconds(2_000))
+        XCTAssertEqual(controller.automaticRefreshes, learned, "once learned, the new ignored folder refreshes nothing")
+        try "tracked\n".write(to: root.appendingPathComponent("tracked.txt"), atomically: false, encoding: .utf8)
+        try await eventually("a tracked change still refreshes", timeout: 6) { controller.status.entries.contains { $0.path == "tracked.txt" } }
+    }
+
+    /// A repository whose refresh outlasts the watcher's one-second interval
+    /// still finishes one while the tree keeps changing. Every change used to
+    /// cancel the refresh under way, so none finished until the writes stopped.
+    @MainActor func testASlowRefreshFinishesWhileTheTreeKeepsChanging() async throws {
+        let root = try repository("git-watch-slow"); defer { try? FileManager.default.removeItem(at: root) }
+        try start(root)
+        try "seed\n".write(to: root.appendingPathComponent("seed.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
+        let controller = GitController(roots: [root.path]); defer { controller.stop(); GitController.statusReadDelay = .zero }
+        try await eventually("settle") { controller.repositoryRoot != nil && !controller.loading }
+        try await Task.sleep(for: .milliseconds(1_200))
+        GitController.statusReadDelay = .milliseconds(1_500)
+        let began = Date()
+        var sawChangeWhileWriting = false
+        for index in 0..<16 {
+            try "\(index)\n".write(to: root.appendingPathComponent("busy\(index).txt"), atomically: true, encoding: .utf8)
+            try await Task.sleep(for: .milliseconds(250))
+            if !controller.status.entries.isEmpty { sawChangeWhileWriting = true; break }
+        }
+        XCTAssertTrue(sawChangeWhileWriting, "a refresh finished \(Date().timeIntervalSince(began)) s into continuous writes")
+    }
+
+    func testIgnoredPathsCoverTheirFoldersAndFilesOnly() {
+        let ignored = GitIgnoredPaths()
+        ignored.update(root: "/repo", relative: ["node_modules/", "build/", "debug.log"])
+        XCTAssertTrue(ignored.covers("/repo/node_modules/pkg/index.js"))
+        XCTAssertTrue(ignored.covers("/repo/node_modules"))
+        XCTAssertTrue(ignored.covers("/repo/build/out/app.o"))
+        XCTAssertTrue(ignored.covers("/repo/debug.log"))
+        XCTAssertFalse(ignored.covers("/repo/node_modules_notes.md"))
+        XCTAssertFalse(ignored.covers("/repo/src/build.swift"))
+        XCTAssertFalse(ignored.covers("/repo/debug.log.txt"))
+        // FSEvents keeps "/private" where the resolved root drops it.
+        ignored.update(root: "/var/folders/x/repo", relative: ["node_modules/"])
+        XCTAssertTrue(ignored.covers("/private/var/folders/x/repo/node_modules/a.js"))
+    }
+
     /// The watch must never win a race with the reader. A refresh queued by
     /// the watch used to start while the reader's own was waiting on git, take
     /// its place, and leave the panel showing the old changes with a spinner

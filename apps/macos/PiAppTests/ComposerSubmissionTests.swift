@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import SwiftUI
 @testable import PiApp
 
 final class ComposerSubmissionTests: XCTestCase {
@@ -60,6 +61,39 @@ final class ComposerSubmissionTests: XCTestCase {
         }
         XCTAssertTrue(intents.isEmpty)
         XCTAssertTrue(elsewhere.isEmpty, "A composer nobody is typing in claims nothing")
+    }
+
+    /// The field's height is its scroll view's own: the text reports its
+    /// height to the scroll view in the layout pass that lays a new line
+    /// out, and the scroll view asks SwiftUI to size it again. It used to go
+    /// through SwiftUI state a run-loop turn later, so each new line was
+    /// drawn in the old frame first, and a chat switch showed the previous
+    /// chat's height until the new editor reported its own.
+    @MainActor func testTheFieldTakesItsHeightFromItsText() throws {
+        var text = "One line"
+        let hosted = NSHostingView(rootView: ComposerHeightProbe(text: Binding(get: { text }, set: { text = $0 })))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = hosted
+        defer { window.contentView = nil; window.close() }
+        func settle() { for _ in 0..<3 { hosted.layoutSubtreeIfNeeded(); RunLoop.current.run(until: Date().addingTimeInterval(0.02)) } }
+        settle()
+        let scroll = try XCTUnwrap(ConversationPaneTests.views(ComposerScrollView.self, in: hosted).first)
+        let editor = try XCTUnwrap(scroll.documentView as? ComposerTextView)
+        XCTAssertEqual(scroll.frame.height, ComposerScrollView.minimumHeight, accuracy: 0.5)
+        editor.insertText("\nTwo\nThree\nFour\nFive", replacementRange: editor.selectedRange())
+        hosted.layoutSubtreeIfNeeded()
+        // In the pass that laid the lines out, before any run-loop turn.
+        XCTAssertGreaterThan(scroll.intrinsicContentSize.height, ComposerScrollView.minimumHeight + 40, "the text reported its height in the same pass")
+        settle()
+        XCTAssertEqual(scroll.frame.height, scroll.intrinsicContentSize.height, accuracy: 0.5, "SwiftUI sized the field to its text")
+        editor.insertText(String(repeating: "\nMore", count: 40), replacementRange: editor.selectedRange())
+        settle()
+        XCTAssertEqual(scroll.frame.height, ComposerScrollView.maximumHeight, accuracy: 0.5, "it stops at the ceiling")
+        // Cleared through the model, as sending clears it.
+        text = ""
+        hosted.rootView = ComposerHeightProbe(text: Binding(get: { text }, set: { text = $0 }))
+        settle()
+        XCTAssertEqual(scroll.frame.height, ComposerScrollView.minimumHeight, accuracy: 0.5, "clearing brings it back to one line")
     }
 
     /// A sheet of the workspace window owns the keyboard: the conversation's
@@ -172,4 +206,10 @@ final class ComposerSubmissionTests: XCTestCase {
         XCTAssertTrue(view.sendFailure?.contains("Resume or remove") == true)
         XCTAssertEqual(view.draft, "preserved stale steer")
     }
+}
+
+/// The native field alone, sized as the composer sizes it.
+private struct ComposerHeightProbe: View {
+    @Binding var text: String
+    var body: some View { NativeComposer(text: $text, send: { _ in }).fixedSize(horizontal: false, vertical: true).frame(width: 480) }
 }

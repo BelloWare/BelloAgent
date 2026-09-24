@@ -31,4 +31,8 @@ extension AgentSession {
     /// so their bounds are testable without exposing the cards themselves.
     var retainedToolStateIDs: [String] { toolStateOrder }
     var retainedToolStateBytes: Int { toolStateBytes.values.reduce(0,+) }
+    /// Parsed journal records still held after open, and whether a context
+    /// preview is: both are released, not kept for the session's life.
+    var journalLoadedRecordCount: Int { journal?.loaded.count ?? 0 }
+    var holdsPreparedContext: Bool { preparedContext != nil }
 }

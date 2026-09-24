@@ -142,14 +142,14 @@ import AppKit
 
     /// Refreshes without waiting, replacing any refresh already in flight so
     /// its git processes stop instead of racing the new one.
-    func startRefresh() { refreshTask?.cancel(); refreshTask = Task { await refresh() } }
+    func startRefresh() { automaticRefresh = nil; automaticChangePending = false; refreshTask?.cancel(); refreshTask = Task { await refresh() } }
     private func startHistoryReload() { historyTask?.cancel(); historyTask = Task { await reloadHistory() } }
     /// Stops every read this panel started. The sheet calls it as it closes, so
     /// no `git show` keeps computing a patch for a panel nobody can see.
     func stop() {
         generation += 1
         watcher?.stop(); watcher = nil
-        refreshTask?.cancel(); refreshTask = nil
+        refreshTask?.cancel(); refreshTask = nil; automaticRefresh = nil; automaticChangePending = false
         historyTask?.cancel(); historyTask = nil
         detailTask?.cancel(); detailTask = nil
         selectedDiffTask?.cancel(); selectedDiffTask = nil
@@ -165,10 +165,26 @@ import AppKit
         // change; if it somehow does not, the change is picked up after it.
         guard !busy, readerRefreshes == 0 else { missedChange = true; return }
         missedChange = false
+        // A refresh already under way is let finish, and whatever changed
+        // during it makes one more after it. Cancelling it on every change
+        // meant a repository whose refresh outlasts the watcher's one-second
+        // interval (a build writing all the while) never finished one.
+        if automaticRefresh != nil { automaticChangePending = true; return }
         automaticRefreshes += 1
+        let token = UUID(); automaticRefresh = token; automaticChangePending = false
         refreshTask?.cancel()
-        refreshTask = Task { await refresh(automatic: true) }
+        refreshTask = Task { [weak self] in
+            await self?.refresh(automatic: true)
+            guard let self, self.automaticRefresh == token else { return }
+            self.automaticRefresh = nil
+            if self.automaticChangePending, !Task.isCancelled { self.automaticChangePending = false; self.workingTreeChanged() }
+        }
     }
+    /// A test seam: how long each status read takes on top of git's own time.
+    nonisolated(unsafe) static var statusReadDelay: Duration = .zero
+    /// The automatic refresh under way, and whether the tree changed during it.
+    private var automaticRefresh: UUID?
+    private var automaticChangePending = false
     private func updateWatch(on root: String?) {
         guard let root else { watcher?.stop(); watcher = nil; return }
         let resolved = URL(fileURLWithPath: root, isDirectory: true).resolvingSymlinksInPath().path
@@ -207,6 +223,8 @@ import AppKit
             // A refresh publishes only what changed: the watch refreshes on
             // every save, and reassigning the same status, history and diff
             // redrew the whole panel each time.
+            // A test seam, zero in the app: a repository slow to read.
+            if Self.statusReadDelay > .zero { try? await Task.sleep(for: Self.statusReadDelay); guard !Task.isCancelled else { return } }
             let status = try await service.status(in: top)
             guard current(generation) else { return }
             publish(\.status, status)
@@ -223,6 +241,7 @@ import AppKit
             else { selectedDiffStale = true }
             async let branchList = service.branches(in: top)
             async let stashList = service.stashes(in: top)
+            async let ignoredList = service.ignoredPaths(in: top)
             // Reads cancelled because this refresh was replaced are not empty
             // lists: taking them for that blanked the branch menu and the
             // stash count until the next refresh landed, several times a
@@ -230,6 +249,7 @@ import AppKit
             var branches: [String] = [], stashes: [GitStashEntry] = []
             do { branches = try await branchList } catch is CancellationError { return } catch {}
             do { stashes = try await stashList } catch is CancellationError { return } catch {}
+            if let ignored = try? await ignoredList, let watcher { watcher.ignored.update(root: watcher.root, relative: ignored) }
             guard current(generation) else { return }
             publish(\.branches, branches); publish(\.stashes, stashes)
             await reloadHistory(generation: generation, automatic: automatic)

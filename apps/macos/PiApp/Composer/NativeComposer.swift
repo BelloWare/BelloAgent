@@ -16,7 +16,6 @@ struct NativeComposer: NSViewRepresentable {
     var inputRejected: (String) -> Void = { _ in }
     /// Image files dropped on or pasted into the composer.
     var attachFiles: ([URL]) -> Void = { _ in }
-    var heightChanged: (CGFloat) -> Void = { _ in }
     /// A changed token moves keyboard focus into the editor once the view is in a window.
     var focusToken = 0
     /// The selected skills, drawn as tokens that lead the text.
@@ -28,8 +27,8 @@ struct NativeComposer: NSViewRepresentable {
     var skillHovered: (SkillChip, ComposerSkillToken, Bool) -> Void = { _, _, _ in }
     var describeSkill: (SkillChip) -> SkillDetail? = { _ in nil }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.borderType = .noBorder
+    func makeNSView(context: Context) -> ComposerScrollView {
+        let scroll = ComposerScrollView(); scroll.hasVerticalScroller = true; scroll.borderType = .noBorder
         scroll.drawsBackground = false; scroll.autohidesScrollers = true
         // An overlay scroller never narrows the text container, so a reply reaching the height
         // clamp cannot rewrap, change height, hide the scroller and rewrap again.
@@ -64,7 +63,12 @@ struct NativeComposer: NSViewRepresentable {
         editor.focused = { [weak editor, weak coordinator] in
             if let editor { coordinator?.focusChanged(editor) }
         }
-        editor.contentHeightChanged = { [weak coordinator] height in Task { @MainActor in coordinator?.parent.heightChanged(height) } }
+        // The field's height is the scroll view's own: the text's height is
+        // its intrinsic height, so SwiftUI sizes the field in the pass that
+        // laid the new line out. Handed on through state a run-loop turn
+        // later, the line was drawn in the old frame first and the field
+        // grew (or shrank) a frame behind it, moving the transcript twice.
+        editor.contentHeightChanged = { [weak scroll] height in scroll?.fieldHeight = height }
         editor.skillStrip.changed = { [weak coordinator] in coordinator?.parent.skillsChanged() }
         editor.skillStrip.pressed = { [weak coordinator] in coordinator?.parent.skillPressed($0, $1) }
         editor.skillStrip.hovered = { [weak coordinator] in coordinator?.parent.skillHovered($0, $1, $2) }
@@ -73,7 +77,13 @@ struct NativeComposer: NSViewRepresentable {
         editor.skillStrip.display = skillDisplay; editor.skillTokens = skills
         return scroll
     }
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
+    /// The field is as tall as its text, between its floor and ceiling. An
+    /// intrinsic height alone let it grow but never shrink back: SwiftUI
+    /// took it as a minimum, so a cleared draft kept the tall field.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView scroll: ComposerScrollView, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? scroll.frame.width, height: scroll.fieldHeight)
+    }
+    func updateNSView(_ scroll: ComposerScrollView, context: Context) {
         context.coordinator.parent = self
         if context.coordinator.appliedFocusToken != focusToken, let editor = scroll.documentView as? ComposerTextView {
             context.coordinator.appliedFocusToken = focusToken
@@ -206,6 +216,27 @@ struct ComposerEditMeasurement {
         return (time - value.event, time - value.handler)
     }
 }
+/// The composer's scroll view. Its intrinsic height is the text's, between
+/// the field's floor and ceiling, and it asks SwiftUI to size it again the
+/// moment that height changes.
+@MainActor final class ComposerScrollView: NSScrollView {
+    static let minimumHeight: CGFloat = 44
+    static let maximumHeight: CGFloat = 240
+    var fieldHeight: CGFloat = ComposerScrollView.minimumHeight {
+        didSet {
+            let clamped = min(Self.maximumHeight, max(Self.minimumHeight, fieldHeight))
+            if clamped != fieldHeight { fieldHeight = clamped; return }
+            guard fieldHeight != oldValue else { return }
+            invalidateIntrinsicContentSize()
+            // A height that changes inside a layout pass (the window resized
+            // and the text or its tokens rewrapped) is not taken up by the
+            // pass that is running, so it is asked for again after it.
+            DispatchQueue.main.async { [weak self] in self?.invalidateIntrinsicContentSize() }
+        }
+    }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: fieldHeight) }
+}
+
 @MainActor final class ComposerTextView: NSTextView {
     /// The keys that belong to the conversation rather than to the draft.
     static func conversationScroll(for keyCode: UInt16) -> TranscriptKeyScroll? {
