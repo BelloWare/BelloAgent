@@ -139,7 +139,10 @@ struct TranscriptVersionView: Equatable, Sendable {
         guard !sendingRows.isEmpty else { return false }
         let settled = sendingRows.filter { row in
             let receipt = receipts.last { $0["turnId"]?.string == row.id }?["state"]?.string ?? ""
-            return ["failed", "cancelled", "removed"].contains(receipt) || (!loading && !busy && queued.contains(row.id))
+            // Only a paused queue holds it: an idle helper that has queued a
+            // message it has not dispatched yet is about to run it, and taking
+            // the row out for that one snapshot made it vanish and come back.
+            return ["failed", "cancelled", "removed"].contains(receipt) || (!loading && !busy && queuePaused && queued.contains(row.id))
         }
         guard !settled.isEmpty else { return false }
         sendingRows.removeAll { row in settled.contains { $0.id == row.id } }
