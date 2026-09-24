@@ -431,9 +431,16 @@ import SwiftUI
         pasteText(text)
     }
     /// Sends pasted text as one paste, bracketed when the program asked for that.
+    /// A bracketed paste carries no ESC or C1 CSI of its own, as in iTerm2,
+    /// kitty and VTE: a pasted "ESC[201~" would otherwise end the paste early
+    /// and run the rest, newlines included, as typed input.
     func pasteText(_ text: String) {
         let normalized = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
-        if emulator.bracketedPaste { send("\u{1b}[200~" + normalized + "\u{1b}[201~") } else { send(normalized) }
+        if emulator.bracketedPaste {
+            var payload = normalized
+            payload.unicodeScalars.removeAll { $0 == "\u{1b}" || $0 == "\u{9b}" }
+            send("\u{1b}[200~" + payload + "\u{1b}[201~")
+        } else { send(normalized) }
     }
     @objc override func selectAll(_ sender: Any?) {
         // Everything with content: the blank rows under the cursor add nothing.
