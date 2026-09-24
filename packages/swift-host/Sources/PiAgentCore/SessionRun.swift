@@ -59,7 +59,7 @@ extension AgentSession {
             let started=nowMS(); var measured=false
             defer { if !measured { modelRequestsMs += nowMS()-started } }
             do {
-                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,turnID:turnID,purpose:purpose,onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
+                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,cacheSessionID:promptCacheSessionID,turnID:turnID,purpose:purpose,onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
                 modelReplyMs = nowMS()-started; modelRequestsMs += modelReplyMs; measured = true
                 return reply
             } catch let error as AgentError {
@@ -124,8 +124,8 @@ extension AgentSession {
                     else { resourceSnapshot=try await resources.resolve(); appliedSnapshot=resourceSnapshot }
                     appliedRevision=resourceSnapshot.revision
                     var definitions=await sessionDefinitions()
-                    var instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
-                    var request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id)
+                    var instructions=Self.requestInstructions(resourceSnapshot.prompt)
+                    var request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
                     var count=try countContext(requestContext,request:request)
                     currentContextCount=count
                     // Pi 0.85.1 checks the threshold before a new prompt joins the context
@@ -157,8 +157,8 @@ extension AgentSession {
                         if !drained && !resumingFailedRequest, try await drainSteering() { overflowRecoveryAttempted=false }
                         resourceSnapshot=appliedSnapshot ?? resourceSnapshot
                         definitions=await sessionDefinitions()
-                        instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
-                        request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id)
+                        instructions=Self.requestInstructions(resourceSnapshot.prompt)
+                        request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
                         count=try countContext(requestContext,request:request); currentContextCount=count
                     }
                     var modelMs=0.0
@@ -187,8 +187,8 @@ extension AgentSession {
                                 overflowRecoveryAttempted=false
                                 resourceSnapshot=appliedSnapshot ?? resourceSnapshot
                                 definitions=await sessionDefinitions()
-                                instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
-                                request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id)
+                                instructions=Self.requestInstructions(resourceSnapshot.prompt)
+                                request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
                                 count=try countContext(requestContext,request:request); currentContextCount=count
                                 return (try turnProfile.dispatching(count),requestContext,instructions,definitions)
                             })
@@ -222,8 +222,8 @@ extension AgentSession {
                             if try await drainSteering() { overflowRecoveryAttempted=false }
                             resourceSnapshot=appliedSnapshot ?? resourceSnapshot
                             definitions=await sessionDefinitions()
-                            instructions=Self.requestInstructions(resourceSnapshot.prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
-                            request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id)
+                            instructions=Self.requestInstructions(resourceSnapshot.prompt)
+                            request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
                             count=try countContext(requestContext,request:request); currentContextCount=count
                         }
                     }

@@ -113,6 +113,8 @@ final class TimelineStreamingFastPathTests: XCTestCase {
         /// and the page places itself), and the window's display pass.
         var models: [Double] = [], layouts: [Double] = [], displays: [Double] = []
         var appends = 0, estimates = 0, rebuilds = 0, hostBuilds = 0, rootUpdates = 0, sizingPasses = 0, measuredRows = 0
+        /// Times the page or the document hashed every row's id: a token keeps them all.
+        var identityWalks = 0
         /// Inside the pane's layout, in seconds over the run: the document
         /// taking the snapshot (the reply's row taking its token among it),
         /// placing its rows, the reply's own surface reading and measuring the
@@ -150,6 +152,7 @@ final class TimelineStreamingFastPathTests: XCTestCase {
             run.rootUpdates += TranscriptLayoutClock.rootUpdates
             run.sizingPasses += TranscriptLayoutClock.rowSizingPasses
             run.measuredRows += TranscriptLayoutClock.measuredRows
+            run.identityWalks += TranscriptLayoutClock.identityWalks
             run.documentUpdate += TranscriptLayoutClock.updateSeconds
             run.documentLayout += TranscriptLayoutClock.layoutSeconds
             run.surface += TranscriptLayoutClock.markdownUpdateSeconds + TranscriptLayoutClock.markdownLayoutSeconds
@@ -243,6 +246,7 @@ final class TimelineStreamingFastPathTests: XCTestCase {
         XCTAssertGreaterThan(watching.appends, 0)
         XCTAssertEqual(watching.rebuilds, 0, "a token rebuilt the reply's row")
         XCTAssertEqual(watching.hostBuilds, 0, "a token built a row's tree")
+        XCTAssertEqual(watching.identityWalks, 0, "a token hashed every row's id again, though it keeps them all")
         XCTAssertTrue(page.atBottom, "the page followed the reply")
         await pane.settle(turns: 4)
         XCTAssertTrue(replyRow() === row, "the reply keeps its row")
@@ -265,6 +269,7 @@ final class TimelineStreamingFastPathTests: XCTestCase {
         XCTAssertEqual(reading.measuredRows, 0, "a token measured a row nobody can see")
         XCTAssertLessThan(row.measurementCount - measured, away.count / 4, "the reply was measured about once a token")
         XCTAssertEqual(reading.hostBuilds, 0, "a token built a row's tree")
+        XCTAssertEqual(reading.identityWalks, 0, "a token hashed every row's id again, though it keeps them all")
         XCTAssertEqual(reading.rebuilds, 0, "a token rebuilt a row nobody can see")
         XCTAssertEqual(reading.sizingPasses, 0, "a token put a row through SwiftUI's sizing")
         XCTAssertEqual(scroll.contentView.bounds.minY, top, accuracy: 0.5, "the reply growing far below moved the reader")

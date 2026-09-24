@@ -65,7 +65,7 @@ struct RequestDocument: Sendable {
     var notice: String?
     var totalCharacters: Int
     var digests: RequestDigests
-    /// The retained bytes, for "Show all" — rendered on the worker, never here.
+    /// The retained bytes, for "Show all" — read whole on the worker, never here.
     let full: RequestDocumentStorage
     /// A compaction's summary request: what it summarizes, and the
     /// instruction its prompt ends with. Nil for any other request.
@@ -97,11 +97,11 @@ struct RequestDocument: Sendable {
         var items: [Item] = [], calls: [String: String] = [:]
         // A summary request's prompt is its last user message, whole.
         let summarizes = SummaryRequestInfo.isSummary(system: systemText(root, api: api))
-        var prompt: String?
+        var prompt: (text: String, item: Int)?
         for (index, raw) in storage.itemValues(root: root, api: api).enumerated() {
             if index % 16 == 0 { try Task.checkCancellation() }
             let described = describe(raw, api: api, calls: &calls, response: false)
-            if summarizes, described.kind == .user { prompt = described.text }
+            if summarizes, described.kind == .user { prompt = (described.text, index) }
             let canonical = canonicalData(raw)
             let text = described.text as NSString
             let preview = prefix(text, limit: previewLimit)
@@ -115,7 +115,9 @@ struct RequestDocument: Sendable {
                                      tools: sections.first { $0.id == .tools }?.digest)
         return RequestDocument(api: api, model: root["model"] as? String, bytes: data.count, sections: sections, items: items,
                                notice: nil, totalCharacters: items.reduce(0) { $0 + $1.characters }, digests: digests, full: storage,
-                               summary: prompt.flatMap(SummaryRequestInfo.read(prompt:)))
+                               summary: prompt.flatMap { prompt in
+            SummaryRequestInfo.read(prompt: prompt.text).map { info in var info = info; info.item = prompt.item; return info }
+        })
     }
 
     /// The digests alone, for the request a delta compares with: no preview,

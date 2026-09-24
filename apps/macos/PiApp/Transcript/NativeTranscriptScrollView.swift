@@ -375,7 +375,13 @@ final class TranscriptNativeScrollView: NSScrollView {
         // still reach every affected row through their own paths.
         guard (self.snapshot?.sessionID != snapshot?.sessionID || self.snapshot?.generation != snapshot?.generation) || self.snapshot?.sequence != snapshot?.sequence || self.environment != environment else { return }
         let projected = snapshot?.items ?? []
-        guard Set(projected.map(\.id)).count == projected.count, Set(rows.map(\.itemID)).count == rows.count else {
+        // The rows already placed are the page's rows under the same ids, in
+        // the same order — every token of a reply. They were proved unique
+        // when they came; hashing every id of a long chat again on each token
+        // proves nothing new.
+        let sameIdentities = projected.count == rows.count && zip(projected, rows).allSatisfy { $0.id == $1.itemID }
+        if !sameIdentities, TranscriptLayoutClock.recording { TranscriptLayoutClock.identityWalks += 1 }
+        guard sameIdentities || Set(projected.map(\.id)).count == projected.count && Set(rows.map(\.itemID)).count == rows.count else {
             let page = page, revision = page?.snapshot?.sequence
             // This can run inside updateNSView. Publish after SwiftUI's update
             // finishes, and do not attach an old failure to a newer page.
@@ -412,8 +418,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         // and only when rows have come or gone: a token of a reply changes
         // neither, and once anything was open every token used to walk every
         // row and every tool of the page to find that out.
-        let sameRows = (snapshot?.items.count ?? 0) == rows.count
-            && zip(snapshot?.items ?? [], rows).allSatisfy { $0.id == $1.itemID }
+        let sameRows = sameIdentities && projected.count == rows.count
         if !sameRows, let disclosure, disclosure.changedCount > 0, let items = snapshot?.items {
             if TranscriptLayoutClock.recording { TranscriptLayoutClock.disclosurePrunes += 1 }
             let live = Set(items.flatMap { item -> [String] in
@@ -440,14 +445,15 @@ final class TranscriptNativeScrollView: NSScrollView {
         // at: a row that is a different row than it was, or the same row with
         // different content. Everything above keeps its place.
         var changedFrom = items.count == previous.count ? items.count : min(items.count, previous.count)
-        var retained = Dictionary(uniqueKeysWithValues: rows.map { ($0.itemID, $0) })
+        // The same rows in the same places need no index by id to be found.
+        var retained = sameRows ? [:] : Dictionary(uniqueKeysWithValues: rows.map { ($0.itemID, $0) })
+        let freshIDs = snapshot?.fresh ?? []
         rows = items.enumerated().map { index, item in
             let fresh: Bool
-            if case .block(let block) = item {
-                let ids = snapshot?.fresh ?? []
-                fresh = block.message.map { ids.contains($0.id) } ?? block.activity.contains { ids.contains($0.id) }
+            if !freshIDs.isEmpty, case .block(let block) = item {
+                fresh = block.message.map { freshIDs.contains($0.id) } ?? block.activity.contains { freshIDs.contains($0.id) }
             } else { fresh = false }
-            if let row = retained.removeValue(forKey: item.id) {
+            if let row = sameRows ? previous[index] : retained.removeValue(forKey: item.id) {
                 if row.update(item: item, fresh: fresh, actions: actionRelay.forwarded, environment: environment) {
                     changedFrom = min(changedFrom, index)
                     if motion?.changes.contains(where: { $0.rowID == row.itemID }) == true { motionNeedsRetarget = true }

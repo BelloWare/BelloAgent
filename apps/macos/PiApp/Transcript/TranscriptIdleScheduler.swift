@@ -26,8 +26,16 @@ import AppKit
         weak var owner: NSView?
         var work: Work
         var readyAt: TimeInterval
+        /// When this work was first asked for, since it last finished.
+        var since: TimeInterval
         var step: () -> Bool
     }
+    /// How long a stream of changes may keep pushing reconciliation back.
+    /// Every token of a reply moves its quiet deadline later, so without a
+    /// limit rows left standing at an estimate — history above a chat opened
+    /// mid-reply — stayed unmeasured for the whole reply, and every token
+    /// placed the whole page again because of them.
+    static let longestDeferral: TimeInterval = 0.5
     private var jobs: [Job] = []
     private var inputQuietUntil: TimeInterval = 0
     private var nextAllowedAt: TimeInterval = 0
@@ -75,9 +83,10 @@ import AppKit
 
     func request(_ owner: NSView, work: Work = .reconciliation, after deadline: TimeInterval, step: @escaping () -> Bool) {
         if let index = jobs.firstIndex(where: { $0.owner === owner && $0.work == work }) {
-            jobs[index].readyAt = work == .preparation ? min(jobs[index].readyAt, deadline) : max(jobs[index].readyAt, deadline)
+            jobs[index].readyAt = work == .preparation ? min(jobs[index].readyAt, deadline)
+                : min(max(jobs[index].readyAt, deadline), max(jobs[index].since + Self.longestDeferral, jobs[index].readyAt))
             jobs[index].step = step
-        } else { jobs.append(Job(owner: owner, work: work, readyAt: deadline, step: step)) }
+        } else { jobs.append(Job(owner: owner, work: work, readyAt: deadline, since: clock(), step: step)) }
         reschedule()
     }
     func cancel(_ owner: NSView) {

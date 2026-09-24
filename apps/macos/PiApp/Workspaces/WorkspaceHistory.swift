@@ -75,6 +75,7 @@ extension WorkspaceModel {
               view.historyState == .preparing || view.historyState == .empty,
               id == selectedID || sides[selectedID ?? ""]?.id == id else { return }
         if view.historyState != .empty { view.historyState = .ready }
+        view.refreshingCachedRows = false
         view.presentation.readyAt = PerformanceProbe.now
         view.contextSelectionReady = true
         PerformanceProbe.shared.observe("selectionUsefulViewportMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
@@ -101,7 +102,7 @@ extension WorkspaceModel {
         // The reads of the page being replaced end with it: neither boundary
         // is left loading, or failed, behind the cover.
         view.olderPage = .init(); view.newerPage = .init()
-        view.historyState = .loading; view.historyProgress = nil; view.browsingHistory = true; view.publishTranscript()
+        view.historyState = .loading; view.refreshingCachedRows = false; view.historyProgress = nil; view.browsingHistory = true; view.publishTranscript()
         view.presentation.navigation = Task { [weak self, weak view] in
             guard let self, let view else { return }
             do {
@@ -110,7 +111,7 @@ extension WorkspaceModel {
                 self.adoptInitialHistory(page, into: view, around: around)
                 if self.opened.contains(id) { self.refresh(id) }
             } catch is CancellationError { }
-            catch { if !Task.isCancelled, view.presentationGeneration == generation { view.historyState = .failed(error.localizedDescription) } }
+            catch { if !Task.isCancelled, view.presentationGeneration == generation { view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false } }
         }
     }
     func loadEarlier(sessionID: String? = nil) { Task { _ = await loadEarlierPage(sessionID: sessionID) } }

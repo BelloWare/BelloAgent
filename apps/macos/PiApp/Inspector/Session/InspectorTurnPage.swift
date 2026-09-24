@@ -6,18 +6,24 @@ struct InspectorTurnPage: View {
     @ObservedObject var inspector: SessionInspectorModel
     let turnID: String
     let compact: Bool
-    @StateObject private var full = InspectorFullText()
+    @StateObject private var prompt = InspectorPromptExpansion()
+    private static let promptID = "inspector-turn-prompt"
 
     private var turn: InspectorTurn? { inspector.index.turn(turnID) }
     private var summary: TurnSummary? { inspector.summaries[turnID] }
 
     var body: some View {
-        VStack(spacing: 0) {
+        ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if let turn {
                         header(turn)
-                        if !turn.isOther { prompt(turn) }
+                        if !turn.isOther {
+                            // "Show less" at the foot of a long prompt brings the card back into view.
+                            InspectorPromptCard(preview: inspector.prompts[turn.id], model: prompt, showAll: { showPrompt(turn.id) },
+                                                folded: { DispatchQueue.main.async { proxy.scrollTo(Self.promptID, anchor: nil) } })
+                                .id(Self.promptID)
+                        }
                         usage(turn)
                         requests(turn)
                     } else {
@@ -28,9 +34,9 @@ struct InspectorTurnPage: View {
                 .padding(.horizontal, compact ? PiSpacing.lg : PiSpacing.xl).padding(.vertical, PiSpacing.lg)
                 .frame(maxWidth: 1_100, alignment: .leading)
             }
-            InspectorFullTextPane(full: full)
         }
-        .onChange(of: turnID) { _, _ in full.close() }
+        .onChange(of: turnID) { _, _ in prompt.collapse() }
+        .onDisappear { prompt.collapse() }
         .accessibilityIdentifier("inspector-turn")
     }
 
@@ -48,40 +54,19 @@ struct InspectorTurnPage: View {
         }
     }
 
-    /// The prompt as the reader wrote it: its first lines, the rest one click away.
-    private func prompt(_ turn: InspectorTurn) -> some View {
-        let text = inspector.prompts[turn.id]
-        return PiCard(padding: PiSpacing.md) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "person.crop.circle").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.piInfo)
-                    Text("Prompt").font(PiFont.caption.weight(.semibold)).foregroundStyle(Color.piInkSecondary)
-                    Spacer(minLength: 0)
-                    Button("Show all") { showPrompt(turn.id) }.buttonStyle(.piGhost).disabled(text?.isEmpty ?? true)
-                }
-                if let text, !text.isEmpty {
-                    Text(text).font(PiFont.body).foregroundStyle(Color.piInk).lineLimit(8).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    Text(text == nil ? "Reading the prompt…" : "The prompt's text was not retained.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
-                }
-            }
-        }
-        .accessibilityIdentifier("inspector-turn-prompt")
-    }
-
+    /// The whole prompt, in the card, read from the chat's journal.
     private func showPrompt(_ id: String) {
         guard let workspace = inspector.workspace else { return }
         let sessionID = inspector.scope.sessionID
-        full.open(title: "Prompt") {
-            var text = "", offset = 0
+        prompt.show {
+            var text = "", offset = 0, total = 0
             repeat {
                 let page = try await workspace.messagePage(id: id, field: "text", offset: offset, sessionID: sessionID)
-                text += page.0; offset += (page.0 as NSString).length
+                text += page.0; offset += (page.0 as NSString).length; total = max(total, page.1)
                 if page.0.isEmpty { break }
                 if offset >= page.1 { break }
-            } while offset < 8_388_608
-            return text
+            } while offset < InspectorPromptExpansion.readLimit
+            return (text, offset, total)
         }
     }
 
@@ -196,4 +181,115 @@ private struct InspectorTurnRequestRow: View {
     }
     private var missing: String { TurnInfoPresentation.lineFigures(line) }
     private var source: String { TurnInfoPresentation.lineSource(line) }
+}
+
+/// A turn's prompt read whole, for its card; nil while the card shows the
+/// preview.
+@MainActor final class InspectorPromptExpansion: ObservableObject {
+    /// The most of a prompt read from the journal; the card says when a
+    /// prompt is longer.
+    static let readLimit = 8_388_608
+    @Published private(set) var expansion: InspectorExpansion?
+
+    func show(read: @escaping @MainActor () async throws -> (text: String, length: Int, total: Int)) {
+        guard expansion == nil else { return }
+        let expansion = InspectorExpansion(title: "Prompt", style: InspectorTextStyle(face: .body))
+        expansion.showLess = { [weak self] in self?.collapse() }
+        self.expansion = expansion
+        expansion.load(read)
+    }
+    func collapse() {
+        guard let expansion else { return }
+        expansion.cancel()
+        self.expansion = nil
+    }
+}
+
+/// The prompt as the reader wrote it: its first lines, or all of it in place,
+/// selectable, with "Show less" to fold it again.
+struct InspectorPromptCard: View {
+    let preview: String?
+    @ObservedObject var model: InspectorPromptExpansion
+    let showAll: () -> Void
+    /// After "Show less" at the foot of the card.
+    var folded: () -> Void = {}
+
+    var body: some View {
+        PiCard(padding: PiSpacing.md) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "person.crop.circle").font(.system(size: 12, weight: .medium)).foregroundStyle(Color.piInfo)
+                    Text("Prompt").font(PiFont.caption.weight(.semibold)).foregroundStyle(Color.piInkSecondary)
+                    Spacer(minLength: 0)
+                    Button(model.expansion == nil ? "Show all" : "Show less") {
+                        if model.expansion == nil { showAll() } else { model.collapse() }
+                    }
+                    .buttonStyle(.piGhost).disabled(model.expansion == nil && (preview?.isEmpty ?? true))
+                    .accessibilityIdentifier("inspector-prompt-toggle")
+                }
+                if let expansion = model.expansion {
+                    InspectorPromptWhole(expansion: expansion, preview: preview) { model.collapse(); folded() }
+                } else if let preview, !preview.isEmpty {
+                    InspectorPromptPreview(text: preview)
+                } else {
+                    Text(preview == nil ? "Reading the prompt…" : "The prompt's text was not retained.").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
+                }
+            }
+        }
+        .accessibilityIdentifier("inspector-turn-prompt")
+    }
+}
+
+private struct InspectorPromptPreview: View {
+    let text: String
+    var body: some View {
+        Text(text).font(PiFont.body).foregroundStyle(Color.piInk).lineLimit(8).textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// The whole prompt: the preview until the text is laid out, then the text,
+/// what of it is shown when it is long, and "Show less" at its foot.
+private struct InspectorPromptWhole: View {
+    @ObservedObject var expansion: InspectorExpansion
+    let preview: String?
+    let collapse: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack(alignment: .topLeading) {
+                InspectorTextBlock(expansion: expansion)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if expansion.layout == nil, let preview, !preview.isEmpty { InspectorPromptPreview(text: preview) }
+            }
+            switch expansion.phase {
+            case .loading:
+                HStack(spacing: 6) {
+                    PiSpinner(size: 11)
+                    Text(expansion.loaded ? "Laying out the whole prompt…" : "Reading the whole prompt…").font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
+                }
+            case .failed(let message):
+                Text("The whole prompt could not be read: " + message).font(PiFont.caption).foregroundStyle(Color.piWarning)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .shown:
+                EmptyView()
+            }
+            if expansion.capped {
+                HStack(spacing: 8) {
+                    Text("Showing the first \(MetricFormat.tokens(Double(expansion.shown))) of \(MetricFormat.tokens(Double(expansion.length))) characters")
+                        .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).monospacedDigit()
+                    Button(expansion.laying ? "Laying out…" : "Show \(MetricFormat.tokens(Double(expansion.nextStep))) more") { expansion.reveal() }
+                        .buttonStyle(.piGhost).disabled(expansion.laying)
+                        .accessibilityIdentifier("inspector-prompt-reveal")
+                }
+            }
+            if expansion.loaded, expansion.total > expansion.length {
+                Text("The first \(MetricFormat.tokens(Double(expansion.length))) of the prompt's \(MetricFormat.tokens(Double(expansion.total))) characters were read.")
+                    .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).monospacedDigit()
+            }
+            if (expansion.layout?.height ?? 0) > 320 {
+                Button("Show less", action: collapse).buttonStyle(.piGhost).accessibilityIdentifier("inspector-prompt-less")
+            }
+        }
+    }
 }

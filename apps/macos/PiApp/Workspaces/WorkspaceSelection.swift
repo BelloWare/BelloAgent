@@ -35,9 +35,9 @@ extension WorkspaceModel {
         } else if revealInSidebar { revealProjectChat(item) } else { showArchivedSessions = item.isArchived }
         PerformanceProbe.shared.count("sessionSelectionCalls")
         PerformanceProbe.shared.beginSelection(id, hasHistory: item.path != nil)
-        let view = displays[id] ?? SessionDisplay(id: id)
+        let view = displays[id] ?? SessionDisplay(id: id), cached = view.hasPresentedRows
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
-        view.historyState = .loading; view.olderPage = .init(); view.newerPage = .init()
+        view.historyState = .loading; view.refreshingCachedRows = cached; view.olderPage = .init(); view.newerPage = .init()
         view.historyProgress = nil
         view.contextSelectionReady = false; view.browsingHistory = true
         view.draftReady = view.selectionMetadataLoaded
@@ -56,8 +56,9 @@ extension WorkspaceModel {
         // closed (`WorkspaceLaunchSelection.swift`).
         var shownSide: (child: ChatRecord, view: SessionDisplay)?
         if let info = sides[id], let sideView = displays[info.id], let child = record(info.id) {
+            let sideCached = sideView.hasPresentedRows
             sideView.presentation.begin(); sideView.presentationGeneration = sideView.presentation.generation
-            sideView.historyProgress = nil; sideView.historyState = .loading; sideView.browsingHistory = true
+            sideView.historyProgress = nil; sideView.historyState = .loading; sideView.refreshingCachedRows = sideCached; sideView.browsingHistory = true
             sideView.draftReady = sideView.selectionMetadataLoaded || info.pending
             sideView.publishTranscript()
             shownSide = (child, sideView)
@@ -125,7 +126,8 @@ extension WorkspaceModel {
             } catch is CancellationError { }
             catch {
                 guard current() else { return }
-                view.historyState = .failed(error.localizedDescription); view.notice = error.localizedDescription; view.draftReady = view.selectionMetadataLoaded
+                view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false
+                view.notice = error.localizedDescription; view.draftReady = view.selectionMetadataLoaded
             }
         }
         navigationTask = task; view.presentation.navigation = task

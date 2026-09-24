@@ -62,6 +62,26 @@ final class ComposerSubmissionTests: XCTestCase {
         XCTAssertTrue(elsewhere.isEmpty, "A composer nobody is typing in claims nothing")
     }
 
+    /// A sheet of the workspace window owns the keyboard: the conversation's
+    /// shortcuts (⌘↩ send or steer, ⌘. stop, ⌘F search) stand down while it is
+    /// up. ⌘↩ in the Git commit field used to send the chat's draft behind it.
+    @MainActor func testASheetTakesTheConversationShortcutsAway() {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent(UUID().uuidString)
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let chat = ChatRecord(id: "sheet-chat", workspaceID: "w", title: "Chat", path: nil, profileID: "p")
+        model.chats = [chat]; model.selectedID = chat.id
+        XCTAssertTrue(model.conversationCommandsEnabled)
+        for present in [{ model.showGit = true }, { model.showProfiles = true }, { model.showResources = true },
+                        { model.showWorkspaceManager = true }, { model.showConversationContent = true }] as [() -> Void] {
+            present()
+            XCTAssertTrue(model.presentsSheet); XCTAssertFalse(model.conversationCommandsEnabled)
+            model.showGit = false; model.showProfiles = false; model.showResources = false
+            model.showWorkspaceManager = false; model.showConversationContent = false
+            XCTAssertTrue(model.conversationCommandsEnabled)
+        }
+    }
+
     /// The menu bar's ⌘↩ is the composer's send-or-steer, for when the
     /// keyboard is elsewhere; it used to be "Send / Queue Follow-up".
     @MainActor func testTheMenuBarGivesCommandReturnToSendOrSteer() throws {

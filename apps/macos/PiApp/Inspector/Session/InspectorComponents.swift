@@ -5,7 +5,9 @@ import AppKit
 // formats a body: the strings arrive prepared.
 
 /// A page's heading: what it is, a quiet line of context, badges, and the
-/// page's own actions on the right.
+/// page's own actions on the right. The actions say their names while the row
+/// has room for them and show their symbols when it does not, each named on
+/// hover; the badges never truncate, and the title gives way first.
 struct InspectorPageHeader<Badges: View, Actions: View>: View {
     let title: String
     var subtitle: String? = nil
@@ -15,21 +17,59 @@ struct InspectorPageHeader<Badges: View, Actions: View>: View {
         self.title = title; self.subtitle = subtitle; self.badges = badges(); self.actions = actions()
     }
     var body: some View {
-        HStack(alignment: .top, spacing: PiSpacing.md) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(title).font(PiFont.title(18)).foregroundStyle(Color.piInk).lineLimit(1).layoutPriority(1)
-                    badges
-                }
-                if let subtitle, !subtitle.isEmpty {
-                    Text(subtitle).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                }
+        VStack(alignment: .leading, spacing: 4) {
+            ViewThatFits(in: .horizontal) {
+                row(named: true)
+                row(named: false)
             }
-            Spacer(minLength: PiSpacing.sm)
-            HStack(spacing: 6) { actions }
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            }
         }
         .accessibilityElement(children: .contain)
+    }
+    private func row(named: Bool) -> some View {
+        HStack(alignment: .center, spacing: PiSpacing.md) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title).font(PiFont.title(18)).foregroundStyle(Color.piInk).lineLimit(1).layoutPriority(1)
+                badges.fixedSize()
+            }
+            Spacer(minLength: PiSpacing.sm)
+            HStack(spacing: 6) { actions }.fixedSize()
+                .environment(\.inspectorActionNames, named)
+        }
+    }
+}
+
+private struct InspectorActionNamesKey: EnvironmentKey { static let defaultValue = true }
+extension EnvironmentValues {
+    /// Whether a page header's actions say their names, or show only their
+    /// symbols on a narrow page.
+    var inspectorActionNames: Bool {
+        get { self[InspectorActionNamesKey.self] }
+        set { self[InspectorActionNamesKey.self] = newValue }
+    }
+}
+
+/// A page header's action: its name and symbol, or its symbol alone on a
+/// narrow page, named on hover and to VoiceOver either way.
+struct InspectorHeaderAction: View {
+    let title: String
+    let symbol: String
+    let help: String
+    let identifier: String
+    let action: () -> Void
+    @Environment(\.inspectorActionNames) private var named
+    var body: some View {
+        if named {
+            Button(action: action) { Label(title, systemImage: symbol).lineLimit(1) }
+                .buttonStyle(.piGhost).fixedSize().help(help)
+                .accessibilityIdentifier(identifier)
+        } else {
+            PiIconButton(symbol: symbol, label: title, size: 26, action: action)
+                .accessibilityIdentifier(identifier)
+        }
     }
 }
 
@@ -37,9 +77,8 @@ struct InspectorPageHeader<Badges: View, Actions: View>: View {
 struct InspectorShowInChat: View {
     let action: () -> Void
     var body: some View {
-        Button(action: action) { Label("Show in chat", systemImage: "arrow.uturn.left.circle") }
-            .buttonStyle(.piGhost).help("Bring the chat forward, scrolled to what this page is about")
-            .accessibilityIdentifier("inspector-show-in-chat")
+        InspectorHeaderAction(title: "Show in chat", symbol: "arrow.uturn.left.circle", help: "Bring the chat forward, scrolled to what this page is about",
+                              identifier: "inspector-show-in-chat", action: action)
     }
 }
 
@@ -47,9 +86,8 @@ struct InspectorShowInChat: View {
 struct InspectorForkFromHere: View {
     let action: () -> Void
     var body: some View {
-        Button(action: action) { Label("Fork from here", systemImage: "arrow.triangle.branch") }
-            .buttonStyle(.piGhost).help("A new chat, nested under this one, that ends at the reply this request produced")
-            .accessibilityIdentifier("inspector-fork-from-here")
+        InspectorHeaderAction(title: "Fork from here", symbol: "arrow.triangle.branch", help: "A new chat, nested under this one, that ends at the reply this request produced",
+                              identifier: "inspector-fork-from-here", action: action)
     }
 }
 
@@ -143,85 +181,6 @@ struct InspectorPlaceholder: View {
         .padding(PiSpacing.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
-    }
-}
-
-/// The whole text of one item, read on the capture worker when asked for.
-@MainActor final class InspectorFullText: ObservableObject {
-    @Published private(set) var title: String?
-    @Published private(set) var text = ""
-    @Published private(set) var loading = false
-    @Published private(set) var failure: String?
-    private var task: Task<Void, Never>?
-    private var generation = 0
-
-    func open(title: String, render: @escaping @Sendable () throws -> String) {
-        task?.cancel(); generation += 1
-        let generation = generation
-        self.title = title; text = ""; failure = nil; loading = true
-        task = Task { [weak self] in
-            do {
-                let value = try await CapturedBodyWorker.shared.run(render)
-                guard let self, self.generation == generation else { return }
-                self.text = value; self.loading = false
-            } catch {
-                guard let self, self.generation == generation, !(error is CancellationError) else { return }
-                self.failure = error.localizedDescription; self.loading = false
-            }
-        }
-    }
-    /// Text the app has to ask for (a prompt from the chat's journal).
-    func open(title: String, load: @escaping @MainActor () async throws -> String) {
-        task?.cancel(); generation += 1
-        let generation = generation
-        self.title = title; text = ""; failure = nil; loading = true
-        task = Task { [weak self] in
-            do {
-                let value = try await load()
-                guard let self, self.generation == generation else { return }
-                self.text = value; self.loading = false
-            } catch {
-                guard let self, self.generation == generation, !(error is CancellationError) else { return }
-                self.failure = error.localizedDescription; self.loading = false
-            }
-        }
-    }
-    func close() { task?.cancel(); generation += 1; title = nil; text = ""; loading = false; failure = nil }
-}
-
-/// The pane under an outline that holds one item's whole text: a native text
-/// view, so a long tool result scrolls without SwiftUI laying it out.
-struct InspectorFullTextPane: View {
-    @ObservedObject var full: InspectorFullText
-    var body: some View {
-        if let title = full.title {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 8) {
-                    Image(systemName: "doc.plaintext").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.piInkTertiary)
-                    Text(title).font(PiFont.caption.weight(.semibold)).foregroundStyle(Color.piInk).lineLimit(1)
-                    if !full.text.isEmpty {
-                        Text(RequestDocument.charactersLabel((full.text as NSString).length)).font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
-                    }
-                    Spacer(minLength: 0)
-                    Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(full.text, forType: .string) } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
-                    }.buttonStyle(.piGhost).disabled(full.text.isEmpty)
-                    PiIconButton(symbol: "xmark", label: "Close", size: 22) { full.close() }
-                }
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                Rectangle().fill(Color.piHairline).frame(height: 1)
-                ZStack {
-                    PagedTextView(text: full.text, accessibilityLabel: title)
-                    if full.loading { PiSpinner(size: 16, lineWidth: 2) }
-                    if let failure = full.failure { Text(failure).font(PiFont.caption).foregroundStyle(Color.piWarning).padding() }
-                }
-            }
-            .frame(height: 220)
-            .background(Color.piSurfaceSunken)
-            .overlay(alignment: .top) { Rectangle().fill(Color.piHairline).frame(height: 1) }
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-            .accessibilityIdentifier("inspector-full-text")
-        }
     }
 }
 

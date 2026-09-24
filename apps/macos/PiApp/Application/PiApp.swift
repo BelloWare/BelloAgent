@@ -19,6 +19,10 @@ extension FocusedValues {
     @FocusedValue(\.workspaceCommandModel) private var focusedModel
     @Environment(\.openWindow) private var openWindow
     private var commandModel: WorkspaceModel { focusedModel ?? model }
+    /// The conversation's commands act only while the workspace window is the
+    /// focused scene: with the Session Inspector or Settings in front, ⌘↩ and
+    /// ⌘. used to reach the chat behind them through the fallback model.
+    private var conversationCommands: Bool { focusedModel != nil && commandModel.conversationCommandsEnabled }
     @NSApplicationDelegateAdaptor(ApplicationLifecycle.self) private var lifecycle
     var body: some Scene {
         // One window: the menu bar item and the Dock reopen this window rather
@@ -75,8 +79,9 @@ extension FocusedValues {
             CommandGroup(after: .sidebar) {
                 Button(commandModel.page == .report ? "Back to Chats" : "Usage Report") { commandModel.toggleReport() }.keyboardShortcut("r", modifiers: [.command, .shift])
                 Button("Session Inspector…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspect(id) } }.keyboardShortcut("i", modifiers: [.command, .option])
+                    .disabled(commandModel.presentsSheet)
                     .disabled((commandModel.focusedSessionID ?? commandModel.selectedID).flatMap(commandModel.record) == nil)
-                Button("Changes and History…") { commandModel.showChanges() }.keyboardShortcut("g", modifiers: [.command, .shift]).disabled(commandModel.workspaces.isEmpty)
+                Button("Changes and History…") { commandModel.showChanges() }.keyboardShortcut("g", modifiers: [.command, .shift]).disabled(commandModel.workspaces.isEmpty || commandModel.presentsSheet)
                 Button(commandModel.terminalVisible ? "Hide Terminal" : "Show Terminal") { commandModel.toggleTerminal() }.keyboardShortcut("`", modifiers: .control).disabled(commandModel.selectedID == nil)
                 Divider()
                 Button("Next Chat") { commandModel.selectAdjacentChat(1) }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
@@ -94,14 +99,15 @@ extension FocusedValues {
                 let foldsTurns = commandModel.canFoldTurns, foldsResponses = commandModel.canFoldResponses
                 // Return in the composer sends or queues; ⌘↩ sends or steers,
                 // here and in the composer alike (`submitComposer`).
-                Button("Send / Queue Follow-up") { commandModel.send() }.disabled(!commandModel.conversationCommandsEnabled)
-                Button("Open Side") { commandModel.openSide() }.disabled(!commandModel.conversationCommandsEnabled)
+                Button("Send / Queue Follow-up") { commandModel.send() }.disabled(!conversationCommands)
+                Button("Open Side") { commandModel.openSide() }.disabled(!conversationCommands)
                 Button("Send / Steer Current Run") { commandModel.submitFocusedComposer(intent: .steer) }
-                    .keyboardShortcut(.return, modifiers: .command).disabled(!commandModel.conversationCommandsEnabled)
-                Button("Stop") { commandModel.stop(sessionID: commandModel.focusedSessionID) }.keyboardShortcut(".")
-                Button("Resume Follow-ups") { commandModel.action("queue.resume", sessionID: commandModel.focusedSessionID) }.disabled(!commandModel.conversationCommandsEnabled)
-                Button("Compact Now") { commandModel.action("context.compact", sessionID: commandModel.focusedSessionID) }.disabled(!commandModel.conversationCommandsEnabled)
-                Button("Latest Messages") { commandModel.latest(sessionID: commandModel.focusedSessionID) }.disabled(!commandModel.conversationCommandsEnabled)
+                    .keyboardShortcut(.return, modifiers: .command).disabled(!conversationCommands)
+                // ⌘. is also a dialog's cancel key: never a stop from a sheet or another window.
+                Button("Stop") { commandModel.stop(sessionID: commandModel.focusedSessionID) }.keyboardShortcut(".").disabled(!conversationCommands)
+                Button("Resume Follow-ups") { commandModel.action("queue.resume", sessionID: commandModel.focusedSessionID) }.disabled(!conversationCommands)
+                Button("Compact Now") { commandModel.action("context.compact", sessionID: commandModel.focusedSessionID) }.disabled(!conversationCommands)
+                Button("Latest Messages") { commandModel.latest(sessionID: commandModel.focusedSessionID) }.disabled(!conversationCommands)
                 Divider()
                 // Folding a turn was a click on its chevron and nothing else.
                 Button("Fold This Turn") { commandModel.setFocusedTurnFolded(true) }
@@ -118,7 +124,7 @@ extension FocusedValues {
                 Button("Show This Response") { commandModel.setFocusedResponseCollapsed(false) }
                     .disabled(!foldsResponses)
                 Divider()
-                Button("Search and Copy Conversation…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspectConversation(id) } }.keyboardShortcut("f").disabled(!commandModel.conversationCommandsEnabled)
+                Button("Search and Copy Conversation…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspectConversation(id) } }.keyboardShortcut("f").disabled(!conversationCommands)
             }
         }
         Settings { ProfileSettings(model: model, windowChrome: true).frame(width: 760, height: 780) }

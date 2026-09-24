@@ -36,15 +36,23 @@ enum TranscriptPaging {
         return message.text.utf8.count + (message.thinking?.utf8.count ?? 0) + tools + timeline + 512
     }
     static func window(_ messages: [TranscriptMessage], keepingEarlier: Bool) -> [TranscriptMessage] {
-        var result: [TranscriptMessage] = [], bytes = 0
+        // Counts the rows that fit, then cuts once. A page that fits whole —
+        // every token of a reply in most chats — comes back as it came,
+        // where copying it row by row retained every field of every row.
+        var kept = 0, bytes = 0
         let caps = residentCaps
-        for row in (keepingEarlier ? messages : Array(messages.reversed())) {
+        func admits(_ row: TranscriptMessage) -> Bool {
             let size = size(row)
-            guard result.count < caps.rows,
-                  result.isEmpty || bytes + size <= caps.bytes else { break }
-            result.append(row); bytes += size
+            guard kept < caps.rows, kept == 0 || bytes + size <= caps.bytes else { return false }
+            kept += 1; bytes += size
+            return true
         }
-        return keepingEarlier ? result : result.reversed()
+        if keepingEarlier {
+            for row in messages { guard admits(row) else { break } }
+            return kept == messages.count ? messages : Array(messages.prefix(kept))
+        }
+        for row in messages.reversed() { guard admits(row) else { break } }
+        return kept == messages.count ? messages : Array(messages.suffix(kept))
     }
     /// The resident window's two caps: `HistoryWindowPolicy`'s, which the app
     /// never changes. A test seam: a fixture lowers them so that a short chat
@@ -110,6 +118,10 @@ enum TranscriptPaging {
     /// many times the page walked every row to forget what left it.
     static var disclosureReads = 0
     static var disclosurePrunes = 0
+    /// Whole-page identity walks: the page or the document hashing every
+    /// row's id to prove the ids unique, or to find rows that came or went.
+    /// A token keeps every row's identity, so it must take none.
+    static var identityWalks = 0
     /// What a reply's native surface spent taking tokens, and the part of it
     /// that was the markdown reading of the text, so a fixture can tell the
     /// surface's own share from the parser's.
@@ -125,7 +137,7 @@ enum TranscriptPaging {
         rowAttachmentSeconds = 0; rowDetachmentSeconds = 0
         placementSeconds = 0; validationSeconds = 0; intrinsicInvalidations = 0
         streamingAppends = 0; streamingEstimates = 0; streamingRebuilds = 0
-        disclosureReads = 0; disclosurePrunes = 0
+        disclosureReads = 0; disclosurePrunes = 0; identityWalks = 0
         markdownAppendSeconds = 0; markdownReadingSeconds = 0
     }
 }

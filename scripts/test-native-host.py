@@ -1180,6 +1180,43 @@ class NativeIntegration(unittest.TestCase):
         closed=self.peer.command('side.close',session='side');self.assertEqual(closed['path'],kept['path'])
         self.peer.command('session.close',session='side');self.open(session='side',path=kept['path']);self.submit('side','after resume')
         self.assertEqual(self.settled('side')['state'],'idle')
+    def test_side_request_extends_the_parents_cached_prefix(self):
+        # Ours (pi has no side chats), as Codex's /side: the side's first request is
+        # its parent's last one extended, so it joins the parent's prompt cache.
+        before = len(Fixture.requests)
+        self.open(model='billing-limit'); self.submit(text='parent question'); self.assertEqual(self.settled()['state'], 'idle')
+        self.peer.command('side.open', {'sideSessionId': 'cache-side'}, 's')
+        self.submit('cache-side', 'side question'); self.assertEqual(self.settled('cache-side')['state'], 'idle')
+        def sent(session):
+            with Fixture.lock:
+                records = [({k.lower(): v for k, v in r['headers'].items()}, r['body']) for r in Fixture.requests[before:] if r['path'] == '/v1/responses']
+            return [(headers, raw, json.loads(raw)) for headers, raw in records if headers.get('x-session-id') == session]
+        parent, side = sent('s'), sent('cache-side')
+        self.assertEqual((len(parent), len(side)), (1, 1))
+        (parent_headers, parent_raw, parent_body), (side_headers, side_raw, side_body) = parent[-1], side[0]
+        self.assertTrue(all(r.get('validated') for r in Fixture.requests[before:] if r['path'] == '/v1/responses'), 'every request met the contract')
+        # Keys are sorted, so the tools close both bodies: byte-equal lists.
+        self.assertEqual(side_raw[side_raw.rindex(b'"tools":'):], parent_raw[parent_raw.rindex(b'"tools":'):])
+        self.assertEqual([t['name'] for t in side_body['tools']], ['read','ls','find','grep','write','edit','bash','mcp'])
+        self.assertEqual(side_body['input'][:len(parent_body['input'])], parent_body['input'], 'same instructions, then the parent input')
+        # Then the parent's reply, the hidden note as a user message, and the question.
+        added = side_body['input'][len(parent_body['input']):]
+        self.assertTrue(added[0]['role'] == 'assistant' and all(item.get('role') != 'user' for item in added[:-2]), added)
+        note = added[-2]
+        self.assertEqual(note['role'], 'user'); self.assertTrue(note['content'][0]['text'].startswith('This is a side conversation'))
+        self.assertEqual(side_body['input'][-1]['content'][0]['text'], 'side question')
+        self.assertEqual(side_body['prompt_cache_key'], parent_body['prompt_cache_key'])
+        self.assertEqual(parent_body['prompt_cache_key'], 's')
+        self.assertEqual((side_headers['session_id'], side_headers['x-client-request-id']), ('s', 's'))
+        self.assertEqual((side_headers['x-session-id'], side_body['metadata']['session_id']), ('cache-side', 'cache-side'))
+        # The side's attempts and spend are its own.
+        attempts = self.peer.command('debug.list', session='cache-side')['attempts']
+        self.assertEqual([a['sessionId'] for a in attempts], ['cache-side'])
+        self.assertEqual(len(self.peer.command('debug.list', session='s')['attempts']), 1)
+        self.assertAlmostEqual(self.peer.command('session.status', session='cache-side')['cost']['spentUSD'], 0.0123)
+        self.assertAlmostEqual(self.peer.command('session.status', session='s')['cost']['spentUSD'], 0.0123)
+        snapshot = self.peer.command('session.snapshot', session='cache-side')
+        self.assertNotIn('side conversation', json.dumps(snapshot['messages']), 'the note is never a row')
     def test_side_close_preserves_active_work_and_fork_has_independent_complete_context(self):
         before=len(Fixture.requests)
         self.open(model='slow')

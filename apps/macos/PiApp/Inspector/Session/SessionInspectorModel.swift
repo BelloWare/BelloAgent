@@ -65,10 +65,21 @@ import AppKit
     private var summaryReads: Task<Void, Never>?
     private var summaryObservation: AnyCancellable?
     private var observations: Set<AnyCancellable> = []
+    /// The chat's display the footer sinks follow, held weakly: a display the
+    /// workspace let go of is not kept for the Inspector's sake.
+    private weak var followed: SessionDisplay?
+    private var followsDisplay = false
+    /// Which read of the log `reading` is: a read that was stopped, ending
+    /// after the next one began, leaves the next one's handle alone.
+    private var readGeneration = 0
     private var signature: String?
     private var lastRead: (rows: [InspectorRequestRow], live: [InspectorRequestRow], older: Int) = ([], [], 0)
     /// Test seams: log reads of the whole index, and how often the poll runs.
     private(set) var indexReads = 0
+    /// Test seam: awaited as each read of the log starts.
+    var beforeRead: (() async -> Void)?
+    /// Test seam: a read of the log is under way, and can be stopped.
+    var isReading: Bool { reading != nil }
     var pollInterval: Duration = .seconds(8)
     var runningPollInterval: Duration = .seconds(2)
 
@@ -254,8 +265,11 @@ import AppKit
     private func read(force: Bool) {
         guard visible, reading == nil else { return }
         let archive = archive, scope = scope
+        readGeneration &+= 1
+        let generation = readGeneration
         reading = Task { [weak self] in
-            defer { self?.reading = nil }
+            defer { if self?.readGeneration == generation { self?.reading = nil } }
+            if let gate = self?.beforeRead { await gate() }
             do {
                 let signature = try await archive.inspectorSignature(sessionID: scope.sessionID, workspaceID: scope.workspaceID)
                 guard let self, !Task.isCancelled else { return }
@@ -315,6 +329,7 @@ import AppKit
     /// Follows the chat's footer: a settled request re-reads the index, and
     /// the clocks and totals feed the Overview.
     func observe(footer: SessionMetrics, display: SessionDisplay?) {
+        followed = display; followsDisplay = display != nil
         observations.removeAll()
         usage.$snapshot.dropFirst().sink { [weak self] _ in self?.inputsChanged() }.store(in: &observations)
         footer.$gateway.dropFirst().removeDuplicates().debounce(for: .milliseconds(250), scheduler: RunLoop.main)
@@ -322,6 +337,21 @@ import AppKit
         footer.$turnTiming.removeDuplicates().sink { [weak self] timing in self?.work = timing; self?.inputsChanged() }.store(in: &observations)
         display?.presentationChanges.dropFirst().debounce(for: .seconds(1), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.refreshSummaries(); self?.refreshVersions() }.store(in: &observations)
+    }
+
+    /// The workspace built a new display for the chat, or let its display
+    /// go (an idle chat's display is evicted when many are open): the
+    /// Inspector follows the one it has now, and reads what that shows.
+    func follow(_ display: SessionDisplay?) {
+        guard display !== followed || (display == nil && followsDisplay) else { return }
+        if let display {
+            observe(footer: display.footer, display: display)
+            refreshSummaries(); refreshVersions(); inputsChanged()
+        } else {
+            followed = nil; followsDisplay = false
+            observations.removeAll()
+            usage.$snapshot.dropFirst().sink { [weak self] _ in self?.inputsChanged() }.store(in: &observations)
+        }
     }
 
     private func inputsChanged() {

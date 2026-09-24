@@ -4,7 +4,11 @@ import Foundation
 // message appends, forks, and keeping an ephemeral side chat.
 
 extension AgentSession {
-    public func sideSeed() -> (messages:[ChatMessage], info:JSON) { (boundary,["parentSessionId":JSON(id),"cutoffEntryId":boundary.last.map { JSON($0.id) } ?? .null,"contextRevision":JSON(sha256(Data(boundary.map(\.id).joined(separator:"\n").utf8))),"capturedAt":JSON(isoNow()),"instructionRevision":appliedRevision.map { JSON($0) } ?? .null]) }
+    /// A side's starting context and origin. The origin also names the tools
+    /// this chat's requests offer and the prompt cache they join, which the
+    /// side's requests keep (SessionSide.swift).
+    public func sideSeed() -> (messages:[ChatMessage], info:JSON) { (boundary,["parentSessionId":JSON(id),"cutoffEntryId":boundary.last.map { JSON($0.id) } ?? .null,"contextRevision":JSON(sha256(Data(boundary.map(\.id).joined(separator:"\n").utf8))),"capturedAt":JSON(isoNow()),"instructionRevision":appliedRevision.map { JSON($0) } ?? .null,
+        "parentToolMode":JSON(offersReadOnlyTools ? "read-only" : "editing"),"cacheSessionId":JSON(promptCacheSessionID)]) }
     /// Clone the complete retained journal without replaying a queued command.
     /// A running source contributes its latest complete model/tool boundary;
     /// later source records remain inspectable in the clone's original history.
@@ -22,7 +26,8 @@ extension AgentSession {
         var source=try journal.records()
         let temporary=directory.appendingPathComponent(".fork-\(UUID().uuidString).jsonl")
         let destination=directory.appendingPathComponent("fork_"+newID+".jsonl")
-        var origin=sideSeed().info; origin["relationship"]="fork"
+        // A fork has its own tools and its own prompt cache.
+        var origin=sideSeed().info.removing(["parentToolMode","cacheSessionId"]); origin["relationship"]="fork"
         origin["omittedIncompleteEntries"]=JSON(max(0,context.count-boundary.count))
         var contextIDs=boundary.map(\.id), timeline=EditReplayPlan.forkTimeline(visible:visible.map(\.id),boundary:contextIDs)
         if let messageID {

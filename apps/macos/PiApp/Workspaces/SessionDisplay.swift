@@ -80,6 +80,12 @@ struct TranscriptVersionView: Equatable, Sendable {
     let presentation = ConversationPresentation()
     @Published var presentationGeneration = UUID()
     @Published var historyState: ConversationLoadState = .dormant
+    /// A revisit of a chat whose rows were already on the page: they stay
+    /// there, uncovered, while its fresh page is read and placed, instead of
+    /// fading a loading cover over them for the length of the read.
+    @Published var refreshingCachedRows = false
+    /// Rows this display has presented, which a revisit keeps on the page.
+    var hasPresentedRows: Bool { !messages.isEmpty && (presentation.identity != nil || refreshingCachedRows) }
     @Published var historyProgress: String?
     @Published var olderPage = ConversationPageBoundary()
     @Published var newerPage = ConversationPageBoundary()
@@ -139,7 +145,10 @@ struct TranscriptVersionView: Equatable, Sendable {
         guard !sendingRows.isEmpty else { return false }
         let settled = sendingRows.filter { row in
             let receipt = receipts.last { $0["turnId"]?.string == row.id }?["state"]?.string ?? ""
-            return ["failed", "cancelled", "removed"].contains(receipt) || (!loading && !busy && queued.contains(row.id))
+            // Only a paused queue holds it: an idle helper that has queued a
+            // message it has not dispatched yet is about to run it, and taking
+            // the row out for that one snapshot made it vanish and come back.
+            return ["failed", "cancelled", "removed"].contains(receipt) || (!loading && !busy && queuePaused && queued.contains(row.id))
         }
         guard !settled.isEmpty else { return false }
         sendingRows.removeAll { row in settled.contains { $0.id == row.id } }
@@ -158,7 +167,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// where the conversation stopped. Errors live in the flow of the chat,
     /// not in a strip pinned above it.
     var presentedMessages: [TranscriptMessage] {
-        if historyState == .loading { return [] }
+        if historyState == .loading && !refreshingCachedRows { return [] }
         // An earlier version of an edited message, read-only, in place of the
         // latest one and everything after it.
         if let version = versionView {
@@ -290,7 +299,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     var composerLocation: ComposerLocation?
     weak var composerEditor: ComposerTextView?
     var completionParse: Task<Void, Never>?
-    var codeClassification: (generation: UUID, revision: UInt64, offset: Int, outside: Bool)?
+    /// What `SlashCompletionToken.outsideCode` said about the draft `text`
+    /// before the slash at `offset`. The answer depends on that prefix alone,
+    /// so it stands for every later edit that leaves the prefix unchanged.
+    var codeClassification: (generation: UUID, revision: UInt64, offset: Int, text: String, outside: Bool)?
     @Published var state = "idle" { didSet { if state != oldValue { activityChanges.send() } } }
     @Published var runStatus = "idle" { didSet { if runStatus != oldValue { activityChanges.send() } } }
     /// Bumped when the pane should move keyboard focus into the composer.

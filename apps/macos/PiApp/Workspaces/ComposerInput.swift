@@ -24,7 +24,7 @@ struct ComposerInput: View {
     /// A draft of any size is checked for its first non-whitespace character;
     /// trimming a long draft would copy it on every keystroke.
     private var canSend: Bool { session.draftReady && !((!draft.text.contains { !$0.isWhitespace } && session.skills.isEmpty) || session.loading || model.installPreparing || (editing && model.editBlocker(session) != nil)) }
-    private var queues: Bool { !editing && (session.busy || !session.queue.isEmpty) }
+    private var queues: Bool { !editing && (session.busy || !session.queue.isEmpty || !session.sendingRows.isEmpty) }
     @State private var sendPulse = false
     private func submit(intent: ComposerSubmissionIntent = .followUp) {
         guard model.page == .chats else { return }
@@ -36,7 +36,6 @@ struct ComposerInput: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: PiSpacing.sm) {
-            if session.completionVisible { completions.transition(AnyTransition.scale(scale: 0.98, anchor: .bottom).combined(with: .opacity)) }
             VStack(spacing: 0) {
                 if session.editPreparing && !editing { Text("Loading the complete original input…").font(PiFont.caption).padding(8) }
                 if editing { EditingBanner(session: session, blocker: model.editBlocker(session)) { model.cancelEdit(sessionID: session.id) }.transition(AnyTransition.move(edge: .top).combined(with: .opacity)) }
@@ -46,7 +45,7 @@ struct ComposerInput: View {
                 if !session.attachments.isEmpty { chips.padding(.horizontal, PiSpacing.md).padding(.top, PiSpacing.md).transition(.opacity) }
                 NativeComposer(text: $draft.text, send: { submit(intent: $0) }, sessionID: session.id, completion: { _ in },
                     locationChanged: { model.composerMoved($0, editor: $1, view: session) },
-                    directSlash: { session.directCommand = true }, pasted: { session.directCommand = false; session.completionVisible = false },
+                    directSlash: { if !session.directCommand { session.directCommand = true } }, pasted: { session.directCommand = false; session.completionVisible = false },
                     completionKey: { model.completionKey($0, modifiers: $1, view: session) }, focused: { if model.focusedSessionID != session.id { model.focusedSessionID = session.id }; model.prewarm(session.id) }, accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer", inputRejected: { session.notice = $0 },
                     attachFiles: { model.attachImageFiles($0, sessionID: session.id) },
                     heightChanged: { height in if abs(contentHeight - height) >= 1 { contentHeight = height } }, focusToken: session.composerFocusRequest,
@@ -70,7 +69,8 @@ struct ComposerInput: View {
                     // The keyboard hints are the empty composer's placeholder; they leave once typing starts.
                     .overlay(alignment: .topLeading) {
                         if draft.text.isEmpty && session.skills.isEmpty {
-                            Text("Message… " + ComposerSubmissionIntent.hint(running: session.busy)).font(.system(size: 14)).foregroundStyle(Color.piInkTertiary)
+                            Text("Message… " + ComposerSubmissionIntent.hint(queues: queues, onBar: queues && !editing && barForm.runControls.showsHint))
+                                .font(.system(size: 14)).foregroundStyle(Color.piInkTertiary)
                                 .padding(.leading, 15).padding(.top, 9).allowsHitTesting(false).accessibilityHidden(true)
                         }
                     }
@@ -115,6 +115,16 @@ struct ComposerInput: View {
                 .padding(.horizontal, 10).padding(.bottom, 8).padding(.top, 0)
             }
             .piElevated(radius: 16)
+            // The slash-command list floats above the composer instead of
+            // taking part in the pane's layout: in the stack, opening it,
+            // filtering it and closing it resized the transcript every time.
+            // A zero-height frame on the composer's top edge holds it, and the
+            // list, at its own height, rises from that edge.
+            .overlay(alignment: .top) {
+                if session.completionVisible {
+                    completions.padding(.bottom, PiSpacing.sm).frame(height: 0, alignment: .bottom)
+                }
+            }
         }
         .padding(.horizontal, PiSpacing.lg).padding(.top, PiSpacing.sm).padding(.bottom, 6)
         // NSTextView supplies its measured height after native layout. An
@@ -181,41 +191,86 @@ struct ComposerInput: View {
         }
     }
 
+    /// The slash-command list, in the chrome of the other Pi popovers: the
+    /// surface, a strong hairline and the hover card's shadow.
     private var completions: some View {
         let choices = model.completions(session)
-        return VStack(alignment: .leading, spacing: 2) {
+        let catalog = session.skillCatalog
+        let shape = RoundedRectangle(cornerRadius: PiRadius.md, style: .continuous)
+        return VStack(alignment: .leading, spacing: 0) {
             ScrollViewReader { reader in
                 ScrollView {
-                    LazyVStack(spacing: 2) {
+                    LazyVStack(spacing: SlashCompletionMetrics.rowSpacing) {
                         ForEach(choices) { choice in
-                            Button { model.chooseCompletion(choice, view: session) } label: {
-                                HStack(spacing: PiSpacing.sm) {
-                                    Image(systemName: choice.skill == nil ? "terminal" : "command").frame(width: 16)
-                                    Text("/" + choice.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Color.piInk)
-                                    Text(choice.detail).lineLimit(1).truncationMode(.middle).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
-                                    Spacer()
-                                }.padding(.horizontal, PiSpacing.sm).padding(.vertical, 6).frame(maxWidth: .infinity)
-                                    .background(choice.id == session.completionSelectionID ? Color.piAccentSoft : Color.clear, in: RoundedRectangle(cornerRadius: PiRadius.sm))
-                                    .contentShape(Rectangle())
-                            }.buttonStyle(.plain).piPointer().id(choice.id)
+                            SlashCompletionRow(choice: choice, selected: choice.id == session.completionSelectionID) {
+                                model.chooseCompletion(choice, view: session)
+                            }.id(choice.id)
                         }
-                    }
-                }.frame(height: min(224, CGFloat(max(1, choices.count)) * 30))
+                    }.padding(SlashCompletionMetrics.inset)
+                }.frame(height: SlashCompletionMetrics.listHeight(count: choices.count))
                     .onChange(of: session.completionSelectionID) { _, id in if let id { reader.scrollTo(id) } }
             }
-            HStack {
-                Text(session.skillCatalog.state == .loading ? "Discovering skills…" : session.skillCatalog.state == .failed ? "Discovery failed" : choices.isEmpty ? "No matches" : "\(choices.count) results · ↑↓ Choose · Tab/Return Select")
-                    .font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
-                Spacer()
-                if session.skillCatalog.state == .failed || session.skillCatalog.state == .partial {
+            Rectangle().fill(Color.piHairline).frame(height: 1)
+            HStack(spacing: PiSpacing.sm) {
+                Text(catalog.state == .loading ? "Discovering skills…" : catalog.state == .failed ? "Discovery failed" : choices.isEmpty ? "No matches" : "\(choices.count) results · ↑↓ Choose · Tab/Return Select")
+                    .font(PiFont.caption).foregroundStyle(Color.piInkTertiary).lineLimit(1)
+                Spacer(minLength: PiSpacing.sm)
+                if catalog.state == .failed || catalog.state == .partial {
                     Button("Retry") { Task { await model.loadSkillCatalog(refresh: true, sessionID: session.id) } }.buttonStyle(.piGhost)
                 }
                 Button("All Skills…") { model.inspectResources(session.id) }.buttonStyle(.piGhost)
-            }.padding(.horizontal, PiSpacing.sm).padding(.top, 4)
-            if !session.skillCatalog.notice.isEmpty && session.skillCatalog.state != .loading {
-                Text(session.skillCatalog.notice).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(2).help(session.skillCatalog.notice)
+            }.padding(.horizontal, PiSpacing.md).padding(.vertical, PiSpacing.xs)
+            if !catalog.notice.isEmpty && catalog.state != .loading {
+                Text(catalog.notice).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(2).help(catalog.notice)
+                    .padding(.horizontal, PiSpacing.md).padding(.bottom, PiSpacing.sm)
             }
-        }.padding(PiSpacing.sm).piElevated(radius: PiRadius.md)
-            .accessibilityElement(children: .contain).accessibilityLabel("Slash command suggestions")
+        }
+        .background(shape.fill(Color.piSurface))
+        .overlay(shape.stroke(Color.piHairlineStrong, lineWidth: 1))
+        .clipShape(shape)
+        .shadow(color: Color.piShadow, radius: 10, y: 3)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .contain).accessibilityLabel("Slash command suggestions")
+    }
+}
+
+/// The slash-command list's rows: the height and highlight of a Pi list row.
+enum SlashCompletionMetrics {
+    static let rowHeight: CGFloat = 28
+    static let rowSpacing: CGFloat = 2
+    static let inset = PiSpacing.xs
+    /// Eight rows show before the list scrolls.
+    static let visibleRows = 8
+    static func listHeight(count: Int) -> CGFloat {
+        let rows = CGFloat(min(visibleRows, max(1, count)))
+        return rows * rowHeight + (rows - 1) * rowSpacing + 2 * inset
+    }
+}
+
+/// One command or skill: its symbol, its name, and where it comes from. The
+/// selected row takes the accent wash the keyboard moves; the pointer's row
+/// takes the fill every other Pi list uses for hover.
+private struct SlashCompletionRow: View {
+    let choice: CommandCompletion
+    let selected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: PiRadius.sm, style: .continuous)
+        Button(action: action) {
+            HStack(spacing: PiSpacing.sm) {
+                Image(systemName: choice.skill == nil ? "terminal" : "command")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(selected ? Color.piAccent : Color.piInkSecondary).frame(width: 16)
+                Text("/" + choice.name).font(PiFont.body.weight(.semibold)).foregroundStyle(Color.piInk).lineLimit(1).layoutPriority(1)
+                Text(choice.detail).lineLimit(1).truncationMode(.middle).font(PiFont.caption).foregroundStyle(Color.piInkSecondary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, PiSpacing.sm).frame(maxWidth: .infinity, minHeight: SlashCompletionMetrics.rowHeight, maxHeight: SlashCompletionMetrics.rowHeight)
+            .background(selected ? Color.piAccentSoft : hovering ? Color.piFill : Color.clear, in: shape)
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain).piPointer().help(choice.detail)
+        .onHover { hovering = $0 }
     }
 }

@@ -65,6 +65,11 @@ extension ProviderClient {
                 input.append(["type": "function_call_output", "call_id": JSON(call), "output": toolOutput(message, images: images)])
             default:
                 settle()
+                // Ours: a hidden note is a user message of its own, sent just
+                // before the message that carries it (ChatMessage.contextNote).
+                if let note = message.contextNote {
+                    input.append(["role": "user", "content": [["type": "input_text", "text": JSON(note.text)]]])
+                }
                 let content = userContent(message, images: images)
                 if content.isEmpty { continue }
                 input.append(["role": "user", "content": .array(content)])

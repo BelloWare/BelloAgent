@@ -241,6 +241,8 @@ struct ContentGeometry: Equatable {
         // would not have shown until the helper's own row arrived.
         let added = messages.reversed().prefix { $0.isSending || $0.role == "system" && ["notice", "failure"].contains($0.kind ?? "")
             && ($0.id.hasPrefix("notice:retry:") || $0.id.hasPrefix("failure:")) }.count
+        // Nothing added is the common case: the page itself, not a copy of it.
+        guard added > 0 else { return TranscriptPaging.window(messages, keepingEarlier: true) }
         return TranscriptPaging.window(Array(messages.dropLast(added)), keepingEarlier: true) + messages.suffix(added)
     }
 
@@ -349,24 +351,35 @@ struct ContentGeometry: Equatable {
             preserveReadingPositionForLayout()
         }
         let page = Self.displayPage(messages)
-        let patched = snapshot.flatMap { current in
-            Self.sameLifecycle(current.lifecycle, input.lifecycle) ? TranscriptActivity.patched(current.items, from: current.messages, to: page) : nil
+        let patch = snapshot.flatMap { current in
+            Self.sameLifecycle(current.lifecycle, input.lifecycle) ? TranscriptActivity.patch(current.items, from: current.messages, to: page) : nil
         }
         // A page short of the conversation's newest row — cut by the resident
         // window, or a history window with newer rows after it — may end in
         // the middle of a turn; that turn folds only on its task's receipt.
-        let items = patched ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle,
-                                                         complete: page.count == messages.count && !session.newerPage.available)
-        guard Set(page.map(\.id)).count == page.count, Set(items.map(\.id)).count == items.count else {
-            projectionError = "This conversation contains conflicting row identities. The last valid page is retained; inspect the session file to repair it. No history was deleted."
-            return
+        let items = patch?.items ?? TranscriptActivity.blocks(of: page, lifecycle: input.lifecycle,
+                                                              complete: page.count == messages.count && !session.newerPage.available)
+        // A token keeps every row's identity and place (see `patch`), all of
+        // them already proved unique and already seen by the page presented.
+        // Hashing every id of a long chat again, twice for uniqueness and
+        // twice for what is new, was most of what a token cost the page.
+        let sameIdentities = patch != nil && initialized
+        if !sameIdentities {
+            if TranscriptLayoutClock.recording { TranscriptLayoutClock.identityWalks += 1 }
+            guard Set(page.map(\.id)).count == page.count, Set(items.map(\.id)).count == items.count else {
+                projectionError = "This conversation contains conflicting row identities. The last valid page is retained; inspect the session file to repair it. No history was deleted."
+                return
+            }
         }
         if projectionError != nil { projectionError = nil }
-        if let current = snapshot, current.messages == page, current.lifecycle == input.lifecycle, initialized { return }
+        if let current = snapshot, current.lifecycle == input.lifecycle, initialized,
+           patch.map({ !$0.changed }) ?? (current.messages == page) { return }
         var fresh: Set<String> = []
-        for message in page {
-            if initialized, !seen.contains(message.id) { fresh.insert(message.id) }
-            seen.insert(message.id)
+        if !sameIdentities {
+            for message in page {
+                if initialized, !seen.contains(message.id) { fresh.insert(message.id) }
+                seen.insert(message.id)
+            }
         }
         if !initialized {
             if let anchor = session.scrollAnchor {
@@ -394,8 +407,10 @@ struct ContentGeometry: Equatable {
         firstRow = page.first?.id ?? ""
         // A single bounded plan supplies stable identities for both initial
         // history and incremental updates; the native document reuses hosts.
-        let ids = Set(items.map(\.id))
-        frames = frames.filter { ids.contains($0.key) }
+        if !sameIdentities {
+            let ids = Set(items.map(\.id))
+            frames = frames.filter { ids.contains($0.key) }
+        }
         sequence += 1
         lastPresentationAt = ProcessInfo.processInfo.systemUptime
         let next = Snapshot(sessionID: session.id, generation: generation, messages: page, items: items, fresh: fresh, sequence: sequence, lifecycle: input.lifecycle, liveTurn: TaskTranscriptPlan.live(input.lifecycle, messages: messages),
@@ -1082,7 +1097,7 @@ private struct TranscriptHostedRow: View {
                 // spacing reserved around every message would otherwise leave
                 // fourteen points of blank where the fold swallowed the row.
                 let blank = drawsNothing(message)
-                MessageRowView(message: message, actions: actions, disclosure: disclosure, toggle: toggle).equatable()
+                MessageRowView(message: message, actions: actions, disclosure: disclosure, toggle: toggle, switchesSource: true).equatable()
                     .padding(.top, blank ? 0 : (message.role == "user" ? 14 : 4))
                     .padding(.bottom, blank ? 0 : (message.role == "user" ? 4 : 10))
             case .block(let block):
@@ -1319,7 +1334,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     /// answer is kept rather than counting the row's characters again.
     func estimatedHeight(width: CGFloat) -> CGFloat {
         if let estimate, estimate.width == width { return estimate.height }
-        let height = TranscriptRowEstimate.height(of: item, width: width)
+        let height = TranscriptRowEstimate.height(of: item, width: width, raw: disclosure.raw)
         estimate = (width, height)
         return height
     }
@@ -1625,6 +1640,12 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     /// hosting view to notice its own intrinsic size changed.
     func toggleDisclosure(_ part: TranscriptDisclosure.Part) {
         guard let disclosureStore else { return }
+        // Switching a reply between rendered and its source takes away the
+        // text a selection in it lives in. The selection ends here, in the
+        // click, rather than when its view goes: that is inside the update
+        // that removes it, and moving the first responder there lays the
+        // window out in the middle of SwiftUI's update.
+        if part.kind == .source { releaseSelection(inReply: part.id) }
         disclosureStore.toggle(part)
         // A card the reader just opened whose arguments the host had to cut
         // asks for the rest, once. The card draws the inline document until it
@@ -1646,6 +1667,14 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         measuring = false
         invalidateIntrinsicContentSize()
         onDisclosureChanged?()
+    }
+    /// Ends a selection held in any row that draws this reply's text.
+    private func releaseSelection(inReply id: String) {
+        guard let window, let document = superview else { return }
+        let rows = document.subviews.compactMap { $0 as? TranscriptRowContainer }
+        if rows.contains(where: { ReplySource.replyID(of: $0.item) == id && $0.ownsFirstResponder }) {
+            window.makeFirstResponder(nil)
+        }
     }
     func measure(width proposed: CGFloat?) -> CGSize {
         // SwiftUI probes zero while discovering minimum sizes. It is not the
@@ -1914,8 +1943,10 @@ struct NativeTranscriptView: View {
             // Parent panel or status changes must not animate the document's
             // frame. Row disclosures and the Back to bottom pill set their own motion.
             .transaction { $0.animation = nil }
+            // Not re-identified by the presentation generation: a new page of
+            // the same chat (a revisit, a reload, an earlier version) keeps the
+            // bar where it stands instead of replaying its entrance.
             LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion)
-                .id(session.presentationGeneration)
         }
         // The run state is read where it is used, never from the value this
         // body happened to be built with: a task runs a turn of the run loop

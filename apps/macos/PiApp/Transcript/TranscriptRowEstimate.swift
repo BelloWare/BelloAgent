@@ -41,14 +41,37 @@ enum TranscriptRowEstimate {
         return CGFloat(lines) * size * lineFactor + CGFloat(blanks) * 4
     }
 
+    /// How tall literal text stands at this width (`TranscriptPlainText`):
+    /// every line it holds is a line box, a blank one and the one a trailing
+    /// line break opens included, with the face's spacing between lines and
+    /// no block gaps, because nothing in it is read as Markdown.
+    static func plain(_ text: String, width: CGFloat, face: TranscriptPlainTextFace) -> CGFloat {
+        guard !text.isEmpty else { return 0 }
+        let columns = max(20.0, Double(width / (face.size * face.characterWidth)))
+        var lines = 0.0
+        var run = 0
+        for character in text.unicodeScalars {
+            if character == "\n" {
+                lines += max(1, (Double(run) / columns).rounded(.up))
+                run = 0
+            } else {
+                run += 1
+            }
+        }
+        lines += max(1, (Double(run) / columns).rounded(.up))
+        return CGFloat(lines) * face.lineHeight + CGFloat(lines - 1) * face.lineSpacing
+    }
+
     /// One tool call's collapsed card: the line every piece of work shares.
     static let toolRow: CGFloat = TranscriptRowChrome.height
     /// A work header, a reasoning header, a turn line, a figures line.
     static let line: CGFloat = 22
 
-    static func height(of item: TranscriptItem, width: CGFloat) -> CGFloat {
+    /// `raw`: the row's reply reads as its markdown source
+    /// (`TranscriptRowDisclosure.raw`).
+    static func height(of item: TranscriptItem, width: CGFloat, raw: Bool = false) -> CGFloat {
         switch item {
-        case .message(let message): return height(of: message, width: width, inline: true)
+        case .message(let message): return height(of: message, width: width, inline: true, raw: raw)
         case .block(let block):
             if block.presentation == .work { return 30 }
             // A turn's fold control is one line and a rule, whatever it hides.
@@ -78,7 +101,7 @@ enum TranscriptRowEstimate {
                 total += CGFloat(block.tools.count) * toolRow
                 total += CGFloat(block.replies.filter { !($0.thinking ?? "").isEmpty }.count) * line
             }
-            if let message = block.message { total += height(of: message, width: width, inline: false) }
+            if let message = block.message { total += height(of: message, width: width, inline: false, raw: raw) }
             if block.turn != nil { total += line }
             return max(24, total)
         }
@@ -98,7 +121,7 @@ enum TranscriptRowEstimate {
         return rows * SkillPillFace.height + (rows - 1) * TranscriptSkillPills.spacing + (text ? MessageRowView.skillGap : 0)
     }
 
-    private static func height(of message: TranscriptMessage, width: CGFloat, inline: Bool) -> CGFloat {
+    private static func height(of message: TranscriptMessage, width: CGFloat, inline: Bool, raw: Bool) -> CGFloat {
         switch message.kind {
         case "compaction", "failure": return 64
         case "branch", "notice": return 40
@@ -106,12 +129,20 @@ enum TranscriptRowEstimate {
         }
         if message.role == "system" { return 40 }
         if message.role == "user" {
-            let body = min(width, TranscriptMetrics.proseWidth) - 28
-            return prose(message.text, width: max(40, body), size: MarkdownStyle.user.baseSize) + 18 + 14 + 4 + 22
+            // The bubble keeps 40 points beside it and is never wider than
+            // prose; its text is what the reader typed, line for line, inside
+            // 14 points of padding each side and 9 above and below. The row
+            // adds 14 above, the band's 6 and 22 under the bubble, and 4 below.
+            let body = min(width - 40, TranscriptMetrics.proseWidth) - 28
+            return plain(message.text, width: max(40, body), face: .user) + 18 + 14 + 6 + 22 + 4
                 + skillPills(message.skills ?? [], width: max(40, body), text: !message.text.isEmpty)
         }
         let body = min(width, TranscriptMetrics.proseWidth)
-        var total = prose(message.text, width: max(40, body), size: MarkdownStyle.prose.baseSize)
+        // A reply read as its source is that source in the code panel: the
+        // row's whole width, 14 points of padding each side and 12 above and below.
+        var total = ReplySource.shows(message, raw: raw)
+            ? plain(message.text, width: max(40, width - 28), face: .source) + 24
+            : prose(message.text, width: max(40, body), size: MarkdownStyle.prose.baseSize)
         if message.truncated == true { total += line }
         // Any early end draws its notice line, not only the output limit.
         if MessageRowView.earlyEnd(message.stopReason) != nil { total += line }

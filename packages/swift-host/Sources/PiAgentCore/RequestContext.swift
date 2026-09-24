@@ -79,7 +79,8 @@ enum PiContext {
     /// estimateTokens: characters over four, rounded up. A reply counts its
     /// text, thinking, and each call's name and JSON arguments; every other
     /// row (user, tool result, a summary or custom row) its text, with each
-    /// image counted as 4,800 characters.
+    /// image counted as 4,800 characters. A hidden note counts as the user
+    /// message of its own it is sent as.
     static func estimateTokens(_ message: ChatMessage) -> Int {
         var chars = 0
         for block in message.content {
@@ -91,7 +92,7 @@ enum PiContext {
             default: break
             }
         }
-        return tokens(chars: chars)
+        return sum([tokens(chars: chars), message.contextNote.map { tokens(chars: $0.text.utf16.count) } ?? 0])
     }
     /// Math.ceil(chars / 4).
     static func tokens(chars: Int) -> Int { chars / 4 + (chars % 4 == 0 ? 0 : 1) }

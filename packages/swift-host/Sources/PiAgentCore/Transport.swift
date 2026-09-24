@@ -55,7 +55,55 @@ final class HTTPIngressBudget: @unchecked Sendable {
     var accounting: (used: Int, peak: Int) { lock.lock(); defer { lock.unlock() }; return (used, high) }
 }
 
-/// One delegate/URLSession per request. No global URL interception and no unbounded tee.
+/// Long-lived ephemeral URL sessions for model requests: one per origin and
+/// connection identity (the credential and configured headers), so requests
+/// and tool rounds reuse keep-alive connections the way pi's fetch does
+/// instead of paying DNS, TCP and TLS every time. No cookies, URL cache or
+/// credential storage. The session has no delegate: each task's `HTTPStream`
+/// is its own (`URLSessionTask.delegate`). A transport failure drops the
+/// session, and a changed base URL or header set gets a session of its own.
+final class HTTPSessionPool: @unchecked Sendable {
+    static let shared = HTTPSessionPool()
+    static let capacity = 8
+    private let lock = NSLock()
+    private var sessions: [String: (session: URLSession, queue: OperationQueue)] = [:]
+    private var recency: [String] = []
+    private var made = 0
+    /// Sessions this pool has created, for tests.
+    var created: Int { lock.lock(); defer { lock.unlock() }; return made }
+    func session(for key: String) -> (session: URLSession, queue: OperationQueue) {
+        lock.lock(); defer { lock.unlock() }
+        if let existing = sessions[key] { recency.removeAll { $0 == key }; recency.append(key); return existing }
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = HTTPStream.idleTimeout; config.timeoutIntervalForResource = HTTPStream.totalTimeout
+        config.httpCookieStorage = nil; config.urlCredentialStorage = nil; config.urlCache = nil
+        let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
+        let entry = (session: URLSession(configuration: config, delegate: nil, delegateQueue: queue), queue: queue)
+        sessions[key] = entry; recency.append(key); made += 1
+        while recency.count > Self.capacity { sessions.removeValue(forKey: recency.removeFirst())?.session.finishTasksAndInvalidate() }
+        return entry
+    }
+    /// Drops a session after a transport failure; its running tasks finish.
+    func discard(_ session: URLSession) {
+        lock.lock()
+        let key = sessions.first { $0.value.session === session }?.key
+        if let key { sessions.removeValue(forKey: key); recency.removeAll { $0 == key } }
+        lock.unlock()
+        if key != nil { session.finishTasksAndInvalidate() }
+    }
+    /// The origin and every header but the per-request ones.
+    static func key(_ request: URLRequest, perRequest: Set<String>) -> String {
+        let url = request.url
+        let origin = "\(url?.scheme ?? "")://\(url?.host ?? ""):\(url?.port ?? -1)"
+        let headers = (request.allHTTPHeaderFields ?? [:]).filter { !perRequest.contains($0.key.lowercased()) }
+            .map { "\($0.key.lowercased()):\($0.value)" }.sorted()
+        return ([origin] + headers).joined(separator: "\n")
+    }
+}
+
+/// One delegate per request; model requests share a pooled session
+/// (`HTTPSessionPool`), others get a session of their own. No global URL
+/// interception and no unbounded tee.
 ///
 /// Concurrency: `@unchecked` because URLSession calls its delegate from its own
 /// queue. The invariant is that every mutable property except `continuation` is
@@ -77,6 +125,10 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
     private var timingRuns: [(end: Int, at: Double)] = []
     private var completed = false, completionError: Error?
     private var delegateQueue: OperationQueue?
+    private var pool: HTTPSessionPool?
+    private var reused: Bool?
+    /// Whether the request went out on a connection an earlier one opened.
+    var reusedConnection: Bool? { lock.lock(); defer { lock.unlock() }; return reused }
     init(budget: HTTPIngressBudget = .shared, bufferLimit: Int = 4 * 1024 * 1024, responseLimit: Int = 64 * 1024 * 1024) {
         self.budget = budget; self.bufferLimit = max(1, bufferLimit); self.responseLimit = max(1, responseLimit)
         super.init()
@@ -128,7 +180,7 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
     /// URL session's own week-long bound stays.
     static let idleTimeout: TimeInterval = 300
     static let totalTimeout: TimeInterval = 604_800
-    func start(_ request: URLRequest, configuration: URLSessionConfiguration? = nil) -> AsyncThrowingStream<HTTPPart, Error> {
+    func start(_ request: URLRequest, configuration: URLSessionConfiguration? = nil, pool: HTTPSessionPool? = nil, connection: String? = nil) -> AsyncThrowingStream<HTTPPart, Error> {
         // The queue retains whole, ordered delegate chunks. Byte admission is
         // bounded BEFORE yield, independent of a slow capture acknowledgement.
         // Suspend at 1 MiB with 3 MiB headroom for callbacks already in flight;
@@ -136,13 +188,24 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
         AsyncThrowingStream(bufferingPolicy: .unbounded) { continuation in
             self.continuation=continuation
             continuation.onTermination = { [weak self] _ in self?.cancel() }
-            let config = configuration ?? URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest=Self.idleTimeout; config.timeoutIntervalForResource=Self.totalTimeout
-            config.httpCookieStorage=nil; config.urlCredentialStorage=nil; config.urlCache=nil
-            let queue=OperationQueue(); queue.maxConcurrentOperationCount=1
-            let session=URLSession(configuration: config, delegate:self, delegateQueue:queue)
-            let task=session.dataTask(with: request)
-            lock.lock(); self.session=session; self.task=task; self.delegateQueue=queue; lock.unlock()
+            let session: URLSession, queue: OperationQueue, task: URLSessionDataTask
+            if let pool, configuration == nil {
+                // A pooled session is shared: the idle bound travels with the
+                // request, the session keeps the same bounds, and this stream is
+                // the task's own delegate, with its own parser state.
+                var request = request; request.timeoutInterval = Self.idleTimeout
+                let shared = pool.session(for: connection ?? HTTPSessionPool.key(request, perRequest: []))
+                session = shared.session; queue = shared.queue
+                task = session.dataTask(with: request); task.delegate = self
+            } else {
+                let config = configuration ?? URLSessionConfiguration.ephemeral
+                config.timeoutIntervalForRequest=Self.idleTimeout; config.timeoutIntervalForResource=Self.totalTimeout
+                config.httpCookieStorage=nil; config.urlCredentialStorage=nil; config.urlCache=nil
+                queue=OperationQueue(); queue.maxConcurrentOperationCount=1
+                session=URLSession(configuration: config, delegate:self, delegateQueue:queue)
+                task=session.dataTask(with: request)
+            }
+            lock.lock(); self.session=session; self.task=task; self.delegateQueue=queue; self.pool = configuration == nil ? pool : nil; lock.unlock()
             ended.enter()
             lock.lock(); observed["dispatch"] = JSON(nowMS()); observed["dispatchWallTimestamp"] = JSON(Date().timeIntervalSince1970); lock.unlock()
             task.resume()
@@ -201,10 +264,18 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
         observed["httpEnd"] = JSON(nowMS())
         observed["transportOutcome"] = JSON(ingressFailure != nil ? "error" : error == nil ? "eof" : (error as? URLError)?.code == .cancelled ? "cancelled" : "error")
         completed = true; completionError = error
+        let pool = self.pool
         self.task=nil; self.session=nil; lock.unlock()
         ended.leave()
         flushBody()
-        session.finishTasksAndInvalidate()
+        if let pool {
+            // A connection or TLS failure drops the shared session: the next
+            // request opens a fresh one. A cancelled request leaves it be.
+            if let failure = error as? URLError, failure.code != .cancelled { pool.discard(session) }
+        } else { session.finishTasksAndInvalidate() }
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        lock.lock(); reused = metrics.transactionMetrics.last?.isReusedConnection; lock.unlock()
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         // A configured endpoint must not redirect credentials to another route or origin.
@@ -274,7 +345,7 @@ public actor TraceStore {
         // follow once the request is on its way: the recorder accepts them
         // any time after `begin`, and a long chat's context must not add
         // those round trips to every request's latency.
-        if !(await sink(["type":"begin", "metadata":metadata(traces[id] ?? t).removing(["messageIds", "outputMessageIds"])])) { traces[id]?.persistenceError="Native request recorder was unavailable at dispatch" }
+        if !(await sink(["type":"begin", "metadata":metadata(traces[id] ?? t, messageIDs:false)])) { traces[id]?.persistenceError="Native request recorder was unavailable at dispatch" }
         else { t.contextLinksPending = true }
         if mode == "persist" { await deliverBytes(id, kind:"request", offset:0, bytes:captured.bytes) }
         return id
@@ -356,7 +427,7 @@ public actor TraceStore {
         guard previousRedactions == 0, trace.responseCredentialRedactions > 0 else { return }
         // Publish the exception before its bytes, including during a live
         // stream or a cancelled tail; the inspector must never label them exact.
-        if !(await sink(["type": "metadata", "metadata": metadata(trace).removing(["messageIds", "outputMessageIds"])])) {
+        if !(await sink(["type": "metadata", "metadata": metadata(trace, messageIDs:false)])) {
             traces[trace.id]?.persistenceError = "Native recorder could not acknowledge response credential masking; body retention stopped"
         }
     }
@@ -374,7 +445,7 @@ public actor TraceStore {
     }
     public func dispatched(_ id: String, at time: Double, wall: Double = Date().timeIntervalSince1970) async {
         traces[id]?.dispatch = time; traces[id]?.dispatchWallTimestamp = wall
-        if let t = traces[id] { _ = await sink(["type":"metadata", "metadata":metadata(t).removing(["messageIds", "outputMessageIds"])]) }
+        if let t = traces[id] { _ = await sink(["type":"metadata", "metadata":metadata(t, messageIDs:false)]) }
         await deliverContextLinks(id)
     }
     private func deliverContextLinks(_ id: String) async {
@@ -423,7 +494,7 @@ public actor TraceStore {
         trace.operation=value
         // Semantic summary validation happens after HTTP completion. Persist
         // its diagnosis too, including attempts that produced no checkpoint.
-        if trace.outcome != "running", !(await sink(["type":"metadata","metadata":metadata(trace).removing(["messageIds","outputMessageIds"])])) {
+        if trace.outcome != "running", !(await sink(["type":"metadata","metadata":metadata(trace, messageIDs:false)])) {
             traces[id]?.persistenceError="Native recorder could not acknowledge compaction outcome metadata"
         }
     }
@@ -432,7 +503,7 @@ public actor TraceStore {
         await flushResponse(id)
         await flushEvents(id)
         traces[id]?.outcome=outcome; traces[id]?.modelOutcome=modelOutcome
-        if let trace = traces[id], !(await sink(["type":"finish", "metadata":metadata(trace).removing(["messageIds", "outputMessageIds"])])) { traces[id]?.persistenceError="Native request finalization was unavailable; durable request remains interrupted" }
+        if let trace = traces[id], !(await sink(["type":"finish", "metadata":metadata(trace, messageIDs:false)])) { traces[id]?.persistenceError="Native request finalization was unavailable; durable request remains interrupted" }
     }
     public func outputs(_ id: String, messageIDs: [String]) async {
         if let trace = traces[id] { trace.outputMessageIDs=Array(Set(trace.outputMessageIDs + messageIDs)).sorted() }
@@ -512,17 +583,23 @@ public actor TraceStore {
                 "inputIncludingCache":t.usage["inputIncludingCache"],"completeness":t.modelOutcome=="completed" ? "complete":"partial",
                 "rateSource":"Gateway-reported output tokens after the first (N − 1, reasoning included) / first output → last output token (the model terminal when no last output was stamped); completed attempts with N ≥ 2 over at least minimumDecodeSpanMs","liveTokenRate":.null]
     }
-    private func metadata(_ t:Trace)->JSON {
-        ["attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
+    /// An attempt's metadata. `messageIDs: false` leaves out the context and
+    /// output id lists: the recorder is sent those as `links` packets, and a
+    /// session snapshot's `latestAttempt` (4 Hz while busy, and every idle
+    /// poll) never reads them, while at 1,000 messages they were ~39 KB.
+    private func metadata(_ t:Trace, messageIDs:Bool = true)->JSON {
+        var value:JSON = ["attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
          "outcome":JSON(t.outcome),"modelOutcome":JSON(t.modelOutcome),"transportOutcome":JSON(t.transportOutcome),"requestHeaders":t.requestHeaders,"responseHeaders":t.headers,"usage":t.usage,"gateway":t.gateway?.json ?? .null,"operation":t.operation,
-         "identity":t.credentials.metadata(t.identity?.json ?? .null),"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"messageIds":.array(t.messageIDs.map { JSON($0) }),"outputMessageIds":.array(t.outputMessageIDs.map { JSON($0) }),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
+         "identity":t.credentials.metadata(t.identity?.json ?? .null),"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
          "rawEventsOmitted":JSON(t.rawEventsDropped),"eventIndexPersistenceError":JSON(t.eventIndexError),
          "request":bodyInfo(t,request:true),"response":bodyInfo(t,request:false),"metrics":metrics(t),"rawEventIndexCount":JSON(t.rawEvents.count),
          "timingVersion":2,"dispatchWallTimestamp":t.dispatchWallTimestamp.map { JSON($0) } ?? .null,
          "timingBoundary":"Monotonic URLSession dispatch, header callback (first HTTP observation), decoded body callbacks, body bytes containing parsed content/terminal, and task completion. Not socket/TLS or paint timing.",
          "timings":["dispatch":t.dispatch.map { JSON($0) } ?? .null,"firstHTTPByte":t.firstHTTPByte.map { JSON($0) } ?? .null,"firstBodyByte":t.firstBodyByte.map { JSON($0) } ?? .null,"firstContent":t.firstContent.map { JSON($0) } ?? .null,"firstText":t.firstText.map { JSON($0) } ?? .null,"lastContent":t.lastContent.map { JSON($0) } ?? .null,"modelComplete":t.completed.map { JSON($0) } ?? .null,"httpEnd":t.eof.map { JSON($0) } ?? .null]]
+        if messageIDs { value["messageIds"] = .array(t.messageIDs.map { JSON($0) }); value["outputMessageIds"] = .array(t.outputMessageIDs.map { JSON($0) }) }
+        return value
     }
-    public func latest(_ session:String)->JSON { guard let id=order.last(where:{traces[$0]?.session==session}),let t=traces[id] else { return .null }; return metadata(t) }
+    public func latest(_ session:String)->JSON { guard let id=order.last(where:{traces[$0]?.session==session}),let t=traces[id] else { return .null }; return metadata(t, messageIDs:false) }
     public func command(_ method:String, session:String, params p:JSON) throws -> JSON {
         let boundary:JSON="Application HTTP boundary after serialization and HTTP decoding, not TLS packets. Gateway upstream traffic is unavailable. Authentication headers are masked; long request tokens retain only their last four characters, and short tokens, cookies and secret response headers are fully masked. Known credential literals in request bodies are labeled SHA-256 fingerprints; response credential echoes are replaced by same-length asterisks. Body transformations are explicit byte-exactness exceptions. Other captured bytes remain untransformed and sensitive."
         if method=="debug.mode" {
@@ -537,7 +614,7 @@ public actor TraceStore {
         if method=="debug.list" {
             let all=order.reversed().compactMap{traces[$0]}.filter{$0.session==session}, offset=try boundedInt(p["offset"])
             let page=Array(all.dropFirst(offset).prefix(64))
-            return ["attempts":.array(page.map(metadata)),"total":JSON(all.count),"next":offset+page.count<all.count ? JSON(offset+page.count):.null,"mode":JSON(mode(session)),"boundary":boundary,"workspaceRetainedBytes":JSON(retainedBytes),"limits":["bodyBytes":JSON(Self.perBodyLimit),"workspaceBytes":JSON(memoryLimit)],"droppedMetadata":JSON(droppedMetadata)]
+            return ["attempts":.array(page.map { metadata($0) }),"total":JSON(all.count),"next":offset+page.count<all.count ? JSON(offset+page.count):.null,"mode":JSON(mode(session)),"boundary":boundary,"workspaceRetainedBytes":JSON(retainedBytes),"limits":["bodyBytes":JSON(Self.perBodyLimit),"workspaceBytes":JSON(memoryLimit)],"droppedMetadata":JSON(droppedMetadata)]
         }
         guard let id=p["attemptId"].text,let t=traces[id],t.session==session else { throw AgentError("capture_unavailable","Attempt is unavailable or belongs to another session") }
         if method=="debug.attempt" { var v=metadata(t); v["boundary"]=boundary;v["requestHash"]=t.mode=="off" ? .null:["sha256":JSON(sha256(t.request)),"scope":"retained bytes"];v["responseHash"]=t.mode=="off" ? .null:["sha256":JSON(sha256(t.response)),"scope":"retained bytes"]; return v }

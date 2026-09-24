@@ -142,11 +142,22 @@ final class InspectorSummaryRequestTests: XCTestCase {
         window.contentView = hosted; window.orderFront(nil)
         defer { window.contentView = nil; window.close() }
         for _ in 0..<10 { hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
-        let cards = ConversationPaneTests.views(SummaryInstructionMarkerView.self, in: hosted)
-        XCTAssertEqual(cards.map(\.name), ["start of this turn"], "The summary card is on the page, named")
-        let card = try XCTUnwrap(cards.first).convert(try XCTUnwrap(cards.first).bounds, to: nil)
-        let outline = try XCTUnwrap(ConversationPaneTests.views(NSOutlineView.self, in: hosted).first).convert(try XCTUnwrap(ConversationPaneTests.views(NSOutlineView.self, in: hosted).first).bounds, to: nil)
-        XCTAssertGreaterThan(card.minY, outline.maxY - 1, "It sits above the conversation, not after it")
+        // The conversation's first row, open, named, its instruction under it:
+        // it scrolls with the rest, and "Show all" puts all of it in place.
+        let outline = try XCTUnwrap(ConversationPaneTests.views(InspectorOutlineView.self, in: hosted).first)
+        let heading = try XCTUnwrap(outline.item(atRow: 0) as? InspectorItemsOutline.Node)
+        XCTAssertEqual(heading.path, "summary", "The summary request's heading is the first row")
+        XCTAssertTrue(outline.isItemExpanded(heading), "It opens by itself")
+        let cell = try XCTUnwrap(outline.view(atColumn: 0, row: 0, makeIfNecessary: true) as? InspectorRowCell)
+        XCTAssertEqual(cell.accessibilityLabel(), "Summary request, start of this turn, Summarizes the start of a turn too large to keep whole; its recent work is kept.")
+        let first = try XCTUnwrap(outline.item(atRow: 1) as? InspectorItemsOutline.Node)
+        guard case .line(let line, _) = first.kind else { return XCTFail("The instruction's first line follows the heading") }
+        XCTAssertTrue(summary.instruction.hasPrefix(line), line)
+        let coordinator = try XCTUnwrap(outline.coordinator)
+        coordinator.showWhole(.instruction)
+        try await wait("the whole instruction in place") { coordinator.expansion(for: .instruction)?.layout != nil }
+        XCTAssertEqual(coordinator.expansion(for: .instruction)?.text, summary.instruction, "All of the instruction, read from the prompt")
+        XCTAssertEqual(coordinator.expansion(for: .instruction)?.textView?.string, summary.instruction)
     }
 }
 

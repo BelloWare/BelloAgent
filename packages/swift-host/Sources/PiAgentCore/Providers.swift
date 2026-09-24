@@ -17,6 +17,8 @@ public struct ProviderClient: ModelClient {
     /// Profile custom headers can never replace transport, authentication or
     /// session/turn correlation headers.
     public static let transportOwnedHeaders: Set<String> = ["host","content-length","transfer-encoding","connection","authorization","x-api-key","x-session-id","x-turn-id"]
+    /// Headers that name one request's session or turn, not the connection.
+    static let perRequestHeaders: Set<String> = ["x-session-id","x-turn-id","session_id","x-client-request-id"]
     /// Identities are already restricted to `[A-Za-z0-9._:-]`; anything else
     /// (a synthetic auxiliary id, for example) is reduced to that header-safe
     /// alphabet so a value can never inject a header line.
@@ -29,7 +31,11 @@ public struct ProviderClient: ModelClient {
     }
     /// Pi's buildParams (openai-responses.ts). `promptCaching` is false for a
     /// compaction summary, which pi sends with cacheRetention "none".
-    public static func requestBody(profile p:Profile, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, promptCaching:Bool = true) throws -> JSON {
+    /// `cacheSessionID` names the prompt cache the request joins (pi's
+    /// session id there); nil means the session's own. Ours: a side chat
+    /// joins its parent's cache, whose requests its own extend, while
+    /// `sessionID` keeps naming the side itself.
+    public static func requestBody(profile p:Profile, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, cacheSessionID:String? = nil, promptCaching:Bool = true) throws -> JSON {
         let history=messages.filter(\.replayEligible)
         var body:JSON=["model":JSON(p.model),"stream":true]
         if p.api=="openai-responses" {
@@ -41,7 +47,7 @@ public struct ProviderClient: ModelClient {
             // the app wants the requested model or a visible error.
             if p.raw["compat"]["allowFallbacks"].flag != true { body["disable_fallbacks"]=true }
             // Pi routes a session's requests to one prompt cache by its id.
-            if promptCaching { body["prompt_cache_key"]=JSON(Self.promptCacheKey(sessionID)) }
+            if promptCaching { body["prompt_cache_key"]=JSON(Self.promptCacheKey(cacheSessionID ?? sessionID)) }
             // The cap on the wire is the model's own ceiling clipped to the room
             // the input leaves (or a bounded task's explicit cap), never the
             // output budget. Responses rejects a cap below 16, so pi sends at least 16.
@@ -77,7 +83,7 @@ public struct ProviderClient: ModelClient {
             body["max_tokens"]=JSON(messagesCap);body["system"]=JSON(instructions)
             body["messages"] = .array(try history.compactMap { message -> JSON? in
                 if message.role=="toolResult" { return ["role":"user","content":[["type":"tool_result","tool_use_id":JSON(message.toolCallId ?? ""),"content":JSON(message.text),"is_error":JSON(message.isError)]]] }
-                let blocks: [JSON]
+                var blocks: [JSON]
                 if message.role=="assistant",let items=try replayItems(message,profile:p) { blocks=items }
                 else { blocks=message.content.compactMap { block in
                     if block["type"].text=="text" { return block }
@@ -85,6 +91,7 @@ public struct ProviderClient: ModelClient {
                     if block["type"].text=="image" { return ["type":"image","source":["type":"base64","media_type":block["mimeType"],"data":block["data"]]] }
                     return nil
                 } }
+                if message.role != "assistant", let note=message.contextNote { blocks.insert(textBlock(note.text),at:0) }
                 guard !blocks.isEmpty else { return nil }
                 return ["role":JSON(message.role=="assistant" ? "assistant":"user"),"content":.array(blocks)]
             })
@@ -109,11 +116,18 @@ public struct ProviderClient: ModelClient {
         try await complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,turnID:turnID,purpose:purpose,onObservation:{ _ in },onDelta:onDelta)
     }
     public func complete(profile:Profile, apiKey:String, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, turnID:String, purpose:String, onObservation:@escaping @Sendable (RequestObservation) async -> Void, onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        try await complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,cacheSessionID:sessionID,turnID:turnID,purpose:purpose,onObservation:onObservation,onDelta:onDelta)
+    }
+    /// `cacheSessionID` feeds only the prompt cache key and pi's two session
+    /// affinity headers. The correlation header and metadata, the attempt
+    /// log and the observation all name `sessionID`, the chat that sent the
+    /// request and pays for it.
+    public func complete(profile:Profile, apiKey:String, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, cacheSessionID:String, turnID:String, purpose:String, onObservation:@escaping @Sendable (RequestObservation) async -> Void, onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
         try Task.checkCancellation()
         // Pi sends a compaction summary with cacheRetention "none": no prompt
         // cache key and no session affinity headers.
         let caching=purpose != "compaction"
-        let body=try Self.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,promptCaching:caching)
+        let body=try Self.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,cacheSessionID:cacheSessionID,promptCaching:caching)
         let bytes=try body.data()
         guard bytes.count<=32*1024*1024 else { throw AgentError("request_limit","Serialized request exceeds 32 MiB") }
         var request=URLRequest(url:profile.endpoint);request.httpMethod="POST";request.httpBody=bytes
@@ -122,10 +136,11 @@ public struct ProviderClient: ModelClient {
         // auxiliary request carries that purpose's identity) for LiteLLM correlation.
         request.setValue(Self.correlationValue(sessionID),forHTTPHeaderField:"x-session-id")
         request.setValue(Self.correlationValue(turnID),forHTTPHeaderField:"x-turn-id")
-        // Pi's session affinity for an OpenAI-format gateway: session_id and x-client-request-id.
+        // Pi's session affinity for an OpenAI-format gateway: session_id and
+        // x-client-request-id, naming the same cache as prompt_cache_key.
         if caching {
-            request.setValue(Self.correlationValue(sessionID),forHTTPHeaderField:"session_id")
-            request.setValue(Self.correlationValue(sessionID),forHTTPHeaderField:"x-client-request-id")
+            request.setValue(Self.correlationValue(cacheSessionID),forHTTPHeaderField:"session_id")
+            request.setValue(Self.correlationValue(cacheSessionID),forHTTPHeaderField:"x-client-request-id")
         }
         // LiteLLM authenticates both API routes with the configured proxy key.
         // The Messages route also accepts x-api-key for its native protocol.
@@ -148,7 +163,9 @@ public struct ProviderClient: ModelClient {
         var providerFailure:AgentError?
         do {
             try Task.checkCancellation()
-            let parts = stream.start(request)
+            // Model requests share a keep-alive session per gateway and
+            // credential; the correlation headers change with every request.
+            let parts = stream.start(request, pool: .shared, connection: HTTPSessionPool.key(request, perRequest: Self.perRequestHeaders))
             observation.phase="awaiting"; observation.sourceEvent="dispatch"
             let dispatch = stream.observation()
             await traces.dispatched(attempt, at: dispatch["dispatch"].double ?? nowMS(), wall: dispatch["dispatchWallTimestamp"].double ?? Date().timeIntervalSince1970)

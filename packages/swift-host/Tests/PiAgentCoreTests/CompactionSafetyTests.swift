@@ -181,7 +181,7 @@ final class CompactionSafetyTests: XCTestCase {
         try await s.compact();try await eventually { !(await s.isRunning) }
         let context=await s.context,selected=await s.activeSubmission,profile=await s.profile
         XCTAssertTrue(context.first?.text.contains(claim) == true);XCTAssertNil(selected)
-        let instructions=AgentSession.requestInstructions("Keep policy",selectionIDs:[])
+        let instructions=AgentSession.requestInstructions("Keep policy")
         let body=try ProviderClient.requestBody(profile:profile,messages:context,instructions:instructions,tools:await s.sessionDefinitions(),sessionID:"claims")
         XCTAssertFalse(RequestContextCounter.systemPrompt(body)?.contains("secret-skill") ?? true)
         XCTAssertEqual(body["input"].list.dropFirst().first?["role"].text,"user","Summary remains replay data, never authoritative instructions")

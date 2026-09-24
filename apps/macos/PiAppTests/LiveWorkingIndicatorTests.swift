@@ -92,8 +92,12 @@ final class LiveWorkingIndicatorTests: XCTestCase {
         XCTAssertTrue(pane.window.firstResponder === running, "the reader must be able to put the caret in it during a run")
         // The two deliveries are offered by name; which key does which is
         // pinned by `ComposerSubmissionTests`.
-        XCTAssertEqual(ComposerSubmissionIntent.hint(running: true), "↩ Queue · ⌘↩ Steer · ⇧↩ New line")
-        XCTAssertEqual(ComposerSubmissionIntent.hint(running: false), "↩ Send · ⌘↩ Send · ⇧↩ New line")
+        // Idle, Send is named once; while messages queue, the bar beside
+        // Steer says what Return does and the placeholder does not repeat it,
+        // unless the bar is too narrow to show it.
+        XCTAssertEqual(ComposerSubmissionIntent.hint(queues: false), "↩ Send · ⇧↩ New line")
+        XCTAssertEqual(ComposerSubmissionIntent.hint(queues: true, onBar: true), "⇧↩ New line")
+        XCTAssertEqual(ComposerSubmissionIntent.hint(queues: true, onBar: false), "↩ Queue · ⌘↩ Steer · ⇧↩ New line")
         pane.session.state = "idle"
         await pane.settle(4)
     }

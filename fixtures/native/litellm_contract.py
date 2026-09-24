@@ -51,13 +51,14 @@ def validate_arguments(arguments, schema):
 CORRELATION_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 
-def validate_correlation(headers, body, responses, *, session_id=None, turn_id=None):
+def validate_correlation(headers, body, responses, *, session_id=None, turn_id=None, cache_id=None):
     """Every gateway request names its native session and turn.
 
     ``x-session-id``/``x-turn-id`` carry bounded identity text; a Responses
     body repeats the session identity as ``metadata.session_id`` so LiteLLM
     can correlate spend without inspecting headers. Messages bodies must not
-    grow a metadata field the host never sends.
+    grow a metadata field the host never sends. ``cache_id`` pins the prompt
+    cache a request joins when it is known.
     """
     session = headers.get("x-session-id")
     turn = headers.get("x-turn-id")
@@ -71,9 +72,16 @@ def validate_correlation(headers, body, responses, *, session_id=None, turn_id=N
         # Pi 0.85.1 routes a session to one prompt cache (prompt_cache_key, at most
         # 64 characters) with session_id and x-client-request-id headers, except
         # for a compaction summary, which it sends with cacheRetention "none".
+        # Ours: a side chat joins its parent's cache, so those three name the
+        # parent while x-session-id and metadata name the side.
         cached = "prompt_cache_key" in body
-        require(not cached or body["prompt_cache_key"] == session[:64], "prompt_cache_key must be the session identity")
-        require(cached == (headers.get("session_id") == session) == (headers.get("x-client-request-id") == session), "pi's session affinity headers must travel with its prompt cache key")
+        cache = headers.get("session_id")
+        require(cached == (cache is not None) == (headers.get("x-client-request-id") is not None), "pi's session affinity headers must travel with its prompt cache key")
+        if cached:
+            require(isinstance(cache, str) and CORRELATION_ID.fullmatch(cache) is not None and headers.get("x-client-request-id") == cache,
+                    "pi's session affinity headers must name one prompt cache")
+            require(body["prompt_cache_key"] == cache[:64], "prompt_cache_key must be the cache identity its affinity headers name")
+        require(cache_id is None or cache == cache_id, "the request joins another prompt cache than expected")
     else:
         require("metadata" not in body, "Messages requests must not carry Responses correlation metadata")
     return session, turn
@@ -82,13 +90,14 @@ def validate_correlation(headers, body, responses, *, session_id=None, turn_id=N
 def validate_request(method, path, headers, body, *, api_key, model=None,
                      max_output_tokens=None, custom_headers=None,
                      expected_tool_names=None, native_items=None, historical_tool_schemas=None,
-                     session_id=None, turn_id=None):
+                     session_id=None, turn_id=None, cache_id=None):
     """Validate both API formats and return semantic history for response choice.
 
     native_items='portable' rejects opaque reasoning on the wire. 'pinned'
     permits it; the response fixture additionally checks the exact issued bytes.
     Request authentication is compared in memory and never included in errors.
-    session_id/turn_id pin the expected correlation identities when known.
+    session_id/turn_id pin the expected correlation identities when known,
+    and cache_id the prompt cache the request joins.
     """
     require(method == "POST", "model requests must use POST")
     require(path in ("/v1/responses", "/v1/messages"), "unexpected model route")
@@ -98,7 +107,7 @@ def validate_request(method, path, headers, body, *, api_key, model=None,
     require(headers.get("content-type", "").split(";", 1)[0].strip() == "application/json", "request content type must be JSON")
     require(headers.get("accept") == "text/event-stream", "request must accept SSE")
     require(isinstance(body, dict), "request body must be an object")
-    session, turn = validate_correlation(headers, body, responses, session_id=session_id, turn_id=turn_id)
+    session, turn = validate_correlation(headers, body, responses, session_id=session_id, turn_id=turn_id, cache_id=cache_id)
     if responses:
         require("x-api-key" not in headers and "anthropic-version" not in headers, "Messages headers leaked into Responses")
     else:

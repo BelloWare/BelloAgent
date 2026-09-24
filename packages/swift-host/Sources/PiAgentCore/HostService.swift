@@ -121,7 +121,9 @@ public actor NativeHostService {
     /// Test seam: a loaded session.
     func loadedSession(_ id: String) -> AgentSession? { sessions[id] }
     private func mark(_ id:String,_ seq:Int) async {
-        if let session=sessions[id], !(await session.isEphemeral) { sideParents.removeValue(forKey:id) }
+        // Only a side chat can stop being one (it was kept); every other
+        // session's events skip the hop to its actor, once per streamed token.
+        if sideParents[id] != nil, let session=sessions[id], !(await session.isEphemeral) { sideParents.removeValue(forKey:id) }
         dirty[id]=max(seq,dirty[id] ?? 0)
         // Owned by `flushTask` and cancelled by `shutdown`, which then flushes
         // once itself, so a pending coalescing window cannot outlive the host.
@@ -210,11 +212,20 @@ public actor NativeHostService {
             // The chat's cost limit, and the spend the app counted for a chat
             // whose journal predates cost records (adopted at most once).
             let costLimit=try AgentSession.costLimit(params["costLimit"]), costSeed=try AgentSession.costSeed(params["costSeed"])
+            // The chat's capture mode rides on the open, which saves the app a
+            // `debug.mode` round trip before its first turn. The reply names
+            // the mode it applied; without one the app sends `debug.mode` itself.
+            let captureMode=params["captureMode"].text
+            if let captureMode { _=try await traces.command("debug.mode",session:id,params:["mode":JSON(captureMode)]) }
+            func withMode(_ snapshot:JSON)->JSON {
+                guard let captureMode, case .object(var fields)=snapshot else { return snapshot }
+                fields["captureMode"]=JSON(captureMode); return .object(fields)
+            }
             try await runtimeGate.acquire()
             do {
                 if let existing=sessions[id] {
                     if let costLimit { await existing.setCostLimit(costLimit) }
-                    await runtimeGate.release(); return await existing.snapshot()
+                    await runtimeGate.release(); return withMode(await existing.snapshot())
                 }
                 let original=try Profile(params["profile"]), (profile,key)=try ProfileFiles.credentials(profile:original,supplied:params["apiKey"].text)
                 let mode=params["toolMode"].text ?? "editing"; guard ["editing","read-only"].contains(mode) else { throw AgentError("tool_mode", "Unknown tool mode") }
@@ -233,7 +244,7 @@ public actor NativeHostService {
                 if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
                 if let costLimit { await session.setCostLimit(costLimit) }
                 if let costSeed { await session.adoptSpendSeed(costSeed) }
-                await runtimeGate.release(); return await session.snapshot()
+                await runtimeGate.release(); return withMode(await session.snapshot())
             } catch { await runtimeGate.release(); throw error }
         }
         if method == "session.portable.preview" || method == "session.import.inspect" { return try portable(params) }

@@ -442,6 +442,9 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
         emulator.feed("\u{1b}[?2004h")
         view.pasteText("one\ntwo")
         XCTAssertEqual(taken(), "\u{1b}[200~one\rtwo\u{1b}[201~")
+        // A paste cannot end its own brackets and run the rest as typing.
+        view.pasteText("safe\u{1b}[201~rm -rf ~\n\u{9b}201~x")
+        XCTAssertEqual(taken(), "\u{1b}[200~safe[201~rm -rf ~\r201~x\u{1b}[201~")
     }
 
     /// Reading the history back: selection, copy and drawing all go through

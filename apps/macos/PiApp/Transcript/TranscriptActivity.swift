@@ -295,10 +295,12 @@ enum TranscriptRenderIdentity {
     case message(String), block(String)
     var key: String {
         switch self {
-        case .message(let id): return ["block:", "message:", "work:", "summary:"].contains(where: id.hasPrefix) ? "message:" + id : id
+        case .message(let id): return Self.reserved.contains(where: id.hasPrefix) ? "message:" + id : id
         case .block(let id): return "block:" + id
         }
     }
+    /// Read for every row's id, many times a token: one array, not one per read.
+    private static let reserved = ["block:", "message:", "work:", "summary:"]
 }
 
 extension TranscriptMessage {
@@ -1023,11 +1025,24 @@ enum TranscriptActivity {
     // MARK: Blocks and turns
 
     static func patched(_ items: [TranscriptItem], from previous: [TranscriptMessage], to page: [TranscriptMessage]) -> [TranscriptItem]? {
-        guard TaskTranscriptPlan.cosmetic(from: previous, to: page) else { return nil }
-        let changed = zip(previous, page).filter { $0 != $1 }.map { $1 }
-        guard changed.allSatisfy({ $0.role == "assistant" && $0.kind == nil }),
-              zip(previous, page).allSatisfy({ $0.accounting == $1.accounting }) else { return nil }
-        if changed.isEmpty { return items }
+        patch(items, from: previous, to: page)?.items
+    }
+    /// `patched`, saying too whether any row changed. A patch keeps every
+    /// row's identity and place: the same ids, in the same order.
+    ///
+    /// One pass over the page finds the rows a token changed; the checks
+    /// that follow read only those. Comparing the whole page again for each
+    /// check — whether it is cosmetic, which rows changed, whether their
+    /// accounting did — walked every row three times more on every token.
+    static func patch(_ items: [TranscriptItem], from previous: [TranscriptMessage], to page: [TranscriptMessage]) -> (items: [TranscriptItem], changed: Bool)? {
+        guard previous.count == page.count else { return nil }
+        var before: [TranscriptMessage] = [], changed: [TranscriptMessage] = []
+        for (lhs, rhs) in zip(previous, page) where lhs != rhs { before.append(lhs); changed.append(rhs) }
+        // Rows that did not change are cosmetic and keep their accounting.
+        guard TaskTranscriptPlan.cosmetic(from: before, to: changed),
+              changed.allSatisfy({ $0.role == "assistant" && $0.kind == nil }),
+              zip(before, changed).allSatisfy({ $0.accounting == $1.accounting }) else { return nil }
+        if changed.isEmpty { return (items, false) }
         let sources = Set(changed.map(\.id))
         var replacements: [String: TranscriptItem] = [:]
         for message in changed {
@@ -1037,23 +1052,26 @@ enum TranscriptActivity {
                 guard replacements.updateValue(item, forKey: item.id) == nil else { return nil }
             }
         }
-        var affected = Set<String>()
-        for item in items {
+        var affected = Set<String>(), places: [Int] = []
+        for (index, item) in items.enumerated() {
             switch item {
-            case .message(let message): if sources.contains(message.id) { affected.insert(item.id) }
+            case .message(let message): if sources.contains(message.id) { affected.insert(item.id); places.append(index) }
             case .block(let block):
                 let ownsSource = block.message.map { sources.contains($0.id) } == true ||
                     block.activity.contains { sources.contains($0.id) }
                 if block.taskSummary?.requests.contains(where: { sources.contains($0.id) }) == true,
                    block.presentation != .work || block.task != nil { return nil }
                 if block.turn?.requests.contains(where: { sources.contains($0.id) }) == true { return nil }
-                if ownsSource { affected.insert(item.id) }
+                if ownsSource { affected.insert(item.id); places.append(index) }
             }
         }
         // Membership changes, legacy grouping changes and terminal aggregates
         // take the complete planner. Ordinary part fragments touch local rows.
         guard affected == Set(replacements.keys) else { return nil }
-        return items.map { replacements[$0.id] ?? $0 }
+        // Only the rows the token touched are replaced, in their places.
+        var result = items
+        for index in places { if let replacement = replacements[items[index].id] { result[index] = replacement } }
+        return (result, true)
     }
     /// `complete` says whether the page reaches the conversation's newest
     /// row (see `TaskTranscriptPlan.items`).

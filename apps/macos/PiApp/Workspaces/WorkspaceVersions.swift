@@ -137,10 +137,15 @@ extension WorkspaceModel {
     /// under this one, whose conversation ends at that reply and its tools.
     /// It opens with its composer focused.
     func forkFromReply(sessionID: String, messageID: String) {
-        guard !installPreparing, let view = displays[sessionID] else { return }
+        // The Inspector offers this for a chat with no display this launch
+        // (never shown, or let go): the fork needs only its saved record.
+        guard !installPreparing, record(sessionID) != nil else { return }
         if forkingReplies.contains(sessionID) { return }
         forkingReplies.insert(sessionID)
-        Task { [weak self, weak view] in
+        // The fork opens only if the reader is still where they asked for
+        // it, as with /fork: one who moved on meanwhile is not pulled back.
+        let selectedBefore = selectedID
+        Task { [weak self] in
             guard let self else { return }
             defer {
                 self.forkingReplies.remove(sessionID)
@@ -151,10 +156,11 @@ extension WorkspaceModel {
             }
             do {
                 let fork = try await self.createFork(parentID: sessionID, atMessageID: messageID)
+                guard self.selectedID == selectedBefore else { return }
                 await self.select(fork.id)
                 self.focusComposer(fork.id)
             } catch {
-                view?.notice = error.localizedDescription
+                self.displays[sessionID]?.notice = error.localizedDescription
                 self.error = error.localizedDescription
             }
         }

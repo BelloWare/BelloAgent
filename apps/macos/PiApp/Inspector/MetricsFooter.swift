@@ -296,8 +296,19 @@ struct SessionRunLine: View {
         return MetricFormat.runDuration(max(reported ?? 0, measured))
     }
 
+    /// Where the run clock's one-second ticks are laid from: half a second
+    /// past the turn's start, to the hundredth, so every update of this line
+    /// names the same schedule and each tick falls mid-second. A schedule
+    /// from `.now` restarted with every update, and the seconds shown stepped
+    /// unevenly (12s, 12s, 14s). Without a start stamp, the current instant.
+    static func clockOrigin(_ timing: [String: WireValue], atUptimeMs now: Double, date: Date) -> Date {
+        guard let started = timing["startedAt"]?.number, started.isFinite, started >= 0, started <= now else { return date }
+        let origin = date.timeIntervalSinceReferenceDate - (now - started) / 1_000 + 0.5
+        return Date(timeIntervalSinceReferenceDate: (origin * 100).rounded() / 100)
+    }
+
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { _ in
+        TimelineView(.periodic(from: Self.clockOrigin(footer.turnTiming, atUptimeMs: ProcessInfo.processInfo.systemUptime * 1_000, date: Date()), by: 1)) { _ in
             HStack(spacing: 6) {
                 if let elapsed = Self.elapsed(footer.turnTiming, atUptimeMs: ProcessInfo.processInfo.systemUptime * 1_000) {
                     Text(elapsed).monospacedDigit().lineLimit(1).fixedSize()

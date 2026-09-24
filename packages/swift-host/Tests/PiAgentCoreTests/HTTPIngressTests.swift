@@ -22,6 +22,63 @@ private final class IngressFixtureProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class HTTPIngressTests: XCTestCase {
+    /// An HTTP/1.1 server that keeps connections alive, like a gateway.
+    private static let keepAliveServer = """
+    import http.server, json, os, sys
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            body = b"data: {}\\n\\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream"); self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+        def log_message(self, *args): pass
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    with open(os.path.join(sys.argv[1], "ready.json"), "w") as ready: json.dump({"port": server.server_address[1]}, ready)
+    server.serve_forever()
+    """
+    /// Model requests share one keep-alive session per gateway and
+    /// credential: the second request goes out on the connection the first
+    /// one opened, and another credential gets a session of its own.
+    func testSequentialRequestsReuseOneSessionAndItsConnection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pool-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let script = root.appendingPathComponent("server.py")
+        try Data(Self.keepAliveServer.utf8).write(to: script)
+        let server = Process()
+        server.executableURL = URL(fileURLWithPath: "/usr/bin/python3"); server.arguments = [script.path, root.path]
+        server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice
+        try server.run()
+        defer { server.terminate(); server.waitUntilExit() }
+        let ready = root.appendingPathComponent("ready.json")
+        for _ in 0..<1000 where !FileManager.default.fileExists(atPath: ready.path) { try await Task.sleep(for: .milliseconds(10)) }
+        try await Task.sleep(for: .milliseconds(20))
+        let port = try XCTUnwrap(JSON.parse(Data(contentsOf: ready))["port"].int)
+        let pool = HTTPSessionPool()
+        func send(_ turn: String, key: String = "fixture-key") async throws -> HTTPStream {
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/responses")!)
+            request.httpMethod = "POST"; request.httpBody = Data("{}".utf8)
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization"); request.setValue(turn, forHTTPHeaderField: "x-turn-id")
+            let stream = HTTPStream()
+            var body = Data()
+            for try await part in stream.start(request, pool: pool, connection: HTTPSessionPool.key(request, perRequest: ["x-turn-id"])) {
+                if case .bytes(let bytes, _) = part { body.append(bytes); stream.consumed(bytes.count) }
+            }
+            XCTAssertEqual(String(decoding: body, as: UTF8.self), "data: {}\n\n")
+            XCTAssertEqual(stream.observation()["transportOutcome"].text, "eof")
+            _ = await stream.endObservation()
+            for _ in 0..<400 where stream.reusedConnection == nil { try await Task.sleep(for: .milliseconds(5)) }
+            return stream
+        }
+        let first = try await send("t1"), second = try await send("t2")
+        XCTAssertEqual(pool.created, 1, "One session serves both requests")
+        XCTAssertEqual(first.reusedConnection, false)
+        XCTAssertEqual(second.reusedConnection, true, "The second request reuses the first one's connection")
+        _ = try await send("t3", key: "another-key")
+        XCTAssertEqual(pool.created, 2, "Another credential gets a session of its own")
+    }
     private func configuration() -> URLSessionConfiguration {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [IngressFixtureProtocol.self]

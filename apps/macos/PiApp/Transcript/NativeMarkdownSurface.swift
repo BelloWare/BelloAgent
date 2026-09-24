@@ -19,6 +19,11 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     /// Which reply this is, so a token can be handed to the surface that is
     /// carrying it.
     var identity: String = ""
+    /// The reader is reading this reply as its source (`ReplySource`). The
+    /// surface keeps every block and every height it measured, but draws
+    /// nothing and takes no room, so switching back finds the rendered reply
+    /// exactly as the reader left it rather than standing at estimates.
+    var parked = false
 
     func makeNSView(context: Context) -> NativeMarkdownContainer {
         let view = NativeMarkdownContainer()
@@ -28,9 +33,10 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     func updateNSView(_ view: NativeMarkdownContainer, context: Context) {
         view.read(source: source, style: style, capsWidth: capsWidth, streaming: streaming, headings: headings,
                   environment: TranscriptRowEnvironment(context.environment), identity: identity)
+        view.park(parked)
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeMarkdownContainer, context: Context) -> CGSize? {
-        nsView.measure(width: proposal.width)
+        parked ? CGSize(width: proposal.width ?? 0, height: 0) : nsView.measure(width: proposal.width)
     }
 }
 
@@ -393,8 +399,9 @@ private struct NativeHostedMarkdownBlock: View {
     /// which the idle scheduler reclaims once they are far from the viewport.
     private var mountedHosts: [ObjectIdentifier: NativeMarkdownBlockHost] = [:]
     private var detachedHosts: [ObjectIdentifier: NativeMarkdownBlockHost] = [:]
-    var hasProvisionalGeometry: Bool { layouts.last?.provisional.isEmpty == false }
+    var hasProvisionalGeometry: Bool { !isParked && layouts.last?.provisional.isEmpty == false }
     var visibleContentPrepared: Bool {
+        if isParked { return true }
         guard let clip = observedClip, let layout = layouts.last(where: { $0.width == bounds.width }) else { return blocks.isEmpty }
         let viewport = convert(clip.bounds, from: clip)
         guard !resolveScheduled else { return false }
@@ -437,6 +444,26 @@ private struct NativeHostedMarkdownBlock: View {
     deinit {
         if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
         for observer in frameObservers { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    /// Parked while the reader reads this reply as its source: every block
+    /// and every height stays, nothing is mounted or drawn, and the surface
+    /// takes no room. Unparked, it is the rendered reply it was, at the
+    /// heights it had, so the reader's place comes back with it.
+    private(set) var isParked = false
+    func park(_ parked: Bool) {
+        guard parked != isParked else { return }
+        isParked = parked
+        if parked {
+            for (key, host) in mountedHosts {
+                if host.view?.superview === self { host.view?.removeFromSuperview() }
+                if host.view != nil { detachedHosts[key] = host }
+            }
+            mountedHosts = [:]
+            loadingSection?.stopAnimation(nil); loadingSection?.removeFromSuperview()
+            TranscriptIdleScheduler.shared.cancel(self)
+        }
+        needsLayout = true
     }
 
     /// The reading of this message, owned here rather than by a view body, so
@@ -881,7 +908,7 @@ private struct NativeHostedMarkdownBlock: View {
         return false
     }
     private func mountVisibleBlocks() {
-        guard laidOutWidth != nil else { return }
+        guard laidOutWidth != nil, !isParked else { return }
         let viewport: CGRect
         if let clip = observedClip {
             viewport = convert(clip.bounds, from: clip)

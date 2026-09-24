@@ -160,6 +160,15 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // Only a message as typed and a reply read as its source.
+        if testEnvironment("PI_APP_UI_GALLERY_LITERAL_ONLY") == "1" {
+            try await captureLiteralTextScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                               workspaceID: workspace.id, profileID: connections[0].profile.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         if testEnvironment("PI_APP_UI_GALLERY_COST_ONLY") == "1" {
             try await captureCostLimitScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                              workspaceID: workspace.id, profileID: connections[0].profile.id)
@@ -318,6 +327,8 @@ final class UIScreenshotTests: XCTestCase {
                                               workspaceID: workspace.id, profileID: connections[0].profile.id)
         try await captureCompactionRequestScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                                  workspaceID: workspace.id, profileID: connections[0].profile.id)
+        try await captureLiteralTextScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                           workspaceID: workspace.id, profileID: connections[0].profile.id)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
         let fresh = WorkspaceModel(stateRoot: folder.appendingPathComponent("onboarding-state"), vault: freshVault)
@@ -519,6 +530,23 @@ final class UIScreenshotTests: XCTestCase {
             try captureWithPopovers(window, to: gallery.appendingPathComponent("17d-skills-popover-\(name).png"))
             popovers.close(); try await settle(0.4)
         }
+        // 17e · The slash list, typed as a reader would: "/" at the start of
+        // the draft, then "re" narrows the commands and skills it offers.
+        let editor = try XCTUnwrap(descendants(ComposerTextView.self, in: window.contentView ?? NSView()).first, "The composer's editor is on screen")
+        window.makeFirstResponder(editor)
+        session.directCommand = true
+        editor.insertText("/re", replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        let listed = Date().addingTimeInterval(5)
+        while Date() < listed, !session.completionVisible { try await settle(0.05) }
+        XCTAssertTrue(session.completionVisible, "The slash list opened")
+        XCTAssertFalse(model.completions(session).isEmpty, "The slash list offers the catalog's matches")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("17e-skills-slash-\(name).png"))
+        }
+        editor.insertText("", replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
+        session.directCommand = false; try await settle(0.3)
+        XCTAssertFalse(session.completionVisible, "Clearing the draft closed the slash list")
     }
 
     /// 19 · Versions and forks. A question edited once shows `‹ 1 / 2 ›` on
@@ -563,6 +591,69 @@ final class UIScreenshotTests: XCTestCase {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
             try capture(window, to: gallery.appendingPathComponent("19b-fork-from-here-\(name).png"))
         }
+    }
+
+    /// 21 · A message exactly as it was typed: Markdown's characters, indented
+    /// lines and a blank line read literally in the bubble, while the reply
+    /// that echoes them renders them. 21b · That reply switched to its source,
+    /// one monospaced text in the code panel.
+    @MainActor private func captureLiteralTextScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                     appearances: [(String, NSAppearance.Name)], workspaceID: String, profileID: String) async throws {
+        let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "Keep it literal", path: nil, profileID: profileID, toolMode: "editing")
+        model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+        await model.select(chat.id); try await settle(0.8)
+        let session = try XCTUnwrap(model.displays[chat.id])
+        session.draft = """
+        Keep these exactly as I typed them:
+        **not bold**, `not code`, _not italic_
+        # not a heading
+        - not a list item
+            indented four spaces
+        [not a link](https://example.com)
+
+        after a blank line
+        """
+        model.send(sessionID: chat.id)
+        try await waitIdle(session, model: model, minimumMessages: 2)
+        let typed = try XCTUnwrap(session.messages.last { $0.role == "user" })
+        XCTAssertTrue(typed.text.contains("**not bold**"), "the message keeps its characters")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("21-literal-message-\(name).png"))
+        }
+        // View raw on the reply, as its pill, its menu and its accessibility action do.
+        let reply = try XCTUnwrap(session.messages.last { $0.role == "assistant" && $0.kind == nil }?.id)
+        session.disclosure.setOpen(true, .source(reply))
+        try await settle(0.6)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("21b-reply-raw-\(name).png"))
+        }
+        session.disclosure.setOpen(false, .source(reply)); try await settle(0.6)
+        // 21c · A long paste and its reply's source: both long enough to be
+        // TextKit's rather than SwiftUI's, where the paste ends and the source begins.
+        let steps = (1...48).map { "- [ ] **step \($0)** run `swift test --filter Retry\($0)` # then read the log" }
+        session.draft = "A long paste, exactly as typed:\n" + steps.joined(separator: "\n")
+        model.send(sessionID: chat.id)
+        try await waitIdle(session, model: model, minimumMessages: 4)
+        let long = try XCTUnwrap(session.messages.last { $0.role == "assistant" && $0.kind == nil }?.id)
+        session.disclosure.setOpen(true, .source(long))
+        try await settle(0.6)
+        let scroll = try XCTUnwrap(descendants(TranscriptNativeScrollView.self, in: window.contentView ?? NSView()).first)
+        let row = try XCTUnwrap(descendants(TranscriptRowContainer.self, in: scroll).first { ReplySource.replyID(of: $0.contentItem) == long })
+        let clip = scroll.contentView
+        let y = max(0, row.frame.minY - clip.bounds.height * 0.45)
+        scroll.readerWillNavigate(upward: y < clip.bounds.minY)
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: y))
+        scroll.reflectScrolledClipView(clip)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("21c-long-paste-source-\(name).png"))
+        }
+        session.disclosure.setOpen(false, .source(long)); try await settle(0.6)
     }
 
     /// 20 · A split-turn compaction in the Session Inspector: one Compaction
@@ -766,6 +857,40 @@ final class UIScreenshotTests: XCTestCase {
         inspector.request.tab = .conversation
         try await until("the tool round's conversation") { inspector.request.conversation.value != nil && inspector.request.delta != nil }
         try await shoot("11c-inspector-conversation", hold: 1.0)
+        // 11i · "Show all" opens texts in place: the system prompt, all of it
+        // where its preview was, with a few lines selected, and every tool's
+        // schema in place of the tools' list; the rows below moved down.
+        // 11j · The end of the schema: "Show less", then the rows after it.
+        do {
+            let outline = try XCTUnwrap(descendants(InspectorOutlineView.self, in: panel.contentView ?? NSView()).first, "The conversation's outline is on screen")
+            let coordinator = try XCTUnwrap(outline.coordinator)
+            let clip = try XCTUnwrap(outline.enclosingScrollView?.contentView)
+            coordinator.showWhole(.section(.system))
+            coordinator.showWhole(.section(.tools))
+            try await until("the whole system prompt and every tool's schema in place") {
+                [RequestDocument.Section.Kind.system, .tools].allSatisfy { coordinator.expansion(for: .section($0))?.textView?.window != nil }
+            }
+            try await settle(0.4)
+            let system = try XCTUnwrap(coordinator.expansion(for: .section(.system))?.textView)
+            XCTAssertEqual(system.string, coordinator.expansion(for: .section(.system))?.text, "The whole system prompt is in place")
+            let text = system.string as NSString
+            let first = text.range(of: "\n").location
+            system.setSelectedRange(NSRange(location: 0, length: first == NSNotFound ? min(140, text.length) : first))
+            panel.makeFirstResponder(system)
+            clip.scroll(to: .zero); outline.enclosingScrollView?.reflectScrolledClipView(clip)
+            try await shoot("11i-inspector-expanded", hold: 1.0)
+            let less = (0..<outline.numberOfRows).last { row in
+                guard let node = outline.item(atRow: row) as? InspectorItemsOutline.Node, case .less = node.kind else { return false }
+                return true
+            }
+            let end = try XCTUnwrap(less, "The schema ends with Show less")
+            clip.scroll(to: NSPoint(x: 0, y: max(0, outline.rect(ofRow: end).minY - clip.bounds.height * 0.55)))
+            outline.enclosingScrollView?.reflectScrolledClipView(clip)
+            try await shoot("11j-inspector-expanded-end", hold: 0.8)
+            coordinator.showLess(.section(.tools)); coordinator.showLess(.section(.system))
+            clip.scroll(to: .zero); outline.enclosingScrollView?.reflectScrolledClipView(clip)
+            try await settle(0.3)
+        }
         // 11d · What came back.
         inspector.request.tab = .response
         try await until("the tool round's response") { inspector.request.response.value != nil }

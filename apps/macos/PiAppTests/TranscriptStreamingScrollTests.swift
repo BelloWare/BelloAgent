@@ -169,6 +169,13 @@ final class TranscriptStreamingScrollTests: XCTestCase {
         // a delta rather than an insertion.
         session.messages.append(TranscriptMessage(id: "stream:x", role: "assistant", text: "#", state: "streaming", turn: last))
         await pane.settle(turns: 6)
+        // A row wears the arrival accent for `freshDuration`, and the page
+        // takes it off on its next presentation. Let it fade first: otherwise
+        // the first token also takes the accent off, and how the first frame
+        // is answered depends on how long this setup happened to take.
+        let fading = ProcessInfo.processInfo.systemUptime + 5
+        while page.snapshot?.fresh.isEmpty == false, ProcessInfo.processInfo.systemUptime < fading { await pane.settle(turns: 2) }
+        XCTAssertEqual(page.snapshot?.fresh ?? [], [], "the arriving row still wears its arrival accent", file: file, line: line)
         let clip = scroll.contentView
         // The reader has scrolled back into the history: the page is detached,
         // which is the case where their position has to hold while the reply

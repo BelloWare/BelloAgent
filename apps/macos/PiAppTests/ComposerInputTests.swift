@@ -297,3 +297,34 @@ extension ConversationPaneTests {
         XCTAssertEqual(editor.string, "", "paging must not type into the side's draft")
     }
 }
+
+/// Views that must change in place rather than be removed and inserted
+/// again: each would otherwise replay a transition the reader sees as a
+/// flicker. Read from the source, as `BlockingAlertTests` reads it.
+extension ConversationPaneTests {
+    static func appSource(_ path: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("PiApp")
+        return try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+    }
+    /// The code from `start` to the first `end` after it.
+    static func excerpt(_ source: String, from start: String, to end: String) throws -> Substring {
+        let from = try XCTUnwrap(source.range(of: start), "\(start) not found")
+        let to = try XCTUnwrap(source.range(of: end, range: from.upperBound..<source.endIndex), "\(end) not found after \(start)")
+        return source[from.lowerBound..<to.upperBound]
+    }
+    func testLiveTurnBarKeepsItsIdentityAcrossPresentations() throws {
+        let body = try Self.excerpt(Self.appSource("Transcript/NativeTranscriptView.swift"), from: "LiveTurnBarSlot(turn:", to: "}")
+        XCTAssertFalse(body.contains(".id("), "A new presentation of the chat replays the live turn bar's entrance")
+    }
+    func testModelChipChangesItsLabelInPlace() throws {
+        let label = try Self.excerpt(Self.appSource("Workspaces/ModelSwitchControls.swift"), from: "Text(text).font(.system(size: 12, weight: .medium))", to: "if loading")
+        XCTAssertTrue(label.contains(".contentTransition(.opacity)"))
+        XCTAssertFalse(label.contains(".id(text)"), "A new model name removes the chip's label and inserts another")
+        XCTAssertFalse(label.contains(".transition("), "The chip's label is replaced, not changed")
+    }
+    func testProjectsSheetCrossesItsPanesInOneStack() throws {
+        let panes = try Self.excerpt(Self.appSource("Workspaces/WorkspaceManagerView.swift"), from: "list.frame(width: 250)", to: "NewWorkspaceDraft.editing")
+        XCTAssertTrue(panes.contains("ZStack {"))
+        XCTAssertFalse(panes.contains("Group {"), "A Group gives each pane its own frame: the leaving and arriving panes stand side by side")
+    }
+}

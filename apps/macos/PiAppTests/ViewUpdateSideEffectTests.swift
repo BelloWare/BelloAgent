@@ -44,6 +44,33 @@ final class ViewUpdateSideEffectTests: XCTestCase {
         XCTAssertEqual(issues, [], "Side effects inside SwiftUI updates while a reply streamed")
     }
 
+    /// Switching a reply to its markdown source and back rebuilds the reply's
+    /// row, re-measures it and moves the rows under it, all from the click
+    /// (`ReplySource`): nothing is published from inside a SwiftUI update.
+    @MainActor func testSwitchingAReplyToItsSourcePublishesNothingDuringAViewUpdate() async throws {
+        let sections = (0..<12).map { "## Part \($0)\nParagraph \($0) with **bold**, `code` and a [link](https://example.com)." }
+        let pane = try ConversationPaneTests.Pane(messages: [
+            TranscriptMessage(id: "u1", role: "user", text: "Write it **all** out,\n- as typed.", at: 1_000, turn: "u1"),
+            TranscriptMessage(id: "a1", role: "assistant", text: sections.joined(separator: "\n\n"), state: "complete", at: 2_000, turn: "u1"),
+            TranscriptMessage(id: "u2", role: "user", text: "And a short one.", at: 3_000, turn: "u2"),
+            TranscriptMessage(id: "a2", role: "assistant", text: "A short **reply**.", state: "complete", at: 4_000, turn: "u2")
+        ])
+        defer { pane.close() }
+        await pane.settle(12)
+        let document = try XCTUnwrap(descendants(TranscriptNativeDocument.self, in: pane.hosted).first)
+        let rows = ["a1", "a2"].compactMap { id in document.retainedRows.first { ReplySource.replyID(of: $0.contentItem) == id } }
+        XCTAssertEqual(rows.count, 2, "Both replies have a row of text")
+        let start = Date()
+        for _ in 0..<2 {
+            for (row, id) in zip(rows, ["a1", "a2"]) {
+                row.toggleDisclosure(.source(id)); await pane.settle(6)
+                row.toggleDisclosure(.source(id)); await pane.settle(6)
+            }
+        }
+        let issues = try SwiftUIRuntimeIssues.since(start)
+        XCTAssertEqual(issues, [], "Side effects inside SwiftUI updates while replies switched to their source and back")
+    }
+
     /// Switching an edited message to an earlier version and back swaps the
     /// rows under the page, and each switcher's marker learns its message in
     /// its own update: nothing is published from inside one.
@@ -159,6 +186,44 @@ final class ViewUpdateSideEffectTests: XCTestCase {
         decoration.update(caret: false, target: nil)
         try await Task.sleep(for: .milliseconds(30))
         XCTAssertEqual(published, 2)
+    }
+
+    /// "Show all" in the Inspector puts a text in place: the outline's rows
+    /// change and a Turn page's prompt card grows when the text arrives from
+    /// its worker, never from inside the update that asked for it; a new width
+    /// is laid out again the same way.
+    @MainActor func testShowingATextWholeInPlacePublishesNothingDuringAViewUpdate() async throws {
+        let fixture = try await InspectorExpandFixture(body: InspectorExpandBodies.request(result: InspectorExpandInPlaceTests.result))
+        defer { fixture.close() }
+        let model = InspectorPromptExpansion()
+        let whole = InspectorExpandBodies.toolResult(lines: 200)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 640), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: ScrollView { InspectorPromptCard(preview: String(whole.prefix(2_000)), model: model, showAll: {}).padding(24) })
+        window.orderFront(nil)
+        defer { model.collapse(); window.contentView = nil; window.close() }
+        for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+        let start = Date()
+        try await fixture.showAll("item:3")
+        try await fixture.showAll("section:system")
+        fixture.window.setContentSize(NSSize(width: 600, height: 820))
+        try await fixture.wait("the texts laid out to the new width") {
+            fixture.coordinator.expansions.values.allSatisfy { !$0.laying && ($0.layout?.width ?? 0) < 600 }
+        }
+        await fixture.settle()
+        fixture.coordinator.showLess(.item(3)); fixture.coordinator.showLess(.section(.system))
+        await fixture.settle()
+        model.show { (whole, (whole as NSString).length, (whole as NSString).length) }
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline, model.expansion?.layout == nil { try await Task.sleep(for: .milliseconds(20)) }
+        for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertNotNil(model.expansion?.layout, "The prompt opened in its card")
+        window.setContentSize(NSSize(width: 600, height: 640))
+        for _ in 0..<20 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+        model.collapse()
+        for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(20)) }
+        let issues = try SwiftUIRuntimeIssues.since(start)
+        XCTAssertEqual(issues, [], "Side effects inside SwiftUI updates while texts opened in place and folded")
     }
 
     /// Return in a choice list saves the highlighted choice. SwiftUI runs key

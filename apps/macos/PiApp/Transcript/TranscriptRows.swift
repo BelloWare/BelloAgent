@@ -112,25 +112,44 @@ struct SpinnerView: View {
     }
 }
 
-/// The pill buttons under a row: Edit (user rows), Copy and Details. They show
-/// on hover, and they exist only while the row is hovered: three buttons with
-/// their hover tracking for every row of a long chat is a large part of what
-/// opening one costs. The band reserves their height either way, so nothing
-/// moves, and the same actions stay reachable without a pointer through the
-/// row's accessibility actions.
-private struct RowActionsView: View {
+/// The pill buttons under a row: Edit (user rows), Copy, View raw (finished
+/// replies), Details and Fork from here. They show on hover, and they exist
+/// only while the row is hovered: a few buttons with their hover tracking for
+/// every row of a long chat is a large part of what opening one costs. The
+/// band reserves their height either way, so nothing moves, and the same
+/// actions stay reachable without a pointer through the row's accessibility
+/// actions.
+struct RowActionsView: View {
     let message: TranscriptMessage
     let actions: TranscriptActions
     let visible: Bool
+    /// The reply's switch between rendered and source, where the row offers it.
+    var source: ReplySourceToggle? = nil
     @Environment(\.piReduceMotion) private var reduceMotion
     @Environment(\.transcriptForks) private var forks
+    /// One pill: its label, whether it wears the accent, and what it does.
+    struct Pill: Identifiable {
+        let title: String
+        var accent = false
+        let perform: () -> Void
+        var id: String { title }
+    }
+    /// The pills a hovered row shows, in order.
+    static func pills(_ message: TranscriptMessage, actions: TranscriptActions, forks: Bool, source: ReplySourceToggle?) -> [Pill] {
+        var pills: [Pill] = []
+        if MessageRowView.editable(message) { pills.append(Pill(title: "Edit", accent: true) { actions.edit(message.id) }) }
+        pills.append(Pill(title: "Copy") { actions.copyMessage(message.id) })
+        if let source { pills.append(Pill(title: ReplySource.title(raw: source.raw), perform: source.toggle)) }
+        pills.append(Pill(title: "Details") { actions.inspect(message.id) })
+        if ReplyMenu.forks(message, enabled: forks), let fork = actions.fork { pills.append(Pill(title: "Fork from here") { fork(message.id) }) }
+        return pills
+    }
     var body: some View {
         HStack(spacing: 4) {
             if visible {
-                if MessageRowView.editable(message) { pill("Edit", accent: true) { actions.edit(message.id) } }
-                pill("Copy") { actions.copyMessage(message.id) }
-                pill("Details") { actions.inspect(message.id) }
-                if ReplyMenu.forks(message, enabled: forks), let fork = actions.fork { pill("Fork from here") { fork(message.id) } }
+                ForEach(Self.pills(message, actions: actions, forks: forks, source: source)) { pill in
+                    self.pill(pill.title, accent: pill.accent, action: pill.perform)
+                }
             }
         }
         .frame(height: 22)
@@ -144,24 +163,45 @@ private struct RowActionsView: View {
     }
 }
 
+/// One of a row's actions as assistive technology offers it: a name and
+/// what it does.
+struct TranscriptRowAction: Identifiable {
+    let name: String
+    let perform: () -> Void
+    var id: String { name }
+    /// The row's actions, for readers who never hover: VoiceOver reaches Edit,
+    /// Copy, a reply's View raw, Details and Fork from here through the row
+    /// itself rather than through pills that only a pointer can reveal. A
+    /// message still being sent can only be copied.
+    static func all(_ message: TranscriptMessage, _ actions: TranscriptActions, forks: Bool = false,
+                    source: ReplySourceToggle? = nil) -> [TranscriptRowAction] {
+        let id = message.id
+        let copy = TranscriptRowAction(name: "Copy") { actions.copyMessage(id) }
+        if message.isSending { return [copy] }
+        var all: [TranscriptRowAction] = []
+        let editable = MessageRowView.editable(message)
+        if editable { all.append(TranscriptRowAction(name: "Edit") { actions.edit(id) }) }
+        all.append(copy)
+        if let source { all.append(TranscriptRowAction(name: ReplySource.title(raw: source.raw), perform: source.toggle)) }
+        all.append(TranscriptRowAction(name: "Details") { actions.inspect(id) })
+        if !editable, ReplyMenu.forks(message, enabled: forks), let fork = actions.fork {
+            all.append(TranscriptRowAction(name: "Fork from here") { fork(id) })
+        }
+        return all
+    }
+}
+
 extension View {
-    /// The row's actions, for readers who never hover: VoiceOver reaches Copy,
-    /// Details and Edit through the row itself rather than through pills that
-    /// only a pointer can reveal.
-    @ViewBuilder func transcriptRowActions(_ message: TranscriptMessage, _ actions: TranscriptActions, forks: Bool = false) -> some View {
-        if message.isSending {
-            accessibilityAction(named: "Copy") { actions.copyMessage(message.id) }
-        } else if MessageRowView.editable(message) {
-            accessibilityAction(named: "Edit") { actions.edit(message.id) }
-                .accessibilityAction(named: "Copy") { actions.copyMessage(message.id) }
-                .accessibilityAction(named: "Details") { actions.inspect(message.id) }
-        } else if ReplyMenu.forks(message, enabled: forks), let fork = actions.fork {
-            accessibilityAction(named: "Copy") { actions.copyMessage(message.id) }
-                .accessibilityAction(named: "Details") { actions.inspect(message.id) }
-                .accessibilityAction(named: "Fork from here") { fork(message.id) }
-        } else {
-            accessibilityAction(named: "Copy") { actions.copyMessage(message.id) }
-                .accessibilityAction(named: "Details") { actions.inspect(message.id) }
+    /// The row's actions (`TranscriptRowAction.all`) as one list on the row.
+    /// A list, not a modifier per case: which actions a row offers changes
+    /// as a reply settles — Fork from here and View raw arrive — and that must
+    /// never give the row's content a new identity, which would rebuild the
+    /// reply's selectable text in the middle of the reader's selection.
+    func transcriptRowActions(_ message: TranscriptMessage, _ actions: TranscriptActions, forks: Bool = false,
+                              source: ReplySourceToggle? = nil) -> some View {
+        let named = TranscriptRowAction.all(message, actions, forks: forks, source: source)
+        return accessibilityActions {
+            ForEach(named) { action in Button(action.name, action: action.perform) }
         }
     }
 }
@@ -197,20 +237,25 @@ struct MarkdownBodyView: View {
     var streaming = false
     var copyTargets: [MarkdownCopyTarget] = []
     var sourceIdentity = ""
+    /// The reader is reading this reply as its source: the body keeps its
+    /// place and its native surface's measurements, but draws nothing and
+    /// takes no room until it is shown again.
+    var parked = false
     @State private var choice = MarkdownSurfaceChoice()
     @State private var hovering = false
     var body: some View {
         // A reply that is still arriving is read by its own native surface,
         // which owns that reading: nothing here reads it, so a token does not
-        // run this body at all.
-        let blocks = streaming ? [] : TranscriptMarkdown.blocks(source, style: style)
+        // run this body at all. A parked body reads nothing either: the
+        // surface it chose keeps its own reading.
+        let blocks = streaming || parked ? [] : TranscriptMarkdown.blocks(source, style: style)
         let native = usesNativeSurface(blockCount: blocks.count)
         let headings = copyTargets.filter { if case .section = $0.kind { return true }; return false }
         let introduction = copyTargets.first { $0.kind == .introduction || $0.kind == .whole }
         Group {
             if native {
                 NativeMarkdownSurface(source: source, style: style, capsWidth: capsWidth, streaming: streaming,
-                                      headings: headings, identity: sourceIdentity)
+                                      headings: headings, identity: sourceIdentity, parked: parked)
                     .frame(minHeight: source.isEmpty && streaming ? 22 : nil)
                     .overlay(alignment: .leading) { if source.isEmpty && streaming { WaitingDots() } }
             } else {
@@ -228,7 +273,7 @@ struct MarkdownBodyView: View {
         .overlay(alignment: .topTrailing) {
             // An overlay never changes the row's layout, so the control can
             // wait until the pointer is actually over this message.
-            if let introduction, !streaming, hovering { CopyButton(target: introduction, visible: hovering).offset(y: -3) }
+            if let introduction, !streaming, !parked, hovering { CopyButton(target: introduction, visible: hovering).offset(y: -3) }
         }
         .onHover { hovering = $0 }
         .textSelection(.enabled)
@@ -608,6 +653,9 @@ struct MessageRowView: View {
     var inlineAccounting = true
     var disclosure = TranscriptRowDisclosure.default
     var toggle: (TranscriptDisclosure.Part) -> Void = { _ in }
+    /// Whether `toggle` reaches the conversation's disclosure, so this row
+    /// can offer to switch its reply between rendered and source.
+    var switchesSource = false
     @State private var hovering = false
     @Environment(\.transcriptForks) private var forks
     /// Between a user bubble's skill pills and its text.
@@ -646,7 +694,19 @@ struct MessageRowView: View {
         }
     }
     private var failed: Bool { ["error", "aborted"].contains(message.state ?? "") }
+    /// The switch between this reply rendered and its source, where the row
+    /// offers one: on a finished reply's text, in a row that reaches the
+    /// conversation's disclosure. The pills and the row's accessibility
+    /// actions both take this one value.
+    var source: ReplySourceToggle? {
+        guard switchesSource, ReplySource.offered(message) else { return nil }
+        let id = message.id, toggle = toggle
+        return ReplySourceToggle(raw: disclosure.raw) { toggle(.source(id)) }
+    }
     @ViewBuilder private var plain: some View {
+        let raw = ReplySource.shows(message, raw: disclosure.raw)
+        // A parked body keeps the copy targets it was drawn with, so parking
+        // and showing it again change nothing it measured.
         let copyTargets = message.role == "assistant" && !message.isStreaming ? TranscriptCopy.targets(in: message.text) : []
         VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 6) {
             if message.role == "system" || failed {
@@ -665,8 +725,10 @@ struct MessageRowView: View {
                             TranscriptSkillPills(messageID: message.id, skills: skills, actions: actions)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        // What the reader typed, exactly as typed: nothing in
+                        // it is read as Markdown, and it is one selectable text.
                         if message.skills?.isEmpty != false || !message.text.isEmpty {
-                            MarkdownBodyView(source: message.text, style: .user, capsWidth: false)
+                            TranscriptPlainText(text: message.text, face: .user)
                                 .equatable()
                         }
                     }
@@ -680,8 +742,17 @@ struct MessageRowView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             } else if !(message.role == "assistant" && message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !(message.tools ?? []).isEmpty) {
                 // A reply that only called tools keeps its row for anchors and receipts, but shows no body.
-                MarkdownBodyView(source: message.text, streaming: message.isStreaming, copyTargets: copyTargets, sourceIdentity: message.id).equatable()
-                    .background { if message.role == "assistant" { TranscriptQuoteRegion(messageID: message.id) } }
+                // A reply the reader switched to its source reads as that
+                // source, exactly as it arrived, until they switch it back.
+                // The rendered body stays where it is, parked, so switching
+                // back puts the reader where they were rather than on a
+                // surface re-measured from estimates.
+                VStack(alignment: .leading, spacing: 0) {
+                    MarkdownBodyView(source: message.text, streaming: message.isStreaming, copyTargets: copyTargets,
+                                     sourceIdentity: message.id, parked: raw).equatable()
+                    if raw { ReplySourceView(source: message.text).equatable() }
+                }
+                .background { if message.role == "assistant" { TranscriptQuoteRegion(messageID: message.id) } }
             }
             if message.truncated == true {
                 Text("This older saved fragment is incomplete; the original text was not retained.").font(.system(size: 12)).foregroundStyle(TranscriptPalette.muted)
@@ -723,7 +794,7 @@ struct MessageRowView: View {
                 }
                 // Edit and Details act on the helper's copy of a message; a
                 // message still being sent has none yet.
-                RowActionsView(message: message, actions: actions, visible: hovering && !message.isSending)
+                RowActionsView(message: message, actions: actions, visible: hovering && !message.isSending, source: source)
                 if message.role == "user", inlineAccounting, let accounting = message.accounting, accounting.requests > 0 { MessageAccountingView(accounting: accounting, onInspect: { actions.inspect(message.id) }, trailing: true) }
             }
             .frame(height: 22)
@@ -732,7 +803,7 @@ struct MessageRowView: View {
         .onHover { hovering = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(message.role) message")
-        .transcriptRowActions(message, actions, forks: forks)
+        .transcriptRowActions(message, actions, forks: forks, source: source)
     }
 }
 
@@ -1121,14 +1192,16 @@ struct BlockRowView: View {
             // above a plain answer is short, so the reader need not aim at it.
             partRow(part: part, message: message)
                 .contextMenu {
-                    PiMenuContent { [actions, toggle, forks] in
-                        ReplyMenu.entries(message, actions: actions, forks: forks, fold: ("Fold This Response to One Line", { toggle(.responseLine(response)) }))
+                    PiMenuContent { [actions, toggle, forks, source = source(message)] in
+                        ReplyMenu.entries(message, actions: actions, forks: forks, fold: ("Fold This Response to One Line", { toggle(.responseLine(response)) }),
+                                          source: source)
                     }
                 }
         } else if let part = block.part, let message = block.message {
             partRow(part: part, message: message)
         } else if block.presentation == .body, let message = block.message {
-            MessageRowView(message:message, actions:actions, inlineAccounting:false, disclosure:disclosure, toggle:toggle).equatable().padding(.bottom,10)
+            MessageRowView(message:message, actions:actions, inlineAccounting:false, disclosure:disclosure, toggle:toggle, switchesSource:true).equatable().padding(.bottom,10)
+                .contextMenu { PiMenuContent { [actions, forks, source = source(message)] in ReplyMenu.entries(message, actions: actions, forks: forks, source: source) } }
         } else if block.presentation == .summary, let turn = block.turn {
             StableTurnSummaryView(turn:turn, actions:actions)
         } else {
@@ -1146,7 +1219,15 @@ struct BlockRowView: View {
                         card:card,
                         cardOpen:key.map { disclosure.openTools.contains($0) && !disclosure.responseFolded } ?? false,
                         fetched:key.flatMap { disclosure.toolInputs[$0] },
-                        toggleCard:{ if let key { toggle(.tool(key)) } })
+                        toggleCard:{ if let key { toggle(.tool(key)) } },
+                        raw:disclosure.raw, toggleRow:toggle)
+    }
+    /// The switch between a reply of this row rendered and its source, for
+    /// its menu; nil where the row's text does not offer one.
+    private func source(_ message: TranscriptMessage) -> ReplySourceToggle? {
+        guard ReplySource.offered(message) else { return nil }
+        let id = message.id, toggle = toggle
+        return ReplySourceToggle(raw: disclosure.raw) { toggle(.source(id)) }
     }
     /// A reply whose recorded order is unavailable: one local work group, its
     /// prose, its figures and the turn line, as it has always read.
@@ -1212,8 +1293,8 @@ struct BlockRowView: View {
                 .onHover { hovering = $0 }
             }
             if let message = block.message {
-                MessageRowView(message: message, actions: actions, inlineAccounting: false, disclosure: disclosure, toggle: toggle).equatable()
-                    .contextMenu { PiMenuContent { [actions, forks] in ReplyMenu.entries(message, actions: actions, forks: forks) } }
+                MessageRowView(message: message, actions: actions, inlineAccounting: false, disclosure: disclosure, toggle: toggle, switchesSource: true).equatable()
+                    .contextMenu { PiMenuContent { [actions, forks, source = source(message)] in ReplyMenu.entries(message, actions: actions, forks: forks, source: source) } }
             }
             // A reply inside a multi-reply turn keeps its own figures; the turn line closes the turn.
             if block.presentation != .work, !block.live, !merged, hasUsage { replyFigures(tokens: tokens) }
@@ -1304,7 +1385,7 @@ struct TranscriptStopStyle: ButtonStyle {
 // Rows skip their body while their inputs are unchanged, so a streaming delta
 // re-renders only the row that changed and settled rows never parse twice.
 extension MessageRowView: Equatable {
-    nonisolated static func == (a: MessageRowView, b: MessageRowView) -> Bool { a.message == b.message && a.inlineAccounting == b.inlineAccounting && a.disclosure == b.disclosure }
+    nonisolated static func == (a: MessageRowView, b: MessageRowView) -> Bool { a.message == b.message && a.inlineAccounting == b.inlineAccounting && a.disclosure == b.disclosure && a.switchesSource == b.switchesSource }
 }
 extension BlockRowView: Equatable {
     nonisolated static func == (a: BlockRowView, b: BlockRowView) -> Bool { a.block == b.block && a.fresh == b.fresh && a.disclosure == b.disclosure && a.workListHeight == b.workListHeight && a.foldInMotion == b.foldInMotion }
@@ -1312,6 +1393,7 @@ extension BlockRowView: Equatable {
 extension MarkdownBodyView: Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.source == b.source && a.style == b.style && a.capsWidth == b.capsWidth && a.streaming == b.streaming && a.copyTargets == b.copyTargets && a.sourceIdentity == b.sourceIdentity
+            && a.parked == b.parked
     }
 }
 extension MarkdownBlockView: Equatable {

@@ -47,7 +47,10 @@ struct TaskPresentationDecoder: Sendable {
 extension WorkspaceModel {
     func refresh(_ id: String) {
         guard let item = record(id), let host = hosts[item.workspaceID], opened.contains(id) else { return }
-        let view = displays[id] ?? SessionDisplay(id: id); displays[id] = view
+        // Written only when new: every write runs `displays`' observers, which
+        // scan every display, and this runs on every event of every chat.
+        let view: SessionDisplay
+        if let held = displays[id] { view = held } else { view = SessionDisplay(id: id); displays[id] = view }
         view.dirty = true
         guard !view.snapshotInFlight else { return }
         guard host.isReady, let connection = host.connectionID else { view.dirty = false; return }

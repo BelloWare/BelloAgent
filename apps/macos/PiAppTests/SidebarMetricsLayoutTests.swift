@@ -106,6 +106,24 @@ final class SidebarMetricsLayoutTests: XCTestCase {
     /// mid-compaction said "compacting" in lower case beside its cost. Every
     /// state a row can show is now a word a reader already knows, and none of
     /// the wire names survives into the line.
+    /// A row's "3m ago" stamp is part of what the row is compared on. It was
+    /// worked out from the clock when read, so an idle row, equal to itself on
+    /// every pass, kept "just now" until something else about it changed.
+    @MainActor func testTheRecencyStampIsComparedSoItMovesOnWithTheClock() {
+        let start = Date()
+        var totals = GatewayTotals(requests: 1, costSamples: 1, costUSD: 0.01)
+        totals.lastActivity = start.timeIntervalSince1970 - 5
+        let fresh = ChatRowStats(totals: totals, now: start)
+        let later = ChatRowStats(totals: totals, now: start.addingTimeInterval(3 * 60))
+        XCTAssertEqual(fresh.recencyLabel, "just now")
+        XCTAssertEqual(later.recencyLabel, "3m ago")
+        XCTAssertNotEqual(fresh, later, "A row whose stamp reads differently is drawn again")
+        XCTAssertEqual(ChatRowStats(totals: totals, now: start.addingTimeInterval(20)), fresh, "and one whose stamp reads the same is not")
+        let before = ChatRowBody(stats: fresh, title: "A", subtitle: "", symbol: "bubble.left", selected: false)
+        let after = ChatRowBody(stats: later, title: "A", subtitle: "", symbol: "bubble.left", selected: false)
+        XCTAssertFalse(before == after)
+    }
+
     @MainActor func testRunStatesReachTheRowAsWordsAReaderKnows() {
         let expected: [(String, Bool, String)] = [
             ("queued", false, "Waiting"), ("running", false, "Working"), ("tool", false, "Working"),
@@ -131,7 +149,8 @@ final class SidebarMetricsLayoutTests: XCTestCase {
     /// width and for every shape the figures take.
     @MainActor func testTheMeasuredFormIsTheOneViewThatFitsWouldHaveChosen() throws {
         var disagreements: [String] = [], checks = 0
-        for (name, stats) in Self.figureSets() {
+        // A run is measured for its widest step on purpose; see the next test.
+        for (name, stats) in Self.figureSets() where !(stats.busy || stats.loading) {
             let figures = SidebarMetricsFigures(stats)
             for sidebar in Self.widths {
                 let available = ChatRowMetrics.availableWidth(sidebar: sidebar, indent: 14, depth: 0)
@@ -145,6 +164,43 @@ final class SidebarMetricsLayoutTests: XCTestCase {
         }
         print("PERF sidebar metrics oracle: \(checks) comparisons, \(disagreements.count) disagreements")
         XCTAssertTrue(disagreements.isEmpty, "The measured form differs from what ViewThatFits chose:\n" + disagreements.prefix(12).joined(separator: "\n"))
+    }
+
+    /// A run keeps one form through its model and tool steps: the model
+    /// generating (no word, no tokens) measures like a tool step ("Working"),
+    /// so no row changes height mid-run and moves every row below it. Every
+    /// step's form, compaction, stopping and opening included, still fits.
+    @MainActor func testARunKeepsOneFormThroughEveryStep() throws {
+        let steps: [(String, String, Bool, [String: WireValue])] = [
+            ("generating", "running", false, ["version": .number(2), "modelActive": .bool(true), "phase": .string("model")]),
+            ("tool", "running", false, ["version": .number(2), "modelActive": .bool(false), "phase": .string("tool")]),
+            ("running", "running", false, [:]), ("queued", "queued", false, [:]), ("compacting", "compacting", false, [:]),
+            ("stopping", "stopping", false, [:]), ("opening", "running", true, [:])]
+        var changes: [String] = [], overflows: [String] = []
+        for cost in [0.0042, 12.34, 98_765.43] {
+            for tokens in [12_300.0, 9_876_543.0] {
+                for activity in [5.0, 900.0, 129_600.0] {
+                    let base = Self.stats(cost: cost, tokens: tokens, activity: activity, rate: true)
+                    for sidebar in stride(from: CGFloat(200), through: 420, by: 2) {
+                        let available = ChatRowMetrics.availableWidth(sidebar: sidebar, indent: 14, depth: 0)
+                        var forms: [String: SidebarMetricsForm] = [:]
+                        for (name, state, loading, activity) in steps {
+                            var stats = base; stats.updateActivity(state: state, loading: loading, activity: activity)
+                            let form = SidebarMetricsFigures(stats).form(fitting: available)
+                            forms[name] = form
+                            if form != .stacked, Self.widths.contains(sidebar) {
+                                let drawn = idealWidth(OracleRow(stats: stats, title: "Chat", tokens: form.showsTokens, recency: form.showsRecency))
+                                if drawn > available { overflows.append("\(name) $\(cost) at \(Int(sidebar))pt: draws \(drawn), has \(available)") }
+                            }
+                        }
+                        let working = forms.filter { ["generating", "tool", "running"].contains($0.key) }
+                        if Set(working.values.map { "\($0)" }).count > 1 { changes.append("$\(cost), \(Int(tokens)) tokens at \(Int(sidebar))pt: \(working.sorted { $0.key < $1.key })") }
+                    }
+                }
+            }
+        }
+        XCTAssertTrue(changes.isEmpty, "A run changes its row's form between steps:\n" + changes.prefix(8).joined(separator: "\n"))
+        XCTAssertTrue(overflows.isEmpty, "A run's form does not fit one of its steps:\n" + overflows.prefix(8).joined(separator: "\n"))
     }
 
     /// Whatever form is chosen has to fit, so the last-resort truncation never

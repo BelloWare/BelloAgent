@@ -122,6 +122,8 @@ enum CompactionSourceBuilder {
                 guard !content.isEmpty else { continue }
                 parts.append("[Tool result]: "+truncate(content).0)
             default:
+                // Ours: a hidden note is the user message it was sent as.
+                if let note=message.contextNote { parts.append("[User]: "+note.text) }
                 let content=text(message,separator:"")
                 if !content.isEmpty { parts.append("[User]: "+content) }
             }
