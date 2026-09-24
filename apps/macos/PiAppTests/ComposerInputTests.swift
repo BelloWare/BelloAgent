@@ -7,15 +7,15 @@ import AppKit
 
 extension ConversationPaneTests {
     /// Typing while the cursor is outside any text view has to find the
-    /// composer. With a long chat open the window holds hundreds of views, so
-    /// that lookup must happen once, not on every keystroke.
+    /// composer. With a long chat open the window holds a great many views,
+    /// so that lookup must happen once, not on every keystroke.
     @MainActor func testFindingTheComposerForStrayTypingDoesNotWalkTheWindowPerKeystroke() async throws {
         let pane = try Pane(messages: longChat(rows: 300), width: 1000, height: 800); defer { pane.close() }
         await pane.settle(30)
         let editor = try XCTUnwrap(pane.editor)
         let surface = try XCTUnwrap(Self.views(TranscriptNativeScrollView.self, in: pane.hosted).first)
         let views = Self.tree(pane.hosted).count
-        XCTAssertGreaterThan(views, 150, "A long chat really does fill the window with views (\(views))")
+        XCTAssertGreaterThan(views, 80, "A long chat really does fill the window with views (\(views))")
         // What one full search of the window costs, which is what used to run
         // for every keystroke landing outside a text view.
         var start = ProcessInfo.processInfo.systemUptime

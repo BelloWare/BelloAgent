@@ -122,6 +122,44 @@ final class MarkdownTextSurfaceTests: XCTestCase {
         withExtendedLifetime(window) {}
     }
 
+    /// A reply streaming into the page: its first line stays inside its own
+    /// row, under the response's header, however many tokens arrive.
+    @MainActor func testAStreamingReplyStaysInsideItsRow() async throws {
+        let session = SessionDisplay(id: "stream-in-row")
+        session.messages = TranscriptStreamingStressTests.history(turns: 3)
+        var live = TranscriptMessage(id: "live", role: "assistant", text: "Fixture reply: slow: walk through the retry budget.\n\nUnicode: 中文🙂 café.\n\n", at: 9_000, turn: "u-live")
+        live.state = "streaming"
+        session.messages.append(TranscriptMessage(id: "u-live", role: "user", text: "slow: walk through it.", at: 8_900, turn: "u-live"))
+        session.messages.append(live)
+        let stage = TranscriptStreamingStressTests.Stage(session); defer { stage.close() }
+        stage.page.state = "running"; stage.page.presentationInterval = 0
+        await stage.settle()
+        func check(_ label: String) throws {
+            let texts = stage.rows.flatMap { row in MarkdownTextSurfaceTests.textViews(in: row).map { (row, $0) } }
+            let (row, text) = try XCTUnwrap(texts.first { $0.1.string.hasPrefix("Fixture reply") }, "\(label): the reply's text")
+            let manager = try XCTUnwrap(text.layoutManager), container = try XCTUnwrap(text.textContainer)
+            var first = manager.boundingRect(forGlyphRange: NSRange(location: 0, length: 1), in: container)
+            first.origin.y += text.textContainerOrigin.y
+            let inRow = row.convert(first, from: text)
+            XCTAssertGreaterThanOrEqual(inRow.minY, -0.5, "\(label): the first line is drawn above its row (\(inRow.minY))")
+            XCTAssertEqual(text.visibleRect.minY, 0, accuracy: 0.5, "\(label): the text is not scrolled within itself")
+            let frameInRow = row.convert(text.bounds, from: text)
+            XCTAssertGreaterThanOrEqual(frameInRow.minY, -0.5, "\(label): the text view starts above its row (\(frameInRow.minY))")
+        }
+        try check("settled")
+        for index in 0..<120 {
+            live.text += "stream-\(index) "
+            session.messages[session.messages.count - 1] = live
+            stage.refresh()
+            if index % 10 == 9 { try check("after \(index + 1) tokens") }
+        }
+        let row = try XCTUnwrap(stage.rows.first { !MarkdownTextSurfaceTests.textViews(in: $0).filter { $0.string.hasPrefix("Fixture reply") }.isEmpty })
+        XCTAssertGreaterThan(row.streamingAppendCount, 100, "the tokens took the streaming fast path")
+    }
+    @MainActor static func textViews(in view: NSView) -> [MarkdownTextView] {
+        (view as? MarkdownTextView).map { [$0] } ?? view.subviews.flatMap { textViews(in: $0) }
+    }
+
     /// The text as drawn: each run's characters, face, colour and paragraph
     /// style, without the marks that name objects.
     @MainActor static func dress(_ surface: NativeMarkdownContainer) -> [String] {

@@ -339,7 +339,18 @@ struct NativeMarkdownSurface: NSViewRepresentable {
              headings: context.headings, environment: context.environment, identity: identity)
         appending = false
         let after = measure(width: bounds.width).height
-        if abs(bounds.height - after) > 0.01 { setFrameSize(NSSize(width: bounds.width, height: after)) }
+        if abs(bounds.height - after) > 0.01 {
+            // SwiftUI holds this view in a wrapper that is not flipped: a frame
+            // grown in place grows upward, over the row above it, and the row,
+            // taller by the same amount, centres the wrapper's stale size in
+            // it. So the top stays where it is, and SwiftUI hears of the new
+            // size, laying the row out again in the pass the row's own height
+            // change starts (the reply stood a token's growth too high, over
+            // its header, until the row's next full measurement).
+            let top = superview.map { $0.isFlipped ? frame.minY : frame.maxY - after } ?? frame.minY
+            frame = NSRect(x: frame.minX, y: top, width: bounds.width, height: after)
+            invalidateIntrinsicContentSize()
+        }
         needsLayout = true
         appendCount += 1
         return after - before
