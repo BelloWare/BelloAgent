@@ -222,10 +222,17 @@ extension ConversationPaneTests {
         await settle(14)
         XCTAssertEqual(composers(), [a.id + "=alpha draft"], "Only the selected chat's composer may be mounted")
         XCTAssertNil(page()?.liveTurn, "The other chat's run must not raise a live bar in the selected chat")
-        await model.select(b.id); await settle(20)
+        // Since 0.1.96 a revisited chat keeps its rows while its fresh page is
+        // read, and the page is presented again when that read lands: wait
+        // for what the reader sees rather than a fixed number of frames.
+        func settle(until condition: () -> Bool) async {
+            let deadline = Date().addingTimeInterval(5)
+            while !condition() && Date() < deadline { await settle(2) }
+        }
+        await model.select(b.id); await settle(until: { page()?.liveTurn != nil })
         XCTAssertEqual(composers(), [b.id + "=beta draft"], "Switching chats swaps the composer and its draft")
         XCTAssertNotNil(page()?.liveTurn, "The running chat shows its live bar once selected")
-        viewB.state = "idle"; await settle(12)
+        viewB.state = "idle"; await settle(until: { page()?.liveTurn == nil })
         XCTAssertNil(page()?.liveTurn, "Ending the run removes the live bar")
         await model.select(a.id); await settle(20)
         XCTAssertEqual(composers(), [a.id + "=alpha draft"], "Switching back restores the first chat's draft")
