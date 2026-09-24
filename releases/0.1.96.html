@@ -1,0 +1,20 @@
+<h2>Bello Agent 0.1.96</h2>
+<ul>
+  <li>Your messages show exactly as you typed them, and any finished reply can switch between rendered and raw ("View raw" on hover or in its menu). Both are one text you can select across lines.</li>
+  <li>The slash-command list no longer flickers while you type, and it now looks like the rest of the app. It floats above the composer instead of pushing the conversation up.</li>
+  <li>Sending is faster to start. Model requests reuse their connection to the gateway instead of opening a new one each time, a cold chat's helper starts while its settings are read, and a restarting helper is picked up the moment the old one exits.</li>
+  <li>A side chat's first question reuses the main chat's prompt cache: it sends the same tools and cache key, and the side stays read-only by refusing edits when they are called. The system prompt no longer changes when you pick skills, so the main chat keeps its cache too.</li>
+  <li>The Session Inspector's "Show all" expands the text in place, selectable, with "Show less" to fold it again.</li>
+  <li>Less flicker. Returning to a chat keeps its messages on screen while it refreshes, sidebar rows keep their height during a run, and the live turn bar, the model chip, the Projects sheet and the run clock no longer jump.</li>
+  <li>Smoother streaming in long chats. Each token costs about half as much to place, earlier messages are measured while a reply streams, and the running footer no longer asks for the whole message list every quarter second.</li>
+  <li>Fixes:
+    <ul>
+      <li>⌘↩ and ⌘. no longer reach the chat from a sheet or another window.</li>
+      <li>Messages sent during /compact are delivered after it, and Stop cancels a pending /compact.</li>
+      <li>"Fork from here" works for any chat and no longer pulls you away if you switched chats.</li>
+      <li>The composer's hints no longer repeat or contradict each other.</li>
+      <li>The sidebar's "3m ago" labels move again.</li>
+      <li>Text pasted into the terminal can no longer end bracketed paste early.</li>
+    </ul>
+  </li>
+</ul>
