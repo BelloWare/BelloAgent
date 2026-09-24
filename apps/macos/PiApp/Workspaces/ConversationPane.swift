@@ -28,6 +28,18 @@ struct ConversationPane: View {
         session.historyState == .empty && session.messages.isEmpty && session.sendingRows.isEmpty && !session.busy && !session.loading && session.failureMessage == nil && session.sendFailure == nil
             && !chat.imported && !chat.isBackgroundTask && projectAvailable && (side == nil || side?.pending == true)
     }
+    /// The loading cover is due: shown once a read has taken longer than a
+    /// glance (`coverDelay`), so a quick one never flashes it.
+    @State private var coverDue = false
+    static let coverDelay = Duration.milliseconds(150)
+    /// Whether the loading cover stands over the transcript. A revisit of a
+    /// chat whose rows are already on the page reads its fresh page behind
+    /// those rows, not behind a cover; a first message being sent is already
+    /// on the page and is not covered while the helper starts.
+    @MainActor static func coversTranscript(_ session: SessionDisplay) -> Bool {
+        session.historyState.loading && !session.refreshingCachedRows
+            || session.loading && session.messages.isEmpty && session.sendingRows.isEmpty
+    }
     var body: some View {
         VStack(spacing: 0) {
             // No header: the sidebar names the chat, the composer bar holds its
@@ -83,14 +95,17 @@ struct ConversationPane: View {
                     }.piAnimation(PiMotion.quick, value: showsStarter)
                 }
                 .overlay {
+                    let covered = Self.coversTranscript(session)
                     ZStack {
-                        // A first message being sent is already on the page: it is not covered while the helper starts.
-                        if session.historyState.loading || session.loading && session.messages.isEmpty && session.sendingRows.isEmpty {
-                            Color.piContent
-                            VStack(spacing: PiSpacing.md) {
-                                LoadingMark()
-                                if let progress = session.historyProgress { Text(progress).font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
-                            }.transition(.opacity)
+                        if covered {
+                            // It appears at once when due and fades only on its way out.
+                            if coverDue {
+                                Color.piContent
+                                VStack(spacing: PiSpacing.md) {
+                                    LoadingMark()
+                                    if let progress = session.historyProgress { Text(progress).font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
+                                }.transition(.opacity)
+                            }
                         } else if case .failed(let error) = session.historyState {
                             Color.piContent
                             VStack(spacing: PiSpacing.md) {
@@ -99,7 +114,12 @@ struct ConversationPane: View {
                                 Button("Retry") { model.reloadHistory(session.id) }.buttonStyle(.piSecondaryCompact)
                             }.padding(PiSpacing.lg)
                         }
-                    }.piAnimation(PiMotion.quick, value: session.historyState.loading)
+                    }.piAnimation(PiMotion.quick, value: covered)
+                    .task(id: covered) {
+                        guard covered else { coverDue = false; return }
+                        try? await Task.sleep(for: Self.coverDelay)
+                        if !Task.isCancelled { coverDue = true }
+                    }
                 }
             if !session.queue.isEmpty { queuePanel.transition(PiMotion.arrival(from: .bottom)) }
             if model.terminalVisible, side == nil, let workspace = model.workspace(for: chat.workspaceID), !workspace.isScratch {
