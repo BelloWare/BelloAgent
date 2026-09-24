@@ -380,6 +380,9 @@ extension WorkspaceModel {
                 if let anchor = view.scrollAnchor { try await store.put(anchor, kind: "anchor", id: id) }
             }
             view.presentation.cancel()
+            // Another side may have opened on this chat during the awaits
+            // above: only this one is closed, and only its cursor moves.
+            guard sides[info.parentID]?.id == id else { return }
             sides.removeValue(forKey: info.parentID)
             if focusedSessionID == id { focusedSessionID = info.parentID }
             // The cursor goes back to the chat the side came from.
