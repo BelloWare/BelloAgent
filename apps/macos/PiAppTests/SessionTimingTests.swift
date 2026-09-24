@@ -464,6 +464,37 @@ final class SessionTimingTests: XCTestCase {
         }
     }
 
+    /// The footer keeps one form through a run. Its run line sits in one
+    /// fixed slot, so neither a phase ("Generating response…" / "Running
+    /// read, grep, bash, edit…") nor a clock step (5s → 12m 34s) switches it
+    /// between one row and two at any pane width. Sized by its text, it did.
+    @MainActor func testTheFooterKeepsItsFormThroughARunsPhasesAndClockSteps() throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        let session = SessionDisplay(id: "footer-form")
+        session.state = "running"
+        session.footer.gateway = GatewayTotals(requests: 2, costSamples: 2, costUSD: 0.0025, cacheReadTokens: 6_000, cacheReadSamples: 2)
+        session.footer.gateway.turnCount = 1
+        session.footer.gateway.tokens = GatewayTokenTotals(input: 12_000, output: 3_800, total: 15_800, inputSamples: 2, outputSamples: 2, samples: 2)
+        let hosted = NSHostingView(rootView: FooterWidthProbe(model: model, session: session, width: 600))
+        func height(_ width: CGFloat, phase: String, tools: [String], seconds: Double) -> CGFloat {
+            session.activity = ["phase": .string(phase), "toolNames": .array(tools.map { .string($0) })]
+            session.footer.turnTiming = ["startedAt": .number(ProcessInfo.processInfo.systemUptime * 1_000 - seconds * 1_000)]
+            hosted.rootView = FooterWidthProbe(model: model, session: session, width: width)
+            hosted.layoutSubtreeIfNeeded()
+            return hosted.fittingSize.height
+        }
+        var heights: Set<CGFloat> = []
+        for width in stride(from: CGFloat(600), through: 1_600, by: 20) {
+            let short = height(width, phase: "model", tools: [], seconds: 5)
+            let long = height(width, phase: "working", tools: ["read", "grep", "bash", "edit"], seconds: 754)
+            XCTAssertEqual(short, long, "at \(width) pt the footer changed form between two moments of one run")
+            heights.insert(short)
+        }
+        XCTAssertGreaterThan(heights.count, 1, "the sweep crosses the width where the run line drops to its own row")
+    }
+
     @MainActor func testRunLineNamesTheActionUnderWayAndTheTurnClock() {
         let session = SessionDisplay(id: "run-line")
         let footer = SessionMetrics()
@@ -649,4 +680,12 @@ final class SessionTimingTests: XCTestCase {
         try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
     }
+}
+
+/// The footer at one pane width, as `ConversationPane` lays it under the composer.
+private struct FooterWidthProbe: View {
+    let model: WorkspaceModel
+    let session: SessionDisplay
+    let width: CGFloat
+    var body: some View { MetricsFooter(model: model, session: session, inspect: {}).frame(width: width) }
 }
