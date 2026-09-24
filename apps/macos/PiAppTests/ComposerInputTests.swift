@@ -322,4 +322,9 @@ extension ConversationPaneTests {
         XCTAssertFalse(label.contains(".id(text)"), "A new model name removes the chip's label and inserts another")
         XCTAssertFalse(label.contains(".transition("), "The chip's label is replaced, not changed")
     }
+    func testProjectsSheetCrossesItsPanesInOneStack() throws {
+        let panes = try Self.excerpt(Self.appSource("Workspaces/WorkspaceManagerView.swift"), from: "list.frame(width: 250)", to: "NewWorkspaceDraft.editing")
+        XCTAssertTrue(panes.contains("ZStack {"))
+        XCTAssertFalse(panes.contains("Group {"), "A Group gives each pane its own frame: the leaving and arriving panes stand side by side")
+    }
 }
