@@ -58,12 +58,18 @@ extension AgentSession {
         guard let schema=await sessionDefinitions().first(where: { $0.name == call.name })?.schema else { return call }
         return ToolCall(id:call.id,name:call.name,arguments:PiProviderRules.coerceArguments(call.arguments,schema:schema))
     }
-    /// The tools a request offers: the session's own, as pi offers its tools.
-    func sessionDefinitions() async -> [ToolDefinition] { await tools.definitions(readOnly:readOnly) }
+    /// The tools a request offers: the session's own, as pi offers its tools,
+    /// except that a read-only side offers its parent's (SessionSide.swift).
+    func sessionDefinitions() async -> [ToolDefinition] { await tools.definitions(readOnly:offersReadOnlyTools) }
     func invokeTool(_ call: ToolCall) async throws -> JSON {
         let prepared=await piPrepared(call)
         let update: @Sendable (JSON) async -> Void = { [weak self] update in await self?.toolUpdate(call.id,update) }
-        guard !readOnly, Self.isEditing(call) else { showToolInvocation(call); toolInvocationsBegan.insert(call.id); return try await tools.invoke(prepared,readOnly:readOnly,onUpdate:update) }
+        guard !readOnly, Self.isEditing(call) else {
+            showToolInvocation(call); toolInvocationsBegan.insert(call.id)
+            // Refused before anything runs; `read_only` reads as a rejection.
+            if let refusal=sideRefusal(call) { throw refusal }
+            return try await tools.invoke(prepared,readOnly:readOnly,onUpdate:update)
+        }
         try await editingGate.acquire()
         showToolInvocation(call)
         toolInvocationsBegan.insert(call.id)

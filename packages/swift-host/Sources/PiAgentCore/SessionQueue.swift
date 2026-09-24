@@ -123,8 +123,9 @@ extension AgentSession {
         try await resources.validate(submission.skills,tools:await tools.capabilityIDs(readOnly:readOnly)); appliedSnapshot=try await resources.resolve(); appliedRevision=appliedSnapshot?.revision; try Task.checkCancellation()
         let images=try loadImages(submission.attachments)
         guard images.isEmpty || profile.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
-        let expanded=(submission.skills.map{$0.expand(turnID:submission.turnID)} + [submission.text]).joined(separator:"\n\n")
+        let expanded=Self.userMessageText(submission.text,skills:submission.skills,turnID:submission.turnID)
         var message=ChatMessage(role:"user",content:[textBlock(expanded)]+images); message.displayText=submission.text; message.id=submission.turnID; message.turn=submission.turnID
+        message.contextNote=pendingContextNote()
         message.userInput = ["version":1,"attachments":.array(submission.attachments.map { $0.removing(["data"]) }),"skills":.array(submission.skills.map(\.recorded))]
         message.taskRootID=newTask ? submission.turnID : taskRootID
         message.taskExecutionID=activeTaskPresentation?.executionID

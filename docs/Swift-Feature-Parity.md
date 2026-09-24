@@ -61,6 +61,35 @@ latest acceptance record for actual native, helper and distribution coverage.
 | Unread replies | Durable unread state baselines old history, reconciles offline journals and survives restart; the sidebar shows a dot rather than a count; explicit Mark as Read remains | Only the latest completed reply visibly painted in a foreground chat clears automatically. Status-panel unread rows are omitted. Background/report/scrollback and stale receipts cannot clear newer output. Existing CUA limits remain. |
 | Request-aware gateway tests | Current Responses requests and selected-model probes are validated before replies, including negative probes, exact bytes and no probe session pollution | Historical Messages coverage stays recorded separately. Tool-result/compaction/cache behavior depends on requests. These are independent local mocks, not installed LiteLLM or deployed-gateway acceptance. |
 
+## Deviations from pi 0.85.1: side chats and skill selection
+
+Pi has no side chats, and its fork starts a new session id. Our sides follow
+Codex CLI's `/side` and Claude Code instead, so a side's first request reuses
+its parent's prompt cache:
+
+- **Tools.** A side sends its parent's exact tool list, which has write, edit
+  and bash when the parent can edit. The side stays read-only when a call
+  runs: write, edit and bash return an error that nothing ran, and point to
+  the main chat or to `/fork` plus Enable Editing Tools. A chat that is
+  read-only itself keeps pi's rule and offers only the read-only tools.
+- **Cache key.** A side's `prompt_cache_key` and pi's `session_id` and
+  `x-client-request-id` headers name its parent's cache, for open and kept
+  sides but not forks. `x-session-id`, `metadata.session_id`, the attempt log
+  and the spend stay the side's own.
+- **Hidden note.** The side's first message carries a note, sent just before it
+  as a user message of its own (never developer or system, which LiteLLM moves
+  into Claude's system prompt): this is a read-only side conversation branched
+  from the one above. No transcript shows it, and it stays in the context so
+  every later request keeps the same prefix. It is journaled on the message
+  (`nativeContextNote`), not as a row. A chat that holds the note and has its
+  editing tools on gets a second note saying so.
+- **Skill selection.** The system prompt no longer lists the turn's selected
+  skill IDs, so it is byte-identical on every request of a chat. It keeps one
+  fixed sentence: only the latest user message's own selection authorizes an
+  explicit-only skill. A message that selects skills carries
+  `Current explicit selection IDs: …` after their skill blocks; a message that
+  selects none is its text alone, as pi sends it.
+
 Shared native payload storage and acknowledged byte delivery preserve actual
 HTTP request/response bodies separately from normalized events. Current tests
 compare Responses capture against independent loopback bytes, including the

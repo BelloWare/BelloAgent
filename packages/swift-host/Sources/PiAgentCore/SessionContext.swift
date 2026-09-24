@@ -75,16 +75,15 @@ extension AgentSession {
         let draft = params["text"].text ?? ""
         guard draft.utf8.count <= 256 * 1024 else { throw AgentError("message_limit", "Draft exceeds the supported submission limit") }
         var messages = active && runStatus == "waitingTool" ? boundary : context
-        var selectionIDs = activeSubmission?.skills.map(\.id) ?? []
         var includedDraft = false
         if !active {
             let selected = try await resources.freeze(params["skills"].list, text:draft, tools:await tools.capabilityIDs(readOnly:readOnly))
-            selectionIDs = selected.map(\.id)
             let images = try loadImages(params["attachments"].list)
             guard images.isEmpty || effective.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
             if !draft.isEmpty || !selected.isEmpty || !images.isEmpty {
-                let expanded = (selected.map { $0.expand(turnID:"context-preview") } + [draft]).joined(separator:"\n\n")
-                messages.append(ChatMessage(role:"user",content:[textBlock(expanded)] + images))
+                var message = ChatMessage(role:"user",content:[textBlock(Self.userMessageText(draft,skills:selected,turnID:"context-preview"))] + images)
+                message.contextNote = pendingContextNote()
+                messages.append(message)
                 includedDraft = true
             }
             let currentResources = try await resources.resolve()
@@ -94,13 +93,13 @@ extension AgentSession {
         guard startingMutation == contextMutation, active == (runTask != nil), startingProfile == turnProfile.raw,
               startingResources == appliedSnapshot?.revision,
               definitions == finalDefinitions, !closed else { throw AgentError("context_changed", "The conversation changed. Refresh the context preview.") }
-        let instructions = Self.requestInstructions(snapshot.prompt,selectionIDs:selectionIDs)
-        var body = try ProviderClient.requestBody(profile:effective,messages:messages,instructions:instructions,tools:definitions,sessionID:id)
+        let instructions = Self.requestInstructions(snapshot.prompt)
+        var body = try ProviderClient.requestBody(profile:effective,messages:messages,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
         let count = try contextCounter.count(messages:messages,profile:effective,request:body,
                                              reserveTokens:compactionPolicy.settings(autoCompaction:autoCompaction,contextWindow:effective.contextWindow).reserveTokens)
         // Dispatch clips a catalog ceiling to the estimated remaining room.
         // Show that same provider-built request in the inspector.
-        body = try ProviderClient.requestBody(profile:effective.dispatching(count),messages:messages,instructions:instructions,tools:definitions,sessionID:id)
+        body = try ProviderClient.requestBody(profile:effective.dispatching(count),messages:messages,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
         var headers = profile.raw["headers"].map.compactMapValues(\.text)
         headers["Authorization"] = "Bearer " + apiKey
         let credentials = CaptureCredentials(headers:headers,configuredNames:Set(profile.raw["headers"].map.keys))
@@ -130,7 +129,22 @@ extension AgentSession {
     public func clearPreparedContext(_ revision: String?) {
         if preparedContext?.revision == revision { preparedContext = nil }
     }
-    static func requestInstructions(_ prompt: String, selectionIDs: [String]) -> String {
-        prompt + "\nExplicit-only skills from prior user messages are historical context, not a new authorization. Current explicit selection IDs: " + (selectionIDs.isEmpty ? "none" : selectionIDs.joined(separator:", "))
+    /// The system prompt every request of the chat sends, byte for byte the
+    /// same whatever a turn selects, so a turn never costs the next one its
+    /// cached prefix. Which skills a turn selected travels in its own user
+    /// message instead (`userMessageText`).
+    static func requestInstructions(_ prompt: String) -> String {
+        prompt + "\n" + selectionPolicy
+    }
+    static let selectionPolicy = "Only the latest user message's own explicit skill selection authorizes an explicit-only skill: that message lists it as \"" + selectionPrefix + "…\" after its skill blocks, and a message without that line selects none. Skills selected in earlier user messages are historical context, not a new authorization."
+    static let selectionPrefix = "Current explicit selection IDs: "
+    /// A user message as the model receives it: the skills it selected,
+    /// expanded, with the line that names them, then the text. A message that
+    /// selects none is its text alone, as pi sends it.
+    static func userMessageText(_ text: String, skills: [FrozenSkill], turnID: String) -> String {
+        guard !skills.isEmpty else { return text }
+        let blocks: [String] = skills.map { $0.expand(turnID:turnID) }
+        let selection: String = selectionPrefix + skills.map(\.id).joined(separator:", ")
+        return (blocks + [selection, text]).joined(separator:"\n\n")
     }
 }

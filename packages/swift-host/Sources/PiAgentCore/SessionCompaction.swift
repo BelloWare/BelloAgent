@@ -94,9 +94,9 @@ extension AgentSession {
         do {
             let snapshot=try await resources.resolve(), definitions=await sessionDefinitions()
             try validateCompaction(revision,profile:originalProfile)
-            let instructions=Self.requestInstructions((appliedSnapshot ?? snapshot).prompt,selectionIDs:activeSubmission?.skills.map(\.id) ?? [])
+            let instructions=Self.requestInstructions((appliedSnapshot ?? snapshot).prompt)
             func body(_ messages: [ChatMessage]) throws -> JSON {
-                try ProviderClient.requestBody(profile:originalProfile,messages:messages,instructions:instructions,tools:definitions,sessionID:id)
+                try ProviderClient.requestBody(profile:originalProfile,messages:messages,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
             }
             // Pi's figure is what the checkpoint records. A candidate is sized as
             // pi sizes a request no reply has measured: characters over four with

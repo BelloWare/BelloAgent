@@ -6,6 +6,18 @@ import Foundation
 /// One text block of message content, the shape every provider agrees on.
 func textBlock(_ text: String) -> JSON { ["type": "text", "text": JSON(text)] }
 
+/// Text the model receives as a user message of its own just before the
+/// message that carries it, and that no transcript shows: a side chat's note
+/// that it is a read-only side (`kind` "side-read-only"), or that its editing
+/// tools were turned on later ("editing-on"). Carried by the user message it
+/// precedes rather than journaled as a row, so every timeline, edit plan and
+/// history reader sees the rows they always saw.
+public struct ContextNote: Codable, Sendable, Equatable {
+    public var kind: String, text: String
+    public init(kind: String, text: String) { self.kind = kind; self.text = text }
+    var json: JSON { ["kind": JSON(kind), "text": JSON(text)] }
+}
+
 public struct ChatMessage: Codable, Sendable {
     public var id: String = UUID().uuidString
     public var role: String
@@ -58,6 +70,8 @@ public struct ChatMessage: Codable, Sendable {
     /// history_read tool. Nothing sets it now; it is kept so those saved
     /// records read and write back unchanged.
     public var retainedOutput: String? = nil
+    /// User rows: the hidden note sent ahead of this message (`ContextNote`).
+    public var contextNote: ContextNote? = nil
     public var text: String { content.filter { $0["type"].text == "text" }.compactMap { $0["text"].text }.joined() }
     public var thinking: String { content.filter { $0["type"].text == "thinking" }.compactMap { $0["thinking"].text }.joined() }
     public var pi: JSON {
@@ -82,6 +96,7 @@ public struct ChatMessage: Codable, Sendable {
         if let toolName { value["toolName"] = JSON(toolName) }
         if let displayText { value["nativeDisplayText"] = JSON(displayText) }
         if let userInput { value["nativeUserInput"] = userInput }
+        if let contextNote { value["nativeContextNote"] = contextNote.json }
         if let requestAttemptIDs { value["nativeRequestAttemptIds"] = .array(requestAttemptIDs.map { JSON($0) }) }
         if let kind { value["nativeKind"] = JSON(kind) }
         if let detail { value["nativeDetail"] = JSON(detail) }
@@ -102,6 +117,7 @@ public struct ChatMessage: Codable, Sendable {
         replayEligible = pi["nativeReplayEligible"].flag ?? true; displayText = pi["nativeDisplayText"].text
         if !pi["nativeCompaction"].isNull, pi["nativeCompaction"]["version"].int != 2 { throw AgentError("session_damaged","Unsupported inherited compaction metadata version") }
         userInput = pi["nativeUserInput"].isNull ? nil : pi["nativeUserInput"]
+        if let kind = pi["nativeContextNote"]["kind"].text, let note = pi["nativeContextNote"]["text"].text { contextNote = ContextNote(kind: kind, text: note) }
         requestAttemptIDs = pi["nativeRequestAttemptIds"].isNull ? nil : pi["nativeRequestAttemptIds"].list.compactMap(\.text)
         kind = pi["nativeKind"].text; detail = pi["nativeDetail"].text
         timestamp = pi["timestamp"].double; toolStats = pi["nativeToolStats"].isNull ? nil : pi["nativeToolStats"]
