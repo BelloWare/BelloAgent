@@ -6,7 +6,6 @@ struct InspectorNextRequestPage: View {
     @ObservedObject var inspector: SessionInspectorModel
     @ObservedObject var next: NextRequestModel
     let compact: Bool
-    @StateObject private var full = InspectorFullText()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,7 +24,6 @@ struct InspectorNextRequestPage: View {
             .padding(.horizontal, compact ? PiSpacing.lg : PiSpacing.xl).padding(.top, PiSpacing.lg).padding(.bottom, PiSpacing.sm)
             Rectangle().fill(Color.piHairline).frame(height: 1)
             content
-            InspectorFullTextPane(full: full)
         }
         .accessibilityIdentifier("inspector-next-request")
     }
@@ -55,11 +53,8 @@ struct InspectorNextRequestPage: View {
                 let grouped = next.delta.map { !$0.first } ?? false
                 InspectorItemsOutline(content: InspectorOutlineContent(key: "next:\(document.bytes):\(document.items.count)", sections: document.sections, items: document.items,
                                                                        shared: grouped ? next.delta?.shared : nil, marksNew: grouped,
-                                                                       openLast: grouped ? min(next.delta?.added ?? 0, 8) : 2)) { target, title in
-                    switch target {
-                    case .item(let index): full.open(title: title, render: { try document.fullText(item: index) })
-                    case .section(let kind): full.open(title: title, render: { try document.fullText(section: kind) })
-                    }
+                                                                       openLast: grouped ? min(next.delta?.added ?? 0, 8) : 2)) { target in
+                    InspectorRequestPage.wholeText(target, of: document)
                 }
                 .padding(.horizontal, compact ? PiSpacing.sm : PiSpacing.md)
             }

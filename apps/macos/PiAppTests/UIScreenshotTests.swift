@@ -783,6 +783,40 @@ final class UIScreenshotTests: XCTestCase {
         inspector.request.tab = .conversation
         try await until("the tool round's conversation") { inspector.request.conversation.value != nil && inspector.request.delta != nil }
         try await shoot("11c-inspector-conversation", hold: 1.0)
+        // 11i · "Show all" opens texts in place: the system prompt, all of it
+        // where its preview was, with a few lines selected, and every tool's
+        // schema in place of the tools' list; the rows below moved down.
+        // 11j · The end of the schema: "Show less", then the rows after it.
+        do {
+            let outline = try XCTUnwrap(descendants(InspectorOutlineView.self, in: panel.contentView ?? NSView()).first, "The conversation's outline is on screen")
+            let coordinator = try XCTUnwrap(outline.coordinator)
+            let clip = try XCTUnwrap(outline.enclosingScrollView?.contentView)
+            coordinator.showWhole(.section(.system))
+            coordinator.showWhole(.section(.tools))
+            try await until("the whole system prompt and every tool's schema in place") {
+                [RequestDocument.Section.Kind.system, .tools].allSatisfy { coordinator.expansion(for: .section($0))?.textView?.window != nil }
+            }
+            try await settle(0.4)
+            let system = try XCTUnwrap(coordinator.expansion(for: .section(.system))?.textView)
+            XCTAssertEqual(system.string, coordinator.expansion(for: .section(.system))?.text, "The whole system prompt is in place")
+            let text = system.string as NSString
+            let first = text.range(of: "\n").location
+            system.setSelectedRange(NSRange(location: 0, length: first == NSNotFound ? min(140, text.length) : first))
+            panel.makeFirstResponder(system)
+            clip.scroll(to: .zero); outline.enclosingScrollView?.reflectScrolledClipView(clip)
+            try await shoot("11i-inspector-expanded", hold: 1.0)
+            let less = (0..<outline.numberOfRows).last { row in
+                guard let node = outline.item(atRow: row) as? InspectorItemsOutline.Node, case .less = node.kind else { return false }
+                return true
+            }
+            let end = try XCTUnwrap(less, "The schema ends with Show less")
+            clip.scroll(to: NSPoint(x: 0, y: max(0, outline.rect(ofRow: end).minY - clip.bounds.height * 0.55)))
+            outline.enclosingScrollView?.reflectScrolledClipView(clip)
+            try await shoot("11j-inspector-expanded-end", hold: 0.8)
+            coordinator.showLess(.section(.tools)); coordinator.showLess(.section(.system))
+            clip.scroll(to: .zero); outline.enclosingScrollView?.reflectScrolledClipView(clip)
+            try await settle(0.3)
+        }
         // 11d · What came back.
         inspector.request.tab = .response
         try await until("the tool round's response") { inspector.request.response.value != nil }

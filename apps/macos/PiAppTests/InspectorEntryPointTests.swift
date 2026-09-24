@@ -180,3 +180,79 @@ final class InspectorWindowControlTests: XCTestCase {
         }
     }
 }
+
+/// The Inspector follows its chat as the workspace holds it: a display the
+/// workspace lets go of and builds again is the one the open Inspector reads,
+/// and a read of the log it stopped never outlives the next one's handle.
+final class InspectorFollowTests: XCTestCase {
+    @MainActor private func settle() async { for _ in 0..<6 { try? await Task.sleep(for: .milliseconds(20)) } }
+
+    /// An idle chat's display is evicted when many are open, and built again
+    /// when the chat is shown: the open Inspector reads the new one.
+    @MainActor func testAnOpenInspectorFollowsTheDisplayTheWorkspaceBuildsAgain() async throws {
+        SessionInspectorWindows.shared.closeAll()
+        let root = scratchRoot("inspector-follow"); defer { try? FileManager.default.removeItem(at: root) }
+        let bench = try ConversationPaneTests.workbench(root: root, chats: ["Followed chat"])
+        let model = bench.model, chat = bench.chats[0]
+        defer { SessionInspectorWindows.shared.closeAll(); model.shutdown() }
+        let first = SessionDisplay(id: chat.id)
+        model.displays[chat.id] = first
+        model.openInspector(session: chat.id)
+        let inspector = try XCTUnwrap(SessionInspectorWindows.shared.controller(sessionID: chat.id)?.inspector)
+        first.footer.turnTiming = ["modelMs": .number(100)]
+        await settle()
+        XCTAssertEqual(inspector.work["modelMs"], .number(100), "The Inspector reads the chat's display")
+        // Evicted, then built again when the chat is shown.
+        model.displays.removeValue(forKey: chat.id)
+        await settle()
+        let second = SessionDisplay(id: chat.id)
+        model.displays[chat.id] = second
+        await settle()
+        second.footer.turnTiming = ["modelMs": .number(250)]
+        await settle()
+        XCTAssertEqual(inspector.work["modelMs"], .number(250), "The Inspector reads the display built again")
+        first.footer.turnTiming = ["modelMs": .number(999)]
+        await settle()
+        XCTAssertEqual(inspector.work["modelMs"], .number(250), "and no longer the one the workspace let go of")
+    }
+
+    /// Hidden, a read is stopped; shown again, the next read starts. The
+    /// stopped read, ending after it, leaves the next one's handle alone, so
+    /// hiding the window again still stops it.
+    @MainActor func testAStoppedReadLeavesTheNextReadsHandleAlone() async throws {
+        let root = scratchRoot("inspector-read-handle"); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root)
+        try await archive.configure(quota: 1 << 20, bodyRetention: 100, metricRetention: 1_000_000)
+        let inspector = SessionInspectorModel(scope: SessionUsageScope(sessionID: "session", workspaceID: "project"), title: "Handle",
+                                              archive: archive, workspace: nil, usageLoader: { _, _, _ in throw CaptureFailure.unavailable },
+                                              cache: InspectorDocumentCache())
+        final class Gates { var waiting: [CheckedContinuation<Void, Never>] = [] }
+        let gates = Gates()
+        inspector.beforeRead = { await withCheckedContinuation { gates.waiting.append($0) } }
+        func wait(_ what: String, _ condition: () -> Bool) async throws {
+            let deadline = Date().addingTimeInterval(10)
+            while !condition() {
+                guard Date() < deadline else { XCTFail("Timed out waiting for " + what); throw CancellationError() }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        inspector.setVisible(true)
+        try await wait("the first read") { gates.waiting.count == 1 }
+        inspector.setVisible(false)
+        XCTAssertFalse(inspector.isReading, "Hiding the window stops the read")
+        inspector.setVisible(true)
+        try await wait("the next read") { gates.waiting.count == 2 }
+        XCTAssertTrue(inspector.isReading)
+        // The stopped read ends now, after the next one began.
+        gates.waiting[0].resume()
+        await settle()
+        XCTAssertTrue(inspector.isReading, "The next read keeps its handle")
+        inspector.setVisible(false)
+        XCTAssertFalse(inspector.isReading)
+        gates.waiting[1].resume()
+        await settle()
+        XCTAssertEqual(inspector.indexReads, 0, "A read stopped while hidden reads nothing")
+        try await archive.close()
+    }
+}
+

@@ -24,6 +24,9 @@ extension NSColor {
     static let piFill = pi(0x000000, 0.045, dark: 0xFFFFFF, 0.05)
     static let piFillStrong = pi(0x000000, 0.075, dark: 0xFFFFFF, 0.09)
     static let piHairline = pi(0x000000, 0.07, dark: 0xFFFFFF, 0.09)
+    /// Selected text in the Inspector's whole texts: the brand orange, soft
+    /// enough for the ink to read through.
+    static let piTextSelection = pi(0xD67520, 0.26, dark: 0xF0A052, 0.32)
     /// The charts' reasoning purple (`Color.monitorModel(2)`).
     static let piPurple = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? NSColor(srgbRed: 0.70, green: 0.61, blue: 0.96, alpha: 1) : NSColor(srgbRed: 0.48, green: 0.34, blue: 0.72, alpha: 1)

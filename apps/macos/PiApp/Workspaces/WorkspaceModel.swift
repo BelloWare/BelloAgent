@@ -225,7 +225,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
         noteActivityChanged()
     }
     var displays: [String: SessionDisplay] = [:] {
-        didSet { syncActivityObservers() }
+        didSet { syncActivityObservers(); SessionInspectorWindows.shared.displaysChanged() }
         willSet {
             // Rows switch between retained accounting and a live display only
             // when display identity changes. Stream/status refreshes keep that
