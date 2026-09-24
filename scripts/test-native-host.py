@@ -291,6 +291,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             text, kind = 'Fixture turn prefix: the long echo was requested.', 'compaction'
         elif semantic['is_compaction']:
             CONTRACT.require('fixture: read README.md' in prompt and 'fixture file contents' in prompt, 'compaction source lost the completed tool turn')
+            # A compaction is one request: a split turn's prefix comes in <turn-prefix>.
+            if '<turn-prefix>' in prompt:
+                CONTRACT.require('fixture: long echo' in prompt.split('<turn-prefix>', 1)[1], 'the split turn\'s prefix lost its request')
             text, kind = 'Fixture continuation summary: README.md read successfully; fixture file contents; remaining echo preserved.', 'compaction'
         elif tool_result:
             ident = history[-1]['call_id'] if responses else history[-1]['content'][0]['tool_use_id']
@@ -910,8 +913,8 @@ class NativeIntegration(unittest.TestCase):
                 self.peer.command('context.compact',session=session)
                 compacted = self.settled(session); self.assertEqual(compacted['state'],'idle',compacted.get('preflightError'))
                 self.assertIn('Fixture continuation summary',json.dumps(compacted['messages']))
-                # Pi splits the long echo's turn: the history summary, then its turn-prefix summary.
-                attempts = self.peer.command('debug.list',session=session)['attempts']; self.assertEqual(len(attempts),5)
+                # Pi splits the long echo's turn: one request summarizes the history and the turn's prefix.
+                attempts = self.peer.command('debug.list',session=session)['attempts']; self.assertEqual(len(attempts),4)
                 records = []
                 with self.peer.capture_lock: packets = list(self.peer.captures)
                 for attempt in attempts:
@@ -935,8 +938,8 @@ class NativeIntegration(unittest.TestCase):
                 continuation = next(r for r in records if r['scenario']=='tool-result')
                 self.assertEqual(bool(continuation['semantic']['opaque']),policy=='pinned')
                 self.assertEqual(list(continuation['semantic']['results'].values()),['fixture file contents'])
-                self.assertEqual(sum(a['purpose']=='compaction' for a in attempts),2)
-                self.assertAlmostEqual(sum(a['gateway']['cost']['usd'] for a in attempts),0.0193)
+                self.assertEqual(sum(a['purpose']=='compaction' for a in attempts),1)
+                self.assertAlmostEqual(sum(a['gateway']['cost']['usd'] for a in attempts),0.0183)
                 journals = ''.join(path.read_text() for path in (self.root/'sessions').rglob('*.jsonl'))
                 self.assertIn('strict-original-opaque' if api=='openai-responses' else 'strict-original-signature',journals,'Portable replay must still retain original provider items on disk')
                 self.peer.command('session.close',session=session)

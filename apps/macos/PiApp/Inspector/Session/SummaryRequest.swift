@@ -1,18 +1,24 @@
 import Foundation
 
 /// What one compaction summary request asked the model to do, read from its
-/// body. A compaction can make several: the history before the kept messages
-/// (in chained parts when it does not fit one request), then the start of a
-/// turn too large to keep whole. Reading them as "two compactions" was the
-/// mistake this names away.
+/// body. Since 0.1.99 a compaction is one request: the history before the
+/// kept messages, with the start of a turn too large to keep whole in the
+/// same request (`<turn-prefix>`) when the kept messages begin inside it.
+/// Earlier helpers sent that start in a second request, and a history too
+/// large for one request in chained parts; reading those as "two
+/// compactions" was the mistake this names away.
 enum SummaryRequestKind: String, Sendable, Equatable {
     /// The history before the kept messages, summarized afresh.
     case earlierHistory
-    /// New messages folded into a summary so far (`<previous-summary>`): the
-    /// next part of a chained history, or a later compaction's update.
+    /// New messages folded into a summary so far (`<previous-summary>`): a
+    /// later compaction's update, or an earlier helper's next chained part.
     case update
     /// The start of a turn too large to keep whole (pi's turn-prefix prompt).
     case turnStart
+    /// The history and the start of a turn too large to keep whole, in one request.
+    case historyAndTurnStart
+    /// An update of the summary so far and the start of a turn too large to keep whole.
+    case updateAndTurnStart
 }
 
 struct SummaryRequestInfo: Sendable, Equatable {
@@ -31,8 +37,10 @@ struct SummaryRequestInfo: Sendable, Equatable {
     static let instructionLimit = 4_000
     /// Pi's summarization system prompt opens with this.
     static let systemMarker = "You are a context summarization assistant."
-    /// Pi's turn-prefix prompt, and the helper's turn-prefix update, carry this.
+    /// Pi's turn-prefix prompt, and an earlier helper's turn-prefix update, carry this.
     static let turnPrefixMarker = "This is the PREFIX of a turn that was too large to keep."
+    /// The helper's prompt for a split turn's prefix summarized with the history.
+    static let splitTurnMarker = "The messages in <turn-prefix> are the PREFIX of a turn that was too large to keep."
     /// Pi's update prompt opens with this.
     static let updateMarker = "The messages above are NEW conversation messages"
 
@@ -41,23 +49,20 @@ struct SummaryRequestInfo: Sendable, Equatable {
 
     /// The kind and instruction of a summary request, from the text of its
     /// one user message: `<conversation>…</conversation>`, then
-    /// `<previous-summary>…</previous-summary>` when there is a summary so
-    /// far, then the instruction. The later of the two closing tags ends
-    /// what came before the instruction; either one may occur, quoted, inside
+    /// `<turn-prefix>…</turn-prefix>` when it summarizes a split turn's start
+    /// too, then `<previous-summary>…</previous-summary>` when there is a
+    /// summary so far, then the instruction. The last of the closing tags ends
+    /// what came before the instruction; any one may occur, quoted, inside
     /// what it closes, and only the last occurrence is the real end.
     static func read(prompt: String, limit: Int = instructionLimit) -> SummaryRequestInfo? {
-        let conversation = prompt.range(of: "</conversation>", options: .backwards)
-        let previous = prompt.range(of: "</previous-summary>", options: .backwards)
-        let end: Range<String.Index>, update: Bool
-        switch (conversation, previous) {
-        case (nil, nil): return nil
-        case (let closing?, nil): end = closing; update = false
-        case (nil, let closing?): end = closing; update = true
-        case (let text?, let summary?): (end, update) = summary.lowerBound > text.lowerBound ? (summary, true) : (text, false)
-        }
+        let closings = ["</conversation>", "</turn-prefix>", "</previous-summary>"].map { prompt.range(of: $0, options: .backwards) }
+        guard let end = closings.compactMap({ $0 }).max(by: { $0.lowerBound < $1.lowerBound }) else { return nil }
+        let update = closings[2]?.lowerBound == end.lowerBound
         let instruction = prompt[end.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        let updated = update && instruction.hasPrefix(updateMarker)
         let kind: SummaryRequestKind = instruction.contains(turnPrefixMarker) ? .turnStart
-            : update && instruction.hasPrefix(updateMarker) ? .update : .earlierHistory
+            : instruction.contains(splitTurnMarker) ? (updated ? .updateAndTurnStart : .historyAndTurnStart)
+            : updated ? .update : .earlierHistory
         let kept = String(instruction.prefix(limit))
         return SummaryRequestInfo(kind: kind, instruction: kept,
                                   lines: RequestDocument.wrap(RequestDocument.prefix(kept as NSString, limit: RequestDocument.previewLimit)),
@@ -68,15 +73,18 @@ struct SummaryRequestInfo: Sendable, Equatable {
 /// The summary requests of one compaction, in the order they were sent,
 /// and what each is called.
 enum SummaryRequestLabel {
-    /// "start of this turn"; an update is "part N of M" when it is a chained
-    /// part of one compaction's history, else "update"; anything else is
-    /// "earlier history". `kinds` are the compaction's requests in order,
-    /// nil where the body has not been read.
+    /// "start of this turn"; an update is "part N of M" when it is an earlier
+    /// helper's chained part of one compaction's history, else "update";
+    /// anything else is "earlier history", and a request that also
+    /// summarized a split turn's start says so. `kinds` are the compaction's
+    /// requests in order, nil where the body has not been read.
     static func label(at index: Int, kinds: [SummaryRequestKind?]) -> String? {
         guard kinds.indices.contains(index), let kind = kinds[index] else { return nil }
         switch kind {
         case .turnStart: return "start of this turn"
         case .earlierHistory: return "earlier history"
+        case .historyAndTurnStart: return "earlier history and start of this turn"
+        case .updateAndTurnStart: return "update and start of this turn"
         case .update:
             // The history's parts: every request that is not the turn's start.
             // They can only be counted once every body has been read.
@@ -110,6 +118,12 @@ struct InspectorSummaryHeading: Equatable {
         case .turnStart:
             name = label ?? "start of this turn"
             subject = "Summarizes the start of a turn too large to keep whole; its recent work is kept."
+        case .historyAndTurnStart:
+            name = label ?? "earlier history and start of this turn"
+            subject = "Summarizes the history before the messages the compaction keeps, and the start of a turn too large to keep whole; its recent work is kept."
+        case .updateAndTurnStart:
+            name = label ?? "update and start of this turn"
+            subject = "Folds new messages into the summary so far, given in <previous-summary>, and summarizes the start of a turn too large to keep whole."
         }
     }
 }

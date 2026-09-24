@@ -41,6 +41,15 @@ final class InspectorSummaryRequestTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(SummaryRequestInfo.read(prompt: Self.prompt(quoted, instruction: Self.summarize))).kind, .earlierHistory)
         let quotedSummary = try XCTUnwrap(SummaryRequestInfo.read(prompt: Self.prompt("[User]: hi", previous: "It said </conversation> once", instruction: Self.update)))
         XCTAssertEqual(quotedSummary.kind, .update)
+        // Since 0.1.99 a split turn's start is summarized in the history's one
+        // request, in <turn-prefix>; the turn's messages are not the instruction.
+        let split = SummaryRequestInfo.splitTurnMarker + " The SUFFIX (recent work) is retained after this summary."
+        let combined = try XCTUnwrap(SummaryRequestInfo.read(prompt: "<conversation>\n[User]: first\n</conversation>\n\n<turn-prefix>\n[User]: a huge turn\n</turn-prefix>\n\n" + Self.summarize + "\n\n" + split))
+        XCTAssertEqual(combined.kind, .historyAndTurnStart)
+        XCTAssertTrue(combined.instruction.hasPrefix("The messages above are a conversation to summarize."), combined.instruction)
+        XCTAssertFalse(combined.instruction.contains("a huge turn"))
+        let updated = try XCTUnwrap(SummaryRequestInfo.read(prompt: "<conversation>\n[User]: more\n</conversation>\n\n<turn-prefix>\n[User]: a huge turn\n</turn-prefix>\n\n<previous-summary>\n## Goal\nSo far\n</previous-summary>\n\n" + Self.update + "\n\n" + split))
+        XCTAssertEqual(updated.kind, .updateAndTurnStart)
         XCTAssertNil(SummaryRequestInfo.read(prompt: "Just a question"))
         XCTAssertTrue(SummaryRequestInfo.isSummary(system: Self.system))
         XCTAssertFalse(SummaryRequestInfo.isSummary(system: "You are Bello Agent."))
@@ -55,6 +64,9 @@ final class InspectorSummaryRequestTests: XCTestCase {
         XCTAssertEqual(SummaryRequestLabel.label(at: 0, kinds: [.update, .turnStart]), "update")
         XCTAssertNil(SummaryRequestLabel.label(at: 0, kinds: [nil, .update]), "Not read yet")
         XCTAssertEqual(SummaryRequestLabel.label(at: 1, kinds: [nil, .update]), "update", "Parts are only counted once every body is read")
+        // A compaction is one request since 0.1.99; a split turn's start is in it.
+        XCTAssertEqual(SummaryRequestLabel.label(at: 0, kinds: [.historyAndTurnStart]), "earlier history and start of this turn")
+        XCTAssertEqual(SummaryRequestLabel.label(at: 0, kinds: [.updateAndTurnStart]), "update and start of this turn")
     }
 
     func testTheNavigatorListsACompactionsRequestsUnderOneRow() {

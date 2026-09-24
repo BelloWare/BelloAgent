@@ -13,17 +13,21 @@ seeded tool-heavy sessions built from this repository's own text:
                 a turn that must start from the summary.
   mid-run       One turn told to read ten large files in a temp workspace
                 with the real read tool: the threshold is crossed between
-                rounds, the helper compacts mid-run, and the turn must finish.
-  over-window   "Compact now" on a history larger than the window, so it is
-                summarized in chained chunks, then a turn from the summary.
+                rounds, the helper compacts mid-run in one request that
+                summarizes the history and the turn's start, and the turn
+                must finish.
+  too-large     "Compact now" on a history too large for one summary
+                request: a compaction is one request and never chunks, so
+                it is refused before anything is sent, and the context stays.
 
-Each scenario must show: every compaction completed and its summary adopted;
-no summary request stopped at max_output_tokens; every summary request left
-at least a quarter of the window for its output (when the model's own limit
-allows); the context estimate after each compaction under the threshold; no
-loop (a bounded number of summary requests, never the same summary asked
-again after an answer, no compaction tried again after one failed); the run
-ending idle; the reported cost under the cap.
+Each scenario that summarizes must show: every compaction completed and its
+summary adopted; one summary request per compaction; no summary request
+stopped at max_output_tokens; every summary request sent with room for pi's
+summary cap (and the turn-prefix cap when it also summarizes a split turn),
+within the model's limit; the context estimate after each compaction under the
+threshold; no loop (a bounded number of summary requests, never the same
+summary asked again after an answer, no compaction tried again after one
+failed); the run ending idle; the reported cost under the cap.
 
 Live run (billed to the gateway key; configuration only from the environment):
 
@@ -80,12 +84,12 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "fixtures/native"))
 import reasoning_gateway  # noqa: E402 (the fixture gateway, and pi's summary prompt parser)
 
-SCENARIOS = ("compact-now", "mid-run", "over-window")
+SCENARIOS = ("compact-now", "mid-run", "too-large")
 THINKING_LEVELS = ("default", "off", "minimal", "low", "medium", "high", "xhigh", "max")
 # The app's onboarding output budget: a local reserve, never sent.
 OUTPUT_BUDGET = 8192
-# CompactionPolicy: pi's reserve and recent tail, and the context safety margin.
-RESERVE, KEEP_RECENT, SAFETY = 16_384, 20_000, 4_096
+# CompactionPolicy: pi's reserve and recent tail.
+RESERVE, KEEP_RECENT = 16_384, 20_000
 FIXTURE = {"model": "fixture-reasoner", "window": 128_000, "limit": 128_000, "thinking": "high", "max_cost": 5.0,
            "key": "fixture-live-e2e-key-" + "0" * 12}
 TASK_TAG, SUMMARY_PREFIX = reasoning_gateway.TASK_TAG, reasoning_gateway.SUMMARY_PREFIX
@@ -109,16 +113,14 @@ class Config:
         """Pi's compaction threshold: the window less its reserve."""
         return self.window - min(RESERVE, self.window // 2)
 
-    @property
-    def quarter(self):
-        """The least output room a summary request must leave, within the model's limit."""
-        return min(self.window // 4, self.limit) if self.limit else self.window // 4
-
-    @property
-    def summary_room(self):
-        """What the helper keeps free beside each summary chunk (CompactionPolicy.summaryRoom)."""
-        share = min(min(RESERVE, self.window // 2) * 8 // 10, self.limit or 1 << 60)
-        return max(share, min(self.limit or 1 << 60, self.window // 4))
+    def summary_room(self, kind):
+        """The room a summary request must leave for its output: pi's cap, 0.8 ×
+        the reserve, plus the turn-prefix cap, 0.5 × the reserve, when it also
+        summarizes a split turn (only that cap for a turn's prefix alone), within
+        the model's limit (CompactionPolicy.summaryTokens)."""
+        reserve = min(RESERVE, self.window // 2)
+        room = reserve // 2 if kind == "turn-prefix" else reserve * 8 // 10 + (reserve // 2 if kind and kind.endswith("+turn-prefix") else 0)
+        return min(room, self.limit) if self.limit else room
 
 
 def load_catalog():
@@ -851,12 +853,20 @@ def common_checks(result, status, stopped, bound, run):
     result.check("no summary request ended at max_output_tokens", summaries and not exhausted,
                  f"{len(summaries)} summary requests" + ("" if not exhausted else "; stopped at the limit: " + ", ".join(
                      f"#{row['index']} ({number(row['outputTokens'])} out, {number(row['reasoningTokens'])} reasoning, limit {number(row['effectiveMaxOutputTokens'])})" for row in exhausted)))
-    small = [row for row in summaries if row["effectiveMaxOutputTokens"] is not None and row["effectiveMaxOutputTokens"] < cfg.quarter]
+    # A compaction is one request: a retry sends the same input again, never another part.
+    inputs = {}
+    for row in summaries:
+        inputs.setdefault(row["operation"], set()).add(row["inputSHA256"] or f"#{row['index']}")
+    several = {operation: len(sent) for operation, sent in inputs.items() if len(sent) > 1}
+    result.check("one summary request per compaction", summaries and not several,
+                 f"{len(summaries)} summary requests over {len(inputs)} compactions"
+                 + ("" if not several else "; more than one: " + ", ".join(f"{(operation or '?')[:8]} sent {count}" for operation, count in several.items())))
+    small = [row for row in summaries if row["effectiveMaxOutputTokens"] is not None and row["effectiveMaxOutputTokens"] < cfg.summary_room(row["kind"])]
     unlimited = [row for row in summaries if row["effectiveMaxOutputTokens"] is None]
-    result.check(f"every summary request leaves at least {number(cfg.quarter)} output tokens (the window ÷ 4" + (", within the model's limit)" if cfg.limit and cfg.limit < cfg.window // 4 else ")"),
+    result.check("every summary request leaves room for pi's summary cap",
                  summaries and not small and (not unlimited or not cfg.limit),
                  (f"least sent: {number(min((row['effectiveMaxOutputTokens'] for row in summaries if row['effectiveMaxOutputTokens'] is not None), default=None))}" if summaries else "no summary request")
-                 + ("" if not small else "; too small: " + ", ".join(f"#{row['index']} {number(row['effectiveMaxOutputTokens'])}" for row in small))
+                 + ("" if not small else "; too small: " + ", ".join(f"#{row['index']} {number(row['effectiveMaxOutputTokens'])} < {number(cfg.summary_room(row['kind']))}" for row in small))
                  + ("" if not unlimited else f"; {len(unlimited)} sent no limit" + ("" if cfg.limit else " (the model's limit is unknown, as the helper sends it)")))
     over = [point for point in result.checkpoints if (point["after"].get("requestTokens") or point["after"].get("tokens") or 0) >= cfg.threshold]
     result.check(f"context after each compaction under the {number(cfg.threshold)}-token threshold",
@@ -938,15 +948,25 @@ def run_compact_now(run, result):
     return session, status, stopped, 4
 
 
-def run_over_window(run, result):
+def run_too_large(run, result):
+    """"Compact now" on a history no one summary request can hold. Nothing
+    may be sent: a summary request here stops the run as a loop past 0."""
     cfg = run.cfg
-    capacity = cfg.window - cfg.summary_room - SAFETY - 700
     history = History(run.corpus, seed=23, text_heavy=True).grow(tokens=int(cfg.window * 1.3))
-    while history.tail_tokens(KEEP_RECENT) < capacity * 1.35:
+    while history.tail_tokens(KEEP_RECENT) < cfg.window * 1.1:
         history.task()
-    bound = math.ceil(history.tail_tokens(KEEP_RECENT) / max(1, capacity - 2_000)) + 4
-    session, status, stopped = compaction_scenario(run, result, "over-window", history, bound=bound, timeout=240 if cfg.mode == "fixture" else 2_700)
-    return session, status, stopped, bound
+    session = Session(run, "too-large", history)
+    try:
+        context = session.opened.get("context") or {}
+        result.notes.append(f"seeded {len(history.messages):,} messages: {number(context.get('tokens'))} estimated tokens "
+                            f"({(context.get('tokens') or 0) / cfg.window:.0%} of the window), summary source ≈ {number(history.tail_tokens(KEEP_RECENT))} tokens")
+        run.out.say("  " + result.notes[-1])
+        session.helper.command("context.compact", {}, session.id)
+        status, stopped = session.wait(0, 120 if cfg.mode == "fixture" else 600)
+        return session, status, stopped, 0
+    except BaseException:
+        session.close()
+        raise
 
 
 def run_mid_run(run, result):
@@ -1000,18 +1020,28 @@ def follow_up_check(result):
                   f"{turns[-1]['stopReason']}") if turns else "no turn request after the compaction")
 
 
-def chunk_check(result):
+def split_turn_check(result):
+    """Mid-run, the kept messages start inside the turn: its start is
+    summarized in the history's one request, not in a second one."""
     summaries = [row for row in result.requests if row["purpose"] == "compaction"]
     first = next((row["operation"] for row in summaries), None)
-    history = [row for row in summaries if row["operation"] == first and row["kind"] and row["kind"].startswith("history")]
-    chained = len(history) >= 2 and not history[0]["kind"].endswith("-update") and all(row["kind"].endswith("-update") for row in history[1:])
-    result.check("summarized in chained chunks", chained,
-                 f"{len(history)} history summary requests in the first compaction" + (", each after the first carrying the summary so far" if chained else ""))
+    kinds = [row["kind"] for row in summaries if row["operation"] == first]
+    result.check("the split turn's start summarized in the same request", kinds and all(kind and kind.endswith("+turn-prefix") for kind in kinds),
+                 f"the first compaction sent: {', '.join(kind or '?' for kind in kinds) or 'nothing'}")
+
+
+def too_large_checks(result, status, stopped, records):
+    compaction = status.get("compaction") or {}
+    result.check("the compaction is refused before any request", compaction.get("errorCode") == "compaction_too_large" and stopped is None,
+                 f"{compaction.get('errorCode') or 'no error'}: {short(compaction.get('error'))}" + (f"; {stopped}" if stopped else ""))
+    result.check("nothing is sent", not result.requests, f"{len(result.requests)} requests")
+    written = [record for record in records if record.get("type") == "compaction"]
+    result.check("the context stays as it was", not written, "no checkpoint written" if not written else f"{len(written)} checkpoints written")
 
 
 def run_scenario(run, name):
     titles = {"compact-now": "Compact now at about 75% of the window", "mid-run": "Threshold compaction mid-run, with real tools",
-              "over-window": "A history larger than the window, summarized in chained chunks"}
+              "too-large": "A history too large for one summary request, refused"}
     result = Result(name, titles[name])
     run.out.say(f"\n[{name}] {titles[name]}")
     began = time.monotonic()
@@ -1019,16 +1049,18 @@ def run_scenario(run, name):
     try:
         if run.budget() <= 0:
             raise Failure("the cost cap is used up")
-        session, status, stopped, bound = {"compact-now": run_compact_now, "mid-run": run_mid_run, "over-window": run_over_window}[name](run, result)
+        session, status, stopped, bound = {"compact-now": run_compact_now, "mid-run": run_mid_run, "too-large": run_too_large}[name](run, result)
         result.requests = session.collect()
         records, result.operations, result.checkpoints = journal(session.path)
-        common_checks(result, status, stopped, bound, run)
+        if name == "too-large":
+            too_large_checks(result, status, stopped, records)
+        else:
+            common_checks(result, status, stopped, bound, run)
         if name == "mid-run":
             mid_run_checks(result, session, records)
-        else:
+            split_turn_check(result)
+        elif name == "compact-now":
             follow_up_check(result)
-        if name == "over-window":
-            chunk_check(result)
         count_spend(run, session, result)
         cost_check(result, run)
     except (Failure, HelperError) as error:
@@ -1119,8 +1151,6 @@ def main(argv=None):
         out.say(f"Live compaction end-to-end · {mode}")
         out.say(f"model {cfg.model} · window {cfg.window:,} ({cfg.window_source}) · output limit {number(cfg.limit)} ({cfg.limit_source}) · "
                 f"thinking {cfg.thinking} · cost cap {dollars(cfg.max_cost)} · threshold {cfg.threshold:,} · helper {cfg.helper}")
-        if cfg.window < 100_000:
-            out.say(f"note: a quarter of a {cfg.window:,}-token window is {cfg.window // 4:,} tokens; a summary at high effort can need more")
         for name in cfg.scenarios:
             results.append(run_scenario(run, name))
             if cfg.mode == "live" and run.unreported:
@@ -1143,7 +1173,7 @@ def main(argv=None):
     report = {"version": 1, "mode": cfg.mode, "started": cfg.stamp, "passed": passed, "seconds": round(time.monotonic() - began, 1),
               "helper": str(cfg.helper), "gateway": cfg.base_url if cfg.mode == "live" else "loopback fixture (fixtures/native/reasoning_gateway.py)",
               "model": cfg.model, "contextWindow": cfg.window, "contextWindowSource": cfg.window_source, "modelOutputLimit": cfg.limit,
-              "modelOutputLimitSource": cfg.limit_source, "thinking": cfg.thinking, "threshold": cfg.threshold, "summaryRoomRequired": cfg.quarter,
+              "modelOutputLimitSource": cfg.limit_source, "thinking": cfg.thinking, "threshold": cfg.threshold, "summaryRoomRequired": cfg.summary_room("history"),
               "costCapUSD": cfg.max_cost, "costUSD": total, "fixtureSummaryLimit": cfg.summary_limit,
               "scenarios": [result.json() for result in results]}
     out.write(cfg.out / "report.json", json.dumps(report, indent=2, ensure_ascii=False) + "\n")

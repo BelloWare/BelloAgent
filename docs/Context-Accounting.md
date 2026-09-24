@@ -14,7 +14,7 @@ Every context decision now uses pi 0.85.1's figures, and the older sections belo
 - **The meter and compaction threshold** use `estimateContextTokens` over the messages: the last valid reply's reported total plus characters over four for the rows after it.
 - **A request** is sized as `estimateContextTokens(context)` in `packages/ai` sizes it. With a measured reply, that is the same figure. Before any reply has measured the context, it is the rows plus the system prompt and the tool schemas, each at characters over four. Images count 4,800 characters, and opaque reasoning replay counts nothing.
 - **The wire output cap** is `clampMaxTokensToContext`: the model ceiling, clipped to the window less the estimate and 4,096, and at least one token.
-- **Refusals.** As in pi, no estimate stops a request before it is sent. The gateway decides; a context rejection is compacted and retried once. Compaction, its summary reserve and the chunk packer use the same units.
+- **Refusals.** As in pi, no estimate stops a turn's request before it is sent. The gateway decides; a context rejection is compacted and retried once. Compaction and its summary reserve use the same units. A compaction is one summary request, never chunks: one that cannot hold its source beside the summary's room is not sent, and the compaction fails with `compaction_too_large`.
 
 The UTF-8 bytes / 3 heuristic, with its image-dimension and opaque-reasoning allowances, is gone. It sized requests well above pi's figure. A turn stopped with "Estimated request input plus the safety margin exceeds configured capacity" on chats pi measured well inside the window.
 

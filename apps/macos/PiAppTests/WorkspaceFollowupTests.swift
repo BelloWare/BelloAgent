@@ -174,16 +174,18 @@ final class WorkspaceFollowupTests: XCTestCase {
         await model.store?.close()
     }
 
-    @MainActor func testCompactionProgressUsesOperationalChunksWithoutInventedPercent() {
+    /// A compaction is one summary request: its progress names the phase,
+    /// never a chunk or an invented percent.
+    @MainActor func testCompactionProgressNamesThePhaseWithoutChunksOrInventedPercent() {
         let display=SessionDisplay(id:"progress")
+        display.observeCompaction(["runStatus":.string("compacting"),"compaction":.object(["phase":.string("planning")])])
+        XCTAssertEqual(display.compactionProgress,"Preparing complete tool history")
         display.observeCompaction(["runStatus":.string("compacting"),"compaction":.object(["phase":.string("summarizing"),"chunk":.number(2)])])
-        XCTAssertEqual(display.compactionProgress,"Summarizing earlier work · chunk 2")
-        display.observeCompaction(["runStatus":.string("compacting"),"compaction":.object(["phase":.string("merging"),"chunk":.number(1)])])
-        XCTAssertEqual(display.compactionProgress,"Combining summaries · chunk 1")
-        display.observeCompaction(["runStatus":.string("compacting"),"compaction":.object(["phase":.string("retrying-output-budget")])])
-        XCTAssertEqual(display.compactionProgress,"Reducing summary input to leave more output space")
-        display.observeCompaction(["compaction":.object(["phase":.string("summarizing"),"chunk":.number(1e30)])])
-        XCTAssertEqual(display.compactionProgress,"Summarizing earlier work")
+        XCTAssertEqual(display.compactionProgress,"Summarizing earlier work","An older helper's chunk is not shown")
+        display.observeCompaction(["runStatus":.string("compacting"),"compaction":.object(["phase":.string("retrying")])])
+        XCTAssertEqual(display.compactionProgress,"Retrying summary request")
+        display.observeCompaction(["runStatus":.string("compacting"),"compaction":.object(["phase":.string("merging")])])
+        XCTAssertNil(display.compactionProgress,"No helper merges summaries now")
         display.observeCompaction(["runStatus":.string("failed"),"compaction":.object(["phase":.string("failed")])])
         XCTAssertNil(display.compactionProgress);XCTAssertNil(display.compactionNotice)
     }

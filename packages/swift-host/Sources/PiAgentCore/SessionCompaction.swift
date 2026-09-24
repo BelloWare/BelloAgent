@@ -110,11 +110,6 @@ extension AgentSession {
             // Pi's summary caps: 0.8 × reserve for history, 0.5 × for a turn prefix,
             // within the model's own ceiling when it is known.
             let cap=compactionPolicy.summaryTokens(for:originalProfile), prefixCap=compactionPolicy.summaryTokens(for:originalProfile,turnPrefix:true)
-            compactionState["outputAllowance"]=JSON(cap)
-            compactionState["outputAllowanceSource"]=JSON(originalProfile.modelOutputLimit.map { $0 < cap + 1 } == true ? "model-output-limit" : "pi-reserve-share")
-            let summaryProfile=try compactionPolicy.summaryProfile(originalProfile,cap:compactionPolicy.summaryRoom(for:originalProfile))
-            compactionState["allowedOutputTokens"]=JSON(cap)
-            compactionState["reasoningEffort"]=JSON(summaryProfile.raw["thinkingLevel"].text ?? "default")
             let planned=try compactionPlan(frozen,profile:originalProfile,recovering:reason == "context-rejection"), source=planned.source, keep=planned.keep
             var cut=planned.cut, plan=planned.plan
             let unchanged=source.previous != nil && (source.newSince ?? 0) >= source.body.count
@@ -130,21 +125,28 @@ extension AgentSession {
                 throw AgentError("compact_unavailable", unchanged ? "Already compacted: nothing has been added since the last compaction." : "Nothing to compact (session too small): the most recent \(keep) tokens stay as they are.")
             }
             let summarizedIDs=(plan.previous.map { [$0.id] } ?? [])+plan.summarized.map(\.id), replayed=Set(plan.protected.map(\.id))
-            func generate(_ messages: [ChatMessage], previous: String?, turnPrefix: Bool) async throws -> String {
-                try await summarize(CompactionSourceBuilder.serialize(messages),previous:previous,turnPrefix:turnPrefix,
-                                    profile:turnPrefix ? compactionPolicy.summaryProfile(originalProfile,cap:compactionPolicy.summaryRoom(for:originalProfile,turnPrefix:true)) : summaryProfile,
-                                    originalProfile:originalProfile,revision:revision,sourceIDs:summarizedIDs,focus:turnPrefix ? nil : focus)
-            }
             // Pi's compact(): the history since the last checkpoint updates its
-            // summary; a split turn's prefix is summarized on its own. Unlike
-            // pi, a split turn with nothing new before it keeps the previous summary.
+            // summary, and a split turn's prefix gets pi's turn-prefix summary.
+            // Ours: both come from one request, the only one a compaction
+            // sends, with room for both of pi's caps. A prefix of verbatim
+            // inputs alone needs no summary, and a split turn with nothing new
+            // before it keeps the previous summary.
+            let summarizesHistory=plan.turnPrefix.isEmpty || plan.history.contains(where: { !replayed.contains($0.id) })
+            let prefix=plan.turnPrefix.contains(where: { !replayed.contains($0.id) }) ? CompactionSourceBuilder.serialize(plan.turnPrefix) : []
+            let room=min(summarizesHistory ? cap+(prefix.isEmpty ? 0:prefixCap) : prefixCap,originalProfile.modelOutputLimit ?? Int.max)
+            compactionState["outputAllowance"]=JSON(room); compactionState["allowedOutputTokens"]=JSON(room)
+            compactionState["outputAllowanceSource"]=JSON(originalProfile.modelOutputLimit.map { $0 <= room } == true ? "model-output-limit" : "pi-reserve-share")
+            let summaryProfile=try compactionPolicy.summaryProfile(originalProfile,cap:room)
+            compactionState["reasoningEffort"]=JSON(summaryProfile.raw["thinkingLevel"].text ?? "default")
+            func summarized(_ prompt: String) async throws -> String {
+                try await summarize(prompt,room:room,profile:summaryProfile,originalProfile:originalProfile,revision:revision,sourceIDs:summarizedIDs)
+            }
             var text: String
-            if plan.turnPrefix.isEmpty || plan.history.contains(where: { !replayed.contains($0.id) }) {
-                text=try await generate(plan.history,previous:plan.previousSummary,turnPrefix:false)
-            } else { text=plan.previousSummary ?? CompactionSourceBuilder.noPriorHistory }
-            // A prefix of verbatim inputs alone needs no summary of its own.
-            if plan.turnPrefix.contains(where: { !replayed.contains($0.id) }) {
-                text += CompactionSourceBuilder.splitTurnSeparator+(try await generate(plan.turnPrefix,previous:nil,turnPrefix:true))
+            if summarizesHistory {
+                text=try await summarized(CompactionSourceBuilder.prompt(CompactionSourceBuilder.serialize(plan.history),previous:plan.previousSummary,focus:focus,turnPrefix:prefix))
+            } else {
+                text=plan.previousSummary ?? CompactionSourceBuilder.noPriorHistory
+                if !prefix.isEmpty { text += CompactionSourceBuilder.splitTurnSeparator+(try await summarized(CompactionSourceBuilder.turnPrefixOnlyPrompt(prefix))) }
             }
             let files=CompactionSourceBuilder.fileLists(plan.history+plan.turnPrefix,previous:plan.previous?.compaction)
             text += CompactionSourceBuilder.fileOperations(read:files.read,modified:files.modified)
@@ -220,7 +222,7 @@ extension AgentSession {
         monitor(observation)
         if !compactionAttemptIDs.contains(observation.attemptID) {
             compactionAttemptIDs.append(observation.attemptID)
-            operationStatus("Summary request · chunk \(compactionState["chunk"].int ?? 1) · attempt \(compactionPhysicalAttempts)")
+            operationStatus("Summary request · attempt \(compactionPhysicalAttempts)")
             if let id=compactionPresentationID, var row=history.first(where: { $0.id == id }) {
                 row.requestAttemptIDs=compactionAttemptIDs; try? updatePresentation(row,persist:true)
             }

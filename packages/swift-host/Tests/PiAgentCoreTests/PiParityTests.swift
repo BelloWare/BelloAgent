@@ -100,18 +100,19 @@ final class PiParityTests: XCTestCase {
         await s.close()
     }
 
-    /// Ours, kept: where pi's clampMaxTokensToContext would clip the summary
-    /// cap to the room its one request leaves, the source is summarized in
-    /// chained chunks at the whole cap instead of risking a cut summary.
-    func testSourceThatWouldClipTheCapIsChainedAtTheWholeCap() async throws {
+    /// Ours: where pi's clampMaxTokensToContext would clip the summary cap to
+    /// the room its one request leaves, the compaction is refused before
+    /// anything is sent, instead of risking a cut summary. A compaction is
+    /// one request, so the source is never split into chunks either.
+    func testSourceThatWouldClipTheCapIsRefusedNotClippedOrChunked() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        let client=PurposeClient(turns:[])
-        let s=try session(root,client,profile:profile(window:40_000,ceiling:100_000),seed:tasks("A",8,chars:15_000),keep:1)
-        try await s.compact(); let state=try await settle(s)
-        let summaries=await client.summaryBodies.filter { !$0.encoded().contains("This is the PREFIX of a turn") }
-        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
-        XCTAssertGreaterThan(summaries.count,1)
-        XCTAssertTrue(summaries.allSatisfy { ($0["max_output_tokens"].int ?? Int.max) >= 13_107 },"Never below the summary's room")
+        let client=PurposeClient(turns:[]), seed=tasks("A",8,chars:15_000)
+        let s=try session(root,client,profile:profile(window:40_000,ceiling:100_000),seed:seed,keep:1)
+        try await s.compact(); let state=try await settle(s), context=await s.context
+        let summaries=await client.summaryBodies
+        XCTAssertEqual(state["compaction"]["errorCode"].text,"compaction_too_large",state["preflightError"].encoded())
+        XCTAssertEqual(summaries.count,0,"Nothing was sent")
+        XCTAssertEqual(context.map(\.id),seed.map(\.id))
         await s.close()
     }
 

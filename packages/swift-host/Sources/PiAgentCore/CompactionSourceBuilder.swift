@@ -3,6 +3,7 @@ import Foundation
 /// Pi's summary source and prompts (compaction/utils.ts and compaction.ts,
 /// v0.85.1): the conversation serialized as text so the model summarizes it
 /// instead of continuing it, with each tool result cut to 2,000 characters.
+/// Ours: a compaction sends one request, never chunks (the owner's rule).
 enum CompactionSourceBuilder {
     static let systemPrompt = """
     You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
@@ -98,9 +99,30 @@ enum CompactionSourceBuilder {
     Be concise. Focus on what's needed to understand the kept suffix.
     """
     static let updatePrompt = "The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\n" + updateInstructions
-    /// Ours: a turn prefix too large for one request continues in the next,
-    /// the way pi's update prompt continues a summary.
-    static let turnPrefixUpdatePrompt = "The messages above are NEW messages from the same turn prefix, to incorporate into the existing prefix summary provided in <previous-summary> tags.\n\n" + turnPrefixPrompt
+    /// Ours: a compaction is one request, so a split turn's prefix is
+    /// summarized in the history's request, where pi sends a second one
+    /// (generateTurnPrefixSummary). This is pi's turn-prefix prompt, asking
+    /// for its summary after the history's under pi's splitTurnSeparator.
+    static let splitTurnPrompt = """
+    The messages in <turn-prefix> are the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained after this summary.
+
+    After the summary, summarize the prefix to provide context for the retained suffix, in this section:
+
+    ---
+
+    **Turn Context (split turn):**
+
+    ## Original Request
+    [What did the user ask for in this turn?]
+
+    ## Early Progress
+    - [Key decisions and work done in the prefix]
+
+    ## Context for Suffix
+    - [Information needed to understand the retained recent work]
+
+    Be concise. Focus on what's needed to understand the kept suffix.
+    """
     static let toolResultMaxChars = 2000
     static let noPriorHistory = "No prior history."
     static let splitTurnSeparator = "\n\n---\n\n**Turn Context (split turn):**\n\n"
@@ -151,22 +173,23 @@ enum CompactionSourceBuilder {
         return (String(text.unicodeScalars[..<end])+"\n\n[... \(length-used) more characters truncated]",true)
     }
 
-    /// generateSummaryWithUsage's prompt text; the turn prefix's when `turnPrefix`.
-    static func prompt(_ parts: ArraySlice<String>, previous: String?, turnPrefix: Bool, focus: String? = nil) -> String {
+    /// generateSummaryWithUsage's prompt text. Ours: a split turn's prefix
+    /// follows the conversation in <turn-prefix>, and `splitTurnPrompt` ends
+    /// the prompt, so the one request summarizes both.
+    static func prompt(_ parts: [String], previous: String?, focus: String? = nil, turnPrefix: [String] = []) -> String {
         var text="<conversation>\n"+parts.joined(separator:"\n\n")+"\n</conversation>\n\n"
+        if !turnPrefix.isEmpty { text += "<turn-prefix>\n"+turnPrefix.joined(separator:"\n\n")+"\n</turn-prefix>\n\n" }
         if let previous { text += "<previous-summary>\n"+previous+"\n</previous-summary>\n\n" }
-        text += turnPrefix ? (previous == nil ? turnPrefixPrompt : turnPrefixUpdatePrompt) : (previous == nil ? summarizationPrompt : updatePrompt)
+        text += previous == nil ? summarizationPrompt : updatePrompt
         // Pi's customInstructions.
         if let focus { text += "\n\nAdditional focus: "+focus }
+        if !turnPrefix.isEmpty { text += "\n\n"+splitTurnPrompt }
         return text
     }
-    /// A part too long for the room left is cut after `fraction` of it and
-    /// continues in the next request; nothing is dropped.
-    static func split(_ part: String, fraction: Double) -> [String]? {
-        let scalars=part.unicodeScalars, count=scalars.count, head=Int(Double(count)*min(max(fraction,0),1))
-        guard head > 0, head < count else { return nil }
-        let middle=scalars.index(scalars.startIndex,offsetBy:head)
-        return [String(scalars[..<middle]),"[continued]: "+String(scalars[middle...])]
+    /// generateTurnPrefixSummary's prompt text, for a split turn with nothing
+    /// new before it.
+    static func turnPrefixOnlyPrompt(_ parts: [String]) -> String {
+        "<conversation>\n"+parts.joined(separator:"\n\n")+"\n</conversation>\n\n"+turnPrefixPrompt
     }
 
     /// extractFileOperations and computeFileLists: paths read, written or

@@ -2,7 +2,7 @@ import XCTest
 @testable import PiAgentCore
 
 private actor BudgetProbe: ModelClient {
-    enum Mode { case recover, twice, partial, filter, refusal, empty, tool, unknown, completedAtCap, holdSecond }
+    enum Mode { case recover, twice, partial, filter, refusal, empty, tool, unknown, completedAtCap, hold }
     let mode: Mode
     var requests: [JSON]=[], profiles: [Profile]=[], held=false
     init(_ mode: Mode = .recover) { self.mode=mode }
@@ -13,7 +13,7 @@ private actor BudgetProbe: ModelClient {
         // the model's, clipped as pi clips any request.
         let count=try RequestContextCounter().count(messages:messages,profile:profile,request:body,reportedUsage:false)
         guard count.fits, tools.isEmpty, profile.wireOutputLimit.map({ $0 <= max(profile.maxOutput,PiContext.outputRoom(contextWindow:profile.contextWindow,requestTokens:count.requestTokens)) }) ?? true else { throw AgentError("fixture_contract","Summary input plus its actual cap must fit") }
-        if mode == .holdSecond && requests.count==2 { held=true;while true { try await Task.sleep(nanoseconds:1_000_000) } }
+        if mode == .hold { held=true;while true { try await Task.sleep(nanoseconds:1_000_000) } }
         var value: JSON=["status":"completed","output":[["type":"message","content":[["type":"output_text","text":"Observed work; preserve the objective."]]]],"usage":["input_tokens":100,"output_tokens":30,"output_tokens_details":["reasoning_tokens":10]]]
         switch mode {
         case .recover, .twice, .partial:
@@ -29,32 +29,31 @@ private actor BudgetProbe: ModelClient {
         case .tool: value["output"] = [["type":"function_call","call_id":"not-authorized","name":"write","arguments":"{}"]]
         case .unknown: value["status"]="incomplete";value["usage"] = .null
         case .completedAtCap: value["usage"]["output_tokens"]=body["max_output_tokens"]
-        case .holdSecond: break
+        case .hold: break
         }
         var parser=ProviderAccumulator(api:"openai-responses");try parser.acceptJSON(value)
         var reply=try parser.result();reply.message.requestAttemptIDs=["budget-\(requests.count)"];return reply
     }
 }
 
-/// 240,000 characters cannot fit one 80,000-token request beside the cap.
-private func oversized(_ s: AgentSession, _ policy: CompactionPolicy = CompactionPolicy()) async throws -> String {
-    let original=await s.profile,revision=await s.contextMutation
-    let p=try policy.summaryProfile(original,cap:policy.summaryTokens(for:original))
-    // 80,000 of pi's tokens (characters over four): two chunks in an 80,000 window.
-    return try await s.summarize(["[Assistant]: "+String(repeating:"e",count:320000)],previous:nil,turnPrefix:false,profile:p,originalProfile:original,revision:revision,sourceIDs:[])
+/// One summary request for `characters` of history at pi's cap.
+private func summary(_ s: AgentSession, _ policy: CompactionPolicy = CompactionPolicy(), characters: Int = 100000) async throws -> String {
+    let original=await s.profile,revision=await s.contextMutation,room=policy.summaryTokens(for:original)
+    let p=try policy.summaryProfile(original,cap:room)
+    return try await s.summarize(CompactionSourceBuilder.prompt(["[Assistant]: "+String(repeating:"e",count:characters)],previous:nil),room:room,profile:p,originalProfile:original,revision:revision,sourceIDs:[])
 }
 
 final class CompactionBudgetTests: XCTestCase {
     /// An earlier task's evidence, then the current objective. The one-token
     /// tail keeps only the objective, so these budget cases summarize history.
-    private func setup(_ root: URL, mode: BudgetProbe.Mode = .recover, ceiling: Int = 100000, window: Int = 200000, policy: CompactionPolicy = { var p=CompactionPolicy();p.keepRecentTokens=1;return p }()) throws -> (AgentSession,BudgetProbe,[ChatMessage]) {
+    private func setup(_ root: URL, mode: BudgetProbe.Mode = .recover, ceiling: Int = 100000, window: Int = 200000, evidence: Int = 800, policy: CompactionPolicy = { var p=CompactionPolicy();p.keepRecentTokens=1;return p }()) throws -> (AgentSession,BudgetProbe,[ChatMessage]) {
         var raw=try fixtureProfile().raw
         raw["contextWindow"]=JSON(window);raw["modelOutputLimit"]=JSON(ceiling);raw["maxOutputTokens"]=4096
         raw["reasoning"]=true;raw["thinkingLevel"]="high";raw["thinkingLevelMap"]=["low":"low","high":"high"]
         var earlier=ChatMessage(role:"user",content:[textBlock("Inspect the logs.")]);earlier.id="earlier";earlier.taskRootID=earlier.id
-        var evidence=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"Observed evidence. ",count:800))]);evidence.taskRootID=earlier.id
+        var observed=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"Observed evidence. ",count:evidence))]);observed.taskRootID=earlier.id
         var user=ChatMessage(role:"user",content:[textBlock("Keep the original objective.")]);user.id="objective";user.taskRootID=user.id
-        let seed=[earlier,evidence,user],client=BudgetProbe(mode)
+        let seed=[earlier,observed,user],client=BudgetProbe(mode)
         let session=try AgentSession(id:UUID().uuidString,profile:Profile(raw),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),seed:seed,compactionPolicy:policy)
         return (session,client,seed)
     }
@@ -103,17 +102,30 @@ final class CompactionBudgetTests: XCTestCase {
         }
     }
 
-    func testOversizedSourceIsChainedAtTheFullCapNeverClipped() async throws {
+    /// A compaction is one request. A history that cannot fit one beside
+    /// the summary's room is never split: nothing is sent, and the context stays.
+    func testOversizedHistoryIsRefusedWithoutARequest() async throws {
+        let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
+        // 16,842 × 19 characters: 80,000 of pi's tokens in an 80,000-token window.
+        let (s,c,seed)=try setup(root,mode:.completedAtCap,window:80000,evidence:16842)
+        try await s.compact();try await eventually { !(await s.isRunning) }
+        let state=await s.snapshot(),context=await s.context,requests=await c.requests
+        XCTAssertEqual(state["compaction"]["errorCode"].text,"compaction_too_large")
+        XCTAssertTrue(state["compaction"]["error"].text?.contains("Nothing was sent") == true,state["compaction"]["error"].text ?? "")
+        XCTAssertEqual(requests.count,0);XCTAssertEqual(context.map(\.id),seed.map(\.id))
+        await s.close()
+    }
+
+    func testOneRequestCarriesTheModelsLimitClippedToTheRoomLeft() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let (s,c,_)=try setup(root,mode:.completedAtCap,window:80000)
-        let result=try await oversized(s),requests=await c.requests
-        let texts=requests.map { $0["input"].list.last?["content"].list.first?["text"].text ?? "" }
+        let result=try await summary(s),requests=await c.requests
         XCTAssertEqual(result,"Observed work; preserve the objective.")
-        XCTAssertEqual(requests.count,2)
-        // Each chunk carries the model's limit, clipped to its window, and never less than the summary's room.
-        XCTAssertTrue(requests.allSatisfy { ($0["max_output_tokens"].int ?? 0) >= 13107 && $0["reasoning"]["effort"].text=="high" })
-        XCTAssertTrue(texts[1].contains("[continued]: e"));XCTAssertTrue(texts[1].contains("<previous-summary>\nObserved work; preserve the objective.\n</previous-summary>"))
-        XCTAssertEqual(texts.map { $0.split(whereSeparator: { $0 != "e" }).map(\.count).max() ?? 0 }.reduce(0,+),320000,"Nothing is dropped between chunks")
+        XCTAssertEqual(requests.count,1)
+        // 25,000 tokens of history in an 80,000 window: the room left, not pi's 13,107.
+        let limit=requests.first?["max_output_tokens"].int ?? 0
+        XCTAssertGreaterThan(limit,40000);XCTAssertLessThan(limit,80000-25000)
+        XCTAssertEqual(requests.first?["reasoning"]["effort"].text,"high")
         await s.close()
     }
 
@@ -122,22 +134,22 @@ final class CompactionBudgetTests: XCTestCase {
         for limit in [1,8] {
             var policy=CompactionPolicy();policy.maximumAttempts=limit;policy.keepRecentTokens=1
             let (s,c,seed)=try setup(root,mode:.twice,window:80000,policy:policy)
-            do { _=try await oversized(s,policy);XCTFail("must not adopt incomplete data") }
+            do { _=try await summary(s,policy);XCTFail("must not adopt incomplete data") }
             catch let e as AgentError { XCTAssertEqual(e.code,"compaction_output_exhausted") }
             let calls=await c.requests,context=await s.context
             XCTAssertEqual(calls.count,1);XCTAssertEqual(context.map(\.id),seed.map(\.id));await s.close()
         }
     }
 
-    func testCancellationDuringALaterChunkPreservesContextAndAccounting() async throws {
+    func testCancellationDuringTheSummaryPreservesContextAndAccounting() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
-        let (s,c,seed)=try setup(root,mode:.holdSecond,window:80000)
-        let task=Task { try await oversized(s) }
+        let (s,c,seed)=try setup(root,mode:.hold,window:80000)
+        let task=Task { try await summary(s) }
         try await eventually { await c.held };task.cancel()
         do { _=try await task.value;XCTFail("cancelled") } catch is CancellationError {} catch { XCTFail("Unexpected \(error)") }
         let context=await s.context,usage=await s.cumulativeUsage,requests=await c.requests
-        XCTAssertEqual(context.map(\.id),seed.map(\.id));XCTAssertEqual(requests.count,2)
-        XCTAssertEqual(usage.output,30,"Only the completed first chunk reported output");await s.close()
+        XCTAssertEqual(context.map(\.id),seed.map(\.id));XCTAssertEqual(requests.count,1)
+        XCTAssertEqual(usage.output,0,"The cancelled request reported no output");await s.close()
     }
 
     func testCeilingsCompatibilityAndDefaultEffortFollowPi() throws {

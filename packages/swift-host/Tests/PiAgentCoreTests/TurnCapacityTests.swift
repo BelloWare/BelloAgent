@@ -98,28 +98,24 @@ final class TurnCapacityTests: XCTestCase {
         await session.close()
     }
 
-    func testCompactionBoundsOversizedSourceBeforeDispatchToSmallerModel() async throws {
+    /// A compaction is one request, never chunks: a switch to a window too
+    /// small for the history's one summary request refuses the compaction
+    /// before anything is sent. As pi does after a failed threshold
+    /// compaction, the turn's request is still sent, for the gateway to judge.
+    func testAWindowTooSmallForOneSummaryRequestSendsNoSummary() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         var first = answer("old answer"); first.usage = ["input": 4_600, "inputIncludingCache": 4_600, "output": 5]
-        let client = ScriptClient([first, answer("Summary of the first half"), answer("Bounded summary of previous work"), answer("continued")])
+        let client = ScriptClient([first, answer("continued")])
         let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore())
         _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 18000)), steer: false)
         try await eventually { !(await session.isRunning) }
         _ = try await session.submit(Submission(commandID: "small", turnID: "small", text: "continue", model: "small-model", contextWindow: 5000, maxOutputTokens: 1000), steer: false)
         try await eventually { !(await session.isRunning) }
-        let count = await client.count, snapshot = await session.snapshot()
-        XCTAssertEqual(count, 4)
-        XCTAssertEqual(snapshot["state"].text, "idle",snapshot["preflightError"].encoded())
-        let requests=await client.requests, profiles=await client.profiles, instructions=await client.instructions
-        // The 18,000-character request cannot fit one 5,000-token summary
-        // request: it is summarized in two chained chunks that each fit.
-        for index in [1,2] {
-            let body=try ProviderClient.requestBody(profile:profiles[index],messages:requests[index],instructions:instructions[index],tools:[],sessionID:"compact")
-            XCTAssertTrue(try RequestContextCounter().count(messages:requests[index],profile:profiles[index],request:body,reportedUsage:false).fits)
-        }
-        XCTAssertTrue(requests[2][0].text.contains("[continued]: x"))
-        XCTAssertTrue(requests[2][0].text.contains("<previous-summary>\nSummary of the first half\n</previous-summary>"))
-        XCTAssertEqual(requests[3].first?.text.hasSuffix("Bounded summary of previous work"),true)
+        let purposes = await client.purposes, snapshot = await session.snapshot(), requests = await client.requests
+        XCTAssertEqual(purposes, ["turn", "turn"], "The 18,000-character request cannot fit one 5,000-token summary request, and it is never split")
+        XCTAssertEqual(snapshot["compaction"]["errorCode"].text, "compaction_too_large")
+        XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
+        XCTAssertEqual(requests[1].last?.text, "continue")
         await session.close()
     }
 

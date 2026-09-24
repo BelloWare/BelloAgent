@@ -188,24 +188,25 @@ final class CompactionSafetyTests: XCTestCase {
         XCTAssertTrue(body["input"].list.dropFirst().first?.encoded().contains(claim) == true)
         XCTAssertTrue(context.filter { $0.role=="user" }.isEmpty,"Pi summarizes the objective with the rest");await s.close()
     }
-    func testAnInputLargerThanTheWindowIsSummarizedLikeAnyOtherRow() async throws {
+    /// A compaction is one request: an input one request cannot hold is
+    /// never split, nothing is sent, and the context stays as it was.
+    func testAnInputLargerThanTheWindowIsRefusedWithoutARequest() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         var messages=seed(count:1);messages[0].content=[textBlock(String(repeating:"required ",count:2000))]
         let client=SummaryProbe(),s=try session(root,client:client,messages:messages,window:3000)
         try await s.compact();try await eventually { !(await s.isRunning) }
         let state=await s.snapshot(), calls=await client.summaryCalls, kept=await s.context
-        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
-        XCTAssertGreaterThan(calls,1,"One request cannot hold it, so it is summarized in chunks")
-        XCTAssertEqual(kept.map(\.kind),["compaction"]);await s.close()
+        XCTAssertEqual(state["compaction"]["errorCode"].text,"compaction_too_large")
+        XCTAssertEqual(calls,0,"Nothing was sent")
+        XCTAssertEqual(kept.map(\.id),messages.map(\.id));await s.close()
     }
-    func testChainedChunksAreAllBoundedAndKeepOneTaskRoot() async throws {
+    func testOneSummaryRequestIsBoundedAndCommitsTheCheckpoint() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
-        let client=SummaryProbe(),s=try session(root,client:client,messages:seed(count:7,bytes:4000),window:3000)
+        let client=SummaryProbe(),s=try session(root,client:client,messages:seed(count:4,bytes:2000),window:6000)
         try await s.compact();try await eventually { !(await s.isRunning) }
         let state=await s.snapshot(), requests=await client.requests,context=await s.context
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
-        XCTAssertGreaterThan(requests.count,2);XCTAssertLessThanOrEqual(requests.count,8)
-        XCTAssertTrue(requests.dropFirst().allSatisfy { $0.encoded().contains("<previous-summary>") },"Each later chunk updates the summary so far")
+        XCTAssertEqual(requests.count,1,"A compaction is one request")
         XCTAssertTrue(context.filter { $0.role=="user" }.isEmpty)
         XCTAssertLessThan(state["compaction"]["after"]["tokens"].int!,state["compaction"]["before"]["tokens"].int!)
         XCTAssertEqual(state["contextState"]["reason"].text,"compaction-committed")
@@ -259,8 +260,8 @@ final class CompactionSafetyTests: XCTestCase {
     }
     func testStopBeforeCommitPreservesContextAndQueuedInput() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
-        for hold in [1,3] {
-            let client=SummaryProbe(holdAt:hold),messages=seed(count:7,bytes:4000),s=try session(root,client:client,messages:messages,window:3000)
+        do {
+            let client=SummaryProbe(holdAt:1),messages=seed(count:4,bytes:2000),s=try session(root,client:client,messages:messages,window:6000)
             try await s.compact();try await eventually { await client.held }
             _=try await s.submit(Submission(commandID:"queued",turnID:"queued",text:"next"),steer:false)
             await s.stop();try await eventually { !(await s.isRunning) }
@@ -306,9 +307,9 @@ final class CompactionSafetyTests: XCTestCase {
     func testStopImmediatelyAfterDurableCommitKeepsCheckpointWithoutContinuation() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let stop=CheckpointStop(),client=SummaryProbe(holdAt:1)
-        var raw=try fixtureProfile().raw;raw["contextWindow"]=3000;raw["maxOutputTokens"]=256
+        var raw=try fixtureProfile().raw;raw["contextWindow"]=6000;raw["maxOutputTokens"]=256
         let s=try AgentSession(id:"stop-commit",profile:Profile(raw),apiKey:"synthetic",cwd:root,directory:root.appendingPathComponent("state"),readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),beforeJournalAppend:{ if $0["type"].text=="compaction" { stop.arm() } },changed:{_,_ in stop.changed() })
-        for message in seed(count:2,bytes:4000) { try await s.append(message) }
+        for message in seed(count:2,bytes:6400) { try await s.append(message) }
         _=try await s.submit(Submission(commandID:"next",turnID:"next",text:"Continue"),steer:false)
         try await eventually { await client.held };stop.set(await s.runTask);await client.release()
         try await eventually { !(await s.isRunning) }

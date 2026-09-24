@@ -1,9 +1,8 @@
 import Foundation
 
 public struct CompactionPolicy: Sendable {
-    /// Ours: physical requests one chained summary chunk may use, including
-    /// transient retries and a repack after the gateway rejects its size. A
-    /// long history takes more chunks; it never fails for its length.
+    /// Ours: physical attempts a compaction's one summary request may use,
+    /// its transient retries included.
     public var maximumAttempts = 8
     /// Pi's compaction reserve and recent-context target (settings-manager.ts).
     public var reserveTokens = 16_384
@@ -28,19 +27,11 @@ public struct CompactionPolicy: Sendable {
         let reserve=settings(autoCompaction:true,contextWindow:profile.contextWindow).reserveTokens
         return max(1,min(reserve*(turnPrefix ? 5 : 8)/10,profile.modelOutputLimit ?? Int.max))
     }
-    /// The room a summary request keeps free for its output, reasoning
-    /// included: pi's share of the reserve, or a quarter of the window when
-    /// that is more, within the model's own limit. The chunks of a history too
-    /// large for one request are packed beside it, so no chunk is held to
-    /// pi's 13,107 tokens.
-    func summaryRoom(for profile: Profile, turnPrefix: Bool = false) -> Int {
-        max(summaryTokens(for: profile, turnPrefix: turnPrefix), min(profile.modelOutputLimit ?? Int.max, profile.contextWindow / 4))
-    }
-    /// A summary request's profile. `cap` is the room its request keeps free
-    /// for the summary; unlike pi's summary maxTokens it is not sent. The
-    /// request carries the model's own output limit, clipped to the window as
-    /// any request is, so the chat's reasoning cannot use up a summary's cap
-    /// before the summary is written.
+    /// A summary request's profile. `cap` is the room its request must keep
+    /// free for the summary; unlike pi's summary maxTokens it is not sent. The
+    /// request carries the model's own output limit, clipped to the room left
+    /// in the window as any request is, so the chat's reasoning cannot use up
+    /// a summary's cap before the summary is written.
     func summaryProfile(_ original: Profile, cap: Int) throws -> Profile {
         var raw=original.raw
         raw["maxOutputTokens"]=JSON(cap)

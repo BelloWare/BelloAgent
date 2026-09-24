@@ -380,16 +380,11 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// establishes a baseline; only a new committed summary produces a notice.
     func observeCompaction(_ snapshot: [String: WireValue], baseline: Bool = false) {
         let operation=snapshot["compaction"]?.object
-        let chunk=operation?["chunk"]?.number.flatMap { value in
-            value.isFinite && value >= 1 && value <= 8 && value.rounded() == value ? Int(value):nil
-        }
-        let chunkDetail=chunk.map { " · chunk \($0)" } ?? ""
+        // A compaction is one summary request, retried as any request is.
         let progress: String?
         switch operation?["phase"]?.string {
-        case "summarizing": progress="Summarizing earlier work"+chunkDetail
-        case "merging": progress="Combining summaries"+chunkDetail
+        case "summarizing": progress="Summarizing earlier work"
         case "retrying": progress="Retrying summary request"
-        case "retrying-output-budget": progress="Reducing summary input to leave more output space"
         case "planning": progress="Preparing complete tool history"
         default: progress=nil
         }

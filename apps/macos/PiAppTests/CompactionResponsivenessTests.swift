@@ -6,7 +6,7 @@ import AppKit
 /// The app froze for good while it compacted a long chat (0.1.89): SwiftUI's
 /// update never went back to the run loop (`LazyListAppKitControlTests`).
 /// This drives that situation in the real window — a long chat whose history
-/// takes several chained summary requests, a sidebar with projects and topics,
+/// is summarized twice, one request each time, a sidebar with projects and topics,
 /// the Session Inspector open, a side pane — through the packaged helper and the
 /// synthetic gateway, compacting by hand and at the threshold, while a
 /// watchdog checks that the main thread keeps coming back to its run loop and
@@ -112,7 +112,8 @@ final class CompactionResponsivenessTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(300))
         }
         let turns = Int(testEnvironment("PI_APP_HANG_TURNS") ?? "") ?? 4
-        let kilobytes = Int(testEnvironment("PI_APP_HANG_KB") ?? "") ?? 90
+        // 45 KiB a turn: the history one summary request can hold in the smaller window.
+        let kilobytes = Int(testEnvironment("PI_APP_HANG_KB") ?? "") ?? 45
         for turn in 0..<turns {
             session.draft = "bulk \(kilobytes) history part \(turn): keep going with the payment retry notes."
             model.send(sessionID: main.id)
@@ -135,7 +136,7 @@ final class CompactionResponsivenessTests: XCTestCase {
         model.openSide(parentID: main.id)
         try await Task.sleep(for: .milliseconds(600))
         XCTAssertNil(model.error, model.error ?? "")
-        // A smaller window: the history is several summary requests long.
+        // A smaller window: the history is summarized, in one request.
         let index = try XCTUnwrap(model.chats.firstIndex { $0.id == main.id })
         model.chats[index].contextWindow = Int(testEnvironment("PI_APP_HANG_WINDOW") ?? "") ?? 60_000
         model.chats[index].maxOutputTokens = 8_192
@@ -171,7 +172,7 @@ final class CompactionResponsivenessTests: XCTestCase {
             return system?.hasPrefix("You are a context summarization assistant.") == true
         }
         print("COMPACTION gateway saw \(records.count) requests, \(summaries.count) summary requests")
-        XCTAssertGreaterThanOrEqual(summaries.count, 3, "Compact Now and the threshold compaction each ran chained summary requests")
+        XCTAssertEqual(summaries.count, 2, "Compact Now and the threshold compaction, one summary request each")
         let issues = try SwiftUIRuntimeIssues.since(start)
         XCTAssertEqual(issues, [], "Side effects inside SwiftUI updates while the chat streamed and compacted")
         XCTAssertLessThan(watchdog.worstStall, watchdog.limit)

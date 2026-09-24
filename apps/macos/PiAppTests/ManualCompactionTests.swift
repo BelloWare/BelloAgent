@@ -63,11 +63,12 @@ final class ManualCompactionTests: XCTestCase {
             var attempts: [[String:WireValue]] = []
             for _ in 0..<500 {
                 attempts = try await model.traces.list(sessionID:id)
-                if attempts.count == 4 { break }
+                if attempts.count == 3 { break }
                 try await Task.sleep(for:.milliseconds(10))
             }
             let records = try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSONDecoder().decode([String:WireValue].self,from:Data($0.utf8)) }.filter { $0["session"]?.string == id }
-            XCTAssertEqual(attempts.count,4); XCTAssertEqual(records.count,4)
+            // Two turns, then the compaction's one summary request.
+            XCTAssertEqual(attempts.count,3); XCTAssertEqual(records.count,3)
             XCTAssertTrue(records.allSatisfy { $0["status"]?.number == 200 })
             for attempt in attempts {
                 let attemptID = try XCTUnwrap(attempt["attemptId"]?.string)
@@ -75,8 +76,8 @@ final class ManualCompactionTests: XCTestCase {
                 let response = try await model.traces.completeBody(attemptID:attemptID,body:"response")
                 XCTAssertTrue(records.contains { Data(base64Encoded:$0["request"]?.string ?? "") == request && Data(base64Encoded:$0["response"]?.string ?? "") == response })
             }
-            // Pi's /compact [instructions]: the focus ends the history summary's
-            // prompt; the turn prefix's summary, like pi's, takes none.
+            // Pi's /compact [instructions]: the focus follows the history summary's
+            // prompt, once, before the split turn's section, which takes none.
             var focused = 0
             for attempt in attempts {
                 guard let attemptID = attempt["attemptId"]?.string else { continue }
