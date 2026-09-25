@@ -1,6 +1,6 @@
 # Bello Agent 0.1.101 — compaction plan conformance
 
-Status: release candidate; publication evidence pending.
+Status: released and publicly verified, 2026-09-25 14:39:14 UTC.
 Starting main SHA: `9f01951` (0.1.100/build 104).
 The owner supplied **BelloAgent-Compaction-Plan.md** and explicitly requested a
 release. That request supersedes the uploaded document's no-publication clause.
@@ -67,6 +67,21 @@ remaining verified gaps without introducing another summarizer or changing UI.
 
 ## Publication
 
-Pending signed/notarized artifacts, website publication and public verification.
+Source commit: `a7f8dc4dd9a22b45b47fa968597b1b8002a51c85`; local tag `v0.1.101`.
+Website publication commit: `0454bae49e2260df7e86d90ef4383f63db1d2716`.
+Cloudflare check `108116512846` completed successfully at 14:38:05 UTC.
+
+- Version **0.1.101**, build **105**, Apple Silicon.
+- Developer ID signing, application notarization/stapling and Gatekeeper
+  assessment passed. Application submission: `973598ef-9fd4-4062-b571-f2ba6a551434`.
+- Installer notarization/stapling and Sparkle Ed25519 validation passed.
+  Installer submission: `d982e02c-1694-412b-9000-508e3f993499`.
+- `BelloAgent-0.1.101.dmg`: **10,846,708 bytes** (10.34 MiB).
+- SHA-256: `f00b69bcba3669a857a021618719f98377a528ff278a783fbc3f1726575b4fe1`.
+- Public product page links to the new installer. The canonical and legacy
+  feeds are byte-identical; the public download matches the local hash and
+  passes signature verification. These checks passed after deployment propagated.
+- [Public installer](https://belloware.com/assets/BelloAgent-0.1.101.dmg).
+
 Source commits remain local under the existing release workflow; this request
 does not ask to push the source repository.

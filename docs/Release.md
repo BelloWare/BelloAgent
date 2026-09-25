@@ -37,7 +37,24 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.100/build 104 is publicly released** at
+**Bello Agent 0.1.101/build 105 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), from source
+`a7f8dc4dd9a22b45b47fa968597b1b8002a51c85` and website commit `0454bae`.
+The signed/notarized DMG is **10,846,708 bytes (10.34 MiB)**; SHA-256
+`f00b69bcba3669a857a021618719f98377a528ff278a783fbc3f1726575b4fe1`.
+The product page, identical update feeds and downloaded hash/Ed25519 verification
+passed at **2026-09-25 14:39:14 UTC**. Cloudflare check `108116512846` succeeded.
+Compaction reserves the larger ordinary/summary output requirement, uses the
+uploaded checkpoint prompt, requires positive completion evidence and rejects
+provider-hosted tool calls. Server truncation is explicitly disabled.
+All 449 helper tests, 112 gallery screenshots and transport/script checks passed.
+A native keyboard-focus test failed under parallel hosts, passed alone, and now
+runs in the serial lane; both rebuilt terminal classes passed all 15 cases.
+Live gateway cache/quality measurements remain unrun because the required test
+configuration is unavailable. Source commits remain local under the release policy.
+See the [0.1.101 validation record](validation/Bello-Agent-0.1.101-2026-09-25.md).
+
+**Bello Agent 0.1.100/build 104 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source
 `dd1e8ffa3e60331e09978a42f9df834717d9bfff` and website commit `ed40835`.
 The signed/notarized DMG is **10,847,251 bytes (10.34 MiB)**; SHA-256
