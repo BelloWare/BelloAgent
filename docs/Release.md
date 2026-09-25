@@ -1,5 +1,10 @@
 # Direct distribution
 
+**Owner workflow change, 2026-09-26:** always commit completed repository changes
+and push to the configured GitHub upstream. A separate push request is no longer
+required. Releases include the source commits, release tag and final validation
+record. This supersedes the earlier policy of keeping release source local.
+
 **Owner workflow change, 2026-09-16, after 0.1.6:** prioritize short release
 cycles. Do not run fresh-install or Sparkle update/relaunch rehearsals unless
 the owner explicitly requests them again. They are no longer release gates.
@@ -51,7 +56,8 @@ All 449 helper tests, 112 gallery screenshots and transport/script checks passed
 A native keyboard-focus test failed under parallel hosts, passed alone, and now
 runs in the serial lane; both rebuilt terminal classes passed all 15 cases.
 Live gateway cache/quality measurements remain unrun because the required test
-configuration is unavailable. Source commits remain local under the release policy.
+configuration is unavailable. Source commits were initially kept local under the
+previous release policy; source publication now follows the standing workflow above.
 See the [0.1.101 validation record](validation/Bello-Agent-0.1.101-2026-09-25.md).
 
 **Bello Agent 0.1.100/build 104 is a historical verified release** at
@@ -65,8 +71,8 @@ context, instructions, tools, reasoning and cache affinity, appends one checkpoi
 instruction, and validates the final continuation before durable adoption.
 Final evidence includes 1,618 native passes (22 optional skips), 443 helper passes,
 112 gallery screenshots and all transport/script checks. Live gateway cache and
-summary-quality benchmarks remain unrun. Source commits remain local under the
-release policy below. See the [0.1.100 validation record](validation/Bello-Agent-0.1.100-2026-09-25.md).
+summary-quality benchmarks remain unrun. Source commits were initially kept local
+under the previous policy. See the [0.1.100 validation record](validation/Bello-Agent-0.1.100-2026-09-25.md).
 
 **Bello Agent 0.1.99/build 103 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
@@ -879,13 +885,12 @@ signing-key ACLs or persistent signing policy.
    owner/update rehearsal for every release. Reuse passing results when their
    source, dependencies and toolchain are unchanged. Keep fixtures separate
    from release assets and record which checks ran versus were reused.
-3. Commit Bello Agent's intended source changes. **Owner policy, 2026-09-18:
-   a release does not push the source repository.** `publish-release.sh`
-   therefore requires only a clean worktree and a committed `HEAD`, not that the
-   commit reached the remote. The repository is pushed when the owner asks for
-   it, as one squashed commit, so a validation record's source SHA names a local
-   commit until that push happens. The website repository is still pushed by
-   step 6, because pushing it is how the site deploys.
+3. Commit Bello Agent's intended source changes and push to the configured
+   GitHub upstream. Preserve the commit identity recorded for each release.
+   `publish-release.sh` requires a clean worktree and committed `HEAD`; it
+   publishes the website repository in step 6. After recording final release
+   verification, commit and push that record and the relevant release tag too.
+   This is the owner's standing workflow, effective 2026-09-26.
 4. The default download prefix is `https://belloware.com/assets/`. Run
    `PI_BUILD_ROOT=/scratch/path scripts/release.sh`.
    It signs nested Sparkle

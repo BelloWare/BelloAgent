@@ -12,10 +12,10 @@ LEGACY_FEED_NAME="pi_app.appcast.xml"
 DOWNLOAD_PREFIX="${PI_DOWNLOAD_URL_PREFIX:-https://belloware.com/assets/}"
 
 # Publish only committed source: no uncommitted or untracked file may differ
-# from the released commit. The source repository is pushed when the owner asks
-# for it, as one squashed commit, so a release never requires that this commit
-# has reached the remote; the website repository still must be in sync, since
-# pushing it is how the site deploys.
+# from the released commit. The standing workflow pushes source before
+# publication and pushes the final validation record and tag afterward.
+# This script publishes the website repository, which must be in sync since
+# pushing it is how the site deploys. See AGENTS.md and docs/Release.md.
 test -z "$(git -C "$ROOT" status --porcelain)"
 git -C "$ROOT" rev-parse --verify --quiet HEAD >/dev/null
 SITE_UPSTREAM="$(git -C "$SITE" rev-parse --abbrev-ref '@{upstream}')"
