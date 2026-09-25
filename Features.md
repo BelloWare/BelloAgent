@@ -92,7 +92,7 @@ updates. Transient model failures allow five retries after the initial request;
 invalid requests and tool side effects are not automatically replayed. Compaction
 uses the same bounded retry settings, within its physical-attempt budget.
 
-**Compaction, 0.1.100:** a single request sends the current typed conversation
+**Compaction, 0.1.101:** a single request sends the current typed conversation
 unchanged, followed by a checkpoint instruction. It keeps the selected model,
 reasoning effort, normal instructions, tool schemas and cache affinity. Tools
 remain defined with calls prohibited; a gateway-returned call is rejected without
@@ -101,11 +101,16 @@ request. Prior checkpoints are included once, without restoring removed history.
 
 Recent complete tool groups, unanswered input and required skill/permission inputs
 remain intact. The planner triggers before the next request with headroom for the
-summary itself. Its generation allowance includes reasoning and is capped at
+summary itself and the ordinary response budget, whichever needs more room.
+Its generation allowance includes reasoning and is capped at
 16,384 tokens, the model ceiling or a quarter-window, whichever is smaller. If the
 intact source cannot fit, nothing is sent and context remains unchanged. Complete
 summaries must fit the actual replay wrapper and continuation output reserve, and
 must reduce context; automatic checkpoints must additionally get below the trigger.
+The checkpoint prompt preserves evidence, constraints, uncertainty and next steps,
+with a smaller soft target for short histories. No summary text is clipped.
+Missing completion evidence, incomplete output items and provider-hosted tool
+calls are rejected; server-side history truncation is explicitly disabled.
 
 Snapshots freeze context/configuration during summarization, synchronize before
 adoption and preserve ordered lineage across reopen and fork. Editing any message
@@ -114,7 +119,7 @@ Transient retries keep the same request; refused, incomplete, tool-calling or
 non-reducing summaries do not become checkpoints. One fitting recovery may follow
 an ordinary context rejection, without rerunning completed tools. Cost, captures
 and chronological operation history remain available. See the
-[0.1.100 validation record](docs/validation/Bello-Agent-0.1.100-2026-09-25.md).
+[0.1.101 validation record](docs/validation/Bello-Agent-0.1.101-2026-09-25.md).
 
 Session right-click and conversation “…” menus offer **Copy Session ID** and
 **Copy Session Reference**. A reference contains the app session ID and actual

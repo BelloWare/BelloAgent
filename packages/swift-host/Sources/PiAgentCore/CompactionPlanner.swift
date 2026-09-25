@@ -23,7 +23,9 @@ public struct CompactionPolicy: Sendable {
     func summaryTokens(for profile: Profile) -> Int {
         min(16_384, profile.modelOutputLimit ?? 16_384, profile.contextWindow / 4)
     }
-    func visibleTarget(for profile: Profile) -> Int { min(3_000, max(1, summaryTokens(for: profile) / 4)) }
+    func visibleTarget(for profile: Profile, inputTokens: Int? = nil) -> Int {
+        min(3_000, max(1, summaryTokens(for: profile) / 4), max(1, (inputTokens ?? 12_000) / 4))
+    }
     func summaryProfile(_ original: Profile, cap: Int) throws -> Profile {
         guard cap >= ProviderClient.minimumOutputTokens, cap < original.contextWindow else {
             throw AgentError("compact_budget", "This context window cannot reserve the minimum summary output allowance.")
@@ -36,9 +38,10 @@ public struct CompactionPolicy: Sendable {
     /// Reserve the appended instruction, summary generation, dispatch margin,
     /// and a growth buffer before the next complete model/tool boundary.
     func trigger(profile: Profile, instructionTokens: Int) throws -> Int {
-        let reserved = PiContext.sum([summaryTokens(for: profile), instructionTokens,
+        let generation = summaryTokens(for: profile)
+        let reserved = PiContext.sum([max(profile.maxOutput, PiContext.sum([generation, instructionTokens])),
             RequestContextCount.safetyMargin(contextWindow: profile.contextWindow), min(max(0, reserveTokens), profile.contextWindow / 4)])
-        guard summaryTokens(for: profile) >= ProviderClient.minimumOutputTokens, reserved < profile.contextWindow else {
+        guard instructionTokens >= 0, generation >= ProviderClient.minimumOutputTokens, reserved < profile.contextWindow else {
             throw AgentError("compact_budget", "This context window cannot fit the checkpoint instruction and summary reserves.")
         }
         return profile.contextWindow - reserved
@@ -224,6 +227,7 @@ extension CompactionPlanner {
         let frozenBody=try body(frozen)
         let attemptKey=try RequestContextCounter.fingerprint(frozenBody,profile:profile)
         let before=try count(frozen,request:frozenBody)
+        let visibleTarget=policy.visibleTarget(for:profile,inputTokens:before.requestTokens)
         let cap=policy.summaryTokens(for:profile)
         let summaryProfile=try policy.summaryProfile(profile,cap:cap)
         let source=try source(context:frozen,taskRoot:taskRoot)
@@ -239,8 +243,8 @@ extension CompactionPlanner {
             let full=try count([placeholder]+plan.keptMessages)
             guard full.fits else { return false }
             if reason != "manual" {
-                let boundary=CompactionSourceBuilder.boundary(projection,messages:frozen,keptIDs:Set(plan.keptMessages.map(\.id)))
-                let instruction=CompactionSourceBuilder.instruction(boundary:boundary,focus:focus,visibleTarget:policy.visibleTarget(for:profile))
+                let boundary=try CompactionSourceBuilder.boundary(projection,messages:frozen,keptIDs:Set(plan.keptMessages.map(\.id)))
+                let instruction=CompactionSourceBuilder.instruction(boundary:boundary,focus:focus,visibleTarget:visibleTarget)
                 let cost=RequestContextCounter.inputTokens([["role":"user","content":.array(ProviderClient.userContent(instruction,images:false))]])
                 return full.requestTokens < (try policy.trigger(profile:profile,instructionTokens:cost))
             }
@@ -248,7 +252,7 @@ extension CompactionPlanner {
             // user message while retaining every large answer. This is only
             // planning; the actual summary must still pass fit and progress.
             var expected=placeholder
-            expected.content=[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:min(policy.visibleTarget(for:profile), max(16, before.requestTokens/4))*4))]
+            expected.content=[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:visibleTarget*4))]
             return try count([expected]+plan.keptMessages).requestTokens < before.requestTokens
         }
         // Only move the boundary BEFORE the request. The summarizer sees
@@ -270,8 +274,8 @@ extension CompactionPlanner {
         guard profile.raw["input"].list.contains("image") || !frozen.contains(where: { $0.content.contains { $0["type"].text == "image" } }) else {
             throw AgentError("unsupported_image", "Compaction cannot replace existing images with placeholders. Select an image-capable model; the context is unchanged.")
         }
-        let description=CompactionSourceBuilder.boundary(projection,messages:frozen,keptIDs:Set(plan.keptMessages.map(\.id)))
-        let instruction=CompactionSourceBuilder.instruction(boundary:description,focus:focus,visibleTarget:policy.visibleTarget(for:profile))
+        let description=try CompactionSourceBuilder.boundary(projection,messages:frozen,keptIDs:Set(plan.keptMessages.map(\.id)))
+        let instruction=CompactionSourceBuilder.instruction(boundary:description,focus:focus,visibleTarget:visibleTarget)
         let summarizedIDs=(plan.previous.map { [$0.id] } ?? [])+plan.summarized.map(\.id)
         return PreparedCompaction(before:before,profile:summaryProfile,plan:plan,messages:frozen+[instruction],replacedIDs:summarizedIDs,fingerprint:attemptKey)
     }

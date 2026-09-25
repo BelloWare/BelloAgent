@@ -60,7 +60,7 @@ final class CompactionPiTests: XCTestCase {
         try await s.compact(focus:"the retry budget"); try await eventually { !(await s.isRunning) }
         let prompts=await client.prompts
         XCTAssertEqual(prompts.count,1)
-        XCTAssertTrue(prompts.first?.contains("Optional user focus (JSON data): \"the retry budget\"") == true, prompts.first.map { String($0.suffix(200)) } ?? "no prompt")
+        XCTAssertTrue(prompts.first?.contains("Optional user focus: \"the retry budget\"") == true, prompts.first.map { String($0.suffix(200)) } ?? "no prompt")
         await s.close()
     }
 

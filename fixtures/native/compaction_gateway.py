@@ -35,7 +35,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             assert system['role'] in ('developer', 'system') and isinstance(system['content'], str)
             instructions = system['content']
             summary = body.get('tool_choice') == 'none'
-            # Pi sends a summary with cacheRetention "none" and every other request with the session's cache key.
+            # Compaction preserves the normal session's supported cache affinity.
             assert body.get('prompt_cache_key') == sid
             assert self.headers['session_id'] == sid and self.headers['x-client-request-id'] == sid
             pending, results, texts = {}, [], []
@@ -58,7 +58,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 assert history[-1]['role'] == 'user'
                 prompt = texts[-1]
                 assert prompt.startswith('Create a concise continuation checkpoint')
-                assert 'Boundary (JSON data):' in prompt
+                assert 'Boundary:' in prompt
+                assert body['truncation'] == 'disabled'
                 assert not instructions.startswith('You are a context summarization assistant.')
                 assert body.get('tools'), 'normal tools must remain defined'
                 assert body.get('max_output_tokens') is None or 16 <= body['max_output_tokens'] <= 16384
@@ -83,8 +84,15 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     text = 'ORIGINAL GOLDEN OBJECTIVE carried. COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE. Do not rerun the mutation.'
                 output = message(text)
                 if sid.startswith('compaction-no-tools'):
-                    name = 'write' if sid.endswith('write') else 'mcp_remote_mutation'
-                    output.append(call('forbidden', name, {'path': 'counter.txt', 'content': 'once\n'}))
+                    if sid.endswith('hosted'):
+                        output.append({'type': 'web_search_call', 'id': 'hosted', 'status': 'completed',
+                                       'action': {'type': 'search', 'query': 'must not run'}})
+                    elif sid.endswith('custom'):
+                        output.append({'type': 'custom_tool_call', 'id': 'custom', 'call_id': 'forbidden',
+                                       'name': 'remote_mutation', 'input': 'must not run'})
+                    else:
+                        name = 'write' if sid.endswith('write') else 'mcp_remote_mutation'
+                        output.append(call('forbidden', name, {'path': 'counter.txt', 'content': 'once\n'}))
             elif sid == 'compaction-sibling':
                 assert joined == 'sibling independent'
                 output = message('Sibling unaffected')

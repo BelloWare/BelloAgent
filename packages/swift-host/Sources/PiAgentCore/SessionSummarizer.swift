@@ -96,6 +96,20 @@ extension AgentSession {
         guard reply.calls.isEmpty, !reply.message.content.contains(where: { $0["type"].text == "toolCall" }) else {
             throw summaryFailure("compaction_unexpected_tool_call","The summary returned a tool call. It was not executed; inspect the gateway's tool-free behavior.",outcome:outcome)
         }
+        // Hosted/future tool items are retained verbatim by the provider reader
+        // even when they are not client-dispatched calls. None is summary text.
+        for item in reply.message.providerItems ?? [] {
+            let type=item["type"].text ?? ""
+            if type.hasSuffix("_call") || type == "tool_use" {
+                throw summaryFailure("compaction_unexpected_tool_call","The summary returned a provider tool call despite tool_choice none. No local tool ran and no checkpoint was adopted.",outcome:outcome)
+            }
+            guard ["message","reasoning"].contains(type) else {
+                throw summaryFailure("compaction_unexpected_output","The summary returned unsupported non-text output. Inspect the captured response.",outcome:outcome)
+            }
+            guard item["status"].isNull || item["status"].text == "completed" else {
+                throw summaryFailure("compaction_incomplete","A summary output item did not complete. Inspect the captured response.",outcome:outcome)
+            }
+        }
         // Pi: a length stop is a partial summary and never a checkpoint.
         if reply.terminal?.outputExhausted == true {
             throw summaryFailure("compaction_output_exhausted","Summary generation hit the model's output limit, so the summary is incomplete and was not adopted.",outcome:outcome)
@@ -103,8 +117,8 @@ extension AgentSession {
         guard !reply.truncated, reply.message.stopReason != "length", reply.terminal?.status != "incomplete" else {
             throw summaryFailure("compaction_incomplete","Summary generation ended incompletely for a non-token or unknown reason. Inspect the captured response.",outcome:outcome)
         }
-        guard reply.terminal?.status == nil || reply.terminal?.status == "completed" else {
-            throw summaryFailure("compaction_incomplete", "The summary did not reach a successful terminal state.", outcome:outcome)
+        guard reply.terminal?.status == "completed", reply.terminal?.incompleteReason == nil else {
+            throw summaryFailure("compaction_incomplete", "The summary has no unambiguous successful completion evidence.", outcome:outcome)
         }
         guard !text.isEmpty else { throw summaryFailure("compaction_empty_summary","The completed response contained no usable summary text. Inspect this attempt before retrying.",outcome:outcome) }
         return text

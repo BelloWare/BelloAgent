@@ -121,7 +121,9 @@ final class CompactionSafetyTests: XCTestCase {
             var raw=try fixtureProfile().raw;raw["contextWindow"]=10000;raw["maxOutputTokens"]=256
             let client=SummaryProbe(),tools=CountingCompactionTools()
             let assistant=toolReply(["write"]).message
-            var result=ChatMessage(role:"toolResult",content:[textBlock("Interrupted before the result was recorded. Outcome unknown.\n"+String(repeating:"Historical evidence. ",count:800))])
+            // Stay comfortably above the automatic trigger even when the
+            // request-local checkpoint wording changes by a few tokens.
+            var result=ChatMessage(role:"toolResult",content:[textBlock("Interrupted before the result was recorded. Outcome unknown.\n"+String(repeating:"Historical evidence. ",count:900))])
             result.toolCallId="call-0";result.toolName="write";result.isError=true;result.toolStats=["outcome":"unknown"]
             let s=try AgentSession(id:UUID().uuidString,profile:Profile(raw),apiKey:"synthetic",cwd:root,
                 directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),

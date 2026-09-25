@@ -1116,7 +1116,9 @@ or change selection/permission state.
 The effective selected model, endpoint, reasoning effort, replay policy, ordinary
 instructions/tool definitions and cache-session affinity remain unchanged.
 `tool_choice: none` prevents requested tool execution; the summary handler has no
-tool-dispatch continuation and rejects calls even when accompanied by text.
+tool-dispatch continuation and rejects calls even when accompanied by text,
+including provider-hosted and custom tool-call items. Summary requests explicitly
+send `truncation: disabled` and reject alternative output-limit parameters.
 Generic settings cannot replace input/model/tools, force a nontext format,
 truncate history, enable provider compaction or bypass execution controls. The
 appended instruction is request-local and never enters ordinary conversation
@@ -1127,10 +1129,11 @@ Generation allowance G is the lesser of 16,384 tokens, the declared output
 ceiling and one quarter of the context window. It includes reasoning and is both
 the wire cap and local reserve; a route configured to omit caps keeps an explicit
 local-only reserve. The soft visible-summary target is up to 3,000 tokens, smaller
-for small windows; neither reasoning effort nor the resulting text is clipped to
-force success. At safe pending-request boundaries the trigger reserves G, the
-appended instruction estimate, dispatch safety margin and a growth buffer of up
-to 16,384 tokens (at most a quarter-window). No compaction runs after a final
+for small windows and histories; neither reasoning effort nor the resulting text
+is clipped to force success. At safe pending-request boundaries the trigger
+reserves the larger of the ordinary response reserve and G plus the appended
+instruction estimate, then adds the dispatch safety margin and a growth buffer
+of up to 16,384 tokens (at most a quarter-window). No compaction runs after a final
 answer merely because the now-idle context is large.
 
 The complete provider projection, including wrappers, schemas and images, sizes
@@ -1142,6 +1145,9 @@ remain estimates. An intact summary request that cannot fit sends nothing; there
 is no shortening or alternate summarizer fallback.
 
 Only a complete, nonempty, non-refused, non-tool-calling reply can be adopted.
+Positive `completed` terminal evidence is required; missing or contradictory
+evidence and incomplete output items retain the old context. Reaching the numeric
+cap with an explicitly completed response does not itself mean truncation.
 The final checkpoint kind and replay wrapper are assigned before counting.
 `[checkpoint] + retained messages` must fit the normal output reserve and shrink
 input; automatic compaction must also fall below its trigger and save at least

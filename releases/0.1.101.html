@@ -1,0 +1,7 @@
+<h2>Bello Agent 0.1.101</h2>
+<ul>
+<li>Compaction now reserves enough room for either the summary or the ordinary response budget, including configurations with large output allowances.</li>
+<li>Checkpoint instructions preserve objectives, evidence, decisions, uncertainty and next steps, with a smaller soft target for short histories.</li>
+<li>Summaries require explicit successful completion. Missing completion evidence, incomplete output items and returned provider tool calls leave the original context unchanged.</li>
+<li>Summary requests explicitly disable server-side history truncation and reject conflicting output limits. Routes that omit a server output cap clearly report their local reserve.</li>
+</ul>

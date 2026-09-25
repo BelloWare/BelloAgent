@@ -198,35 +198,6 @@ final class TerminalPanelAuditTests: TerminalPanelTestCase {
         try await eventually("end every shell on the way out", timeout: 10) { !two.process.running }
     }
 
-    /// The panel in a window, switched from one project to another: the new
-    /// project's shell has the keyboard, not nothing at all.
-    @MainActor func testSwitchingProjectsMovesTheTerminalAndTheKeyboardWithIt() async throws {
-        TerminalRegistry.shared.shutdown()
-        let first = workspace("panel-one-" + UUID().uuidString), second = workspace("panel-two-" + UUID().uuidString)
-        let model = WorkspaceModel(stateRoot: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("panel-" + UUID().uuidString),
-                                   vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        let holder = WorkspaceHolder(workspace: first)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: TerminalPanelProbe(model: model, holder: holder))
-        window.makeKeyAndOrderFront(nil)
-        defer { window.contentView = nil; window.close(); TerminalRegistry.shared.shutdown() }
-
-        let one = TerminalRegistry.shared.session(for: first)
-        try await eventually("give the first project's shell the keyboard") { window.firstResponder === one.view }
-        XCTAssertTrue(one.view.window === window, "the terminal is in the window")
-
-        holder.workspace = second
-        let two = TerminalRegistry.shared.session(for: second)
-        XCTAssertTrue(one !== two)
-        try await eventually("move the panel to the other project") { two.view.window === window }
-        try await eventually("hand the keyboard to the other project's shell") { window.firstResponder === two.view }
-        try await eventually("take the first project's terminal out of the panel") { one.view.superview == nil }
-        XCTAssertNil(one.view.window, "and the first project's terminal has left the window")
-        XCTAssertEqual(two.view.superview?.subviews.count, 1, "one terminal in the panel, not one per project ever shown")
-        XCTAssertEqual(TerminalRegistry.shared.openWorkspaceIDs, [first.id, second.id], "both shells are still there")
-    }
-
     /// The panel asks for the keyboard right after it swaps sessions (another
     /// project, Restart), which can be before SwiftUI has put the new view in
     /// the window. The shell takes the keyboard once it is there; asking only
@@ -313,10 +284,40 @@ final class TerminalPanelAuditTests: TerminalPanelTestCase {
 
 /// The terminal tests that cannot share the machine: two use the general
 /// pasteboard, which every test host shares, three hold a draw or a bell to a
-/// wall-clock cost in Debug too, and one waits for a killed shell's exit,
+/// wall-clock cost in Debug too, one checks keyboard focus while switching
+/// projects, and one waits for a killed shell's exit,
 /// which in ten parallel clones was not reported within ten seconds. They
 /// run in the serial lane (`scripts/test-lanes.py`).
 final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
+    /// The panel in a window, switched from one project to another: the new
+    /// project's shell has the keyboard, not nothing at all.
+    @MainActor func testSwitchingProjectsMovesTheTerminalAndTheKeyboardWithIt() async throws {
+        TerminalRegistry.shared.shutdown()
+        let first = workspace("panel-one-" + UUID().uuidString), second = workspace("panel-two-" + UUID().uuidString)
+        let model = WorkspaceModel(stateRoot: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("panel-" + UUID().uuidString),
+                                   vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let holder = WorkspaceHolder(workspace: first)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: TerminalPanelProbe(model: model, holder: holder))
+        window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close(); TerminalRegistry.shared.shutdown() }
+
+        let one = TerminalRegistry.shared.session(for: first)
+        try await eventually("give the first project's shell the keyboard") { window.firstResponder === one.view }
+        XCTAssertTrue(one.view.window === window, "the terminal is in the window")
+
+        holder.workspace = second
+        let two = TerminalRegistry.shared.session(for: second)
+        XCTAssertTrue(one !== two)
+        try await eventually("move the panel to the other project") { two.view.window === window }
+        try await eventually("hand the keyboard to the other project's shell") { window.firstResponder === two.view }
+        try await eventually("take the first project's terminal out of the panel") { one.view.superview == nil }
+        XCTAssertNil(one.view.window, "and the first project's terminal has left the window")
+        XCTAssertEqual(two.view.superview?.subviews.count, 1, "one terminal in the panel, not one per project ever shown")
+        XCTAssertEqual(TerminalRegistry.shared.openWorkspaceIDs, [first.id, second.id], "both shells are still there")
+    }
+
     /// `cat` on a binary file: thousands of BEL bytes must not ring thousands
     /// of times, each of them on the main thread.
     @MainActor func testABinaryFileFullOfBellsRingsOnceNotTenThousandTimes() async throws {

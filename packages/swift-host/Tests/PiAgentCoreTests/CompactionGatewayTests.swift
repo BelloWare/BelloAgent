@@ -105,7 +105,7 @@ final class CompactionGatewayTests: XCTestCase {
         let snapshot=try await resources.resolve(), definitions=await tools.definitions(readOnly:false)
         let seed=[ChatMessage(role:"user",content:[textBlock("Inspect and preserve the work; do not mutate files.")]),
                   ChatMessage(role:"assistant",content:[textBlock(String(repeating:"Verified evidence. ",count:5000))])]
-        for suffix in ["write","mcp"] {
+        for suffix in ["write","mcp","hosted","custom"] {
             let id="compaction-no-tools-"+suffix, traces=TraceStore()
             let s=try AgentSession(id:id,profile:profile,apiKey:"synthetic-compaction-key",cwd:root,directory:root.appendingPathComponent(id),readOnly:false,resources:resources,client:ProviderClient(traces:traces),tools:tools,traces:traces,seed:seed)
             try await s.compact();try await eventually { !(await s.isRunning) }
@@ -119,6 +119,7 @@ final class CompactionGatewayTests: XCTestCase {
             let normal=try ProviderClient.requestBody(profile:profile,messages:seed,instructions:AgentSession.requestInstructions(snapshot.prompt),tools:definitions,sessionID:id)
             XCTAssertEqual(Array(sent["input"].list.dropLast()),normal["input"].list)
             for key in ["tools","reasoning","include","prompt_cache_key","store","model"] { XCTAssertEqual(sent[key],normal[key],key) }
+            XCTAssertEqual(sent["truncation"].text,"disabled")
             let attempts=try await traces.command("debug.list",session:id,params:[:])["attempts"].list
             XCTAssertEqual(attempts.count,1);XCTAssertEqual(attempts.first?["purpose"].text,"compaction")
             await s.close()

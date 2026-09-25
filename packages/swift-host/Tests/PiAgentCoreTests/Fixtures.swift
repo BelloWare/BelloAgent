@@ -30,7 +30,7 @@ func stopFixtureProcess(_ process: Process, timeout: TimeInterval = 5) {
     while process.isRunning, Date() < deadline { usleep(10_000) }
     if process.isRunning { kill(process.processIdentifier, SIGKILL) }
 }
-func answer(_ text:String) -> ModelReply { ModelReply(message:ChatMessage(role:"assistant",content:[textBlock(text)]),usage:["input":100,"output":5,"inputIncludingCache":100]) }
+func answer(_ text:String) -> ModelReply { ModelReply(message:ChatMessage(role:"assistant",content:[textBlock(text)]),usage:["input":100,"output":5,"inputIncludingCache":100],terminal:ModelTerminalOutcome(status:"completed")) }
 func toolReply(_ names: [String]) -> ModelReply {
     let calls=names.enumerated().map { ToolCall(id:"call-\($0.offset)",name:$0.element,arguments:["value":JSON($0.offset)]) }
     var message=ChatMessage(role:"assistant",content:calls.map { ["type":"toolCall","id":JSON($0.id),"name":JSON($0.name),"arguments":$0.arguments] })

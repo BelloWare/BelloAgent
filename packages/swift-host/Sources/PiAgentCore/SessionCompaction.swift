@@ -63,7 +63,7 @@ extension AgentSession {
     func compactionThreshold(_ messages: [ChatMessage], instructions: String, profile: Profile) throws -> Int {
         let planned = try compactionPlan(messages,profile:profile,recovering:false)
         let projection = try ProviderClient.responsesProjection(messages.filter(\.replayEligible),instructions:instructions,profile:profile)
-        let boundary = CompactionSourceBuilder.boundary(projection,messages:messages,keptIDs:Set(planned.plan.keptMessages.map(\.id)))
+        let boundary = try CompactionSourceBuilder.boundary(projection,messages:messages,keptIDs:Set(planned.plan.keptMessages.map(\.id)))
         let instruction = CompactionSourceBuilder.instruction(boundary:boundary,focus:nil,visibleTarget:compactionPolicy.visibleTarget(for:profile))
         let items = ProviderClient.userContent(instruction,images:false)
         return try compactionPolicy.trigger(profile:profile,instructionTokens:RequestContextCounter.inputTokens([["role":"user","content":.array(items)]]))
@@ -108,7 +108,7 @@ extension AgentSession {
             }
             compactionState["sourceFingerprint"]=JSON(prepared.fingerprint)
             compactionState["outputAllowance"]=JSON(cap); compactionState["allowedOutputTokens"]=JSON(cap)
-            compactionState["outputAllowanceSource"]="summary-generation-cap"
+            compactionState["outputAllowanceSource"]=JSON(summaryProfile.wireOutputLimit == nil ? "local-reserve-only" : "summary-generation-cap")
             compactionState["reasoningEffort"]=JSON(summaryProfile.raw["thinkingLevel"].text ?? "default")
             let text=try await summarize(prepared.messages,instructions:instructions,tools:definitions,profile:summaryProfile,originalProfile:originalProfile,revision:revision)
             var summary=ChatMessage(role:"system",content:[textBlock(CompactionCheckpoint.replayPrefix+text)])

@@ -84,6 +84,7 @@ public struct ProviderClient: ModelClient {
                 guard body["tool_choice"].isNull || body["tool_choice"].text == "none",
                       body["truncation"].isNull || body["truncation"].text == "disabled",
                       body["context_management"].isNull, body["previous_response_id"].isNull,
+                      body["max_tokens"].isNull, body["max_completion_tokens"].isNull,
                       body["conversation"].isNull, body["background"].isNull || body["background"].flag == false,
                       body["metadata"]["session_id"] == owned["metadata"]["session_id"],
                       body["response_format"].isNull || body["response_format"]["type"].text == "text",
@@ -91,6 +92,7 @@ public struct ProviderClient: ModelClient {
                     throw AgentError("compaction_incompatible", "Compaction requires text output, intact history and tool_choice none. Remove conflicting execution, truncation or format options.")
                 }
                 body["tool_choice"] = "none"
+                body["truncation"] = "disabled"
                 body = body.removing(["max_output_tokens"])
                 if let cap = p.wireOutputLimit { body["max_output_tokens"] = JSON(cap) }
                 guard p.wireOutputLimit.map({ $0 >= Self.minimumOutputTokens && $0 == p.maxOutput }) ?? true else {

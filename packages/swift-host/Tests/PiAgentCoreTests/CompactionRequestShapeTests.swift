@@ -21,7 +21,7 @@ final class CompactionRequestShapeTests: XCTestCase {
         let tools=[ToolDefinition("read","Read a file",["type":"object","properties":["path":["type":"string"]]])]
         let ordinary=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:"Normal leading policy",tools:tools,sessionID:"child",cacheSessionID:"parent")
         let projection=try ProviderClient.responsesProjection(messages,instructions:"Normal leading policy",profile:profile)
-        let boundary=CompactionSourceBuilder.boundary(projection,messages:messages,keptIDs:[assistant.id,result.id])
+        let boundary=try CompactionSourceBuilder.boundary(projection,messages:messages,keptIDs:[assistant.id,result.id])
         let instruction=CompactionSourceBuilder.instruction(boundary:boundary,focus:"Keep negative constraints",visibleTarget:3000)
         let summary=try ProviderClient.requestBody(profile:policy.summaryProfile(profile,cap:policy.summaryTokens(for:profile)),messages:messages+[instruction],instructions:"Normal leading policy",tools:tools,sessionID:"child",cacheSessionID:"parent",compaction:true)
         XCTAssertEqual(Array(summary["input"].list.dropLast()),ordinary["input"].list)
