@@ -19,24 +19,31 @@ public struct CompactionPolicy: Sendable {
     func keepRecentTokens(contextWindow: Int) -> Int {
         max(0, min(keepRecentTokens, (contextWindow - settings(autoCompaction: true, contextWindow: contextWindow).reserveTokens) / 2))
     }
-    /// Pi's summary maxTokens (compaction.ts generateSummaryWithUsage):
-    /// min(floor(0.8 × reserveTokens), model.maxTokens when known); a split
-    /// turn's prefix gets 0.5 × reserveTokens. The chat's output budget and
-    /// output cap are not part of it, and an unknown ceiling bounds nothing.
-    func summaryTokens(for profile: Profile, turnPrefix: Bool = false) -> Int {
-        let reserve=settings(autoCompaction:true,contextWindow:profile.contextWindow).reserveTokens
-        return max(1,min(reserve*(turnPrefix ? 5 : 8)/10,profile.modelOutputLimit ?? Int.max))
+    /// One generation allowance, including reasoning; never the normal turn's cap.
+    func summaryTokens(for profile: Profile) -> Int {
+        min(16_384, profile.modelOutputLimit ?? 16_384, profile.contextWindow / 4)
     }
-    /// A summary request's profile. `cap` is the room its request must keep
-    /// free for the summary; unlike pi's summary maxTokens it is not sent. The
-    /// request carries the model's own output limit, clipped to the room left
-    /// in the window as any request is, so the chat's reasoning cannot use up
-    /// a summary's cap before the summary is written.
+    func visibleTarget(for profile: Profile) -> Int { min(3_000, max(1, summaryTokens(for: profile) / 4)) }
     func summaryProfile(_ original: Profile, cap: Int) throws -> Profile {
-        var raw=original.raw
-        raw["maxOutputTokens"]=JSON(cap)
+        guard cap >= ProviderClient.minimumOutputTokens, cap < original.contextWindow else {
+            throw AgentError("compact_budget", "This context window cannot reserve the minimum summary output allowance.")
+        }
+        var raw = original.raw
+        raw["maxOutputTokens"] = JSON(cap)
+        raw["outputCap"] = JSON(cap)
         return try Profile(raw)
     }
+    /// Reserve the appended instruction, summary generation, dispatch margin,
+    /// and a growth buffer before the next complete model/tool boundary.
+    func trigger(profile: Profile, instructionTokens: Int) throws -> Int {
+        let reserved = PiContext.sum([summaryTokens(for: profile), instructionTokens,
+            RequestContextCount.safetyMargin(contextWindow: profile.contextWindow), min(max(0, reserveTokens), profile.contextWindow / 4)])
+        guard summaryTokens(for: profile) >= ProviderClient.minimumOutputTokens, reserved < profile.contextWindow else {
+            throw AgentError("compact_budget", "This context window cannot fit the checkpoint instruction and summary reserves.")
+        }
+        return profile.contextWindow - reserved
+    }
+
 }
 
 struct ReplayGroup: Sendable {
@@ -51,9 +58,9 @@ struct CompactionPlan: Sendable {
     /// Inputs replayed verbatim ahead of `kept`. Pi replays none; a checkpoint
     /// written before 0.1.90 may have, and its record still lists them.
     let protected: [ChatMessage]
-    /// Summarized with pi's summarization or update prompt, oldest first.
+    /// Replaced history, oldest first. The single summary sees the whole context.
     let history: [ChatMessage]
-    /// A split turn's prefix, summarized with pi's turn-prefix prompt.
+    /// The replaced part of a split turn; no separate summary request is made.
     let turnPrefix: [ChatMessage]
     let kept: [ReplayGroup]
     var keptMessages: [ChatMessage] { protected + kept.flatMap(\.messages) }
@@ -117,7 +124,22 @@ enum CompactionPlanner {
         // were appended after it.
         let kept=Set(previous?.compaction?["keptIDs"].list.compactMap(\.text) ?? [])
         let newSince=previous == nil ? nil : body.firstIndex { !kept.contains($0.id) } ?? body.count
-        return Source(previous:previous,carried:Array(carried),body:body,protectedIDs:[],newSince:newSince)
+        var protected = Set<String>()
+        if let latestUser = since.lastIndex(where: { $0.role == "user" }) {
+            let input = since[latestUser]
+            let answered = since[(latestUser + 1)...].contains { $0.role == "assistant" }
+            if !answered || !(input.userInput?["skills"].list.isEmpty ?? true) { protected.insert(input.id) }
+        }
+        // Steering belongs to the current task and must not replace its
+        // original explicit skill selection with summary prose. Preserve every
+        // skill-bearing input of that task, even after a later steering message.
+        if let taskRoot {
+            for input in since where input.role == "user" && (input.taskRootID == taskRoot || input.id == taskRoot) {
+                if !(input.userInput?["skills"].list.isEmpty ?? true) { protected.insert(input.id) }
+            }
+        }
+        if let permission = since.last(where: { $0.contextNote != nil }) { protected.insert(permission.id) }
+        return Source(previous:previous,carried:Array(carried),body:body,protectedIDs:protected,newSince:newSince)
     }
 
     /// findCutPoint: walking back from the newest message by pi's
@@ -178,4 +200,79 @@ enum CompactionPlanner {
     }
 
     static func damaged(_ reason: String) -> AgentError { AgentError("compact_unsafe",reason) }
+}
+
+struct PreparedCompaction: Sendable {
+    let before: RequestContextCount
+    let profile: Profile
+    let plan: CompactionPlan
+    let messages: [ChatMessage]
+    let replacedIDs: [String]
+    let fingerprint: String
+}
+extension CompactionPlanner {
+    static func prepare(frozen: [ChatMessage], profile: Profile, instructions: String, definitions: [ToolDefinition],
+                        sessionID: String, cacheSessionID: String, taskRoot: String?, policy: CompactionPolicy,
+                        reason: String, focus: String?) throws -> PreparedCompaction {
+        try Task.checkCancellation()
+        func body(_ messages: [ChatMessage]) throws -> JSON {
+            try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:definitions,sessionID:sessionID,cacheSessionID:cacheSessionID)
+        }
+        func count(_ messages: [ChatMessage], reported: Bool = false, request: JSON? = nil) throws -> RequestContextCount {
+            try RequestContextCounter().count(messages:messages,profile:profile,request:request ?? body(messages),reportedUsage:reported)
+        }
+        let frozenBody=try body(frozen)
+        let attemptKey=try RequestContextCounter.fingerprint(frozenBody,profile:profile)
+        let before=try count(frozen,request:frozenBody)
+        let cap=policy.summaryTokens(for:profile)
+        let summaryProfile=try policy.summaryProfile(profile,cap:cap)
+        let source=try source(context:frozen,taskRoot:taskRoot)
+        let recent=policy.keepRecentTokens(contextWindow:profile.contextWindow)
+        let keep=reason == "context-rejection" ? min(recent,PiContext.messageTokens(frozen)/2) : recent
+        var cut=cut(source.body,keepRecentTokens:keep,previous:previousPosition(source))
+        var plan=plan(source,cut:cut)
+        let unchanged=source.previous != nil && (source.newSince ?? 0) >= source.body.count
+        var placeholder=ChatMessage(role:"system",content:[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:cap*4))])
+        placeholder.kind="compaction"
+        let projection=try ProviderClient.responsesProjection(frozen,instructions:instructions,profile:profile)
+        func hasRoom(_ plan: CompactionPlan) throws -> Bool {
+            let full=try count([placeholder]+plan.keptMessages)
+            guard full.fits else { return false }
+            if reason != "manual" {
+                let boundary=CompactionSourceBuilder.boundary(projection,messages:frozen,keptIDs:Set(plan.keptMessages.map(\.id)))
+                let instruction=CompactionSourceBuilder.instruction(boundary:boundary,focus:focus,visibleTarget:policy.visibleTarget(for:profile))
+                let cost=RequestContextCounter.inputTokens([["role":"user","content":.array(ProviderClient.userContent(instruction,images:false))]])
+                return full.requestTokens < (try policy.trigger(profile:profile,instructionTokens:cost))
+            }
+            // Avoid spending a manual summary just to replace a tiny initial
+            // user message while retaining every large answer. This is only
+            // planning; the actual summary must still pass fit and progress.
+            var expected=placeholder
+            expected.content=[textBlock(CompactionCheckpoint.replayPrefix+String(repeating:"s",count:min(policy.visibleTarget(for:profile), max(16, before.requestTokens/4))*4))]
+            return try count([expected]+plan.keptMessages).requestTokens < before.requestTokens
+        }
+        // Only move the boundary BEFORE the request. The summarizer sees
+        // every source, including the unchanged tail, under this exact cut.
+        while !unchanged, cut<source.body.count {
+            try Task.checkCancellation()
+            if try hasRoom(plan) { break }
+            cut += 1; plan=CompactionPlanner.plan(source,cut:cut)
+        }
+        guard !unchanged, !plan.summarized.isEmpty else {
+            throw AgentError("compact_unavailable", unchanged ? "Already compacted: nothing has been added since the last compaction." : "Nothing useful to compact while keeping the recent history and required inputs intact.")
+        }
+        guard try count([placeholder]+plan.keptMessages).fits else {
+            throw AgentError("compact_budget", "Required retained inputs, instructions, tools and the summary allowance cannot fit beside the normal output reserve. Original context is unchanged.")
+        }
+        guard try hasRoom(plan) else {
+            throw AgentError(reason == "manual" ? "compact_unavailable" : "compact_budget", "No useful checkpoint can be planned while preserving required inputs and continuation headroom. Original context is unchanged.")
+        }
+        guard profile.raw["input"].list.contains("image") || !frozen.contains(where: { $0.content.contains { $0["type"].text == "image" } }) else {
+            throw AgentError("unsupported_image", "Compaction cannot replace existing images with placeholders. Select an image-capable model; the context is unchanged.")
+        }
+        let description=CompactionSourceBuilder.boundary(projection,messages:frozen,keptIDs:Set(plan.keptMessages.map(\.id)))
+        let instruction=CompactionSourceBuilder.instruction(boundary:description,focus:focus,visibleTarget:policy.visibleTarget(for:profile))
+        let summarizedIDs=(plan.previous.map { [$0.id] } ?? [])+plan.summarized.map(\.id)
+        return PreparedCompaction(before:before,profile:summaryProfile,plan:plan,messages:frozen+[instruction],replacedIDs:summarizedIDs,fingerprint:attemptKey)
+    }
 }

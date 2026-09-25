@@ -28,7 +28,7 @@ final class CompactionTaskRegressionTests: XCTestCase {
         XCTAssertEqual(profiles.map(\.model),["earlier-model","earlier-model","selected-model"])
         XCTAssertEqual(profiles.last?.raw["thinkingLevel"].text,"high")
         XCTAssertEqual(profiles.last?.contextWindow,60000)
-        XCTAssertEqual(profiles.last?.wireOutputLimit,16000,"The selected model's own 16,000, never a summary cap")
+        XCTAssertEqual(profiles.last?.wireOutputLimit,15000,"At most a quarter of the selected 60,000-token window")
         XCTAssertEqual(profiles.last?.modelOutputLimit,16000)
         await session.close()
     }
@@ -47,9 +47,9 @@ final class CompactionTaskRegressionTests: XCTestCase {
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
         XCTAssertEqual(context.first?.kind,"compaction")
         XCTAssertFalse(context.contains { $0.id=="task" })
-        XCTAssertTrue(context.first?.text.contains("No prior history.\n\n---\n\n**Turn Context (split turn):**\n\nCompleted work; preserve the user's objective.") == true)
+        XCTAssertTrue(context.first?.text.contains("Completed work; preserve the user's objective.") == true)
         let calls=await client.count, requests=await client.requests; XCTAssertEqual(calls,3)
-        XCTAssertTrue(requests.last?.first?.text.contains("[User]: Keep my original objective exactly.") == true)
+        XCTAssertTrue(requests.last?.first?.text.contains("Keep my original objective exactly.") == true)
         await session.close()
     }
 }

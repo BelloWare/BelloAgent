@@ -52,6 +52,7 @@ public struct ChatMessage: Codable, Sendable {
     /// cacheRead, cacheWrite, totalTokens), which the context count anchors on.
     /// Nil for rows journaled before 0.1.87 and for replies without usage.
     public var usage: JSON? = nil
+    public var contextUsageBinding: String? = nil
     /// The turn this row was appended under: the id of the user message that
     /// started the run. The transcript groups work by it instead of guessing
     /// at boundaries from row order. Nil for rows journaled before 0.1.34.
@@ -89,6 +90,7 @@ public struct ChatMessage: Codable, Sendable {
         if let retainedOutput { value["nativeRetainedOutput"] = JSON(retainedOutput) }
         if let stopReason { value["nativeStopReason"] = JSON(stopReason) }
         if let usage { value["usage"] = usage }
+        if let contextUsageBinding { value["nativeContextUsageBinding"] = JSON(contextUsageBinding) }
         if let providerItems { value["nativeProviderItems"] = .array(providerItems) }
         if let providerIdentity { value["nativeProviderIdentity"] = providerIdentity }
         if let providerBinding { value["nativeProviderBinding"] = providerBinding }
@@ -126,6 +128,7 @@ public struct ChatMessage: Codable, Sendable {
         taskExecutionID=pi["nativeTaskExecution"].text
         compaction=pi["nativeCompaction"].isNull ? nil : pi["nativeCompaction"]
         retainedOutput=pi["nativeRetainedOutput"].text; stopReason=pi["nativeStopReason"].text
+        contextUsageBinding=pi["nativeContextUsageBinding"].text
         usage=role == "assistant" && !pi["usage"].map.isEmpty ? pi["usage"] : nil
     }
     public func view(toolStates: [String: JSON] = [:], state: String = "complete") -> JSON {

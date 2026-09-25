@@ -112,10 +112,10 @@ final class OutputCapDispatchTests: XCTestCase {
         // First request: nothing measured yet, so the rows' characters over four plus the prefix.
         let firstBody = try ProviderClient.requestBody(profile: profiles[0], messages: sentMessages[0], instructions: instructions[0],
                                                        tools: await session.sessionDefinitions(), sessionID: "cap")
-        let firstSized = PiContext.tokens(chars: pasted.utf16.count) + RequestContextCounter.prefixTokens(firstBody)
+        let firstSized = RequestContextCounter.projectedTokens(firstBody)
         XCTAssertEqual(profiles[0].wireOutputLimit, min(8_000, 32_000 - firstSized - 4_096))
         // Second request: the reply's reported 25,005 plus "and now?" (8 characters, 2 tokens).
-        XCTAssertEqual(profiles[1].wireOutputLimit, min(8_000, 32_000 - 25_007 - 4_096))
+        XCTAssertEqual(profiles[1].wireOutputLimit, min(8_000, 32_000 - 25_015 - 4_096))
         let context = await session.contextInfo()
         XCTAssertEqual(context["requestMethod"].text, "last-reply-usage", context.encoded())
         await session.close()

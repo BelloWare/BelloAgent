@@ -272,8 +272,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         CONTRACT.validate_request('POST', self.path, dict(self.headers), body, api_key='fixture-secret',
                                   model=body['model'], max_output_tokens=4096,
                                   custom_headers={'X-Fixture-Contract': 'strict-v1'}, native_items=native_policy,
-                                  expected_tool_names=[] if semantic['is_compaction'] else ['read','ls','find','grep','write','edit','bash','mcp'])
-        prompt = semantic['user_texts'][0] if semantic['is_compaction'] else semantic['latest_text']
+                                  expected_tool_names=['read','ls','find','grep','write','edit','bash','mcp'])
+        prompt = semantic['latest_text']
         history = body['input' if responses else 'messages']
         tool_result = history[-1].get('type') == 'function_call_output' if responses else any(block.get('type') == 'tool_result' for block in history[-1]['content'])
         expected_opaque = {'type': 'reasoning', 'id': 'strict-reasoning', 'summary': [], 'encrypted_content': 'strict-original-opaque'} if responses else {'type': 'thinking', 'thinking': 'Fixture reasoning.', 'signature': 'strict-original-signature'}
@@ -290,7 +290,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             CONTRACT.require('fixture: long echo' in prompt, 'turn-prefix summary lost the split turn\'s request')
             text, kind = 'Fixture turn prefix: the long echo was requested.', 'compaction'
         elif semantic['is_compaction']:
-            CONTRACT.require('fixture: read README.md' in prompt and 'fixture file contents' in prompt, 'compaction source lost the completed tool turn')
+            source = json.dumps(history[:-1])
+            CONTRACT.require('fixture: read README.md' in source and 'fixture file contents' in source, 'compaction source lost the completed tool turn')
+            CONTRACT.require(body.get('tool_choice') == 'none', 'compaction must prohibit tool execution')
             # A compaction is one request: a split turn's prefix comes in <turn-prefix>.
             if '<turn-prefix>' in prompt:
                 CONTRACT.require('fixture: long echo' in prompt.split('<turn-prefix>', 1)[1], 'the split turn\'s prefix lost its request')

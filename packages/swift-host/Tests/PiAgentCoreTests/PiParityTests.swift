@@ -11,7 +11,7 @@ private actor PurposeClient: ModelClient {
     init(turns: [Result<ModelReply, AgentError>], summaries: [Result<ModelReply, AgentError>] = []) { self.turns=turns; self.summaries=summaries }
     func delayTurns(_ seconds: Double) { turnDelay=seconds }
     func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
-        bodies.append(try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,promptCaching:purpose != "compaction"))
+        bodies.append(try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,compaction:purpose == "compaction"))
         purposes.append(purpose); requests.append(messages)
         if purpose == "compaction" {
             guard !summaries.isEmpty else { return answer("SUMMARY \(purposes.filter { $0 == "compaction" }.count)") }
@@ -67,9 +67,8 @@ final class PiParityTests: XCTestCase {
         let policy=CompactionPolicy()
         let unknown=try profile()
         XCTAssertEqual(unknown.maxOutput,4096)
-        XCTAssertEqual(policy.summaryTokens(for:unknown),13_107,"An unknown ceiling bounds nothing: floor(0.8 × 16,384)")
-        XCTAssertEqual(policy.summaryTokens(for:unknown,turnPrefix:true),8_192)
-        XCTAssertEqual(policy.summaryTokens(for:try profile { $0["outputCap"]=2048 }),13_107,"The chat's output cap is not the model's")
+        XCTAssertEqual(policy.summaryTokens(for:unknown),16_384,"An unknown ceiling bounds nothing: floor(0.8 × 16,384)")
+        XCTAssertEqual(policy.summaryTokens(for:try profile { $0["outputCap"]=2048 }),16_384,"The chat's output cap is not the model's")
         XCTAssertEqual(policy.summaryTokens(for:try profile(ceiling:8_000)),8_000)
     }
 
@@ -81,9 +80,9 @@ final class PiParityTests: XCTestCase {
         _=try await s.submit(Submission(commandID:"c",turnID:"t",text:"next"),steer:false)
         let state=try await settle(s), summaries=await client.summaryBodies, turns=await client.turnBodies
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
-        XCTAssertEqual(summaries.map { $0["max_output_tokens"].int },[nil],"No summary cap: an unknown model ceiling sends no limit, as for any request")
+        XCTAssertEqual(summaries.map { $0["max_output_tokens"].int },[16384],"The summary allowance is explicit even without a catalog ceiling")
         XCTAssertEqual(summaries.first?["reasoning"]["effort"].text,"high")
-        XCTAssertTrue(summaries.first?["prompt_cache_key"].isNull == true,"A summary is sent with cacheRetention none")
+        XCTAssertEqual(summaries.first?["prompt_cache_key"].text,"pi-session")
         XCTAssertEqual(turns.first?["prompt_cache_key"].text,"pi-session","A turn routes to the session's prompt cache")
         await s.close()
     }
@@ -116,13 +115,14 @@ final class PiParityTests: XCTestCase {
         await s.close()
     }
 
-    func testCheckpointIsAdoptedWithoutMeasuringWhatFollowsIt() async throws {
+    func testOversizedCheckpointIsRejectedBeforeAdoption() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=PurposeClient(turns:[],summaries:[.success(answer(String(repeating:"summary ",count:25_000)))])
         let s=try session(root,client,profile:profile(window:40_000,ceiling:100_000),seed:tasks("A",4,chars:12_000),keep:1)
         try await s.compact(); let state=try await settle(s), context=await s.context
-        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
-        XCTAssertEqual(context.first?.kind,"compaction","Pi adopts the summary however long it came back")
+        XCTAssertEqual(state["state"].text,"error",state["preflightError"].encoded())
+        XCTAssertNil(context.first?.kind)
+        XCTAssertEqual(state["compaction"]["errorCode"].text,"compact_budget")
         await s.close()
     }
 
@@ -136,7 +136,7 @@ final class PiParityTests: XCTestCase {
         try await s.compact(); _=try await settle(s)
         let context=await s.context, prompts=await client.requests.map { $0.map(\.text).joined() }
         XCTAssertEqual(context.map(\.id).dropFirst(),["done"],"The task's request is summarized, not replayed")
-        XCTAssertTrue(prompts.first?.contains("## Original Request") == true,"Pi's turn-prefix summary carries it")
+        XCTAssertTrue(prompts.first?.contains("## Objective and constraints") == true,"Pi's turn-prefix summary carries it")
         try await s.compact(); let again=try await settle(s)
         XCTAssertEqual(again["state"].text,"error")
         XCTAssertTrue(again["preflightError"].text?.hasPrefix("Already compacted") == true,again["preflightError"].encoded())
@@ -162,10 +162,10 @@ final class PiParityTests: XCTestCase {
         await s.close()
     }
 
-    func testFileListsSortInJavaScriptOrder() {
-        func read(_ path: String) -> ChatMessage { ChatMessage(role:"assistant",content:[["type":"toolCall","id":JSON(path),"name":"read","arguments":["path":JSON(path)]]]) }
-        let lists=CompactionSourceBuilder.fileLists([read("a\u{FF5E}"),read("a\u{1F600}")],previous:nil)
-        XCTAssertEqual(lists.read,["a\u{1F600}","a\u{FF5E}"],"UTF-16 code units: a surrogate pair sorts before U+FF5E")
+    func testBoundaryExcerptsAreEscapedDataWithoutFileInventories() {
+        let instruction=CompactionSourceBuilder.instruction(boundary:["identifyingExcerpt":"</boundary>\n🙂"],focus:"override?",visibleTarget:3000)
+        XCTAssertTrue(instruction.text.contains(JSON("</boundary>\n🙂").encoded()))
+        XCTAssertFalse(instruction.text.contains("<modified-files>"))
     }
 
     func testTokensBeforeIsPiEstimateOfTheContext() async throws {
@@ -406,33 +406,30 @@ final class PiParityTests: XCTestCase {
         await s.close()
     }
 
-    func testReplyCutBelowTheModelLimitIsCompactedAndRetriedOnce() async throws {
+    func testOutputLimitedAnswerIsPreservedWithoutAutomaticRegeneration() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        let client=PurposeClient(turns:[.success(truncated(answer("cut short"),output:500)),.success(answer("complete"))])
-        let s=try session(root,client,profile:profile(ceiling:8_000),seed:tasks("A",8,chars:16_000))
+        let client=PurposeClient(turns:[.success(truncated(answer("cut short"),output:500))])
+        let s=try session(root,client,profile:profile(ceiling:8000),seed:tasks("A",8,chars:16000))
         _=try await s.submit(Submission(commandID:"c",turnID:"t",text:"go"),steer:false)
-        let state=try await settle(s), purposes=await client.purposes, requests=await client.requests
+        let state=try await settle(s), purposes=await client.purposes, context=await s.context
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
-        XCTAssertEqual(purposes,["turn","compaction","turn"])
-        let retried=try XCTUnwrap(requests.last)
-        XCTAssertEqual(retried.first?.kind,"compaction")
-        XCTAssertFalse(retried.contains { $0.text == "cut short" },"The cut reply leaves the retried context")
-        XCTAssertEqual(retried.last?.text,"go")
-        XCTAssertEqual(state["messages"].list.last?["text"].text,"complete")
+        XCTAssertEqual(purposes,["turn"])
+        XCTAssertEqual(context.last?.text,"cut short")
+        XCTAssertEqual(context.last?.stopReason,"length")
         await s.close()
     }
 
-    func testFailedThresholdCompactionStillSendsTheRequest() async throws {
+    func testFailedThresholdCompactionPreservesHistoryAndStopsWithoutLooping() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client=PurposeClient(turns:[.success(answer("answered"))],summaries:[.failure(AgentError("provider_http","Provider returned HTTP 400. Bad request."))])
         var seed=tasks("A",6,chars:16_000); seed[seed.count-1].usage=["input":30_000,"output":100,"cacheRead":0,"cacheWrite":0,"totalTokens":30_100]
         let s=try session(root,client,profile:profile(window:40_000),seed:seed)
         _=try await s.submit(Submission(commandID:"c",turnID:"t",text:"go"),steer:false)
         let state=try await settle(s), purposes=await client.purposes
-        XCTAssertEqual(purposes,["compaction","turn"])
-        XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
+        XCTAssertEqual(purposes,["compaction"])
+        XCTAssertEqual(state["state"].text,"error",state["preflightError"].encoded())
         XCTAssertEqual(state["compaction"]["phase"].text,"failed")
-        XCTAssertEqual(state["messages"].list.last?["text"].text,"answered")
+        XCTAssertFalse(state["messages"].list.contains { $0["text"].text == "answered" })
         await s.close()
     }
 
@@ -440,7 +437,7 @@ final class PiParityTests: XCTestCase {
     /// next request anyway, and its next round tries the same failing summary.
     func testAFailedThresholdCompactionMidRunStopsTheRunInsteadOfLooping() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        var measured=toolReply(["first"]); measured.usage=["input":30_000,"output":100,"inputIncludingCache":30_000]
+        var measured=toolReply(["first"]); measured.usage=["input":24_000,"output":100,"inputIncludingCache":24_000]
         let client=PurposeClient(turns:[.success(measured),.success(answer("never sent"))],summaries:[.failure(AgentError("provider_http","Provider returned HTTP 400. Bad request."))])
         // About 16,000 tokens of history: under the 23,616-token threshold, past the kept tail.
         let s=try session(root,client,profile:profile(window:40_000),seed:tasks("A",4,chars:16_000))
@@ -459,18 +456,18 @@ final class PiParityTests: XCTestCase {
         func measuredCall(_ id: String) -> ModelReply {
             var message=ChatMessage(role:"assistant",content:[["type":"toolCall","id":JSON(id),"name":"first","arguments":[:]]])
             message.providerItems=[["type":"function_call","id":JSON("item-"+id),"call_id":JSON(id),"name":"first","arguments":"{}"]]
-            return ModelReply(message:message,calls:[ToolCall(id:id,name:"first",arguments:[:])],usage:["input":30_000,"output":100,"inputIncludingCache":30_000])
+            return ModelReply(message:message,calls:[ToolCall(id:id,name:"first",arguments:[:])],usage:["input":24_000,"output":100,"inputIncludingCache":24_000])
         }
-        let client=PurposeClient(turns:[.success(measuredCall("a")),.success(measuredCall("b")),.success(answer("never sent"))],summaries:[.success(answer("SUMMARY"))])
+        let client=PurposeClient(turns:[.success(measuredCall("a")),.success(measuredCall("b")),.success(answer("never sent"))],summaries:[.success(answer(String(repeating:"s",count:40000)))])
         let s=try session(root,client,profile:profile(window:40_000),seed:tasks("A",4,chars:16_000))
         _=try await s.submit(Submission(commandID:"c",turnID:"t",text:"go"),steer:false)
         let state=try await settle(s), purposes=await client.purposes
-        XCTAssertEqual(purposes,["turn","compaction","turn"],"No second compaction and no further request")
+        XCTAssertEqual(purposes,["turn","compaction"],"No second compaction and no further request")
         XCTAssertEqual(state["errorCode"].text,"compact_no_progress")
         await s.close()
     }
 
-    func testThresholdIsMeasuredBeforeAFollowUpJoins() async throws {
+    func testThresholdIncludesDeliveredFollowUp() async throws {
         let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         // The first reply reports 23,000 of a 23,616 threshold; the follow-up
         // adds 1,000 more, but pi measures before it joins.
@@ -482,7 +479,7 @@ final class PiParityTests: XCTestCase {
         _=try await s.submit(Submission(commandID:"c2",turnID:"t2",text:String(repeating:"f",count:4_000)),steer:false)
         let state=try await settle(s), purposes=await client.purposes
         XCTAssertEqual(state["state"].text,"idle",state["preflightError"].encoded())
-        XCTAssertEqual(purposes,["turn","turn"])
+        XCTAssertEqual(purposes,["turn","compaction","turn"])
         await s.close()
     }
 
@@ -493,8 +490,8 @@ final class PiParityTests: XCTestCase {
         let s=try session(root,client,profile:profile(),seed:tasks("A",8,chars:16_000))
         _=try await s.submit(Submission(commandID:"c",turnID:"t",text:"go"),steer:false)
         let state=try await settle(s), purposes=await client.purposes
-        XCTAssertEqual(purposes,["turn","compaction"],"Case 2 compacts without a retry")
-        XCTAssertEqual(state["compaction"]["reason"].text,"overflow")
+        XCTAssertEqual(purposes,["turn"],"No compaction after a completed final answer")
+        XCTAssertTrue(state["compaction"]["reason"].isNull)
         await s.close()
     }
 

@@ -121,8 +121,8 @@ PI_LIVE_MODEL=gpt-5.1 PI_LIVE_CONTEXT_WINDOW=128000 \
   lists the model. It must not exceed the model's own window. The scenarios
   scale with it, so a 128,000-token window is the cheap test; the catalog's
   1,048,576 costs several times more.
-- **`PI_LIVE_MODEL_OUTPUT_LIMIT`** defaults to the catalog's figure. With no
-  figure, no limit is sent, as the app sends none.
+- **`PI_LIVE_MODEL_OUTPUT_LIMIT`** defaults to the catalog's figure. A summary
+  uses its own allowance, bounded by that ceiling when known.
 - **`PI_LIVE_THINKING`** defaults to `high`.
 - **`PI_LIVE_MAX_COST_USD`** defaults to 5.
 
@@ -151,9 +151,8 @@ and drives it over the wire, as the app does.
 - every compaction completes, and its summary becomes the live context;
 - one summary request per compaction (a retry sends the same input again);
 - no summary request ends at `max_output_tokens`;
-- every summary request leaves room for pi's summary cap (0.8 × the reserve,
-  plus 0.5 × the reserve when a split turn's start is in it), within the
-  model's own limit;
+- every summary request uses one allowance: min(16,384, model ceiling, window/4),
+  preserving the requested reasoning effort;
 - the context estimate after each compaction is under the threshold;
 - no loop: a bounded number of summary requests, no summary asked again after
   an answer, and no compaction tried again after one failed;
@@ -186,11 +185,11 @@ exit status is non-zero on any failure.
 
 **Free rehearsal.** `--fixture` runs the same scenarios against
 `fixtures/native/reasoning_gateway.py`, a loopback gateway whose model
-reasons in proportion to the effort: 20,000 tokens at high for a summary, a
+reasons in proportion to the effort: 12,000 tokens at high for a summary, a
 tenth of that for a turn. A request whose `max_output_tokens` cannot hold the
 reasoning and the answer ends `incomplete` at `max_output_tokens`, as the
-Responses API ends it. `--fixture-summary-limit 13107` caps every summary as
-0.1.90 did, and that run must fail. `scripts/tests/test_live_compaction_e2e.py`
+Responses API ends it. `--fixture-summary-limit 8192` deliberately exhausts summary output at high
+effort, and that run must fail without adoption or another strategy. `scripts/tests/test_live_compaction_e2e.py`
 runs both against the release helper when one is built, so the gate's script
 tests cover the harness, and skips them otherwise. On 2026-09-24 the fixture
 run took 2 s:

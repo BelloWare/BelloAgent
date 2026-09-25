@@ -7,12 +7,12 @@ private actor BudgetProbe: ModelClient {
     var requests: [JSON]=[], profiles: [Profile]=[], held=false
     init(_ mode: Mode = .recover) { self.mode=mode }
     func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
-        let body=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID)
+        let body=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,compaction:purpose == "compaction")
         requests.append(body); profiles.append(profile)
         // The summary's room is kept free, and the output limit it carries is
         // the model's, clipped as pi clips any request.
         let count=try RequestContextCounter().count(messages:messages,profile:profile,request:body,reportedUsage:false)
-        guard count.fits, tools.isEmpty, profile.wireOutputLimit.map({ $0 <= max(profile.maxOutput,PiContext.outputRoom(contextWindow:profile.contextWindow,requestTokens:count.requestTokens)) }) ?? true else { throw AgentError("fixture_contract","Summary input plus its actual cap must fit") }
+        guard count.fits, body["tool_choice"].text == "none", profile.wireOutputLimit.map({ $0 <= max(profile.maxOutput,PiContext.outputRoom(contextWindow:profile.contextWindow,requestTokens:count.requestTokens)) }) ?? true else { throw AgentError("fixture_contract","Summary input plus its actual cap must fit") }
         if mode == .hold { held=true;while true { try await Task.sleep(nanoseconds:1_000_000) } }
         var value: JSON=["status":"completed","output":[["type":"message","content":[["type":"output_text","text":"Observed work; preserve the objective."]]]],"usage":["input_tokens":100,"output_tokens":30,"output_tokens_details":["reasoning_tokens":10]]]
         switch mode {
@@ -40,7 +40,9 @@ private actor BudgetProbe: ModelClient {
 private func summary(_ s: AgentSession, _ policy: CompactionPolicy = CompactionPolicy(), characters: Int = 100000) async throws -> String {
     let original=await s.profile,revision=await s.contextMutation,room=policy.summaryTokens(for:original)
     let p=try policy.summaryProfile(original,cap:room)
-    return try await s.summarize(CompactionSourceBuilder.prompt(["[Assistant]: "+String(repeating:"e",count:characters)],previous:nil),room:room,profile:p,originalProfile:original,revision:revision,sourceIDs:[])
+    let source=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"e",count:characters))])
+    let instruction=CompactionSourceBuilder.instruction(boundary:[:],focus:nil,visibleTarget:policy.visibleTarget(for:p))
+    return try await s.summarize([source,instruction],instructions:"Keep normal instructions",tools:[],profile:p,originalProfile:original,revision:revision)
 }
 
 final class CompactionBudgetTests: XCTestCase {
@@ -58,17 +60,19 @@ final class CompactionBudgetTests: XCTestCase {
         return (session,client,seed)
     }
 
-    func testPiSummaryCapSessionEffortAndPiPromptShape() async throws {
+    func testSummaryCapSessionEffortAndNormalPromptShape() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let (session,client,_)=try setup(root,mode:.completedAtCap)
         try await session.compact();try await eventually { !(await session.isRunning) }
         let requests=await client.requests,snapshot=await session.snapshot(),profile=await session.profile
-        XCTAssertEqual(requests.map { $0["max_output_tokens"].int },[100000],"The model's own 100,000, not a 13,107-token summary cap")
+        XCTAssertEqual(requests.map { $0["max_output_tokens"].int },[16384],"A bounded summary cap, retaining the session effort")
         XCTAssertEqual(requests.map { $0["reasoning"]["effort"].text },["high"])
         let request=try XCTUnwrap(requests.first),input=request["input"].list
-        XCTAssertEqual(RequestContextCounter.systemPrompt(request),CompactionSourceBuilder.systemPrompt)
-        XCTAssertEqual(input.count,2,"Pi's system prompt, then the one summary message")
-        XCTAssertEqual(input.last?["content"].list.first?["text"].text,"<conversation>\n[User]: Inspect the logs.\n\n[Assistant]: "+String(repeating:"Observed evidence. ",count:800)+"\n</conversation>\n\n"+CompactionSourceBuilder.summarizationPrompt)
+        XCTAssertTrue(RequestContextCounter.systemPrompt(request)?.contains(AgentSession.selectionPolicy) == true)
+        XCTAssertEqual(input.count,5,"Normal instructions, three history messages and the final instruction")
+        XCTAssertEqual(input[1]["content"].list.first?["text"].text,"Inspect the logs.")
+        XCTAssertTrue(input.last?["content"].list.first?["text"].text?.contains("Create a concise continuation checkpoint") == true)
+        XCTAssertEqual(request["tool_choice"].text,"none")
         XCTAssertEqual(profile.raw["thinkingLevel"].text,"high");XCTAssertEqual(profile.maxOutput,4096)
         XCTAssertEqual(snapshot["state"].text,"idle",snapshot["preflightError"].encoded())
         XCTAssertEqual(snapshot["compaction"]["httpAttempts"].int,1,"Usage at the cap alone is not evidence of incomplete output")
@@ -83,8 +87,8 @@ final class CompactionBudgetTests: XCTestCase {
             let state=await s.snapshot(),context=await s.context,calls=await c.requests,usage=await s.cumulativeUsage
             XCTAssertEqual(context.map(\.id),seed.map(\.id));XCTAssertEqual(calls.count,1,"Pi never retries a length stop")
             XCTAssertEqual(state["compaction"]["errorCode"].text,"compaction_output_exhausted")
-            XCTAssertEqual(state["compaction"]["lastAttempt"]["reasoningTokens"].int,100000)
-            XCTAssertEqual(usage.output,100000,"A failed summary still consumed its reported output, including reasoning once")
+            XCTAssertEqual(state["compaction"]["lastAttempt"]["reasoningTokens"].int,16384)
+            XCTAssertEqual(usage.output,16384,"A failed summary still consumed its reported output, including reasoning once")
             XCTAssertTrue(state["preflightError"].text?.contains("budget-1") == true);await s.close()
         }
     }
@@ -124,7 +128,7 @@ final class CompactionBudgetTests: XCTestCase {
         XCTAssertEqual(requests.count,1)
         // 25,000 tokens of history in an 80,000 window: the room left, not pi's 13,107.
         let limit=requests.first?["max_output_tokens"].int ?? 0
-        XCTAssertGreaterThan(limit,40000);XCTAssertLessThan(limit,80000-25000)
+        XCTAssertEqual(limit,16384)
         XCTAssertEqual(requests.first?["reasoning"]["effort"].text,"high")
         await s.close()
     }
@@ -155,7 +159,7 @@ final class CompactionBudgetTests: XCTestCase {
     func testCeilingsCompatibilityAndDefaultEffortFollowPi() throws {
         var raw=try fixtureProfile().raw;raw["modelOutputLimit"]=100000;raw["outputCap"]=24000;raw["thinkingLevel"]="max"
         let policy=CompactionPolicy()
-        XCTAssertEqual(policy.summaryTokens(for:try Profile(raw)),13107,"Pi's cap is the reserve's share; the chat's output cap is not the model's")
+        XCTAssertEqual(policy.summaryTokens(for:try Profile(raw)),16384,"Pi's cap is the reserve's share; the chat's output cap is not the model's")
         raw["modelOutputLimit"]=12000
         XCTAssertEqual(policy.summaryTokens(for:try Profile(raw)),12000,"within the model's own ceiling")
         XCTAssertEqual(try policy.summaryProfile(Profile(raw),cap:12000).raw["thinkingLevel"].text,"max")

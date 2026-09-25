@@ -127,8 +127,8 @@ final class RequestContextTests: XCTestCase {
         XCTAssertEqual(unknown.requestTokens, PiContext.messageTokens(context), "the messages' characters over four")
         let sized = try RequestContextCounter().count(messages: context, profile: profile, request: request(profile, messages: context))
         XCTAssertEqual(sized.requestMethod, "characters")
-        XCTAssertEqual(sized.requestTokens, PiContext.messageTokens(context) + RequestContextCounter.prefixTokens(try request(profile, messages: context)),
-                       "estimateContextTokens(context): the rows, the system prompt and the tools, each characters over four")
+        XCTAssertEqual(sized.requestTokens, RequestContextCounter.projectedTokens(try request(profile, messages: context)),
+                       "Use the actual checkpoint wrapper and provider items")
         context.append(reply("response3", usage(25_000, 0)))
         let measured = try RequestContextCounter().count(messages: context, profile: profile)
         XCTAssertEqual(measured.tokens, 25_000); XCTAssertEqual(measured.requestTokens, 25_000)
@@ -222,7 +222,7 @@ final class RequestContextTests: XCTestCase {
         let clipped = try counter.count(messages: crowdedMessages, profile: crowded, request: crowdedBody)
         XCTAssertEqual(clipped.tokens, 2_250, "pi's figure")
         XCTAssertEqual(clipped.requestMethod, "characters")
-        XCTAssertEqual(clipped.requestTokens, 2_250 + RequestContextCounter.prefixTokens(crowdedBody), "estimateContextTokens(context): the rows plus the prefix")
+        XCTAssertEqual(clipped.requestTokens, 2_250 + 8 + RequestContextCounter.prefixTokens(crowdedBody), "Visible text plus the provider message envelope and prefix")
         XCTAssertEqual(clipped.outputCap, clipped.replyRoom); XCTAssertEqual(clipped.replyRoom, 12_000 - clipped.requestTokens - 4_096)
         XCTAssertEqual(try crowded.dispatching(clipped).wireOutputLimit, clipped.outputCap)
         XCTAssertEqual(try bounded.dispatching(sent).raw, bounded.raw, "nothing changes when the ceiling already fits")
@@ -238,7 +238,7 @@ final class RequestContextTests: XCTestCase {
         XCTAssertEqual(basic.tokens, 4); XCTAssertEqual(instructed.tokens, 4, "pi's figure is the messages until a reply reports usage")
         XCTAssertGreaterThan(instructed.requestTokens, basic.requestTokens + 1_300)
         XCTAssertNotEqual(basic.requestFingerprint, instructed.requestFingerprint)
-        XCTAssertTrue(basic.warnings.contains { $0.contains("Instructions and tool schemas are not in this figure") })
+        XCTAssertTrue(basic.warnings.contains { $0.contains("estimated") })
         // Once a reply reports usage, it holds the instructions and schemas.
         let measured = messages + [reply("Done", usage(5_000, 20)), user("Thanks")]
         let anchored = try counter.count(messages: measured, profile: profile)
@@ -275,20 +275,21 @@ final class RequestContextTests: XCTestCase {
         let counter = RequestContextCounter()
         let opaque = try counter.count(messages: [message], profile: pinned, request: retained)
         let plain = try counter.count(messages: [message], profile: portable, request: projected)
-        XCTAssertEqual(opaque.requestTokens, plain.requestTokens, "pi counts the reply's text, not its opaque replay")
+        XCTAssertEqual(opaque.requestTokens, plain.requestTokens + 8, "The opaque item adds only its envelope, never its ciphertext length")
         XCTAssertEqual(opaque.tokens, plain.tokens)
     }
 
     func testImagesCountAs4800CharactersWhateverTheirSize() throws {
         #if canImport(ImageIO)
-        let profile = try pinnedProfile(), counter = RequestContextCounter()
+        var raw = try pinnedProfile().raw; raw["input"] = ["text", "image"]
+        let profile = try Profile(raw), counter = RequestContextCounter()
         var sizes: [Int] = []
         for side in [1, 512] {
             let messages = [ChatMessage(role: "user", content: [["type": "image", "mimeType": "image/png", "data": JSON(try png(side: side).base64EncodedString())]])]
             let body = try request(profile, messages: messages)
             let result = try counter.count(messages: messages, profile: profile, request: body)
             XCTAssertEqual(result.tokens, 1_200, "pi: 4,800 characters whatever the image")
-            XCTAssertEqual(result.requestTokens, 1_200 + RequestContextCounter.prefixTokens(body), "the image's base64 bytes are never counted as text")
+            XCTAssertEqual(result.requestTokens, 1_200 + 8 + RequestContextCounter.prefixTokens(body), "The image and envelope are counted, never its base64 bytes")
             sizes.append(result.requestTokens)
         }
         XCTAssertEqual(sizes[0], sizes[1])
@@ -302,7 +303,7 @@ final class RequestContextTests: XCTestCase {
         let profile = try pinnedProfile()
         let body: JSON = ["model": JSON(profile.model), "input": [["type": "message", "role": "user", "content": [["type": "input_image", "image_url": "https://fixture.invalid/image.png"]]]]]
         let count = try RequestContextCounter().count(messages: [], profile: profile, request: body)
-        XCTAssertEqual(count.requestTokens, 0)
+        XCTAssertEqual(count.requestTokens, 1208)
         XCTAssertEqual(count.json["estimated"], true)
     }
 

@@ -90,29 +90,31 @@ chats have no unread indicators, and live menu rows show elapsed time, models,
 queues and reported session usage. Continuous streaming no longer starves popup
 updates. Transient model failures allow five retries after the initial request;
 invalid requests and tool side effects are not automatically replayed. Compaction
-still shares its independent eight-physical-request budget across all chunks.
+uses the same bounded retry settings, within its physical-attempt budget.
 
-**Compaction, 0.1.64:** one long user task can compact between complete model/tool
-batches. Original task input and delivered steering remain verbatim. Complete
-assistant/call/result groups are retained or summarized together. Recorded unknown
-outcomes and warning phrases in tool output do not block compaction; their recorded
-status and evidence remain available to the summary. Large sources use bounded evidence excerpts and
-chunk/merge requests, with eight physical summary attempts per operation.
-A tool result over 64 KB (from a tool that does not cut its own output, such as an
-MCP server) reaches the model as its first 32 KB and pi's note naming the saved file
-that holds all of it, which `read` can open; there is no `history_read` tool (removed
-in 0.1.94 to match pi).
-Summary output has no fixed 4,096-token cap: use the selected model ceiling,
-clipped to the actual summary request's remaining capacity; use the configured
-output budget when the catalog has no ceiling. Preserve the session's reasoning
-effort. The summarization instruction follows the source content, with no target
-character or token count. Empty, refused, truncated, tool-calling or non-reducing
-summaries do not replace context. A typed context rejection permits one reduction
-and one retry of that model operation, never a replay of completed tools.
-Checkpoints synchronize before memory adoption and preserve ordered lineage on
-reopen, side/keep and fork. Existing banners show chunk/merge progress, and summary
-usage stays separate from normal-request context observations. See the
-[implementation and CP01–CP33 record](docs/Compaction-Implementation-2026-09-20.md).
+**Compaction, 0.1.100:** a single request sends the current typed conversation
+unchanged, followed by a checkpoint instruction. It keeps the selected model,
+reasoning effort, normal instructions, tool schemas and cache affinity. Tools
+remain defined with calls prohibited; a gateway-returned call is rejected without
+execution. There is no flattened source, excerpting, chunking or second repair
+request. Prior checkpoints are included once, without restoring removed history.
+
+Recent complete tool groups, unanswered input and required skill/permission inputs
+remain intact. The planner triggers before the next request with headroom for the
+summary itself. Its generation allowance includes reasoning and is capped at
+16,384 tokens, the model ceiling or a quarter-window, whichever is smaller. If the
+intact source cannot fit, nothing is sent and context remains unchanged. Complete
+summaries must fit the actual replay wrapper and continuation output reserve, and
+must reduce context; automatic checkpoints must additionally get below the trigger.
+
+Snapshots freeze context/configuration during summarization, synchronize before
+adoption and preserve ordered lineage across reopen and fork. Editing any message
+the summary saw—including a retained one—invalidates that dependent checkpoint.
+Transient retries keep the same request; refused, incomplete, tool-calling or
+non-reducing summaries do not become checkpoints. One fitting recovery may follow
+an ordinary context rejection, without rerunning completed tools. Cost, captures
+and chronological operation history remain available. See the
+[0.1.100 validation record](docs/validation/Bello-Agent-0.1.100-2026-09-25.md).
 
 Session right-click and conversation “…” menus offer **Copy Session ID** and
 **Copy Session Reference**. A reference contains the app session ID and actual

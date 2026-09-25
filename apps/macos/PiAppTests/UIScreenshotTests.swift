@@ -657,8 +657,8 @@ final class UIScreenshotTests: XCTestCase {
     }
 
     /// 20 · A split-turn compaction in the Session Inspector: one Compaction
-    /// row holding its one summary request, named "earlier history and start
-    /// of this turn", and its page with its instruction first on the
+    /// row holding its one summary request, named "continuation checkpoint",
+    /// and its page with the appended instruction identified on the
     /// Conversation tab.
     @MainActor private func captureCompactionRequestScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                            appearances: [(String, NSAppearance.Name)], workspaceID: String, profileID: String) async throws {
@@ -692,7 +692,7 @@ final class UIScreenshotTests: XCTestCase {
         try await until("the summary request named", seconds: 30) {
             inspector.summaryLabel(group.requests[0].id) != nil && inspector.request.conversation.value?.summary != nil
         }
-        XCTAssertEqual(inspector.summaryLabel(group.requests[0].id), "earlier history and start of this turn")
+        XCTAssertEqual(inspector.summaryLabel(group.requests[0].id), "continuation checkpoint")
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
             try capture(panel, to: gallery.appendingPathComponent("20-compaction-requests-\(name).png"))

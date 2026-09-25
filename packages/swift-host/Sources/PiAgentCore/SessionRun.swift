@@ -88,8 +88,7 @@ extension AgentSession {
             try Task.checkCancellation(); state="running"; runStatus="running"; try persistState(active:true); event("state")
             if compactOnly { try await compactContext();if let activeSubmission { commandState(activeSubmission,"completed") } }
             else {
-                // Pi checks a new prompt against the context before the prompt joins it.
-                let priorContext=requestContext
+                // Deliver the next eligible input before sizing the pending request.
                 if steering.isEmpty, !retrying {
                     // A follow-up that cannot be answered stays queued, paused.
                     if !queue.isEmpty { try enforceCostLimit() }
@@ -99,13 +98,7 @@ extension AgentSession {
                 retrying=false
                 // Pi's _overflowRecoveryAttempted: one compact-and-retry until a
                 // user message arrives or a reply completes.
-                var overflowRecoveryAttempted=false
-                // Ours: a mid-run compaction the next measurement still finds over the
-                // threshold freed no room; compacting again would loop.
-                var compactedWithoutRelief=false
-                // The context before this round's steering or follow-up joined it:
-                // pi checks the threshold before pending messages are injected.
-                var undelivered: [ChatMessage]?
+                var overflowRecoveryAttempted=retryFirstRequest && contextRecovery["consumed"].flag == true
                 var rounds=0
                 while true {
                     // Pi's agent loop has no limit on model requests per run.
@@ -116,7 +109,6 @@ extension AgentSession {
                     // Each round makes a model request. At the chat's cost
                     // limit it stops here, before pending steering is delivered.
                     try enforceCostLimit()
-                    let beforeDelivery=undelivered ?? requestContext; undelivered=nil
                     let drained=resumingFailedRequest ? false : try await drainSteering()
                     if drained { overflowRecoveryAttempted=false }
                     var resourceSnapshot: ResourceSnapshot
@@ -128,32 +120,13 @@ extension AgentSession {
                     var request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
                     var count=try countContext(requestContext,request:request)
                     currentContextCount=count
-                    // Pi 0.85.1 checks the threshold before a new prompt joins the context
-                    // (Case 3 of _checkCompaction, on the reply before it) and before each
-                    // later request of the run (_compactBeforeNextAssistantResponse), where
-                    // the context is unknown after a compaction until a reply reports usage.
-                    // A retried request is not checked again. A request whose input fits the
-                    // window is always sent, with its cap clipped to the room that is left.
-                    // Pi never refuses a request on its estimate: a request the gateway
-                    // rejects as too long is compacted and retried once below.
-                    let thresholdTokens=resumingFailedRequest ? nil : rounds == 1 ? PiContext.promptThresholdTokens(priorContext) : PiContext.contextUsage(beforeDelivery)?.tokens
-                    let overThreshold=thresholdTokens.map { PiContext.shouldCompact($0,contextWindow:turnProfile.contextWindow,settings:compactionSettings) }
-                    if overThreshold == false { compactedWithoutRelief=false }
-                    if overThreshold == true, rounds > 1, compactedWithoutRelief {
-                        throw AgentError("compact_no_progress", "Compacting did not bring this chat back under its context limit: the latest work alone is too large to keep. Continue in a new chat, or compact with a focus (/compact …).")
-                    }
-                    if overThreshold == true, canCompact {
-                        if rounds == 1 {
-                            // Pi reports a failed threshold compaction and sends the request anyway.
-                            do { try await compactContext(reason:"threshold") }
-                            catch where !(error is CancellationError) && !Task.isCancelled {}
-                        } else {
-                            // Ours: mid-run, pi's next round would try the same failing
-                            // summary again, billing a summary and a full request every
-                            // round. The run stops with the compaction's error instead.
-                            try await compactContext(reason:"threshold")
-                            compactedWithoutRelief=true
-                        }
+                    // Include delivered input and complete tool results. Leave
+                    // room for an intact-history summary before this request.
+                    let threshold = autoCompaction && !titleTask && !resumingFailedRequest
+                        ? try compactionThreshold(requestContext,instructions:instructions,profile:turnProfile) : Int.max
+                    if count.requestTokens >= threshold, canCompact {
+                        do { try await compactContext(reason:"threshold") }
+                        catch let error as AgentError where error.code == "compact_unavailable" && count.fits { /* Nothing useful to replace; keep the intact request. */ }
                         if !drained && !resumingFailedRequest, try await drainSteering() { overflowRecoveryAttempted=false }
                         resourceSnapshot=appliedSnapshot ?? resourceSnapshot
                         definitions=await sessionDefinitions()
@@ -251,9 +224,9 @@ extension AgentSession {
                     if let stoppedEarly { assistant.stopReason = outputLimited ? "length" : stoppedEarly }
                     // The reply keeps its usage in pi's shape: the next count rests on it.
                     assistant.usage=PiContext.usage(reply.usage,api:turnProfile.api)
+                    assistant.contextUsageBinding = try reply.message.contextUsageBinding ?? RequestContextCounter.usageBinding(request,profile:turnProfile)
                     try append(assistant); cumulativeUsage.observe(reply.usage)
                     if !outputLimited { overflowRecoveryAttempted=false }
-                    let replyID=assistant.id
                     event("message_end")
                     await flushRequestLinks()
                     guard !titleTask || reply.calls.isEmpty else { throw AgentError("title_tool_call", "Title generation returned a tool call. No tool ran and no extra model request was made.") }
@@ -280,46 +253,10 @@ extension AgentSession {
                     // A reply that stopped at the output budget ends the turn like any
                     // other: the row says so, and queued follow-ups go on.
                     if outputLimited { event("output_limit") }
-                    // Pi 0.85.1 ends a run with _checkCompaction on its last reply. A
-                    // queued follow-up continues the run instead and is checked before its
-                    // request. A failed compaction keeps the context and says so.
-                    if queue.isEmpty, let position=context.lastIndex(where: { $0.id == replyID }) {
-                        let stop=outputLimited ? "length" : "stop", usage=context[position].usage, window=turnProfile.contextWindow
-                        let overflowed=PiProviderRules.isUsageOverflow(stopReason:stop,usage:usage,contextWindow:window)
-                        let recoverable=PiProviderRules.isRecoverableLength(stopReason:stop,usage:usage,desiredMaxOutput:turnProfile.modelOutputLimit ?? 0)
-                        if autoCompaction, overflowed || recoverable {
-                            if stop == "stop" {
-                                // Case 2: a completed reply that overflowed the window compacts without a retry.
-                                if canCompact {
-                                    do { try await compactContext(reason:"overflow") }
-                                    catch where !(error is CancellationError) && !Task.isCancelled {}
-                                }
-                            } else if !overflowRecoveryAttempted, !titleTask, canCompact(recovering:true) {
-                                // Case 1: a reply cut below the model's own output limit (or by a
-                                // full window) leaves the context, which is compacted, and the
-                                // request is made again once.
-                                overflowRecoveryAttempted=true
-                                let recovery: JSON=["logicalRequestId":JSON(operationID),"consumed":true,"failedAttemptId":currentAttemptIDs.last.map { JSON($0) } ?? .null,
-                                                    "failedFingerprint":count.requestFingerprint.map { JSON($0) } ?? .null,"failure":"length"]
-                                try journal?.append(["type":"custom","customType":"pi-app.context-recovery.v1","data":recovery],flush:true)
-                                contextRecovery=recovery; excludeFromRequests(replyID)
-                                var compacted=false
-                                do { try await compactContext(reason:"context-rejection"); compacted=true }
-                                catch where !(error is CancellationError) && !Task.isCancelled {}
-                                // Pi takes the reply out of the rebuilt context again and continues.
-                                excludeFromRequests(replyID)
-                                if compacted { continue }
-                            }
-                        } else if let tokens=PiContext.thresholdTokens(after:position,in:context),
-                                  PiContext.shouldCompact(tokens,contextWindow:window,settings:compactionSettings), canCompact {
-                            // Case 3: the threshold, without a retry.
-                            do { try await compactContext(reason:"threshold") }
-                            catch where !(error is CancellationError) && !Task.isCancelled {}
-                        }
-                    }
+                    // A completed or output-limited answer stays in context.
+                    // Compaction runs only before another pending model request.
                     try finishPresentedTask(outputLimited ? "output-limited" : "completed")
                     if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
-                    undelivered=requestContext
                     if !queue.isEmpty { try enforceCostLimit() }
                     if try await startFollowUp() { overflowRecoveryAttempted=false; continue }
                     break

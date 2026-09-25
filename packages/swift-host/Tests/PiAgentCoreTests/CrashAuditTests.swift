@@ -71,16 +71,17 @@ final class CrashAuditTests: XCTestCase {
         try await session.compact(commandID: "compact")
         try await eventually { !(await session.isRunning) }
         let snapshot = await session.snapshot(), other = await sibling.snapshot()
-        XCTAssertEqual(snapshot["state"].text, "idle"); XCTAssertEqual(other["state"].text, "idle")
+        XCTAssertEqual(snapshot["state"].text, "error"); XCTAssertEqual(other["state"].text, "idle")
+        XCTAssertEqual(snapshot["compaction"]["errorCode"].text,"compact_unavailable",snapshot["preflightError"].encoded())
         XCTAssertTrue(snapshot["messages"].list.contains { $0["text"].text == "answer survived" })
-        XCTAssertTrue(snapshot["messages"].list.contains { $0["kind"].text == "compaction" })
+        XCTAssertFalse(snapshot["messages"].list.contains { $0["kind"].text == "compaction" }, "Implausible usage cannot turn a tiny transcript into useful compaction work")
         let calls = await tools.calls; XCTAssertEqual(calls, ["first"], "Bad accounting cannot replay a tool")
         let totals = await session.inspectContext()["cumulative"]
         XCTAssertEqual(totals["inputStatus"].text, "overflow"); XCTAssertTrue(totals["output"].isNull)
         let records = try String(contentsOf: root.appendingPathComponent("records.jsonl"), encoding: .utf8).split(separator: "\n").map { try JSON.parse(Data($0.utf8)) }
-        XCTAssertEqual(records.count, 5, "Two turn requests, one tool follow-up, one summary request (pi's history and turn-prefix summaries together) and one sibling; no retries")
+        XCTAssertEqual(records.count, 4, "Two turns, one tool follow-up and one sibling; unusable compaction sends nothing")
         let attempts = try await traces.command("debug.list", session: "huge-usage", params: [:])["attempts"].list
-        XCTAssertEqual(attempts.count, 4)
+        XCTAssertEqual(attempts.count, 3)
         for attempt in attempts {
             let capture = try await traces.command("debug.body", session: "huge-usage", params: ["attemptId": attempt["attemptId"], "body": "response"])
             XCTAssertTrue(records.contains { $0["response"] == capture["bytes"] }, "Exact bytes survive invalid normalized accounting")

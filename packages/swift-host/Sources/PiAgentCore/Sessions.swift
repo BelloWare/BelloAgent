@@ -125,6 +125,7 @@ public actor AgentSession {
     var presentationUtility = false
     var cachedPresentationTimeline: String?
     var contextRecovery: JSON = .null
+    var failedCompactionFingerprint: String?
     var compactionState: JSON = .null
     var compactionAttemptIDs: [String] = []
     var compactionPhysicalAttempts = 0
@@ -256,6 +257,7 @@ public actor AgentSession {
                 recentTaskPresentations.removeAll { $0.key == task.key }; recentTaskPresentations.append(task)
                 if recentTaskPresentations.count > 64 { recentTaskPresentations.removeFirst() }
             } else if item["customType"].text == "pi-app.native.state.v1" { stateRecord=item["data"] }
+            else if item["customType"].text == "pi-app.compaction-failure.v1" { failedCompactionFingerprint=item["data"]["fingerprint"].text }
             else if item["customType"].text == "pi-app.context-recovery.v1" { contextRecovery=item["data"] }
             else if item["customType"].text == "pi-app.native.context.v1" {
                 let byID=Dictionary(history.map { ($0.id,$0) },uniquingKeysWith:{_,b in b})

@@ -228,12 +228,14 @@ def validate_request(method, path, headers, body, *, api_key, model=None,
     require(set(calls) == set(results), "request contains a tool call without its completed result")
     if native_items == "portable":
         require(not opaque, "portable history leaked opaque provider items")
-    # Pi's summary request: its summarization system prompt and one message
-    # holding the conversation as text, then pi's prompt; no tools.
-    is_compaction = instructions.startswith("You are a context summarization assistant.")
+    is_compaction = body.get("tool_choice") == "none" and bool(user_texts) and user_texts[-1].startswith("Create a concise continuation checkpoint")
     if is_compaction:
-        require(not tools and len(history) == 1 and len(user_texts) == 1, "a summary request is one message of conversation text, with no tools")
-        require(user_texts[0].startswith("<conversation>\n") and "\n</conversation>\n\n" in user_texts[0], "compaction omitted pi's conversation text")
+        require(bool(tools) and len(history) > 1, "summary must retain normal tools and typed history")
+    # Retain inspection support for historical fixture requests.
+    elif instructions.startswith("You are a context summarization assistant."):
+        is_compaction = True
+        require(not tools and len(history) == 1 and len(user_texts) == 1, "legacy summary request shape")
+        require(user_texts[0].startswith("<conversation>\n"), "legacy summary omitted conversation text")
     return {"api": "openai-responses" if responses else "anthropic-messages", "instructions": instructions,
             "latest_text": user_texts[-1] if user_texts else "", "user_texts": user_texts,
             "calls": calls, "results": results, "opaque": opaque, "tool_names": set(schemas),

@@ -34,9 +34,10 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             system, history = body['input'][0], body['input'][1:]
             assert system['role'] in ('developer', 'system') and isinstance(system['content'], str)
             instructions = system['content']
-            summary = not body.get('tools')
+            summary = body.get('tool_choice') == 'none'
             # Pi sends a summary with cacheRetention "none" and every other request with the session's cache key.
-            assert ('prompt_cache_key' in body) == (not summary) and body.get('prompt_cache_key', sid) == sid
+            assert body.get('prompt_cache_key') == sid
+            assert self.headers['session_id'] == sid and self.headers['x-client-request-id'] == sid
             pending, results, texts = {}, [], []
             for item in history:
                 kind = item.get('type', 'message')
@@ -54,35 +55,36 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             joined = '\n'.join(texts)
             incomplete = False
             if summary:
-                # Pi's summary request: its system prompt, one message of
-                # <conversation> text, and pi's summarization prompt last.
-                assert len(history) == 1 and len(texts) == 1
-                assert instructions.startswith('You are a context summarization assistant.')
-                prompt = texts[0]
-                assert prompt.startswith('<conversation>\n') and '\n</conversation>\n\n' in prompt
-                # Ours: a summary carries the model's own output limit, never a
-                # summary cap, clipped to the window as pi clips any request.
-                # An unknown model ceiling sends no limit, as for any request.
-                assert body.get('max_output_tokens') is None or body['max_output_tokens'] > 0
-                if sid.startswith('compaction-budget'):
+                assert history[-1]['role'] == 'user'
+                prompt = texts[-1]
+                assert prompt.startswith('Create a concise continuation checkpoint')
+                assert 'Boundary (JSON data):' in prompt
+                assert not instructions.startswith('You are a context summarization assistant.')
+                assert body.get('tools'), 'normal tools must remain defined'
+                assert body.get('max_output_tokens') is None or 16 <= body['max_output_tokens'] <= 16384
+                if sid.startswith('compaction-no-tools'):
+                    text = 'A misleading complete summary accompanying a forbidden call.'
+                elif sid.startswith('compaction-budget'):
                     assert body['reasoning']['effort'] == 'high'
                     # Pi's estimate of the request, characters over four, and its
                     # limit fit the 16,000-token window.
                     assert (len(prompt) + len(instructions)) / 4 + body['max_output_tokens'] <= 16000
                     incomplete = sid == 'compaction-budget-exhausted'
                     text = 'Observed evidence retained. Continue the original objective.'
-                elif '<previous-summary>' in prompt:
-                    assert 'The messages above are NEW conversation messages' in prompt
-                    assert '[Tool result]: READ_STAGE_COMPLETE part 3' in prompt
+                elif any(t.startswith('The conversation history before this point was compacted') for t in texts):
+                    assert any('READ_STAGE_COMPLETE part 3' in r for r in results)
                     # Pi replays no input verbatim: the summary carries the objective.
                     text = 'ORIGINAL GOLDEN OBJECTIVE carried. COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE PART_3_READ. Do not rerun the mutation.'
                 else:
-                    assert '[Assistant tool calls]: write(' in prompt and 'read(part=1)' in prompt
-                    assert 'READ_STAGE_COMPLETE' in prompt and 'COUNTER_APPENDED_ONCE' in prompt
+                    assert any(i.get('name') == 'write' for i in history) and any(i.get('name') == 'read' for i in history)
+                    assert any('READ_STAGE_COMPLETE' in r for r in results) and any('COUNTER_APPENDED_ONCE' in r for r in results)
                     # Pi cuts a long result at 2,000 characters and names nothing to recall it by.
                     assert '[history_read:' not in prompt and 'Additional focus' not in prompt
                     text = 'ORIGINAL GOLDEN OBJECTIVE carried. COUNTER_APPENDED_ONCE READ_STAGE_COMPLETE. Do not rerun the mutation.'
                 output = message(text)
+                if sid.startswith('compaction-no-tools'):
+                    name = 'write' if sid.endswith('write') else 'mcp_remote_mutation'
+                    output.append(call('forbidden', name, {'path': 'counter.txt', 'content': 'once\n'}))
             elif sid == 'compaction-sibling':
                 assert joined == 'sibling independent'
                 output = message('Sibling unaffected')

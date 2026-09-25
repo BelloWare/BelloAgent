@@ -131,7 +131,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             # Pi's system prompt leads the input (fix/pi-parity); older requests carried it as instructions.
             first = body.get("input")[0] if isinstance(body.get("input"), list) and body.get("input") else None
             system_prompt = body.get("instructions") or (first.get("content") if isinstance(first, dict) and first.get("role") in ("system", "developer") else "")
-            summary_request = str(system_prompt).startswith("You are a context summarization assistant.")
+            summary_request = body.get("tool_choice") == "none" or str(system_prompt).startswith("You are a context summarization assistant.")
             lenient = summary_request or os.environ.get("PI_APP_UI_FIXTURE_LENIENT_LIMIT") == "1"
             if lenient and requested_model != "fixture-fast" and not connection_test:
                 require(type(body.get(limit_name)) is int and 0 < body[limit_name] <= limits[requested_model], "output limit must stay within the catalog ceiling")

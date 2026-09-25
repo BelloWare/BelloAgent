@@ -96,7 +96,7 @@ struct RequestDocument: Sendable {
         try Task.checkCancellation()
         var items: [Item] = [], calls: [String: String] = [:]
         // A summary request's prompt is its last user message, whole.
-        let summarizes = SummaryRequestInfo.isSummary(system: systemText(root, api: api))
+        let summarizes = SummaryRequestInfo.isSummary(system: systemText(root, api: api)) || root["tool_choice"] as? String == "none"
         var prompt: (text: String, item: Int)?
         for (index, raw) in storage.itemValues(root: root, api: api).enumerated() {
             if index % 16 == 0 { try Task.checkCancellation() }

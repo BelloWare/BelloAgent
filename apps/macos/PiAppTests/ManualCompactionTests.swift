@@ -82,7 +82,7 @@ final class ManualCompactionTests: XCTestCase {
             for attempt in attempts {
                 guard let attemptID = attempt["attemptId"]?.string else { continue }
                 let request = try await model.traces.completeBody(attemptID:attemptID,body:"request")
-                if String(decoding:request,as:UTF8.self).contains("Additional focus: keep the evidence list") { focused += 1 }
+                if String(decoding:request,as:UTF8.self).contains("keep the evidence list") { focused += 1 }
             }
             XCTAssertEqual(focused, id == "slash" ? 1 : 0, id)
         }

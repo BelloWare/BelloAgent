@@ -23,26 +23,27 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             sid = self.headers['x-session-id']
             assert body['metadata']['session_id'] == sid
             assert body['stream'] is True and body['store'] is False
-            summary = not body.get('tools')
+            summary = body.get('tool_choice') == 'none'
             system, history = body['input'][0], body['input'][1:]
             assert system['role'] == 'developer' and isinstance(system['content'], str)
             # Pi sends a summary with cacheRetention "none" and a turn with the session's cache key.
-            assert ('prompt_cache_key' in body) == (not summary)
+            assert body.get('prompt_cache_key') == sid
             if summary:
                 # Ours: no summary cap. A summary carries the model's own output limit
                 # (the chosen 16,000 here), clipped to the window; an unknown one sends none.
-                prompt = history[0]['content'][0]['text']
+                prompt = history[-1]['content'][0]['text']
                 prefix = 'This is the PREFIX of a turn that was too large to keep.' in prompt
                 expected = ('connection-default', 'low') if sid == 'default' else ('chosen-' + sid, 'high')
                 assert body['model'] == expected[0], 'Compaction lost selected model: ' + body['model']
                 assert body['reasoning']['effort'] == expected[1], 'Compaction lost effort'
                 limit = body.get('max_output_tokens')
                 if sid == 'default':
-                    assert limit is None, 'Compaction sent a limit the model does not declare: ' + str(limit)
+                    assert limit == 16384, 'Compaction must send its explicit allowance: ' + str(limit)
                 else:
                     assert limit is not None and 0 < limit <= 16000, 'Compaction lost the model\'s own limit: ' + str(limit)
-                assert system['content'].startswith('You are a context summarization assistant.')
-                assert len(history) == 1 and prompt.startswith('<conversation>\n')
+                assert not system['content'].startswith('You are a context summarization assistant.')
+                assert len(history) > 1 and prompt.startswith('Create a concise continuation checkpoint')
+                assert body['tools']
                 text = 'Preserve the original objective. Verified evidence was retained.'
             else:
                 assert body['model'] == 'previous-model'

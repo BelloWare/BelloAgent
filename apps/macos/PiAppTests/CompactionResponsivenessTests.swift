@@ -138,7 +138,7 @@ final class CompactionResponsivenessTests: XCTestCase {
         XCTAssertNil(model.error, model.error ?? "")
         // A smaller window: the history is summarized, in one request.
         let index = try XCTUnwrap(model.chats.firstIndex { $0.id == main.id })
-        model.chats[index].contextWindow = Int(testEnvironment("PI_APP_HANG_WINDOW") ?? "") ?? 60_000
+        model.chats[index].contextWindow = Int(testEnvironment("PI_APP_HANG_WINDOW") ?? "") ?? 75_000
         model.chats[index].maxOutputTokens = 8_192
         model.chats[index].modelOutputLimit = 16_000
         model.action("context.compact", sessionID: main.id)
@@ -147,18 +147,19 @@ final class CompactionResponsivenessTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
         while Date() < compactDeadline {
             if session.runStatus == "compacting" || session.state == "compacting" { sawCompacting = true }
-            if sawCompacting, !session.hasWork, !session.loading { break }
+            if !session.hasWork, !session.loading, sawCompacting || session.compactionNotice != nil || session.failureMessage != nil { break }
             try await Task.sleep(for: .milliseconds(100))
         }
         XCTAssertTrue(sawCompacting, "Compact Now never ran")
         print("COMPACTION manual compaction done: \(session.compactionNotice ?? "no notice"); worst \(String(format: "%.2f", watchdog.worstStall)) s")
 
-        // Threshold compaction during a turn: the history grows past the
-        // smaller window, and the next send compacts before it asks.
-        for turn in 0..<2 {
+        // Grow past the earlier headroom threshold, then send another pending
+        // request. Finished answers no longer launch idle compaction.
+        for turn in 0..<4 {
             session.draft = "bulk \(kilobytes) more history \(turn) after the compaction."
             model.send(sessionID: main.id)
             try await waitIdle("bulk turn after compaction \(turn)", timeout: 240)
+            XCTAssertNil(session.failureMessage, session.failureMessage ?? "")
         }
         print("COMPACTION threshold compaction done; worst \(String(format: "%.2f", watchdog.worstStall)) s, \(watchdog.answered) answers")
         let (captured, _) = try await URLSession.shared.data(from: URL(string: base + "/captures")!)
@@ -169,7 +170,7 @@ final class CompactionResponsivenessTests: XCTestCase {
             // Pi's system prompt is the first input item; older requests carried it as instructions.
             let first = (body["input"] as? [[String: Any]])?.first
             let system = body["instructions"] as? String ?? (["system", "developer"].contains(first?["role"] as? String ?? "") ? first?["content"] as? String : nil)
-            return system?.hasPrefix("You are a context summarization assistant.") == true
+            return body["tool_choice"] as? String == "none" || system?.hasPrefix("You are a context summarization assistant.") == true
         }
         print("COMPACTION gateway saw \(records.count) requests, \(summaries.count) summary requests")
         XCTAssertEqual(summaries.count, 2, "Compact Now and the threshold compaction, one summary request each")

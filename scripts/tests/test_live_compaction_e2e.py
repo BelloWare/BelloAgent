@@ -4,7 +4,7 @@ The harness bills a real gateway only when the owner runs it. Its fixture mode
 drives the release helper against a loopback gateway whose model reasons, so
 these tests run it whenever a release helper is built (scripts/build-bundle.py
 builds one under $PI_BUILD_ROOT) and skip otherwise. One run must pass; one
-with every summary capped at 0.1.90's 13,107 tokens must fail, or the harness
+with every summary capped at 0.1.90's 8,192 tokens must fail, or the harness
 proves nothing. The gateway, the summary prompt parser and the configuration
 are checked without a helper.
 """
@@ -66,14 +66,14 @@ class FixtureRunTests(unittest.TestCase):
             summaries = [row for row in scenarios[name]["requests"] if row["purpose"] == "compaction"]
             self.assertTrue(summaries, name)
             # Each summary reasoned as a real model does at high effort, and still finished.
-            self.assertTrue(all(row["reasoningTokens"] >= 20_000 and row["stopReason"] == "completed" for row in summaries), summaries)
+            self.assertTrue(all(row["reasoningTokens"] >= 12_000 and row["stopReason"] == "completed" for row in summaries), summaries)
             self.assertTrue(all(row["effectiveMaxOutputTokens"] >= cfg.summary_room(row["kind"]) for row in summaries))
             # A compaction is one request.
             self.assertEqual(len(summaries), len({row["operation"] for row in summaries}), summaries)
             self.assertEqual([point["phase"] for point in scenarios[name]["checkpoints"]], ["completed"])
         self.assertEqual(scenarios["mid-run"]["checkpoints"][0]["reason"], "threshold")
         split = [row["kind"] for row in scenarios["mid-run"]["requests"] if row["purpose"] == "compaction"]
-        self.assertTrue(split and split[0].endswith("+turn-prefix"), "the turn's start is summarized with the history, in one request")
+        self.assertEqual(split, ["continuation"], "the intact typed context uses one appended instruction")
         # Too large for one request: refused, and nothing is sent or written.
         self.assertEqual((scenarios["too-large"]["requests"], scenarios["too-large"]["checkpoints"]), ([], []))
         self.assertTrue(all(check["passed"] for check in scenarios["too-large"]["checks"]), scenarios["too-large"]["checks"])
@@ -81,8 +81,8 @@ class FixtureRunTests(unittest.TestCase):
         # The fixture's key stands in for a real one: it is never printed or written.
         self.assertNotIn(harness.FIXTURE["key"], done.stdout + done.stderr + written)
 
-    def test_a_summary_capped_at_13107_tokens_fails_every_scenario_that_summarizes(self):
-        done, report, _ = run_fixture("--fixture-summary-limit", "13107")
+    def test_a_summary_capped_at_8192_tokens_fails_every_scenario_that_summarizes(self):
+        done, report, _ = run_fixture("--fixture-summary-limit", "8192")
         self.assertEqual(done.returncode, 1, done.stdout[-6000:] + done.stderr[-3000:])
         self.assertFalse(report["passed"])
         scenarios = {scenario["scenario"]: scenario for scenario in report["scenarios"]}
@@ -91,7 +91,7 @@ class FixtureRunTests(unittest.TestCase):
             failed = {check["name"].split(" (")[0] for check in scenarios[name]["checks"] if not check["passed"]}
             self.assertLessEqual({"compaction completed and its summary adopted", "no summary request ended at max_output_tokens", "the run ends idle"}, failed, name)
             stopped = [row for row in scenarios[name]["requests"] if row["purpose"] == "compaction" and row["stopReason"] == "max_output_tokens"]
-            self.assertTrue(stopped and all(row["reasoningTokens"] == 13_107 for row in stopped))
+            self.assertTrue(stopped and all(row["reasoningTokens"] == 8_192 for row in stopped))
         # The refusal sends no summary, so the cap cannot touch it.
         self.assertTrue(scenarios["too-large"]["passed"], scenarios["too-large"]["checks"])
 
@@ -123,18 +123,18 @@ class ReasoningGatewayTests(unittest.TestCase):
         return response.status, harness.terminal_event(data.encode())
 
     def test_reasoning_that_outgrows_the_limit_ends_incomplete_at_max_output_tokens(self):
-        status, final = self.post(summary_request(13_107))
+        status, final = self.post(summary_request(8_192))
         self.assertEqual(status, 200)
         self.assertEqual((final["status"], final["incomplete_details"]["reason"]), ("incomplete", "max_output_tokens"))
-        self.assertEqual(final["usage"]["output_tokens"], 13_107)
-        self.assertEqual(final["usage"]["output_tokens_details"]["reasoning_tokens"], 13_107)
+        self.assertEqual(final["usage"]["output_tokens"], 8_192)
+        self.assertEqual(final["usage"]["output_tokens_details"]["reasoning_tokens"], 8_192)
         self.assertEqual([item["type"] for item in final["output"]], ["reasoning"], "no summary text came out")
 
     def test_room_for_reasoning_and_the_summary_completes(self):
         for limit in (32_000, None):
             status, final = self.post(summary_request(limit))
             self.assertEqual((status, final["status"]), (200, "completed"))
-            self.assertEqual(final["usage"]["output_tokens_details"]["reasoning_tokens"], 20_000)
+            self.assertEqual(final["usage"]["output_tokens_details"]["reasoning_tokens"], 12_000)
             text = final["output"][-1]["content"][0]["text"]
             self.assertTrue(text.startswith("## Goal"))
             self.assertGreater(final["usage"]["cost"], 0)
@@ -145,10 +145,10 @@ class ReasoningGatewayTests(unittest.TestCase):
         self.assertLess(low["usage"]["output_tokens_details"]["reasoning_tokens"], high["usage"]["output_tokens_details"]["reasoning_tokens"])
 
     def test_the_debug_switch_caps_summaries_as_0_1_90_did(self):
-        self.gateway.summary_limit = 13_107
+        self.gateway.summary_limit = 8_192
         _, final = self.post(summary_request(100_000))
         self.assertEqual(final["status"], "incomplete")
-        self.assertEqual(self.gateway.records[-1]["effective_limit"], 13_107)
+        self.assertEqual(self.gateway.records[-1]["effective_limit"], 8_192)
 
     def test_a_request_that_breaks_the_wire_contract_is_refused(self):
         body = summary_request(32_000)
@@ -201,9 +201,9 @@ class ConfigurationTests(unittest.TestCase):
         with self.environment(PI_LIVE_BASE_URL="https://gateway.example/v1", PI_LIVE_API_KEY="k" * 20, PI_LIVE_MODEL="unlisted-model",
                               PI_LIVE_CONTEXT_WINDOW="128000", PI_LIVE_THINKING="medium", PI_LIVE_MAX_COST_USD="2.5"):
             cfg = harness.load_config(self.arguments())
-        self.assertEqual((cfg.window, cfg.limit, cfg.thinking, cfg.max_cost, cfg.threshold), (128_000, None, "medium", 2.5, 111_616))
+        self.assertEqual((cfg.window, cfg.limit, cfg.thinking, cfg.max_cost, cfg.threshold), (128_000, None, "medium", 2.5, 93_208))
         # Pi's summary cap, with the turn-prefix cap when a split turn's start is in the same request.
-        self.assertEqual([cfg.summary_room(kind) for kind in ("history", "history-update+turn-prefix", "turn-prefix")], [13_107, 21_299, 8_192])
+        self.assertEqual([cfg.summary_room(kind) for kind in ("history", "history-update+turn-prefix", "turn-prefix")], [16_384, 16_384, 16_384])
         with self.environment():
             with self.assertRaisesRegex(harness.Failure, "PI_LIVE_BASE_URL"):
                 harness.load_config(self.arguments())

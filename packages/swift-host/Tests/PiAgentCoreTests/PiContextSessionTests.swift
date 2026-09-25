@@ -25,38 +25,28 @@ final class PiContextSessionTests: XCTestCase {
         await reopened.close()
     }
 
-    func testCompactionFollowsTheReplyThatCrossesTheThresholdAndTheMeterWaitsForTheNextReply() async throws {
-        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        // The one-token tail splits the second turn: one request summarizes the
-        // history and the turn's prefix.
-        let client = ScriptClient([reply("at the threshold", total: 83_616), reply("over it", total: 83_617), answer("Summary: done.\n\n---\n\n**Turn Context (split turn):**\n\nPrefix: two."), reply("after", total: 3_000)])
-        let s = try session(root, client)
-        _ = try await s.submit(Submission(commandID: "a", turnID: "a", text: "one"), steer: false)
+    func testCompactionWaitsForPendingWorkAndFollowingReplyRefreshesUsage() async throws {
+        let root=try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client=ScriptClient([reply(String(repeating:"evidence ",count:1500),total:66000),answer("Summary: verified work."),reply("after",total:3000)])
+        let s=try session(root,client)
+        _=try await s.submit(Submission(commandID:"a",turnID:"a",text:"one"),steer:false)
         try await eventually { !(await s.isRunning) }
-        let first = await client.purposes
-        XCTAssertEqual(first, ["turn"], "at the threshold is not over it")
-        _ = try await s.submit(Submission(commandID: "b", turnID: "b", text: "two"), steer: false)
+        let first=await client.purposes
+        XCTAssertEqual(first,["turn"],"Do not compact an idle finished task")
+        _=try await s.submit(Submission(commandID:"b",turnID:"b",text:"two"),steer:false)
         try await eventually { !(await s.isRunning) }
-        let second = await client.purposes
-        XCTAssertEqual(second, ["turn", "turn", "compaction"], "pi compacts right after the reply that crossed it, in one request")
-        let compacted = await s.snapshot(["includeMessages": false])
-        XCTAssertEqual(compacted["state"].text, "idle", compacted["preflightError"].encoded())
-        XCTAssertEqual(compacted["context"]["state"], "post-compaction"); XCTAssertEqual(compacted["context"]["tokens"], .null)
-        XCTAssertEqual(compacted["context"]["source"].text, "Pending until the next reply")
-        XCTAssertEqual(compacted["contextState"]["count"]["state"], "post-compaction")
-        _ = try await s.submit(Submission(commandID: "c", turnID: "c", text: "three"), steer: false)
-        try await eventually { !(await s.isRunning) }
-        let third = await client.purposes
-        XCTAssertEqual(third, ["turn", "turn", "compaction", "turn"], "a reply from before the compaction triggers nothing more")
-        let measured = await s.snapshot(["includeMessages": false])["context"]
-        XCTAssertEqual(measured["tokens"], 3_000); XCTAssertNil(measured["state"].text)
+        let second=await client.purposes, snapshot=await s.snapshot(["includeMessages":false])
+        XCTAssertEqual(second,["turn","compaction","turn"])
+        XCTAssertEqual(snapshot["state"].text,"idle",snapshot["preflightError"].encoded())
+        XCTAssertEqual(snapshot["context"]["tokens"],3000,"The ordinary reply, not summary usage, measures the new context")
         await s.close()
     }
 
     func testATurnCompactsBeforeItsNextRequestWhenAToolResultCrossesTheThreshold() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         // The call's reply sits at the threshold; its "done write" result (3 tokens) crosses it.
-        var call = toolReply(["write"]); call.usage = ["input": 83_606, "inputIncludingCache": 83_606, "output": 10]
+        var call = toolReply(["write"]); call.usage = ["input": 66000, "inputIncludingCache": 66000, "output": 10]
+        call.message.providerItems=nil; call.message.content.insert(textBlock(String(repeating:"evidence ",count:1500)),at:0)
         let client = ScriptClient([call, answer("Summary: wrote."), answer("finished")])
         let s = try session(root, client)
         _ = try await s.submit(Submission(commandID: "a", turnID: "a", text: "write it"), steer: false)

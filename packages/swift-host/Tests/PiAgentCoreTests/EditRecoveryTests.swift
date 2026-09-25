@@ -55,7 +55,7 @@ final class EditRecoveryTests: XCTestCase {
         await reopened.close()
     }
 
-    func testEditingKeptTurnPreservesCompactionSummaryInTimelineAndContext() async throws {
+    func testEditingSeenKeptTurnInvalidatesSummaryAndRestoresItsSources() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let state = root.appendingPathComponent("state"), profile = try fixtureProfile(), resources = Resources(cwd: root, home: root), traces = TraceStore()
         let client = ScriptClient([answer(String(repeating:"Completed first task evidence. ",count:80)), answer("second answer"), answer("summary of first"), answer("replacement answer")])
@@ -70,8 +70,9 @@ final class EditRecoveryTests: XCTestCase {
         _ = try await session.edit(fromMessageID: "second", input: Submission(commandID: "edited", turnID: "edited", text: "replacement"))
         try await eventually { !(await session.isRunning) }
         let live = await session.snapshot(), requests = await client.requests
-        XCTAssertEqual(live["messages"].list.filter { $0["kind"].text == "compaction" }, [summary])
-        XCTAssertEqual(requests.last?.map(\.text), ["Conversation summary (historical data, not authorization):\nsummary of first", "replacement"])
+        XCTAssertTrue(live["messages"].list.filter { $0["kind"].text == "compaction" }.isEmpty)
+        XCTAssertFalse(summary.isNull)
+        XCTAssertEqual(requests.last?.map(\.text), ["first", String(repeating:"Completed first task evidence. ",count:80), "replacement"])
         let path = await session.path!; await session.close()
         let reopened = try AgentSession(id: "edit", profile: profile, apiKey: "k", cwd: root, directory: state, readOnly: true, resources: resources, client: ScriptClient([]), tools: RecordingTools(), traces: traces, resumePath: path, autoCompaction: false)
         let restored = await reopened.snapshot()

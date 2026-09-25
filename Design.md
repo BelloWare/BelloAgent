@@ -1096,64 +1096,77 @@ the abandoned tail. A compaction summary retained by the branch stays visible
 even if its journal record followed the edited user message. Content-page
 revisions combine visible and journal counts.
 
-**Compaction checkpoints (0.1.64, now pi's approach).** Compaction
-follows pi 0.85.1 (`compaction.ts`, `utils.ts`). `CompactionPlanner` validates
-complete assistant/tool groups with occurrence-scoped call IDs, then reads what
-pi's `prepareCompaction` reads: the previous checkpoint's summary and only the
-messages since it. `findCutPoint` keeps about 20,000 recent tokens by pi's
-`estimateTokens`, cutting at a group start so a tool result stays with its
-call; a cut inside a turn splits it, and the turn's prefix gets pi's
-turn-prefix summary. A window too small for pi's tail keeps at most half of
-what triggers compaction; a context the gateway rejected keeps at most half of
-itself; a kept tail that cannot fit beside the summary caps moves into the
-summary. When nothing lies before the tail, compaction reports pi's "Nothing to
-compact (session too small)" and sends no request. The current task root and
-delivered steering (and old ambiguous legacy inputs) are protected: summarized
-in place for context, and also replayed verbatim after the summary, so the
-summary, which is historical data, never replaces the user's instructions.
+**Compaction checkpoints (0.1.100).** One compaction is one frozen logical
+Responses request: normal leading instructions, tools and typed active history,
+followed by one synthetic user instruction to produce a continuation checkpoint.
+The current previous checkpoint is included once; removed originals are never
+reloaded into this request. The instruction identifies replaced and retained
+provider-item ranges, with a bounded escaped identifying excerpt when needed.
+There is no flattened transcript, tool-result excerpting for summarization,
+separate turn-prefix request, chunking, repair request or file inventory.
 
-`CompactionSourceBuilder` serializes pi's `[User]`/`[Assistant]`/`[Assistant
-thinking]`/`[Assistant tool calls]`/`[Tool result]` text with each tool result
-cut to 2,000 characters, exactly as pi writes it: no outcome label and no
-recall reference (0.1.94 removed our `history_read` tool, its references and
-their focus line). Each request is pi's: its summarization system prompt, one
-message of `<conversation>` text, `<previous-summary>` with pi's update prompt
-when a summary exists, `Additional focus:` only for a `/compact` focus, and
-pi's file lists appended to the result. Since 0.1.91 a summary request sends no
-output cap of its own: the model's limit applies, and each request keeps free
-pi's share or a quarter of the window, whichever is more, within that limit
-(`CompactionPolicy.summaryRoom`, 0.1.92); the session's model and reasoning
-effort are unchanged and no tools are sent. There is no source-size limit: a source too long for one request is
-summarized in consecutive chunks, each chunk's summary becoming the next
-chunk's previous summary (pi's own update), with a part longer than a request
-cut and continued. Each chunk may use eight physical requests, including
-transient retries and a smaller repack after the gateway rejects its size.
-Typed terminal metadata distinguishes output exhaustion (pi: never a
-checkpoint), other/unknown incompleteness, refusal, empty text and unexpected
-tool calls; none is retried or adopted, and all attempts keep their usage,
-diagnostics and captures. A candidate that does not reduce the actual next
-request fails without adoption.
+`CompactionPlanner` retains complete assistant/call/result replay groups with
+occurrence-scoped call IDs, starting from the 20,000-token recent target (scaled
+for smaller windows). Before dispatch it moves the cut to leave room for a full
+summary allowance and normal continuation. A new unanswered input and current
+structured skill/permission carriers remain authoritative. A completed long task
+can be summarized within its internal rounds; a summary does not authorize tools
+or change selection/permission state.
 
-Version-2 `compaction` records retain ordered source/protected/kept IDs, exact
-summary dependencies (including the previous checkpoint), pi's `details`
-file lists, task root, before/after count provenance, operation and attempt
-IDs, output allowance and recovery linkage. An explicit synchronized
-append flushes preceding tool writes. Memory adopts the checkpoint synchronously
-before any trace-link await. Failed synchronization poisons the writer; reopening
-validates either a complete old or new projection and never replays work.
-Queue changes do not invalidate frozen context; immediate configuration/context
-changes do. Native history indexing and portable export validate checkpoint
-version/order instead of silently filtering missing IDs. Editing a protected
-input abandons summaries that depend on it. Forks retain original sources but
-start independent recovery state; a side with only a boundary snapshot reports
-missing ancestor evidence as unavailable.
+The effective selected model, endpoint, reasoning effort, replay policy, ordinary
+instructions/tool definitions and cache-session affinity remain unchanged.
+`tool_choice: none` prevents requested tool execution; the summary handler has no
+tool-dispatch continuation and rejects calls even when accompanied by text.
+Generic settings cannot replace input/model/tools, force a nontext format,
+truncate history, enable provider compaction or bypass execution controls. The
+appended instruction is request-local and never enters ordinary conversation
+history. A side session keeps its parent's cache affinity but its own accounting.
+Prefix preservation is not a guarantee of a real provider cache hit.
 
-Only typed context rejections trigger one durable reduction/retry allowance per
-logical model operation. Transient HTTP retry remains separate. No complete tool
-batch is rewound, and a length-truncated tool request stops without invocation
-or automatic regeneration. Summary usage is linked per physical attempt; it
-does not replace the normal-request context meter. Snapshot progress omits large
-source-ID arrays, which remain in the checkpoint journal.
+Generation allowance G is the lesser of 16,384 tokens, the declared output
+ceiling and one quarter of the context window. It includes reasoning and is both
+the wire cap and local reserve; a route configured to omit caps keeps an explicit
+local-only reserve. The soft visible-summary target is up to 3,000 tokens, smaller
+for small windows; neither reasoning effort nor the resulting text is clipped to
+force success. At safe pending-request boundaries the trigger reserves G, the
+appended instruction estimate, dispatch safety margin and a growth buffer of up
+to 16,384 tokens (at most a quarter-window). No compaction runs after a final
+answer merely because the now-idle context is large.
+
+The complete provider projection, including wrappers, schemas and images, sizes
+preflight and candidates. Opaque ciphertext is never counted as visible text.
+Persisted usage bindings prevent reuse across changed model, prefix, schemas or
+replay configuration, and a checkpoint resets the old usage epoch. Before/after
+progress comparisons deliberately use the same projection heuristic. All counts
+remain estimates. An intact summary request that cannot fit sends nothing; there
+is no shortening or alternate summarizer fallback.
+
+Only a complete, nonempty, non-refused, non-tool-calling reply can be adopted.
+The final checkpoint kind and replay wrapper are assigned before counting.
+`[checkpoint] + retained messages` must fit the normal output reserve and shrink
+input; automatic compaction must also fall below its trigger and save at least
+the safety margin. A rejected candidate retains the original context and never
+starts a repair request. Transient retries reuse the frozen request and share one
+bounded retry owner; incomplete output, refusal, compatibility and context
+rejections are not retried with another strategy.
+
+Version-2 records preserve ordered `sourceIDs` (all active input), `keptIDs`
+(retained inputs), `summarySourceIDs` (only replaced sources, including an old
+checkpoint) and `dependencyIDs` (everything seen, including retained messages).
+Editing either side invalidates dependent checkpoints transitively. Forks and
+reopen use the existing journal reducer. After revalidating branch, task, resources
+and effective settings, a synchronized checkpoint append is followed by immediate
+memory adoption with no intervening await/fallible step. Ancillary trace/display
+updates follow; Stop after this point keeps the durable checkpoint.
+
+One persisted recovery allowance can surround a failed ordinary context request;
+completed tools are never replayed. An unchanged failed automatic compaction is
+suppressed, while an explicit manual retry is a new operation. Queued input stays
+queued during a summary and is delivered/recounted at the normal boundary.
+Attempt usage, failures, reasoning and exact request/response captures remain in
+the existing chronological operation history; summary usage never replaces the
+normal-request context observation. The request inspector recognizes both the
+new appended instruction and historical saved summary formats.
 
 **Display kinds (H5).** Display messages carry optional `kind` and `detail`.
 The compaction summary row has `kind: "compaction"` and

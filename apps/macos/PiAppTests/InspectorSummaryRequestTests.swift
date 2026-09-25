@@ -9,6 +9,22 @@ import AppKit
 /// navigator — and its instruction first on its Conversation tab. The owner
 /// read a split-turn compaction's two requests as two compactions.
 final class InspectorSummaryRequestTests: XCTestCase {
+    func testAppendedCheckpointInstructionKeepsOrdinaryHistoryInspectable() throws {
+        let prompt = SummaryRequestInfo.checkpointMarker + "\nBoundary (JSON data): {\"replaced\":[[1,3]],\"retained\":[[3,5]]}"
+        let body: [String: Any] = ["model":"fixture", "tool_choice":"none", "tools": [["name":"read"]], "input": [
+            ["role":"developer", "content":"The ordinary instructions"],
+            ["role":"user", "content":[["type":"input_text", "text":"Original request"]]],
+            ["role":"assistant", "content":[["type":"output_text", "text":"Prior answer"]]],
+            ["role":"user", "content":[["type":"input_text", "text":prompt]]]]]
+        let document = try RequestDocument.parse(JSONSerialization.data(withJSONObject:body))
+        let info = try XCTUnwrap(document.summary)
+        XCTAssertEqual(info.kind,.continuation)
+        XCTAssertEqual(info.instruction,prompt)
+        XCTAssertEqual(info.item,document.items.last?.id)
+        XCTAssertEqual(InspectorSummaryHeading(info,label:nil).name,"continuation checkpoint")
+        XCTAssertEqual(document.items.count,3)
+    }
+
     static let system = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary."
     static let summarize = "The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish?]"
     static let update = "The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\nUpdate the existing structured summary with new information."

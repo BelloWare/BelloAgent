@@ -1,13 +1,10 @@
 import Foundation
 
-/// What one compaction summary request asked the model to do, read from its
-/// body. Since 0.1.99 a compaction is one request: the history before the
-/// kept messages, with the start of a turn too large to keep whole in the
-/// same request (`<turn-prefix>`) when the kept messages begin inside it.
-/// Earlier helpers sent that start in a second request, and a history too
-/// large for one request in chained parts; reading those as "two
-/// compactions" was the mistake this names away.
+/// Classifies current appended checkpoint instructions and historical summary
+/// requests without rewriting their captured conversation.
 enum SummaryRequestKind: String, Sendable, Equatable {
+    /// Normal typed context followed by one checkpoint instruction.
+    case continuation
     /// The history before the kept messages, summarized afresh.
     case earlierHistory
     /// New messages folded into a summary so far (`<previous-summary>`): a
@@ -35,6 +32,7 @@ struct SummaryRequestInfo: Sendable, Equatable {
     var item: Int? = nil
 
     static let instructionLimit = 4_000
+    static let checkpointMarker = "Create a concise continuation checkpoint for this conversation."
     /// Pi's summarization system prompt opens with this.
     static let systemMarker = "You are a context summarization assistant."
     /// Pi's turn-prefix prompt, and an earlier helper's turn-prefix update, carry this.
@@ -55,6 +53,12 @@ struct SummaryRequestInfo: Sendable, Equatable {
     /// what came before the instruction; any one may occur, quoted, inside
     /// what it closes, and only the last occurrence is the real end.
     static func read(prompt: String, limit: Int = instructionLimit) -> SummaryRequestInfo? {
+        if prompt.hasPrefix(checkpointMarker) {
+            let kept = String(prompt.prefix(limit))
+            return SummaryRequestInfo(kind: .continuation, instruction: kept,
+                lines: RequestDocument.wrap(RequestDocument.prefix(kept as NSString, limit: RequestDocument.previewLimit)),
+                characters: (prompt as NSString).length)
+        }
         let closings = ["</conversation>", "</turn-prefix>", "</previous-summary>"].map { prompt.range(of: $0, options: .backwards) }
         guard let end = closings.compactMap({ $0 }).max(by: { $0.lowerBound < $1.lowerBound }) else { return nil }
         let update = closings[2]?.lowerBound == end.lowerBound
@@ -81,6 +85,7 @@ enum SummaryRequestLabel {
     static func label(at index: Int, kinds: [SummaryRequestKind?]) -> String? {
         guard kinds.indices.contains(index), let kind = kinds[index] else { return nil }
         switch kind {
+        case .continuation: return "continuation checkpoint"
         case .turnStart: return "start of this turn"
         case .earlierHistory: return "earlier history"
         case .historyAndTurnStart: return "earlier history and start of this turn"
@@ -109,6 +114,9 @@ struct InspectorSummaryHeading: Equatable {
     init(_ info: SummaryRequestInfo, label: String?) {
         self.info = info
         switch info.kind {
+        case .continuation:
+            name = label ?? "continuation checkpoint"
+            subject = "Reads the active conversation unchanged, summarizes the older context, and keeps the recent messages intact."
         case .earlierHistory:
             name = label ?? "earlier history"
             subject = "Summarizes the history before the messages the compaction keeps."

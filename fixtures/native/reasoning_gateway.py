@@ -5,7 +5,7 @@ gateway instead of a real one. It answers at once, but it spends output
 tokens the way a reasoning model does, which the helper's other fixtures
 never do:
 
-- Reasoning grows with the requested effort: about 20,000 tokens at high for
+- Reasoning grows with the requested effort: about 12,000 tokens at high for
   a summary (a summary has the whole conversation to think over), a tenth of
   that for a turn. The answer comes after the reasoning, in the same output
   budget.
@@ -43,7 +43,7 @@ import litellm_contract as contract
 
 # Output tokens a request reasons for, by effort. A summary reasons over the
 # whole conversation; a turn that reads the next file reasons a tenth of it.
-SUMMARY_REASONING = {"none": 0, "minimal": 1_000, "low": 5_000, "medium": 10_000, "high": 20_000, "xhigh": 30_000, "max": 40_000}
+SUMMARY_REASONING = {"none": 0, "minimal": 1_000, "low": 5_000, "medium": 10_000, "high": 12_000, "xhigh": 30_000, "max": 40_000}
 TURN_REASONING_SHARE = 10
 # USD per million tokens: GPT-5-class input, cached input and output.
 PRICES = {"input": 1.25, "cached": 0.125, "output": 10.0}
@@ -75,6 +75,8 @@ def parse_summary_prompt(prompt):
     fixed prompt comes last, so the last one found is the request's own; a
     conversation can quote any of them. A request that also summarizes a
     split turn's prefix is "<kind>+turn-prefix"."""
+    if prompt.startswith("Create a concise continuation checkpoint"):
+        return "continuation", "", None
     position, kind = max((prompt.rfind(start), kind) for kind, start in SUMMARY_PROMPTS)
     if position < 0:
         return None, prompt, None
@@ -156,8 +158,8 @@ class ReasoningGateway:
                                "message": f"This model's maximum context length is {self.window} tokens. Your input has {input_tokens} tokens."}})
         reasoning = SUMMARY_REASONING.get(effort, SUMMARY_REASONING["medium"])
         if summary:
-            prompt = semantic["user_texts"][0]
-            text, call = self.summarize(prompt, input_tokens), None
+            prompt = semantic["user_texts"][-1]
+            text, call = self.summarize(prompt, input_tokens, body=body), None
             record["summary_kind"] = parse_summary_prompt(prompt)[0]
         else:
             reasoning //= TURN_REASONING_SHARE
@@ -225,10 +227,25 @@ class ReasoningGateway:
 
     # -- the scripted model -----------------------------------------------
 
-    def summarize(self, prompt, input_tokens):
+    def summarize(self, prompt, input_tokens, body=None):
         """A structured summary in pi's format that keeps the task, files and markers."""
         kind, conversation, previous = parse_summary_prompt(prompt)
         previous = previous or ""
+        if kind == "continuation" and body:
+            pieces = []
+            for item in body["input"][1:-1]:
+                if item.get("type") == "function_call":
+                    args = json.loads(item["arguments"])
+                    pieces.append(item["name"] + "(" + ", ".join(f'{key}={json.dumps(value)}' for key, value in args.items()) + ")")
+                elif item.get("type") == "function_call_output":
+                    pieces.append("[Tool result]: " + str(item["output"]))
+                else:
+                    text = "".join(part.get("text", "") for part in item.get("content", []) if isinstance(part, dict))
+                    if text.startswith(SUMMARY_PREFIX):
+                        previous = text
+                    else:
+                        pieces.append("[" + item.get("role", "assistant").title() + "]: " + text)
+            conversation = "\n\n".join(pieces)
         users = [part[len("[User]: "):] for part in conversation.split("\n\n") if part.startswith("[User]: ")]
         task = next((user for user in users if TASK_TAG in user), None) or next((line for line in previous.split("\n") if TASK_TAG in line), None)
         files = sorted(set(re.findall(r'read\(path="([^"]+)"', conversation)) | set(self.listed(previous, "Files read: ")))
@@ -242,7 +259,7 @@ class ReasoningGateway:
                  "- Markers seen: " + ", ".join(f"E2E-MARKER {part}: {word}" for part, word in sorted(markers.items()))]
         # A real summary grows with what it summarizes: one token of summary per
         # twenty of input, from 800 to 4,000, filled with the conversation's own lines.
-        target, notes = max(800, min(4_000, input_tokens // 20)) * 4, [line.strip() for line in conversation.split("\n") if len(line.strip()) > 40]
+        target, notes = max(800, min(3_000, input_tokens // 30)) * 4, [line.strip() for line in conversation.split("\n") if len(line.strip()) > 40]
         index = 0
         while sum(len(line) + 1 for line in lines) < target and notes:
             lines.append("- Evidence: " + notes[(index * 7919) % len(notes)][:160])

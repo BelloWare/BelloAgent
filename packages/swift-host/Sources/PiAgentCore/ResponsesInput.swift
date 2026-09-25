@@ -32,7 +32,17 @@ extension ProviderClient {
 
     /// The input array: the system prompt first, then every replayed message.
     static func responsesInput(_ history: [ChatMessage], instructions: String, profile p: Profile) throws -> [JSON] {
+        try responsesProjection(history, instructions: instructions, profile: p).items
+    }
+    struct InputProjection {
+        var items: [JSON]
+        var ranges: [String: Range<Int>]
+    }
+    /// The same conversion, with local source ownership for describing a
+    /// compaction boundary. No marker or metadata is added to wire items.
+    static func responsesProjection(_ history: [ChatMessage], instructions: String, profile p: Profile) throws -> InputProjection {
         var input: [JSON] = []
+        var ranges: [String: Range<Int>] = [:]
         // Pi puts the system prompt in the input: as a developer message to a
         // reasoning model, unless the gateway declares no developer role.
         if !instructions.isEmpty {
@@ -51,6 +61,8 @@ extension ProviderClient {
             pending = []; answered = []
         }
         for message in history {
+            let start = input.count
+            defer { ranges[message.id] = start..<input.count }
             switch message.role {
             case "assistant":
                 settle()
@@ -77,7 +89,7 @@ extension ProviderClient {
             msgIndex += 1
         }
         settle()
-        return input
+        return InputProjection(items: input, ranges: ranges)
     }
 
     /// A user message's content. A compaction checkpoint replays as pi's

@@ -16,7 +16,7 @@ private actor HeldTurnClient: ModelClient {
             return answer("Summary of the earlier questions")
         }
         turns.append(turnID)
-        guard turnID == "long" else { return answer("Answer to \(turnID)") }
+        guard turnID == "long" else { return answer("Answer to \(turnID). " + String(repeating:"Verified evidence. ",count:100)) }
         while holdTurn {
             if ignoresCancel { try? await Task.sleep(nanoseconds: 1_000_000) } else { try await Task.sleep(nanoseconds: 1_000_000) }
         }

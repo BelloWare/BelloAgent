@@ -1,0 +1,7 @@
+<h2>Bello Agent 0.1.100</h2>
+<ul>
+<li>Compaction now reads the active conversation in its normal request format, followed by one checkpoint instruction. Instructions, tool definitions, reasoning settings and session cache affinity stay consistent.</li>
+<li>Earlier compaction triggers reserve room for a complete summary. The generation allowance includes reasoning and is bounded by 16,384 tokens, the model ceiling and the context window.</li>
+<li>Recent complete tool groups and unanswered inputs stay intact. Summaries must fit and reduce context before they replace it; rejected summaries leave the conversation unchanged.</li>
+<li>Improved checkpoint dependency tracking, retry behavior, restoration and request inspection. Tool calls returned during summarization are rejected without execution.</li>
+</ul>

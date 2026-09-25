@@ -29,13 +29,12 @@ public struct ProviderClient: ModelClient {
         }
         return safe.isEmpty ? "unknown" : String(safe)
     }
-    /// Pi's buildParams (openai-responses.ts). `promptCaching` is false for a
-    /// compaction summary, which pi sends with cacheRetention "none".
+    /// Normal Responses construction, including cache affinity for compaction.
     /// `cacheSessionID` names the prompt cache the request joins (pi's
     /// session id there); nil means the session's own. Ours: a side chat
     /// joins its parent's cache, whose requests its own extend, while
     /// `sessionID` keeps naming the side itself.
-    public static func requestBody(profile p:Profile, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, cacheSessionID:String? = nil, promptCaching:Bool = true) throws -> JSON {
+    public static func requestBody(profile p:Profile, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, cacheSessionID:String? = nil, promptCaching:Bool = true, compaction:Bool = false) throws -> JSON {
         let history=messages.filter(\.replayEligible)
         var body:JSON=["model":JSON(p.model),"stream":true]
         if p.api=="openai-responses" {
@@ -74,8 +73,30 @@ public struct ProviderClient: ModelClient {
                     }
                 }
             }
-            // Last, so a model's sampling parameters override the named fields.
+            let owned = body
             for (key,value) in p.raw["samplingParams"].map { body[key]=value }
+            if compaction {
+                // A summary uses the normal prefix, but generic options cannot
+                // substitute history/models/tools or enable another execution path.
+                for key in ["input","model","tools","instructions","store","stream"] {
+                    guard body[key] == owned[key] else { throw AgentError("compaction_incompatible", "Compaction cannot override the normal request's \(key) through sampling parameters.") }
+                }
+                guard body["tool_choice"].isNull || body["tool_choice"].text == "none",
+                      body["truncation"].isNull || body["truncation"].text == "disabled",
+                      body["context_management"].isNull, body["previous_response_id"].isNull,
+                      body["conversation"].isNull, body["background"].isNull || body["background"].flag == false,
+                      body["metadata"]["session_id"] == owned["metadata"]["session_id"],
+                      body["response_format"].isNull || body["response_format"]["type"].text == "text",
+                      body["text"]["format"]["type"].isNull || body["text"]["format"]["type"].text == "text" else {
+                    throw AgentError("compaction_incompatible", "Compaction requires text output, intact history and tool_choice none. Remove conflicting execution, truncation or format options.")
+                }
+                body["tool_choice"] = "none"
+                body = body.removing(["max_output_tokens"])
+                if let cap = p.wireOutputLimit { body["max_output_tokens"] = JSON(cap) }
+                guard p.wireOutputLimit.map({ $0 >= Self.minimumOutputTokens && $0 == p.maxOutput }) ?? true else {
+                    throw AgentError("compact_budget", "The summary's output cap must match its local reserve and the route's supported minimum.")
+                }
+            }
         } else {
             let sampling=p.raw["samplingParams"].map
             for key in ["temperature","top_p"] { if let value=sampling[key] { body[key]=value } }
@@ -124,10 +145,7 @@ public struct ProviderClient: ModelClient {
     /// request and pays for it.
     public func complete(profile:Profile, apiKey:String, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, cacheSessionID:String, turnID:String, purpose:String, onObservation:@escaping @Sendable (RequestObservation) async -> Void, onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
         try Task.checkCancellation()
-        // Pi sends a compaction summary with cacheRetention "none": no prompt
-        // cache key and no session affinity headers.
-        let caching=purpose != "compaction"
-        let body=try Self.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,cacheSessionID:cacheSessionID,promptCaching:caching)
+        let body=try Self.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,cacheSessionID:cacheSessionID,compaction:purpose == "compaction")
         let bytes=try body.data()
         guard bytes.count<=32*1024*1024 else { throw AgentError("request_limit","Serialized request exceeds 32 MiB") }
         var request=URLRequest(url:profile.endpoint);request.httpMethod="POST";request.httpBody=bytes
@@ -138,10 +156,8 @@ public struct ProviderClient: ModelClient {
         request.setValue(Self.correlationValue(turnID),forHTTPHeaderField:"x-turn-id")
         // Pi's session affinity for an OpenAI-format gateway: session_id and
         // x-client-request-id, naming the same cache as prompt_cache_key.
-        if caching {
-            request.setValue(Self.correlationValue(cacheSessionID),forHTTPHeaderField:"session_id")
-            request.setValue(Self.correlationValue(cacheSessionID),forHTTPHeaderField:"x-client-request-id")
-        }
+        request.setValue(Self.correlationValue(cacheSessionID),forHTTPHeaderField:"session_id")
+        request.setValue(Self.correlationValue(cacheSessionID),forHTTPHeaderField:"x-client-request-id")
         // LiteLLM authenticates both API routes with the configured proxy key.
         // The Messages route also accepts x-api-key for its native protocol.
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -256,6 +272,7 @@ public struct ProviderClient: ModelClient {
             var result=try accumulator.result(); result.message.requestAttemptIDs=[attempt]
             result.message.responseTimeline=displayEvents.timeline
             result.message.providerIdentity=await traces.identity(attempt)
+            result.message.contextUsageBinding=try RequestContextCounter.usageBinding(body,profile:profile)
             result.message.providerBinding=try Self.replayBinding(profile); await traces.usage(attempt,result.usage)
             await traces.transport(attempt,observation:await stream.endObservation())
             await traces.finish(attempt,outcome:result.truncated ? "truncated":"completed",modelOutcome:result.truncated ? "truncated":"completed")

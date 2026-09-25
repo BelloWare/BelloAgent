@@ -6,7 +6,7 @@ private actor CompactionOutcomeClient: ModelClient {
     private(set) var compacting = false
     func holdCompaction() { hold = true }
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
-        guard purpose == "compaction" else { return answer("Completed answer") }
+        guard purpose == "compaction" else { return answer(String(repeating:"Completed answer with evidence. ",count:100)) }
         compacting = true
         while hold { try await Task.sleep(nanoseconds: 1_000_000) }
         throw AgentError("fixture_compaction_failure", "Summary request failed")

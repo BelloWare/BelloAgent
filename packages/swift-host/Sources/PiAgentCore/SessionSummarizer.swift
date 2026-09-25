@@ -1,50 +1,39 @@
 import Foundation
 
 extension AgentSession {
-    /// Pi's generateSummary (generateTurnPrefixSummary for a split turn with
-    /// nothing new before it): one request carrying the whole source, retried
-    /// as pi's retryAssistantCall retries it. Ours: a compaction is this one
-    /// request (the owner's rule), never chunks, and a split turn's prefix is
-    /// summarized in it (CompactionSourceBuilder.prompt). A request that would
-    /// not leave `room` free for its summary is not sent, where pi's
-    /// clampMaxTokensToContext would clip the summary, and a request the
-    /// gateway rejects as too long is not sent again: either way the
-    /// compaction fails and the context stays as it was. Nothing is published
-    /// into active context until the checkpoint is adopted.
-    func summarize(_ prompt: String, room: Int, profile: Profile, originalProfile: Profile, revision: UInt64, sourceIDs: [String]) async throws -> String {
-        // The summary profile's output budget is `room`: the request fits as
-        // any request does, its input beside that budget and the margin.
-        let messages=summaryMessages(prompt,sourceIDs:sourceIDs), count=try summaryCount(messages,profile:profile)
+    /// One frozen normal context plus one request-local instruction. No tool
+    /// dispatch continuation exists on this path, even if the gateway ignores
+    /// tool_choice. Preflight and dispatch use the same builder and controls.
+    func summarize(_ messages: [ChatMessage], instructions: String, tools: [ToolDefinition], profile: Profile,
+                   originalProfile: Profile, revision: UInt64) async throws -> String {
+        let sessionID=id, cacheSessionID=promptCacheSessionID
+        let worker=Task.detached(priority:.userInitiated) {
+            let body=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,
+                sessionID:sessionID,cacheSessionID:cacheSessionID,compaction:true)
+            try CompactionPlanner.validateRequest(body)
+            return try RequestContextCounter().count(messages:messages,profile:profile,request:body)
+        }
+        let count=try await withTaskCancellationHandler(operation:{ try await worker.value },onCancel:{ worker.cancel() })
+        try validateCompaction(revision,profile:originalProfile)
         guard count.fits else {
-            func tokens(_ value: Int) -> String { value.formatted(.number.locale(Locale(identifier:"en_US"))) }
-            throw AgentError("compaction_too_large","The history to summarize (about \(tokens(count.requestTokens)) tokens) and the summary's \(tokens(room))-token room do not fit this model's \(tokens(profile.contextWindow))-token window in one request. Nothing was sent, and the context is unchanged. Switch to a model with a larger window, or start a new chat.")
+            throw AgentError("compaction_too_large", "The intact history (about \(count.requestTokens) tokens), checkpoint instruction and \(profile.maxOutput)-token summary allowance do not fit this model's \(profile.contextWindow)-token window. Nothing was sent, and the context is unchanged. Use a larger context window or start a new chat.")
         }
-        var used=0
+        compactionState["summaryInput"] = count.json
+        compactionState["wireCap"] = profile.wireOutputLimit.map { JSON($0) } ?? .null
+        var used = 0
         do {
-            let reply=try await summaryReply(messages,profile:profile,originalProfile:originalProfile,revision:revision,
-                                             limit:min(max(1,compactionPolicy.maximumAttempts),1+max(0,retrySettings.enabled ? retrySettings.maxRetries : 0)),used:&used)
-            return try adopt(reply,cap:room)
+            let reply = try await summaryReply(messages,instructions:instructions,tools:tools,profile:profile,originalProfile:originalProfile,revision:revision,
+                limit:min(max(1,compactionPolicy.maximumAttempts),1+max(0,retrySettings.enabled ? retrySettings.maxRetries : 0)),used:&used)
+            return try adopt(reply,cap:profile.maxOutput)
         } catch let error as AgentError where Self.isContextOverflow(error) {
-            throw AgentError("compaction_too_large","The gateway rejected the summary request as longer than the model's window. The context is unchanged. Switch to a model with a larger window, or start a new chat.",attemptID:error.attemptID)
+            throw AgentError("compaction_too_large", "The gateway rejected the intact summary request as longer than the model's window. The context is unchanged; no alternate summary was sent.", attemptID:error.attemptID)
         }
-    }
-
-    /// The summary request's one user message.
-    func summaryMessages(_ prompt: String, sourceIDs: [String]) -> [ChatMessage] {
-        var source=ChatMessage(role:"user",content:[textBlock(prompt)])
-        source.sourceMessageIDs=sourceIDs
-        return [source]
-    }
-    /// A summary request sized as pi sizes one: its system prompt and message.
-    func summaryCount(_ messages: [ChatMessage], profile: Profile) throws -> RequestContextCount {
-        let body=try ProviderClient.requestBody(profile:profile,messages:messages,instructions:CompactionSourceBuilder.systemPrompt,tools:[],sessionID:id,promptCaching:false)
-        return try contextCounter.count(messages:messages,profile:profile,request:body,reportedUsage:false)
     }
 
     /// One summary request, retried as pi's retryAssistantCall retries it:
     /// a failure pi reads as transient gets settings.retry's retries, within
     /// `limit` physical attempts counted in `used`.
-    func summaryReply(_ messages: [ChatMessage], profile: Profile, originalProfile: Profile, revision: UInt64, limit: Int, used: inout Int) async throws -> ModelReply {
+    func summaryReply(_ messages: [ChatMessage], instructions: String, tools: [ToolDefinition], profile: Profile, originalProfile: Profile, revision: UInt64, limit: Int, used: inout Int) async throws -> ModelReply {
         compactionState["phase"]="summarizing"
         compactionState["outputAllowance"]=JSON(profile.maxOutput)
         event("compaction_progress")
@@ -62,19 +51,16 @@ extension AgentSession {
             let start=nowMS(); var requestMs: Double?
             defer { let ms=requestMs ?? (nowMS()-start); turnModelMs += ms; cumulativeModelMs=ObservedDuration.adding(cumulativeModelMs,ms) }
             do {
-                // The model's output limit, clipped as pi clips any request to
-                // the room left, and never below the summary's room.
-                let count=try summaryCount(messages,profile:profile)
-                let room=max(profile.maxOutput,PiContext.outputRoom(contextWindow:profile.contextWindow,requestTokens:count.requestTokens))
-                let dispatched=try profile.wireOutputLimit.map { $0 > room ? try profile.capped(room) : profile } ?? profile
-                let reply=try await client.complete(profile:dispatched,apiKey:apiKey,messages:messages,instructions:CompactionSourceBuilder.systemPrompt,tools:[],sessionID:id,turnID:currentTurnID,purpose:"compaction",onObservation:{ [weak self] in await self?.compactionObservation($0) },onDelta:{ [weak self] in await self?.compactionDelta($0) })
+                let reply=try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,
+                    sessionID:id,cacheSessionID:promptCacheSessionID,turnID:currentTurnID,purpose:"compaction",
+                    onObservation:{ [weak self] in await self?.compactionObservation($0) },onDelta:{ [weak self] in await self?.compactionDelta($0) })
                 requestMs=nowMS()-start
                 return try await received(reply,cap:profile.maxOutput,revision:revision,originalProfile:originalProfile)
             } catch let error as AgentError {
                 requestMs=nowMS()-start
                 operationStatus("Summary request failed: " + error.message)
                 if let attempt=error.attemptID, !compactionAttemptIDs.contains(attempt) { compactionAttemptIDs.append(attempt) }
-                guard !Self.isContextOverflow(error), retrySettings.enabled, retries<retrySettings.maxRetries, used<limit,
+                guard !Self.isContextOverflow(error), !["compaction_incompatible", "compact_stale", "provider_incomplete", "provider_refused"].contains(error.code), retrySettings.enabled, retries<retrySettings.maxRetries, used<limit,
                       PiProviderRules.isRetryableText(error.piMessage), !Task.isCancelled else { throw error }
                 retries += 1
                 compactionState["phase"]="retrying"; event("compaction_progress")
@@ -116,6 +102,9 @@ extension AgentSession {
         }
         guard !reply.truncated, reply.message.stopReason != "length", reply.terminal?.status != "incomplete" else {
             throw summaryFailure("compaction_incomplete","Summary generation ended incompletely for a non-token or unknown reason. Inspect the captured response.",outcome:outcome)
+        }
+        guard reply.terminal?.status == nil || reply.terminal?.status == "completed" else {
+            throw summaryFailure("compaction_incomplete", "The summary did not reach a successful terminal state.", outcome:outcome)
         }
         guard !text.isEmpty else { throw summaryFailure("compaction_empty_summary","The completed response contained no usable summary text. Inspect this attempt before retrying.",outcome:outcome) }
         return text

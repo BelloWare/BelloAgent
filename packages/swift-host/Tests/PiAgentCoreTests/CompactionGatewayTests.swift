@@ -35,7 +35,7 @@ final class CompactionGatewayTests: XCTestCase {
         var user=ChatMessage(role:"user",content:[textBlock("Preserve the objective.")]);user.id="root";user.taskRootID="root"
         // Two answers of 2,250 tokens each: the second is kept, and the task's
         // start is summarized in one request of a 16,000-token window.
-        let seed=[user]+(0..<2).map { _ in var evidence=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"observed ",count:1000))]);evidence.taskRootID="root";return evidence }
+        let seed=[user]+(0..<2).map { _ in var evidence=ChatMessage(role:"assistant",content:[textBlock(String(repeating:"observed ",count:1500))]);evidence.taskRootID="root";return evidence }
         let traces=TraceStore()
         func attempts(_ id: String) async throws -> [JSON] { try await traces.command("debug.list",session:id,params:[:])["attempts"].list }
         func records() throws -> [JSON] { try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) } }
@@ -91,6 +91,40 @@ final class CompactionGatewayTests: XCTestCase {
         let spent=await exhausted.cumulativeUsage;XCTAssertEqual(spent.output,stopped.first?["usage"]["output"].int ?? -1)
         await exhausted.close()
     }
+    func testGatewayIgnoringToolChoiceNeverExecutesAndCapturesIntactPrefix() async throws {
+        let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
+        var repo=URL(fileURLWithPath:#filePath);for _ in 0..<5 { repo.deleteLastPathComponent() }
+        let server=Process();server.executableURL=URL(fileURLWithPath:"/usr/bin/python3")
+        server.arguments=[repo.appendingPathComponent("fixtures/native/compaction_gateway.py").path,root.path]
+        server.standardOutput=FileHandle.nullDevice;server.standardError=FileHandle.nullDevice;try server.run()
+        defer { stopFixtureProcess(server) }
+        let ready=root.appendingPathComponent("ready.json");try await eventually { FileManager.default.fileExists(atPath:ready.path) }
+        let port=try XCTUnwrap(JSON.parse(Data(contentsOf:ready))["port"].int)
+        var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["thinkingLevel"]="high"
+        let profile=try Profile(raw), resources=Resources(cwd:root,home:root), tools=GoldenCompactionTools(root)
+        let snapshot=try await resources.resolve(), definitions=await tools.definitions(readOnly:false)
+        let seed=[ChatMessage(role:"user",content:[textBlock("Inspect and preserve the work; do not mutate files.")]),
+                  ChatMessage(role:"assistant",content:[textBlock(String(repeating:"Verified evidence. ",count:5000))])]
+        for suffix in ["write","mcp"] {
+            let id="compaction-no-tools-"+suffix, traces=TraceStore()
+            let s=try AgentSession(id:id,profile:profile,apiKey:"synthetic-compaction-key",cwd:root,directory:root.appendingPathComponent(id),readOnly:false,resources:resources,client:ProviderClient(traces:traces),tools:tools,traces:traces,seed:seed)
+            try await s.compact();try await eventually { !(await s.isRunning) }
+            let state=await s.snapshot(), context=await s.context, calls=await tools.calls
+            XCTAssertEqual(state["compaction"]["errorCode"].text,"compaction_unexpected_tool_call",state["preflightError"].encoded())
+            XCTAssertEqual(context.map(\.id),seed.map(\.id));XCTAssertTrue(calls.isEmpty)
+            XCTAssertFalse(FileManager.default.fileExists(atPath:root.appendingPathComponent("counter.txt").path))
+            let records=try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) }.filter { $0["session"].text==id }
+            XCTAssertEqual(records.count,1,"Tool-calling summaries are not retried")
+            let sent=try JSON.parse(XCTUnwrap(Data(base64Encoded:try XCTUnwrap(records.first?["request"].text))))
+            let normal=try ProviderClient.requestBody(profile:profile,messages:seed,instructions:AgentSession.requestInstructions(snapshot.prompt),tools:definitions,sessionID:id)
+            XCTAssertEqual(Array(sent["input"].list.dropLast()),normal["input"].list)
+            for key in ["tools","reasoning","include","prompt_cache_key","store","model"] { XCTAssertEqual(sent[key],normal[key],key) }
+            let attempts=try await traces.command("debug.list",session:id,params:[:])["attempts"].list
+            XCTAssertEqual(attempts.count,1);XCTAssertEqual(attempts.first?["purpose"].text,"compaction")
+            await s.close()
+        }
+    }
+
     func testOneTaskCompactsRecoversAgainstIndependentGatewayAndReopensWithoutRepeatingTools() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         var repo=URL(fileURLWithPath:#filePath);for _ in 0..<5 { repo.deleteLastPathComponent() }
@@ -100,7 +134,7 @@ final class CompactionGatewayTests: XCTestCase {
         let ready=root.appendingPathComponent("ready.json")
         try await eventually { FileManager.default.fileExists(atPath:ready.path) }
         let port=try XCTUnwrap(JSON.parse(Data(contentsOf:ready))["port"].int)
-        var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["contextWindow"]=8000;raw["maxOutputTokens"]=512
+        var raw=try fixtureProfile().raw;raw["baseUrl"]=JSON("http://127.0.0.1:\(port)");raw["contextWindow"]=16000;raw["maxOutputTokens"]=512
         let profile=try Profile(raw),traces=TraceStore(),tools=GoldenCompactionTools(root),state=root.appendingPathComponent("state")
         let s=try AgentSession(id:"compaction-golden",profile:profile,apiKey:"synthetic-compaction-key",cwd:root,directory:state,readOnly:false,resources:Resources(cwd:root,home:root),client:ProviderClient(traces:traces),tools:tools,traces:traces)
         let sibling=try AgentSession(id:"compaction-sibling",profile:profile,apiKey:"synthetic-compaction-key",cwd:root,directory:state,readOnly:true,resources:Resources(cwd:root,home:root),client:ProviderClient(traces:traces),tools:tools,traces:traces)
@@ -126,9 +160,17 @@ final class CompactionGatewayTests: XCTestCase {
         // request, the recovery summary and the final answer.
         XCTAssertEqual(attempts.count,7);XCTAssertEqual(records.filter { $0["status"].int==400 }.count,1);XCTAssertFalse(records.contains { $0["status"].int==422 })
         for attempt in attempts {
-            let request=try await traces.command("debug.body",session:"compaction-golden",params:["attemptId":attempt["attemptId"],"body":"request"])
-            let response=try await traces.command("debug.body",session:"compaction-golden",params:["attemptId":attempt["attemptId"],"body":"response"])
-            XCTAssertTrue(records.contains { $0["request"]==request["bytes"] && $0["response"]==response["bytes"] },"Raw HTTP bytes must match; normalized events are not capture")
+            func fullBody(_ which: String) async throws -> String {
+                var data=Data(), offset:JSON=0
+                while true {
+                    let page=try await traces.command("debug.body",session:"compaction-golden",params:["attemptId":attempt["attemptId"],"body":JSON(which),"offset":offset])
+                    data.append(try XCTUnwrap(Data(base64Encoded:page["bytes"].text ?? "")))
+                    guard !page["next"].isNull else { return data.base64EncodedString() }
+                    offset=page["next"]
+                }
+            }
+            let request=try await fullBody("request"), response=try await fullBody("response")
+            XCTAssertTrue(records.contains { $0["request"].text==request && $0["response"].text==response },"All captured bytes must match, including full unexcerpted tool results")
             XCTAssertFalse(attempt["operation"].isNull,"Every physical attempt has operation linkage")
         }
         let defs=await s.sessionDefinitions(),request=try ProviderClient.requestBody(profile:profile,messages:context,instructions:"",tools:defs,sessionID:"compaction-golden")
@@ -156,6 +198,25 @@ final class CompactionGatewayTests: XCTestCase {
         XCTAssertEqual(historyAfter.map(\.id),ordered.map(\.id))
         XCTAssertEqual(historyAfter.map(\.responseTimeline),ordered.map(\.responseTimeline))
         XCTAssertEqual(try String(contentsOf:root.appendingPathComponent("counter.txt"),encoding:.utf8),"once\n")
-        await reopened.close()
+        let forked=try await reopened.fork(to:"compaction-fork")
+        let copy=try AgentSession(id:"compaction-fork",profile:profile,apiKey:"synthetic-compaction-key",cwd:root,directory:state,readOnly:false,resources:Resources(cwd:root,home:root),client:noReplay,tools:tools,traces:traces,resumePath:forked["path"].text)
+        let forkContext=await copy.context
+        XCTAssertEqual(forkContext.map(\.id),restored.map(\.id))
+        XCTAssertEqual(forkContext.map(\.content),restored.map(\.content))
+        XCTAssertEqual(forkContext.map(\.providerItems),restored.map(\.providerItems))
+        XCTAssertEqual(forkContext.map(\.contextUsageBinding),restored.map(\.contextUsageBinding))
+        XCTAssertEqual(forkContext.map(\.compaction),restored.map(\.compaction))
+        let afterForkCalls=await noReplay.count;XCTAssertEqual(afterForkCalls,0)
+        if let output=ProcessInfo.processInfo.environment["PI_COMPACTION_SHAPES_DIR"] {
+            let directory=URL(fileURLWithPath:output);try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            let bodies=try records.map { try JSON.parse(XCTUnwrap(Data(base64Encoded:XCTUnwrap($0["request"].text)))) }
+            let summaryIndex=try XCTUnwrap(bodies.firstIndex { $0["tool_choice"].text == "none" })
+            let instructions=bodies[0]["input"].list.first?["content"].text ?? ""
+            let restoredBody=try ProviderClient.requestBody(profile:profile,messages:restored,instructions:instructions,tools:defs,sessionID:"compaction-golden")
+            let forkBody=try ProviderClient.requestBody(profile:profile,messages:forkContext,instructions:instructions,tools:defs,sessionID:"compaction-fork")
+            let samples:[String:JSON] = ["ordinary":bodies[0],"summary":bodies[summaryIndex],"next-request":bodies[summaryIndex+1],"restored":restoredBody,"forked":forkBody]
+            for (name,body) in samples { try JSONSerialization.data(withJSONObject:JSONSerialization.jsonObject(with:body.data()),options:[.prettyPrinted,.sortedKeys]).write(to:directory.appendingPathComponent(name+".json")) }
+        }
+        await copy.close();await reopened.close()
     }
 }

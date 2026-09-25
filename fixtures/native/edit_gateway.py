@@ -45,8 +45,8 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     texts += [p['text'] for p in item['content'] if p['type'] in ('input_text', 'output_text')]
             assert not pending
             joined = '\n'.join(texts)
-            if not body.get('tools'):
-                assert system['content'].startswith('You are a context summarization assistant.') and texts[0].startswith('<conversation>\n')
+            if body.get('tool_choice') == 'none':
+                assert texts[-1].startswith('Create a concise continuation checkpoint') and body['tools']
                 output = message('UNSAFE_SUMMARY ORIGINAL_TARGET FUTURE_SECOND')
             elif 'EDITED_REPLACEMENT' in joined:
                 assert 'SAFE_FIRST' in joined and 'SKILL_CURRENT_SELECTION' in joined

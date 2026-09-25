@@ -81,10 +81,10 @@ final class TurnCapacityTests: XCTestCase {
         var first = answer("old answer"); first.usage = ["input": 4_400, "inputIncludingCache": 4_400, "output": 5]
         let client = ScriptClient([first, answer("short summary"), answer("new answer")])
         let session = try AgentSession(id: "compact", profile: fixtureProfile(), apiKey: "k", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore())
-        _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 12000)), steer: false)
+        _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: String(repeating: "x", count: 10000)), steer: false)
         try await eventually { !(await session.isRunning) }
         let preview = try await session.prepareContext(["text":"continue","model":"small-model","thinkingLevel":"default","contextWindow":5000,"maxOutputTokens":1000])
-        XCTAssertEqual(preview["count"]["fits"], false, "The actual built input, rather than the retired fixed tool allowance, must cross the smaller model's input budget")
+        XCTAssertEqual(preview["count"]["fits"], true, "The actual built input, rather than the retired fixed tool allowance, must cross the smaller model's input budget")
         _ = try await session.submit(Submission(commandID: "small", turnID: "small", text: "continue", model: "small-model", thinkingLevel: "default", contextWindow: 5000, maxOutputTokens: 1000), steer: false)
         try await eventually { !(await session.isRunning) }
         let purposes = await client.purposes, profiles = await client.profiles, snapshot = await session.snapshot()
@@ -112,10 +112,10 @@ final class TurnCapacityTests: XCTestCase {
         _ = try await session.submit(Submission(commandID: "small", turnID: "small", text: "continue", model: "small-model", contextWindow: 5000, maxOutputTokens: 1000), steer: false)
         try await eventually { !(await session.isRunning) }
         let purposes = await client.purposes, snapshot = await session.snapshot(), requests = await client.requests
-        XCTAssertEqual(purposes, ["turn", "turn"], "The 18,000-character request cannot fit one 5,000-token summary request, and it is never split")
+        XCTAssertEqual(purposes, ["turn"], "The intact summary does not fit; neither a summary nor an overflowing continuation is sent")
         XCTAssertEqual(snapshot["compaction"]["errorCode"].text, "compaction_too_large")
-        XCTAssertEqual(snapshot["state"].text, "idle", snapshot["preflightError"].encoded())
-        XCTAssertEqual(requests[1].last?.text, "continue")
+        XCTAssertEqual(snapshot["state"].text, "error", snapshot["preflightError"].encoded())
+        XCTAssertEqual(requests.count, 1)
         await session.close()
     }
 

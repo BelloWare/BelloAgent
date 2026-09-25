@@ -51,7 +51,7 @@ Free rehearsal, against a local gateway whose model reasons (about 20,000
 tokens at high for a summary):
 
   PI_BUILD_ROOT=... python3 scripts/live-compaction-e2e.py --fixture
-  PI_BUILD_ROOT=... python3 scripts/live-compaction-e2e.py --fixture --fixture-summary-limit 13107
+  PI_BUILD_ROOT=... python3 scripts/live-compaction-e2e.py --fixture --fixture-summary-limit 8192
 
 The second run caps every summary at 0.1.90's 13,107 tokens and must FAIL.
 
@@ -110,17 +110,12 @@ class Config:
 
     @property
     def threshold(self):
-        """Pi's compaction threshold: the window less its reserve."""
-        return self.window - min(RESERVE, self.window // 2)
+        """Conservative fixture planning threshold; the helper counts its exact instruction."""
+        return self.window - self.summary_room(None) - min(RESERVE, self.window // 4) - min(1024, max(1, self.window // 100)) - 1000
 
-    def summary_room(self, kind):
-        """The room a summary request must leave for its output: pi's cap, 0.8 ×
-        the reserve, plus the turn-prefix cap, 0.5 × the reserve, when it also
-        summarizes a split turn (only that cap for a turn's prefix alone), within
-        the model's limit (CompactionPolicy.summaryTokens)."""
-        reserve = min(RESERVE, self.window // 2)
-        room = reserve // 2 if kind == "turn-prefix" else reserve * 8 // 10 + (reserve // 2 if kind and kind.endswith("+turn-prefix") else 0)
-        return min(room, self.limit) if self.limit else room
+    def summary_room(self, kind=None):
+        """The single summary allowance, including hidden reasoning."""
+        return min(16_384, self.limit or 16_384, self.window // 4)
 
 
 def load_catalog():
@@ -736,8 +731,10 @@ def describe(attempt, request, response, gateway_record):
         body = {}
     prompt = ""
     items = body.get("input") or []
-    if len(items) > 1 and items[1].get("role") == "user":
-        prompt = "".join(part.get("text", "") for part in items[1].get("content", []))
+    user_items = [item for item in items if item.get("role") == "user"]
+    if user_items:
+        chosen = user_items[-1] if attempt["purpose"] == "compaction" else user_items[0]
+        prompt = "".join(part.get("text", "") for part in chosen.get("content", []))
     summary = attempt["purpose"] == "compaction"
     kind = reasoning_gateway.parse_summary_prompt(prompt)[0] if summary else None
     terminal = terminal_event(response)
@@ -861,9 +858,9 @@ def common_checks(result, status, stopped, bound, run):
     result.check("one summary request per compaction", summaries and not several,
                  f"{len(summaries)} summary requests over {len(inputs)} compactions"
                  + ("" if not several else "; more than one: " + ", ".join(f"{(operation or '?')[:8]} sent {count}" for operation, count in several.items())))
-    small = [row for row in summaries if row["effectiveMaxOutputTokens"] is not None and row["effectiveMaxOutputTokens"] < cfg.summary_room(row["kind"])]
+    small = [row for row in summaries if row["effectiveMaxOutputTokens"] is not None and row["effectiveMaxOutputTokens"] != cfg.summary_room(row["kind"])]
     unlimited = [row for row in summaries if row["effectiveMaxOutputTokens"] is None]
-    result.check("every summary request leaves room for pi's summary cap",
+    result.check("every summary request uses the planned generation allowance",
                  summaries and not small and (not unlimited or not cfg.limit),
                  (f"least sent: {number(min((row['effectiveMaxOutputTokens'] for row in summaries if row['effectiveMaxOutputTokens'] is not None), default=None))}" if summaries else "no summary request")
                  + ("" if not small else "; too small: " + ", ".join(f"#{row['index']} {number(row['effectiveMaxOutputTokens'])} < {number(cfg.summary_room(row['kind']))}" for row in small))
@@ -1026,7 +1023,7 @@ def split_turn_check(result):
     summaries = [row for row in result.requests if row["purpose"] == "compaction"]
     first = next((row["operation"] for row in summaries), None)
     kinds = [row["kind"] for row in summaries if row["operation"] == first]
-    result.check("the split turn's start summarized in the same request", kinds and all(kind and kind.endswith("+turn-prefix") for kind in kinds),
+    result.check("the active context summarized with one appended instruction", kinds and all(kind == "continuation" for kind in kinds),
                  f"the first compaction sent: {', '.join(kind or '?' for kind in kinds) or 'nothing'}")
 
 
