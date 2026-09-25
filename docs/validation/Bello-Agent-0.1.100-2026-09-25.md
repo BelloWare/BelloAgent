@@ -1,6 +1,6 @@
 # Bello Agent 0.1.100 — intact-context compaction
 
-Status: implementation and validation complete; release packaging in progress.
+Status: released and publicly verified, 2026-09-25 04:32:16 UTC.
 Starting main SHA: `8ae9c5713e1ac74e5471015107257784bf5a0ae3` (0.1.99/build 103).
 The owner's revised **Compaction-Implementation-Plan _1_.md**, September 25,
 supersedes the former Pi transcript/excerpt path. The owner separately requested
@@ -92,4 +92,21 @@ persistence, not semantic summary quality or real prompt-cache hits.
 
 ## Release provenance
 
-Pending signed build, notarization, publication and public verification.
+- Version **0.1.100**, build **104**, arm64 macOS 14+.
+- Built from source `dd1e8ffa3e60331e09978a42f9df834717d9bfff` on main.
+  Native tree `aebcc00c35d566b1dcfdf34f59e07bfac19eb5b5`; helper tree
+  `a7856c7ccde96adb12d569ceca9493f57ee0c2a7`. Only provenance documentation
+  changed after packaging. Source is committed locally under the existing
+  release policy; this request did not separately request a source push.
+- Optimized build, packaged helper smoke, Developer ID signing, notarization,
+  stapling, Gatekeeper and Sparkle validation passed. Accepted notarizations:
+  app `ad3166a4-1439-4659-9d42-9afb2c533518`; installer
+  `c1e93612-b816-49c2-9ae2-cc22e0161ed0`.
+- Website publication commit: `ed40835730d1e21236009febc639e712da504f1a`, pushed.
+- Public verification at **2026-09-25 04:32:16 UTC**: product page advertises
+  0.1.100, canonical and legacy feeds match byte-for-byte, downloaded installer
+  matches the local SHA-256 and passes Ed25519 verification. Initial reads
+  during deployment still served 0.1.99; verification was repeated after rollout.
+- Installer: **10,847,251 bytes** (10.34 MiB), SHA-256
+  `85ee93b880b9d0d4fe2fcada1b06f101e55d95d7fc5dac7dde7dabd69218db48`.
+- [Download Bello Agent 0.1.100](https://belloware.com/assets/BelloAgent-0.1.100.dmg).
