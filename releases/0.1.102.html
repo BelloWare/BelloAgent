@@ -1,0 +1,7 @@
+<h2>Bello Agent 0.1.102</h2>
+<ul>
+<li>Long threads can continue beyond the former 128 MiB session journal limit. You no longer need to start a new chat because its saved history has grown.</li>
+<li>Large sessions remain browsable and can be reopened, forked, recovered or used for a portable handoff. Journal readers process records incrementally to reduce peak memory use.</li>
+<li>History scanning and fork copying are faster, while writer locks, complete-record validation and damaged-file recovery remain intact.</li>
+<li>Request details refresh when an initially empty capture arrives, including compaction request previews.</li>
+</ul>

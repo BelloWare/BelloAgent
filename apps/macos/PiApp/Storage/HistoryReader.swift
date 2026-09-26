@@ -54,6 +54,7 @@ struct HistoryRevision: Equatable, Sendable {
 // Read-only archive browsing does not launch an agent runtime.
 // First index record offsets and parent links; decode only the requested page.
 actor HistoryReader {
+    private static let newline = Data([10])
     /// A journal that is no longer where its chat says it is must say so. The
     /// caller's "original files were preserved" is a false claim about a file
     /// that is not there.
@@ -305,7 +306,6 @@ actor HistoryReader {
         let identity = try stamp(file)
         let key = RecordKey(path: path, stamp: identity, id: id, field: field)
         if let decoded, decoded.key == key { return (try UnicodePage.slice(decoded.text, offset: offset), decoded.text.length) }
-        guard try file.seekToEnd() <= 134_217_728 else { throw StoreError.unreadableRecord }
         // The stamped index already knows where this record starts and how long
         // it is. Rescanning and decoding the whole journal per page made editing
         // one large message cost one full decode of the file for every page.
@@ -326,7 +326,7 @@ actor HistoryReader {
         while let chunk = try file.read(upToCount: 65_536), !chunk.isEmpty {
             try Task.checkCancellation()
             var start = chunk.startIndex
-            for index in chunk.indices where chunk[index] == 10 {
+            while let index = chunk.range(of: Self.newline, in: start..<chunk.endIndex)?.lowerBound {
                 try Task.checkCancellation()
                 pending.append(chunk[start..<index]); guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }
                 // A damaged neighbour must not hide a readable message, and a
@@ -378,7 +378,6 @@ actor HistoryReader {
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file)
         let size = try file.seekToEnd(); try file.seek(toOffset: 0)
-        guard size <= 134_217_728 else { throw StoreError.unreadableRecord }
         let branch: HistoryOffsetIndex
         if let cached = indexes[path], cached.stamp == identity { branch = cached.branch }
         else { branch = try HistoryOffsetIndex() }
@@ -404,7 +403,7 @@ actor HistoryReader {
         while let chunk = try file.read(upToCount: 65_536), !chunk.isEmpty {
             try Task.checkCancellation()
             var start = chunk.startIndex
-            for index in chunk.indices where chunk[index] == 10 {
+            while let index = chunk.range(of: Self.newline, in: start..<chunk.endIndex)?.lowerBound {
                 try Task.checkCancellation()
                 pending.append(chunk[start..<index]); guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }
                 do {

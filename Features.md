@@ -286,7 +286,7 @@ on a bounded pool of worker threads, outside the project tool actor. Gateway lim
 [20-session concurrency review](docs/Concurrency-Review-2026-09-19.md) and
 [worker-thread review](docs/TPS-Workers-Review-2026-09-19.md).
 
-Native journals have a Pi-compatible display envelope but a distinct provider-state contract. One writer owns each journal. Do not let Pi CLI append to a native journal. Old Pi sessions remain read-only; an explicit portable draft is available, not lossless SDK replay. The owner does not require additional legacy migration work before release.
+Native journals have a Pi-compatible display envelope but a distinct provider-state contract. One writer owns each journal. Long threads have no total journal-size cap: they can continue, reopen, browse, fork, recover and prepare a portable preview beyond 128 MiB. Readers stream records instead of loading all raw journal bytes at once; the 32 MiB individual-record bound and damaged-tail/identity checks remain. Do not let Pi CLI append to a native journal. Old Pi sessions remain read-only; an explicit portable draft is available, not lossless SDK replay. The owner does not require additional legacy migration work before release.
 
 Explicit-only skills stay in the user picker and out of automatic discovery. Preserve original relative script paths. A skill grants no extra tools and cannot escalate permissions. Third-party skill scripts may still need an installed language runtime; the small application does not bundle every possible toolchain.
 

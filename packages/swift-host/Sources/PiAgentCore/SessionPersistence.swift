@@ -23,19 +23,23 @@ extension AgentSession {
         guard !closed, let journal, !ephemeral else { throw AgentError("session_unavailable", "Save this session before forking its context") }
         _ = try identity(JSON(newID))
         guard newID != id else { throw AgentError("session_conflict", "A fork needs a new session identity") }
-        var source=try journal.records()
         let temporary=directory.appendingPathComponent(".fork-\(UUID().uuidString).jsonl")
         let destination=directory.appendingPathComponent("fork_"+newID+".jsonl")
         // A fork has its own tools and its own prompt cache.
         var origin=sideSeed().info.removing(["parentToolMode","cacheSessionId"]); origin["relationship"]="fork"
         origin["omittedIncompleteEntries"]=JSON(max(0,context.count-boundary.count))
         var contextIDs=boundary.map(\.id), timeline=EditReplayPlan.forkTimeline(visible:visible.map(\.id),boundary:contextIDs)
+        var end: Int?
         if let messageID {
-            let end=try forkPoint(messageID, in: source)
-            source=Array(source[...end])
+            let cutoff=try forkPoint(messageID, in: journal.recordReader()); end=cutoff
             // The same reducer every journal is replayed with, stopped at the reply.
-            let state: ConversationReplay
-            do { state=try ConversationReplay(source) }
+            var state=try ConversationReplay()
+            do {
+                let reader=try journal.recordReader(); var index=0
+                while let record=try reader.next() {
+                    if index <= cutoff { try state.consume(record) }; index += 1
+                }
+            }
             catch { throw AgentError("fork_target", "The conversation up to that reply cannot be rebuilt: \(error.localizedDescription)") }
             contextIDs=state.context.map(\.id)
             timeline=EditReplayPlan.forkTimeline(visible:state.visible.map(\.id),boundary:contextIDs)
@@ -49,13 +53,16 @@ extension AgentSession {
         }
         do {
             let prepared=try SessionJournal(url:temporary,id:newID,cwd:cwd,binding:profile.binding,create:true)
-            for record in source {
+            let reader=try journal.recordReader(); var index=0
+            while let record=try reader.next() {
+                defer { index += 1 }
+                if let end, index > end { continue }
                 let kind=record["customType"].text ?? ""
                 // A fork is a chat of its own: it starts with no spend of its own.
                 if ["pi-app.native.v1", "pi-app.native.state.v1", "pi-app.side-origin.v1", "pi-app.fork-origin.v1", "pi-app.context-recovery.v1", SessionSpend.recordType].contains(kind) { continue }
                 // Branch records can contain a queued edit. Preserve the branch
                 // and all message bytes, but never authorize its command twice.
-                try prepared.append(record.removing(["id","parentId","timestamp","nativeState"]),id:try identity(record["id"]))
+                try prepared.append(record.removing(["id","parentId","timestamp","nativeState"]),id:try identity(record["id"]),flush:false)
             }
             try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(contextIDs.map { JSON($0) }),"visibleIDs":.array(timeline.map { JSON($0) })]])
             try prepared.append(["type":"custom","customType":"pi-app.fork-origin.v1","data":origin])
@@ -71,24 +78,29 @@ extension AgentSession {
     /// its whole tool batch. A batch still running is refused; one a crash
     /// left without results is kept, and the fork records their outcome as
     /// unknown when it opens, as any reopened chat does.
-    func forkPoint(_ messageID: String, in records: [JSON]) throws -> Int {
-        guard let start = records.firstIndex(where: { $0["type"].text == "message" && $0["id"].text == messageID }) else {
-            throw AgentError("fork_target", "That reply is not in this conversation's journal yet.")
-        }
-        let reply = try ChatMessage(id: messageID, pi: records[start]["message"])
-        guard reply.role == "assistant", reply.kind == nil else { throw AgentError("fork_target", "Choose one of the assistant's replies to fork from.") }
-        guard reply.replayEligible else {
-            throw AgentError("fork_target", "That reply was stopped before it finished, so it is not part of the conversation. Fork from an earlier reply.")
-        }
-        var pending = Set(reply.content.filter { $0["type"].text == "toolCall" }.compactMap { $0["id"].text }), end = start, index = start + 1
-        while !pending.isEmpty, index < records.count {
-            let record = records[index]; index += 1
+    func forkPoint(_ messageID: String, in reader: JournalRecordReader) throws -> Int {
+        var index=0, start: Int?, end=0, pending=Set<String>(), batchFinished=false
+        while let record=try reader.next() {
+            defer { index += 1 }
+            if start == nil {
+                guard record["type"].text == "message", record["id"].text == messageID else { continue }
+                start=index; end=index
+                let reply = try ChatMessage(id: messageID, pi: record["message"])
+                guard reply.role == "assistant", reply.kind == nil else { throw AgentError("fork_target", "Choose one of the assistant's replies to fork from.") }
+                guard reply.replayEligible else {
+                    throw AgentError("fork_target", "That reply was stopped before it finished, so it is not part of the conversation. Fork from an earlier reply.")
+                }
+                pending=Set(reply.content.filter { $0["type"].text == "toolCall" }.compactMap { $0["id"].text })
+                continue
+            }
+            guard !pending.isEmpty, !batchFinished else { continue }
             guard record["type"].text == "message" else { continue }
             let role = record["message"]["role"].text
-            if role == "toolResult", let call = record["message"]["toolCallId"].text, pending.remove(call) != nil { end = index - 1; continue }
+            if role == "toolResult", let call = record["message"]["toolCallId"].text, pending.remove(call) != nil { end = index; continue }
             // The batch is over once the next reply or message begins.
-            if role == "assistant" || role == "user" { break }
+            if role == "assistant" || role == "user" { batchFinished=true }
         }
+        guard start != nil else { throw AgentError("fork_target", "That reply is not in this conversation's journal yet.") }
         if !pending.isEmpty, runTask != nil, context.contains(where: { $0.id == messageID }) {
             throw AgentError("fork_tools_running", "That reply's tools are still running. Fork from it once they finish.")
         }

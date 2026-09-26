@@ -127,7 +127,7 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         let statement = try query("SELECT id FROM visible ORDER BY n"); defer { sqlite3_finalize(statement) }
         var ids: [String] = []
         while try next(statement) {
-            guard ids.count < 100_000, let text = sqlite3_column_text(statement, 0) else { throw StoreError.unreadableRecord }
+            guard let text = sqlite3_column_text(statement, 0) else { throw StoreError.unreadableRecord }
             ids.append(String(cString: text))
         }
         return ids

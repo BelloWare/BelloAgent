@@ -1590,7 +1590,11 @@ retain their adapter. Display windows never become replay context or export scop
 `HistoryReader` uses a private derived SQLite offset/visible-position index with
 bounded page cache and eight retained indexes. Full supported files are indexed;
 the former 100,000-record ceiling is a cancellation/progress segment only. The
-128 MiB file and 32 MiB record safety bounds remain. Compact replay-validation
+32 MiB individual-record safety bound remains; there is no total journal-size
+ceiling as of 0.1.102. Native reopening, forking, recovery and portable previews
+stream records, and provenance hashing is incremental. The app's offset index
+and message reader also accept journals beyond the former 128 MiB ceiling.
+Compact replay-validation
 metadata is temporary and source-size-bounded; this is not a constant-memory
 parser for arbitrary files. File incarnation plus committed-prefix SHA-256 lets
 ordinary appends preserve cursors and rejects rewrites. Source handoff passes

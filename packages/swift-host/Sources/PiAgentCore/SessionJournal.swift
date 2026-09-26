@@ -29,11 +29,6 @@ final class SessionJournal {
     private(set) var appends = 0, synchronizations = 0
     private let beforeAppend: @Sendable (JSON) throws -> Void
     private let beforeSynchronize: @Sendable () throws -> Void
-    /// The records read at open, handed over once (`takeLoaded`). Kept here
-    /// they were a second, parsed copy of the whole journal for as long as
-    /// the session stayed loaded.
-    private(set) var loaded: [JSON]
-    func takeLoaded() -> [JSON] { defer { loaded = [] }; return loaded }
     init(url: URL, id: String, cwd: URL, binding: JSON, create: Bool, beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeSynchronize: @escaping @Sendable () throws -> Void = {}) throws {
         self.url=url; self.beforeAppend=beforeAppend; self.beforeSynchronize=beforeSynchronize
         try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
@@ -48,20 +43,19 @@ final class SessionJournal {
                 let header: JSON = ["type":"session","version":3,"id":JSON(id),"cwd":JSON(cwd.path),"timestamp":JSON(isoNow())]
                 var data=try header.data(); data.append(10); try data.write(to:url)
             }
-            let data=try readBounded(url,maximum:128*1024*1024)
-            guard data.last == 10 else { throw AgentError("session_damaged", "Incomplete journal tail preserved; recover a copy before continuing") }
-            var records: [JSON]=[]
-            for line in data.split(separator:10) { guard line.count <= 32*1024*1024 else { throw AgentError("session_damaged", "Journal record exceeds limit") }; records.append(try JSON.parse(Data(line))) }
-            guard let header=records.first, header["type"].text == "session", header["version"].int == 3, header["id"].text == id else { throw AgentError("session_identity", "Session header does not match its identity") }
+            let reader=try JournalRecordReader(url)
+            guard let header=try reader.next(), header["type"].text == "session", header["version"].int == 3, header["id"].text == id else { throw AgentError("session_identity", "Session header does not match its identity") }
             var last: String?, seen=Set<String>()
-            for item in records.dropFirst() {
+            var marker: JSON?
+            while let item=try reader.next() {
                 let rid=try identity(item["id"])
                 guard seen.insert(rid).inserted, item["parentId"].text == last else { throw AgentError("session_damaged", "Native journal must be a valid single branch") }; last=rid
+                if marker == nil, item["customType"].text == "pi-app.native.v1" { marker=item }
             }
             if !create {
-                guard let marker=records.first(where:{$0["customType"].text == "pi-app.native.v1"}), marker["data"]["binding"] == binding else { throw AgentError("legacy_session", "This is not a compatible native session. Original Pi history remains read-only; use an explicit portable handoff.") }
+                guard let marker, marker["data"]["binding"] == binding else { throw AgentError("legacy_session", "This is not a compatible native session. Original Pi history remains read-only; use an explicit portable handoff.") }
             }
-            loaded=Array(records.dropFirst()); tail=last; bytes=UInt64(data.count); handle=try FileHandle(forWritingTo:url); try handle.seekToEnd()
+            tail=last; bytes=reader.size; handle=try FileHandle(forWritingTo:url); try handle.seekToEnd()
         } catch { _=flock(lockFD,LOCK_UN); _=close(lockFD); throw error }
         if create { try append(["type":"custom","customType":"pi-app.native.v1","data":["binding":binding,"version":1]]) }
     }
@@ -74,7 +68,7 @@ final class SessionJournal {
         guard !poisoned else { throw AgentError("session_damaged", "A journal write failed; recover a copy before continuing") }
         var v=value; v["id"]=JSON(id); v["parentId"]=tail.map { JSON($0) } ?? .null; v["timestamp"]=JSON(isoNow())
         var data=try v.data(); data.append(10)
-        guard data.count <= 32*1024*1024, bytes+UInt64(data.count) <= 128*1024*1024 else { throw AgentError("session_limit", "Session journal size limit reached; start a new chat") }
+        guard data.count - 1 <= JournalRecordReader.maximumRecordBytes else { throw AgentError("session_record_limit", "This individual journal record exceeds 32 MiB; the existing conversation is preserved") }
         try beforeAppend(v)
         do { try handle.write(contentsOf:data) } catch { poisoned=true; throw error }
         tail=id; bytes += UInt64(data.count); unsynced=true; appends += 1
@@ -98,11 +92,12 @@ final class SessionJournal {
         let old=url; _=flock(lockFD,LOCK_UN); _=close(lockFD); lockFD=newFD; url=destination
         try? FileManager.default.removeItem(atPath:old.path+".lock")
     }
-    func records() throws -> [JSON] {
+    /// Stream replay/copies without a second parsed copy of the whole journal.
+    func recordReader() throws -> JournalRecordReader {
         guard !poisoned else { throw AgentError("session_damaged", "A failed journal write must be recovered before forking") }
-        let data=try readBounded(url,maximum:128*1024*1024)
-        guard data.last == 10, data.count == bytes else { throw AgentError("session_damaged", "The source journal changed or has an incomplete tail") }
-        return try data.split(separator:10).dropFirst().map { try JSON.parse(Data($0)) }
+        let reader=try JournalRecordReader(url,expectedBytes:bytes)
+        _=try reader.next() // The header is validated at open, not a replay record.
+        return reader
     }
     deinit { try? synchronize(); try? handle.close(); _=flock(lockFD,LOCK_UN); _=close(lockFD) }
 }

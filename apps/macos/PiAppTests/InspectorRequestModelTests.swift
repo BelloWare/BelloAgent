@@ -90,6 +90,55 @@ final class InspectorRequestModelTests: XCTestCase {
         XCTAssertGreaterThan(bodyPages, 0)
     }
 
+    /// A partial request parsed before capture finishes must not stay cached.
+    @MainActor func testAPartialRequestCaptureRefreshesWhenItsCompletedBodyArrives() async throws {
+        let root=scratchRoot("inspector-request-arriving"); defer { try? FileManager.default.removeItem(at:root) }
+        let request=model(root)
+        var finished=false
+        let complete=InspectorSummaryRequestTests.body(SummaryRequestInfo.checkpointMarker + " Preserve the task and evidence.")
+        request.metadataPollInterval = .milliseconds(40)
+        request.metadataOverride = { _ in
+            ["outcome":.string(finished ? "completed" : "running"),
+             "request":.object(["state":.string(finished ? "complete" : "partial"),"retainedBytes":.number(finished ? Double(complete.count) : 1)])]
+        }
+        request.sourceOverride = { _,kind in
+            kind == "request" ? Self.source({ finished ? complete : Data("{".utf8) },state:{ finished ? "complete" : "partial" }) : nil
+        }
+        request.open(row("arriving",outcome:"running"),predecessor:nil,previousLabel:nil)
+        request.setActive(true); defer { request.setActive(false) }
+        try await wait("the initial partial capture") {
+            if case .failed = request.conversation { return true }
+            return request.conversation.value != nil
+        }
+        XCTAssertEqual(request.conversation.value?.notice,RequestDocument.notJSON,String(describing:request.conversation))
+        finished=true
+        try await wait("the complete checkpoint body") { request.conversation.value?.summary?.kind == .continuation }
+        XCTAssertEqual(request.conversation.value?.items.count,1)
+        XCTAssertNil(request.conversation.value?.notice)
+        let reads=request.bodyReads
+        try await Task.sleep(for:.milliseconds(150))
+        XCTAssertEqual(request.bodyReads,reads,"A stable completed body is not re-read on a timer")
+    }
+
+    @MainActor func testRequestCacheUsesTheRevisionActuallyReadAfterCaptureGrowth() async throws {
+        let root=scratchRoot("inspector-request-revision"); defer { try? FileManager.default.removeItem(at:root) }
+        let request=model(root), bytes=Self.requestBody(3)
+        var descriptions=0
+        request.metadataOverride = { _ in ["outcome":.string("completed")] }
+        request.sourceOverride = { _,_ in
+            CapturedBodySource(metadata:{
+                descriptions += 1
+                return CapturedBodyMetadata(body:["state":.string(descriptions == 1 ? "partial" : "complete"),"retainedBytes":.number(descriptions == 1 ? 0 : Double(bytes.count))],hash:nil)
+            },page:{ offset in (bytes.subdata(in:offset..<bytes.count),bytes.count) })
+        }
+        request.open(row("grew"),predecessor:nil,previousLabel:nil)
+        request.setActive(true); defer { request.setActive(false) }
+        try await wait("the grown request") { request.conversation.value?.items.count == 3 && request.delta != nil }
+        let stale=await request.cache.value(.init(attempt:"grew",kind:"request",revision:"0:partial"))
+        let fresh=await request.cache.value(.init(attempt:"grew",kind:"request",revision:"\(bytes.count):complete"))
+        XCTAssertNil(stale); XCTAssertNotNil(fresh)
+    }
+
     /// Only the tab on screen reads its body, and a hidden page reads nothing.
     @MainActor func testATabThatIsNotOnScreenReadsNothing() async throws {
         let root = scratchRoot("inspector-tabs"); defer { try? FileManager.default.removeItem(at: root) }

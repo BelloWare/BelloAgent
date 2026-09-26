@@ -407,6 +407,7 @@
 		E8E40D7151A7B8B59D7DAC6F /* SessionStatsPopoverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32F19B9D5D9657D155C0E0F3 /* SessionStatsPopoverTests.swift */; };
 		E91232BF7424A19A488BF62D /* CapturedBodyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A9AB6D40F02920EE8A73C6 /* CapturedBodyTests.swift */; };
 		E9141D91BE783867341792A2 /* TerminalCaptureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 473FAB05DC2AC8DCE40A3366 /* TerminalCaptureTests.swift */; };
+		E91E520ADFFC7229872FC8B3 /* LongJournalHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27C05F09DFDD5B016862685A /* LongJournalHistoryTests.swift */; };
 		E934E128BA566A629CD9FA5A /* TopicStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C888A5DEB00178FA3D923AF /* TopicStorageTests.swift */; };
 		E93EE7352B35B9C587DBFD28 /* MarkdownStreamingCorrectnessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0586930AEE234D39E6C2B795 /* MarkdownStreamingCorrectnessTests.swift */; };
 		E95F57A9AAEAF3BEB8430247 /* WorkspaceAccounting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43B83A67E972E79B16294038 /* WorkspaceAccounting.swift */; };
@@ -543,6 +544,7 @@
 		270DDB06822ECD426FEFF8D6 /* NativeMarkdownSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownSurface.swift; sourceTree = "<group>"; };
 		273002CEAC41AB47DF0B6CE1 /* WorkspaceEditing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceEditing.swift; sourceTree = "<group>"; };
 		2792B3E6D3BDF980BF8A79B5 /* TranscriptStreamingScrollTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptStreamingScrollTests.swift; sourceTree = "<group>"; };
+		27C05F09DFDD5B016862685A /* LongJournalHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LongJournalHistoryTests.swift; sourceTree = "<group>"; };
 		2B407113C78220CCBC708031 /* NativeUIAcceptanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeUIAcceptanceTests.swift; sourceTree = "<group>"; };
 		2C2E7DC083302046F6A8A8F9 /* TranscriptMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptMarkdownTests.swift; sourceTree = "<group>"; };
 		2D43B519AC6F5C6AED73D19F /* FreshPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreshPresentationTests.swift; sourceTree = "<group>"; };
@@ -1374,6 +1376,7 @@
 				5BF5FAEAA32A90350F131B30 /* LiveMonitorTests.swift */,
 				99124E7DA6403C08A9684779 /* LivePopupTests.swift */,
 				CD282C27A66B54D03789BCC2 /* LiveWorkingIndicatorTests.swift */,
+				27C05F09DFDD5B016862685A /* LongJournalHistoryTests.swift */,
 				C1D1532C63CB20C9B1E14533 /* MainThreadWatchdog.swift */,
 				C8900FB9C09F92FC2FDD8AE8 /* ManualCompactionTests.swift */,
 				C11A721BDB2C2A135E7CC636 /* MarkdownSourceReconciliationTests.swift */,
@@ -1983,6 +1986,7 @@
 				E07B86EFF8124F3F58B73EDB /* LiveMonitorTests.swift in Sources */,
 				FF9770AB8D1DDE7774A93748 /* LivePopupTests.swift in Sources */,
 				463FBD88C7B1D72D8468DEF7 /* LiveWorkingIndicatorTests.swift in Sources */,
+				E91E520ADFFC7229872FC8B3 /* LongJournalHistoryTests.swift in Sources */,
 				14EC48A5B6AA741C1C61ED75 /* MainThreadWatchdog.swift in Sources */,
 				2504B37FD2686C8BA084A0C6 /* ManualCompactionTests.swift in Sources */,
 				146214A07F36725F957F0D63 /* MarkdownSourceReconciliationTests.swift in Sources */,
@@ -2205,7 +2209,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -2220,7 +2224,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.101;
+				MARKETING_VERSION = 0.1.102;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -2286,7 +2290,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -2307,7 +2311,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.101;
+				MARKETING_VERSION = 0.1.102;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;

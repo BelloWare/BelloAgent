@@ -20,7 +20,8 @@ final class SideForkTests: XCTestCase {
         try journal!.append(["type":"message","message":result.pi], id: "tool-result")
         try journal!.append(["type":"message","message":["role":"assistant","content":"final answer"]], id: "answer")
         try journal!.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":["summary","replacement","tools","tool-result","answer"]]])
-        let sourceRecords = try journal!.records(); journal = nil
+        let reader=try journal!.recordReader(); var sourceRecords:[JSON]=[]
+        while let record=try reader.next() { sourceRecords.append(record) }; journal = nil
         let client = ScriptClient([]), tools = RecordingTools()
         let parent = try AgentSession(id: "parent", profile: profile, apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: resources, client: client, tools: tools, traces: traces, resumePath: sourcePath.path)
         let originalBytes = try Data(contentsOf: sourcePath), sourceContext = await parent.sideSeed(), sourceView = await parent.snapshot()

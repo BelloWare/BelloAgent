@@ -334,16 +334,16 @@ final class CompactionSafetyTests: XCTestCase {
         XCTAssertFalse(purposes.contains("turn"),"Cancellation at the committed checkpoint must prevent continuation")
         await s.close()
     }
-    func testFailureBeforeCheckpointPreservesOriginalDurableBranchAndStorageLimit() async throws {
+    func testFailureBeforeCheckpointPreservesOriginalDurableBranchOnDiskFailure() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let profile=try fixtureProfile(),state=root.appendingPathComponent("state")
         let s=try AgentSession(id:"before-commit",profile:profile,apiKey:"synthetic",cwd:root,directory:state,readOnly:true,resources:Resources(cwd:root,home:root),client:SummaryProbe(),tools:RecordingTools(),traces:TraceStore(),compactionPolicy:Self.smallTail,beforeJournalAppend:{ record in
-            if record["type"].text=="compaction" { throw AgentError("session_limit","Session journal size limit reached; start a new chat") }
+            if record["type"].text=="compaction" { throw AgentError("session_write","No space left on device") }
         })
         let messages=seed();for message in messages { try await s.append(message) }
         try await s.compact();try await eventually { !(await s.isRunning) }
         let snapshot=await s.snapshot(),context=await s.context,path=await s.path!
-        XCTAssertEqual(context.map(\.id),messages.map(\.id));XCTAssertTrue(snapshot["preflightError"].text?.contains("journal size limit") == true)
+        XCTAssertEqual(context.map(\.id),messages.map(\.id));XCTAssertTrue(snapshot["preflightError"].text?.contains("No space left") == true)
         let rows=try String(contentsOf:URL(fileURLWithPath:path),encoding:.utf8).split(separator:"\n").map { try JSON.parse(Data($0.utf8)) }
         XCTAssertFalse(rows.contains { $0["type"].text=="compaction" });await s.close()
         let replay=ScriptClient([]),reopened=try AgentSession(id:"before-commit",profile:profile,apiKey:"synthetic",cwd:root,directory:state,readOnly:true,resources:Resources(cwd:root,home:root),client:replay,tools:RecordingTools(),traces:TraceStore(),resumePath:path)

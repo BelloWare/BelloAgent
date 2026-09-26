@@ -50,6 +50,7 @@ enum InspectorLoad<Value> {
     private(set) var predecessor: InspectorRequestRow?
     private(set) var active = false
     private var generation = 0
+    private var bodyGeneration = 0
     private var bodyTask: Task<Void, Never>?
     private var metadataTask: Task<Void, Never>?
     /// Test seam: how many body reads started.
@@ -75,7 +76,9 @@ enum InspectorLoad<Value> {
             if row.source == .record { tab = .conversation }
             if active { start() }
         } else {
+            let metadataChanged = self.row?.source != row.source || self.row?.outcome != row.outcome
             if self.row != row { self.row = row }
+            if active, metadataChanged { loadMetadata() }
             if self.predecessor?.id != predecessor?.id { self.predecessor = predecessor; self.previousLabel = previousLabel; delta = nil; deltaNote = nil; if active { loadVisibleTab() } }
         }
     }
@@ -96,6 +99,7 @@ enum InspectorLoad<Value> {
 
     func cancel() {
         generation += 1
+        bodyGeneration += 1
         bodyTask?.cancel(); bodyTask = nil
         metadataTask?.cancel(); metadataTask = nil
         if conversation.loading { conversation = .idle }
@@ -110,7 +114,7 @@ enum InspectorLoad<Value> {
 
     private func tabChanged() {
         // The tab that was on screen stops reading; the one now on screen reads.
-        bodyTask?.cancel(); bodyTask = nil
+        bodyGeneration += 1; bodyTask?.cancel(); bodyTask = nil
         if conversation.loading { conversation = .idle }
         if response.loading { response = .idle }
         if active { loadVisibleTab() }
@@ -126,8 +130,18 @@ enum InspectorLoad<Value> {
             while !Task.isCancelled {
                 guard let self, self.generation == generation else { return }
                 do {
-                    let value = try await self.readMetadata(row)
+                    guard let current = self.row, current.id == id else { return }
+                    let value = try await self.readMetadata(current)
                     guard !Task.isCancelled, self.generation == generation, self.row?.id == id else { return }
+                    if self.metadata["request"] != value["request"] {
+                        // The page may have opened before the request capture
+                        // arrived. An empty/partial parse is not its final body.
+                        // Refresh only on a changed descriptor, not every poll.
+                        if self.tab == .conversation {
+                            self.bodyGeneration += 1; self.bodyTask?.cancel(); self.bodyTask = nil
+                        }
+                        self.conversation = .idle; self.delta = nil; self.deltaNote = nil
+                    }
                     if value != self.metadata {
                         self.metadata = value
                         let text = await Task.detached(priority: .userInitiated) { WireValue.object(value).pretty }.value
@@ -189,13 +203,14 @@ enum InspectorLoad<Value> {
 
     private func startBody(_ work: @escaping @MainActor (InspectorRequestModel) async throws -> Void) {
         bodyTask?.cancel()
-        let generation = generation
+        bodyGeneration += 1
+        let generation = generation, bodyGeneration = bodyGeneration
         bodyTask = Task { [weak self] in
-            guard let self else { return }
+            guard let self, self.generation == generation, self.bodyGeneration == bodyGeneration, !Task.isCancelled else { return }
             do { try await work(self) }
             catch is CancellationError { }
             catch {
-                guard self.generation == generation, !Task.isCancelled else { return }
+                guard self.generation == generation, self.bodyGeneration == bodyGeneration, !Task.isCancelled else { return }
                 let message = error.localizedDescription
                 switch self.tab {
                 case .conversation: if self.conversation.value == nil { self.conversation = .failed(message) } else { self.deltaNote = message }
@@ -203,7 +218,7 @@ enum InspectorLoad<Value> {
                 case .raw: break
                 }
             }
-            if self.generation == generation { self.bodyTask = nil }
+            if self.generation == generation, self.bodyGeneration == bodyGeneration { self.bodyTask = nil }
         }
     }
 
@@ -273,10 +288,11 @@ enum InspectorLoad<Value> {
         let key = InspectorDocumentCache.Key(attempt: row.id, kind: "request", revision: CapturedBodyReader.revision(before))
         if case .request(let cached)? = await cache.value(key) { return cached }
         bodyReads += 1
-        let (bytes, _) = try await CapturedBodyReader.readBytes(kind: "request", source: source, progress: progress)
+        let (bytes, described) = try await CapturedBodyReader.readBytes(kind: "request", source: source, progress: progress)
         let document = try await CapturedBodyWorker.shared.run { try RequestDocument.parse(bytes) }
-        await cache.store(.request(document), for: key, cost: bytes.count + document.items.count * 1_024)
-        await cache.storeDigests(document.digests, for: key)
+        let readKey = InspectorDocumentCache.Key(attempt: row.id, kind: "request", revision: CapturedBodyReader.revision(described))
+        await cache.store(.request(document), for: readKey, cost: bytes.count + document.items.count * 1_024)
+        await cache.storeDigests(document.digests, for: readKey)
         return document
     }
 
@@ -331,9 +347,10 @@ enum InspectorLoad<Value> {
             guard let before = try? await source.metadata(), MessageBodyReader.canReadRetained(before.body["state"]?.string ?? "") else { continue }
             let key = InspectorDocumentCache.Key(attempt: row.id, kind: "request", revision: CapturedBodyReader.revision(before))
             if case .request(let cached)? = await cache.value(key) { return cached.summary }
-            let (bytes, _) = try await CapturedBodyReader.readBytes(kind: "request", source: source)
+            let (bytes, described) = try await CapturedBodyReader.readBytes(kind: "request", source: source)
             let document = try await CapturedBodyWorker.shared.run { try RequestDocument.parse(bytes) }
-            await cache.store(.request(document), for: key, cost: bytes.count + document.items.count * 1_024)
+            let readKey = InspectorDocumentCache.Key(attempt: row.id, kind: "request", revision: CapturedBodyReader.revision(described))
+            await cache.store(.request(document), for: readKey, cost: bytes.count + document.items.count * 1_024)
             return document.summary
         }
         return nil
@@ -348,9 +365,10 @@ enum InspectorLoad<Value> {
             let key = InspectorDocumentCache.Key(attempt: row.id, kind: "request", revision: CapturedBodyReader.revision(before))
             if let digests = await cache.digests(key) { return digests }
             if case .request(let cached)? = await cache.value(key) { return cached.digests }
-            let (bytes, _) = try await CapturedBodyReader.readBytes(kind: "request", source: source)
+            let (bytes, described) = try await CapturedBodyReader.readBytes(kind: "request", source: source)
             let digests = try await CapturedBodyWorker.shared.run { try RequestDocument.digests(bytes) }
-            if let digests { await cache.storeDigests(digests, for: key) }
+            let readKey = InspectorDocumentCache.Key(attempt: row.id, kind: "request", revision: CapturedBodyReader.revision(described))
+            if let digests { await cache.storeDigests(digests, for: readKey) }
             return digests
         }
         throw expired

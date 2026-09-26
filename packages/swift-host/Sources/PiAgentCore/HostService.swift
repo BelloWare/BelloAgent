@@ -413,45 +413,61 @@ public actor NativeHostService {
         let sessions=canonical(directory.path), source=canonical(try required(params["path"],"session path"))
         guard within(source,sessions) else { throw AgentError("invalid_path","Only this project's own chats can be recovered") }
         let id=try identity(params["newSessionId"]), destination=sessions.appendingPathComponent(id+".jsonl")
-        let data=try readBounded(source,maximum:128*1024*1024)
-        guard let end=data.lastIndex(of:10) else { throw AgentError("session_damaged","No complete record to recover") }
-        var records:[JSON]=[], last:String?, seen=Set<String>()
-        for line in data[..<end].split(separator:10) {
-            guard line.count <= 32*1024*1024 else { throw AgentError("session_damaged","Journal record exceeds limit") }
-            records.append(try JSON.parse(Data(line)))
-        }
-        guard var header=records.first, header["type"].text == "session", header["version"].int == 3,
-              records.contains(where:{ $0["customType"].text == "pi-app.native.v1" }) else { throw AgentError("legacy_session","Only a native chat can be recovered this way") }
-        for item in records.dropFirst() {
-            let rid=try identity(item["id"])
-            guard seen.insert(rid).inserted, item["parentId"].text == last else { throw AgentError("session_damaged","The journal is damaged before its last record; nothing was recovered") }
-            last=rid
-        }
+        let reader=try JournalRecordReader(source,allowIncompleteTail:true)
+        guard var header=try reader.next(), header["type"].text == "session", header["version"].int == 3 else { throw AgentError("legacy_session","Only a native chat can be recovered this way") }
         header["id"]=JSON(id)
         var copy=try header.data(); copy.append(10)
-        if let first=data[..<end].firstIndex(of:10), first < end { copy.append(data[data.index(after:first)...end]) }
         // Written beside the destination, then linked into place: an existing
         // chat of that id is never replaced and a failed write leaves nothing.
         let temporary=sessions.appendingPathComponent(".recover-\(UUID().uuidString).jsonl")
         let fd=open(temporary.path,O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW,0o600)
         guard fd >= 0 else { throw AgentError("session_write","Cannot create the recovered copy") }
         let file=FileHandle(fileDescriptor:fd,closeOnDealloc:true)
-        defer { try? FileManager.default.removeItem(at:temporary) }
-        try file.write(contentsOf:copy); try file.synchronize(); try file.close()
+        defer { try? file.close(); try? FileManager.default.removeItem(at:temporary) }
+        try file.write(contentsOf:copy)
+        var last:String?, seen=Set<String>(), count=0, native=false
+        while var line=try reader.nextLine() {
+            if !line.isEmpty {
+                let item=try JSON.parse(line), rid=try identity(item["id"])
+                guard seen.insert(rid).inserted, item["parentId"].text == last else { throw AgentError("session_damaged","The journal is damaged before its last record; nothing was recovered") }
+                last=rid; count += 1
+                if item["customType"].text == "pi-app.native.v1" { native=true }
+            }
+            line.append(10); try file.write(contentsOf:line)
+        }
+        guard native else { throw AgentError("legacy_session","Only a native chat can be recovered this way") }
+        try file.synchronize(); try file.close()
         guard link(temporary.path,destination.path) == 0 else { throw AgentError("session_exists","A chat with that identity already exists") }
-        return ["sessionId":JSON(id),"sessionFile":JSON(destination.path),"records":JSON(records.count-1),"omittedBytes":JSON(data.count-end-1)]
+        return ["sessionId":JSON(id),"sessionFile":JSON(destination.path),"records":JSON(count),"omittedBytes":JSON(Double(reader.omittedBytes))]
     }
     private func portable(_ params:JSON) throws -> JSON {
-        let file=canonical(try required(params["path"],"session path")), data=try readBounded(file,maximum:128*1024*1024)
-        var records:[String:JSON]=[:], leaf:String?, header:JSON=[:]
-        guard data.last==10 else { throw AgentError("incomplete_history","History has an incomplete tail. Preserve and review it before making a portable handoff.") }
-        for (i,line) in data.split(separator:10).enumerated() {
-            let item=try JSON.parse(Data(line))
-            if i==0 { guard item["type"].text=="session" else { throw AgentError("invalid_history","Expected session header") };header=item;continue }
+        let file=canonical(try required(params["path"],"session path"))
+        let reader=try JournalRecordReader(file,allowIncompleteTail:true,hash:true)
+        guard let header=try reader.next(), header["type"].text=="session" else { throw AgentError("invalid_history","Expected session header") }
+        var next=try reader.next()
+        // Native journals are linear. Replay as a stream, discarding old
+        // presentation/state snapshots instead of retaining the complete file.
+        if next?["customType"].text == "pi-app.native.v1" {
+            var replay=try ConversationReplay(), last:String?, seen=Set<String>()
+            while let item=next {
+                let id=try identity(item["id"])
+                guard seen.insert(id).inserted, item["parentId"].text==last else { throw AgentError("invalid_history","Native journal must be a valid single branch") }
+                last=id; try replay.consume(item); next=try reader.next()
+            }
+            guard reader.omittedBytes==0 else { throw AgentError("incomplete_history","History has an incomplete tail. Preserve and review it before making a portable handoff.") }
+            let messages=replay.context.map { "[\($0.role)]\n" + ($0.displayText ?? $0.text) }
+            let text=messages.suffix(40).joined(separator:"\n\n"), retained=preview(text,bytes:65536), digest=reader.digest!
+            return ["path":JSON(file.path),"sessionId":header["id"],"nativeReplay":false,"damaged":false,"text":JSON(retained),"draft":JSON(retained),"truncated":JSON(retained.utf8.count < text.utf8.count || messages.count > 40),"provenance":["sourcePath":JSON(file.path),"sourceSHA256":JSON(digest),"portable":true],"notice":"Portable text of the selected branch. Original unchanged. Review before sending.","sha256":JSON(digest)]
+        }
+        var records:[String:JSON]=[:], leaf:String?
+        while let item=next {
             guard records.count<100000,let id=item["id"].text,records[id]==nil else { throw AgentError("invalid_history","Invalid or duplicate journal identity") }
             if let parent=item["parentId"].text,records[parent]==nil { throw AgentError("invalid_history","Journal parent is missing") }
             records[id]=item;leaf=id
+            next=try reader.next()
         }
+        guard reader.omittedBytes==0 else { throw AgentError("incomplete_history","History has an incomplete tail. Preserve and review it before making a portable handoff.") }
+        let digest=reader.digest!
         var chain:[JSON]=[],cursor=leaf
         while let id=cursor,let record=records[id] { chain.append(record);cursor=record["parentId"].text }
         chain.reverse()
@@ -459,7 +475,7 @@ public actor NativeHostService {
             let replay = try ConversationReplay(chain)
             let messages = replay.context.map { "[\($0.role)]\n" + ($0.displayText ?? $0.text) }
             let text = messages.suffix(40).joined(separator: "\n\n"), retained = preview(text, bytes: 65536)
-            return ["path":JSON(file.path),"sessionId":header["id"],"nativeReplay":false,"damaged":false,"text":JSON(retained),"draft":JSON(retained),"truncated":JSON(retained.utf8.count < text.utf8.count || messages.count > 40),"provenance":["sourcePath":JSON(file.path),"sourceSHA256":JSON(sha256(data)),"portable":true],"notice":"Portable text of the selected branch. Original unchanged. Review before sending.","sha256":JSON(sha256(data))]
+            return ["path":JSON(file.path),"sessionId":header["id"],"nativeReplay":false,"damaged":false,"text":JSON(retained),"draft":JSON(retained),"truncated":JSON(retained.utf8.count < text.utf8.count || messages.count > 40),"provenance":["sourcePath":JSON(file.path),"sourceSHA256":JSON(digest),"portable":true],"notice":"Portable text of the selected branch. Original unchanged. Review before sending.","sha256":JSON(digest)]
         }
         // Select the active leaf only, then replay compaction and branch
         // boundaries in order so the preview shows the live context.
@@ -492,7 +508,7 @@ public actor NativeHostService {
             if item["type"].text=="compaction" { messages.append("[summary]\n"+(item["summary"].text ?? "")) }
         }
         let text=messages.suffix(40).joined(separator:"\n\n"),retained=preview(text,bytes:65536)
-        return ["path":JSON(file.path),"sessionId":header["id"],"nativeReplay":false,"damaged":false,"text":JSON(retained),"draft":JSON(retained),"truncated":JSON(retained.utf8.count<text.utf8.count || messages.count>40),"provenance":["sourcePath":JSON(file.path),"sourceSHA256":JSON(sha256(data)),"portable":true],"notice":"Portable text only, active branch and latest compaction. Opaque reasoning, executable state and permissions are not transferred. Original unchanged. Review before sending.","sha256":JSON(sha256(data))]
+        return ["path":JSON(file.path),"sessionId":header["id"],"nativeReplay":false,"damaged":false,"text":JSON(retained),"draft":JSON(retained),"truncated":JSON(retained.utf8.count<text.utf8.count || messages.count>40),"provenance":["sourcePath":JSON(file.path),"sourceSHA256":JSON(digest),"portable":true],"notice":"Portable text only, active branch and latest compaction. Opaque reasoning, executable state and permissions are not transferred. Original unchanged. Review before sending.","sha256":JSON(digest)]
     }
     public func shutdown() async {
         // Acknowledgments are dropped from here on (see `receive`): a capture
