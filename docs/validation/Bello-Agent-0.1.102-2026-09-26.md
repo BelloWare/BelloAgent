@@ -1,6 +1,6 @@
 # Bello Agent 0.1.102 — long session journals
 
-Status: validated; signing and publication pending.
+Status: publicly released and verified at 2026-09-26 15:50:25 UTC.
 Starting main: `ab921695a6c59949cc821cbab1b81209b4ff6783`.
 
 ## Root cause and changes
@@ -71,5 +71,19 @@ ceilings. Removing only the append check would have left long chats unreadable.
 
 ## Publication
 
-Pending signing, notarization, source/tag publication,
-website deployment, and public download hash/signature verification.
+- Release source: `f5ab292f3d8507eaec012c0ece26b7172e543e89`, pushed to
+  GitHub `main`; annotated tag `v0.1.102` is pushed and resolves to that commit.
+- Website publication: `dde19cd38a614c5715f2ec44269ad1dd89710f0d`, pushed to
+  `BelloWare/belloware.com` `main`.
+- Signed/notarized Bello Agent 0.1.102, build 106. App notarization
+  `fc297978-701c-44cd-8faa-5ddfe2f3059d` and DMG notarization
+  `27da361b-42e9-4165-ad13-89dc34fdfe97` were accepted. Stapling, signature,
+  Gatekeeper and artifact validation passed.
+- `BelloAgent-0.1.102.dmg`: **10,848,340 bytes**; SHA-256
+  `d8eee67d82bf1998e418ff5d7264a63ab105b77243579660fd054bd4a46f7611`.
+- At 2026-09-26 15:50:25 UTC, the public product page linked to 0.1.102.
+  `scripts/verify-published.py` downloaded the public archive, verified its
+  SHA-256 and Ed25519 signature, and confirmed that both public update feeds
+  match the intended release and are byte-identical.
+- A copy of the final verified DMG is in the remote session's output folder.
+  No install or updater rehearsal was performed.

@@ -42,7 +42,25 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.101/build 105 is publicly released** at
+**Bello Agent 0.1.102/build 106 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), from source
+`f5ab292f3d8507eaec012c0ece26b7172e543e89`, pushed Git tag `v0.1.102`, and
+website commit `dde19cd38a614c5715f2ec44269ad1dd89710f0d`.
+The signed/notarized DMG is **10,848,340 bytes (10.35 MiB)**; SHA-256
+`d8eee67d82bf1998e418ff5d7264a63ab105b77243579660fd054bd4a46f7611`.
+The product page, identical update feeds and downloaded hash/Ed25519 verification
+passed at **2026-09-26 15:50:25 UTC**. Long chats no longer hit a total journal
+size ceiling: reopening, continuing, forking, recovery and history browsing use
+bounded record reads. Tests exercise real journals over 129 MiB. The request
+inspector also refreshes an initially incomplete capture when its body arrives.
+The full gate passed 1,618 native cases (23 optional skips), 453 helper cases and
+all transport/script checks. One of the gallery's 112 screenshots exposed the
+capture race; its exact scene passed after the fix in both themes. Final checks
+passed all 454 helper cases, 46 affected native cases and rebuilt-helper transport
+checks. See the [0.1.102 validation record](validation/Bello-Agent-0.1.102-2026-09-26.md)
+for the complete evidence and excluded live-gateway/install checks.
+
+**Bello Agent 0.1.101/build 105 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), from source
 `a7f8dc4dd9a22b45b47fa968597b1b8002a51c85` and website commit `0454bae`.
 The signed/notarized DMG is **10,846,708 bytes (10.34 MiB)**; SHA-256
