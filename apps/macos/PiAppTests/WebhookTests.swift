@@ -210,6 +210,72 @@ final class WebhookTests: XCTestCase {
         XCTAssertNil(tracker.observe(snapshot("idle")))
     }
 
+    // MARK: Sending
+
+    /// A finished chat's webhook, which nobody is watching, is sent once more
+    /// after a network failure, 429 or 5xx; a refusal is not asked again, and
+    /// the preview's and Settings' sends answer at once.
+    @MainActor func testAFinishedChatsWebhookIsSentOnceMoreAfterAServerError() async throws {
+        let receiver = try WebhookReceiver(); defer { receiver.stop() }
+        let address = try await receiver.start()
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("webhook-retry-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        model.webhookRetryDelay = .milliseconds(50)
+        var settings = WebhookSettings(); settings.enabled = true; settings.url = address + "/hook"; settings.parameters = ""
+        let request = try WebhookRequest.render(settings, values: ["title": "T"])
+
+        receiver.answer([503])
+        let status = try await model.deliverWebhook(request, retrying: true)
+        XCTAssertEqual(status, 204); XCTAssertEqual(receiver.requests.count, 2, "Sent once more after the 503")
+
+        receiver.answer([429])
+        _ = try await model.deliverWebhook(request, retrying: true)
+        XCTAssertEqual(receiver.requests.count, 2, "429 is worth another try too")
+
+        receiver.answer([400])
+        do { _ = try await model.deliverWebhook(request, retrying: true); XCTFail("A refusal is an error") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("HTTP 400"), error.localizedDescription) }
+        XCTAssertEqual(receiver.requests.count, 1, "A refusal is not asked again")
+
+        receiver.answer([502, 503])
+        do { _ = try await model.deliverWebhook(request, retrying: true); XCTFail("Two failures are an error") }
+        catch { XCTAssertTrue(error.localizedDescription.hasSuffix("HTTP 503. Tried twice, a few seconds apart."), error.localizedDescription) }
+        XCTAssertEqual(receiver.requests.count, 2, "Once more, not more")
+
+        receiver.answer([503])
+        do { _ = try await model.deliverWebhook(request); XCTFail("The preview's send answers at once") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("HTTP 503"), error.localizedDescription) }
+        XCTAssertEqual(receiver.requests.count, 1)
+    }
+
+    /// Settings' Send Test sends the webhook as typed, before it is saved,
+    /// filled from a sample chat, with sample words for the parameters.
+    @MainActor func testSendTestSendsTheWebhookAsTypedWithASampleChat() async throws {
+        let receiver = try WebhookReceiver(); defer { receiver.stop() }
+        let address = try await receiver.start()
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("webhook-test-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        var settings = WebhookSettings(); settings.url = address + "/hook/{{chat_id}}"
+        settings.headers = #"{"X-Project": "{{project}}"}"#
+        XCTAssertFalse(settings.enabled, "Not yet switched on: a test is how it gets set up")
+        let status = try await model.sendTestWebhook(settings)
+        XCTAssertEqual(status, 204)
+        let request = try XCTUnwrap(receiver.requests.first)
+        XCTAssertTrue(request.head.hasPrefix("POST /hook/sample-chat HTTP/1.1"), request.head)
+        XCTAssertTrue(request.head.lowercased().contains("x-project: sample-project"), request.head)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(request.body.utf8)) as? [String: String])
+        XCTAssertEqual(body, ["title": "Webhook test from Bello Agent", "message": "Sample summary written by the mini model",
+                              "chat": "Sample chat", "status": "completed"])
+        settings.url = "not an address"
+        do { _ = try await model.sendTestWebhook(settings); XCTFail("An address that cannot be sent to is said so") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("address"), error.localizedDescription) }
+        XCTAssertEqual(receiver.requests.count, 1)
+    }
+
     // MARK: A finished chat, end to end
 
     /// A chat's run finishes against the synthetic gateway; the webhook
@@ -293,7 +359,8 @@ extension ConversationPaneTests.LiveChat {
     }
 }
 
-/// Accepts HTTP requests on the loopback interface, keeps them and answers 204.
+/// Accepts HTTP requests on the loopback interface, keeps them and answers
+/// 204, or the statuses it is told to answer first, one per request.
 final class WebhookReceiver: @unchecked Sendable {
     struct Request { let head: String; let body: String }
     private let listener: NWListener
@@ -301,7 +368,9 @@ final class WebhookReceiver: @unchecked Sendable {
     private let lock = NSLock()
     private var captured: [Request] = []
     private var connections: [NWConnection] = []
+    private var statuses: [Int] = []
     var requests: [Request] { lock.withLock { captured } }
+    func answer(_ statuses: [Int]) { lock.withLock { self.statuses = statuses; captured = [] } }
     init() throws {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
@@ -336,8 +405,12 @@ final class WebhookReceiver: @unchecked Sendable {
                     .flatMap { Int($0.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) } ?? 0
                 if bytes.count >= split.upperBound + length {
                     let body = String(decoding: bytes[split.upperBound..<(split.upperBound + length)], as: UTF8.self)
-                    self.lock.withLock { self.captured.append(Request(head: head, body: body)) }
-                    let reply = Data("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".utf8)
+                    let status = self.lock.withLock { () -> Int in
+                        self.captured.append(Request(head: head, body: body))
+                        return self.statuses.isEmpty ? 204 : self.statuses.removeFirst()
+                    }
+                    let reply = Data((status == 204 ? "HTTP/1.1 204 No Content\r\n" : "HTTP/1.1 \(status) Fixture\r\nContent-Length: 0\r\n") .utf8)
+                        + Data("Connection: close\r\n\r\n".utf8)
                     connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
                     return
                 }

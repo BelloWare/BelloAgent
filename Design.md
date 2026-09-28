@@ -36,10 +36,16 @@ waits for its user. The pieces live in `Workspaces/WebhookSettings.swift`
   for where they land: percent-encoded in the address, one line in a header,
   JSON-string escaped in a body that parses as JSON (else plain text). The body
   keeps the user's formatting; Content-Type is added unless a header sets it.
-  Unknown placeholders are sent empty and named in the preview. Delivery is one
-  ephemeral `URLSession` request (no cookies, cache or stored credentials, 20 s),
-  no retry; anything but 2xx is a failure, shown in the chat's footer and the
-  window banner.
+  Unknown placeholders are sent empty and named in the preview. Delivery is an
+  ephemeral `URLSession` request (no cookies, cache or stored credentials, 20 s);
+  anything but 2xx is a failure, shown in the chat's footer and the window
+  banner. Since 0.1.108 a finished chat's webhook, which nobody is watching, is
+  sent once more after `webhookRetryDelay` (4 s) when the network failed or the
+  address answered 429 or 5xx; another 4xx is not asked again, and the
+  preview's and Settings' sends answer at once.
+- **Send Test.** The Settings group's "Try it" row sends the webhook as typed,
+  before it is saved (`sendTestWebhook`): a sample chat fills the built-in
+  placeholders and each parameter gets sample words, so no mini model is asked.
 - **The preview.** ⋯ ▸ Preview Webhook… (`WebhookPreviewSheet`) prepares the
   same request from the chat as it is, asks the mini model while the sheet is open
   (closing it ends the request), shows the address, headers, body, the parameters

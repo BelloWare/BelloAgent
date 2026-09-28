@@ -106,6 +106,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
     var titleGenerationTasks: [String: Task<Void, Never>] = [:]
     /// Webhooks on their way: the mini model's request, then the send.
     var webhookTasks: [UUID: Task<Void, Never>] = [:]
+    /// How long a finished chat's webhook waits before its one retry.
+    var webhookRetryDelay: Duration = .seconds(4)
     /// Connections already told, this launch, that titles need a mini model.
     var titleMiniModelNotified: Set<String> = []
     @Published var showGit = false
