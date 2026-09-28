@@ -63,4 +63,24 @@ final class PiSheetCancelTests: XCTestCase {
         XCTAssertFalse(hosted.performKeyEquivalent(with: try escape()),
                        "A window keeps ⌘W, not Escape")
     }
+
+    /// In a window the header doubles as the title bar, and stays the height
+    /// of its title. Its drag area once took the window's spare height: the
+    /// Settings window opened from the app menu had a third of its height
+    /// empty above and below "Settings".
+    @MainActor func testAWindowsHeaderStaysTheHeightOfItsTitle() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 780), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: PiSheet("Settings", subtitle: "Your connections, keys and preferences.", symbol: "gearshape", windowChrome: true) {
+            ScrollView { Text("Settings content") }
+        } actions: { Button("Cancel") {} } footer: { Button("Save") {} }.frame(width: 760, height: 780))
+        window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        let hosted = try XCTUnwrap(window.contentView)
+        hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        func find(_ view: NSView) -> NSView? { view.identifier?.rawValue == "piWindowBar" ? view : view.subviews.lazy.compactMap(find).first }
+        let bar = try XCTUnwrap(find(hosted), "The window's drag area is there")
+        XCTAssertLessThan(bar.frame.height, 110, "The header is the height of its title, not \(bar.frame.height) points")
+        XCTAssertGreaterThan(bar.frame.height, 40, "The drag area still covers the header")
+    }
 }

@@ -310,6 +310,8 @@ final class UIScreenshotTests: XCTestCase {
             window.setContentSize(NSSize(width: 1440, height: 900)); window.center(); try await settle(0.8)
             model.closeReport(); try await settle(0.8)
             try await sheet(window, name: "05-profiles-\(name)", into: gallery, open: { model.showProfiles = true }, close: { model.showProfiles = false })
+            // 05b · Settings from the app menu: a window of its own.
+            try await settingsWindow(name: "05b-settings-window-\(name)", into: gallery)
             try await sheet(window, name: "06-resources-\(name)", into: gallery, open: { model.inspectResources(main.id) }, close: { model.showResources = false })
             try await sheet(window, name: "07-search-\(name)", into: gallery, open: { model.inspectConversation(main.id) }, close: { model.showConversationContent = false })
             try await sheet(window, name: "08-workspaces-\(name)", into: gallery, open: { model.showWorkspaceManager = true }, close: { model.showWorkspaceManager = false })
@@ -814,6 +816,23 @@ final class UIScreenshotTests: XCTestCase {
     /// for the turn it is photographing to reach a certain age.
     @MainActor private func page(of window: NSWindow) -> TranscriptPage? {
         window.contentView.flatMap { descendants(TranscriptSurfaceMarker.self, in: $0).first?.page }
+    }
+
+    /// Opens Settings as the app menu does, photographs its window, closes it.
+    @MainActor private func settingsWindow(name: String, into gallery: URL) async throws {
+        let before = Set(NSApp.windows.map { ObjectIdentifier($0) })
+        let appMenu = try XCTUnwrap(NSApp.mainMenu?.items.first?.submenu, "The app menu is missing")
+        let item = try XCTUnwrap(appMenu.items.first { $0.keyEquivalent == "," }, "The app menu has no Settings item")
+        appMenu.performActionForItem(at: appMenu.index(of: item))
+        var opened: NSWindow?
+        for _ in 0..<60 where opened == nil {
+            try await settle(0.05)
+            opened = NSApp.windows.first { !before.contains(ObjectIdentifier($0)) && $0.isVisible }
+        }
+        let settings = try XCTUnwrap(opened, "The Settings window never opened")
+        try await settle(1.6)
+        try capture(settings, to: gallery.appendingPathComponent(name + ".png"))
+        settings.close(); try await settle(0.6)
     }
 
     @MainActor private func sheet(_ window: NSWindow, name: String, into gallery: URL, open: () -> Void, close: () -> Void) async throws {
