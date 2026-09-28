@@ -147,11 +147,11 @@ final class CompactionResponsivenessTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
         while Date() < compactDeadline {
             if session.runStatus == "compacting" || session.state == "compacting" { sawCompacting = true }
-            if !session.hasWork, !session.loading, sawCompacting || session.compactionNotice != nil || session.failureMessage != nil { break }
+            if !session.hasWork, !session.loading, sawCompacting || session.messages.contains(where: { $0.kind == "compaction" }) || session.failureMessage != nil { break }
             try await Task.sleep(for: .milliseconds(100))
         }
         XCTAssertTrue(sawCompacting, "Compact Now never ran")
-        print("COMPACTION manual compaction done: \(session.compactionNotice ?? "no notice"); worst \(String(format: "%.2f", watchdog.worstStall)) s")
+        print("COMPACTION manual compaction done: \(session.messages.last(where: { $0.kind == "compaction" })?.detail ?? "no checkpoint row"); worst \(String(format: "%.2f", watchdog.worstStall)) s")
 
         // Grow past the earlier headroom threshold, then send another pending
         // request. Finished answers no longer launch idle compaction.

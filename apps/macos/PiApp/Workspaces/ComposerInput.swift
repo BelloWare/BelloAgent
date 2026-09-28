@@ -42,9 +42,6 @@ struct ComposerInput: View {
                     QueueEditBanner(steering: QueuedMessage.from(session.queue).first { $0.id == queued }?.steering ?? false) { model.cancelQueuedEdit(sessionID: session.id) }
                         .transition(AnyTransition.move(edge: .top).combined(with: .opacity))
                 }
-                if session.runStatus == "compacting" || session.compactionNotice != nil {
-                    CompactionBanner(session: session) { session.compactionNotice = nil }.transition(AnyTransition.move(edge: .top).combined(with: .opacity))
-                }
                 if !session.attachments.isEmpty { chips.padding(.horizontal, PiSpacing.md).padding(.top, PiSpacing.md).transition(.opacity) }
                 NativeComposer(text: $draft.text, send: { submit(intent: $0) }, sessionID: session.id, completion: { _ in },
                     locationChanged: { model.composerMoved($0, editor: $1, view: session) },

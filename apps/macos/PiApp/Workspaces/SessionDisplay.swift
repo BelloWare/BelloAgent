@@ -370,15 +370,10 @@ struct TranscriptVersionView: Equatable, Sendable {
             state = "idle"; runStatus = "idle"; failureMessage = nil
         }
     }
-    /// Set when a compaction finishes; shown above the composer until the next send or dismissal.
-    @Published var compactionNotice: String?
+    /// What a running compaction is doing, for the run line under the
+    /// composer. A finished compaction shows as its row in the transcript.
     @Published var compactionProgress: String?
-    private var compactionBaselineLoaded = false
-    private var observedCompactionID: String?
-    /// Status snapshots carry the successful summary that is still in active
-    /// context, independently of the visible transcript page. Opening history
-    /// establishes a baseline; only a new committed summary produces a notice.
-    func observeCompaction(_ snapshot: [String: WireValue], baseline: Bool = false) {
+    func observeCompaction(_ snapshot: [String: WireValue]) {
         let operation=snapshot["compaction"]?.object
         // A compaction is one summary request, retried as any request is.
         let progress: String?
@@ -388,19 +383,9 @@ struct TranscriptVersionView: Equatable, Sendable {
         case "planning": progress="Preparing complete tool history"
         default: progress=nil
         }
-        if compactionProgress != progress { compactionProgress=progress }
-        let summary = snapshot["latestSuccessfulCompaction"]?.object
-        let id = summary?["id"]?.string
-        if baseline || !compactionBaselineLoaded {
-            compactionBaselineLoaded = true; observedCompactionID = id
-            return
-        }
         // Published on the whole display: written only when it changes, not
         // once per snapshot for as long as a compaction runs.
-        if snapshot["runStatus"]?.string == "compacting", compactionNotice != nil { compactionNotice = nil }
-        guard id != observedCompactionID else { return }
-        observedCompactionID = id
-        compactionNotice = id == nil ? nil : summary?["detail"]?.string
+        if compactionProgress != progress { compactionProgress=progress }
     }
     var activity: [String: WireValue] = [:] { didSet { if activity != oldValue { activityChanges.send() } } }
     var activityObservedAt: Double = 0

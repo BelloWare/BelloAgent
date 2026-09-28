@@ -71,7 +71,7 @@ extension WorkspaceModel {
         // in the queue panel once the helper has it, as it always has.
         let drawsRow = accepted && !steer && !view.busy
         view.beginContextSubmission(turnID)
-        view.loading = true; view.compactionNotice = nil
+        view.loading = true
         view.sendFailure = nil
         // The composer empties on Return, not when the helper answers. If the
         // send fails, the text comes back with its images and skills.
@@ -248,7 +248,6 @@ extension WorkspaceModel {
         guard !installPreparing, let id = sessionID ?? selectedID, let item = record(id) else { return }
         // Nothing runs in an archived chat; stopping is the one command it still takes.
         guard !item.isArchived || method == "turn.stop" else { displays[id]?.notice = Self.archivedNotice; return }
-        if method == "context.compact" { displays[id]?.compactionNotice = nil }
         // Compact uses the same selected model/effort/limits as Send. Freeze
         // the originating pane's choice before opening or awaiting its helper.
         let requestParams = method == "context.compact" ? TurnOverrides.params(for: item, base: params) : params

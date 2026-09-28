@@ -93,9 +93,10 @@ extension ConversationPaneTests {
         await restarted.store?.close()
     }
 
-    /// Compaction shows above the composer while it runs and after it lands,
-    /// and the composer keeps working throughout.
-    @MainActor func testCompactionShowsAboveTheComposerWithoutDisplacingIt() async throws {
+    /// Compaction is not shown in the input box: the composer keeps its size
+    /// while one runs and after it lands. The run line under the composer says
+    /// what the chat is doing, and the transcript shows the finished compaction.
+    @MainActor func testCompactionLeavesTheInputBoxAlone() async throws {
         let pane = try Pane(messages: [TranscriptMessage(id: "u1", role: "user", text: "Go", at: 1000, turn: "u1")])
         defer { pane.close() }
         await pane.settle(16)
@@ -103,18 +104,15 @@ extension ConversationPaneTests {
         let card = try XCTUnwrap(editor.enclosingScrollView?.superview?.superview)
         let idle = card.convert(card.bounds, to: nil)
         pane.session.state = "compacting"; pane.session.runStatus = "compacting"
+        pane.session.compactionProgress = "Summarizing earlier work"
         await pane.settle(12)
-        let compacting = card.convert(card.bounds, to: nil)
-        XCTAssertGreaterThan(compacting.height, idle.height, "The compaction strip takes room inside the composer card")
-        XCTAssertEqual(compacting.width, idle.width, accuracy: 0.5, "The strip must not change the composer's width")
-        XCTAssertEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 44, accuracy: 0.5, "The field itself keeps its height")
-        pane.session.state = "idle"; pane.session.runStatus = "idle"
-        pane.session.compactionNotice = "Summarized 40 older messages"
+        XCTAssertEqual(card.convert(card.bounds, to: nil).height, idle.height, accuracy: 0.5, "Nothing about the compaction goes into the input box")
+        XCTAssertEqual(try XCTUnwrap(editor.enclosingScrollView).frame.height, 44, accuracy: 0.5, "The field keeps its height")
+        XCTAssertEqual(SessionRunLine(session: pane.session, footer: pane.session.footer).action, "Summarizing earlier work…",
+                       "The run line under the composer says what the chat is doing")
+        pane.session.state = "idle"; pane.session.runStatus = "idle"; pane.session.compactionProgress = nil
         await pane.settle(12)
-        XCTAssertGreaterThan(card.convert(card.bounds, to: nil).height, idle.height, "The result stays until it is dismissed")
-        pane.session.compactionNotice = nil
-        await pane.settle(12)
-        XCTAssertEqual(card.convert(card.bounds, to: nil).height, idle.height, accuracy: 0.5, "Dismissing gives the room back")
+        XCTAssertEqual(card.convert(card.bounds, to: nil).height, idle.height, accuracy: 0.5)
         // The composer still takes typing afterwards.
         pane.window.makeFirstResponder(editor)
         type("x", into: editor)
