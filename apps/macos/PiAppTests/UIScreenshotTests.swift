@@ -876,8 +876,10 @@ final class UIScreenshotTests: XCTestCase {
     }
 
     /// Opens Settings as the app menu does, photographs its window, closes it.
+    /// SwiftUI keeps the closed Settings window and shows the same one again,
+    /// so the window to find is the one that became visible, not a new one.
     @MainActor private func settingsWindow(name: String, into gallery: URL) async throws {
-        let before = Set(NSApp.windows.map { ObjectIdentifier($0) })
+        let before = Set(NSApp.windows.filter(\.isVisible).map { ObjectIdentifier($0) })
         let appMenu = try XCTUnwrap(NSApp.mainMenu?.items.first?.submenu, "The app menu is missing")
         let item = try XCTUnwrap(appMenu.items.first { $0.keyEquivalent == "," }, "The app menu has no Settings item")
         appMenu.performActionForItem(at: appMenu.index(of: item))
