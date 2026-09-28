@@ -448,6 +448,37 @@ final class LaunchSelectionTests: XCTestCase {
         XCTAssertNil(fourth.sides[fixture.b2.id], "A closed side stays closed")
     }
 
+    /// A side closed while launch is still reading stays closed. Until launch
+    /// had reopened its chat, whose first page can take seconds, a pane
+    /// opened or closed was not written down, and launch then wrote the sides
+    /// it had read back: a side closed in that time came back at every launch.
+    @MainActor func testASideClosedWhileLaunchIsStillReadingStaysClosed() async throws {
+        let (fixture, side) = try await sideFixture()
+        let first = await launch(fixture)
+        await first.select(fixture.b2.id)
+        await first.showSide(side.id)
+        try await quit(first)
+
+        let second = unrestoredModel(fixture)
+        let gate = ArchiveGate()
+        await gate.hold(second.traces)
+        let restoring = Task { await second.restore() }
+        await waitFor("The sidebar never listed the chats") { !second.chats.isEmpty }
+        await second.select(fixture.b2.id)
+        XCTAssertEqual(second.sides[fixture.b2.id]?.id, side.id, "The chat opened from the sidebar brings its side back, as launch would")
+        await waitFor("The side never finished loading") { second.displays[side.id]?.loading == false && second.displays[side.id]?.draftReady == true }
+        second.closeSide(side.id)
+        await waitFor("Closing the side never finished") { second.sides[fixture.b2.id] == nil }
+        gate.release()
+        await restoring.value
+        XCTAssertNil(second.sides[fixture.b2.id])
+        try await quit(second)
+
+        let third = await launch(fixture)
+        XCTAssertEqual(third.selectedID, fixture.b2.id)
+        XCTAssertNil(third.sides[fixture.b2.id], "A side closed while launch was still reading stays closed")
+    }
+
     /// A side is remembered once it is kept, not before: until then it would
     /// not exist after a relaunch. Keeping it while it is shown (what
     /// `registerKeptSide` does to `sides`) is what writes it.

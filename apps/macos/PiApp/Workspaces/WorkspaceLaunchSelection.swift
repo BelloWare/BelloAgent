@@ -109,8 +109,11 @@ extension WorkspaceModel {
     /// the one to reopen beside its chat; a closed pane forgets it. A side
     /// that has not been kept changes nothing: it would not exist after a
     /// relaunch, and the kept side it covers would.
+    /// This runs while launch is still reading too; only the write waits
+    /// for it. A pane closed before launch had reopened its chat, whose first
+    /// page can take seconds, went unrecorded, and launch then wrote the side
+    /// it had read back: that side came back at every launch.
     func sidesChanged(from old: [String: SideRecord]) {
-        guard remembersSelection else { return }
         var next = rememberedSides
         for parent in Set(old.keys).union(sides.keys) {
             let before = old[parent], after = sides[parent]
