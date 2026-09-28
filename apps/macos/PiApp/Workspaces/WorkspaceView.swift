@@ -71,7 +71,7 @@ struct WorkspaceView: View {
                         // rather than a welcome — with setup buttons, before
                         // the vault answers — that the chat is about to cover.
                         Color.clear
-                    } else if OnboardingState.shouldPresent(configurationLoaded: model.configurationLoaded, hasProfiles: !model.requestProfiles.isEmpty, hasChats: !model.chats.isEmpty) {
+                    } else if model.presentsSetup {
                         OnboardingView(model: model)
                     } else {
                         WorkspaceWelcome(model: model)

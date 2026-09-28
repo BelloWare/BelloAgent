@@ -35,6 +35,20 @@ final class OnboardingTests: XCTestCase {
         XCTAssertFalse(OnboardingState.shouldPresent(configurationLoaded: true, hasProfiles: true, hasChats: true))
     }
 
+    /// First run shows one path: while setup fills the window, the sidebar
+    /// offers no project of its own; setup's last step adds it.
+    @MainActor func testTheSidebarOffersNoProjectWhileSetupIsOnScreen() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("setup-path-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        await model.restore()
+        XCTAssertTrue(model.presentsSetup, "An empty vault opens on setup, and the sidebar's prompt waits")
+        XCTAssertTrue(model.sidebarProjects.isEmpty)
+        model.launching = true
+        XCTAssertFalse(model.presentsSetup, "Nothing while launch still reads the vault")
+    }
+
     @MainActor func testLegacyMessagesProfilesCannotBecomeOnboardingConnections() async {
         var legacy = ready().profile; legacy.api = "anthropic-messages"
         let state = OnboardingState(); state.resume(profiles: [legacy], preferredID: legacy.id)
