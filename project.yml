@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.108
-    CURRENT_PROJECT_VERSION: 112
+    MARKETING_VERSION: 0.1.109
+    CURRENT_PROJECT_VERSION: 113
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Long chats open much faster, the model catalog can mark models that take images, and the webhook can be tested and is retried once."
+    RELEASE_MESSAGE: "Long chats open almost instantly: each chat keeps a small index beside its history, and older messages load as you scroll up."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO
