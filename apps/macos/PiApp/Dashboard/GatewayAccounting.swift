@@ -473,6 +473,14 @@ extension PayloadArchive {
         return totals
     }
 
+    /// The page's request ledgers, by the answer row each stands for.
+    static func ledgers(_ messages: [TranscriptMessage]) -> [String: String] {
+        var ledgers: [String: String] = [:]
+        for message in messages where message.kind == "requestLedger" {
+            if let source = message.presentationSourceID, !source.isEmpty { ledgers[source] = message.id }
+        }
+        return ledgers
+    }
     func gatewayAccounting(sessionID: String, workspaceID: String, messages: [TranscriptMessage], includeTiming: Bool = false) throws -> SessionGatewayAccounting {
         guard !sessionID.isEmpty, sessionID.utf8.count <= 128, !workspaceID.isEmpty, workspaceID.utf8.count <= 128,
               messages.count <= 500, Set(messages.map(\.id)).count == messages.count,
@@ -496,7 +504,15 @@ extension PayloadArchive {
         // the bounded target page first: SQLite otherwise may scan all retained
         // attempts before matching the turn or output link. This order uses the
         // turn/output indexes; UNION removes duplicate attribution before summing.
-        let values = messages.map { _ in "(?,?,?,?)" }.joined(separator: ",")
+        let values = messages.map { _ in "(?,?,?,?,?)" }.joined(separator: ",")
+        // The helper links a request to its hidden ledger row (`requestLedger`)
+        // as output from dispatch on, before the answer row exists as more than
+        // the text streaming in: the ledger stands for the answer its source
+        // row is writing, and that row claims the request through it. Without
+        // this the ledger's link kept the streaming answer from its request,
+        // which went to the user's row, and the answer's own stand-in counted
+        // the same request a second time ("3 of 5" for four requests).
+        let ledgers = Self.ledgers(messages)
         var args: [CaptureSQLValue] = [], latestUser = ""
         for (index, message) in messages.enumerated() {
             if message.role == "user" { latestUser = message.id }
@@ -504,11 +520,11 @@ extension PayloadArchive {
             // A compaction summary is a system row but is the visible output of
             // its own model request. It must retain that request's accounting.
             let accountingRole = message.kind == "compaction" ? "assistant" : message.role
-            args += [.text(message.id), .text(accountingRole), .integer(Int64(index)), .text(pendingTurn)]
+            args += [.text(message.id), .text(accountingRole), .integer(Int64(index)), .text(pendingTurn), .text(ledgers[message.id] ?? "")]
         }
-        args += [.text(workspaceID), .text(sessionID), .text(workspaceID), .text(sessionID), .text(workspaceID)]
+        args += [.text(workspaceID), .text(sessionID), .text(workspaceID), .text(sessionID), .text(workspaceID), .text(workspaceID)]
         let attribution = """
-        WITH targets(message,role,position,pending_turn) AS (VALUES \(values)), candidates(message,id,priority,position) AS (
+        WITH targets(message,role,position,pending_turn,ledger) AS (VALUES \(values)), candidates(message,id,priority,position) AS (
           SELECT t.message,a.id,2,t.position FROM targets t CROSS JOIN attempts a
           WHERE t.role='user' AND a.workspace=? AND a.session=? AND a.turn=t.message
             AND a.metrics_retained=1 AND a.dispatch IS NOT NULL
@@ -520,6 +536,10 @@ extension PayloadArchive {
           UNION ALL
           SELECT t.message,a.id,0,t.position FROM targets t CROSS JOIN message_links l CROSS JOIN attempts a
           WHERE t.role='assistant' AND l.message=t.message AND l.role='output'
+            AND a.id=l.attempt AND a.workspace=? AND a.metrics_retained=1 AND a.dispatch IS NOT NULL
+          UNION ALL
+          SELECT t.message,a.id,0,t.position FROM targets t CROSS JOIN message_links l CROSS JOIN attempts a
+          WHERE t.role='assistant' AND t.ledger!='' AND l.message=t.ledger AND l.role='output'
             AND a.id=l.attempt AND a.workspace=? AND a.metrics_retained=1 AND a.dispatch IS NOT NULL
         ), attributed AS (
           SELECT message,id,ROW_NUMBER() OVER (PARTITION BY id ORDER BY priority,position) AS owner FROM candidates
@@ -613,22 +633,22 @@ extension PayloadArchive {
         // primary-key lookups for the replies on this page, never another
         // pass over the session's attempts. The turn report reads a reply's
         // record for a request the log does not count here, and names why.
-        let recorded = messages.compactMap { message -> (message: String, attempt: String)? in
+        let recorded = messages.compactMap { message -> (message: String, attempt: String, ledger: String)? in
             guard message.role == "assistant", let attempt = message.reply?.attempt, !attempt.isEmpty, attempt.utf8.count <= 128 else { return nil }
-            return (message.id, attempt)
+            return (message.id, attempt, ledgers[message.id] ?? "")
         }
         if !recorded.isEmpty {
             func marks(_ ids: [String]) -> String { ids.isEmpty ? "NULL" : ids.map { _ in "?" }.joined(separator: ",") }
             let users = messages.filter { $0.role == "user" }.map(\.id), replies = messages.filter { $0.role == "assistant" }.map(\.id)
             let sql = """
-            WITH recorded(message,attempt) AS (VALUES \(recorded.map { _ in "(?,?)" }.joined(separator: ",")))
+            WITH recorded(message,attempt,ledger) AS (VALUES \(recorded.map { _ in "(?,?,?)" }.joined(separator: ",")))
             SELECT r.message,a.id,a.metrics_retained,a.dispatch IS NOT NULL AS dispatched,a.outcome,
               (a.input_tokens IS NOT NULL OR a.output_tokens IS NOT NULL) AS reported,
-              EXISTS (SELECT 1 FROM message_links l WHERE l.attempt=r.attempt AND l.role='output' AND l.message=r.message) AS here,
+              EXISTS (SELECT 1 FROM message_links l WHERE l.attempt=r.attempt AND l.role='output' AND l.message IN (r.message,r.ledger)) AS here,
               (a.session=? AND a.turn IN (\(marks(users)))) OR EXISTS (SELECT 1 FROM message_links l WHERE l.attempt=r.attempt AND l.role='output' AND l.message IN (\(marks(replies))))  AS shown
             FROM recorded r LEFT JOIN attempts a ON a.id=r.attempt AND a.workspace=?
             """
-            let values: [CaptureSQLValue] = recorded.flatMap { [.text($0.message), .text($0.attempt)] } + [.text(sessionID)]
+            let values: [CaptureSQLValue] = recorded.flatMap { [.text($0.message), .text($0.attempt), .text($0.ledger)] } + [.text(sessionID)]
                 + users.map(CaptureSQLValue.text) + replies.map(CaptureSQLValue.text) + [.text(workspaceID)]
             for row in try db.rows(sql, values) {
                 guard let message = row["message"]?.string else { throw CaptureFailure.corrupt }

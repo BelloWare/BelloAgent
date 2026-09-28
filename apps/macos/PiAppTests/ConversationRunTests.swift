@@ -522,3 +522,47 @@ extension ConversationPaneTests {
         try await model.traces.close(); await model.store?.close()
     }
 }
+
+extension ConversationPaneTests {
+    /// A request still streaming is counted once, against the packaged
+    /// helper. The helper links a request to its hidden ledger row from
+    /// dispatch on, and that link kept the streaming answer from its request:
+    /// the user's row took it, and the answer's own stand-in counted it again.
+    /// One request read "0 of 2 requests … (2 still running)", and a turn of
+    /// four read "3 of 5".
+    @MainActor func testARequestStillStreamingIsCountedOnce() async throws {
+        let live = try await LiveChat()
+        var closed = false
+        defer { if !closed { Task { await live.close() } } }
+        await live.settle(20)
+        let prompt = "slow: count the requests of this turn"
+        await live.send(prompt)
+        await live.waitUntil("The answer never started streaming") { live.session.messages.contains { $0.role == "assistant" && $0.isStreaming } }
+        let ledger = try XCTUnwrap(live.session.messages.last { $0.kind == "requestLedger" }, "The helper keeps a ledger row for the request")
+        let answer = try XCTUnwrap(ledger.presentationSourceID)
+        // The ledger's link reaches the log with the footer's next figures.
+        var linked = false
+        for _ in 0..<150 where !linked {
+            linked = try await !live.model.traces.list(sessionID: live.chat.id, messageID: ledger.id, workspaceID: live.chat.workspaceID).isEmpty
+            if !linked { await live.settle(2) }
+        }
+        XCTAssertTrue(linked, "The request log links the request to its ledger while it streams")
+        // Read the accounting again now that the log holds that link.
+        let revision = live.session.accountingRevision
+        live.model.scheduleAccounting(live.chat.id, workspaceID: live.chat.workspaceID)
+        await live.waitUntil("The accounting was never read again") {
+            live.session.accountingRevision > revision && live.model.accountingTasks[live.chat.id] == nil
+        }
+        XCTAssertTrue(live.session.messages.contains { $0.id == answer && $0.isStreaming }, "The answer is still streaming")
+        XCTAssertEqual(live.session.messageAccounting[answer]?.requests, 1, "The streaming answer keeps its own request")
+        let turn = Array(live.session.messages.drop { !($0.role == "user" && $0.text == prompt) })
+        XCTAssertNil(live.session.messageAccounting[turn.first?.id ?? ""], "The user's row does not take the answer's request")
+        let accounting = TranscriptActivity.aggregate(turn)
+        XCTAssertEqual(accounting.requests, 1, "One request, counted once")
+        XCTAssertEqual(accounting.missing.running, 1)
+        live.model.stop(sessionID: live.chat.id)
+        await live.settle(10)
+        closed = true
+        await live.close()
+    }
+}
