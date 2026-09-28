@@ -226,7 +226,7 @@ extension WorkspaceModel {
                         }
                         observeAssistantOutputs(sessionID: item.id, snapshot: initial.object ?? [:])
                         observeSessionCompletion(sessionID: item.id, snapshot: initial.object ?? [:], baseline: true)
-                        displays[item.id]?.observeCompaction(initial.object ?? [:], baseline: true)
+                        displays[item.id]?.observeCompaction(initial.object ?? [:])
                         displays[item.id]?.observeContext(initial.object ?? [:], baseline: true)
                         let preference = try await capturePreference(sessionID: item.id)
                         _ = try await host.request("debug.mode", sessionID: item.id, params: ["mode": .string(preference.mode)])

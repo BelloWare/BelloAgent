@@ -187,33 +187,6 @@ final class WorkspaceFollowupTests: XCTestCase {
         display.observeCompaction(["runStatus":.string("compacting"),"compaction":.object(["phase":.string("merging")])])
         XCTAssertNil(display.compactionProgress,"No helper merges summaries now")
         display.observeCompaction(["runStatus":.string("failed"),"compaction":.object(["phase":.string("failed")])])
-        XCTAssertNil(display.compactionProgress);XCTAssertNil(display.compactionNotice)
-    }
-
-    @MainActor func testCompactionNoticesRequireNewSuccessAndIgnoreFailureCancellationAndOldHistory() {
-        func snapshot(_ id: String?, detail: String = "Compacted 12000 tokens · 2 messages kept", run: String = "idle") -> [String: WireValue] {
-            ["runStatus": .string(run), "latestSuccessfulCompaction": id.map { .object(["id": .string($0), "detail": .string(detail)]) } ?? .null]
-        }
-        let display = SessionDisplay(id: "chat")
-        display.observeCompaction(snapshot("historical"), baseline: true)
-        XCTAssertNil(display.compactionNotice, "Opening existing history is not a new compaction")
-        display.observeCompaction(snapshot("historical", run: "compacting"))
-        display.observeCompaction(snapshot("historical", run: "failed"))
-        XCTAssertNil(display.compactionNotice, "Leaving compacting after failure cannot reuse a historical summary")
-        display.observeCompaction(snapshot("historical", run: "compacting"))
-        display.observeCompaction(snapshot("historical", run: "cancelled"))
-        XCTAssertNil(display.compactionNotice)
-
-        display.browsingHistory = true
-        display.messages = [TranscriptMessage(id: "old-row", role: "system", text: "Old summary", kind: "compaction", detail: "Old statistics")]
-        display.observeCompaction(snapshot("new", detail: "Current statistics"))
-        XCTAssertEqual(display.compactionNotice, "Current statistics", "A fast or background compaction needs no observed running state or current transcript rows")
-        display.compactionNotice = nil
-        display.observeCompaction(snapshot("new", detail: "Current statistics"))
-        XCTAssertNil(display.compactionNotice, "Repeated status cannot resurrect a dismissed or sent notice")
-        display.observeCompaction(snapshot("newer", detail: "Newer statistics"))
-        XCTAssertEqual(display.compactionNotice, "Newer statistics")
-        display.observeCompaction(snapshot(nil))
-        XCTAssertNil(display.compactionNotice, "A summary removed from active context must not retain its notice")
+        XCTAssertNil(display.compactionProgress)
     }
 }

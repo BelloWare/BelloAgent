@@ -150,7 +150,7 @@ extension WorkspaceModel {
         if let digest = view.editSourceTextDigest { params["editSourceTextDigest"] = .string(digest) }
         let generation = view.editGeneration
         latestVersion(sessionID: id)
-        view.loading = true; view.editSubmitting = true; view.compactionNotice = nil
+        view.loading = true; view.editSubmitting = true
         Task {
             defer { view.loading = false; view.editSubmitting = false }
             var dispatched = false
@@ -223,29 +223,6 @@ struct PendingBranch: Equatable, Sendable {
 /// Strip above the composer while context is being compacted and after it
 /// finished, so the change is noticed even when the transcript marker has
 /// scrolled away. Dismissed by the next send or the button.
-struct CompactionBanner: View {
-    @ObservedObject var session: SessionDisplay
-    let dismiss: () -> Void
-    private var compacting: Bool { session.runStatus == "compacting" }
-    var body: some View {
-        HStack(spacing: 6) {
-            if compacting { ProgressView().controlSize(.mini) }
-            else { Image(systemName: "arrow.down.right.and.arrow.up.left").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.piInfo) }
-            Text(compacting ? "Compacting context…" : "Context compacted").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Color.piInk)
-            Text("· " + (compacting ? session.compactionProgress ?? "Preparing context" : session.compactionNotice ?? ""))
-                .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.tail)
-            Spacer(minLength: 4)
-            if !compacting { Button("Dismiss", action: dismiss).buttonStyle(.piGhost) }
-        }
-        .padding(.leading, 12).padding(.trailing, 4).padding(.vertical, 3)
-        .background(Color.piInfo.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .padding(.horizontal, 8).padding(.top, 8)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(compacting ? "Compacting context" : "Context compacted. " + (session.compactionNotice ?? ""))
-        .accessibilityIdentifier("compactionBanner")
-    }
-}
-
 struct EditingBanner: View {
     @ObservedObject var session: SessionDisplay
     var blocker: String? = nil
