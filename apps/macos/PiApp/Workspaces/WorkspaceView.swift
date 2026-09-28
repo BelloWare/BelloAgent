@@ -103,7 +103,7 @@ struct WorkspaceView: View {
         .toggleStyle(.switch)
         .background(Color.piWindow)
         .focusedSceneValue(\.workspaceCommandModel, model)
-        .sheet(isPresented: $model.showProfiles) { ProfileSettings(model: model).frame(width: 760, height: 780) }
+        .sheet(isPresented: $model.showProfiles) { ProfileSettings(model: model).frame(width: 880, height: 780) }
         .sheet(isPresented: $model.showConversationContent) { if let id = model.contentSessionID { ConversationContentView(model: model, sessionID: id) } }
         .sheet(isPresented: $model.showResources) { ResourceInspector(model: model) }
         .sheet(isPresented: $model.showWorkspaceManager) { WorkspaceManagerView(model: model) }

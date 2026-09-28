@@ -317,6 +317,12 @@ final class UIScreenshotTests: XCTestCase {
             window.setContentSize(NSSize(width: 1440, height: 900)); window.center(); try await settle(0.8)
             model.closeReport(); try await settle(0.8)
             try await sheet(window, name: "05-profiles-\(name)", into: gallery, open: { model.showProfiles = true }, close: { model.showProfiles = false })
+            // 05c · Settings' other sections, each opened from its row's place.
+            for section in [SettingsSection.usage, .chats, .app] {
+                model.settingsSection = section
+                try await sheet(window, name: "05c-settings-\(section.rawValue)-\(name)", into: gallery, open: { model.showProfiles = true }, close: { model.showProfiles = false })
+            }
+            model.settingsSection = .connections
             // 05b · Settings from the app menu: a window of its own.
             try await settingsWindow(name: "05b-settings-window-\(name)", into: gallery)
             try await sheet(window, name: "06-resources-\(name)", into: gallery, open: { model.inspectResources(main.id) }, close: { model.showResources = false })
@@ -729,10 +735,6 @@ final class UIScreenshotTests: XCTestCase {
         }
     }
 
-    /// 18 · A chat's cost limit: the notice where a run stopped at it, the
-    /// editor Raise limit… opens over it, and the notice once the limit is
-    /// above the spend. The chat has its own limit of $0.001; the fixture's
-    /// read round costs $0.00125, so the request after it never goes.
     /// 19 · The webhook: its group in Settings, and a finished chat's preview
     /// with the mini model's parameters. Nothing is sent: the address is only
     /// shown, and the webhook is off again once the scenes are taken.
@@ -747,7 +749,10 @@ final class UIScreenshotTests: XCTestCase {
             $0.webhook = configured
             for index in $0.profiles.indices { $0.profiles[index].profile.miniModelId = "fixture-fast" }
         }
-        // 19 · Settings, scrolled down to the webhook group: its top, then its end.
+        // 19 · Settings → Chats & notifications, scrolled to the webhook
+        // group: its top, then its end.
+        model.settingsSection = .chats
+        defer { model.settingsSection = .connections }
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance)
             if window.attachedSheet == nil { model.showProfiles = true; try await settle(2.2) }
@@ -782,6 +787,10 @@ final class UIScreenshotTests: XCTestCase {
         try await model.updateConfiguration { $0.webhook = nil }
     }
 
+    /// 18 · A chat's cost limit: the notice where a run stopped at it, the
+    /// editor Raise limit… opens over it, and the notice once the limit is
+    /// above the spend. The chat has its own limit of $0.001; the fixture's
+    /// read round costs $0.00125, so the request after it never goes.
     @MainActor private func captureCostLimitScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                    appearances: [(String, NSAppearance.Name)], workspaceID: String, profileID: String) async throws {
         func pair(_ name: String, hold: Double = 0.8, popovers: Bool = false, before: () async throws -> Void = {}) async throws {
@@ -835,9 +844,11 @@ final class UIScreenshotTests: XCTestCase {
         let resumed = Date().addingTimeInterval(90)
         while Date() < resumed, session.failureMessage != nil || session.hasWork || session.loading { try await settle(0.25) }
         XCTAssertNil(session.failureMessage, "Continue took the stopped turn on")
-        // 18d · Settings: the default every chat without its own limit runs
-        // under. The Spending group sits low on the page, so the page is
-        // scrolled to its end first.
+        // 18d · Settings → Usage & capture: the default every chat without its
+        // own limit runs under. The Spending group is the section's last, so
+        // the page is scrolled to its end first.
+        model.settingsSection = .usage
+        defer { model.settingsSection = .connections }
         try await pair("18d-cost-limit-settings", hold: 0.8) {
             if window.attachedSheet == nil { model.showProfiles = true; try await settle(2.2) }
             let sheet = try XCTUnwrap(window.attachedSheet, "Settings opened as a sheet")

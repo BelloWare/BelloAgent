@@ -547,11 +547,9 @@ struct MessageRowView: View {
                 .foregroundStyle(TranscriptPalette.warning).padding(.top, 2)
                 .accessibilityIdentifier(message.stopReason == "length" ? "reply-output-limit" : "reply-ended-early")
             }
-            // Stopping keeps what had arrived. The row says so with one amber
-            // chip beside the partial answer rather than a sentence under it:
-            // the words above it are still the reply, and they are what the
-            // reader came back to read.
-            if message.stopReason == "interrupted" { TranscriptStoppedChip() }
+            // Stopping keeps what had arrived, and the words above are still
+            // the reply. The turn's card says it was stopped, once: a chip
+            // here repeated it (0.1.107).
             // One quiet band under the row for its time, usage and actions; the
             // actions appear on hover without moving anything.
             HStack(alignment: .center, spacing: 10) {

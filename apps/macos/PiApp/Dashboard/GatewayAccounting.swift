@@ -216,10 +216,13 @@ enum ReplyLog: String, Sendable {
     case counted
     /// Counted on this reply, still without usage.
     case running, failed, noUsage
+    /// Counted on this reply, which was stopped before its usage came.
+    case stopped
     init(outcome: String?) {
         switch outcome {
         case "running"?, "streaming"?: self = .running
         case "completed"?, "truncated"?: self = .noUsage
+        case "cancelled"?: self = .stopped
         default: self = .failed
         }
     }
@@ -227,14 +230,32 @@ enum ReplyLog: String, Sendable {
 
 struct GatewayMissingUsage: Codable, Sendable, Equatable {
     var running = 0, failed = 0, noUsage = 0
-    var total: Int { running + failed + noUsage }
-    init(running: Int = 0, failed: Int = 0, noUsage: Int = 0) { self.running = running; self.failed = failed; self.noUsage = noUsage }
-    /// `PayloadArchive.missingUsageSQL`'s sum: no usage, then failed, then
-    /// running, each in its own 20 bits (fewer than a million per message).
-    init(packed value: CaptureSQLValue?) {
-        let bits: Int64
-        switch value { case .integer(let n)?: bits = n; case .real(let n)?: bits = Int64(exactly: n) ?? 0; default: bits = 0 }
-        self.init(running: Int((bits >> 40) & 0xFFFFF), failed: Int((bits >> 20) & 0xFFFFF), noUsage: Int(bits & 0xFFFFF))
+    /// Requests the user stopped (outcome `cancelled`), counted apart from
+    /// failures since 0.1.107.
+    var stopped = 0
+    var total: Int { running + failed + noUsage + stopped }
+    init(running: Int = 0, failed: Int = 0, noUsage: Int = 0, stopped: Int = 0) {
+        self.running = running; self.failed = failed; self.noUsage = noUsage; self.stopped = stopped
+    }
+    /// `PayloadArchive.missingUsageSQL`'s sums: no usage, then failed, then
+    /// running, each in its own 20 bits (fewer than a million per message),
+    /// and the stopped ones in a column of their own.
+    init(packed value: CaptureSQLValue?, stopped: CaptureSQLValue? = nil) {
+        func integer(_ value: CaptureSQLValue?) -> Int64 {
+            switch value { case .integer(let n)?: return n; case .real(let n)?: return Int64(exactly: n) ?? 0; default: return 0 }
+        }
+        let bits = integer(value)
+        self.init(running: Int((bits >> 40) & 0xFFFFF), failed: Int((bits >> 20) & 0xFFFFF), noUsage: Int(bits & 0xFFFFF),
+                  stopped: Int(clamping: integer(stopped)))
+    }
+    private enum CodingKeys: String, CodingKey { case running, failed, noUsage, stopped }
+    /// Accounting kept from before 0.1.107 has no stopped count.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        running = try values.decodeIfPresent(Int.self, forKey: .running) ?? 0
+        failed = try values.decodeIfPresent(Int.self, forKey: .failed) ?? 0
+        noUsage = try values.decodeIfPresent(Int.self, forKey: .noUsage) ?? 0
+        stopped = try values.decodeIfPresent(Int.self, forKey: .stopped) ?? 0
     }
 }
 
@@ -367,7 +388,9 @@ extension PayloadArchive {
     /// (`GatewayMissingUsage(packed:)`): the page's pass costs what it did.
     static let missingUsageSQL = """
     SUM(CASE WHEN input_tokens IS NULL AND output_tokens IS NULL THEN
-      CASE WHEN outcome IN ('completed','truncated') THEN 1 WHEN outcome IN ('running','streaming') THEN 1099511627776 ELSE 1048576 END END) AS missing_usage
+      CASE WHEN outcome IN ('completed','truncated') THEN 1 WHEN outcome IN ('running','streaming') THEN 1099511627776
+        WHEN outcome='cancelled' THEN 0 ELSE 1048576 END END) AS missing_usage,
+    SUM(CASE WHEN input_tokens IS NULL AND output_tokens IS NULL AND outcome='cancelled' THEN 1 END) AS missing_stopped
     """
     static let gatewayAggregateSQL = """
     COUNT(*) AS requests,COUNT(DISTINCT turn) AS turn_count,COUNT(cost_usd) AS cost_samples,SUM(cost_usd) AS cost_usd,
@@ -555,7 +578,7 @@ extension PayloadArchive {
         for row in try db.rows(sql, args) {
             guard let id = row["message"]?.string else { throw CaptureFailure.corrupt }
             var totals = Self.gatewayTotals(row)
-            totals.missingUsage = GatewayMissingUsage(packed: row["missing_usage"])
+            totals.missingUsage = GatewayMissingUsage(packed: row["missing_usage"], stopped: row["missing_stopped"])
             result.messages[id] = totals
         }
         // Reuse exactly the accounting ownership relation. Body names are a

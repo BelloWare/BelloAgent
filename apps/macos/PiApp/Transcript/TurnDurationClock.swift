@@ -91,9 +91,11 @@ struct TurnDurationMetrics: View {
     /// A running clock counts whole seconds, as every running clock in the
     /// app does: a live reading with milliseconds changed its digits — and,
     /// trailing zeros trimmed, its width — on every tick. A settled reading
-    /// keeps the precision it was reported with.
+    /// is rounded too (`92 ms`, `19.7s`, `1m 05s`): three decimals of a
+    /// millisecond said nothing a reader could use. The Session Inspector
+    /// keeps each request's exact time.
     nonisolated static func label(_ milliseconds: Double, live: Bool) -> String {
-        live ? MetricFormat.runDuration(milliseconds) : MetricFormat.detailedDuration(milliseconds)
+        live ? MetricFormat.runDuration(milliseconds) : MetricFormat.turnDuration(milliseconds)
     }
     var body: some View {
         let live = input.live
@@ -105,7 +107,7 @@ struct TurnDurationMetrics: View {
             }.font(.system(size: 11, weight: .medium))
             Text("AI \(Self.label(clock.reading.modelMs, live: live)) · Tools \(Self.label(clock.reading.toolMs, live: live))")
                 .font(.system(size: 10)).foregroundStyle(TranscriptPalette.muted)
-                .help("Recorded AI and tool time. Live readings count whole seconds; completed readings retain their reported precision.")
+                .help("Recorded AI and tool time, rounded. The Session Inspector has each request's exact time.")
         // Live, the readings keep one line each, so a tick can never wrap the
         // dock. Settled, they no longer change and may wrap rather than cut.
         }.monospacedDigit().lineLimit(live ? 1 : nil).fixedSize(horizontal: false, vertical: true)

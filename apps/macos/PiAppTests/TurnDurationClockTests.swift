@@ -108,7 +108,19 @@ import SwiftUI
         XCTAssertEqual(TurnDurationMetrics.label(12_345, live: true), "12s")
         XCTAssertEqual(TurnDurationMetrics.label(59_999, live: true), "59s", "A live clock never rounds up to a second it has not reached")
         XCTAssertEqual(TurnDurationMetrics.label(65_000, live: true), "1m 05s")
-        XCTAssertEqual(TurnDurationMetrics.label(12_345, live: false), "12.345s", "A settled reading keeps its precision")
+        // A settled reading is rounded for reading, as the Session Inspector's
+        // turn page rounds it; the inspector keeps each request's exact time.
+        XCTAssertEqual(TurnDurationMetrics.label(12_345, live: false), "12.3s")
+        XCTAssertEqual(TurnDurationMetrics.label(92.466, live: false), "92 ms", "Not 92.466 ms")
+        XCTAssertEqual(TurnDurationMetrics.label(19_695, live: false), "19.7s")
+        XCTAssertEqual(TurnDurationMetrics.label(12_000, live: false), "12s", "A trailing .0 says nothing")
+        XCTAssertEqual(TurnDurationMetrics.label(999.6, live: false), "1s", "Rounding carries up to the second")
+        XCTAssertEqual(TurnDurationMetrics.label(59_960, live: false), "1m 00s", "and across the minute")
+        XCTAssertEqual(TurnDurationMetrics.label(65_432, live: false), "1m 05s")
+        XCTAssertEqual(TurnDurationMetrics.label(3_723_400, live: false), "1h 02m 03s")
+        XCTAssertEqual(TurnDurationMetrics.label(0, live: false), "0s")
+        XCTAssertEqual(TurnDurationMetrics.label(0.3, live: false), "<1 ms", "A quick call never reads as nothing")
+        XCTAssertEqual(TurnDurationMetrics.label(.nan, live: false), "—")
     }
 
     func testNewTaskResetsImmediatelyWithoutReusingThePreviousClock() {

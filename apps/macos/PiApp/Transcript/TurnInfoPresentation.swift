@@ -64,6 +64,7 @@ enum TurnInfoPresentation {
             var text = "input and output from \(max(0, reported)) of \(n) requests; \(n - max(0, reported)) did not report usage"
             if missing.known {
                 let reasons = [(missing.running, "still running", "still running"),
+                               (missing.stopped, "stopped", "stopped"),
                                (missing.failed, "failed before it finished", "failed before they finished"),
                                (missing.noUsage, "came back with no usage from the gateway", "came back with no usage from the gateway"),
                                (missing.notCaptured, "was not captured", "were not captured"),
@@ -79,6 +80,27 @@ enum TurnInfoPresentation {
         if turn.isRunning { return "Reported so far · " + (coverage ?? "updates as requests finish") }
         if turn.partial { return "Partial history · retained request usage" + (coverage.map { " · " + $0 } ?? "") }
         return coverage.map { $0.prefix(1).uppercased() + $0.dropFirst() }
+    }
+    /// The card's note: a stopped turn's advice, then what its figures cover.
+    static func cardNote(_ turn: TurnSummary) -> String? {
+        let parts = [noticeInCard(turn), coverageNotice(turn)].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+    /// A stopped turn says so in its card's header. What the host advises
+    /// next joins the card's note instead of an amber line under it: the
+    /// chip, the header and that line said "stopped" three times over.
+    static func noticeInCard(_ turn: TurnSummary) -> String? {
+        guard turn.outcome == "cancelled", var notice = turn.notice?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        for lead in ["Run cancelled.", "Run stopped."] where notice.hasPrefix(lead) {
+            notice = String(notice.dropFirst(lead.count)).trimmingCharacters(in: .whitespaces)
+        }
+        guard let first = notice.first else { return nil }
+        return first.uppercased() + notice.dropFirst()
+    }
+    /// The notice under the card: a failed or interrupted turn's, unless the
+    /// run's failure card at the foot of the page already says it.
+    static func noticeBelowCard(_ turn: TurnSummary) -> String? {
+        turn.noticeOnFailureCard || turn.outcome == "cancelled" ? nil : turn.notice
     }
     static func subtotals(_ lines: [TurnRequestLine]) -> [TurnModelSubtotal] {
         var order: [String?] = [], totals: [String?: TurnModelSubtotal] = [:]
@@ -101,6 +123,7 @@ enum TurnInfoPresentation {
         if !parts.isEmpty { return parts.joined(separator: " · ") }
         switch line.missing {
         case .running?: return "running"
+        case .stopped?: return "stopped"
         case .failed?: return "failed before finishing"
         case .noUsage?: return "no usage from the gateway"
         case .expired?: return "metrics expired"

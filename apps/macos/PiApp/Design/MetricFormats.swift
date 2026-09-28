@@ -113,6 +113,23 @@ enum MetricFormat {
         return minutes > 0 ? "\(minutes)m " + tail : tail
     }
 
+    /// A finished turn's time, rounded for reading: `92 ms`, `19.7s`,
+    /// `1m 05s`, `1h 02m 03s`. The same steps the live clock counts in, with
+    /// a tenth of a second under a minute. The Session Inspector keeps each
+    /// request's exact time.
+    static func turnDuration(_ milliseconds: Double) -> String {
+        guard let value = DurationObservation.valid(milliseconds) else { return "—" }
+        if value == 0 { return "0s" }
+        if value < 0.5 { return "<1 ms" }
+        if value.rounded() < 1_000 { return whole(value.rounded()) + " ms" }
+        let tenths = (value / 100).rounded()
+        if tenths < 600 { return trimmed(tenths / 10, places: 1) + "s" }
+        guard let total = Int(exactly: (value / 1_000).rounded()) else { return "—" }
+        let hours = total / 3_600, minutes = (total / 60) % 60, seconds = total % 60
+        if hours > 0 { return String(format: "%dh %02dm %02ds", hours, minutes, seconds) }
+        return String(format: "%dm %02ds", minutes, seconds)
+    }
+
     /// Keep small gateway observations useful without floating-point noise.
     /// Extremely small nonzero amounts use six significant digits.
     static func preciseDecimal(_ value: Double) -> String {

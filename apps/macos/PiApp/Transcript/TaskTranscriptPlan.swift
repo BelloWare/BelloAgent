@@ -242,7 +242,7 @@ enum TaskTranscriptPlan {
             startedAt:started, endedAt:ended, elapsedMs:task?.elapsedMilliseconds(),
             modelMs:task?.modelMs ?? replies.reduce(0) { $0 + ($1.modelMs ?? 0) },
             toolMs:task?.toolMs ?? tools.reduce(0) { $0 + ($1.durationMs ?? 0) }, live:task.map { !$0.terminal } ?? false,
-            files:TranscriptActivity.changedFiles(tools), partial:partial, accounting:TranscriptActivity.aggregate(rows),
+            files:TranscriptActivity.changedFiles(tools), partial:partial, accounting:TranscriptActivity.aggregate(rows, stopped:task?.outcome == "cancelled"),
             requests:rows.filter { $0.role == "assistant" || $0.accounting != nil }, current:nil, notice:task?.detail)
         summary.toolCountPartial = task == nil && (calls.partial || partial)
         summary.taskKey = task?.key; summary.taskRootID = task?.rootID
