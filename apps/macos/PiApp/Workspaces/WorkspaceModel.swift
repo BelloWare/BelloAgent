@@ -71,6 +71,9 @@ enum WorkspacePage: String, Sendable { case chats, report }
     var savedSelectionRevision: Int64 = 0
     var selectionWrite: Task<Void, Never>?
     var remembersSelection = false
+    /// Set by `shutdown()`: a launch still reading when the app went does not
+    /// start writing again when it finishes.
+    var selectionMemoryStopped = false
     /// Owned by `WorkspaceLaunchSelection.swift`: the saved side each chat
     /// last showed beside it, by chat id, which `select` reopens after a
     /// relaunch. `sides` is the same thing for this launch, in memory.

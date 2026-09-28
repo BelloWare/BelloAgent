@@ -168,6 +168,13 @@ extension WorkspaceModel {
     /// gives it a chat record, and that chat is then the one to reopen.
     /// Bounded, and never a reason to refuse quitting.
     @discardableResult func flushSelection(timeout: TimeInterval = 5) async -> Bool {
+        // Launch is still reading, and a chat is on screen: the one it is
+        // reopening or one the reader opened, with the panes as they are now.
+        // Waiting for launch wrote nothing at all, and the next launch put back
+        // what the last session left, a side closed meanwhile included.
+        if !remembersSelection, !selectionMemoryStopped, selectedID != nil {
+            remembersSelection = true; noteSelectionChanged()
+        }
         let deadline = ProcessInfo.processInfo.systemUptime + max(0, timeout)
         var retried = false
         while selectionWrite != nil || (rememberedSelection?.revision ?? 0) > savedSelectionRevision {
@@ -182,7 +189,7 @@ extension WorkspaceModel {
 
     /// Stops writing for good: this model is going away.
     func stopRememberingSelection() {
-        remembersSelection = false
+        remembersSelection = false; selectionMemoryStopped = true
         selectionWrite?.cancel()
     }
 
@@ -227,7 +234,8 @@ extension WorkspaceModel {
     func reopenRememberedSelection(_ remembered: RememberedSelection?, unlessSelectedSince revision: Int) async -> Bool {
         // From here on every change is written. Whatever the reader opened
         // while this was loading is the selection now, and is written first.
-        defer { remembersSelection = true; noteSelectionChanged() }
+        // Not after a quit that came first: the app is going.
+        defer { if !selectionMemoryStopped { remembersSelection = true; noteSelectionChanged() } }
         guard selectedID == nil, selectionRevision == revision else { return false }
         // The report comes back over the reopened chat, unless the reader
         // opened something of their own while launch was reading.
