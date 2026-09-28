@@ -1,6 +1,6 @@
 # Bello Agent 0.1.110 — a closed side stays closed after relaunch
 
-Status: candidate; publication pending.
+Status: publicly released and verified at 2026-09-28 17:00:07 UTC.
 Starting main: `30dfb1aea578cc0723682cd3492c6ca7ade93898` (0.1.109's verified record).
 
 ## Changes
@@ -55,9 +55,25 @@ so.
   the synthetic gateway, then a relaunch. A side sent from and closed, one
   closed while its reply streams, and one opened with `/side <question>` and
   closed each stay closed. It runs in the parallel lane, about 9 s.
+- **Live compaction test, fixture mode, on the release helper:** 3 of 3
+  scenarios passed (mid-run recalled 10 of 10 markers); reported cost $0.82 of
+  the fixture's $5.00 cap (synthetic).
 - Installation and updater rehearsals are excluded by the owner's standing
   instruction.
 
 ## Publication
 
-Pending.
+- Release source: `bc3d3dbdb8236611f00bfc1f544b76499968e7c7`, pushed to GitHub `main`; annotated tag
+  `v0.1.110` is pushed and resolves to that commit.
+- Website publication: `638df32804b4ef878d97ba018c029d88b977d1eb`, pushed to `BelloWare/belloware.com` `main`.
+- Signed/notarized Bello Agent 0.1.110, build 114. App notarization
+  `e68fc2e1-278c-4a21-b67b-6a28461e3091` and DMG notarization `2bb11948-5eed-44e7-9615-f281a1af5412` were accepted. Stapling,
+  signature, Gatekeeper and artifact validation passed.
+- `BelloAgent-0.1.110.dmg`: **11,135,115 bytes (10.62 MiB)**; SHA-256
+  `2b6ddf10358574309728cb336489ad36298cf14811ceb2ef799aa65969249d73`.
+- At 2026-09-28 17:00:07 UTC, the public product page linked to 0.1.110.
+  `scripts/verify-published.py` downloaded the public archive, verified its
+  SHA-256 and Ed25519 signature, and confirmed that both public update feeds
+  match the intended release and are byte-identical.
+- No install or updater rehearsal was performed, at the owner's standing
+  instruction.
