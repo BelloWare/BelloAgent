@@ -210,6 +210,38 @@ final class GatewayAccountingTests: XCTestCase {
         try await archive.close()
     }
 
+    /// The helper links a request to its hidden ledger row from dispatch on.
+    /// The answer the ledger stands for keeps the request, streaming or done;
+    /// the ledger's link used to send it to the user's row while the answer's
+    /// own stand-in counted it again.
+    func testALedgerLinkLeavesTheRequestWithTheAnswerItStandsFor() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
+        try await archive.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
+        var metadata = value(output: [], outcome: "running")
+        let id = try await save(archive, metadata)
+        try await archive.accept(["type": .string("links"), "attemptId": .string(id), "outputMessageIds": .array([.string("ledger-1")])], workspace: "workspace")
+        let user = TranscriptMessage(id: "user-1", role: "user", text: "Question")
+        var ledger = TranscriptMessage(id: "ledger-1", role: "system", text: ""); ledger.kind = "requestLedger"; ledger.presentationSourceID = "answer"
+        var answer = TranscriptMessage(id: "answer", role: "assistant", text: "Partial"); answer.state = "streaming"
+        let during = try await archive.gatewayAccounting(sessionID: "session", workspaceID: "workspace", messages: [user, ledger, answer])
+        XCTAssertNil(during.messages[user.id], "The user's row does not take the answer's request")
+        XCTAssertEqual(during.messages[answer.id]?.requests, 1)
+        XCTAssertEqual(during.messages[answer.id]?.missingUsage?.running, 1)
+        var rows = [user, ledger, answer]
+        for index in rows.indices { rows[index].accounting = during.messages[rows[index].id] }
+        let turn = TranscriptActivity.aggregate(rows)
+        XCTAssertEqual(turn.requests, 1, "Counted once: the answer's row has it, so it needs no stand-in")
+        XCTAssertEqual(turn.missing.running, 1)
+        metadata["outputMessageIds"] = .array([.string("answer")]); metadata["outcome"] = .string("completed")
+        metadata["usage"] = .object(["inputIncludingCache": .number(38), "output": .number(42), "total": .number(80), "cacheRead": .number(0), "cacheWrite": .number(0)])
+        try await archive.finish(metadata)
+        answer.state = nil
+        let complete = try await archive.gatewayAccounting(sessionID: "session", workspaceID: "workspace", messages: [user, ledger, answer])
+        XCTAssertEqual(complete.messages.keys.sorted(), ["answer"]); XCTAssertEqual(complete.messages["answer"]?.requests, 1)
+        try await archive.close()
+    }
+
     func testAccountingSurvivesReopenBodyPurgeAndSchemaBackfillButExpiresWithMetrics() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let clock = AccountingClock(), key = Data(repeating: 3, count: 32)
