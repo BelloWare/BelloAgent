@@ -173,15 +173,15 @@ final class SessionOrganizationTests: XCTestCase {
         row.updateActivity(state: "running", loading: false, activity: ["version": .number(2), "phase": .string("tool")])
         XCTAssertEqual(row.state, "tool"); XCTAssertEqual(row.rateLabel, "Latest 125 tok/s")
         row.timing?.samples.append(SessionTimingSample(id: "missing", wall: Date(), ttftMilliseconds: 100, streamingMilliseconds: 900, outputTokens: nil, requestMilliseconds: 1_000))
-        XCTAssertEqual(row.rateLabel, "Usage unavailable", "A new completed request without usage must not borrow an older rate or the average")
+        XCTAssertNil(row.rateLabel, "A new completed request without usage must not borrow an older rate or the average, nor say usage is unavailable")
         row.timing = SessionTimingHistory()
-        XCTAssertEqual(row.rateLabel, "Awaiting usage")
+        XCTAssertNil(row.rateLabel, "A chat without a completed request shows no rate")
         // A buffered route that never emits a first-content event has no
         // decode span, so it has no settled rate — the sidebar says so rather
         // than dividing by the whole round trip and calling that decode speed.
         let buffered = SessionTimingSample(id: "hidden-reasoning", wall: Date(), ttftMilliseconds: nil,
                                            streamingMilliseconds: nil, outputTokens: 302, requestMilliseconds: 2_403)
         row.timing = SessionTimingHistory(samples: [buffered])
-        XCTAssertEqual(row.rateLabel, "Usage unavailable")
+        XCTAssertNil(row.rateLabel)
     }
 }

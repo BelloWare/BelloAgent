@@ -101,7 +101,7 @@ struct ChatRowStats: Equatable {
             && activity["modelActive"]?.bool == true && ["model", "compacting"].contains(phase)
         if busy && phase == "tool" { self.state = "tool" }
     }
-    var rateLabel: String? { timing.map { SessionRatePresentation(history: $0).label } }
+    var rateLabel: String? { timing.flatMap { SessionRatePresentation(history: $0).label } }
 }
 
 /// What a chat row shows, given values its parent has already looked up. It

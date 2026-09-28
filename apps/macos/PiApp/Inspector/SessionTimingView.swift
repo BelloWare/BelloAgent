@@ -9,14 +9,14 @@ struct SidebarReportedRate: View {
     let sessionTitle: String
     private var presentation: SessionRatePresentation { SessionRatePresentation(history: history) }
     var body: some View {
-        Text(presentation.label)
+        Text(presentation.label ?? "")
             .font(PiFont.caption.monospacedDigit()).lineLimit(1)
             .frame(width: 108, alignment: .leading)
             .foregroundStyle(presentation.latest == nil ? Color.piInkTertiary : Color.piInkSecondary)
             .contentTransition(.opacity).piAnimation(PiMotion.quick, value: presentation.label)
             .help(SessionRatePresentation.explanation)
             .accessibilityLabel("Latest completed output rate")
-            .accessibilityValue(presentation.label)
+            .accessibilityValue(presentation.label ?? "Not measured")
             .accessibilityIdentifier("sidebar-reported-rate")
             .piStableLayout()
     }
