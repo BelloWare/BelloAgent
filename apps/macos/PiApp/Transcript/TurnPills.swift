@@ -232,9 +232,10 @@ struct TurnLineView: View {
 struct StableTurnSummaryView: View {
     let turn: TurnSummary
     let actions: TranscriptActions
-    /// The notice the report shows: a failed turn's error is left to the
-    /// run's failure card when that card is on the page.
-    static func shownNotice(_ turn: TurnSummary) -> String? { turn.noticeOnFailureCard ? nil : turn.notice }
+    /// The notice under the report: a failed turn's error is left to the
+    /// run's failure card when that card is on the page, and a stopped
+    /// turn's advice is in the report's own note.
+    static func shownNotice(_ turn: TurnSummary) -> String? { TurnInfoPresentation.noticeBelowCard(turn) }
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             TurnPillRow(turn: turn, actions: actions, showsInfo: true)

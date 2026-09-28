@@ -106,7 +106,7 @@ struct TurnAccounting: Equatable, Sendable {
 struct TurnRequestLine: Equatable, Sendable, Identifiable {
     enum Source: Equatable, Sendable { case log, record }
     /// Why a request has no usage.
-    enum Missing: Equatable, Sendable { case running, failed, noUsage, notCaptured, expired }
+    enum Missing: Equatable, Sendable { case running, stopped, failed, noUsage, notCaptured, expired }
     var id: String
     /// Seconds since 1970, when known.
     var wall: Double?
@@ -144,13 +144,14 @@ struct TurnRequestLine: Equatable, Sendable, Identifiable {
 
 /// A turn's requests without usage, by why.
 struct TurnMissingUsage: Equatable, Sendable {
-    var running = 0, failed = 0, noUsage = 0, notCaptured = 0, expired = 0, unknown = 0
+    var running = 0, stopped = 0, failed = 0, noUsage = 0, notCaptured = 0, expired = 0, unknown = 0
     /// False when an older snapshot could not say why its requests lack usage.
     var known = true
-    var total: Int { running + failed + noUsage + notCaptured + expired + unknown }
+    var total: Int { running + stopped + failed + noUsage + notCaptured + expired + unknown }
     mutating func add(_ reason: TurnRequestLine.Missing?) {
         switch reason {
         case .running?: running += 1
+        case .stopped?: stopped += 1
         case .failed?: failed += 1
         case .noUsage?: noUsage += 1
         case .notCaptured?: notCaptured += 1
@@ -842,7 +843,9 @@ enum TranscriptActivity {
         return input - read
     }
     /// Sums only what each request reported; partial coverage stays visible through the sample counts.
-    static func aggregate(_ messages: [TranscriptMessage]) -> TurnAccounting {
+    /// `stopped`: the turn ended at the user's Stop, so a reply it cut off
+    /// without usage was stopped, not failed.
+    static func aggregate(_ messages: [TranscriptMessage], stopped: Bool = false) -> TurnAccounting {
         var sum = TurnAccounting()
         func add(_ field: WritableKeyPath<TurnAccounting, Double?>, _ samples: WritableKeyPath<TurnAccounting, Int>, _ value: Double?, _ count: Int) {
             guard count > 0, let value = reported(value) else { return }
@@ -868,7 +871,8 @@ enum TranscriptActivity {
         }
         var modelPosition = -1, filled = GatewayMissingUsage()
         for (position, message) in messages.enumerated() {
-            if let line = recordLine(message) {
+            if var line = recordLine(message) {
+                if stopped, line.missing == .failed, message.stopReason == "interrupted" { line.missing = .stopped }
                 sum.requests += 1
                 sum.recordLines.append(line)
                 addFigures(line)
@@ -879,16 +883,17 @@ enum TranscriptActivity {
                 }
                 if line.route.valid { addRoute(line.route) }
             } else if let record = message.reply, record.input != nil || record.output != nil,
-                      let state = message.accounting?.replyLog.flatMap(ReplyLog.init(rawValue:)), [.running, .failed, .noUsage].contains(state) {
+                      let state = message.accounting?.replyLog.flatMap(ReplyLog.init(rawValue:)), [.running, .failed, .noUsage, .stopped].contains(state) {
                 // The log counts this reply's request, with no usage yet (its
                 // final metadata still on the way): the record's figures stand
                 // in for that one request, which is not counted again.
                 addFigures(TurnRequestLine(reply: message))
-                switch state { case .running: filled.running += 1; case .failed: filled.failed += 1; default: filled.noUsage += 1 }
+                switch state { case .running: filled.running += 1; case .failed: filled.failed += 1; case .stopped: filled.stopped += 1; default: filled.noUsage += 1 }
             }
             guard let a = message.accounting else { continue }
             if let missing = a.missingUsage {
                 sum.missing.running += missing.running; sum.missing.failed += missing.failed; sum.missing.noUsage += missing.noUsage
+                sum.missing.stopped += missing.stopped
             } else if a.requests > 0 { sum.missing.known = false }
             sum.requests += a.requests
             if let split = GatewayTokenSplit.reported(a, input: true) { sum.inputSplit = sum.inputSplit.map { $0.adding(split) } ?? split }
@@ -914,6 +919,7 @@ enum TranscriptActivity {
         sum.missing.running = max(0, sum.missing.running - filled.running)
         sum.missing.failed = max(0, sum.missing.failed - filled.failed)
         sum.missing.noUsage = max(0, sum.missing.noUsage - filled.noUsage)
+        sum.missing.stopped = max(0, sum.missing.stopped - filled.stopped)
         return sum
     }
     /// A reply the request log has no row for still made a request: its own

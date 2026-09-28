@@ -242,6 +242,25 @@ final class GatewayAccountingTests: XCTestCase {
         try await archive.close()
     }
 
+    /// A request the user stopped is counted as stopped, not failed: the log
+    /// records it `cancelled`, and its reply's record reads the same.
+    func testAStoppedRequestIsCountedAsStoppedNotFailed() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
+        try await archive.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
+        let stopped = try await save(archive, value(output: ["answer"], outcome: "cancelled"))
+        try await save(archive, value(output: ["other"], outcome: "failed", wall: 1996))
+        let user = TranscriptMessage(id: "user-1", role: "user", text: "Question")
+        var answer = TranscriptMessage(id: "answer", role: "assistant", text: "Part of an answer"); answer.stopReason = "interrupted"
+        answer.reply = ReplyRecord(attempt: stopped, requested: "router")
+        let other = TranscriptMessage(id: "other", role: "assistant", text: "")
+        let result = try await archive.gatewayAccounting(sessionID: "session", workspaceID: "workspace", messages: [user, answer, other])
+        XCTAssertEqual(result.messages["answer"]?.missingUsage, GatewayMissingUsage(stopped: 1))
+        XCTAssertEqual(result.messages["other"]?.missingUsage, GatewayMissingUsage(failed: 1))
+        XCTAssertEqual(result.messages["answer"]?.replyLog, ReplyLog.stopped.rawValue)
+        try await archive.close()
+    }
+
     func testAccountingSurvivesReopenBodyPurgeAndSchemaBackfillButExpiresWithMetrics() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let clock = AccountingClock(), key = Data(repeating: 3, count: 32)

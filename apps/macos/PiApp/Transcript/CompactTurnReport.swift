@@ -114,11 +114,11 @@ struct CompactTurnReport: View {
         VStack(alignment: .leading, spacing: 6) {
             TurnReportHeaderLayout { state; identityAndActions }
             TurnReportMetrics(turn: turn)
-            if let notice = TurnInfoPresentation.coverageNotice(turn) {
+            if let notice = TurnInfoPresentation.cardNote(turn) {
                 // Live, one line whatever it says: a dock that reflowed as
                 // requests finished would move the conversation above it.
                 Text(notice).font(.system(size: 9.5)).foregroundStyle(TranscriptPalette.faint)
-                    .lineLimit(turn.isRunning ? 1 : 3).truncationMode(.tail).fixedSize(horizontal: false, vertical: !turn.isRunning)
+                    .lineLimit(turn.isRunning ? 1 : 4).truncationMode(.tail).fixedSize(horizontal: false, vertical: !turn.isRunning)
                     .help(notice).accessibilityIdentifier("turn-coverage-notice")
             }
         }

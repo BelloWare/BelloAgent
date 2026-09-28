@@ -494,7 +494,8 @@ extension TurnRequestLine {
         logMissing = row.recordFigures || row.source == .record ? row.logMissing : nil
         if !reportedUsage {
             missing = !row.metricsRetained ? .expired : row.running ? .running
-                : ["completed", "truncated"].contains(row.outcome) ? (row.source == .record ? row.logMissing : .noUsage) : .failed
+                : ["completed", "truncated"].contains(row.outcome) ? (row.source == .record ? row.logMissing : .noUsage)
+                : row.outcome == "cancelled" ? .stopped : .failed
         }
     }
 }

@@ -411,6 +411,49 @@ extension ConversationPaneTests {
     }
 }
 
+extension ConversationPaneTests.LiveChat {
+    /// The last finished turn's report, as the page shows it.
+    var finishedTurn: TurnSummary? {
+        transcript?.snapshot?.items.reversed().lazy.compactMap { item -> TurnSummary? in
+            if case .block(let block) = item, block.presentation == .summary, let turn = block.turn, !turn.isRunning { return turn }
+            return nil
+        }.first
+    }
+}
+
+extension ConversationPaneTests {
+    /// Stop leaves one account of itself, against the packaged helper: the
+    /// turn's card says "Stopped", counts the request as stopped rather than
+    /// failed, and keeps the host's advice in its note; nothing under the card
+    /// repeats it.
+    @MainActor func testAStoppedTurnSaysSoOnce() async throws {
+        let live = try await LiveChat()
+        var closed = false
+        defer { if !closed { Task { await live.close() } } }
+        await live.settle(20)
+        await live.send("slow: stop me part way")
+        await live.waitUntil("The answer never started streaming") {
+            live.session.messages.contains { $0.role == "assistant" && $0.isStreaming && !$0.text.isEmpty }
+        }
+        live.model.stop(sessionID: live.chat.id)
+        await live.waitUntil("The run never stopped") { !live.session.busy }
+        await live.waitUntil("The stopped turn's card never counted its request") {
+            live.finishedTurn.map { $0.outcome == "cancelled" && $0.accounting.missing.stopped == 1 } ?? false
+        }
+        let turn = try XCTUnwrap(live.finishedTurn)
+        XCTAssertEqual(TurnInfoPresentation.outcome(turn), "Stopped")
+        XCTAssertEqual(turn.accounting.requests, 1)
+        XCTAssertEqual(turn.accounting.missing.failed, 0, "A request the user stopped did not fail")
+        let note = try XCTUnwrap(TurnInfoPresentation.cardNote(turn))
+        XCTAssertTrue(note.hasSuffix("1 did not report usage (1 stopped)"), note)
+        XCTAssertFalse(note.hasPrefix("Run cancelled"), "The header already says it stopped: \(note)")
+        XCTAssertNil(StableTurnSummaryView.shownNotice(turn), "No amber line under the card")
+        XCTAssertNil(live.model.error, live.model.error ?? "")
+        closed = true
+        await live.close()
+    }
+}
+
 // MARK: - The helper dying under a running turn
 
 extension ConversationPaneTests {

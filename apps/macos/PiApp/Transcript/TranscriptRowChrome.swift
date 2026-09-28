@@ -131,24 +131,6 @@ final class TranscriptFocusMarkerView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// What Stop leaves behind: the partial answer stays, and this says why it
-/// ends where it does. Amber, because nothing failed — the reader stopped it.
-struct TranscriptStoppedChip: View {
-    var detail: String = "Its partial answer is retained separately from the retry."
-    var body: some View {
-        HStack(spacing: 5) {
-            TranscriptStateDot(state: .stopped).frame(width: 7)
-            Text("Stopped").font(.system(size: 11, weight: .medium)).foregroundStyle(TranscriptPalette.warning)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 2)
-        .background(TranscriptPalette.warning.opacity(0.14), in: Capsule())
-        .fixedSize()
-        .help(detail)
-        .accessibilityLabel("Stopped. " + detail)
-        .accessibilityIdentifier("reply-stopped")
-    }
-}
-
 /// One work row: `[icon] Title · summary        suffix`, 24 pt tall, the whole
 /// line a button. `content` is what it opens, already laid out by its owner.
 struct TranscriptWorkRow<Content: View>: View {

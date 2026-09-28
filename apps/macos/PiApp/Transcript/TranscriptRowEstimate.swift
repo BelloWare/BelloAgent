@@ -92,7 +92,7 @@ enum TranscriptRowEstimate {
                     .reduce(CGFloat(44)) { $0 + CGFloat($1.count) * 11.5 * characterFactor + 34 }
                 let rows = max(1, (pills / max(40, width)).rounded(.up))
                 return 6 + line + 4 + rows * 22 + (rows - 1) * 3 + 10
-                    + (turn.notice.map { prose($0, width: width, size: 12) } ?? 0)
+                    + (TurnInfoPresentation.noticeBelowCard(turn).map { prose($0, width: width, size: 12) } ?? 0)
             }
             var total: CGFloat = 10
             let reasoned = block.replies.contains { !($0.thinking ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

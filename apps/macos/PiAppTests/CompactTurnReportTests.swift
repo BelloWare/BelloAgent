@@ -290,3 +290,60 @@ final class CompactTurnReportTests: XCTestCase {
         }
     }
 }
+
+
+/// A stopped turn says so once: its card's header says "Stopped", its note
+/// counts the request as stopped and carries what the host advises next, and
+/// nothing under the card or the reply repeats it.
+final class StoppedTurnPresentationTests: XCTestCase {
+    private func stopped(notice: String? = "Run cancelled. Pending messages are paused; inspect tool effects before retrying.") -> TurnSummary {
+        var turn = TaskTranscriptPlan.summary([], task: nil)
+        turn.partial = false; turn.outcome = "cancelled"; turn.notice = notice
+        turn.accounting.requests = 1; turn.accounting.missing = TurnMissingUsage(stopped: 1)
+        return turn
+    }
+
+    func testAStoppedTurnsAdviceIsInItsCardAndNotUnderIt() {
+        let turn = stopped()
+        XCTAssertEqual(TurnInfoPresentation.outcome(turn), "Stopped")
+        XCTAssertEqual(TurnInfoPresentation.coverageNotice(turn), "Input and output from 0 of 1 requests; 1 did not report usage (1 stopped)",
+                       "A request the user stopped did not fail")
+        XCTAssertEqual(TurnInfoPresentation.cardNote(turn),
+                       "Pending messages are paused; inspect tool effects before retrying. Input and output from 0 of 1 requests; 1 did not report usage (1 stopped)",
+                       "The header already says it stopped; the note keeps the advice")
+        XCTAssertNil(TurnInfoPresentation.noticeBelowCard(turn), "No amber line under the card")
+        XCTAssertNil(TurnInfoPresentation.noticeInCard(stopped(notice: "Run cancelled.")), "Nothing left to say once the header says it")
+        XCTAssertEqual(TurnInfoPresentation.noticeInCard(stopped(notice: "the app closed")), "The app closed")
+    }
+
+    func testAFailedTurnKeepsItsNoticeUnderTheCard() {
+        var turn = stopped(notice: "The gateway refused the request: 400")
+        turn.outcome = "failed"; turn.accounting.missing = TurnMissingUsage(failed: 1)
+        XCTAssertNil(TurnInfoPresentation.noticeInCard(turn))
+        XCTAssertEqual(TurnInfoPresentation.noticeBelowCard(turn), "The gateway refused the request: 400")
+        turn.noticeOnFailureCard = true
+        XCTAssertNil(TurnInfoPresentation.noticeBelowCard(turn), "The failure card at the foot of the page says it")
+        XCTAssertEqual(TurnInfoPresentation.coverageNotice(turn), "Input and output from 0 of 1 requests; 1 did not report usage (1 failed before it finished)")
+    }
+
+    /// A reply the user stopped, with no usage and no row in the log, is
+    /// counted as stopped in a stopped turn and as failed otherwise.
+    func testAReplyCutOffByStopCountsAsStopped() {
+        var reply = TranscriptMessage(id: "partial", role: "assistant", text: "Part of an answer")
+        reply.stopReason = "interrupted"
+        reply.reply = .init(attempt: "attempt-1", requested: "router")
+        reply.accounting = GatewayTotals(); reply.accounting?.replyLog = ReplyLog.absent.rawValue
+        let rows = [TranscriptMessage(id: "u", role: "user", text: "Go"), reply]
+        XCTAssertEqual(TranscriptActivity.aggregate(rows, stopped: true).missing.stopped, 1)
+        XCTAssertEqual(TranscriptActivity.aggregate(rows, stopped: true).missing.failed, 0)
+        XCTAssertEqual(TranscriptActivity.aggregate(rows).missing.failed, 1, "Outside a stopped turn an interrupted reply failed")
+    }
+
+    func testAccountingKeptFromBeforeReadsWithNoneStopped() throws {
+        let older = try JSONDecoder().decode(GatewayMissingUsage.self, from: Data(#"{"running":1,"failed":2,"noUsage":3}"#.utf8))
+        XCTAssertEqual(older, GatewayMissingUsage(running: 1, failed: 2, noUsage: 3, stopped: 0))
+        XCTAssertEqual(older.total, 6)
+        XCTAssertEqual(ReplyLog(outcome: "cancelled"), .stopped)
+        XCTAssertEqual(ReplyLog(outcome: "failed"), .failed)
+    }
+}
