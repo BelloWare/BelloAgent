@@ -373,6 +373,44 @@ extension ConversationPaneTests {
     }
 }
 
+extension ConversationPaneTests {
+    /// After Stop the queue waits for Resume. A message sent meanwhile joins
+    /// it, after what was waiting, instead of being refused, and Resume sends
+    /// them in order.
+    @MainActor func testAMessageSentWhileTheQueueIsPausedJoinsIt() async throws {
+        let live = try await LiveChat()
+        var closed = false
+        defer { if !closed { Task { await live.close() } } }
+        await live.settle(20)
+        let slow = "slow: walk through the retry loop step by step"
+        try await live.holdingHelper {
+            live.session.draft = slow
+            live.model.send(sessionID: live.chat.id)
+            await live.waitUntil("The turn never started") { live.session.busy }
+        }
+        await live.taken(slow)
+        await live.send("Follow-up 0")
+        await live.waitUntil("The follow-up never reached the queue") { QueuedMessage.from(live.session.queue).count == 1 }
+        live.model.stop(sessionID: live.chat.id)
+        await live.waitUntil("The stopped run never paused its queue") { !live.session.busy && live.session.queuePaused }
+        await live.send("Added while paused")
+        await live.waitUntil("The new message never joined the paused queue") {
+            QueuedMessage.from(live.session.queue).map(\.text) == ["Follow-up 0", "Added while paused"]
+        }
+        XCTAssertTrue(live.session.queuePaused, "It waits for Resume")
+        XCTAssertNil(live.session.sendFailure, live.session.sendFailure ?? "")
+        live.model.action("queue.resume", sessionID: live.chat.id)
+        await live.waitUntil("Resume never sent both") {
+            live.session.queue.isEmpty && !live.session.busy && live.session.messages.contains { $0.role == "user" && $0.text == "Added while paused" }
+        }
+        let users = live.session.messages.filter { $0.role == "user" }.map(\.text)
+        XCTAssertEqual(Array(users.suffix(2)), ["Follow-up 0", "Added while paused"], "Resume sends them in order")
+        XCTAssertNil(live.model.error, live.model.error ?? "")
+        closed = true
+        await live.close()
+    }
+}
+
 // MARK: - The helper dying under a running turn
 
 extension ConversationPaneTests {

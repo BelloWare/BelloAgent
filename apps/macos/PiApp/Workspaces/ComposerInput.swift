@@ -70,7 +70,7 @@ struct ComposerInput: View {
                     // The keyboard hints are the empty composer's placeholder; they leave once typing starts.
                     .overlay(alignment: .topLeading) {
                         if draft.text.isEmpty && session.skills.isEmpty {
-                            Text("Message… " + ComposerSubmissionIntent.hint(queues: queues, onBar: queues && !editing && barForm.runControls.showsHint))
+                            Text("Message… " + ComposerSubmissionIntent.hint(queues: queues, steers: session.busy, onBar: queues && !editing && barForm.runControls.showsHint))
                                 .font(.system(size: 14)).foregroundStyle(Color.piInkTertiary)
                                 .padding(.leading, 15).padding(.top, 9).allowsHitTesting(false).accessibilityHidden(true)
                         }
@@ -156,7 +156,7 @@ struct ComposerInput: View {
     /// The line beside the steering button: what pressing Return will do.
     private var hint: String? {
         if queueEditing { return "↩ Save" }
-        if queues { return "↩ Queue · ⌘↩ Steer" }
+        if queues { return session.busy ? "↩ Queue · ⌘↩ Steer" : "↩ Queue" }
         if editing { return session.busy || !session.queue.isEmpty ? "Wait for idle to resend" : "Resend from here" }
         return nil
     }
