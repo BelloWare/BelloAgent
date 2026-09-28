@@ -12,61 +12,71 @@ extension ConversationPaneTests {
         return mine + view.subviews.flatMap { controls(in: $0) }
     }
 
-    /// Rewriting a queued follow-up opens a field that needs more room than a
-    /// one-line row. The panel has to grow with it: the row being typed into
-    /// and the follow-ups under it must all stay inside the panel.
-    @MainActor func testRewritingAQueuedFollowUpKeepsEveryRowInsideThePanel() async throws {
-        // A narrow pane, as a side leaves, so the message really does wrap.
+    /// Rewriting a queued follow-up happens in the chat's own composer, in
+    /// its look, not in a plain field squeezed into the row: the pencil puts
+    /// the message there and sets the draft aside, the panel keeps its size
+    /// and marks the row, and Cancel brings the draft back untouched.
+    @MainActor func testRewritingAQueuedFollowUpOpensItInTheComposer() async throws {
         let pane = try Pane(width: 620, height: 760); defer { pane.close() }
         pane.session.state = "running"
         pane.session.queue = (0..<4).map { index in
             ["turnId": .string("q\(index)"), "kind": .string("follow-up"),
              "text": .string("Follow-up \(index): " + String(repeating: "a long queued instruction that keeps going. ", count: 6))]
         }
+        pane.session.draft = "unsent thought"
         await pane.settle(20)
-        let field = try XCTUnwrap(Self.views(ComposerTextView.self, in: pane.hosted).first?.enclosingScrollView)
-        let composer = field.convert(field.bounds, to: nil)
         func list() throws -> NSScrollView {
             try XCTUnwrap(Self.views(NSScrollView.self, in: pane.hosted).first { String(describing: Swift.type(of: $0)).contains("ListCore") })
         }
         let idle = try list().frame.height
-        XCTAssertEqual(idle, QueuePanel.listHeight(rows: 4, editing: false), accuracy: 0.5)
+        XCTAssertEqual(idle, QueuePanel.listHeight(rows: 4), accuracy: 0.5)
+        let queued = QueuedMessage.from(pane.session.queue)[1]
 
-        // The chat starts rewriting the second follow-up, exactly as the pencil does.
-        pane.session.queueEditingID = "q1"
+        pane.model.editQueued("q1", sessionID: pane.session.id)
         await pane.settle(24)
-        let editing = try list()
-        XCTAssertGreaterThan(editing.frame.height, idle, "The panel makes room for the field being typed into")
-        let panel = editing.convert(editing.bounds, to: nil)
-        let rows = Self.views(NSTableRowView.self, in: editing)
-        XCTAssertEqual(rows.count, 4, "Every follow-up stays on screen while one is rewritten")
-        var previous: CGRect?
-        for row in rows.sorted(by: { $0.convert($0.bounds, to: nil).minY > $1.convert($1.bounds, to: nil).minY }) {
-            let frame = row.convert(row.bounds, to: nil)
-            XCTAssertLessThanOrEqual(frame.maxY, panel.maxY + 0.5, "Row \(frame) is clipped by the panel \(panel)")
-            XCTAssertGreaterThanOrEqual(frame.minY, panel.minY - 0.5, "Row \(frame) is clipped by the panel \(panel)")
-            if let previous { XCTAssertEqual(frame.maxY, previous.minY, accuracy: 0.5, "Queued rows must stack, not overlap") }
-            previous = frame
-        }
-        // The field itself is inside the panel, and tall enough to have grown.
-        let fields = Self.views(NSView.self, in: editing).filter { String(describing: Swift.type(of: $0)).contains("TextField") }
-        let edited = try XCTUnwrap(fields.first, "The row being rewritten shows its field")
-        let editedFrame = edited.convert(edited.bounds, to: nil)
-        XCTAssertLessThanOrEqual(editedFrame.maxY, panel.maxY + 0.5, "The field being typed into is clipped by the panel")
-        XCTAssertGreaterThanOrEqual(editedFrame.minY, panel.minY - 0.5, "The field being typed into is clipped by the panel")
-        XCTAssertGreaterThan(editedFrame.height, 30, "The field wraps the long message it is rewriting")
-        XCTAssertFalse(panel.intersects(composer), "The queue panel must never reach the composer")
-        print(String(format: "PERF queue panel %.0f -> %.0f points, field %.0f tall, composer at %.0f",
-                     idle, editing.frame.height, editedFrame.height, composer.minY))
-        // Leaving the edit gives the room back.
-        pane.session.queueEditingID = nil
-        await pane.settle(20)
-        XCTAssertEqual(try list().frame.height, idle, accuracy: 0.5, "Closing the field gives the panel's room back")
+        XCTAssertEqual(pane.session.queueEditingID, "q1")
+        XCTAssertEqual(pane.editor?.string, queued.text, "The composer holds the queued message")
+        XCTAssertEqual(pane.session.savedDraft.text, "unsent thought", "The draft saved for the chat stays the one typed")
+        XCTAssertEqual(try list().frame.height, idle, accuracy: 0.5, "No row grows: the rewrite is in the composer")
+        XCTAssertTrue(Self.views(NSTextField.self, in: try list()).allSatisfy { !$0.isEditable }, "The panel opens no field of its own")
+        let panel = try list().convert(try list().bounds, to: nil)
+        let field = try XCTUnwrap(pane.editor?.enclosingScrollView)
+        XCTAssertFalse(panel.intersects(field.convert(field.bounds, to: nil)), "The queue panel must never reach the composer")
+
+        pane.model.cancelQueuedEdit(sessionID: pane.session.id)
+        await pane.settle(12)
+        XCTAssertNil(pane.session.queueEditingID)
+        XCTAssertEqual(pane.editor?.string, "unsent thought", "Cancel brings the draft back")
+        XCTAssertEqual(QueuedMessage.from(pane.session.queue)[1].text, queued.text, "Cancel leaves the queued message as it was")
     }
 
-    /// A queued submission longer than the snapshot's preview: the field must
-    /// wait for the helper's whole copy, refuse to save the preview, and show
-    /// the complete text once it lands.
+    /// Return in the composer saves the rewrite rather than queueing it as a
+    /// new message, and brings the set-aside draft back.
+    @MainActor func testReturnSavesTheRewriteInsteadOfQueueingANewMessage() async throws {
+        let pane = try Pane(width: 900, height: 700); defer { pane.close() }
+        pane.session.state = "running"
+        pane.session.queue = [["turnId": .string("q0"), "kind": .string("follow-up"), "text": .string("Short one")]]
+        pane.session.draft = "unsent thought"
+        await pane.settle(14)
+        pane.model.editQueued("q0", sessionID: pane.session.id)
+        await pane.settle(10)
+        let editor = try XCTUnwrap(pane.editor)
+        XCTAssertTrue(pane.window.makeFirstResponder(editor))
+        editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
+        editor.insertText(", rewritten", replacementRange: editor.selectedRange())
+        await pane.settle(6)
+        type("\r", into: editor, keyCode: 36)
+        await pane.settle(10)
+        XCTAssertNil(pane.session.queueEditingID, "Return saved the rewrite")
+        XCTAssertTrue(pane.session.sendingRows.isEmpty, "Nothing was queued as a new message")
+        XCTAssertEqual(pane.editor?.string, "unsent thought", "The set-aside draft comes back")
+        pane.session.state = "idle"
+        await pane.settle(4)
+    }
+
+    /// A queued submission longer than the snapshot's preview: the composer
+    /// takes it only once the helper's whole copy is read, so the preview can
+    /// never be saved over it, and it holds the complete text.
     @MainActor func testRewritingALongQueuedMessageWaitsForItsWholeText() async throws {
         let pane = try Pane(width: 900, height: 700); defer { pane.close() }
         let whole = "Rewrite the retry loop. " + String(repeating: "Here is another paragraph of the original instruction. ", count: 120)
@@ -75,6 +85,7 @@ extension ConversationPaneTests {
         pane.session.queue = [["turnId": .string("q0"), "kind": .string("follow-up"),
                                "text": .string(preview), "textBytes": .number(Double(whole.utf8.count)), "textTruncated": .bool(true)]]
         pane.session.state = "running"
+        pane.session.draft = "unsent thought"
         let gate = AsyncGate()
         pane.model.queueReadOperation = { sessionID, turnID in
             XCTAssertEqual(turnID, "q0"); XCTAssertEqual(sessionID, pane.session.id)
@@ -84,63 +95,79 @@ extension ConversationPaneTests {
         await pane.settle(16)
         XCTAssertTrue(QueuedMessage.from(pane.session.queue)[0].truncated, "The row says its text is a preview")
 
-        pane.session.queueEditingID = "q0"
+        pane.model.editQueued("q0", sessionID: pane.session.id)
         await pane.settle(10)
-        func field() -> NSTextField? {
-            Self.views(NSTextField.self, in: pane.hosted).first { $0.isEditable || !$0.isEnabled }
-        }
-        let editing = try XCTUnwrap(field(), "The row opens a field")
-        XCTAssertFalse(editing.isEnabled, "The field is held while the whole message is being read, so the preview cannot be saved over it")
-        XCTAssertEqual(editing.stringValue, preview, "Until it lands, the field shows what the snapshot carried")
+        XCTAssertEqual(pane.session.queueEditPreparing, "q0", "The row shows the read in progress")
+        XCTAssertNil(pane.session.queueEditingID, "Nothing is open for rewriting until the whole message is in")
+        XCTAssertEqual(pane.editor?.string, "unsent thought", "The composer keeps the draft meanwhile")
         await gate.open()
-        try await waitFor("The whole message never reached the field") { field()?.stringValue == whole }
+        try await waitFor("The whole message never reached the composer") { pane.session.queueEditingID == "q0" }
         await pane.settle(8)
-        let loaded = try XCTUnwrap(field())
-        XCTAssertTrue(loaded.isEnabled, "Once the whole message is in, the field takes edits again")
-        XCTAssertEqual(loaded.stringValue, whole, "The field holds the complete message, not the first kilobyte")
+        XCTAssertEqual(pane.editor?.string, whole, "The composer holds the complete message, not the first kilobyte")
+        XCTAssertNil(pane.session.queueEditPreparing)
 
         // A row that is not a preview opens straight from the snapshot.
-        pane.session.queueEditingID = nil
+        pane.model.cancelQueuedEdit(sessionID: pane.session.id)
         await pane.settle(6)
         pane.session.queue = [["turnId": .string("q1"), "kind": .string("follow-up"), "text": .string("Short one")]]
         await pane.settle(8)
-        pane.session.queueEditingID = "q1"
+        pane.model.editQueued("q1", sessionID: pane.session.id)
         await pane.settle(10)
-        let short = try XCTUnwrap(field())
-        XCTAssertTrue(short.isEnabled, "A short follow-up needs no read")
-        XCTAssertEqual(short.stringValue, "Short one")
+        XCTAssertEqual(pane.editor?.string, "Short one", "A short follow-up needs no read")
+        pane.model.cancelQueuedEdit(sessionID: pane.session.id)
+        pane.session.state = "idle"
+        await pane.settle(4)
     }
 
-    /// When the whole message cannot be read, the chat says so and closes the
-    /// field instead of leaving the preview open to be saved over the original.
-    @MainActor func testAFailedQueueReadClosesTheFieldWithANotice() async throws {
+    /// When the whole message cannot be read, the chat says so and leaves the
+    /// composer and its draft alone, instead of opening the preview to be
+    /// saved over the original.
+    @MainActor func testAFailedQueueReadLeavesTheComposerAloneWithANotice() async throws {
         let pane = try Pane(width: 900, height: 700); defer { pane.close() }
         pane.session.queue = [["turnId": .string("q0"), "kind": .string("follow-up"),
                                "text": .string(String(repeating: "preview ", count: 120)), "textTruncated": .bool(true)]]
+        pane.session.draft = "unsent thought"
         pane.model.queueReadOperation = { _, _ in throw HostError.failure("The helper is no longer running this chat.") }
         await pane.settle(14)
-        pane.session.queueEditingID = "q0"
-        try await waitFor("The failed read never closed the field") { pane.session.queueEditingID == nil }
+        pane.model.editQueued("q0", sessionID: pane.session.id)
+        try await waitFor("The failed read never ended") { pane.session.queueEditPreparing == nil && !pane.session.notice.isEmpty }
         await pane.settle(8)
         XCTAssertTrue(pane.session.notice.contains("could not be read"), "The chat says why it did not open: “\(pane.session.notice)”")
-        XCTAssertTrue(Self.views(NSTextField.self, in: pane.hosted).allSatisfy { !$0.isEditable },
-                      "No field is left open on the row")
+        XCTAssertNil(pane.session.queueEditingID)
+        XCTAssertEqual(pane.editor?.string, "unsent thought", "The draft stays in the composer")
     }
 
-    /// The chat drops the row it was rewriting when that follow-up is delivered
-    /// or removed, instead of leaving an open field on a row that is gone.
+    /// The message being rewritten can be sent before the rewrite is saved.
+    /// An untouched rewrite gives the composer its draft back; a changed one
+    /// stays in the composer, ahead of that draft, and the chat says why.
+    /// This holds when the queue empties and its panel leaves the page.
     @MainActor func testRewritingStopsWhenTheFollowUpLeavesTheQueue() async throws {
         let pane = try Pane(width: 1000, height: 700); defer { pane.close() }
         pane.session.state = "running"
+        pane.session.draft = "unsent thought"
         pane.session.queue = (0..<2).map { index in
             ["turnId": .string("q\(index)"), "kind": .string("follow-up"), "text": .string("Follow-up \(index)")]
         }
         await pane.settle(16)
-        pane.session.queueEditingID = "q1"
+        pane.model.editQueued("q1", sessionID: pane.session.id)
         await pane.settle(12)
         pane.session.queue = [["turnId": .string("q0"), "kind": .string("follow-up"), "text": .string("Follow-up 0")]]
         await pane.settle(16)
-        XCTAssertNil(pane.session.queueEditingID, "A delivered follow-up closes the field that was rewriting it")
+        XCTAssertNil(pane.session.queueEditingID, "A delivered follow-up ends the rewrite")
+        XCTAssertEqual(pane.editor?.string, "unsent thought", "An untouched rewrite gives the draft back")
+        XCTAssertFalse(pane.session.notice.contains("left the queue"), "Nothing typed was lost, so nothing to explain")
+
+        pane.model.editQueued("q0", sessionID: pane.session.id)
+        await pane.settle(12)
+        pane.session.draft = "Follow-up 0, rewritten"
+        await pane.settle(4)
+        pane.session.queue = []
+        await pane.settle(16)
+        XCTAssertNil(pane.session.queueEditingID)
+        XCTAssertEqual(pane.editor?.string, "Follow-up 0, rewritten\n\nunsent thought", "Nothing typed is lost")
+        XCTAssertTrue(pane.session.notice.contains("left the queue"), pane.session.notice)
+        pane.session.state = "idle"
+        await pane.settle(4)
     }
 
     /// Every queued follow-up stays on screen, inside the panel, with its
@@ -174,37 +201,35 @@ extension ConversationPaneTests {
 }
 
 extension ConversationPaneTests {
-    /// The field rewriting a queued follow-up lives in a panel rebuilt for
-    /// each chat. Looking at another chat and coming back showed the original
-    /// message again, and the rewrite typed so far was gone.
+    /// A rewrite in progress is the chat's composer draft: looking at another
+    /// chat and coming back finds it still there, still a rewrite, and Cancel
+    /// then brings back the draft set aside for it.
     @MainActor func testARewriteInProgressSurvivesLookingAtAnotherChat() async throws {
         let pane = try Pane(width: 900, height: 700); defer { pane.close() }
         pane.session.queue = [["turnId": .string("q1"), "kind": .string("follow-up"), "text": .string("Short one")]]
         pane.session.state = "running"
+        pane.session.draft = "unsent thought"
         await pane.settle(12)
-        pane.session.queueEditingID = "q1"
+        pane.model.editQueued("q1", sessionID: pane.session.id)
         await pane.settle(10)
-        func field() -> NSTextField? { Self.views(NSTextField.self, in: pane.hosted).first { $0.isEditable } }
-        let editing = try XCTUnwrap(field())
-        XCTAssertTrue(pane.window.makeFirstResponder(editing))
-        let editor = try XCTUnwrap(editing.currentEditor() as? NSTextView)
+        let editor = try XCTUnwrap(pane.editor)
+        XCTAssertTrue(pane.window.makeFirstResponder(editor))
         editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
         editor.insertText(", rewritten", replacementRange: editor.selectedRange())
         await pane.settle(6)
-        XCTAssertEqual(field()?.stringValue, "Short one, rewritten")
-        // Another chat in the pane, then this one again: the panel is rebuilt.
+        XCTAssertEqual(pane.editor?.string, "Short one, rewritten")
+        // Another chat in the pane, then this one again.
         let other = SessionDisplay(id: "other")
         pane.hosted.rootView = ConversationPane(model: pane.model, session: other, chat: ChatRecord(id: "other", workspaceID: pane.chat.workspaceID, title: "Other", path: nil, profileID: pane.chat.profileID), paneWidth: 900)
-        // Long enough for the panel's exit transition to finish: until it
-        // has, coming back would revive the same panel rather than build one.
         for _ in 0..<4 { await pane.settle(20); try await Task.sleep(for: .milliseconds(150)) }
-        XCTAssertNil(field(), "The other chat has no queue panel")
+        XCTAssertNotEqual(pane.editor?.string, "Short one, rewritten", "The other chat has its own composer")
         pane.hosted.rootView = ConversationPane(model: pane.model, session: pane.session, chat: pane.chat, paneWidth: 900)
         await pane.settle(10)
-        XCTAssertEqual(field()?.stringValue, "Short one, rewritten", "The rewrite typed so far is still there")
-        pane.session.queueEditingID = nil
+        XCTAssertEqual(pane.editor?.string, "Short one, rewritten", "The rewrite typed so far is still there")
+        XCTAssertEqual(pane.session.queueEditingID, "q1", "It is still a rewrite of the queued message")
+        pane.model.cancelQueuedEdit(sessionID: pane.session.id)
         await pane.settle(6)
-        XCTAssertNil(pane.session.queueEditText, "Closing the field forgets the rewrite")
+        XCTAssertEqual(pane.editor?.string, "unsent thought", "Cancel brings back the draft set aside")
         pane.session.state = "idle"
         await pane.settle(4)
     }

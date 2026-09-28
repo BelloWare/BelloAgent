@@ -18,10 +18,12 @@ struct ComposerInput: View {
         self.model = model; self.session = session; self.draft = session.composerDraft; self.paneWidth = paneWidth
     }
     private var editing: Bool { session.editingMessageID != nil }
+    /// The composer holds a queued message: Return saves it back in its place.
+    private var queueEditing: Bool { session.queueEditingID != nil }
     /// A draft of any size is checked for its first non-whitespace character;
     /// trimming a long draft would copy it on every keystroke.
     private var canSend: Bool { session.draftReady && !((!draft.text.contains { !$0.isWhitespace } && session.skills.isEmpty) || session.loading || model.installPreparing || (editing && model.editBlocker(session) != nil)) }
-    private var queues: Bool { !editing && (session.busy || !session.queue.isEmpty || !session.sendingRows.isEmpty) }
+    private var queues: Bool { !editing && !queueEditing && (session.busy || !session.queue.isEmpty || !session.sendingRows.isEmpty) }
     @State private var sendPulse = false
     private func submit(intent: ComposerSubmissionIntent = .followUp) {
         guard model.page == .chats else { return }
@@ -36,6 +38,10 @@ struct ComposerInput: View {
             VStack(spacing: 0) {
                 if session.editPreparing && !editing { Text("Loading the complete original input…").font(PiFont.caption).padding(8) }
                 if editing { EditingBanner(session: session, blocker: model.editBlocker(session)) { model.cancelEdit(sessionID: session.id) }.transition(AnyTransition.move(edge: .top).combined(with: .opacity)) }
+                if let queued = session.queueEditingID {
+                    QueueEditBanner(steering: QueuedMessage.from(session.queue).first { $0.id == queued }?.steering ?? false) { model.cancelQueuedEdit(sessionID: session.id) }
+                        .transition(AnyTransition.move(edge: .top).combined(with: .opacity))
+                }
                 if session.runStatus == "compacting" || session.compactionNotice != nil {
                     CompactionBanner(session: session) { session.compactionNotice = nil }.transition(AnyTransition.move(edge: .top).combined(with: .opacity))
                 }
@@ -74,8 +80,9 @@ struct ComposerInput: View {
                     }
                 let form = barForm
                 HStack(spacing: ComposerBarMetrics.spacing) {
-                    PiIconButton(symbol: "photo.badge.plus", label: "Attach Image…", size: 28, filled: true) { model.attachImages(sessionID: session.id) }.disabled(!session.draftReady || !model.supportsImages(session.id))
-                    PiIconButton(symbol: "command", label: "Skills…", size: 28, filled: true) { model.inspectResources(session.id) }
+                    // A queued message keeps only its text.
+                    PiIconButton(symbol: "photo.badge.plus", label: "Attach Image…", size: 28, filled: true) { model.attachImages(sessionID: session.id) }.disabled(!session.draftReady || !model.supportsImages(session.id) || queueEditing)
+                    PiIconButton(symbol: "command", label: "Skills…", size: 28, filled: true) { model.inspectResources(session.id) }.disabled(queueEditing)
                     Spacer()
                     runControlRow(form.runControls)
                     if let chat = model.record(session.id) {
@@ -88,7 +95,7 @@ struct ComposerInput: View {
                     }
                     ModelSwitchPills(model: model, session: session, form: form.pills).padding(.trailing, ComposerBarMetrics.pillsTrailing)
                     Button { submit() } label: {
-                        Image(systemName: queues ? "text.badge.plus" : editing ? "arrow.uturn.up" : "arrow.up").font(.system(size: 13, weight: .bold))
+                        Image(systemName: queueEditing ? "checkmark" : queues ? "text.badge.plus" : editing ? "arrow.uturn.up" : "arrow.up").font(.system(size: 13, weight: .bold))
                             .foregroundStyle(canSend ? Color.piOnAccent : Color.piInkTertiary)
                             .frame(width: 30, height: 30)
                             .background { if canSend { Circle().fill(Color.piBrandOrange) } else { Circle().fill(Color.piFillStrong) } }
@@ -97,7 +104,7 @@ struct ComposerInput: View {
                             .scaleEffect(sendPulse && !reduceMotion ? 0.92 : 1)
                             .piAnimation(PiMotion.quick, value: canSend)
                             .piAnimation(PiMotion.quick, value: sendPulse)
-                    }.buttonStyle(.plain).piPointer().disabled(!canSend).help(editing ? model.editBlocker(session) ?? "Resend Edited Message" : queues ? "Queue Follow-up" : "Send")
+                    }.buttonStyle(.plain).piPointer().disabled(!canSend).help(queueEditing ? "Save Queued Message" : editing ? model.editBlocker(session) ?? "Resend Edited Message" : queues ? "Queue Follow-up" : "Send")
                     if session.busy {
                         Button { model.stop(sessionID: session.id) } label: {
                             Image(systemName: "stop.fill").font(.system(size: 12, weight: .bold))
@@ -139,7 +146,7 @@ struct ComposerInput: View {
         let pills = ModelSwitchPills.contents(model: model, session: session)
         let chat = model.record(session.id)
         let isSide = model.side(session.id) != nil
-        return ComposerBarMetrics(showsSteer: session.busy && !editing,
+        return ComposerBarMetrics(showsSteer: session.busy && !editing && !queueEditing,
                                   hint: hint,
                                   showsChanges: chat.map { !isSide && model.workspace(for: $0.workspaceID) != nil && $0.workspaceID != WorkspaceRecord.scratchID } ?? false,
                                   showsActions: chat != nil && !isSide,
@@ -151,6 +158,7 @@ struct ComposerInput: View {
     private var barForm: ComposerBarForm { metrics.form(fitting: ComposerBarMetrics.available(paneWidth: paneWidth)) }
     /// The line beside the steering button: what pressing Return will do.
     private var hint: String? {
+        if queueEditing { return "↩ Save" }
         if queues { return "↩ Queue · ⌘↩ Steer" }
         if editing { return session.busy || !session.queue.isEmpty ? "Wait for idle to resend" : "Resend from here" }
         return nil
@@ -162,7 +170,7 @@ struct ComposerInput: View {
     /// letter per line and push the composer to three rows.
     @ViewBuilder private func runControlRow(_ form: ComposerRunControlsForm) -> some View {
         HStack(spacing: ComposerBarMetrics.spacing) {
-            if session.busy && !editing {
+            if session.busy && !editing && !queueEditing {
                 Button { submit(intent: .steer) } label: {
                     if form.steerIsCompact { Image(systemName: "arrow.turn.up.right") }
                     else { Label("Steer run", systemImage: "arrow.turn.up.right") }

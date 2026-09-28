@@ -428,6 +428,23 @@ final class UIScreenshotTests: XCTestCase {
         model.send(sessionID: mainID)
         try await settle(1.5)
         try await pair("13-running-with-queue", hold: 0.8)
+        // 13c · The follow-up being rewritten in the composer, a draft set aside for it.
+        if let queued = QueuedMessage.from(session.queue).first {
+            session.draft = "A thought still being typed."
+            model.editQueued(queued.id, sessionID: mainID)
+            try await settle(0.8)
+            if session.queueEditingID == queued.id {
+                session.draft = queued.text + " Keep it under 72 characters."
+                try await pair("13c-queued-rewrite", hold: 0.6)
+            } else {
+                XCTFail("The queued follow-up never opened in the composer (notice “\(session.notice)”)")
+            }
+            model.cancelQueuedEdit(sessionID: mainID)
+            session.draft = ""
+            try await settle(0.4)
+        } else {
+            XCTFail("The follow-up never reached the queue; 13c has nothing to show.")
+        }
         model.stop(sessionID: mainID)
         let deadline = Date().addingTimeInterval(45)
         while Date() < deadline, session.hasWork || !session.queue.isEmpty { try await settle(0.3) }

@@ -37,6 +37,7 @@ extension WorkspaceModel {
         if item.isArchived { return WorkspaceModel.archivedNotice }
         if isEphemeral(view.id) { return "Keep this side chat before editing its messages." }
         if view.editSubmitting { return "Waiting for the edit acknowledgement." }
+        if view.queueEditingID != nil { return "Save or cancel the queued message you are rewriting first." }
         return nil
     }
     /// Eligibility is shared by the composer button, keyboard and send path.

@@ -99,7 +99,7 @@ extension WorkspaceModel {
                 guard current() else { return }
                 if wantsMetadata {
                     if let draft = metadata?.draft, view.draft == draftAtStart.text && view.attachments == (draftAtStart.attachments ?? []) && view.skills == (draftAtStart.skills ?? []),
-                       view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil { view.restoreDraft(draft) }
+                       view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil { view.restoreDraft(draft) }
                     if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
                     view.selectionMetadataLoaded = true
                 }

@@ -7,6 +7,7 @@ extension WorkspaceModel {
     /// Snapshot the originating pane's intent synchronously, before any helper await.
     func submitComposer(intent: ComposerSubmissionIntent, sessionID: String) {
         guard page == .chats, let view = displays[sessionID], view.draftReady, !view.loading, !installPreparing else { return }
+        if view.queueEditingID != nil { saveQueuedEdit(sessionID: sessionID); return }
         if view.editingMessageID != nil { sendEdit(sessionID: sessionID); return }
         // Bypassing the completion list with Command-Return is not a skill grant.
         if intent == .steer, view.completionVisible {
@@ -31,6 +32,11 @@ extension WorkspaceModel {
         // Global commands target the visible conversation. Explicit session
         // submissions already accepted by an asynchronous side flow continue.
         guard sessionID != nil || page == .chats else { return }
+        if let id = sessionID ?? focusedSessionID ?? selectedID, let view = displays[id], view.queueEditingID != nil {
+            if steer { view.notice = "Save or cancel the queued message you are rewriting before steering the current run." }
+            else { saveQueuedEdit(sessionID: id) }
+            return
+        }
         if let id = sessionID ?? focusedSessionID ?? selectedID, let view = displays[id], view.editingMessageID != nil {
             if steer { view.notice = "Finish or cancel this edit before steering the current run." }
             else { sendEdit(sessionID: id) }

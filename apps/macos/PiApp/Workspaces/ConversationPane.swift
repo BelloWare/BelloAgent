@@ -269,8 +269,8 @@ struct ConversationPane: View {
     }
 
     private var queuePanel: some View {
-        // The row being rewritten, and the text typed into it, belong to this
-        // chat: the panel starts over when the reader goes to another one.
+        // The panel keeps nothing of its own: a message being rewritten is in
+        // this chat's composer. It starts over for each chat.
         QueuePanel(model: model, session: session)
             .id(session.id)
             .padding(.horizontal, PiSpacing.lg).padding(.bottom, PiSpacing.sm)
