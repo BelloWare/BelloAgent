@@ -97,7 +97,7 @@ extension WorkspaceModel {
         do { try await migrateLegacyOutputBudgets() }
         catch { self.error = "Saved chat output limits could not be migrated. \(error.localizedDescription)" }
         do {
-            try await traces.configure(key: saved.captureKey, quota: saved.capture.quotaBytes,
+            try await traces.configure(key: saved.captureKey, quota: saved.capture.quotaUnlimited ? nil : saved.capture.quotaBytes,
                                        bodyRetention: Double(saved.capture.retentionDays) * 86400,
                                        metricRetention: Double(saved.dashboard.metricRetentionDays) * 86400)
             return true

@@ -500,12 +500,12 @@ final class CapturedBodyTests: XCTestCase {
     }
 
     @MainActor func testBoundsAndHexPreserveOriginalBytes() throws {
-        XCTAssertEqual(CapturedBodyReader.limit("request"), 33_554_432)
-        XCTAssertEqual(CapturedBodyReader.limit("response"), 67_108_864)
-        for value in [-1.0, Double.nan, Double.infinity, 67_108_865, 1.5] {
+        for value in [-1.0, Double.nan, Double.infinity, 1.5] {
             let metadata = CapturedBodyMetadata(body: ["retainedBytes": .number(value)], hash: nil)
-            XCTAssertThrowsError(try metadata.count(limit: CapturedBodyReader.limit("response")))
+            XCTAssertThrowsError(try metadata.count())
         }
+        // A body has no size limit: 5 GiB is a length like any other.
+        XCTAssertEqual(try CapturedBodyMetadata(body: ["retainedBytes": .number(5_368_709_120)], hash: nil).count(), 5_368_709_120)
         XCTAssertEqual(try CapturedBodyHex.render(Data([0, 10, 127, 255])), "00000000  00 0a 7f ff \n")
         // Same dump, without one String(format:) call and one intermediate
         // string per sixteen bytes: a large body used to spin a core for it.

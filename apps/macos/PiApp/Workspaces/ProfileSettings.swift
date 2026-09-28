@@ -137,10 +137,18 @@ struct ProfileSettings: View {
                         PiRow(label: "Idle helper grace") { PiStepper(label: "\(controller.preferences.runtime.idleGraceSeconds) seconds", value: $controller.preferences.runtime.idleGraceSeconds, range: 10...600, step: 10) }
                         PiRow(label: "Tools PATH", last: true) { PiTextField(placeholder: "/usr/bin:/bin", text: $controller.preferences.runtime.toolsPATH, mono: true) }
                     }
-                    PiSettingsGroup(title: "Capture and dashboard", footer: "Request and response bodies are saved locally for 30 days by default, within the storage quota. Headers are included with authentication values masked. Bodies are unencrypted; known credentials in request bodies are hashed. Per-session overrides are separate.") {
+                    PiSettingsGroup(title: "Capture and dashboard", footer: "Request and response bodies are saved locally for 30 days by default, within the payload quota; past a limited quota the oldest bodies are deleted to make room, and Unlimited keeps every body until its retention ends. Headers are included with authentication values masked. Bodies are unencrypted; known credentials in request bodies are hashed. Per-session overrides are separate.") {
                         PiRow(label: "Default future body capture") { PiDropdown(selection: $controller.preferences.capture.defaultMode, items: [("off", "Off"), ("memory", "Session memory"), ("persist", "Persist locally")], compact: true) }
                         PiRow(label: "Body retention") { PiStepper(label: "\(controller.preferences.capture.retentionDays) days", value: $controller.preferences.capture.retentionDays, range: 1...365) }
-                        PiRow(label: "Payload quota") { PiStepper64(label: "\(quotaMiB.wrappedValue) MiB", value: quotaMiB, range: 1...10_240) }
+                        PiRow(label: "Payload quota") {
+                            HStack(spacing: 8) {
+                                PiDropdown(selection: $controller.preferences.capture.quotaUnlimited, items: [(false, "Limit"), (true, "Unlimited")], compact: true)
+                                    .accessibilityLabel("Payload quota")
+                                if !controller.preferences.capture.quotaUnlimited {
+                                    PiStepper64(label: "\(quotaMiB.wrappedValue) MiB", value: quotaMiB, range: 1...10_240)
+                                }
+                            }
+                        }
                         PiRow(label: "Metric retention") { PiStepper(label: "\(controller.preferences.dashboard.metricRetentionDays) days", value: $controller.preferences.dashboard.metricRetentionDays, range: 1...3650) }
                         PiRow(label: "Dashboard window", last: true) { PiStepper(label: "\(controller.preferences.dashboard.windowHours) hours", value: $controller.preferences.dashboard.windowHours, range: 1...8760) }
                     }

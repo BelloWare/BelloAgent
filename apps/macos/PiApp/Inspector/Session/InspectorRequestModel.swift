@@ -179,6 +179,8 @@ enum InspectorLoad<Value> {
         if let sourceOverride { return sourceOverride(row, kind) }
         let state = metadata[kind]?.object?["state"]?.string ?? ""
         if row.source != .live, MessageBodyReader.canReadRetained(state) { return .archive(archive, attemptID: row.id, kind: kind) }
+        // The helper let go of a request the log saved: its bodies are read there.
+        if metadata[kind]?.object?["savedToLog"]?.bool == true { return .archive(archive, attemptID: row.id, kind: kind) }
         if let workspace, metadataLoaded, liveCapture { return .live(workspace, sessionID: sessionID, attemptID: row.id, kind: kind) }
         return nil
     }

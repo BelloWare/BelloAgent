@@ -55,34 +55,109 @@ final class CaptureTraceTests: XCTestCase {
         XCTAssertLessThan(slim, full - 20_000)
     }
 
-    /// A request's context links (every message id it carries) are sent to
-    /// the recorder after the request is dispatched, not awaited before it:
-    /// the recorder acknowledges each packet, and a long chat's context takes
-    /// several. A request that never went out still links its context.
-    func testContextLinksDoNotHoldUpDispatch() async throws {
-        let recorder = SlowRecorder(delay: 20_000_000), traces = TraceStore(sink: { await recorder.accept($0) })
+    /// A request goes out without waiting for the app's log: its record and
+    /// its context links (every message id it carries, one packet per 512)
+    /// are queued, and the request is dispatched while the log still holds
+    /// the first packet. A request that never went out still links its context.
+    func testCaptureNeverHoldsUpDispatch() async throws {
+        let recorder = HeldRecorder(), traces = TraceStore(sink: { await recorder.accept($0) })
         let ids = (0..<2000).map { "message-\($0)" }
-        let start = nowMS()
         let id = await traces.begin(session: "s", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: Data("{}".utf8), headers: [:], messageIDs: ids)
-        let untilDispatch = nowMS() - start
-        let before = await recorder.types
         await traces.dispatched(id, at: nowMS())
+        try await eventually { await recorder.types == ["begin"] }
+        await recorder.open()
+        await traces.delivered()
+        let types = await recorder.types
+        XCTAssertEqual(types, ["begin", "metadata", "links", "links", "links", "links"])
         let linked = await recorder.packets.filter { $0["type"].text == "links" }.flatMap { $0["messageIds"].list }.count
-        print("PERF capture-before-dispatch contextIds=2000 packetsBeforeDispatch=\(before.count) msBeforeDispatch=\(Int(untilDispatch))")
-        XCTAssertEqual(before, ["begin"], "only the attempt itself is recorded before the request goes out")
-        XCTAssertLessThan(untilDispatch, 80, "four link packets (~20 ms each) no longer precede dispatch")
         XCTAssertEqual(linked, 2000, "every context id is still linked")
         let failed = await traces.begin(session: "s", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: Data("{}".utf8), headers: [:], messageIDs: ["a", "b"])
         await traces.finish(failed, outcome: "failed", modelOutcome: "interrupted")
+        await traces.delivered()
         let packets = await recorder.packets.filter { $0["attemptId"].text == failed || $0["metadata"]["attemptId"].text == failed }.compactMap { $0["type"].text }
         XCTAssertEqual(packets, ["begin", "links", "finish"], "an attempt that never dispatched links its context before it finishes")
     }
 }
 
-private actor SlowRecorder {
-    let delay: UInt64
+extension CaptureTraceTests {
+    /// Every server-sent event is indexed: a long reply's 5,000th event is
+    /// kept like its first, in the helper and in the app's log.
+    func testEveryEventIsIndexed() async throws {
+        for mode in ["memory", "persist"] {
+            let recorder = HeldRecorder(); await recorder.open()
+            let traces = TraceStore(sink: { await recorder.accept($0) })
+            _ = try await traces.command("debug.mode", session: "s", params: ["mode": JSON(mode)])
+            let id = await traces.begin(session: "s", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: Data("{}".utf8), headers: [:])
+            for index in 0..<5_000 { await traces.event(id, SSEEvent(event: "delta", data: "", start: index * 10, end: index * 10 + 10)) }
+            let page = try await traces.command("debug.raw-events", session: "s", params: ["attemptId": JSON(id), "offset": 4_990])
+            XCTAssertEqual(page["total"].int, 5_000); XCTAssertEqual(page["events"].list.count, 10)
+            XCTAssertEqual(page["events"].list.last?["start"].int, 49_990)
+            await traces.finish(id, outcome: "completed", modelOutcome: "completed")
+            await traces.delivered()
+            let attempt = try await traces.command("debug.attempt", session: "s", params: ["attemptId": JSON(id)])
+            XCTAssertEqual(attempt["rawEventIndexCount"].int, 5_000); XCTAssertEqual(attempt["rawEventsOmitted"].int, 0)
+            let pages = await recorder.packets.filter { $0["type"].text == "events" }
+            if mode == "persist" {
+                XCTAssertEqual(pages.map { $0["offset"].int ?? -1 }, Array(stride(from: 0, to: 5_000, by: 128)))
+                XCTAssertEqual(pages.flatMap { $0["events"].list }.count, 5_000)
+            } else { XCTAssertTrue(pages.isEmpty, "a session-memory chat keeps its events in the helper") }
+        }
+    }
+
+    /// A persisted chat's request stays in the helper until the app has saved
+    /// all of it; one whose pages the log refused keeps its only complete copy
+    /// here. A saved request goes once a later one of the chat is saved, and
+    /// a session-memory chat keeps every request.
+    func testHelperLetsGoOnlyOfWhatTheLogSaved() async throws {
+        let profile = try fixtureProfile(), response = Data("data: {}\n\n".utf8)
+        for mode in ["persist", "memory"] {
+            let recorder = SelectiveRecorder(), traces = TraceStore(sink: { await recorder.accept($0) })
+            _ = try await traces.command("debug.mode", session: "s", params: ["mode": JSON(mode)])
+            var ids: [String] = []
+            for index in 0..<3 {
+                let id = await traces.begin(session: "s", turn: "t\(index)", profile: profile, purpose: "turn", body: Data("{\"n\":\(index)}".utf8), headers: [:])
+                if index == 0 { await recorder.refuse(id) }
+                await traces.append(id, data: response)
+                await traces.transport(id, observation: ["transportOutcome": "eof"])
+                await traces.finish(id, outcome: "completed", modelOutcome: "completed")
+                await traces.delivered()
+                ids.append(id)
+            }
+            let listed = try await traces.command("debug.list", session: "s", params: [:])["attempts"].list.compactMap { $0["attemptId"].text }
+            if mode == "persist" {
+                XCTAssertEqual(Set(listed), [ids[0], ids[2]])
+                let kept = try await traces.command("debug.body", session: "s", params: ["attemptId": JSON(ids[0]), "body": "response"])
+                XCTAssertEqual(Data(base64Encoded: kept["bytes"].text ?? ""), response, "the helper's copy is the only complete one")
+                let attempt = try await traces.command("debug.attempt", session: "s", params: ["attemptId": JSON(ids[0])])
+                XCTAssertFalse(attempt["persistenceError"].isNull); XCTAssertEqual(attempt["response"]["savedToLog"].flag, false)
+                let latest = try await traces.command("debug.attempt", session: "s", params: ["attemptId": JSON(ids[2])])
+                XCTAssertEqual(latest["response"]["savedToLog"].flag, true)
+            } else {
+                XCTAssertEqual(Set(listed), Set(ids))
+            }
+        }
+    }
+}
+
+/// Refuses the body pages of the requests it is told to, like a full disk.
+private actor SelectiveRecorder {
+    var packets: [JSON] = [], refused: Set<String> = []
+    func refuse(_ id: String) { refused.insert(id) }
+    func accept(_ packet: JSON) -> Bool {
+        packets.append(packet)
+        return !(packet["type"].text == "bytes" && refused.contains(packet["attemptId"].text ?? ""))
+    }
+}
+
+/// Holds every packet until opened, like an app busy saving a large one.
+private actor HeldRecorder {
     var packets: [JSON] = []
-    init(delay: UInt64) { self.delay = delay }
+    private var held: [CheckedContinuation<Void, Never>] = [], opened = false
     var types: [String] { packets.compactMap { $0["type"].text } }
-    func accept(_ packet: JSON) async -> Bool { packets.append(packet); try? await Task.sleep(nanoseconds: delay); return true }
+    func accept(_ packet: JSON) async -> Bool {
+        packets.append(packet)
+        if !opened { await withCheckedContinuation { held.append($0) } }
+        return true
+    }
+    func open() { opened = true; let waiting = held; held.removeAll(); for waiter in waiting { waiter.resume() } }
 }

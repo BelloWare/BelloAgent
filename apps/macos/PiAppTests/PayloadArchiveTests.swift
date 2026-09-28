@@ -709,6 +709,90 @@ final class PayloadArchiveTests: XCTestCase {
         let retainedLinks = try await archive.messageLinks(attemptID: id, offset: 0); XCTAssertEqual(retainedLinks["total"]?.number, 2)
     }
 
+    /// Nothing in the log is capped: more requests recording at once than
+    /// the old 128 writers, 5,000 event indices for one request, 12,000
+    /// context links and 300 KiB of metadata in one record, and output
+    /// attribution for 1,500 visible messages are all kept.
+    func testTheLogKeepsWhatUsedToBeCapped() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: nil, bodyRetention: 86400, metricRetention: 604800)
+        let ids = (0..<100).map { _ in UUID().uuidString }
+        for id in ids { try await archive.begin(metadata(id: id), workspace: "workspace") }
+        for id in ids { try await archive.append(attempt: id, kind: "request", offset: 0, bytes: Data(id.utf8)) }
+        for id in ids { try await archive.finish(metadata(id: id, outcome: "completed", observed: id.utf8.count)) }
+        for id in ids {
+            let body = try await archive.completeBody(attemptID: id, body: "request"); XCTAssertEqual(body, Data(id.utf8))
+        }
+        for offset in stride(from: 0, to: 5_000, by: 128) {
+            let page = (offset..<min(offset + 128, 5_000)).map { index -> WireValue in
+                .object(["type": .string("delta"), "start": .number(Double(index * 10)), "end": .number(Double(index * 10 + 10)), "observedAt": .number(Double(index))])
+            }
+            try await archive.accept(["type": .string("events"), "attemptId": .string(ids[0]), "offset": .number(Double(offset)), "events": .array(page)], workspace: "workspace")
+        }
+        let tail = try await archive.eventIndices(attemptID: ids[0], offset: 4_992)
+        XCTAssertEqual(tail["total"]?.number, 5_000); XCTAssertEqual(tail["events"]?.array?.count, 8)
+        let large = UUID().uuidString
+        var entry = metadata(id: large)
+        entry["messageIds"] = .array((0..<12_000).map { .string("message-\($0)") })
+        entry["requestHeaders"] = .object(["x-large": .string(String(repeating: "h", count: 300_000))])
+        try await archive.begin(entry, workspace: "workspace")
+        entry["outcome"] = .string("completed"); entry["outputMessageIds"] = .array((0..<1_500).map { .string("output-\($0)") })
+        try await archive.finish(entry)
+        let links = try await archive.messageLinks(attemptID: large, offset: 13_400)
+        XCTAssertEqual(links["total"]?.number, 13_500); XCTAssertEqual(links["links"]?.array?.count, 100)
+        let recorded = try await archive.metadata(attempt: large)
+        XCTAssertEqual(recorded["requestHeaders"]?.object?["x-large"]?.string?.count, 300_000)
+        let target = try await archive.accountingTarget(attemptID: large, workspaceID: "workspace", visibleMessageIDs: Set((0..<1_500).map { "output-\($0)" }))
+        XCTAssertEqual(target?.outputMessageIDs.count, 1_500)
+        try await archive.close()
+    }
+
+    /// With Unlimited storage no body is deleted to make room; choosing a
+    /// limit again evicts the oldest bodies as before.
+    func testUnlimitedStorageNeverEvictsAndALimitStillDoes() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: nil, bodyRetention: 86400, metricRetention: 604800)
+        var ids: [String] = []
+        for index in 0..<4 { ids.append(try await save(archive, bytes: Data(fixture(131_072).map { $0 ^ UInt8(index + 1) }))) }
+        for id in ids {
+            let kept = try await archive.metadata(attempt: id)
+            XCTAssertEqual(kept["request"]?.object?["state"]?.string, "complete")
+        }
+        let unlimited = try await archive.statistics()
+        XCTAssertGreaterThanOrEqual(unlimited["storedBytes"] ?? 0, 4 * 131_072)
+        try await archive.configure(quota: 150_000, bodyRetention: 86400, metricRetention: 604800)
+        let newest = try await save(archive, bytes: Data(fixture(131_072).map { $0 ^ 0x55 }))
+        for id in ids {
+            let evicted = try await archive.metadata(attempt: id)
+            XCTAssertEqual(evicted["request"]?.object?["state"]?.string, "expired")
+        }
+        let latest = try await archive.metadata(attempt: newest)
+        XCTAssertEqual(latest["request"]?.object?["state"]?.string, "complete")
+        let limited = try await archive.statistics(); XCTAssertLessThanOrEqual(limited["storedBytes"] ?? .max, 150_000)
+        try await archive.close()
+    }
+
+    /// A damaged or hostile count past what a JSON number holds exactly is
+    /// refused, never converted into an overflowing integer.
+    func testCountsPastExactRangeAreRefusedNotConverted() async throws {
+        let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
+        let archive = PayloadArchive(root: folder)
+        try await archive.configure(quota: nil, bodyRetention: 86400, metricRetention: 604800)
+        let id = UUID().uuidString
+        try await archive.begin(metadata(id: id), workspace: "workspace")
+        for offset in [9.3e18, 1e30] {
+            do {
+                try await archive.accept(["type": .string("bytes"), "attemptId": .string(id), "body": .string("request"), "offset": .number(offset),
+                                          "bytes": .string(Data("x".utf8).base64EncodedString())], workspace: "workspace")
+                XCTFail("An offset past the exact range must be refused")
+            } catch { guard case CaptureFailure.sequence = error else { return XCTFail("Unexpected error: \(error)") } }
+        }
+        XCTAssertThrowsError(try CapturedBodyMetadata(body: ["retainedBytes": .number(9.3e18)], hash: nil).count())
+        try await archive.close()
+    }
+
     func testDamagedEventBlobAndBodyLengthsThrowInsteadOfTrapping() async throws {
         let folder = try root(); defer { try? FileManager.default.removeItem(at: folder) }
         let archive = PayloadArchive(root: folder)

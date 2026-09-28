@@ -36,11 +36,13 @@ struct CapturePreferences: Codable, Sendable, Equatable {
     // Compatibility field only. Capture no longer requires a reveal/consent gate.
     var disclosureAccepted = true
     var quotaBytes: Int64 = 1_073_741_824
+    /// No storage limit: the log keeps every body until its retention ends.
+    var quotaUnlimited = false
     var retentionDays = 30
 
     init() {}
     private enum CodingKeys: String, CodingKey {
-        case policyVersion, defaultMode, sessionModes, sessionSince, disclosureAccepted, quotaBytes, retentionDays
+        case policyVersion, defaultMode, sessionModes, sessionSince, disclosureAccepted, quotaBytes, quotaUnlimited, retentionDays
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -51,6 +53,7 @@ struct CapturePreferences: Codable, Sendable, Equatable {
         sessionSince = try values.decodeIfPresent([String: String].self, forKey: .sessionSince) ?? [:]
         disclosureAccepted = try values.decodeIfPresent(Bool.self, forKey: .disclosureAccepted) ?? false
         quotaBytes = try values.decodeIfPresent(Int64.self, forKey: .quotaBytes) ?? 1_073_741_824
+        quotaUnlimited = try values.decodeIfPresent(Bool.self, forKey: .quotaUnlimited) ?? false
         retentionDays = try values.decodeIfPresent(Int.self, forKey: .retentionDays) ?? 7
         if version == nil {
             // Old versions did not distinguish an untouched Off from an Off

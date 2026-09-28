@@ -85,7 +85,7 @@ final class HTTPIngressTests: XCTestCase {
         return config
     }
     func testSlowConsumerRetainsExactOrderedBytesAndReturnsReservations() async throws {
-        let budget = HTTPIngressBudget(limit: 4 * 1024 * 1024)
+        let budget = HTTPIngressBudget()
         let stream = HTTPStream(budget: budget)
         var bytes = Data()
         for try await part in stream.start(URLRequest(url: URL(string: "https://fixture.invalid/524288")!), configuration: configuration()) {
@@ -96,43 +96,38 @@ final class HTTPIngressTests: XCTestCase {
         }
         XCTAssertEqual(bytes, Data(repeating: 97, count: 524_288))
         XCTAssertEqual(budget.accounting.used, 0)
-        XCTAssertLessThanOrEqual(budget.accounting.peak, budget.limit)
         XCTAssertEqual(stream.observation()["transportOutcome"].text, "eof")
     }
-    func testIngressRejectsOversizeBeforeConsumerCanClaimCompletion() async throws {
-        let budget = HTTPIngressBudget(limit: 32_768)
-        var stream: HTTPStream? = HTTPStream(budget: budget, bufferLimit: 32_768, responseLimit: 65_536)
+    /// A response has no size limit: a large one behind a small buffer and a
+    /// consumer that starts late arrives whole, never failed for its size.
+    func testLargeResponseIsNeverRefusedForItsSize() async throws {
+        let budget = HTTPIngressBudget()
+        var stream: HTTPStream? = HTTPStream(budget: budget, bufferLimit: 32_768)
         var received = Data()
-        do {
-            let parts = stream!.start(URLRequest(url: URL(string: "https://fixture.invalid/1048576")!), configuration: configuration())
-            try await Task.sleep(for: .milliseconds(30))
-            for try await part in parts {
-                if case .bytes(let data, _) = part { received.append(data); stream!.consumed(data.count) }
-            }
-            XCTFail("An over-budget response must fail")
-        } catch { XCTAssertTrue(error is AgentError) }
+        let parts = stream!.start(URLRequest(url: URL(string: "https://fixture.invalid/1048576")!), configuration: configuration())
+        try await Task.sleep(for: .milliseconds(30))
+        for try await part in parts {
+            if case .bytes(let data, _) = part { received.append(data); stream!.consumed(data.count) }
+        }
         _ = await stream!.endObservation()
-        XCTAssertLessThanOrEqual(received.count, 32_768)
-        XCTAssertEqual(received, Data(repeating: 97, count: received.count))
-        XCTAssertLessThanOrEqual(budget.accounting.peak, 32_768)
-        XCTAssertEqual(stream!.observation()["transportOutcome"].text, "error")
+        XCTAssertEqual(received, Data(repeating: 97, count: 1_048_576))
+        XCTAssertEqual(stream!.observation()["transportOutcome"].text, "eof")
+        XCTAssertEqual(stream!.observation()["responseObservedBytes"].int, 1_048_576)
         stream = nil
         try await eventually { budget.accounting.used == 0 }
     }
-    func testWorkspaceBudgetCannotBeExceededByTwentyConcurrentReservations() async {
-        let budget = HTTPIngressBudget(limit: 1_048_576)
+    func testIngressAccountingBalancesAcrossTwentyConcurrentStreams() async {
+        let budget = HTTPIngressBudget()
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<20 { group.addTask {
-                for _ in 0..<100 {
-                    if budget.reserve(131_072) { await Task.yield(); budget.release(131_072) }
-                }
+                for _ in 0..<100 { budget.reserve(131_072); await Task.yield(); budget.release(131_072) }
             } }
         }
         XCTAssertEqual(budget.accounting.used, 0)
-        XCTAssertLessThanOrEqual(budget.accounting.peak, budget.limit)
+        XCTAssertLessThanOrEqual(budget.accounting.peak, 20 * 131_072)
     }
     func testSlowRecorderCoalescesReceivedCallbacksWithoutChangingArrivalTimesOrBytes() async throws {
-        let budget = HTTPIngressBudget(limit: 1_048_576)
+        let budget = HTTPIngressBudget()
         // Waiting before consuming simulates a durable recorder holding its
         // first ACK, while callbacks already in flight continue to arrive.
         let measured = HTTPStream(budget: budget)

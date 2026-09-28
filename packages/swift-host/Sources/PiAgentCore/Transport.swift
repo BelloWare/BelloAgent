@@ -38,18 +38,16 @@ public struct SSEParser: Sendable {
 }
 public enum HTTPPart: Sendable { case head(Int, [String: String]), bytes(Data, Double) }
 
-/// Workspace-wide accounting for bytes received but not yet captured/parsed.
-/// Only counters cross delegate queues. No byte arrays or callbacks escape it.
+/// Workspace-wide accounting for bytes received but not yet parsed. It
+/// refuses nothing: a stream pauses its own download when its consumer falls
+/// behind (`HTTPStream`). Only counters cross delegate queues.
 final class HTTPIngressBudget: @unchecked Sendable {
-    static let shared = HTTPIngressBudget(limit: 32 * 1024 * 1024)
+    static let shared = HTTPIngressBudget()
     private let lock = NSLock()
-    let limit: Int
     private var used = 0, high = 0
-    init(limit: Int) { self.limit = max(0, limit) }
-    func reserve(_ count: Int) -> Bool {
+    func reserve(_ count: Int) {
         lock.lock(); defer { lock.unlock() }
-        guard count >= 0, count <= limit - used else { return false }
-        used += count; high = max(high, used); return true
+        used += max(0, count); high = max(high, used)
     }
     func release(_ count: Int) { lock.lock(); used -= min(used, max(0, count)); lock.unlock() }
     var accounting: (used: Int, peak: Int) { lock.lock(); defer { lock.unlock() }; return (used, high) }
@@ -118,9 +116,10 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
     private var task: URLSessionDataTask?
     private var session: URLSession?
     private let budget: HTTPIngressBudget
-    private let bufferLimit: Int, responseLimit: Int
+    /// Where the download pauses (a quarter of it) and resumes (an eighth):
+    /// flow control, never a limit on what is received.
+    private let bufferLimit: Int
     private var pendingBytes = 0, suspended = false
-    private var ingressFailure: AgentError?
     private var pendingBody = Data(), inFlight = false, consumedBytes = 0, deliveredBytes = 0
     private var timingRuns: [(end: Int, at: Double)] = []
     private var completed = false, completionError: Error?
@@ -129,8 +128,8 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
     private var reused: Bool?
     /// Whether the request went out on a connection an earlier one opened.
     var reusedConnection: Bool? { lock.lock(); defer { lock.unlock() }; return reused }
-    init(budget: HTTPIngressBudget = .shared, bufferLimit: Int = 4 * 1024 * 1024, responseLimit: Int = 64 * 1024 * 1024) {
-        self.budget = budget; self.bufferLimit = max(1, bufferLimit); self.responseLimit = max(1, responseLimit)
+    init(budget: HTTPIngressBudget = .shared, bufferLimit: Int = 4 * 1024 * 1024) {
+        self.budget = budget; self.bufferLimit = max(1, bufferLimit)
         super.init()
     }
     deinit { budget.release(pendingBytes) }
@@ -144,7 +143,7 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
         consumedBytes += released
         timingRuns.removeAll { $0.end <= consumedBytes }
         inFlight = false
-        if suspended, pendingBytes <= bufferLimit / 8, ingressFailure == nil {
+        if suspended, pendingBytes <= bufferLimit / 8 {
             suspended = false; task?.resume()
         }
         // Flush already-received bytes after the current capture ACK. This
@@ -168,7 +167,7 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
             let time = timingRuns.first(where: { $0.end >= deliveredBytes })?.at ?? nowMS()
             lock.unlock(); yield(.bytes(bytes, time)); return
         }
-        let done = completed, error = ingressFailure ?? completionError
+        let done = completed, error = completionError
         lock.unlock()
         if done {
             if let error { continuation?.finish(throwing: error) } else { continuation?.finish() }
@@ -182,9 +181,9 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
     static let totalTimeout: TimeInterval = 604_800
     func start(_ request: URLRequest, configuration: URLSessionConfiguration? = nil, pool: HTTPSessionPool? = nil, connection: String? = nil) -> AsyncThrowingStream<HTTPPart, Error> {
         // The queue retains whole, ordered delegate chunks. Byte admission is
-        // bounded BEFORE yield, independent of a slow capture acknowledgement.
-        // Suspend at 1 MiB with 3 MiB headroom for callbacks already in flight;
-        // exceeding either hard budget fails explicitly rather than dropping.
+        // paced BEFORE yield: the download pauses at 1 MiB pending and resumes
+        // at 512 KiB. Callbacks already in flight are kept; nothing fails or is
+        // dropped for size. Capture never holds the consumer (`TraceStore`).
         AsyncThrowingStream(bufferingPolicy: .unbounded) { continuation in
             self.continuation=continuation
             continuation.onTermination = { [weak self] _ in self?.cancel() }
@@ -241,28 +240,18 @@ final class HTTPStream: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate
         let received = (observed["responseObservedBytes"].int ?? 0) + data.count
         observed["responseObservedBytes"] = JSON(received)
         if !data.isEmpty && observed["firstBodyByte"].isNull { observed["firstBodyByte"] = JSON(time) }
-        if ingressFailure != nil { lock.unlock(); return }
-        let error: AgentError?
-        if received > responseLimit {
-            error = AgentError("response_limit", "Response exceeded the ingress byte limit; retained capture is an explicit partial prefix")
-        } else if timingRuns.count >= 65_536 || data.count > bufferLimit - pendingBytes || !budget.reserve(data.count) {
-            error = AgentError("stream_backpressure", "HTTP capture/parser queue reached its byte budget; retained capture is an explicit partial prefix")
-        } else {
-            error = nil; pendingBytes += data.count
-            pendingBody.append(data); timingRuns.append((received, time))
-            observed["peakPendingBodyBytes"] = JSON(max(observed["peakPendingBodyBytes"].int ?? 0, pendingBytes))
-            if !suspended, pendingBytes >= bufferLimit / 4 { suspended = true; dataTask.suspend() }
-        }
-        ingressFailure = error
+        pendingBytes += data.count; budget.reserve(data.count)
+        pendingBody.append(data); timingRuns.append((received, time))
+        observed["peakPendingBodyBytes"] = JSON(max(observed["peakPendingBodyBytes"].int ?? 0, pendingBytes))
+        if !suspended, pendingBytes >= bufferLimit / 4 { suspended = true; dataTask.suspend() }
         lock.unlock()
-        if error != nil { dataTask.cancel() }
         flushBody()
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         lock.lock()
         observed["httpEnd"] = JSON(nowMS())
-        observed["transportOutcome"] = JSON(ingressFailure != nil ? "error" : error == nil ? "eof" : (error as? URLError)?.code == .cancelled ? "cancelled" : "error")
+        observed["transportOutcome"] = JSON(error == nil ? "eof" : (error as? URLError)?.code == .cancelled ? "cancelled" : "error")
         completed = true; completionError = error
         let pool = self.pool
         self.task=nil; self.session=nil; lock.unlock()
@@ -296,7 +285,7 @@ public actor TraceStore {
         var lastContent:Double?
         var firstHTTPByte:Double?, firstBodyByte:Double?, transportOutcome="pending"
         var status:Int?, headers:JSON=[:], requestHeaders:JSON=[:], usage:JSON=[:], outcome="running", modelOutcome="pending"
-        var request=Data(), response=Data(), requestObserved=0, responseObserved=0, rawEvents:[JSON]=[], rawEventsDropped=0
+        var request=Data(), response=Data(), requestObserved=0, responseObserved=0, rawEvents:[JSON]=[], rawEventCount=0
         var requestedModel = "", messageIDs: [String] = [], outputMessageIDs: [String] = [], persistenceError: String?
         var wallTimestamp = Date().timeIntervalSince1970, dispatchWallTimestamp:Double?
         var sentEventIndices = 0, eventIndexError = false
@@ -308,7 +297,11 @@ public actor TraceStore {
         var contextLinksPending = false
         var credentials = CaptureCredentials(headers: [:], configuredNames: [])
         var requestCaptureBytes = 0, credentialRedactions = 0, credentialOmitted = false
-        var requestMemoryLimited = false, responseMemoryLimited = false
+        /// The app confirmed this request's final record.
+        var finishSaved = false
+        /// A persisted chat's bodies and raw events are in the app's log, and
+        /// the helper let go of its copies.
+        var savedToLog = false
         var responseMasker = CaptureCredentials.ResponseMasker(CaptureCredentials(headers: [:], configuredNames: []))
         var responseCaptureBytes = 0, responseCredentialRedactions = 0
         init(id: String, session: String, turn: String, api: String, url: String, purpose: String, mode: String) {
@@ -316,17 +309,16 @@ public actor TraceStore {
             self.url = url; self.purpose = purpose; self.mode = mode
         }
     }
-    private var traces:[String:Trace]=[:], order:[String]=[], modes:[String:String]=[:], droppedMetadata=0
-    public static let perBodyLimit=8*1024*1024, totalLimit=128*1024*1024
+    private var traces:[String:Trace]=[:], order:[String]=[], modes:[String:String]=[:]
     /// A decode span shorter than this is a reply delivered in one burst, not
     /// a measured generation: it contributes no tokens-per-second rate.
     public static let minimumDecodeSpanMs = 250.0
+    /// Body bytes the helper holds: every request's until the app has saved
+    /// it, and a session-memory chat's for good (they are its only copy).
+    /// Nothing is capped or cut.
     private var retainedBytes = 0
-    private let memoryLimit: Int
     private let sink: @Sendable (JSON) async -> Bool
-    public init(memoryLimit: Int = TraceStore.totalLimit, sink: @escaping @Sendable (JSON) async -> Bool = { _ in true }) {
-        self.memoryLimit = max(0, min(Self.totalLimit, memoryLimit)); self.sink = sink
-    }
+    public init(sink: @escaping @Sendable (JSON) async -> Bool = { _ in true }) { self.sink = sink }
     public func mode(_ session:String)->String { modes[session] ?? "memory" }
     public func begin(session:String, turn:String, profile:Profile, purpose:String, body:Data, headers:[String:String], messageIDs: [String] = []) async ->String {
         let id=UUID().uuidString, mode=mode(session)
@@ -335,35 +327,31 @@ public actor TraceStore {
         t.responseMasker = CaptureCredentials.ResponseMasker(t.credentials)
         let captured = t.credentials.requestBody(body)
         t.requestCaptureBytes = captured.bytes.count; t.credentialRedactions = captured.replacements; t.credentialOmitted = captured.omitted
-        t.requestObserved=body.count; if mode != "off" { t.request=captured.bytes.prefix(Self.perBodyLimit) }
+        t.requestObserved=body.count; if mode != "off" { t.request=captured.bytes }
         t.requestHeaders=t.credentials.requestHeaders(headers)
         if t.credentials.contains(t.url.removingPercentEncoding ?? t.url) { t.url = CaptureCredentials.fingerprint(t.url) }
         t.identity=RoutingIdentity(profile:profile); t.gateway=GatewayTelemetry(profile:profile); t.requestedModel=profile.model; t.messageIDs=Array(Set(messageIDs)).sorted()
-        traces[id]=t; retainedBytes += t.request.count; order.append(id); trim()
-        // The attempt is recorded before dispatch. Its context links (every
-        // message id the request carries, one acknowledged packet per 512)
-        // follow once the request is on its way: the recorder accepts them
-        // any time after `begin`, and a long chat's context must not add
-        // those round trips to every request's latency.
-        if !(await sink(["type":"begin", "metadata":metadata(traces[id] ?? t, messageIDs:false)])) { traces[id]?.persistenceError="Native request recorder was unavailable at dispatch" }
-        else { t.contextLinksPending = true }
-        if mode == "persist" { await deliverBytes(id, kind:"request", offset:0, bytes:captured.bytes) }
+        traces[id]=t; retainedBytes += t.request.count; order.append(id)
+        // The attempt is recorded before dispatch, and the request goes out
+        // without waiting for the app to save it: its packets are queued.
+        // Its context links (every message id the request carries, one packet
+        // per 512) follow once the request is on its way.
+        post(["type":"begin", "metadata":metadata(t, messageIDs:false)], attempt: id, stage: .begin)
+        t.contextLinksPending = true
+        if mode == "persist" { deliverBytes(id, kind:"request", offset:0, bytes:captured.bytes) }
         return id
     }
-    private func deliverLinks(_ id: String, field: String, ids: [String]) async {
+    private func deliverLinks(_ id: String, field: String, ids: [String]) {
         for start in stride(from: 0, to: ids.count, by: 512) {
             var packet: JSON = ["type":"links", "attemptId":JSON(id)]
             packet[field] = .array(Array(ids.dropFirst(start).prefix(512)).map { JSON($0) })
-            if !(await sink(packet)) { traces[id]?.persistenceError="Native message/request links were not durably acknowledged"; return }
+            post(packet, attempt: id, stage: .links)
         }
     }
-    private func deliverBytes(_ id: String, kind: String, offset: Int, bytes: Data) async {
-        guard traces[id]?.persistenceError == nil else { return }
+    private func deliverBytes(_ id: String, kind: String, offset: Int, bytes: Data) {
         for start in stride(from: 0, to: bytes.count, by: 32_768) {
             let page = bytes.subdata(in: start..<min(start + 32_768, bytes.count))
-            if !(await sink(["type":"bytes", "attemptId":JSON(id), "body":JSON(kind), "offset":JSON(offset+start), "bytes":JSON(page.base64EncodedString())])) {
-                traces[id]?.persistenceError="Native payload retention stopped; inspect the durable prefix and metrics"; return
-            }
+            post(["type":"bytes", "attemptId":JSON(id), "body":JSON(kind), "offset":JSON(offset+start), "bytes":JSON(page.base64EncodedString())], attempt: id, stage: .bytes)
         }
     }
     public func head(_ id:String, status:Int, headers:[String:String]) {
@@ -398,60 +386,50 @@ public actor TraceStore {
         let captured = t.mode == "off" ? Data() : t.responseMasker.feed(data)
         let offset = t.responseCaptureBytes
         t.responseCaptureBytes += captured.count; t.responseCredentialRedactions = t.responseMasker.replacements
-        if t.mode != "off", !t.responseMemoryLimited {
-            let count = min(captured.count, max(0, Self.perBodyLimit - t.response.count))
-            t.response.append(captured.prefix(count)); retainedBytes += count
-        }
-        trim()
+        if t.mode != "off" { t.response.append(captured); retainedBytes += captured.count }
         if t.mode == "persist" {
-            await publishResponseTransformation(traces[id] ?? t, previousRedactions: previousRedactions)
-            await deliverBytes(id, kind:"response", offset:offset, bytes:captured)
+            publishResponseTransformation(t, previousRedactions: previousRedactions)
+            deliverBytes(id, kind:"response", offset:offset, bytes:captured)
         }
     }
-    private func flushResponse(_ id: String) async {
+    private func flushResponse(_ id: String) {
         guard let t = traces[id], t.mode != "off" else { return }
         let previousRedactions = t.responseCredentialRedactions
         let captured = t.responseMasker.feed(Data(), final: true), offset = t.responseCaptureBytes
         t.responseCaptureBytes += captured.count; t.responseCredentialRedactions = t.responseMasker.replacements
-        if !t.responseMemoryLimited {
-            let count = min(captured.count, max(0, Self.perBodyLimit - t.response.count))
-            t.response.append(captured.prefix(count)); retainedBytes += count
-        }
-        trim()
+        t.response.append(captured); retainedBytes += captured.count
         if t.mode == "persist" {
-            await publishResponseTransformation(traces[id] ?? t, previousRedactions: previousRedactions)
-            await deliverBytes(id, kind: "response", offset: offset, bytes: captured)
+            publishResponseTransformation(t, previousRedactions: previousRedactions)
+            deliverBytes(id, kind: "response", offset: offset, bytes: captured)
         }
     }
-    private func publishResponseTransformation(_ trace: Trace, previousRedactions: Int) async {
+    private func publishResponseTransformation(_ trace: Trace, previousRedactions: Int) {
         guard previousRedactions == 0, trace.responseCredentialRedactions > 0 else { return }
         // Publish the exception before its bytes, including during a live
         // stream or a cancelled tail; the inspector must never label them exact.
-        if !(await sink(["type": "metadata", "metadata": metadata(trace, messageIDs:false)])) {
-            traces[trace.id]?.persistenceError = "Native recorder could not acknowledge response credential masking; body retention stopped"
-        }
+        post(["type": "metadata", "metadata": metadata(trace, messageIDs:false)], attempt: trace.id, stage: .masking)
     }
     public func event(_ id:String, _ event:SSEEvent) async {
         guard let t=traces[id] else { return }
-        guard t.rawEvents.count<4096 else { t.rawEventsDropped += 1;return }
         t.rawEvents.append(["type":JSON(preview(event.event, bytes:128)),"start":JSON(event.start),"end":JSON(event.end),"observedAt":JSON(nowMS())])
-        if t.mode == "persist", t.rawEvents.count - t.sentEventIndices >= 128 { await flushEvents(id) }
+        t.rawEventCount += 1
+        if t.mode == "persist", t.rawEvents.count - t.sentEventIndices >= 128 { flushEvents(id) }
     }
-    private func flushEvents(_ id: String) async {
-        guard let trace = traces[id], trace.mode == "persist", !trace.eventIndexError, trace.sentEventIndices < trace.rawEvents.count else { return }
+    private func flushEvents(_ id: String) {
+        guard let trace = traces[id], trace.mode == "persist", trace.sentEventIndices < trace.rawEvents.count else { return }
         let offset = trace.sentEventIndices, page = Array(trace.rawEvents.dropFirst(offset).prefix(128))
         trace.sentEventIndices += page.count
-        if !(await sink(["type":"events", "attemptId":JSON(id), "offset":JSON(offset), "events":.array(page)])) { traces[id]?.eventIndexError = true }
+        post(["type":"events", "attemptId":JSON(id), "offset":JSON(offset), "events":.array(page)], attempt: id, stage: .events)
     }
     public func dispatched(_ id: String, at time: Double, wall: Double = Date().timeIntervalSince1970) async {
         traces[id]?.dispatch = time; traces[id]?.dispatchWallTimestamp = wall
-        if let t = traces[id] { _ = await sink(["type":"metadata", "metadata":metadata(t, messageIDs:false)]) }
-        await deliverContextLinks(id)
+        if let t = traces[id] { post(["type":"metadata", "metadata":metadata(t, messageIDs:false)], attempt: id, stage: .update) }
+        deliverContextLinks(id)
     }
-    private func deliverContextLinks(_ id: String) async {
+    private func deliverContextLinks(_ id: String) {
         guard let t = traces[id], t.contextLinksPending else { return }
         t.contextLinksPending = false
-        await deliverLinks(id, field: "messageIds", ids: t.messageIDs)
+        deliverLinks(id, field: "messageIds", ids: t.messageIDs)
     }
     /// An output item opened, of any kind: the model started generating, so
     /// the first opening can be the first output. It carries no token itself.
@@ -494,59 +472,120 @@ public actor TraceStore {
         trace.operation=value
         // Semantic summary validation happens after HTTP completion. Persist
         // its diagnosis too, including attempts that produced no checkpoint.
-        if trace.outcome != "running", !(await sink(["type":"metadata","metadata":metadata(trace, messageIDs:false)])) {
-            traces[id]?.persistenceError="Native recorder could not acknowledge compaction outcome metadata"
-        }
+        if trace.outcome != "running" { post(["type":"metadata","metadata":metadata(trace, messageIDs:false)], attempt: id, stage: .operation) }
     }
     public func finish(_ id:String, outcome:String, modelOutcome:String) async {
-        await deliverContextLinks(id)
-        await flushResponse(id)
-        await flushEvents(id)
+        deliverContextLinks(id)
+        flushResponse(id)
+        flushEvents(id)
         traces[id]?.outcome=outcome; traces[id]?.modelOutcome=modelOutcome
-        if let trace = traces[id], !(await sink(["type":"finish", "metadata":metadata(trace, messageIDs:false)])) { traces[id]?.persistenceError="Native request finalization was unavailable; durable request remains interrupted" }
+        if let trace = traces[id] { post(["type":"finish", "metadata":metadata(trace, messageIDs:false)], attempt: id, stage: .finish) }
     }
     public func outputs(_ id: String, messageIDs: [String]) async {
         if let trace = traces[id] { trace.outputMessageIDs=Array(Set(trace.outputMessageIDs + messageIDs)).sorted() }
-        await deliverLinks(id, field: "outputMessageIds", ids: messageIDs)
+        deliverLinks(id, field: "outputMessageIds", ids: messageIDs)
     }
-    private func trim() {
-        var retained = retainedBytes
-        defer { retainedBytes = retained }
-        while order.count>64 || retained>memoryLimit {
-            guard let index=order.firstIndex(where:{ traces[$0]?.outcome != "running" }) else { break }
-            let id=order.remove(at:index); if let old=traces.removeValue(forKey:id) { retained -= old.request.count+old.response.count; droppedMetadata += 1 }
+    // MARK: Delivery to the app's request log
+
+    /// What a rejected packet means for its request's later packets.
+    private enum Stage { case begin, update, links, bytes, masking, events, operation, finish }
+    private struct Outgoing { let packet: JSON; let attempt: String; let stage: Stage }
+    private struct Delivery { var refused = false, bytesStopped = false, linksStopped = false, eventsStopped = false }
+    /// Every capture packet, in the order it was made. One consumer sends
+    /// them, each after the app confirmed the one before. Neither a model
+    /// request nor its stream waits on this queue: a slow app delays its log,
+    /// never the chat, and nothing is dropped for being slow.
+    private var outbox: [Outgoing] = [], outboxHead = 0, draining = false
+    private var deliveries: [String: Delivery] = [:]
+    private var idle: [CheckedContinuation<Void, Never>] = []
+    private func post(_ packet: JSON, attempt: String, stage: Stage) {
+        outbox.append(Outgoing(packet: packet, attempt: attempt, stage: stage))
+        guard !draining else { return }
+        draining = true
+        Task { await self.drain() }
+    }
+    /// Returns once every packet queued so far has been answered. Nothing in
+    /// a chat waits on this; tests read the log after it.
+    func delivered() async {
+        guard draining else { return }
+        await withCheckedContinuation { idle.append($0) }
+    }
+    private func drain() async {
+        while outboxHead < outbox.count {
+            let item = outbox[outboxHead]; outboxHead += 1
+            if outboxHead >= 256, outboxHead * 2 >= outbox.count { outbox.removeFirst(outboxHead); outboxHead = 0 }
+            let delivery = deliveries[item.attempt] ?? Delivery()
+            // A request the log refused, or a kind of packet it stopped taking
+            // for that request, sends nothing more of that kind.
+            if delivery.refused || (item.stage == .bytes && delivery.bytesStopped) || (item.stage == .links && delivery.linksStopped)
+                || (item.stage == .events && delivery.eventsStopped) { continue }
+            let accepted = await sink(item.packet)
+            recorded(item.stage, accepted: accepted, attempt: item.attempt)
         }
-        // Running attempts cannot lose their metadata or durable recorder
-        // state. Trim their memory bodies instead, retaining only prefixes.
-        // Keep at most one inspector page when trimming a large body, avoiding
-        // repeated multi-MiB copies as subsequent network chunks arrive.
-        func prefix(_ data: Data, excess: Int) -> Data {
-            let count = min(32_768, max(0, data.count - excess))
-            guard count > 0 else { return Data() }
-            return Data(data.prefix(count))
+        outbox.removeAll(); outboxHead = 0; draining = false
+        let waiting = idle; idle.removeAll()
+        for waiter in waiting { waiter.resume() }
+    }
+    private func recorded(_ stage: Stage, accepted: Bool, attempt id: String) {
+        var delivery = deliveries[id] ?? Delivery()
+        let trace = traces[id]
+        switch stage {
+        case .begin:
+            if !accepted { delivery.refused = true; trace?.persistenceError = "Native request recorder was unavailable at dispatch" }
+        case .bytes:
+            if !accepted { delivery.bytesStopped = true; trace?.persistenceError = "Native payload retention stopped; inspect the durable prefix and metrics" }
+        case .masking:
+            if !accepted { delivery.bytesStopped = true; trace?.persistenceError = "Native recorder could not acknowledge response credential masking; body retention stopped" }
+        case .links:
+            if !accepted { delivery.linksStopped = true; if trace?.persistenceError == nil { trace?.persistenceError = "Native message/request links were not durably acknowledged" } }
+        case .events:
+            if !accepted { delivery.eventsStopped = true; trace?.eventIndexError = true }
+        case .operation:
+            if !accepted { trace?.persistenceError = "Native recorder could not acknowledge compaction outcome metadata" }
+        case .update: break
+        case .finish:
+            if !accepted { trace?.persistenceError = "Native request finalization was unavailable; durable request remains interrupted" }
+            else if let trace { saved(trace, complete: !delivery.bytesStopped && !delivery.eventsStopped && !delivery.linksStopped) }
         }
-        for id in order where retained > memoryLimit {
-            guard let trace = traces[id] else { continue }
-            if !trace.response.isEmpty {
-                let kept = prefix(trace.response, excess: retained - memoryLimit)
-                retained -= trace.response.count - kept.count
-                trace.response = kept; trace.responseMemoryLimited = true
-            }
-            if retained > memoryLimit, !trace.request.isEmpty {
-                let kept = prefix(trace.request, excess: retained - memoryLimit)
-                retained -= trace.request.count - kept.count
-                trace.request = kept; trace.requestMemoryLimited = true
-            }
+        // A cleared or released request's late packets leave no state behind.
+        if traces[id] != nil { deliveries[id] = delivery } else { deliveries.removeValue(forKey: id) }
+    }
+    /// The app confirmed a request's final record. When it also took every
+    /// page of a persisted chat's request (bodies, raw events and links), that
+    /// log holds all of it, so the helper lets go of its copies; otherwise the
+    /// helper's copy is the complete one and stays. A session-memory chat keeps
+    /// everything, as the helper holds its only copy. Output links and a
+    /// compaction's outcome can still follow a final record, so a saved record
+    /// itself goes only once a later request of the same chat has been saved.
+    private func saved(_ trace: Trace, complete: Bool) {
+        trace.finishSaved = true
+        guard trace.mode != "memory" else { return }
+        if trace.mode == "persist", complete {
+            retainedBytes -= trace.request.count + trace.response.count
+            trace.request = Data(); trace.response = Data(); trace.rawEvents = []
+            trace.savedToLog = true
         }
+        let earlier = Set(order.filter { id in
+            guard id != trace.id, let other = traces[id] else { return false }
+            return other.session == trace.session && other.finishSaved && (other.savedToLog || other.mode == "off")
+        })
+        guard !earlier.isEmpty else { return }
+        for id in earlier {
+            if let old = traces.removeValue(forKey: id) { retainedBytes -= old.request.count + old.response.count }
+            deliveries.removeValue(forKey: id)
+        }
+        order.removeAll { earlier.contains($0) }
     }
     private func bodyInfo(_ t:Trace, request:Bool)->JSON {
-        let observed=request ? t.requestObserved:t.responseObserved, retained=request ? t.request.count:t.response.count
+        let observed=request ? t.requestObserved:t.responseObserved
         let captured = request ? t.requestCaptureBytes : t.responseCaptureBytes
+        // Every captured byte is kept: in the helper until the app has saved
+        // it, and then in the app's log.
+        let retained = t.savedToLog ? captured : request ? t.request.count : t.response.count
         let omitted = request && t.credentialOmitted, redactions = request ? t.credentialRedactions : t.responseCredentialRedactions
-        let memoryLimited = request ? t.requestMemoryLimited : t.responseMemoryLimited
         let redacted = redactions > 0
-        let state=t.mode=="off" ? "not-captured":omitted ? "credential-omitted":retained<captured ? "truncated":!request && (t.transportOutcome != "eof" || captured < observed) ? "partial":redacted ? (request ? "credential-hashed" : "credential-masked"):"complete"
-        var result:JSON = ["state":JSON(state),"observedBytes":JSON(observed),"retainedBytes":JSON(retained),"reason": t.mode=="off" ? "Capture was disabled" : omitted ? "Credential replacement exceeded capture safety limits; request body was not retained." : retained<captured ? (memoryLimited ? "Workspace memory limit; retained prefix only. Durable capture is independent." : "8 MiB per-body limit") : .null]
+        let state=t.mode=="off" ? "not-captured":omitted ? "credential-omitted":!request && (t.transportOutcome != "eof" || captured < observed) ? "partial":redacted ? (request ? "credential-hashed" : "credential-masked"):"complete"
+        var result:JSON = ["state":JSON(state),"observedBytes":JSON(observed),"retainedBytes":JSON(retained),"savedToLog":JSON(t.savedToLog),"reason": t.mode=="off" ? "Capture was disabled" : omitted ? "Credential replacement exceeded capture safety limits; request body was not retained." : .null]
         if request {
             result["captureBytes"] = JSON(captured); result["credentialRedactions"] = JSON(t.credentialRedactions); result["byteExact"] = JSON(!redacted && !omitted)
             result["transformations"] = .array(omitted ? ["Request body omitted because credential replacement exceeded capture safety limits. No request-body bytes were retained."] : redacted ? ["Known authentication credential bytes replaced by labeled SHA-256 fingerprints. Offsets and hashes describe retained transformed bytes, not the submitted wire body."] : [])
@@ -591,8 +630,8 @@ public actor TraceStore {
         var value:JSON = ["attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
          "outcome":JSON(t.outcome),"modelOutcome":JSON(t.modelOutcome),"transportOutcome":JSON(t.transportOutcome),"requestHeaders":t.requestHeaders,"responseHeaders":t.headers,"usage":t.usage,"gateway":t.gateway?.json ?? .null,"operation":t.operation,
          "identity":t.credentials.metadata(t.identity?.json ?? .null),"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
-         "rawEventsOmitted":JSON(t.rawEventsDropped),"eventIndexPersistenceError":JSON(t.eventIndexError),
-         "request":bodyInfo(t,request:true),"response":bodyInfo(t,request:false),"metrics":metrics(t),"rawEventIndexCount":JSON(t.rawEvents.count),
+         "rawEventsOmitted":0,"eventIndexPersistenceError":JSON(t.eventIndexError),
+         "request":bodyInfo(t,request:true),"response":bodyInfo(t,request:false),"metrics":metrics(t),"rawEventIndexCount":JSON(t.rawEventCount),
          "timingVersion":2,"dispatchWallTimestamp":t.dispatchWallTimestamp.map { JSON($0) } ?? .null,
          "timingBoundary":"Monotonic URLSession dispatch, header callback (first HTTP observation), decoded body callbacks, body bytes containing parsed content/terminal, and task completion. Not socket/TLS or paint timing.",
          "timings":["dispatch":t.dispatch.map { JSON($0) } ?? .null,"firstHTTPByte":t.firstHTTPByte.map { JSON($0) } ?? .null,"firstBodyByte":t.firstBodyByte.map { JSON($0) } ?? .null,"firstContent":t.firstContent.map { JSON($0) } ?? .null,"firstText":t.firstText.map { JSON($0) } ?? .null,"lastContent":t.lastContent.map { JSON($0) } ?? .null,"modelComplete":t.completed.map { JSON($0) } ?? .null,"httpEnd":t.eof.map { JSON($0) } ?? .null]]
@@ -604,24 +643,26 @@ public actor TraceStore {
         let boundary:JSON="Application HTTP boundary after serialization and HTTP decoding, not TLS packets. Gateway upstream traffic is unavailable. Authentication headers are masked; long request tokens retain only their last four characters, and short tokens, cookies and secret response headers are fully masked. Known credential literals in request bodies are labeled SHA-256 fingerprints; response credential echoes are replaced by same-length asterisks. Body transformations are explicit byte-exactness exceptions. Other captured bytes remain untransformed and sensitive."
         if method=="debug.mode" {
             guard let mode=p["mode"].text,["off","memory","persist"].contains(mode) else { throw AgentError("invalid_mode","Choose off, memory or persist") }
-            // The native UI owns explicit trace-file export/persistence; raw host captures remain bounded memory.
+            // The native UI owns explicit trace-file export/persistence.
             modes[session]=mode; return ["mode":JSON(mode),"appliesTo":"future attempts; existing captures are cleared separately"]
         }
         if method=="debug.clear" {
             guard !traces.values.contains(where:{$0.session==session && $0.outcome=="running"}) else { throw AgentError("capture_busy", "Stop the active request before clearing body captures") }
-            let ids=Set(order.filter{traces[$0]?.session==session}); ids.forEach { if let old = traces.removeValue(forKey: $0) { retainedBytes -= old.request.count + old.response.count } }; order.removeAll{ids.contains($0)}; return ["cleared":true]
+            let ids=Set(order.filter{traces[$0]?.session==session}); ids.forEach { if let old = traces.removeValue(forKey: $0) { retainedBytes -= old.request.count + old.response.count }; deliveries.removeValue(forKey: $0) }; order.removeAll{ids.contains($0)}; return ["cleared":true]
         }
         if method=="debug.list" {
-            let all=order.reversed().compactMap{traces[$0]}.filter{$0.session==session}, offset=try boundedInt(p["offset"])
+            let all=order.reversed().compactMap{traces[$0]}.filter{$0.session==session}, offset=try boundedInt(p["offset"],maximum:Int.max)
             let page=Array(all.dropFirst(offset).prefix(64))
-            return ["attempts":.array(page.map { metadata($0) }),"total":JSON(all.count),"next":offset+page.count<all.count ? JSON(offset+page.count):.null,"mode":JSON(mode(session)),"boundary":boundary,"workspaceRetainedBytes":JSON(retainedBytes),"limits":["bodyBytes":JSON(Self.perBodyLimit),"workspaceBytes":JSON(memoryLimit)],"droppedMetadata":JSON(droppedMetadata)]
+            return ["attempts":.array(page.map { metadata($0) }),"total":JSON(all.count),"next":offset+page.count<all.count ? JSON(offset+page.count):.null,"mode":JSON(mode(session)),"boundary":boundary,"workspaceRetainedBytes":JSON(retainedBytes)]
         }
         guard let id=p["attemptId"].text,let t=traces[id],t.session==session else { throw AgentError("capture_unavailable","Attempt is unavailable or belongs to another session") }
-        if method=="debug.attempt" { var v=metadata(t); v["boundary"]=boundary;v["requestHash"]=t.mode=="off" ? .null:["sha256":JSON(sha256(t.request)),"scope":"retained bytes"];v["responseHash"]=t.mode=="off" ? .null:["sha256":JSON(sha256(t.response)),"scope":"retained bytes"]; return v }
-        if method=="debug.raw-events" { let offset=try boundedInt(p["offset"]); return ["events":.array(Array(t.rawEvents.dropFirst(offset).prefix(128))),"total":JSON(t.rawEvents.count),"response":bodyInfo(t,request:false),"omitted":JSON(t.rawEventsDropped)] }
+        if method=="debug.attempt" { var v=metadata(t); v["boundary"]=boundary;v["requestHash"]=t.mode=="off" || t.savedToLog ? .null:["sha256":JSON(sha256(t.request)),"scope":"retained bytes"];v["responseHash"]=t.mode=="off" || t.savedToLog ? .null:["sha256":JSON(sha256(t.response)),"scope":"retained bytes"]; return v }
+        // A saved request's bodies and events are read from the app's log.
+        guard !t.savedToLog else { throw AgentError("capture_saved","This request is saved in the app's request log; read it there") }
+        if method=="debug.raw-events" { let offset=try boundedInt(p["offset"],maximum:Int.max); return ["events":.array(Array(t.rawEvents.dropFirst(offset).prefix(128))),"total":JSON(t.rawEvents.count),"response":bodyInfo(t,request:false),"omitted":0] }
         if method=="debug.body" {
             guard ["request","response"].contains(p["body"].text ?? "") else { throw AgentError("invalid_body","Choose request or response") }
-            let request=p["body"].text=="request", body=request ? t.request:t.response, offset=try boundedInt(p["offset"],maximum:Self.perBodyLimit)
+            let request=p["body"].text=="request", body=request ? t.request:t.response, offset=try boundedInt(p["offset"],maximum:Int.max)
             guard offset<=body.count else { throw AgentError("invalid_range","Offset exceeds retained bytes") }
             let end=min(body.count,offset+32768);var v=bodyInfo(t,request:request)
             v["offset"]=JSON(offset);v["bytes"]=JSON(body.subdata(in:offset..<end).base64EncodedString());v["next"]=end<body.count ? JSON(end):.null;return v

@@ -18,10 +18,10 @@ struct CapturedBodyMetadata: Equatable, Sendable {
         self.body = body; hash = nil; growingPrefix = true
     }
 
-    func count(limit: Int) throws -> Int {
+    func count() throws -> Int {
         guard let number = body["retainedBytes"]?.number, number.isFinite,
-              number >= 0, number.rounded() == number, number <= Double(limit) else {
-            throw HostError.failure("The retained body length is invalid or exceeds the capture limit.")
+              number >= 0, number <= Double(PayloadArchive.largestCount), number.rounded() == number else {
+            throw HostError.failure("The retained body length is invalid.")
         }
         return Int(number)
     }
@@ -299,7 +299,7 @@ struct CapturedBodyDocument: Sendable {
         }, page: { offset in
             let value = try await archive.metadata(attempt: attemptID)
             let metadata = CapturedBodyMetadata(body: value[kind]?.object ?? [:], hash: value[kind + "Hash"])
-            return (try await archive.body(attemptID: attemptID, body: kind, offset: offset), try metadata.count(limit: CapturedBodyReader.limit(kind)))
+            return (try await archive.body(attemptID: attemptID, body: kind, offset: offset), try metadata.count())
         }, whole: { progress in
             try await archive.completeBody(attemptID: attemptID, body: kind) { loaded, total in
                 await progress(loaded, total)
@@ -317,13 +317,12 @@ struct CapturedBodyDocument: Sendable {
                   let encoded = value["bytes"]?.string, let bytes = Data(base64Encoded: encoded) else {
                 throw HostError.failure("This body was not captured or is no longer available.")
             }
-            return (bytes, try CapturedBodyMetadata(body: value, hash: nil).count(limit: CapturedBodyReader.limit(kind)))
+            return (bytes, try CapturedBodyMetadata(body: value, hash: nil).count())
         })
     }
 }
 
 enum CapturedBodyReader {
-    static func limit(_ kind: String) -> Int { kind == "request" ? 33_554_432 : 67_108_864 }
     /// Capture states whose retained bytes can still grow: the archive is
     /// recording, or the helper is still receiving the response. Bytes are
     /// only ever appended, so the prefix a read starts with never changes.
@@ -346,17 +345,14 @@ enum CapturedBodyReader {
         guard MessageBodyReader.canReadRetained(state) else {
             throw HostError.failure("Body unavailable: \(before.body["state"]?.string ?? "not captured"). \(before.body["reason"]?.string ?? "")")
         }
-        let count = try before.count(limit: limit(kind)), growing = growable(state)
+        let count = try before.count(), growing = growable(state)
         let bytes: Data
         if let whole = source.whole { bytes = try await whole(progress) }
         else {
             // A body still being written is read up to the length it had
             // when the read began; failing whenever a byte arrived meant a
             // streaming response could not be viewed until it finished.
-            guard let assembled = try await MessageBodyReader.assemble(limit: limit(kind), length: growing ? count : nil, progress: progress, page: source.page) else {
-                throw HostError.failure("The capture changed while reading. Refresh and try again.")
-            }
-            bytes = assembled
+            bytes = try await MessageBodyReader.assemble(length: growing ? count : nil, progress: progress, page: source.page)
         }
         try Task.checkCancellation()
         let after = try await source.metadata()
@@ -365,7 +361,7 @@ enum CapturedBodyReader {
             // Only growth past the prefix this read holds is not a change; a
             // body that did not grow must still have the same digest.
             guard growing, bytes.count >= count, MessageBodyReader.canReadRetained(after.body["state"]?.string ?? ""),
-                  let now = try? after.count(limit: limit(kind)), now >= bytes.count, now > count || after.hash == before.hash else {
+                  let now = try? after.count(), now >= bytes.count, now > count || after.hash == before.hash else {
                 throw HostError.failure("The capture changed while reading. Refresh and try again.")
             }
             // Every byte the capture holds now was read: `after` describes them.

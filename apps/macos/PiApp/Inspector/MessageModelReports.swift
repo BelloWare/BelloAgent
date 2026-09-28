@@ -60,11 +60,10 @@ enum MessageBodyReader {
     /// `length` reads a body that is still being written up to the length it
     /// had when the read began: its bytes are only ever appended, so the pages
     /// may report a longer body, never a shorter one.
-    @MainActor static func assemble(limit: Int, length target: Int? = nil, progress: (Int, Int) -> Void = { _, _ in }, page: (Int) async throws -> (Data, Int)) async throws -> Data? {
+    @MainActor static func assemble(length target: Int? = nil, progress: (Int, Int) -> Void = { _, _ in }, page: (Int) async throws -> (Data, Int)) async throws -> Data {
         var bytes = Data(), expected: Int?
         if let target {
             guard target >= 0 else { throw HostError.failure("The capture changed while reading. Refresh and try again.") }
-            guard target <= limit else { return nil }
             while bytes.count < target {
                 try Task.checkCancellation()
                 let (chunk, count) = try await page(bytes.count)
@@ -83,7 +82,6 @@ enum MessageBodyReader {
             let (chunk, count) = try await page(bytes.count)
             try Task.checkCancellation()
             guard count >= 0, expected == nil || expected == count else { throw HostError.failure("The capture changed while reading. Refresh and try again.") }
-            guard count <= limit else { return nil }
             expected = count
             guard chunk.count <= count - bytes.count, !chunk.isEmpty || bytes.count == count else { throw HostError.failure("The retained body is incomplete or changed while reading.") }
             bytes.append(chunk)

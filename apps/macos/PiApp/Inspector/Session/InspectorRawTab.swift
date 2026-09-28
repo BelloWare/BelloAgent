@@ -141,7 +141,9 @@ struct InspectorRawTab: View {
             let value: [String: WireValue]
             if request.raw == .links {
                 value = try await inspector.archive.messageLinks(attemptID: row.id, offset: pageOffset)
-            } else if row.source != .live, let retained = try? await inspector.archive.eventIndices(attemptID: row.id, offset: pageOffset) {
+            } else if row.source != .live || request.metadata["response"]?.object?["savedToLog"]?.bool == true,
+                      let retained = try? await inspector.archive.eventIndices(attemptID: row.id, offset: pageOffset) {
+                // A request the log saved is read there, also while the index still shows the helper's row.
                 value = retained
             } else if let workspace = inspector.workspace {
                 value = try await workspace.debugRequest("debug.raw-events", sessionID: inspector.scope.sessionID, params: ["attemptId": .string(row.id), "offset": .number(Double(pageOffset))])
