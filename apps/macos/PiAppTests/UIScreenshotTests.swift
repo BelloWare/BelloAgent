@@ -169,6 +169,13 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        if testEnvironment("PI_APP_UI_GALLERY_WEBHOOK_ONLY") == "1" {
+            try await captureWebhookScenes(model: model, window: window, gallery: gallery, appearances: appearances, chatID: main.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         if testEnvironment("PI_APP_UI_GALLERY_COST_ONLY") == "1" {
             try await captureCostLimitScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                              workspaceID: workspace.id, profileID: connections[0].profile.id)
@@ -331,6 +338,7 @@ final class UIScreenshotTests: XCTestCase {
                                                  workspaceID: workspace.id, profileID: connections[0].profile.id)
         try await captureLiteralTextScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                            workspaceID: workspace.id, profileID: connections[0].profile.id)
+        try await captureWebhookScenes(model: model, window: window, gallery: gallery, appearances: appearances, chatID: main.id)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
         let fresh = WorkspaceModel(stateRoot: folder.appendingPathComponent("onboarding-state"), vault: freshVault)
@@ -725,6 +733,55 @@ final class UIScreenshotTests: XCTestCase {
     /// editor Raise limit… opens over it, and the notice once the limit is
     /// above the spend. The chat has its own limit of $0.001; the fixture's
     /// read round costs $0.00125, so the request after it never goes.
+    /// 19 · The webhook: its group in Settings, and a finished chat's preview
+    /// with the mini model's parameters. Nothing is sent: the address is only
+    /// shown, and the webhook is off again once the scenes are taken.
+    @MainActor private func captureWebhookScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                 appearances: [(String, NSAppearance.Name)], chatID: String) async throws {
+        var settings = WebhookSettings()
+        settings.enabled = true; settings.url = "https://hooks.example.com/bello/{{chat_id}}"
+        settings.headers = #"{"Authorization": "Bearer example-token"}"#
+        settings.prompt = "Write for a phone notification. Point out anything that needs my decision."
+        let configured = settings
+        try await model.updateConfiguration {
+            $0.webhook = configured
+            for index in $0.profiles.indices { $0.profiles[index].profile.miniModelId = "fixture-fast" }
+        }
+        // 19 · Settings, scrolled down to the webhook group: its top, then its end.
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance)
+            if window.attachedSheet == nil { model.showProfiles = true; try await settle(2.2) }
+            let sheet = try XCTUnwrap(window.attachedSheet, "Settings opened as a sheet")
+            let scroll = try XCTUnwrap(descendants(NSScrollView.self, in: sheet.contentView ?? NSView()).max { $0.frame.height < $1.frame.height })
+            let document = try XCTUnwrap(scroll.documentView)
+            for _ in 0..<3 {
+                let end = max(0, document.frame.height - scroll.contentView.bounds.height)
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, end - 60))); scroll.reflectScrolledClipView(scroll.contentView)
+                try await settle(0.4)
+            }
+            try await settle(0.6)
+            try capture(window, to: gallery.appendingPathComponent("19a-webhook-settings-end-\(name).png"))
+            let headers = try XCTUnwrap(descendants(NSTextView.self, in: document).first { $0.accessibilityLabel() == "Headers JSON" }, "The webhook's headers field")
+            let top = headers.convert(headers.bounds, to: document).minY
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, (document.isFlipped ? top : document.frame.height - top) - 250)))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("19-webhook-settings-\(name).png"))
+        }
+        model.showProfiles = false; try await settle(0.8)
+        // 19b · The chat's preview, once the mini model has written its parameters.
+        model.previewWebhook(chatID)
+        func asking() -> Bool { model.chats.contains { $0.backgroundTask == "webhook" } }
+        try await until("the preview to ask the mini model", seconds: 20) { asking() }
+        try await until("the mini model's parameters", seconds: 60) { !asking() }
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+            try capture(window, to: gallery.appendingPathComponent("19b-webhook-preview-\(name).png"))
+        }
+        model.webhookPreviewTarget = nil; try await settle(0.8)
+        try await model.updateConfiguration { $0.webhook = nil }
+    }
+
     @MainActor private func captureCostLimitScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                    appearances: [(String, NSAppearance.Name)], workspaceID: String, profileID: String) async throws {
         func pair(_ name: String, hold: Double = 0.8, popovers: Bool = false, before: () async throws -> Void = {}) async throws {

@@ -28,6 +28,7 @@ import base64
 import http.server
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -155,7 +156,10 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         # A summary request's one message is the whole conversation: none of
         # the keywords below are asked of it.
         prompt = "" if summary else contract["latest_text"]
-        owner_billing = responses and "owner billing sample" in prompt.lower()
+        # A webhook's notification request quotes the chat it describes: its
+        # words are data here, never a scenario keyword.
+        webhook = prompt.startswith("Write the notification for a webhook:")
+        owner_billing = responses and "owner billing sample" in prompt.lower() and not webhook
         if owner_billing:
             resolved_model = "gpt-5.4-mini"
         last = history[-1] if history else {}
@@ -190,7 +194,12 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 text = "Fixture read completed. SECONDARY-WORKSPACE-ROOT-VERIFIED: the file came from the added workspace folder."
         bulk = next((int(word) for previous, word in zip(prompt.lower().split(), prompt.lower().split()[1:])
                      if previous == "bulk" and word.isdigit()), None)
-        if summary:
+        if webhook:
+            # One string per requested key, naming the chat by its quoted title.
+            keys = re.findall(r'^- "([A-Za-z_][A-Za-z0-9_]*)":', prompt, re.M)
+            title = next((json.loads(line[len("Chat title: "):]) for line in prompt.splitlines() if line.startswith("Chat title: ")), "chat")
+            text = json.dumps({key: f"Fixture {key} for {title}" for key in keys})
+        elif summary:
             text = "## Goal\nKeep the synthetic fixture objective.\n\n## Progress\n" + "\n".join(
                 f"- Synthetic summary point {i}: the earlier work stays retained." for i in range(1, 41))
         elif bulk:
@@ -205,7 +214,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             text += "\n\n" + " ".join(f"stream-{i:02d}" for i in range(1, 81))
         chunk_size = 1024 if stress_markdown else 8192 if bulk else 36
         delay = float(os.environ.get("PI_APP_UI_FIXTURE_SUMMARY_DELAY", "0.03")) if summary else (
-            0.025 if stress_markdown else 0.002 if bulk else 0.8 if "slow" in prompt.lower() else 0.035 if "large" in prompt.lower() else 0.03)
+            0.03 if webhook else 0.025 if stress_markdown else 0.002 if bulk else 0.8 if "slow" in prompt.lower() else 0.035 if "large" in prompt.lower() else 0.03)
         chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
         request_id = uuid.uuid4().hex
         # PI_APP_UI_FIXTURE_REAL_USAGE=1 reports the request's own size as its

@@ -1,5 +1,50 @@
 # Bello Agent — Native Swift implementation and continuation design
 
+## Webhook when a chat finishes (0.1.105)
+
+Settings → Webhook (`WebhookSettings`, kept in the Keychain vault as
+`VaultConfiguration.webhook`) sends one HTTP request when a chat finishes and
+waits for its user. The pieces live in `Workspaces/WebhookSettings.swift`
+(settings, moment, prompt, request; no network) and
+`Workspaces/WorkspaceWebhooks.swift` (the model's side).
+
+- **The moment.** `WebhookFinishTracker`, fed every snapshot through
+  `observeSessionCompletion` and baselined when a chat opens, reads the helper's
+  command receipts and run state: a message's receipt became `completed` or
+  `failed`, and the chat is now idle with nothing queued, or in error. A
+  snapshot omits receipts that did not change, so a receipt seen while the helper
+  settles counts when the idle snapshot after it arrives. `paused` or
+  `interrupted` (a run the user stopped) clears it; `compaction:` turns and a
+  new helper epoch never count. It fires once per wait.
+- **Who sends.** `sendsWebhook`: the webhook is on, the chat is the user's own
+  saved chat (not a utility request, connection test, import, archived chat, the
+  scratch workspace or an unsaved side) and its `ChatRecord.webhookOff` is not
+  set. The ⋯ menu's checked "Send Webhook When Done" writes that field with the
+  chat, as its cost limit is written.
+- **The mini model.** `askMiniModel` (shared with title suggestions) opens a
+  throwaway chat in the scratch workspace with `backgroundTask: "webhook"`. The
+  helper treats it as it treats a title task: no tools, no project instructions,
+  no compaction, the output cap, its own one-paragraph system prompt, and purpose
+  `webhook` in the request log. The user message (`WebhookPrompt.text`) is the
+  chat's title, the outcome, the last request and every assistant text after it,
+  each a JSON string clipped to its start and end (at most 12,000 characters, less
+  when the mini model's window is small), then the user's instructions, and asks
+  for a JSON object with exactly the configured keys. The first `{…}` in the reply
+  is read; a missing key falls back to the chat title (`title`) or empty, and a
+  failed request still sends the webhook, saying why in the chat's footer.
+- **The request.** `WebhookRequest.render` fills `{{name}}` placeholders escaped
+  for where they land: percent-encoded in the address, one line in a header,
+  JSON-string escaped in a body that parses as JSON (else plain text). The body
+  keeps the user's formatting; Content-Type is added unless a header sets it.
+  Unknown placeholders are sent empty and named in the preview. Delivery is one
+  ephemeral `URLSession` request (no cookies, cache or stored credentials, 20 s),
+  no retry; anything but 2xx is a failure, shown in the chat's footer and the
+  window banner.
+- **The preview.** ⋯ ▸ Preview Webhook… (`WebhookPreviewSheet`) prepares the
+  same request from the chat as it is, asks the mini model while the sheet is open
+  (closing it ends the request), shows the address, headers, body, the parameters
+  and what the mini model was asked, and Send Now sends it.
+
 ## The Session Inspector (0.1.90)
 
 One window per chat answers one question: what did this chat send, and what

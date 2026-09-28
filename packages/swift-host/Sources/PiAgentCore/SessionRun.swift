@@ -143,7 +143,7 @@ extension AgentSession {
                         partialID=UUID().uuidString; partialStartedAt=Date().timeIntervalSince1970 * 1000; activeTaskPresentation?.operationID=operationID
                         partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus="running"; modelActive=true; event("message_start")
                         do {
-                            completed=try await completeWithRetries(profile:dispatchProfile,messages:requestContext,instructions:instructions,tools:definitions,turnID:currentTurnID,purpose:titleTask ? "title" : "turn",operation:["logicalRequestId":JSON(operationID),"recovered":JSON(recovered),"recovery":recovered ? contextRecovery : .null],onDelta:{ [weak self] delta in await self?.delta(delta) },reset:{
+                            completed=try await completeWithRetries(profile:dispatchProfile,messages:requestContext,instructions:instructions,tools:definitions,turnID:currentTurnID,purpose:titleTask ? utilityPurpose : "turn",operation:["logicalRequestId":JSON(operationID),"recovered":JSON(recovered),"recovery":recovered ? contextRecovery : .null],onDelta:{ [weak self] delta in await self?.delta(delta) },reset:{
                                 if let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty {
                                     var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]])
                                     partial.responseTimeline=partialTimeline; partial.responseTimeline?.finish("interrupted")
@@ -229,7 +229,7 @@ extension AgentSession {
                     if !outputLimited { overflowRecoveryAttempted=false }
                     event("message_end")
                     await flushRequestLinks()
-                    guard !titleTask || reply.calls.isEmpty else { throw AgentError("title_tool_call", "Title generation returned a tool call. No tool ran and no extra model request was made.") }
+                    guard !titleTask || reply.calls.isEmpty else { throw AgentError("title_tool_call", (utilityPurpose == "webhook" ? "The webhook's mini model request" : "Title generation") + " returned a tool call. No tool ran and no extra model request was made.") }
                     if let stoppedEarly {
                         for call in reply.calls {
                             let reason = outputLimited ? "Tool call \"\(call.name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments." : "Not executed: the provider ended the reply early (\(stoppedEarly)), so its arguments may be incomplete. Re-issue a complete tool call if it is still needed."

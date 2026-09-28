@@ -91,6 +91,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var newerPage = ConversationPageBoundary()
     @Published var draftReady = true
     var completionTracker = SessionCompletionTracker()
+    var webhookTracker = WebhookFinishTracker()
     var monitoringEpoch: String?
     var monitoringCursor: Double?
     let transcriptChanges = CurrentValueSubject<[TranscriptMessage], Never>([])

@@ -19,6 +19,9 @@ struct ProfileSettings: View {
     private var quotaMiB: Binding<Int64> {
         Binding(get: { controller.preferences.capture.quotaBytes / 1_048_576 }, set: { controller.preferences.capture.quotaBytes = $0 * 1_048_576 })
     }
+    private var webhook: Binding<WebhookSettings> {
+        Binding(get: { controller.preferences.webhook ?? WebhookSettings() }, set: { controller.preferences.webhook = $0 })
+    }
     private var catalogURL: Binding<String> {
         Binding(get: { controller.draft.profile.catalogUrl ?? "" }, set: { controller.draft.profile.catalogUrl = $0.isEmpty ? nil : $0 })
     }
@@ -30,7 +33,7 @@ struct ProfileSettings: View {
         PiSheet("Settings", subtitle: "Your connections, keys, headers, MCP servers and preferences. Everything here is kept in your macOS Keychain and only this signed app can read it.", symbol: "gearshape", windowChrome: windowChrome) {
             ScrollView {
                 // Lazy, so opening Settings builds the connection form the
-                // sheet opens on rather than all eight groups, the code editor
+                // sheet opens on rather than every group, the code editors
                 // among them, before it can be shown.
                 LazyVStack(alignment: .leading, spacing: PiSpacing.xl) {
                     // Every saved connection is a tab, so the count and the
@@ -181,6 +184,7 @@ struct ProfileSettings: View {
                             }
                         }
                     }
+                    WebhookSettingsGroup(settings: webhook)
                     PiSettingsGroup(title: "Updates") {
                         PiRow(label: "Check for app updates automatically", last: true) { Toggle("", isOn: $controller.preferences.automaticUpdateChecks).labelsHidden() }
                     }

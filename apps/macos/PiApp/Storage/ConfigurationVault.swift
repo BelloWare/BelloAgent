@@ -121,6 +121,9 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
         get { chatCostLimit ?? .standard }
         set { chatCostLimit = newValue }
     }
+    /// The request sent when a chat finishes and waits; absent in older
+    /// vaults, and off until it is set up.
+    var webhook: WebhookSettings?
     // Existing keys remain for reading legacy encrypted captures only. New
     // vaults and new plaintext captures need no payload key. Helpers never
     // receive this object or a legacy key.
@@ -155,6 +158,7 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
               DashboardWindowPreset.customBoundsValid(from: dashboard.customFrom, until: dashboard.customUntil, required: dashboard.windowPreset == DashboardWindowPreset.custom.rawValue) else {
             throw VaultError.invalid("Configuration limits or identifiers are invalid.")
         }
+        do { try webhook?.validate() } catch { throw VaultError.invalid(error.localizedDescription) }
         for value in profiles {
             guard value.profile.providerId == "litellm", !value.profile.isImported,
                   !value.apiKey.isEmpty, value.apiKey.utf8.count <= 16_384,

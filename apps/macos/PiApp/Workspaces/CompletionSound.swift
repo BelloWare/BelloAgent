@@ -62,6 +62,7 @@ extension WorkspaceModel {
     func observeSessionCompletion(sessionID: String, snapshot: [String: WireValue], baseline: Bool = false) {
         guard !accountingStopped, let display = displays[sessionID] else { return }
         let completed = display.completionTracker.observe(snapshot, baseline: baseline)
+        observeWebhookFinish(sessionID: sessionID, snapshot: snapshot, baseline: baseline)
         // Always consume the receipt, including while muted, so turning sound
         // on or restoring a chat cannot replay a completion that already passed.
         guard completed, configuration.playsCompletionSound,

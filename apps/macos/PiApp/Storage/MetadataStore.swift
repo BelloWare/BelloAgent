@@ -675,6 +675,8 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var parentSessionID: String?
     /// This chat's own cost limit; nil runs it under the Settings default.
     var costLimit: CostLimit?
+    /// True when this chat sends no webhook when it finishes; nil follows Settings.
+    var webhookOff: Bool?
     var isPinned: Bool { pinnedAt != nil }
     var isArchived: Bool { archivedAt != nil }
     mutating func migrateOutputBudget(profile: ProfileRecord) {

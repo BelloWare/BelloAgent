@@ -204,7 +204,7 @@ extension WorkspaceModel {
             params.merge(await costLimitParams(for: item)) { _, limit in limit }
             if automaticContext { try requireAutomaticContext(item.id) }
             if item.connectionTest == true || workspace.isScratch { params["connectionTest"] = .bool(true) }
-            if item.backgroundTask == "session-title" { params["backgroundTask"] = .string("session-title") }
+            if let task = item.backgroundTask, ["session-title", "webhook"].contains(task) { params["backgroundTask"] = .string(task) }
             if let path = item.path { params["path"] = .string(path) }
             // Loading a retained handoff above yields too. Recheck immediately
             // before installing the shared operation, without another await.

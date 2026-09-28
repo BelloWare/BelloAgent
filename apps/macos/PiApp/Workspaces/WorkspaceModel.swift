@@ -104,6 +104,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// The row a Shift range extends from, kept until the marks are cleared.
     var sessionMarkAnchorID: String?
     var titleGenerationTasks: [String: Task<Void, Never>] = [:]
+    /// Webhooks on their way: the mini model's request, then the send.
+    var webhookTasks: [UUID: Task<Void, Never>] = [:]
     /// Connections already told, this launch, that titles need a mini model.
     var titleMiniModelNotified: Set<String> = []
     @Published var showGit = false
@@ -116,6 +118,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
     @Published var projectSidebarStates: [String: ProjectSidebarState] = [:] { didSet { sidebarIndex.invalidate() } }
     @Published var topics: [TopicRecord] = [] { didSet { sidebarIndex.invalidate() } }
     @Published var topicEditor: TopicEditorTarget?
+    /// The chat whose webhook the preview sheet shows.
+    @Published var webhookPreviewTarget: RenameTarget?
     var topicExpansionRequests: [String: Bool] = [:]
     var topicExpansionWrites: [String: Task<Void, Never>] = [:]
     var topicOperationsInFlight = 0
@@ -149,7 +153,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// the conversation's shortcuts (⌘↩, ⌘., ⌘F) must not act on the chat
     /// behind it, nor present a second sheet over it.
     var presentsSheet: Bool {
-        showProfiles || showConversationContent || showResources || showWorkspaceManager || showGit || renameTarget != nil || topicEditor != nil
+        showProfiles || showConversationContent || showResources || showWorkspaceManager || showGit || renameTarget != nil || topicEditor != nil || webhookPreviewTarget != nil
     }
     @Published var showResources = false
     @Published var showWorkspaceManager = false

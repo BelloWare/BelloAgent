@@ -207,7 +207,7 @@ extension WorkspaceModel {
                 saved.runtime = preferences.runtime; saved.capture = preferences.capture
                 saved.dashboard = preferences.dashboard; saved.automaticUpdateChecks = preferences.automaticUpdateChecks
                 saved.completionSoundEnabled = preferences.completionSoundEnabled; saved.transcriptView = preferences.transcriptView
-                saved.chatCostLimit = preferences.chatCostLimit
+                saved.chatCostLimit = preferences.chatCostLimit; saved.webhook = preferences.webhook
             }
         }
         // Configuration is durable before the helper hears about it. An idle
@@ -309,7 +309,7 @@ extension WorkspaceModel {
             $0.runtime = preferences.runtime; $0.capture = preferences.capture
             $0.dashboard = preferences.dashboard; $0.automaticUpdateChecks = preferences.automaticUpdateChecks
             $0.completionSoundEnabled = preferences.completionSoundEnabled; $0.transcriptView = preferences.transcriptView
-            $0.chatCostLimit = preferences.chatCostLimit
+            $0.chatCostLimit = preferences.chatCostLimit; $0.webhook = preferences.webhook
         }
     }
     func saveMCPConfiguration(_ config: WireValue, expectedRevision: Int64) async throws {
