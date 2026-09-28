@@ -54,7 +54,16 @@ struct HistoryRevision: Equatable, Sendable {
 // Read-only archive browsing does not launch an agent runtime.
 // First index record offsets and parent links; decode only the requested page.
 actor HistoryReader {
-    private static let newline = Data([10])
+    /// The next newline at or after `start`, found with `memchr`. `Data`'s
+    /// `range(of:)` set up a Boyer-Moore search for every line of a journal,
+    /// the largest single cost of reading a long one.
+    private static func newline(in data: Data, from start: Data.Index) -> Data.Index? {
+        data.withUnsafeBytes { raw -> Data.Index? in
+            let offset = start - data.startIndex
+            guard let base = raw.baseAddress, offset < raw.count, let found = memchr(base + offset, 10, raw.count - offset) else { return nil }
+            return data.startIndex + base.distance(to: UnsafeRawPointer(found))
+        }
+    }
     /// A journal that is no longer where its chat says it is must say so. The
     /// caller's "original files were preserved" is a false claim about a file
     /// that is not there.
@@ -123,6 +132,10 @@ actor HistoryReader {
         var message: MessageRole?
         private struct ContextSelection: Decodable { var ids: [String]?; var visibleIDs: [String]? }
         private enum CodingKeys: String, CodingKey { case type, id, parentId, fromMessageId, keptIds, nativeKeptIDs, version, customType, nativeState, data, message, nativeCompactionVersion, nativeCompaction, nativeBranchVersion }
+        /// A run-state record read from its tail (`StateRecordTail`): its id
+        /// and parent. What it says about unfinished work is read from the
+        /// newest one only.
+        init(stateID: String, parentID: String?) { type = "custom"; id = stateID; parentId = parentID; customType = StateRecordTail.customType }
         init(from decoder: Decoder) throws {
             let value = try decoder.container(keyedBy: CodingKeys.self)
             type = try value.decodeIfPresent(String.self, forKey: .type); id = try value.decodeIfPresent(String.self, forKey: .id)
@@ -326,7 +339,7 @@ actor HistoryReader {
         while let chunk = try file.read(upToCount: 65_536), !chunk.isEmpty {
             try Task.checkCancellation()
             var start = chunk.startIndex
-            while let index = chunk.range(of: Self.newline, in: start..<chunk.endIndex)?.lowerBound {
+            while let index = Self.newline(in: chunk, from: start) {
                 try Task.checkCancellation()
                 pending.append(chunk[start..<index]); guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }
                 // A damaged neighbour must not hide a readable message, and a
@@ -393,6 +406,9 @@ actor HistoryReader {
         else {
         indexes.removeValue(forKey: path)
         var pending = Data(), offset: UInt64 = 0, leaf: String?
+        // Where the newest run-state record is, when it was read from its
+        // tail: what it says about unfinished work is decoded after the loop.
+        var newestState: (offset: UInt64, length: Int)?
         var sessionID: String?, native = false, linear = true, pendingWork = false, lastWork: IndexRecord.PendingWork?
         var contextIDs: Set<String> = [], contextMessages: [String: (calls: [String], result: String?)] = [:]
         var orderedContext: [String] = [], roles: [String: String] = [:]
@@ -403,11 +419,16 @@ actor HistoryReader {
         while let chunk = try file.read(upToCount: 65_536), !chunk.isEmpty {
             try Task.checkCancellation()
             var start = chunk.startIndex
-            while let index = chunk.range(of: Self.newline, in: start..<chunk.endIndex)?.lowerBound {
+            while let index = Self.newline(in: chunk, from: start) {
                 try Task.checkCancellation()
                 pending.append(chunk[start..<index]); guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }
                 do {
-                    let value = try JSONDecoder().decode(IndexRecord.self, from: pending)
+                    // Superseded run state is never used, and a long chat holds
+                    // thousands of copies: only a state record's id and parent
+                    // join the index, and the newest is decoded after the loop.
+                    let value: IndexRecord
+                    if let tail = StateRecordTail.read(pending) { value = IndexRecord(stateID: tail.id, parentID: tail.parent); newestState = (offset, pending.count) }
+                    else { value = try JSONDecoder().decode(IndexRecord.self, from: pending); if value.pendingWork != nil { newestState = nil } }
                     if value.type == "session", offset == 0, value.version == 3 { sessionID = value.id }
                     if value.customType == "pi-app.native.v1" { native = true }
                     if let work = value.pendingWork { pendingWork = work.exists; failureMessage = work.failure; lastWork = work }
@@ -506,6 +527,13 @@ actor HistoryReader {
             }
         }
         if !pending.isEmpty && notice == nil { notice = "Incomplete tail preserved. No repair was performed."; incompleteTail = sessionID != nil }
+        if let newest = newestState {
+            try file.seek(toOffset: newest.offset)
+            let line = try file.read(upToCount: newest.length) ?? Data()
+            if line.count == newest.length, let value = try? JSONDecoder().decode(IndexRecord.self, from: line) {
+                if let work = value.pendingWork { pendingWork = work.exists; failureMessage = work.failure; lastWork = work }
+            } else if notice == nil { notice = "Damaged history record preserved. Continue requires validation or an explicit recovered copy." }
+        }
         if targetTurns != nil && sessionID == nil && notice == nil { notice = "History has no valid session header. Its source was left untouched." }
         try branch.constructChain(leaf: leaf)
         // Native edits keep the append-only source, while the disk-backed
@@ -640,5 +668,63 @@ actor HistoryReader {
                            newer: end < branch.count && !messages.isEmpty ? pageCursor(try branch.at(end - 1).id) : nil,
                            partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil, taskRecords:taskRecords,
                            retainedRun: notice == nil ? retainedRun : nil, incompleteTail: incompleteTail)
+    }
+}
+
+/// A run-state record's own id and parent, read from the end of its line.
+/// The helper writes journal keys sorted, so such a record begins with its
+/// `customType` and ends with its id, parent, timestamp and type, none of which
+/// can hold a quote: the last `,"id":"` in the line is the record's own, and
+/// the rest of the line must be exactly that ending. Anything else answers nil,
+/// and the line is decoded as before. The helper reads its journal the same way
+/// (`JournalLineScan.stateTail`).
+enum StateRecordTail {
+    static let customType = "pi-app.native.state.v1"
+    static let prefix = Data(#"{"customType":"pi-app.native.state.v1","#.utf8)
+
+    static func read(_ line: Data) -> (id: String, parent: String?)? {
+        guard line.starts(with: prefix) else { return nil }
+        return line.withUnsafeBytes { raw -> (id: String, parent: String?)? in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            let marker: [UInt8] = Array(#","id":""#.utf8)
+            var start = bytes.count - marker.count
+            search: while start > prefix.count {
+                for offset in 0..<marker.count where bytes[start + offset] != marker[offset] { start -= 1; continue search }
+                break
+            }
+            // The data object ends right before the record's own id.
+            guard start > prefix.count, bytes[start - 1] == UInt8(ascii: "}") else { return nil }
+            var index = start
+            func take(_ text: StaticString) -> Bool {
+                let count = text.utf8CodeUnitCount
+                guard index + count <= bytes.count else { return false }
+                for offset in 0..<count where bytes[index + offset] != text.utf8Start[offset] { return false }
+                index += count; return true
+            }
+            /// A quoted string without escapes or control characters.
+            func plain() -> String? {
+                guard index < bytes.count, bytes[index] == UInt8(ascii: "\"") else { return nil }
+                let begin = index + 1
+                index = begin
+                while index < bytes.count {
+                    let byte = bytes[index]
+                    if byte == UInt8(ascii: "\"") {
+                        let text = String(decoding: UnsafeBufferPointer(rebasing: bytes[begin..<index]), as: UTF8.self)
+                        index += 1; return text
+                    }
+                    if byte == UInt8(ascii: "\\") || byte < 0x20 { return nil }
+                    index += 1
+                }
+                return nil
+            }
+            guard take(#","id":"#), let id = plain(), take(#","parentId":"#) else { return nil }
+            let parent: String?
+            if index < bytes.count, bytes[index] == UInt8(ascii: "\"") { guard let text = plain() else { return nil }; parent = text }
+            else if take("null") { parent = nil }
+            else { return nil }
+            guard take(#","timestamp":"#), plain() != nil, take(#","type":"custom"}"#) else { return nil }
+            while index < bytes.count, bytes[index] == 0x20 || bytes[index] == 0x09 || bytes[index] == 0x0A || bytes[index] == 0x0D { index += 1 }
+            return index == bytes.count ? (id, parent) : nil
+        }
     }
 }

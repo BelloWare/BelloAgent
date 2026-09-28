@@ -19,6 +19,35 @@ enum JournalLineScan {
         var customType: String?
     }
 
+    /// How every run-state record this helper writes begins: the journal is
+    /// written with sorted keys, and `customType` sorts first.
+    static let statePrefix = Data(#"{"customType":"pi-app.native.state.v1","#.utf8)
+
+    /// A run-state record's own id and parent, read from the end of its line.
+    /// The journal writes keys sorted, so such a record ends with its id,
+    /// parent, timestamp and type, and none of those can hold a quote: the
+    /// last `,"id":"` in the line is the record's own, and the rest of the
+    /// line must be exactly that ending. The snapshot before it is not read at
+    /// all; superseded run state is never used, and a long chat holds
+    /// thousands of them. Anything else answers nil, and the caller reads the
+    /// line as before.
+    static func stateTail(_ line: Data) -> Fields? {
+        guard line.starts(with: statePrefix) else { return nil }
+        return line.withUnsafeBytes { raw -> Fields? in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            let marker: [UInt8] = Array(#","id":""#.utf8)
+            var start = bytes.count - marker.count
+            search: while start > statePrefix.count {
+                for offset in 0..<marker.count where bytes[start + offset] != marker[offset] { start -= 1; continue search }
+                break
+            }
+            // The data object ends right before the record's own id.
+            guard start > statePrefix.count, bytes[start - 1] == UInt8(ascii: "}") else { return nil }
+            var scanner = Scanner(bytes: bytes, index: start)
+            return scanner.stateTail()
+        }
+    }
+
     static func fields(_ line: Data) -> Fields? {
         line.withUnsafeBytes { raw -> Fields? in
             let bytes = raw.bindMemory(to: UInt8.self)
@@ -31,6 +60,18 @@ enum JournalLineScan {
         let bytes: UnsafeBufferPointer<UInt8>
         var index = 0
         private static let quote = UInt8(ascii: "\""), backslash = UInt8(ascii: "\\")
+
+        /// `,"id":"…","parentId":"…"|null,"timestamp":"…","type":"custom"}`
+        /// and nothing after it but white space.
+        mutating func stateTail() -> Fields? {
+            guard literal(#","id":"#), let id = plainString(), literal(#","parentId":"#) else { return nil }
+            let parent: String?
+            if peek == Self.quote { guard let text = plainString() else { return nil }; parent = text }
+            else if literal("null") { parent = nil }
+            else { return nil }
+            guard literal(#","timestamp":"#), plainString() != nil, literal(#","type":"custom"}"#), finished() else { return nil }
+            return Fields(id: id, parentID: parent, customType: "pi-app.native.state.v1")
+        }
 
         mutating func fields() -> Fields? {
             var fields = Fields(), seen = Set<String>()
@@ -67,7 +108,7 @@ enum JournalLineScan {
             }
         }
 
-        private var peek: UInt8? { index < bytes.count ? bytes[index] : nil }
+        var peek: UInt8? { index < bytes.count ? bytes[index] : nil }
         private mutating func take(_ byte: UInt8) -> Bool {
             guard peek == byte else { return false }
             index += 1; return true
@@ -75,8 +116,8 @@ enum JournalLineScan {
         private mutating func skipSpace() {
             while let byte = peek, byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D { index += 1 }
         }
-        private mutating func finished() -> Bool { skipSpace(); return index == bytes.count }
-        private mutating func literal(_ word: StaticString) -> Bool {
+        mutating func finished() -> Bool { skipSpace(); return index == bytes.count }
+        mutating func literal(_ word: StaticString) -> Bool {
             let count = word.utf8CodeUnitCount
             guard index + count <= bytes.count else { return false }
             for offset in 0..<count where bytes[index + offset] != word.utf8Start[offset] { return false }
@@ -84,7 +125,7 @@ enum JournalLineScan {
         }
         /// A string with no escapes, as text; nil for one with an escape,
         /// which the caller leaves to the full parser.
-        private mutating func plainString() -> String? {
+        mutating func plainString() -> String? {
             guard take(Self.quote) else { return nil }
             let start = index
             while let byte = peek {

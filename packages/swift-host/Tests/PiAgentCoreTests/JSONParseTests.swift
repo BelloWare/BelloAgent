@@ -185,6 +185,50 @@ final class JournalLineScanTests: XCTestCase {
     }
 }
 
+/// A run-state record's id and parent, read from the end of its line, are
+/// what a full parse reads; a line that does not end as the journal writes
+/// one is left to the scan.
+final class JournalStateTailTests: XCTestCase {
+    private func line(_ record: JSON) -> Data { (try? record.data()) ?? Data() }
+    private func state(_ data: JSON, id: String = "s1", parent: String? = "p0") -> JSON {
+        ["customType": "pi-app.native.state.v1", "data": data, "id": JSON(id), "parentId": parent.map { JSON($0) } ?? .null,
+         "timestamp": "2026-09-28T13:57:00Z", "type": "custom"]
+    }
+
+    func testTheTailOfAStateRecordIsReadAsTheParserReadsIt() throws {
+        let decoy: JSON = ["commands": [["commandId": "c", "id": "decoy", "parentId": "x", "timestamp": "t", "type": "custom"]],
+                           "queue": [["text": #"quoted ,"id":"inside" text"#]], "active": false]
+        for (id, parent) in [("s1", Optional("p0")), ("s2", nil)] {
+            let bytes = line(state(decoy, id: id, parent: parent))
+            let parsed = try JSON.parse(bytes)
+            XCTAssertEqual(JournalLineScan.stateTail(bytes), .init(id: parsed["id"].text, parentID: parsed["parentId"].text, customType: "pi-app.native.state.v1"))
+        }
+        var random = SeededRandom(seed: 0x57A7E)
+        for _ in 0..<200 {
+            // Run state is always an object; what is inside it is anything.
+            let bytes = line(state(["queue": random.document(depth: 1), "commands": random.document(depth: 1)], id: random.plainIdentity(),
+                                   parent: random.next() % 4 == 0 ? nil : random.plainIdentity()))
+            let parsed = try JSON.parse(bytes)
+            XCTAssertEqual(JournalLineScan.stateTail(bytes)?.id, parsed["id"].text)
+            XCTAssertEqual(JournalLineScan.stateTail(bytes)?.parentID, parsed["parentId"].text)
+        }
+    }
+
+    func testALineThatDoesNotEndAsTheJournalWritesOneIsLeftToTheScan() {
+        let good = String(decoding: line(state(["active": false])), as: UTF8.self)
+        let escape = #"\"#
+        for text in [good.replacingOccurrences(of: #""type":"custom"}"#, with: #""type":"message"}"#),
+                     good.replacingOccurrences(of: #""type":"custom"}"#, with: #""type":"custom","x":1}"#),
+                     good.replacingOccurrences(of: #","timestamp":"2026-09-28T13:57:00Z""#, with: ""),
+                     good.replacingOccurrences(of: #""id":"s1""#, with: #""id":"s"# + escape + #"u0031""#),
+                     good + " x", String(good.dropLast()),
+                     good.replacingOccurrences(of: #"{"customType""#, with: #"{ "customType""#)] {
+            XCTAssertNil(JournalLineScan.stateTail(Data(text.utf8)), text)
+        }
+        XCTAssertNotNil(JournalLineScan.stateTail(Data((good + " ").utf8)), "Trailing white space is allowed, as the parser allows it")
+    }
+}
+
 /// SplitMix64: the same documents on every run.
 private struct SeededRandom {
     private var state: UInt64

@@ -199,9 +199,6 @@ public actor AgentSession {
     // integer increment each, on paths that already build a page.
     var displayProjectionBuildCount = 0
     var displayRowProjectionCount = 0
-    /// How every run-state record this helper writes begins: the journal is
-    /// written with sorted keys, and `customType` sorts first.
-    static let stateRecordPrefix = Data(#"{"customType":"pi-app.native.state.v1","#.utf8)
     public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
         self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.editingGate=editingGate; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.utilityPurpose=utilityPurpose; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
@@ -226,7 +223,7 @@ public actor AgentSession {
         let replay=try opened.recordReader()
         while let line=try replay.nextLine() {
             if line.isEmpty { continue }
-            if line.starts(with: Self.stateRecordPrefix) { newestStateLine=line; continue }
+            if line.starts(with: JournalLineScan.statePrefix) { newestStateLine=line; continue }
             let item=try JSON.parse(line)
             if item["customType"].text == SessionSpend.recordType { spend.add(record: item["data"]); spendTracked = true; continue }
             if item["type"].text == "message" {

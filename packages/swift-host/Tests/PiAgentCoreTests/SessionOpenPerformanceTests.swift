@@ -13,6 +13,31 @@ final class SessionOpenPerformanceTests: XCTestCase {
         }
     }
 
+    /// `PI_PERF_OPEN_JOURNAL`: open a journal this test kept earlier
+    /// (`PI_PERF_KEEP_JOURNAL`) without writing one, for profiling the open.
+    func testOpeningAKeptJournal() async throws {
+        guard let kept = ProcessInfo.processInfo.environment["PI_PERF_OPEN_JOURNAL"] else {
+            throw XCTSkip("Set PI_PERF_OPEN_JOURNAL to a journal kept with PI_PERF_KEEP_JOURNAL.")
+        }
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let profile = try fixtureProfile(), directory = root.appendingPathComponent("state")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let path = directory.appendingPathComponent("long.jsonl")
+        try FileManager.default.copyItem(atPath: kept, toPath: path.path)
+        let repeats = ProcessInfo.processInfo.environment["PI_PERF_REPEAT"].flatMap(Int.init) ?? 3
+        for attempt in 1...repeats {
+            let clock = ContinuousClock(), start = clock.now
+            let reader = try AgentSession(id: "long", profile: profile, apiKey: "fixture", cwd: root, directory: directory, readOnly: true,
+                                          resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: BulkTools(), traces: TraceStore(),
+                                          resumePath: path.path, autoCompaction: false)
+            let opened = clock.now - start
+            let snapshot = await reader.snapshot()
+            XCTAssertNotNil(snapshot["messages"].list.last)
+            print("PERF kept journal open \(attempt): open \(opened.formatted(.units(allowed: [.milliseconds])))")
+            await reader.close()
+        }
+    }
+
     func testOpeningALongChat() async throws {
         guard let turns = ProcessInfo.processInfo.environment["PI_PERF_SESSION_TURNS"].flatMap(Int.init), turns > 0 else {
             throw XCTSkip("Set PI_PERF_SESSION_TURNS to measure opening a long chat.")

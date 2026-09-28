@@ -54,7 +54,8 @@ final class SessionJournal {
             while let line=try reader.nextLine() {
                 if line.isEmpty { continue }
                 let item: JSON?, fields: JournalLineScan.Fields
-                if let scanned=JournalLineScan.fields(line), scanned.id != nil { item = nil; fields = scanned }
+                if let tail=JournalLineScan.stateTail(line) { item = nil; fields = tail }
+                else if let scanned=JournalLineScan.fields(line), scanned.id != nil { item = nil; fields = scanned }
                 else {
                     let parsed=try JSON.parse(line); item = parsed
                     fields = JournalLineScan.Fields(id: parsed["id"].text, parentID: parsed["parentId"].text, customType: parsed["customType"].text)

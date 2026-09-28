@@ -10,7 +10,6 @@ import Glibc
 /// a journal larger than memory. The caller owns the cursor on its actor.
 final class JournalRecordReader {
     static let maximumRecordBytes = 32 * 1024 * 1024
-    private static let newline = Data([10])
     private let file: FileHandle
     let size: UInt64
     private let allowIncompleteTail: Bool
@@ -52,7 +51,7 @@ final class JournalRecordReader {
         var oversizedTail = false
         while true {
             if cursor < buffer.count {
-                let end = buffer.range(of: Self.newline, in: cursor..<buffer.count)?.lowerBound
+                let end = Self.newline(in: buffer, from: cursor)
                 let stop = end ?? buffer.count
                 if oversizedTail || rawLine.count + stop - cursor > Self.maximumRecordBytes {
                     // Recovery omits an unfinished last record, however large;
@@ -87,6 +86,17 @@ final class JournalRecordReader {
             guard !buffer.isEmpty else { throw Self.changed() }
             hasher?.update(buffer)
             cursor = 0; bytesRead += UInt64(buffer.count)
+        }
+    }
+
+    /// The next newline at or after `start`, found with `memchr`. `Data`'s
+    /// `range(of:)` set up a Boyer-Moore search for every line, and that was
+    /// the largest single cost of opening a long chat.
+    static func newline(in data: Data, from start: Int) -> Int? {
+        data.withUnsafeBytes { raw -> Int? in
+            guard let base = raw.baseAddress, start < raw.count else { return nil }
+            guard let found = memchr(base + start, 10, raw.count - start) else { return nil }
+            return base.distance(to: UnsafeRawPointer(found))
         }
     }
 
