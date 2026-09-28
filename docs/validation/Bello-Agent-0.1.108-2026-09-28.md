@@ -1,6 +1,6 @@
 # Bello Agent 0.1.108 — long chats open fast, images from the model catalog, webhook Send Test
 
-Status: candidate; publication pending.
+Status: publicly released and verified at 2026-09-28 14:02:01 UTC.
 Starting main: `c72bcf24282c0768bac6ab6d19f8a694ee89ad6a` (0.1.107's verified record).
 
 ## Changes
@@ -84,9 +84,25 @@ Starting main: `c72bcf24282c0768bac6ab6d19f8a694ee89ad6a` (0.1.107's verified re
 - `WebhookTests`: Send Test sends the webhook as typed with a sample chat; a
   finished chat's webhook is sent once more after a server error.
 - `OnboardingTests.testTheSidebarOffersNoProjectWhileSetupIsOnScreen`.
+- **Live compaction test, fixture mode, on the release helper:** 3 of 3
+  scenarios passed (mid-run recalled 10 of 10 markers); reported cost $0.82 of
+  the fixture's $5.00 cap (synthetic).
 - Installation and updater rehearsals are excluded by the owner's standing
   instruction.
 
 ## Publication
 
-Pending.
+- Release source: `1e30835deaa8f2642edd49c9f1acb7df9e06278f`, pushed to GitHub `main`; annotated tag
+  `v0.1.108` is pushed and resolves to that commit.
+- Website publication: `1a31fa54bb2a5c04fd3ad6abd1f21d76341f595f`, pushed to `BelloWare/belloware.com` `main`.
+- Signed/notarized Bello Agent 0.1.108, build 112. App notarization
+  `94b89b88-ad7a-4988-9f42-527d6c66ba11` and DMG notarization `61433e6a-8697-4598-9ebb-f72d88a144a9` were accepted. Stapling,
+  signature, Gatekeeper and artifact validation passed.
+- `BelloAgent-0.1.108.dmg`: **10,990,336 bytes (10.48 MiB)**; SHA-256
+  `7de1e6527f985cb17d00be2c66d5a91ee7eff8ee0e2c7e31988b88240741de3f`.
+- At 2026-09-28 14:02:01 UTC, the public product page linked to 0.1.108.
+  `scripts/verify-published.py` downloaded the public archive, verified its
+  SHA-256 and Ed25519 signature, and confirmed that both public update feeds
+  match the intended release and are byte-identical.
+- No install or updater rehearsal was performed, at the owner's standing
+  instruction.
