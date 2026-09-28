@@ -102,7 +102,7 @@ struct ProfileSettings: View {
                                 CatalogModelMenu(model: model, controller: controller)
                             }
                         }
-                        PiRow(label: "Mini model", detail: "Used for automatic chat titles. Catalog default uses the first active model marked Mini; without one, no title request is sent.") {
+                        PiRow(label: "Mini model", detail: "Writes chat titles and the webhook's parameters. Catalog default uses the first active model marked Mini; without one, titles keep the first message and a webhook goes out without its parameters.") {
                             CatalogModelMenu(model: model, controller: controller, miniSelection: true)
                         }
                         PiRow(label: "Configured context capacity") { PiNumberField(placeholder: "Tokens", value: $controller.draft.profile.contextWindow) }
