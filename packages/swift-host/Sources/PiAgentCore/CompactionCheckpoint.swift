@@ -34,14 +34,22 @@ enum CompactionCheckpoint {
         let byID=Dictionary(uniqueKeysWithValues:active.map { ($0.id,$0) })
         let kept=ids.compactMap { byID[$0] }
         _=try CompactionPlanner.groups(kept)
+        return (try summary(record),kept)
+    }
+    /// The row a checkpoint record replays as. `restore` checks the record
+    /// against the context it replaced first; a chat opened from its journal's
+    /// metadata file loads the row with the rows it kept, which the full
+    /// replay that wrote the file checked (`JournalCheckpoint`).
+    static func summary(_ record: JSON) throws -> ChatMessage {
+        let metadata=record["nativeCompaction"]
         guard let text=record["summary"].text, !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { throw damaged("Empty compaction summary") }
         var summary=ChatMessage(role:"system",content:[textBlock((metadata.isNull ? legacyReplayPrefix : replayPrefix)+text)])
         summary.id=try identity(record["id"]); summary.kind="compaction"
-        summary.detail=compactionDetail(tokens:record["tokensBefore"].int,kept:kept.count)
+        summary.detail=compactionDetail(tokens:record["tokensBefore"].int,kept:try identities(record["nativeKeptIDs"]).count)
         summary.requestAttemptIDs=record["nativeRequestAttemptIds"].list.compactMap(\.text)
         summary.compaction=metadata.isNull ? nil : metadata; summary.operationID=metadata["operationId"].text
         summary.taskRootID=metadata["taskRootId"].text
-        return (summary,kept)
+        return summary
     }
     static func damaged(_ text: String) -> AgentError { AgentError("session_damaged",text+". History is preserved; inspect or recover a copy before continuing.") }
 }

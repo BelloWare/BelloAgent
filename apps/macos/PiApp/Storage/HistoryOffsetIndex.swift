@@ -81,6 +81,9 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         let statement = try query("SELECT 1 FROM seen WHERE id=?", strings: [id]); defer { sqlite3_finalize(statement) }
         return try next(statement)
     }
+    /// The timeline a partial index starts on: the newest edit marker before
+    /// the rows it holds, as the journal's metadata file records it.
+    func startLineage(_ id: String?) { lineage = id ?? "root" }
     func append(_ ref: HistoryOffset) throws {
         if ref.type == "branch" { lineage = ref.id }
         try done(query("INSERT INTO visible VALUES(\(nextOrdinal),?,?)", strings: [ref.id, ref.role ?? ""]))

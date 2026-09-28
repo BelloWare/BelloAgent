@@ -144,14 +144,14 @@ final class JournalLineScanTests: XCTestCase {
     private func scanned(_ text: String) -> JournalLineScan.Fields? { JournalLineScan.fields(Data(text.utf8)) }
     private func parsedFields(_ text: String) -> JournalLineScan.Fields? {
         guard let item = try? JSON.parse(Data(text.utf8)) else { return nil }
-        return .init(id: item["id"].text, parentID: item["parentId"].text, customType: item["customType"].text)
+        return .init(id: item["id"].text, parentID: item["parentId"].text, customType: item["customType"].text, type: item["type"].text)
     }
 
     func testTheRecordsOwnFieldsAreRead() {
         XCTAssertEqual(scanned(#"{"customType":"pi-app.native.v1","data":{"id":"inner","parentId":"x"},"id":"a1","parentId":null}"#),
                        .init(id: "a1", parentID: nil, customType: "pi-app.native.v1"))
         XCTAssertEqual(scanned(#"{"id":"b2","message":{"content":[{"text":"\"id\":\"fake\" {[","type":"text"}],"id":"m"},"parentId":"a1","type":"message"}"#),
-                       .init(id: "b2", parentID: "a1", customType: nil))
+                       .init(id: "b2", parentID: "a1", customType: nil, type: "message"))
         XCTAssertEqual(scanned(" {\"id\" : \"c3\" , \"n\" : -1.5e3 , \"ok\" : true , \"parentId\" : \"b2\" } "), .init(id: "c3", parentID: "b2", customType: nil))
     }
 
@@ -172,7 +172,7 @@ final class JournalLineScanTests: XCTestCase {
             var record: [String: JSON] = [:]
             for key in keys where random.next() % 3 != 0 {
                 switch key {
-                case "id", "parentId", "customType": record[key] = random.next() % 5 == 0 ? .null : .string(random.plainIdentity())
+                case "id", "parentId", "customType", "type": record[key] = random.next() % 5 == 0 ? .null : .string(random.plainIdentity())
                 default: record[key] = random.document(depth: 1)
                 }
             }
@@ -182,6 +182,50 @@ final class JournalLineScanTests: XCTestCase {
             XCTAssertEqual(fields, parsedFields(text), text)
         }
         XCTAssertGreaterThan(read, 300, "Plain records are read by the scan")
+    }
+}
+
+/// A run-state record's id and parent, read from the end of its line, are
+/// what a full parse reads; a line that does not end as the journal writes
+/// one is left to the scan.
+final class JournalStateTailTests: XCTestCase {
+    private func line(_ record: JSON) -> Data { (try? record.data()) ?? Data() }
+    private func state(_ data: JSON, id: String = "s1", parent: String? = "p0") -> JSON {
+        ["customType": "pi-app.native.state.v1", "data": data, "id": JSON(id), "parentId": parent.map { JSON($0) } ?? .null,
+         "timestamp": "2026-09-28T13:57:00Z", "type": "custom"]
+    }
+
+    func testTheTailOfAStateRecordIsReadAsTheParserReadsIt() throws {
+        let decoy: JSON = ["commands": [["commandId": "c", "id": "decoy", "parentId": "x", "timestamp": "t", "type": "custom"]],
+                           "queue": [["text": #"quoted ,"id":"inside" text"#]], "active": false]
+        for (id, parent) in [("s1", Optional("p0")), ("s2", nil)] {
+            let bytes = line(state(decoy, id: id, parent: parent))
+            let parsed = try JSON.parse(bytes)
+            XCTAssertEqual(JournalLineScan.stateTail(bytes), .init(id: parsed["id"].text, parentID: parsed["parentId"].text, customType: "pi-app.native.state.v1", type: "custom"))
+        }
+        var random = SeededRandom(seed: 0x57A7E)
+        for _ in 0..<200 {
+            // Run state is always an object; what is inside it is anything.
+            let bytes = line(state(["queue": random.document(depth: 1), "commands": random.document(depth: 1)], id: random.plainIdentity(),
+                                   parent: random.next() % 4 == 0 ? nil : random.plainIdentity()))
+            let parsed = try JSON.parse(bytes)
+            XCTAssertEqual(JournalLineScan.stateTail(bytes)?.id, parsed["id"].text)
+            XCTAssertEqual(JournalLineScan.stateTail(bytes)?.parentID, parsed["parentId"].text)
+        }
+    }
+
+    func testALineThatDoesNotEndAsTheJournalWritesOneIsLeftToTheScan() {
+        let good = String(decoding: line(state(["active": false])), as: UTF8.self)
+        let escape = #"\"#
+        for text in [good.replacingOccurrences(of: #""type":"custom"}"#, with: #""type":"message"}"#),
+                     good.replacingOccurrences(of: #""type":"custom"}"#, with: #""type":"custom","x":1}"#),
+                     good.replacingOccurrences(of: #","timestamp":"2026-09-28T13:57:00Z""#, with: ""),
+                     good.replacingOccurrences(of: #""id":"s1""#, with: #""id":"s"# + escape + #"u0031""#),
+                     good + " x", String(good.dropLast()),
+                     good.replacingOccurrences(of: #"{"customType""#, with: #"{ "customType""#)] {
+            XCTAssertNil(JournalLineScan.stateTail(Data(text.utf8)), text)
+        }
+        XCTAssertNotNil(JournalLineScan.stateTail(Data((good + " ").utf8)), "Trailing white space is allowed, as the parser allows it")
     }
 }
 

@@ -165,6 +165,7 @@ extension AgentSession {
             failedCompactionFingerprint=nil
             compactionState=metadata
             operationStatus("Checkpoint durably adopted",terminal:"completed")
+            refreshCheckpoint()
             invalidateDisplay(allRows:true); recordDisplayChange(summary.id,at:displayClock())
             for attempt in compactionAttemptIDs { pendingRequestLinks[attempt,default:[]].append(summary.id) }
             event("context.compacted")

@@ -13,6 +13,9 @@ extension AgentSession {
     public func edit(fromMessageID messageID: String, input: Submission, expectedTimeline: String? = nil, expectedTextDigest: String? = nil) async throws -> JSON {
         guard isIdle else { throw AgentError("session_busy", "Edit requires an idle session with empty queues") }
         guard !ephemeral else { throw AgentError("side_ephemeral", "Keep this side chat before editing its messages; a branch must be durable") }
+        // An edit keeps the rows before it on screen: all of them, not only
+        // the ones a chat opened from its metadata file loaded.
+        try ensureFullHistory()
         try validate(input,steer:false)
         guard try input.savedValue.data().count < 8 * 1024 * 1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
         let capturedHead = journal?.head
@@ -53,6 +56,7 @@ extension AgentSession {
         boundary = context; currentContextCount = nil; clearRequestObservation()
         retrySubmission = nil; activeSubmission = nil; partialID = nil; partialText = ""; partialThinking = ""; resetPartialRow(); currentTurnID = ""; taskRootID = nil
         recordDisplayChange(markerID, at: displayClock())
+        refreshCheckpoint()
         event("context.branched",["fromMessageId":JSON(messageID),"kept":JSON(plan.replay.count)])
         event("queue.changed"); queuePaused=false; launch()
         return ["accepted":true,"turnId":JSON(input.turnID),"queued":false,"queueCount":JSON(queue.count),"delivery":"start"]
@@ -74,7 +78,12 @@ extension AgentSession {
         // those turns must not hide the summary that remains in model context.
         let visibleIDs=Set(visible.map(\.id))
         visible += context.filter { !visibleIDs.contains($0.id) }
-        var marker=ChatMessage(role:"system",content:[]); marker.id=markerID; marker.kind="branch"; marker.replayEligible=false; marker.displayText=branchMarkerText
+        let marker=branchMarker(markerID)
         history.append(marker); visible.append(marker)
+    }
+    /// The display-only row an edit leaves where it branched.
+    static func branchMarker(_ id: String) -> ChatMessage {
+        var marker=ChatMessage(role:"system",content:[]); marker.id=id; marker.kind="branch"; marker.replayEligible=false; marker.displayText=branchMarkerText
+        return marker
     }
 }

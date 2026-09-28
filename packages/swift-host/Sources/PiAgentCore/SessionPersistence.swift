@@ -21,6 +21,7 @@ extension AgentSession {
     /// compaction summarized comes back with its whole context.
     public func fork(to newID: String, at messageID: String? = nil) throws -> JSON {
         guard !closed, let journal, !ephemeral else { throw AgentError("session_unavailable", "Save this session before forking its context") }
+        try ensureFullHistory()
         _ = try identity(JSON(newID))
         guard newID != id else { throw AgentError("session_conflict", "A fork needs a new session identity") }
         let temporary=directory.appendingPathComponent(".fork-\(UUID().uuidString).jsonl")
