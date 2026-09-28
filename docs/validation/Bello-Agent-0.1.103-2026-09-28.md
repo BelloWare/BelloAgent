@@ -1,6 +1,6 @@
 # Bello Agent 0.1.103 — a request log without caps, and queued edits in the composer
 
-Status: candidate; publication pending.
+Status: publicly released and verified at 2026-09-28 06:05:16 UTC.
 Starting main: `9669b56b1190e034c78c57c29b18065ccda3e12f`.
 
 ## Root cause
@@ -133,9 +133,27 @@ Not changed, outside the approved list: the 32 MiB journal record limit and the
   Unlimited setting is saved; the queued rewrite happens in the composer (pane
   tests, and a live test through the packaged helper); gallery scene 13c in
   light and dark.
+- **Live compaction test, fixture mode, on the release helper:** 3 of 3
+  scenarios passed. Compact-now and mid-run each compacted in one summary
+  request (mid-run recalled 10 of 10 markers), and a history too large for one
+  request was refused with `compaction_too_large` before anything was sent.
+  Reported cost $0.83 of the fixture's $5.00 cap (synthetic).
 - Installation and updater rehearsals are excluded by the owner's standing
   instruction.
 
 ## Publication
 
-(pending)
+- Release source: `c6204f9da61ff8849ff2d34534beba34c0d245f0`, pushed to GitHub `main`; annotated tag
+  `v0.1.103` is pushed and resolves to that commit.
+- Website publication: `0d7c0229c8dd4324b8cafb35907068edf3f5aaa7`, pushed to `BelloWare/belloware.com` `main`.
+- Signed/notarized Bello Agent 0.1.103, build 107. App notarization
+  `f7199a81-1dab-4fc5-ba6e-965d6004f5bb` and DMG notarization `14f3c271-c9ce-4262-88dd-4c71f967e911` were accepted. Stapling,
+  signature, Gatekeeper and artifact validation passed.
+- `BelloAgent-0.1.103.dmg`: **10,852,266 bytes (10.35 MiB)**; SHA-256
+  `0c653a515ea2f73b5c2def660dd37c5417bdc9c54f0ad96a9073b21b928cf5fd`.
+- At 2026-09-28 06:05:16 UTC, the public product page linked to 0.1.103.
+  `scripts/verify-published.py` downloaded the public archive, verified its
+  SHA-256 and Ed25519 signature, and confirmed that both public update feeds
+  match the intended release and are byte-identical.
+- No install or updater rehearsal was performed, at the owner's standing
+  instruction.
