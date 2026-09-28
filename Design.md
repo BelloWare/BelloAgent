@@ -2,7 +2,7 @@
 
 ## Webhook when a chat finishes (0.1.105)
 
-Settings → Webhook (`WebhookSettings`, kept in the Keychain vault as
+Settings → Chats & notifications → Webhook (`WebhookSettings`, kept in the Keychain vault as
 `VaultConfiguration.webhook`) sends one HTTP request when a chat finishes and
 waits for its user. The pieces live in `Workspaces/WebhookSettings.swift`
 (settings, moment, prompt, request; no network) and
@@ -186,6 +186,16 @@ subsets. Zero and unknown remain distinct. AI/tool time describes recorded phase
 work; ongoing usage is labeled as reported so far. Duration is present from the
 start, and Stop remains in the composer. Narrow panes wrap the report; the full
 coverage and request table opens on demand.
+
+Since 0.1.107 a settled report rounds its times (`MetricFormat.turnDuration`:
+`92 ms`, `19.7s`, `1m 05s`); the live clock counts whole seconds as before, and
+the Session Inspector keeps each request's exact time. A stopped turn
+(`outcome == "cancelled"`) is said once, by the report's "Stopped" header: the
+request log's `cancelled` outcome and a reply cut off in a stopped turn count as
+*stopped* in the note ("1 did not report usage (1 stopped)"), not as failed; the
+host's advice moves into the note (`TurnInfoPresentation.cardNote`), and neither
+the old chip under the reply nor an amber line under the report repeats it. A
+failed turn keeps its notice under the report unless the failure card says it.
 
 
 Selection, task clocks and queue handoff follow-up (2026-09-21): assistant prose
