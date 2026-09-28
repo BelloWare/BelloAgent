@@ -1,0 +1,7 @@
+<h2>Bello Agent 0.1.105</h2>
+<ul>
+<li>New: a webhook when a chat finishes. Settings → Webhook sends a request to your address when a chat's run completes or fails and nothing else is queued. The address, headers and body can use placeholders such as the chat's title, status, your last request and the reply. The connection's mini model can write parameters for it, a title and a summary by default, from the chat's title, your last request, the assistant's output and your own instructions. A run you stop sends nothing. Each chat can turn the webhook off in its ⋯ menu, and preview the exact request there, then send it.</li>
+<li>A message sent while the queue is paused, after Stop or a failure, now joins the paused queue instead of being refused. Resume sends everything in order. A chat at its cost limit still refuses a new message until the limit is raised.</li>
+<li>The sidebar shows a chat's reply speed only when one was measured, and leaves the slot empty otherwise instead of saying "Usage unavailable".</li>
+<li>Settings opened from the app menu no longer shows a large empty band around its title.</li>
+</ul>
