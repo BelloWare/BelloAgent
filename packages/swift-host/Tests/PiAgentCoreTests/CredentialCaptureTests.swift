@@ -82,6 +82,7 @@ final class CredentialCaptureTests: XCTestCase {
         let body = try await traces.command("debug.body",session:"s",params:["attemptId":JSON(id),"body":"request"])
         XCTAssertEqual(body["state"].text,"credential-omitted"); XCTAssertEqual(body["captureBytes"].int,0); XCTAssertEqual(body["bytes"].text,"")
         XCTAssertTrue(body["transformations"].list.first?.text?.contains("No request-body bytes were retained") == true)
+        await traces.delivered()
         let retained = await packets.values
         XCTAssertFalse(retained.contains { $0["type"].text == "bytes" })
     }
@@ -99,19 +100,24 @@ final class CredentialCaptureTests: XCTestCase {
         let response = Data("data: {\"ok\":true}\n\n".utf8)
         await traces.append(id,data:response)
         await traces.transport(id,observation:["transportOutcome":"eof"])
+        // The helper's own copy, read before the app has saved the request.
+        let retained = try await traces.command("debug.attempt",session:"s",params:["attemptId":JSON(id)])
+        XCTAssertFalse(retained.encoded().contains(key))
         await traces.finish(id,outcome:"completed",modelOutcome:"completed")
+        await traces.delivered()
         let metadata = try await traces.command("debug.attempt",session:"s",params:["attemptId":JSON(id)])
         XCTAssertFalse(metadata.encoded().contains(key)); XCTAssertEqual(metadata["request"]["state"].text,"credential-hashed")
         XCTAssertEqual(metadata["request"]["observedBytes"].int,original.count); XCTAssertEqual(metadata["request"]["credentialRedactions"].int,1)
         XCTAssertEqual(metadata["request"]["byteExact"].flag,false); XCTAssertEqual(metadata["identity"]["status"].text,"incomplete")
+        XCTAssertEqual(metadata["request"]["savedToLog"].flag,true)
         let all = await packets.values
         let requestBytes = all.filter { $0["type"].text == "bytes" && $0["body"].text == "request" }.reduce(into:Data()) { $0.append(Data(base64Encoded:$1["bytes"].text!)!) }
         XCTAssertEqual(String(decoding:requestBytes,as:UTF8.self),"{\"prompt\":\"" + CaptureCredentials.fingerprint(key) + "\"}")
-        XCTAssertEqual(metadata["requestHash"]["sha256"].text,sha256(requestBytes))
+        XCTAssertEqual(retained["requestHash"]["sha256"].text,sha256(requestBytes))
         for packet in all where packet["type"].text != "bytes" { XCTAssertFalse(packet.encoded().contains(key)) }
-        let capturedResponse = try await traces.command("debug.body",session:"s",params:["attemptId":JSON(id),"body":"response"])
-        XCTAssertEqual(Data(base64Encoded:capturedResponse["bytes"].text!),response)
-        XCTAssertEqual(capturedResponse["byteExact"].flag, true)
+        let responseBytes = all.filter { $0["type"].text == "bytes" && $0["body"].text == "response" }.reduce(into:Data()) { $0.append(Data(base64Encoded:$1["bytes"].text!)!) }
+        XCTAssertEqual(responseBytes,response)
+        XCTAssertEqual(metadata["response"]["byteExact"].flag, true)
     }
 
     func testResponseMaskingAtEveryByteBoundaryKeepsUnicodeFormattingAndEscapedKeys() throws {
@@ -158,9 +164,12 @@ final class CredentialCaptureTests: XCTestCase {
             for byte in response { await traces.append(id, data: Data([byte])) }
             await traces.transport(id, observation: ["transportOutcome": JSON(outcome == "cancelled" ? "cancelled" : "error")])
             await traces.finish(id, outcome: outcome, modelOutcome: "interrupted")
-            let captured = try await traces.command("debug.body", session: "s", params: ["attemptId": JSON(id), "body": "response"])
+            await traces.delivered()
+            // The app saved it all, so it is read from the log: the durable
+            // pages below are the capture.
+            let captured = try await traces.command("debug.attempt", session: "s", params: ["attemptId": JSON(id)])["response"]
             let expected = before + Data(repeating: 42, count: key.utf8.count)
-            XCTAssertEqual(Data(base64Encoded: captured["bytes"].text!), expected)
+            XCTAssertEqual(captured["savedToLog"].flag, true); XCTAssertEqual(captured["retainedBytes"].int, expected.count)
             XCTAssertEqual(captured["state"].text, "partial"); XCTAssertEqual(captured["byteExact"].flag, false)
             XCTAssertEqual(captured["credentialRedactions"].int, 1)
             XCTAssertEqual(captured["observedBytes"].int, response.count)

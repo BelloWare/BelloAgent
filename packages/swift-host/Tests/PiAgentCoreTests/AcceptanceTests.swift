@@ -205,6 +205,7 @@ final class AcceptanceTests: XCTestCase {
         XCTAssertEqual(state["state"].text, "paused"); XCTAssertTrue(recovered.isError)
         XCTAssertTrue(recovered.text.contains("Outcome unknown"))
         XCTAssertEqual(recovered.requestAttemptIDs, ["prior-request"], "Recovery results must remain inspectable through their original request")
+        await traces.delivered()
         let packets = await recorder.packets
         XCTAssertTrue(packets.contains { $0["attemptId"].text == "prior-request" && $0["outputMessageIds"].list.contains(JSON(recovered.id)) }, "Snapshot recovery must republish the request link to the durable native recorder")
         await session.close()

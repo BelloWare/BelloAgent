@@ -13,6 +13,7 @@ extension WorkspaceModel {
         guard !installPreparing, let item = record(id), let view = displays[id], !view.loading else { throw HostError.failure("Wait for the chat to finish loading before inspecting its context.") }
         guard !item.imported else { throw HostError.failure("Imported history has no native request context. Its original conversation remains available in Search and copy.") }
         guard view.editingMessageID == nil else { throw HostError.failure("Finish or cancel the message edit before previewing the next context. Earlier retained requests remain available below.") }
+        guard view.queueEditingID == nil else { throw HostError.failure("Save or cancel the queued message you are rewriting before previewing the next context.") }
         if let command = LeadingCommand.leading(view.draft, directInput: view.directCommand) {
             if LeadingCommand.reserved.contains(command.name) { throw HostError.failure("/\(command.name) is an app command, not a model request. Finish or clear the command before previewing context.") }
             throw HostError.failure("Choose /\(command.name) from the skill suggestions first, then preview its structured selection and arguments.")
@@ -37,7 +38,7 @@ extension WorkspaceModel {
             let result = try await host.request("context.preview",sessionID:id,params:params).object ?? [:]
             guard connection == host.connectionID else { throw HostError.failure("The helper restarted. Refresh the context preview.") }
             guard !Task.isCancelled, (!automatic || automaticContextEligible(id)), displays[id] === view, let current = record(id), ContextPreviewBinding(current) == ContextPreviewBinding(item),
-                  configuration.revision == revision, view.editingMessageID == nil, view.directCommand == directCommand,
+                  configuration.revision == revision, view.editingMessageID == nil, view.queueEditingID == nil, view.directCommand == directCommand,
                   contextPreviewParams(current,view:view) == params,
                   self.previewMatchesInput(result, view: view), hosts[item.workspaceID] === host, host.isReady else {
                 if let snapshot = result["revision"] { _ = try? await host.request("context.preview.clear",sessionID:id,params:["revision":snapshot]) }
@@ -69,7 +70,7 @@ extension WorkspaceModel {
     private func matchingPreparedContext(_ view: SessionDisplay) -> PreparedContextMetrics? {
         guard let preview = view.footer.preparedContext, let item = record(view.id),
               preview.binding == ContextPreviewBinding(item), preview.configurationRevision == configuration.revision,
-              preview.directCommand == view.directCommand, view.editingMessageID == nil,
+              preview.directCommand == view.directCommand, view.editingMessageID == nil, view.queueEditingID == nil,
               preview.params == contextPreviewParams(item,view:view), previewMatchesInput(preview.summary,view:view),
               (preview.summary["mode"]?.string == "active-context") == view.busy,
               Date().timeIntervalSince(preview.createdAt) <= 300 else { return nil }
@@ -89,7 +90,7 @@ extension WorkspaceModel {
               let item = record(id), let view = displays[id], !view.loading,
               view.contextSelectionReady || (side(id) != nil && opened.contains(id)),
               !item.imported, !item.isArchived, !item.isBackgroundTask,
-              !view.hasWork, view.state == "idle", !view.uncertain, view.recovered.isEmpty, view.editingMessageID == nil,
+              !view.hasWork, view.state == "idle", !view.uncertain, view.recovered.isEmpty, view.editingMessageID == nil, view.queueEditingID == nil,
               !workspaceChangesInFlight.contains(item.workspaceID), let workspace = workspace(for: item.workspaceID), workspace.trusted,
               let profile = profiles.first(where: { $0.id == item.profileID }), profile.api == LiteLLMConfiguration.supportedAPI,
               !LeadingCommand.begins(view.draft, directInput: view.directCommand) else { return false }

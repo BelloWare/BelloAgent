@@ -387,19 +387,21 @@ class Peer:
     def send(self, value):
         with self.write_lock:
             self.process.stdin.write(encoded(value)+b'\n'); self.process.stdin.flush()
-    def command(self, method, params=None, session=None, command_id=None, fail=False):
+    def request(self, method, params=None, session=None, command_id=None):
         command_id = command_id or str(uuid.uuid4())
         self.send({'v':1,'kind':'command','hostEpoch':self.epoch,'commandId':command_id,'sessionId':session,'method':method,'params':params or {}})
         deadline = time.monotonic()+15
         while True:
             frame = self.frames.get(timeout=max(.01,deadline-time.monotonic()))
-            if frame.get('commandId') == command_id:
-                if fail:
-                    assert not frame['ok'], frame
-                else:
-                    assert frame['ok'], frame
-                return frame.get('result')
+            if frame.get('commandId') == command_id: return frame
             self.events.append(frame)
+    def command(self, method, params=None, session=None, command_id=None, fail=False):
+        frame = self.request(method, params, session, command_id)
+        if fail:
+            assert not frame['ok'], frame
+        else:
+            assert frame['ok'], frame
+        return frame.get('result')
     def close(self):
         if self.process.poll() is None:
             self.process.stdin.close()
@@ -675,8 +677,9 @@ class NativeIntegration(unittest.TestCase):
             self.open(api,model='credential-echo',session=session,profile_headers={'X-Custom-Auth':custom},routing={'replayPolicy':'portable','reference':'fixture-v1','modelHeader':'x-fixture-actual-model'})
             self.peer.command('debug.mode',{'mode':'persist'},session)
             self.submit(session,'literal credentials '+key+' / '+custom); self.assertEqual(self.settled(session)['state'],'idle')
-            metadata = self.peer.command('debug.list',session=session)['attempts'][0]
-            retained = base64.b64decode(self.peer.command('debug.body',{'attemptId':metadata['attemptId'],'body':'request'},session)['bytes'])
+            metadata = self.saved_attempt(session, self.peer.command('debug.list',session=session)['attempts'][0]['attemptId'])
+            self.assertTrue(metadata['request']['savedToLog']); self.assertIsNone(metadata['requestHash'], 'The helper let go of a saved body')
+            retained = self.captured_body(session, metadata, 'request')
             record = next(r for r in reversed(Fixture.requests) if r['path'].endswith('/responses' if api=='openai-responses' else '/messages') and key.encode() in r['body'])
             wire_headers = {k.lower():v for k,v in record['headers'].items()}
             self.assertEqual(wire_headers['authorization'],'Bearer '+key); self.assertEqual(wire_headers['x-custom-auth'],custom)
@@ -689,7 +692,7 @@ class NativeIntegration(unittest.TestCase):
             self.assertEqual(metadata['identity']['status'],'incomplete'); self.assertEqual(metadata['responseHeaders']['x-request-id'],'********')
             self.assertEqual(metadata['responseHeaders']['set-cookie'],'********')
             self.assertNotIn(key,json.dumps(metadata)); self.assertNotIn(custom,json.dumps(metadata))
-            response = base64.b64decode(self.peer.command('debug.body',{'attemptId':metadata['attemptId'],'body':'response'},session)['bytes'])
+            response = self.captured_body(session, metadata, 'response')
             self.assertEqual(response,record['response'])
             with self.peer.capture_lock: packets = [p for p in self.peer.captures if p.get('attemptId',p.get('metadata',{}).get('attemptId'))==metadata['attemptId']]
             durable = b''.join(base64.b64decode(p['bytes']) for p in packets if p['type']=='bytes' and p['body']=='request')
@@ -813,7 +816,8 @@ class NativeIntegration(unittest.TestCase):
                 self.assertEqual(snapshot['messages'][-1]['text'],'9.109996226')
                 self.assertEqual(snapshot['messages'][-1]['thinking'],'A short calculation.')
                 attempts=self.peer.command('debug.list',session=session)['attempts']; self.assertEqual(len(attempts),1)
-                attempt=self.peer.command('debug.attempt',{'attemptId':attempts[0]['attemptId']},session)
+                attempt=self.saved_attempt(session,attempts[0]['attemptId'])
+                self.assertTrue(attempt['request']['savedToLog'] and attempt['response']['savedToLog'])
                 output,reasoning,total=(302,253,340) if billing else (423,326,461)
                 self.assertEqual(attempt['usage']['input'],38)
                 self.assertEqual(attempt['usage']['inputIncludingCache'],38)
@@ -857,8 +861,8 @@ class NativeIntegration(unittest.TestCase):
                 self.assertEqual(body['model'],'auto-router'); self.assertEqual(body['metadata'],{'session_id':session})
                 self.assertTrue(body['stream']); self.assertEqual(body['max_output_tokens'],4096)
                 self.assertEqual(record['path'],'/v1/responses')
-                self.assertEqual(attempt['requestHash']['sha256'],hashlib.sha256(request).hexdigest())
-                self.assertEqual(attempt['responseHash']['sha256'],hashlib.sha256(response).hexdigest())
+                self.assertIsNone(attempt['requestHash']); self.assertIsNone(attempt['responseHash'])
+                self.assertEqual(attempt['request']['retainedBytes'],len(request)); self.assertEqual(attempt['response']['retainedBytes'],len(response))
                 self.assertEqual(attempt['response']['state'],'complete')
                 with self.peer.capture_lock: packets=list(self.peer.captures)
                 for kind,expected in [('request',request),('response',response)]:
@@ -897,12 +901,48 @@ class NativeIntegration(unittest.TestCase):
         if policy == 'pinned': routing.update(expectedModel='fixture-fixed', replayContract='Fixture route fixes exact compatible provider items')
         return self.open(api, model='strict-'+policy, session=session, routing=routing, profile_headers={'X-Fixture-Contract':'strict-v1'})
     def captured_body(self, session, attempt, kind):
+        # A persisted request the app has saved is read from its log: the
+        # helper lets go of its copy (0.1.103), answering `capture_saved`, and
+        # forgets the record once a later request of the chat is saved.
         output, offset = bytearray(), 0
         while True:
-            page = self.peer.command('debug.body',{'attemptId':attempt['attemptId'],'body':kind,'offset':offset},session)
+            frame = self.peer.request('debug.body',{'attemptId':attempt['attemptId'],'body':kind,'offset':offset},session)
+            if not frame['ok']:
+                self.assertIn(frame['error']['code'], ('capture_saved','capture_unavailable'), frame)
+                return self.logged_body(attempt['attemptId'], kind)
+            page = frame['result']
             self.assertEqual(page['offset'], len(output)); output.extend(base64.b64decode(page['bytes']))
             if page['next'] is None: return bytes(output)
             offset = page['next']
+    def logged_packets(self, attempt_id):
+        with self.peer.capture_lock: packets = list(self.peer.captures)
+        return [p for p in packets if p.get('attemptId',p.get('metadata',{}).get('attemptId'))==attempt_id]
+    def logged_body(self, attempt_id, kind, timeout=10):
+        # The log trails the chat: its pages are whole once the final record is in.
+        deadline = time.monotonic()+timeout
+        while not any(p['type']=='finish' for p in self.logged_packets(attempt_id)) and time.monotonic()<deadline: time.sleep(.01)
+        durable = bytearray()
+        for packet in self.logged_packets(attempt_id):
+            if packet['type']=='bytes' and packet['body']==kind:
+                self.assertEqual(packet['offset'],len(durable)); durable.extend(base64.b64decode(packet['bytes']))
+        return bytes(durable)
+    def logged_attempts(self, session, count, timeout=10):
+        # Each of a session's requests as its final record reached the log, newest first.
+        deadline = time.monotonic()+timeout
+        while True:
+            with self.peer.capture_lock: packets = list(self.peer.captures)
+            finished = [p['metadata'] for p in packets if p.get('type')=='finish' and p['metadata'].get('sessionId')==session]
+            if len(finished)>=count or time.monotonic()>deadline: break
+            time.sleep(.01)
+        self.assertEqual(len(finished),count)
+        return list(reversed(finished))
+    def saved_attempt(self, session, attempt_id, timeout=10):
+        # The helper's record once the app has confirmed saving all of it.
+        deadline = time.monotonic()+timeout
+        while True:
+            attempt = self.peer.command('debug.attempt',{'attemptId':attempt_id},session)
+            if attempt['request']['savedToLog'] or time.monotonic()>deadline: return attempt
+            time.sleep(.01)
     def test_responses_request_aware_gateway_tools_replay_compaction_and_capture(self):
         for api in ['openai-responses']:
             for policy in ['portable','pinned']:
@@ -916,7 +956,9 @@ class NativeIntegration(unittest.TestCase):
                 compacted = self.settled(session); self.assertEqual(compacted['state'],'idle',compacted.get('preflightError'))
                 self.assertIn('Fixture continuation summary',json.dumps(compacted['messages']))
                 # Pi splits the long echo's turn: one request summarizes the history and the turn's prefix.
-                attempts = self.peer.command('debug.list',session=session)['attempts']; self.assertEqual(len(attempts),4)
+                attempts = self.logged_attempts(session,4)
+                listed = [a['attemptId'] for a in self.peer.command('debug.list',session=session)['attempts']]
+                self.assertIn(attempts[0]['attemptId'],listed,'The helper keeps the latest saved request of a chat')
                 records = []
                 with self.peer.capture_lock: packets = list(self.peer.captures)
                 for attempt in attempts:

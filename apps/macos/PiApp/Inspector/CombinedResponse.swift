@@ -22,7 +22,6 @@ private struct ResponseCombination {
     // Sparse provider indices must not turn a small capture into a huge array.
     private static let maximumIndex = 16_383
     private static let maximumSlots = 65_536
-    private static let maximumTextBytes = 67_108_864
     private var root: [String: Any] = [:]
     private var items: [Int: ResponseCombinedItem] = [:]
     private var responseID: String?
@@ -34,7 +33,6 @@ private struct ResponseCombination {
     private var unsupported = false
     private var unfinished = false
     private var slotCount = 0
-    private var textBytes = 0
     private var lastSequence: Int?
     private var lastSequencedEvent: [String: Any]?
 
@@ -112,7 +110,7 @@ private struct ResponseCombination {
         if type.hasPrefix("response.function_call_arguments.") {
             guard ensureType(&item.value, type: "function_call") else { return }
             let done = type.hasSuffix(".done"), key = done ? "arguments" : "delta"
-            guard let text = event[key] as? String, reserveText(text) else { hasIssue = true; return }
+            guard let text = event[key] as? String else { hasIssue = true; return }
             if done, let name = event["name"] as? String {
                 if let previous = item.value["name"] as? String, previous != name { hasIssue = true; return }
                 item.value["name"] = name
@@ -164,7 +162,7 @@ private struct ResponseCombination {
         guard ensureType(&part.value, type: partType) else { return }
         let textKey = refusal ? "refusal" : "text"
         let done = type.hasSuffix(".done")
-        guard let text = event[done ? textKey : "delta"] as? String, reserveText(text) else { hasIssue = true; return }
+        guard let text = event[done ? textKey : "delta"] as? String else { hasIssue = true; return }
         if part.text == nil { part.text = ResponseCombinedText(initial: part.value[textKey] as? String ?? "") }
         if !part.text!.receive(text, done: done) { hasIssue = true }
         part.textKey = textKey
@@ -205,12 +203,6 @@ private struct ResponseCombination {
     private mutating func reserveSlots(_ count: Int) -> Bool {
         guard count >= 0, count <= Self.maximumSlots - slotCount else { hasIssue = true; return false }
         slotCount += count; return true
-    }
-
-    private mutating func reserveText(_ value: String) -> Bool {
-        let count = value.utf8.count
-        guard count <= Self.maximumTextBytes - textBytes else { hasIssue = true; return false }
-        textBytes += count; return true
     }
 
     private mutating func ensureType(_ value: inout [String: Any], type: String) -> Bool {

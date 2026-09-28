@@ -58,12 +58,12 @@ actor TraceArchive {
         var lengths: [String: Int] = [:]
         for body in ["request", "response"] {
             let value = metadata[body]?.object?["retainedBytes"] ?? .number(0)
-            guard let number = value.number, number.isFinite, number >= 0,
-                  number <= 67_108_864, number.rounded() == number else { throw TraceError.invalid }
+            guard let number = value.number, number.isFinite, number >= 0, number <= Double(PayloadArchive.largestCount),
+                  number.rounded() == number else { throw TraceError.invalid }
             lengths[body] = Int(number)
         }
         let retained = lengths.values.reduce(Int64(0)) { $0 + Int64($1) }
-        guard retained >= 0, retained <= 67_108_864 else { throw TraceError.invalid }
+        guard retained >= 0 else { throw TraceError.invalid }
         if destination == nil { try reconcile(reserving: retained + 65_536) }
         let base = destination ?? root
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

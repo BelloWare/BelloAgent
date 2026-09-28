@@ -66,6 +66,16 @@ final class ConfigurationVaultTests: XCTestCase {
         }
     }
 
+    /// Unlimited storage is a saved choice beside the quota it replaces;
+    /// settings saved before it existed keep their limit.
+    func testUnlimitedStorageIsSavedAndOlderSettingsKeepTheirLimit() throws {
+        let older = try JSONDecoder().decode(CapturePreferences.self, from: Data("{\"policyVersion\":1,\"defaultMode\":\"persist\",\"quotaBytes\":2097152}".utf8))
+        XCTAssertFalse(older.quotaUnlimited); XCTAssertEqual(older.quotaBytes, 2_097_152)
+        var unlimited = CapturePreferences(); unlimited.quotaUnlimited = true
+        let reloaded = try JSONDecoder().decode(CapturePreferences.self, from: JSONEncoder().encode(unlimited))
+        XCTAssertTrue(reloaded.quotaUnlimited); XCTAssertEqual(reloaded.quotaBytes, 1_073_741_824, "The limit is kept for switching back")
+    }
+
     func testFutureCapturePolicyIsRejectedInsteadOfReplacedWithDefaults() throws {
         XCTAssertThrowsError(try JSONDecoder().decode(CapturePreferences.self, from: Data("{\"policyVersion\":2}".utf8)))
     }

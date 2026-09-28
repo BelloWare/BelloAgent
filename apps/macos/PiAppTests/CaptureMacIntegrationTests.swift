@@ -219,16 +219,23 @@ final class CaptureMacIntegrationTests: XCTestCase {
                 try await Task.sleep(for: .milliseconds(20))
             }
             XCTAssertEqual(snapshot["state"]?.string, "idle", WireValue.object(snapshot).pretty)
-            let attempts = try await model.traces.list(sessionID: id)
+            XCTAssertTrue(snapshot["messages"]?.array?.contains(where: { $0.object?["text"]?.string?.contains("fixture file contents") == true }) == true)
+            // The log trails the chat by a moment: a run never waits for it.
+            let messageIDs = try (snapshot["messages"]?.array ?? []).map { try XCTUnwrap($0.object?["id"]?.string) }
+            var attempts: [[String: WireValue]] = [], unlinked = messageIDs
+            for _ in 0..<500 {
+                attempts = try await model.traces.list(sessionID: id)
+                unlinked = []
+                for messageID in messageIDs {
+                    if try await model.traces.list(sessionID: id, messageID: messageID).isEmpty { unlinked.append(messageID) }
+                }
+                if attempts.count == 2, attempts.allSatisfy({ $0["outcome"]?.string == "completed" }), unlinked.isEmpty { break }
+                try await Task.sleep(for: .milliseconds(20))
+            }
             XCTAssertEqual(attempts.count, 2)
             XCTAssertTrue(attempts.allSatisfy { $0["gateway"]?.object?["cost"]?.object?["status"]?.string == "reported" })
             XCTAssertTrue(attempts.allSatisfy { $0["gateway"]?.object?["cache"]?.object?["status"]?.string == "miss" })
-            XCTAssertTrue(snapshot["messages"]?.array?.contains(where: { $0.object?["text"]?.string?.contains("fixture file contents") == true }) == true)
-            for message in snapshot["messages"]?.array ?? [] {
-                let messageID = try XCTUnwrap(message.object?["id"]?.string)
-                let links = try await model.traces.list(sessionID: id, messageID: messageID)
-                XCTAssertFalse(links.isEmpty, "Every retained user/assistant/tool message needs a request link")
-            }
+            XCTAssertEqual(unlinked, [], "Every retained user/assistant/tool message needs a request link")
         }
         for host in model.hosts.values { try await host.shutdownAndWait() }
         let archiveRoot = await model.traces.root

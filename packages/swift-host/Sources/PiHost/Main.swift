@@ -15,6 +15,7 @@ import Glibc
 final class ProtocolWriter: Sendable {
     let queue=DispatchQueue(label:"pi.native.stdout"), slots=DispatchSemaphore(value:64)
     private let reader=ReaderState()
+    private let changes=PendingChanges()
     /// Standard input reached its end: the app closed its side and is going.
     /// From here a failed write means the reader is gone, not a broken
     /// protocol, and the helper still has a stopped run's partial reply and
@@ -22,21 +23,58 @@ final class ProtocolWriter: Sendable {
     func inputEnded() { reader.set(\.inputEnded) }
     func send(_ value:JSON) {
         guard !reader.gone else { return }
+        // A chat's change notice carries only its latest sequence number, and
+        // the app keeps only the latest one per chat. One waiting per chat is
+        // enough: while the app is busy reading, a later notice updates the
+        // waiting one instead of queueing behind it. Streams no longer pause
+        // for the request log, so without this twenty streaming chats filled
+        // the queue in a brief stall and the helper stopped itself.
+        if value["kind"].text == "event", value["type"].text == "session.changed", let session = value["sessionId"].text {
+            guard changes.hold(session, value) else { return }
+            queue.async { [self] in
+                guard let latest = changes.take(session), !reader.gone else { return }
+                write(latest)
+            }
+            return
+        }
         guard slots.wait(timeout:.now()) == .success else { Self.fail("Native host output backpressure limit reached") }
         queue.async { [self] in
             defer { slots.signal() }
             guard !reader.gone else { return }
-            do {
-                var data=try value.data(); guard data.count<=1048576 else { throw AgentError("frame_limit","Protocol output exceeds frame limit") }
-                data.append(10)
-                do { try FileHandle.standardOutput.write(contentsOf:data) }
-                catch { guard reader.inputEnded else { throw error }; reader.set(\.gone); return }
-            } catch { Self.fail("Native host protocol output failed") }
+            write(value)
         }
+    }
+    /// On the writer queue only.
+    private func write(_ value: JSON) {
+        do {
+            var data=try value.data(); guard data.count<=1048576 else { throw AgentError("frame_limit","Protocol output exceeds frame limit") }
+            data.append(10)
+            do { try FileHandle.standardOutput.write(contentsOf:data) }
+            catch { guard reader.inputEnded else { throw error }; reader.set(\.gone); return }
+        } catch { Self.fail("Native host protocol output failed") }
     }
     func drain() { queue.sync {} }
     static func fail(_ message:String) -> Never {
         try? FileHandle.standardError.write(contentsOf:Data((message+"\n").utf8)); exit(70)
+    }
+}
+
+/// The change notice waiting to be written for each chat, at most one.
+/// Every access goes through the lock.
+final class PendingChanges: @unchecked Sendable {
+    private let lock=NSLock()
+    private var waiting: [String: JSON] = [:]
+    /// Holds `frame` as the chat's waiting notice. True when none was waiting,
+    /// so the caller queues one write; false when the waiting one now carries it.
+    func hold(_ session: String, _ frame: JSON) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let fresh = waiting[session] == nil
+        waiting[session] = frame
+        return fresh
+    }
+    func take(_ session: String) -> JSON? {
+        lock.lock(); defer { lock.unlock() }
+        return waiting.removeValue(forKey: session)
     }
 }
 

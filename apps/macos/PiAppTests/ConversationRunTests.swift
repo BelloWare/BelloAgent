@@ -334,6 +334,47 @@ extension ConversationPaneTests {
     }
 }
 
+extension ConversationPaneTests {
+    /// Rewriting a queued follow-up in the composer, against the packaged
+    /// helper: Return puts the new text back in the queue in its place, and
+    /// the draft set aside for it comes back.
+    @MainActor func testSavingAQueuedRewriteUpdatesTheHelpersQueueInPlace() async throws {
+        let live = try await LiveChat()
+        var closed = false
+        defer { if !closed { Task { await live.close() } } }
+        await live.settle(20)
+        let slow = "slow: walk through the retry loop step by step"
+        try await live.holdingHelper {
+            live.session.draft = slow
+            live.model.send(sessionID: live.chat.id)
+            await live.waitUntil("The turn never started") { live.session.busy }
+        }
+        await live.taken(slow)
+        for index in 0..<2 {
+            await live.send("Follow-up \(index)")
+            await live.waitUntil("Follow-up \(index) never reached the queue") { QueuedMessage.from(live.session.queue).count == index + 1 }
+        }
+        live.session.draft = "unsent thought"
+        let first = try XCTUnwrap(QueuedMessage.from(live.session.queue).first)
+        live.model.editQueued(first.id, sessionID: live.chat.id)
+        XCTAssertEqual(live.session.queueEditingID, first.id)
+        XCTAssertEqual(live.session.draft, "Follow-up 0")
+        live.session.draft = "Follow-up 0, rewritten"
+        live.model.submitComposer(intent: .followUp, sessionID: live.chat.id)
+        XCTAssertNil(live.session.queueEditingID)
+        XCTAssertEqual(live.session.draft, "unsent thought", "The set-aside draft comes back")
+        await live.waitUntil("The helper never took the rewrite") {
+            QueuedMessage.from(live.session.queue).map(\.text) == ["Follow-up 0, rewritten", "Follow-up 1"]
+        }
+        XCTAssertEqual(QueuedMessage.from(live.session.queue).first?.id, first.id, "The rewrite keeps its place and identity")
+        XCTAssertNil(live.model.error, live.model.error ?? "")
+        live.model.stop(sessionID: live.chat.id)
+        await live.settle(10)
+        closed = true
+        await live.close()
+    }
+}
+
 // MARK: - The helper dying under a running turn
 
 extension ConversationPaneTests {

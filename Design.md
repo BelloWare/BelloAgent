@@ -398,24 +398,37 @@ The active Responses builder and stream accumulator preserve complete Responses 
 
 One serialization supplies the HTTP request body and its capture. Authentication header values are masked. Known authentication credentials found in the request body are replaced with labeled SHA-256 fingerprints in the recorded body only, without reserializing it; transformations, original/retained lengths and non-exact status are explicit. If hashing exceeds safety limits, the body is omitted with no digest or empty-body export. Observe response bytes before SSE/JSON parsing. Known credential echoes in captured responses are replaced with same-length asterisks, including matches crossing chunks; the parser still receives the original bytes. Response transformation metadata explicitly marks non-exact captures, and SSE offsets remain unchanged. Flush buffered capture tails on cancellation and failure; handle arbitrarily split Unicode, SSE lines, partial tool arguments, error bodies, JSON fallback and cancellation. Disable credential-forwarding redirects. Capture boundaries are application-observed decoded HTTP, not TCP/TLS or gateway upstream traffic.
 
-The helper's live `TraceStore` still bounds memory to 8 MiB per body, 128 MiB per
-host and 64 attempts. Durable recording now bypasses those history limits:
-`CaptureDelivery` sends original serialized request and pre-parser response bytes
-in acknowledged pages of at most 32 KiB to the native `PayloadArchive` actor.
-Only one page per helper can be outstanding; recorder failure is explicit and
-never retries model/tool work. Metadata and message links are sent even with
-body capture off. The old polling retention path is removed. `TraceArchive` is
-used only for deliberate live-memory exports, not app-managed persistence.
+Since 0.1.103 nothing in capture is capped or cut. The helper's `TraceStore`
+keeps every captured byte and every SSE event index: a persisted chat's until
+the app has saved all of that request (bodies, events and links), a
+session-memory chat's for good, since the helper holds its only copy. A request
+the log refused any page of keeps its complete copy in the helper. A saved
+request's bodies and events are read from the app's log (`savedToLog`;
+`debug.body` answers `capture_saved`), and its record leaves the helper once a
+later request of the same chat is saved. Metadata and message links are sent
+even with body capture off. `TraceArchive` is used only for deliberate
+live-memory exports, not app-managed persistence.
 
-Concurrent producers suspend FIFO behind that page instead of failing when 16
-waiters are already present. A missing acknowledgment closes the capture channel
-at the first deadline and releases waiting producers; it cannot multiply the
-timeout by the session count. An ordinary negative acknowledgment remains local
-to its packet. The archive supports 64 simultaneous persisted attempts (128 body
-chunkers, at most 4 MiB of unpublished tails). The live memory budget also applies
-to active attempts: trim them to explicitly incomplete contiguous prefixes while
-durable delivery continues with original offsets and bytes. Do not append after
-a trimmed gap or mistake a memory prefix for the complete recorded body.
+Capture never holds up a chat. Each packet goes into one ordered outbox with a
+single sender; `CaptureDelivery` emits original serialized request and
+pre-parser response bytes in acknowledged pages of at most 32 KiB to the native
+`PayloadArchive` actor, one page per helper outstanding. A request is
+dispatched, and its stream parsed, without waiting for any acknowledgment. There
+is no acknowledgment deadline: a slow app (a busy disk, a large compaction
+upload) delays the log, never the model request, and never switches capture
+off. The former 3 s deadline did, for every later request of every chat on the
+helper. Shutdown refuses the page in flight and every later one at once. An
+ordinary negative acknowledgment stops only that request's kind of page. The
+HTTP stream pauses its download when its consumer falls behind (1 MiB pending)
+and resumes at 512 KiB; it never fails a response for its size. The app
+refreshes accounting when a late final capture lands (`captureDidPersist`).
+While the log is busy, a request's small chunks join its page still waiting in
+the queue (up to 32 KiB) unless something else of that request was queued after
+it, so nothing of a request is reordered. Because streams no longer pause when
+the app is slow to read, the helper's output writer keeps at most one change
+notice per chat, carrying the latest sequence number (the app also keeps only
+the latest); other frames keep the 64-frame bound. Without this, twenty
+streaming chats filled that bound during a brief stall and the helper stopped.
 
 The 20-session acceptance target uses per-session actors and independent async
 URLSession requests. Since 0.1.52, synchronous read/list/search jobs leave the
@@ -485,17 +498,19 @@ and purge release only unreferenced chunks, retaining request metrics and links
 within their separate retention window. After metric expiry, compact relationship
 tombstones preserve the message-to-request lookup and explicitly mark unavailable
 metrics. Active export leases protect chunk references. SSE event byte indices
-are separately paged (4,096/request, 100,000/archive) and expire with bodies. Interrupted writers expose a verified
-prefix. Persistent request/response safety limits are 32/64 MiB; live memory
-limits do not silently truncate native persistence. The stored chunk quota,
-body retention and metric retention are vault preferences. Current finite
-metadata/chunk limits are 100,000 each; saturation is an explicit recorder error.
+are paged and expire with bodies; a request keeps all of them. Interrupted
+writers expose a verified prefix. The archive has no request-count, writer,
+chunk, event, body-size, metadata or link cap. Counts and offsets must be exact
+JSON integers (at most 2^53, 8 PiB): larger values are damage, refused before
+any arithmetic. The payload quota (or Unlimited, which never deletes a body for
+room), body retention and metric retention are vault preferences; past a
+limited quota the oldest finished bodies are deleted first.
 Reader races, metric-expiry relationships, restart and fixture UI checks pass;
 the signed application remains a separate acceptance gate.
 
 Store byte content once and reconstruct any retained attempt by ordered references. The versioned chunk store and per-body manifests retain chunk IDs, lengths, total length, whole-body digest, boundary and completeness. Content-defined boundaries reuse shifted prefixes; whole-body hashes alone would only reuse identical bodies. Compression and new encryption are not implemented.
 
-Never reconstruct an old request by reserializing chat JSON, rerunning current prompt builders or resolving current skills. Store the serialized bytes that were actually submitted and the received byte stream. Keep request/response manifests independent of TCP/SSE chunk boundaries; retain event/timing byte offsets separately. Storage reads use bounded ranges without unbounded delta chains. The inspector and message-linked details assemble the complete retained body with cancellation and stale-selection protection, so response viewing has no manual pagination. JSON requests and responses default to a formatted, expandable tree. Responses SSE adds a default Combined JSON tree: prefer the terminal event's response object verbatim, including gateway extensions, usage and opaque fields. Otherwise reconstruct supported item/content/reasoning-summary/function-argument deltas and done events as explicitly partial JSON, bounding sparse indices and accumulated text. Invalid/conflicting or unsupported events remain visible in the separate ordered Events tree, with original fields, non-JSON data, sentinels and unfinished-frame labels. These are derived presentations; UTF-8/hex and original-byte exports preserve the recorded stream. Rendering must stay responsive within the existing 32/64 MiB capture limits. Incomplete captures keep their labels even if a terminal response object was retained. The event contract follows the [Responses streaming guide](https://developers.openai.com/api/docs/guides/streaming-responses) and the local SDK event types; derived JSON never substitutes for raw capture.
+Never reconstruct an old request by reserializing chat JSON, rerunning current prompt builders or resolving current skills. Store the serialized bytes that were actually submitted and the received byte stream. Keep request/response manifests independent of TCP/SSE chunk boundaries; retain event/timing byte offsets separately. Storage reads use bounded ranges without unbounded delta chains. The inspector and message-linked details assemble the complete retained body with cancellation and stale-selection protection, so response viewing has no manual pagination. JSON requests and responses default to a formatted, expandable tree. Responses SSE adds a default Combined JSON tree: prefer the terminal event's response object verbatim, including gateway extensions, usage and opaque fields. Otherwise reconstruct supported item/content/reasoning-summary/function-argument deltas and done events as explicitly partial JSON, bounding sparse indices and accumulated text. Invalid/conflicting or unsupported events remain visible in the separate ordered Events tree, with original fields, non-JSON data, sentinels and unfinished-frame labels. These are derived presentations; UTF-8/hex and original-byte exports preserve the recorded stream. Rendering must stay responsive for large captures; there is no body size limit. Incomplete captures keep their labels even if a terminal response object was retained. The event contract follows the [Responses streaming guide](https://developers.openai.com/api/docs/guides/streaming-responses) and the local SDK event types; derived JSON never substitutes for raw capture.
 
 Add durable SQLite request/attempt metadata and message/turn/compaction relationships. Commit chunks/manifests/ownership atomically or publish a durable manifest only after referenced content exists. Verify hashes and lengths on reads, never silently repair corruption. Garbage collection must respect all live references and concurrent readers/writers. Requests can share chunks across a session; privacy boundaries and deletion semantics must be explicit before broader sharing.
 
@@ -676,10 +691,17 @@ History is read from the session/project index with loaded-chat accounting, so
 background completions and reopening update it without reading payload bodies.
 The Session info window retains its explicitly historical aggregate rate.
 
-Pending follow-ups can be dragged to reorder, rewritten in place, promoted
-to steering (delivered after the current tool batch instead of after the run)
-or removed; the helper validates every change (`queue.reorder`, `queue.update`,
-`queue.steer`) and persists it with the queue. The sidebar's width is dragged on
+Pending follow-ups can be dragged to reorder, rewritten, promoted to steering
+(delivered after the current tool batch instead of after the run) or removed;
+the helper validates every change (`queue.reorder`, `queue.update`,
+`queue.steer`) and persists it with the queue. Since 0.1.103 a rewrite happens
+in the chat's own composer: the pencil sets the composer's draft aside (it stays
+the draft saved for the chat) and puts the queued text there under a banner;
+Return saves it in the message's place, Cancel (Esc) leaves it as it was, and
+either brings the draft back. The composer holds text only while rewriting
+(images and skills are off). If the message is sent before the rewrite is
+saved, an untouched rewrite gives the draft back and a changed one stays in the
+composer ahead of it, with a notice. The sidebar's width is dragged on
 its hairline and remembered. Chat and saved side titles are generated with the
 connection's mini model or the catalog's mini default, never the conversation
 model; without one, the app says so once per connection and launch, and the

@@ -79,7 +79,12 @@ final class HistoricalEditingTests: XCTestCase {
         XCTAssertEqual(result["messages"]?.array?.last?.object?["text"]?.string, "EDIT_ACCEPTED_SAFE_PREFIX")
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: parentPath)), parentBytes)
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("mutation.txt")), "MUTATED_ONCE\n")
-        let attempts = try await model.traces.list(sessionID: child.id, workspaceID: workspace.id)
+        // The log trails the chat by a moment: a run never waits for it.
+        var attempts = try await model.traces.list(sessionID: child.id, workspaceID: workspace.id)
+        for _ in 0..<500 where attempts.first?["outcome"]?.string != "completed" {
+            try await Task.sleep(for: .milliseconds(10))
+            attempts = try await model.traces.list(sessionID: child.id, workspaceID: workspace.id)
+        }
         XCTAssertEqual(attempts.count, 1)
         let replacement = try XCTUnwrap(result["messages"]?.array?.compactMap(\.object).first { $0["role"]?.string == "user" && $0["text"]?.string?.contains("EDITED_REPLACEMENT") == true }?["id"]?.string)
         // Model a second edit while its acknowledgement is pending. Its new

@@ -60,10 +60,12 @@ final class ManualCompactionTests: XCTestCase {
             }
             XCTAssertEqual(state["compaction"]?.object?["phase"]?.string,"completed",id + ": " + String(describing:state["preflightError"]))
             XCTAssertNil(model.error)
+            // The log trails the chat by a moment: a request is listed from its
+            // first packet, and its bodies are whole once its record is final.
             var attempts: [[String:WireValue]] = []
-            for _ in 0..<500 {
+            for _ in 0..<1000 {
                 attempts = try await model.traces.list(sessionID:id)
-                if attempts.count == 3 { break }
+                if attempts.count == 3, attempts.allSatisfy({ $0["outcome"]?.string != "running" }) { break }
                 try await Task.sleep(for:.milliseconds(10))
             }
             let records = try String(contentsOf:root.appendingPathComponent("records.jsonl"),encoding:.utf8).split(separator:"\n").map { try JSONDecoder().decode([String:WireValue].self,from:Data($0.utf8)) }.filter { $0["session"]?.string == id }

@@ -150,18 +150,16 @@ final class MessageDetailTests: XCTestCase {
     }
     @MainActor func testBodyCopyRequiresEveryPageOfOneStableRetainedBody() async throws {
         let bytes = Data(String(repeating: "Unicode 🌍 body\n", count: 7000).utf8)
-        let copied = try await MessageBodyReader.assemble(limit: bytes.count) { offset in
+        let copied = try await MessageBodyReader.assemble { offset in
             (bytes.subdata(in: offset..<min(offset + 32768, bytes.count)), bytes.count)
         }
         XCTAssertEqual(copied, bytes, "Copy must assemble beyond the currently displayed 32 KiB page without corrupting split Unicode")
-        let oversized = try await MessageBodyReader.assemble(limit: 1) { _ in (Data([1, 2]), 2) }
-        XCTAssertNil(oversized)
         do {
-            _ = try await MessageBodyReader.assemble(limit: 100) { offset in (offset == 0 ? Data([1, 2]) : Data(), 5) }
+            _ = try await MessageBodyReader.assemble { offset in (offset == 0 ? Data([1, 2]) : Data(), 5) }
             XCTFail("A missing later page must fail instead of silently copying a shortened body")
         } catch { XCTAssertTrue(error.localizedDescription.contains("incomplete")) }
         do {
-            _ = try await MessageBodyReader.assemble(limit: 100) { offset in (Data([1, 2]), offset == 0 ? 4 : 6) }
+            _ = try await MessageBodyReader.assemble { offset in (Data([1, 2]), offset == 0 ? 4 : 6) }
             XCTFail("A changing live capture must be retried instead of mixing different lengths")
         } catch { XCTAssertTrue(error.localizedDescription.contains("changed")) }
         for state in ["not-captured", "not-retained", "credential-omitted", "expired", "purged", "corrupt"] {
@@ -182,7 +180,7 @@ final class MessageDetailTests: XCTestCase {
         let retained = try await archive.metadata(attempt: id)["response"]!.object!
         XCTAssertEqual(retained["state"], .string("partial"))
         XCTAssertTrue(MessageBodyReader.canReadRetained(retained["state"]!.string!))
-        let copied = try await MessageBodyReader.assemble(limit: 1024) { offset in
+        let copied = try await MessageBodyReader.assemble { offset in
             (try await archive.body(attemptID: id, body: "response", offset: offset), Int(retained["retainedBytes"]!.number!))
         }
         XCTAssertEqual(copied, bytes)

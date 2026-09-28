@@ -231,7 +231,13 @@ final class TitleGenerationTests: XCTestCase {
         // Pi's system prompt is the first input item.
         XCTAssertTrue(body["input"]?.array?.first?.object?["content"]?.string?.contains("Generate a short session title") == true)
         XCTAssertFalse(request.contains("PRIVATE PROJECT INSTRUCTION"))
-        let attempts = try await model.traces.list(sessionID: background.id, workspaceID: WorkspaceRecord.scratchID)
+        // The log trails the title task by a moment: its record is final, cost
+        // included, once the last capture packet lands.
+        var attempts = try await model.traces.list(sessionID: background.id, workspaceID: WorkspaceRecord.scratchID)
+        for _ in 0..<500 where attempts.count != 1 || attempts.first?["outcome"]?.string == "running" {
+            try await Task.sleep(for: .milliseconds(10))
+            attempts = try await model.traces.list(sessionID: background.id, workspaceID: WorkspaceRecord.scratchID)
+        }
         XCTAssertEqual(attempts.count, 1); XCTAssertEqual(attempts.first?["purpose"]?.string, "title")
         let accounting = try await model.traces.gatewayAccounting(sessionID: background.id, workspaceID: WorkspaceRecord.scratchID, messages: [])
         XCTAssertEqual(accounting.session.requests, 1); XCTAssertEqual(accounting.session.costUSD, 0.00001)

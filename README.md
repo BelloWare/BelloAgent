@@ -17,7 +17,8 @@ New requests use the LiteLLM Responses API. Existing Messages history and
 credentials remain readable; converting a saved connection is explicit. The app
 includes tools and MCP, queues and side conversations, exact HTTP inspection,
 and per-message/session/report cost and cache accounting. New captured bodies
-are stored without encryption for 30 days by default, subject to quota.
+are stored without encryption for 30 days by default, subject to the payload
+quota (or Unlimited).
 Authentication headers are masked: longer request tokens retain at most their
 last four characters; short tokens, cookies, response authentication and
 credential echoes are fully masked. Known credential literals in captured

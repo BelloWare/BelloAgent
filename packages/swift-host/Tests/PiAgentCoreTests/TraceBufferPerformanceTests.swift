@@ -37,11 +37,17 @@ final class TraceBufferPerformanceTests: XCTestCase {
                     await traces.transport(id, observation: ["transportOutcome": "eof", "responseObservedBytes": JSON(chunks * chunk.count)])
                     await traces.finish(id, outcome: "completed", modelOutcome: "completed")
                     let expected = Data(repeating: 0, count: 0) + (0..<chunks).reduce(into: Data()) { data, _ in data.append(chunk) }
+                    await traces.delivered()
                     let detail = try await traces.command("debug.attempt", session: "buffer", params: ["attemptId": JSON(id)])
-                    XCTAssertEqual(detail["responseHash"]["sha256"].text, sha256(expected))
                     XCTAssertEqual(detail["rawEventIndexCount"].int, chunks - 1)
+                    XCTAssertEqual(detail["response"]["retainedBytes"].int, expected.count)
                     XCTAssertEqual(Data(base64Encoded: snapshot["bytes"].text ?? ""), chunk, "A retained inspector snapshot is immutable")
-                    if mode == "persist" { let recorded = await sink.body(id); XCTAssertEqual(recorded, expected) }
+                    if mode == "persist" {
+                        // The app saved it all, so the helper let go of its copy.
+                        let recorded = await sink.body(id); XCTAssertEqual(recorded, expected)
+                        XCTAssertEqual(detail["response"]["savedToLog"].flag, true)
+                        XCTAssertTrue(detail["responseHash"].isNull)
+                    } else { XCTAssertEqual(detail["responseHash"]["sha256"].text, sha256(expected)) }
                 }
                 let sorted = samples.sorted()
                 print("PERF trace-buffer mode=\(mode) MiB=\(megabytes) samples=3 medianMs=\(sorted[1]) maxMs=\(sorted[2])")
@@ -49,8 +55,10 @@ final class TraceBufferPerformanceTests: XCTestCase {
         }
     }
 
-    func testTwentyAttemptsTrimWithoutLosingDurableBytesOrLeakingAccounting() async throws {
-        let sink = TraceBufferSink(), traces = TraceStore(memoryLimit: 1_048_576, sink: { await sink.accept($0) })
+    /// Twenty chats' bodies are kept whole until the app has saved them, and
+    /// the workspace accounting returns to zero once it has.
+    func testTwentyAttemptsKeepEveryByteUntilSavedWithoutLeakingAccounting() async throws {
+        let sink = TraceBufferSink(), traces = TraceStore(sink: { await sink.accept($0) })
         let profile = try fixtureProfile(), chunk = Data(repeating: 0x61, count: 32_768)
         var ids: [String] = []
         for index in 0..<20 {
@@ -59,12 +67,15 @@ final class TraceBufferPerformanceTests: XCTestCase {
             ids.append(await traces.begin(session: session, turn: "t", profile: profile, purpose: "turn", body: Data(), headers: [:]))
         }
         for _ in 0..<8 { for id in ids { await traces.append(id, data: chunk) } }
+        let active = try await traces.command("debug.list", session: "s0", params: [:])
+        XCTAssertEqual(active["workspaceRetainedBytes"].int, 20 * 8 * chunk.count, "Nothing is trimmed")
+        for id in ids { await traces.finish(id, outcome: "cancelled", modelOutcome: "interrupted") }
+        await traces.delivered()
         for (index, id) in ids.enumerated() {
-            await traces.finish(id, outcome: "cancelled", modelOutcome: "interrupted")
             let data = await sink.body(id)
             XCTAssertEqual(data, Data(repeating: 0x61, count: 8 * chunk.count))
-            let list = try await traces.command("debug.list", session: "s\(index)", params: [:])
-            XCTAssertLessThanOrEqual(list["workspaceRetainedBytes"].int ?? .max, 1_048_576)
+            let attempt = try await traces.command("debug.attempt", session: "s\(index)", params: ["attemptId": JSON(id)])
+            XCTAssertEqual(attempt["response"]["retainedBytes"].int, 8 * chunk.count)
             _ = try await traces.command("debug.clear", session: "s\(index)", params: [:])
         }
         let empty = try await traces.command("debug.list", session: "s0", params: [:])

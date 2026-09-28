@@ -404,14 +404,36 @@ struct TranscriptVersionView: Equatable, Sendable {
     }
     var activity: [String: WireValue] = [:] { didSet { if activity != oldValue { activityChanges.send() } } }
     var activityObservedAt: Double = 0
-    @Published var queue: [[String: WireValue]] = []
-    /// The queued follow-up being rewritten in place. This belongs to the chat,
-    /// not to the panel: the queue changes underneath it while a run delivers,
-    /// and the panel has to be sized for the taller row it opens.
+    @Published var queue: [[String: WireValue]] = [] {
+        didSet { if let editing = queueEditingID, !queue.contains(where: { $0["turnId"]?.string == editing }) { queueEditLeft() } }
+    }
+    /// The queued message being rewritten in this chat's composer. It belongs
+    /// to the chat, not to the queue panel, which is rebuilt for each chat and
+    /// leaves the page when the queue empties.
     @Published var queueEditingID: String?
-    /// What was typed into that row, kept with the chat: the panel is rebuilt
-    /// for each chat, and came back showing the original message.
-    var queueEditText: (id: String, text: String)?
+    /// The queued message's text as it was when the composer took it.
+    var queueEditOriginal = ""
+    /// The composer's draft, set aside while it holds the queued message: it
+    /// comes back when the rewrite is saved or cancelled, and it is the draft
+    /// saved for the chat meanwhile.
+    var draftBeforeQueueEdit: DraftRecord?
+    /// The queued message whose whole text is being read before the composer
+    /// takes it, and which read that is.
+    @Published var queueEditPreparing: String?
+    var queueEditRead = UUID()
+    /// The queued message being rewritten left the queue (it was sent, or
+    /// the helper stopped). An untouched rewrite gives back the set-aside
+    /// draft; a changed one stays, ahead of that draft, so nothing typed is lost.
+    private func queueEditLeft() {
+        let before = draftBeforeQueueEdit ?? DraftRecord(id: id, text: "")
+        let rewrite = draft, trimmed = rewrite.trimmingCharacters(in: .whitespacesAndNewlines)
+        let changed = !trimmed.isEmpty && trimmed != queueEditOriginal.trimmingCharacters(in: .whitespacesAndNewlines)
+        queueEditingID = nil; queueEditOriginal = ""; draftBeforeQueueEdit = nil
+        restoreDraft(before)
+        guard changed else { return }
+        draft = before.text.isEmpty ? rewrite : rewrite + "\n\n" + before.text
+        notice = "That queued message left the queue before your rewrite was saved. The rewrite is in the composer."
+    }
     var queueCount = 0 { didSet { if queueCount != oldValue { activityChanges.send() } } }
     @Published var notice = ""
     @Published var before: String?
@@ -510,6 +532,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// snapshot that first carries it is adopted (`adoptOwnBranch`).
     var pendingBranch: PendingBranch?
     var savedDraft: DraftRecord {
+        if queueEditingID != nil, let draftBeforeQueueEdit { return draftBeforeQueueEdit }
         let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills, sourceTimeline: editSourceTimeline, sourceTextDigest: editSourceTextDigest, inputReviewRequired: editInputReviewRequired) }
         return DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, edit: edit)
     }
