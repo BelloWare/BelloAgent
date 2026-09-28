@@ -359,6 +359,12 @@ struct ConversationActionsMenu: View {
             SessionOrganizationActions.entries(model: model, chat: chat)
             PiMenuEntry.divider
         }
+        if model.activeWebhook != nil, model.webhookEligible(chat.id) {
+            PiMenuEntry.button("Send Webhook When Done", checked: chat.webhookOff != true, identifier: "chatWebhook",
+                               help: "When this chat finishes and waits for you, send the webhook set up in Settings") { model.toggleWebhook(for: chat.id) }
+            PiMenuEntry.button("Preview Webhook…", identifier: "previewWebhook") { model.previewWebhook(chat.id) }
+            PiMenuEntry.divider
+        }
         if model.side(session.id) == nil && !chat.isBackgroundTask {
             PiMenuEntry.button("Open Side", enabled: model.canOpenSide(session.id)) { model.openSide(parentID: session.id) }
             PiMenuEntry.button("Portable Context Handoff…") { model.portableHandoff() }

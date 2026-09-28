@@ -230,7 +230,7 @@ final class SendImmediacyTests: XCTestCase {
         chat.type("and keep the tests green")
         await chat.settle(2)
         try chat.reply(try XCTUnwrap(chat.frames("turn.submit").first),
-                       result: ["code": .string("queue_paused"), "message": .string("Resume or remove paused messages before sending another")], ok: false)
+                       result: ["code": .string("cost_limit"), "message": .string("This chat reached its $0.05 cost limit ($0.06 spent). Raise the limit to continue.")], ok: false)
         await chat.until("The refused send never finished") { !chat.session.loading }
         await chat.settle(6)
         XCTAssertTrue(chat.pass().message(text).isEmpty, "The refused message leaves the page")
@@ -238,7 +238,7 @@ final class SendImmediacyTests: XCTestCase {
         XCTAssertEqual(chat.session.attachments, [image], "Its image comes back")
         XCTAssertEqual(chat.session.skills, [skill], "Its skill comes back")
         let failure = try XCTUnwrap(chat.session.presentedMessages.last, "The refusal is shown")
-        XCTAssertEqual(failure.kind, "failure"); XCTAssertTrue(failure.text.contains("Resume or remove"))
+        XCTAssertEqual(failure.kind, "failure"); XCTAssertTrue(failure.text.contains("Raise the limit"))
         XCTAssertTrue(chat.pass().rows.contains { $0.id == failure.id && $0.drawn }, "The failure is drawn in the conversation, where failures show")
         XCTAssertFalse(chat.session.uncertain, "A refused send is not an uncertain one")
         let pending = try await chat.model.store?.list(CommandIntent.self, kind: "pending:\(chat.chat.id)") ?? []

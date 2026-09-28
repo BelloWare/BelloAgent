@@ -26,6 +26,37 @@ final class TitleTaskTests: XCTestCase {
         await host.shutdown()
     }
 
+    /// A webhook's notification is the same kind of utility request as a
+    /// title: the mini model, no tools, no project instructions, and its own
+    /// short instructions and purpose in the request log.
+    func testHostWebhookSessionAsksTheMiniModelWithItsOwnInstructionsAndPurpose() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        try Data("PRIVATE PROJECT INSTRUCTION".utf8).write(to: root.appendingPathComponent("AGENTS.md"))
+        let host = NativeHostService(emit: { _ in })
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(root.appendingPathComponent("state").path), "mcp": ["servers": [:]]])
+        _ = try await host.command("session.open", sessionID: "webhook-job", params: ["profile": try fixtureProfile().raw, "apiKey": "synthetic", "backgroundTask": "webhook", "toolMode": "editing"])
+        let preview = try await host.command("context.preview", sessionID: "webhook-job", params: ["text": "Write the notification", "model": "mini-fixture", "thinkingLevel": "default", "contextWindow": 16000, "maxOutputTokens": 2048])
+        let page = try await host.command("context.preview.read", sessionID: "webhook-job", params: ["revision": preview["revision"], "section": "request"])
+        let body = try JSON.parse(Data(page["text"].text!.utf8))
+        XCTAssertEqual(body["model"].text, "mini-fixture"); XCTAssertEqual(body["max_output_tokens"].int, 2048)
+        XCTAssertTrue(body["tools"].list.isEmpty)
+        XCTAssertFalse(body.encoded().contains("PRIVATE PROJECT INSTRUCTION"))
+        let system = RequestContextCounter.systemPrompt(body) ?? ""
+        XCTAssertTrue(system.hasPrefix("Write the notification a webhook sends"), system)
+        XCTAssertFalse(system.contains("session title"))
+        let status = try await host.command("session.status", sessionID: "webhook-job", params: [:])
+        XCTAssertEqual(status["toolMode"].text, "read-only")
+        await host.shutdown()
+
+        let client = ScriptClient([answer(#"{"title": "Done"}"#)])
+        let session = try AgentSession(id: "webhook", profile: fixtureProfile(), apiKey: "synthetic", cwd: root, directory: root.appendingPathComponent("webhook-state"), readOnly: true, resources: Resources(cwd: root, titleTask: true, utility: "webhook"), client: client, tools: DisabledTools(), traces: TraceStore(), autoCompaction: false, titleTask: true, utilityPurpose: "webhook")
+        _ = try await session.submit(Submission(commandID: "webhook-command", turnID: "webhook-turn", text: "Write the notification", model: "mini-fixture", thinkingLevel: "default", contextWindow: 16000, maxOutputTokens: 2048), steer: false)
+        try await eventually { !(await session.isRunning) }
+        let purposes = await client.purposes
+        XCTAssertEqual(purposes, ["webhook"], "The request log names the webhook's request")
+        await session.close()
+    }
+
     func testTitlePurposeAndJournalSurviveRestartWithoutResubmission() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = ScriptClient([answer("Improve the catalog picker")])

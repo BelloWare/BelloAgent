@@ -69,15 +69,14 @@ struct SessionRatePresentation: Equatable {
     static let explanation = SettledThroughput.explanation + " The latest completed request stays visible while the next one runs."
     let latest: Double?
     let average: Double?
-    let hasCompletion: Bool
     init(history: SessionTimingHistory) {
         latest = history.latest?.settledTokensPerSecond
         average = (history.historicalSettledThroughput ?? history.settledThroughput).tokensPerSecond
-        hasCompletion = history.latest != nil
     }
-    var label: String {
-        latest.map { "Latest " + Self.compactRate($0) } ?? (hasCompletion ? "Usage unavailable" : "Awaiting usage")
-    }
+    /// The latest completed request's rate, or nothing. A reply too short to
+    /// measure, or one without reported usage, leaves the slot empty: it used
+    /// to say "Usage unavailable" beside a chat whose tokens and cost were known.
+    var label: String? { latest.map { "Latest " + Self.compactRate($0) } }
     /// The sidebar gives this label a fixed 108-point slot. A fast route
     /// reporting five or six digits ran past it and was cut mid-number
     /// ("Latest 126397 to…"), which reads as a broken figure rather than a

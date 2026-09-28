@@ -1,5 +1,21 @@
 import Foundation
 
+/// A throwaway request to a connection's mini model (`askMiniModel`).
+struct MiniModelRequest: Sendable {
+    var model: String
+    var contextWindow: Int
+    var maxOutputTokens: Int
+    var modelOutputLimit: Int?
+    var thinkingLevel: String
+    var prompt: String
+    /// The throwaway chat's `backgroundTask`: "title-suggestions" or "webhook".
+    var task: String
+    var title: String
+    var timeout: TimeInterval
+    /// How errors name the request: "suggestion request".
+    var name: String
+}
+
 struct TitleGenerationPlan: Sendable {
     static let fixedTitle = "Title generation"
     let model: String
@@ -103,7 +119,7 @@ extension WorkspaceModel {
     /// Three title suggestions from the connection's mini model, based on the
     /// chat's first message. The throwaway request session is removed afterwards.
     func suggestTitles(for chatID: String) async throws -> [String] {
-        guard !installPreparing, let source = record(chatID), let profile = profiles.first(where: { $0.id == source.profileID }), let store else {
+        guard !installPreparing, let source = record(chatID), let profile = profiles.first(where: { $0.id == source.profileID }), store != nil else {
             throw HostError.failure("This chat's connection is unavailable.")
         }
         _ = await listModels(for: profile)
@@ -117,10 +133,24 @@ extension WorkspaceModel {
         guard let plan = TitleGenerationPlan(profile: profile, descriptors: descriptors, input: input, variants: 3) else {
             throw HostError.failure("The mini model's context is too small for a suggestion request.")
         }
+        let request = MiniModelRequest(model: plan.model, contextWindow: plan.contextWindow, maxOutputTokens: plan.maxOutputTokens,
+                                       modelOutputLimit: plan.modelOutputLimit, thinkingLevel: plan.thinkingLevel, prompt: plan.prompt,
+                                       task: "title-suggestions", title: "Title suggestions", timeout: 45, name: "suggestion request")
+        let titles = TitleGenerationPlan.titles(from: try await askMiniModel(request, profile: profile, sourceID: chatID), limit: 3)
+        guard !titles.isEmpty else { throw HostError.failure("The mini model did not return usable titles.") }
+        return titles
+    }
+
+    /// One request to the connection's mini model, in a throwaway chat
+    /// outside any project that is removed afterwards: title suggestions and
+    /// webhook notifications. Returns the finished reply's rows. Cancelling
+    /// the calling task stops the request as well as the polling.
+    func askMiniModel(_ request: MiniModelRequest, profile: ProfileRecord, sourceID: String) async throws -> [TranscriptMessage] {
+        guard let store else { throw StoreError.unavailable }
         let taskID = UUID().uuidString
-        var item = ChatRecord(id: taskID, workspaceID: WorkspaceRecord.scratchID, title: "Title suggestions", path: nil, profileID: profile.id, toolMode: "read-only", connectionTest: true,
-                              model: plan.model, thinkingLevel: plan.thinkingLevel, contextWindow: plan.contextWindow, maxOutputTokens: plan.maxOutputTokens, modelOutputLimit: plan.modelOutputLimit)
-        item.backgroundTask = "title-suggestions"; item.sourceSessionID = chatID
+        var item = ChatRecord(id: taskID, workspaceID: WorkspaceRecord.scratchID, title: request.title, path: nil, profileID: profile.id, toolMode: "read-only", connectionTest: true,
+                              model: request.model, thinkingLevel: request.thinkingLevel, contextWindow: request.contextWindow, maxOutputTokens: request.maxOutputTokens, modelOutputLimit: request.modelOutputLimit)
+        item.backgroundTask = request.task; item.sourceSessionID = sourceID
         try await store.put(item, kind: "chat", id: taskID)
         chats.append(item)
         let display = SessionDisplay(id: taskID); displays[taskID] = display; display.loading = true
@@ -148,25 +178,24 @@ extension WorkspaceModel {
         let connected = try await open(item); host = connected
         let turn = UUID().uuidString
         try requireConnection(lease)
-        _ = try await connected.request("turn.submit", sessionID: taskID, params: TurnOverrides.params(for: item, base: ["text": .string(plan.prompt), "clientTurnId": .string(turn)]))
-        let deadline = ProcessInfo.processInfo.systemUptime + 45
+        _ = try await connected.request("turn.submit", sessionID: taskID, params: TurnOverrides.params(for: item, base: ["text": .string(request.prompt), "clientTurnId": .string(turn)]))
+        let deadline = ProcessInfo.processInfo.systemUptime + request.timeout
         while ProcessInfo.processInfo.systemUptime < deadline {
             try Task.checkCancellation()
             let snapshot = try await connected.request("session.snapshot", sessionID: taskID).object ?? [:]
             let state = snapshot["state"]?.string ?? ""
             if state == "idle", let value = snapshot["messages"] {
                 let messages = try TranscriptMessage.page(value)
-                if messages.contains(where: { $0.role == "assistant" && $0.state != "streaming" }) {
-                    let titles = TitleGenerationPlan.titles(from: messages, limit: 3)
-                    guard !titles.isEmpty else { throw HostError.failure("The mini model did not return usable titles.") }
-                    return titles
-                }
+                if messages.contains(where: { $0.role == "assistant" && $0.state != "streaming" }) { return messages }
             }
-            if ["error", "failed", "cancelled", "interrupted", "paused"].contains(state) { throw HostError.failure("The suggestion request did not complete.") }
+            if ["error", "failed", "cancelled", "interrupted", "paused"].contains(state) {
+                let detail = snapshot["preflightError"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                throw HostError.failure("The \(request.name) did not complete" + (detail.isEmpty ? "." : ": " + detail))
+            }
             try await Task.sleep(for: .milliseconds(250))
         }
         _ = try? await connected.request("turn.stop", sessionID: taskID)
-        throw HostError.failure("The suggestion request timed out.")
+        throw HostError.failure("The \(request.name) timed out.")
     }
 
     /// Chats and saved side chats schedule at most one task at a time,
@@ -208,11 +237,12 @@ extension WorkspaceModel {
             self.scheduleTitleGeneration(sourceID: sourceID, input: input)
         }
     }
-    /// Title suggestions are asked for while the rename sheet is open and
-    /// their row is removed when it closes; a quit in between left the row
-    /// for good. Launch removes them.
+    /// Title suggestions are asked for while the rename sheet is open, and a
+    /// webhook's notification while it is sent; their rows are removed when
+    /// the request ends, and a quit in between left them for good. Launch
+    /// removes them.
     func dropLeftoverTitleSuggestions() async {
-        let leftovers = chats.filter { $0.backgroundTask == "title-suggestions" }.map(\.id)
+        let leftovers = chats.filter { ["title-suggestions", "webhook"].contains($0.backgroundTask ?? "") }.map(\.id)
         guard !leftovers.isEmpty else { return }
         chats.removeAll { leftovers.contains($0.id) }
         for id in leftovers { try? await store?.remove(kind: "chat", id: id) }

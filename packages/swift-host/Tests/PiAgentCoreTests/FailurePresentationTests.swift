@@ -36,21 +36,25 @@ final class FailurePresentationTests: XCTestCase {
         let path = try XCTUnwrap(failed["path"].text)
         await session.close()
 
-        let replay = ScriptClient([answer("Follow-up completed")])
+        let replay = ScriptClient([answer("Follow-up completed"), answer("Another answer")])
         let reopened = try AgentSession(id: "failed", profile: profile, apiKey: "fixture", cwd: root, directory: directory, readOnly: true, resources: Resources(cwd: root, home: root), client: replay, tools: RecordingTools(), traces: TraceStore(), resumePath: path, autoCompaction: false)
         let restored = await reopened.snapshot(["includeMessages": false]), beforeResume = await replay.count
         XCTAssertEqual(restored["state"].text, "error")
         XCTAssertEqual(restored["preflightError"], failed["preflightError"])
         XCTAssertEqual(restored["queuePaused"].flag, true)
         XCTAssertEqual(beforeResume, 0, "Opening retained failure must not retry its request or follow-ups")
-        do {
-            _ = try await reopened.submit(Submission(commandID: "new", turnID: "new", text: "Another question"), steer: false)
-            XCTFail("Paused follow-ups require an explicit resume or removal")
-        } catch let error as AgentError { XCTAssertEqual(error.code, "queue_paused") }
+        // A message sent while paused joins the paused queue, after what was
+        // waiting, and nothing goes out until Resume.
+        let joined = try await reopened.submit(Submission(commandID: "new", turnID: "new", text: "Another question"), steer: false)
+        XCTAssertEqual(joined["queued"].flag, true); XCTAssertEqual(joined["delivery"].text, "after-resume"); XCTAssertEqual(joined["queueCount"].int, 2)
+        let waiting = await reopened.snapshot(["includeMessages": false]), stillNothing = await replay.count
+        XCTAssertEqual(waiting["queuePaused"].flag, true); XCTAssertEqual(waiting["queueCount"].int, 2); XCTAssertEqual(stillNothing, 0)
         try await reopened.resumeQueue(); try await eventually { !(await reopened.isRunning) }
         let completed = await reopened.snapshot(["includeMessages": false]), afterResume = await replay.count
         XCTAssertEqual(completed["state"].text, "idle"); XCTAssertTrue(completed["preflightError"].isNull)
-        XCTAssertEqual(afterResume, 1)
+        XCTAssertEqual(afterResume, 2)
+        let sent = await replay.requests.compactMap { $0.last(where: { $0.role == "user" })?.text }
+        XCTAssertEqual(sent, ["Follow-up", "Another question"], "The paused follow-up goes first, then the new message")
         await reopened.close()
     }
 

@@ -67,7 +67,7 @@ extension AgentSession {
         requestObservation=nil
         observationEstimate=currentContextCount?.json ?? .null
         let bound=boundProfile ?? turnProfile
-        publishedObservation=["sessionID":JSON(id),"turnID":JSON(currentTurnID),"purpose":JSON(titleTask ? "title":"turn"),
+        publishedObservation=["sessionID":JSON(id),"turnID":JSON(currentTurnID),"purpose":JSON(titleTask ? utilityPurpose:"turn"),
             "runtimeEpoch":JSON(displayEpoch),"generation":JSON(Int(observationGeneration)),"replayRevision":JSON(Int(contextMutation)),
             "phase":"preparing","requestedModel":JSON(bound.model),"contextWindow":JSON(bound.contextWindow),
             "estimate":observationEstimate,"attemptID":.null,"requestFingerprint":.null]
@@ -77,7 +77,7 @@ extension AgentSession {
     }
     func observe(_ observation: RequestObservation, generation: UInt64) {
         guard !closed, generation == observationGeneration, observation.sessionID == id,
-              observation.turnID == currentTurnID, observation.purpose == (titleTask ? "title" : "turn") else { return }
+              observation.turnID == currentTurnID, observation.purpose == (titleTask ? utilityPurpose : "turn") else { return }
         if let current=requestObservation, current.attemptID != observation.attemptID { return }
         if let current=requestObservation {
             if let previous=current.eventSequence, let incoming=observation.eventSequence, incoming<previous { return }

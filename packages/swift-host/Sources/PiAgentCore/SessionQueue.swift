@@ -17,19 +17,23 @@ extension AgentSession {
         _ = try profile.overriding(model:input.model,thinkingLevel:input.thinkingLevel,contextWindow:input.contextWindow,maxOutputTokens:input.maxOutputTokens,modelOutputLimit:input.modelOutputLimit)
         if steer, runTask == nil { throw AgentError("not_running", "Steering requires an active run; send a normal message") }
         // A message sent to a chat at its cost limit is refused where it was
-        // typed, with the same words as a run stopped there. One sent while a
-        // run is going waits in the queue, which pauses if the run stops.
+        // typed, with the same words as a run stopped there, also when earlier
+        // messages wait: nothing can run until the limit is raised. One sent
+        // while a run is going waits in the queue, which pauses if the run stops.
         if !steer, runTask == nil { try enforceCostLimit() }
-        if !steer, runTask == nil, queuePaused, !queue.isEmpty || !steering.isEmpty { throw AgentError("queue_paused", "Resume or remove paused messages before sending another") }
     }
+    /// Stop (or a failure) left messages waiting: a new one joins them, after
+    /// them, and nothing is sent until Resume.
+    var pausedWithPending: Bool { runTask == nil && queuePaused && (!queue.isEmpty || !steering.isEmpty) }
     public func submit(_ input: Submission, steer: Bool) throws -> JSON {
         try validate(input,steer:steer)
+        let paused = pausedWithPending
         if steer { steering.append(input) } else { queue.append(input) }; commandState(input,"queued")
         do { try persistState() } catch { if steer { steering.removeLast() } else { queue.removeLast() }; commands.removeAll{$0["turnId"].text == input.turnID}; throw error }
         event(steer ? "steering.queued" : "queue.changed")
-        let queued=runTask != nil
-        if runTask == nil { queuePaused=false; launch() }
-        return ["accepted":true,"turnId":JSON(input.turnID),"queued":JSON(queued),"queueCount":JSON(queue.count),"delivery":JSON(steer ? "after-current-model-tool-turn" : queued ? "after-run-would-stop" : "start")]
+        let queued=runTask != nil || paused
+        if runTask == nil, !paused { queuePaused=false; launch() }
+        return ["accepted":true,"turnId":JSON(input.turnID),"queued":JSON(queued),"queueCount":JSON(queue.count),"delivery":JSON(steer ? "after-current-model-tool-turn" : paused ? "after-resume" : queued ? "after-run-would-stop" : "start")]
     }
     public func removeQueued(_ turnID: String) throws {
         guard let item=(queue+steering).first(where:{$0.turnID == turnID}) else { throw AgentError("queue_missing", "Queued message is no longer pending") }

@@ -98,6 +98,7 @@ final class LiveWorkingIndicatorTests: XCTestCase {
         XCTAssertEqual(ComposerSubmissionIntent.hint(queues: false), "↩ Send · ⇧↩ New line")
         XCTAssertEqual(ComposerSubmissionIntent.hint(queues: true, onBar: true), "⇧↩ New line")
         XCTAssertEqual(ComposerSubmissionIntent.hint(queues: true, onBar: false), "↩ Queue · ⌘↩ Steer · ⇧↩ New line")
+        XCTAssertEqual(ComposerSubmissionIntent.hint(queues: true, steers: false), "↩ Queue · ⇧↩ New line", "A paused queue has no run to steer")
         pane.session.state = "idle"
         await pane.settle(4)
     }

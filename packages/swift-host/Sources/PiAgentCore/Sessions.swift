@@ -160,7 +160,11 @@ public actor AgentSession {
     var assistantMessageCount = 0
     var latestAssistantMessageID: String?
     let autoCompaction: Bool
+    /// A utility request with no tools and no project context: a chat title,
+    /// or the notification a webhook sends. `utilityPurpose` names it in the
+    /// request log ("title" or "webhook").
     let titleTask: Bool
+    let utilityPurpose: String
     /// Whether tool cards report the recorded outcome (`unknown` for a call
     /// that began and was interrupted, `cancelled` for one that never ran).
     /// A reader that did not ask for this sees the states it always saw.
@@ -192,8 +196,8 @@ public actor AgentSession {
     // integer increment each, on paths that already build a page.
     var displayProjectionBuildCount = 0
     var displayRowProjectionCount = 0
-    public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
-        self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.editingGate=editingGate; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
+    public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
+        self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.editingGate=editingGate; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.utilityPurpose=utilityPurpose; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
             history=seed; context=seed; boundary=seed; visible=seed; toolHistory=ToolHistoryIndex(seed); parentInfo=parent; ephemeral=true
             taskRootID=seed.last(where: { $0.role == "user" })?.taskRootID

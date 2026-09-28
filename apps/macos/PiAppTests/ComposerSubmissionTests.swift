@@ -202,9 +202,14 @@ final class ComposerSubmissionTests: XCTestCase {
         XCTAssertEqual(view.draft, "preserved stale steer")
         XCTAssertEqual(view.sendFailure, "The run finished. Press Return to send this as a new message.")
         XCTAssertFalse(view.uncertain)
+        // Paused, the same keys send a message that joins the waiting queue,
+        // after what was already there, instead of being refused.
         view.state = "paused"; key(36, .command, editor: editor); try await accepted()
-        XCTAssertTrue(view.sendFailure?.contains("Resume or remove") == true)
-        XCTAssertEqual(view.draft, "preserved stale steer")
+        XCTAssertNil(view.sendFailure); XCTAssertEqual(view.draft, "")
+        let paused = try await host.request("session.snapshot", sessionID: chat.id).object ?? [:]
+        let followUps = (paused["queue"]?.array?.compactMap(\.object) ?? []).filter { $0["kind"]?.string == "follow-up" }.compactMap { $0["text"]?.string }
+        XCTAssertEqual(followUps, ["follow up", "preserved stale steer"], "It waits after what was queued")
+        XCTAssertEqual(paused["queuePaused"]?.bool, true, "Nothing is sent until Resume")
     }
 }
 

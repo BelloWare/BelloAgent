@@ -33,8 +33,11 @@ struct PiSheet<Content: View, Actions: View, Footer: View>: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .leading) {
-                if windowChrome { PiWindowBar() }
+            // In a window of its own the header is also the title bar: the
+            // drag area lies behind it and takes no room. As a sibling in a
+            // stack, the bar, an AppKit view without a height of its own, took
+            // the window's spare height and swelled the header to a third of it.
+            Group {
                 HStack(alignment: .center, spacing: PiSpacing.md) {
                     if let symbol {
                         PiIconBadge(symbol: symbol, size: 30)
@@ -53,6 +56,8 @@ struct PiSheet<Content: View, Actions: View, Footer: View>: View {
                 .padding(.trailing, PiSpacing.xl)
                 .padding(.top, windowChrome ? PiSpacing.md : PiSpacing.lg).padding(.bottom, PiSpacing.lg)
             }
+            .fixedSize(horizontal: false, vertical: true)
+            .background { if windowChrome { PiWindowBar() } }
             .background(Color.piWindow)
             Rectangle().fill(Color.piHairline).frame(height: 1)
             content.frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.piContent)

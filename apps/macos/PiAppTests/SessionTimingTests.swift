@@ -186,7 +186,7 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertNil(zeroDuration.settledTokensPerSecond, "and divides by nothing: no rate, never an infinite one")
         XCTAssertNil(history.samples.first { $0.id == missingEndID }?.requestMilliseconds)
         XCTAssertEqual(history.latest?.id, missingUsageID)
-        XCTAssertEqual(SessionRatePresentation(history: history).label, "Usage unavailable")
+        XCTAssertNil(SessionRatePresentation(history: history).label, "No measured rate: the sidebar slot stays empty")
         // The migration re-projected every retained request's duration from
         // its metadata; the expired one and the one never dispatched are gone.
         XCTAssertEqual(history.samples.map(\.id), [hiddenID, zeroID, zeroDurationID, missingEndID, missingUsageID])
@@ -643,7 +643,11 @@ final class SessionTimingTests: XCTestCase {
                 XCTAssertEqual(hosted.bounds.width, width + 24, accuracy: 0.5)
                 XCTAssertTrue(rendered.contains("12.34"), "Cost must remain visible at \(width)pt: \(rendered)")
                 // The 99 tokens after the first over the 800 ms decode span: 124 tok/s.
-                XCTAssertTrue(rendered.contains(item.output == nil ? "usage unavailable" : "latest 124"), "The complete rate label must remain visible at \(width)pt: \(rendered)")
+                if item.output == nil {
+                    XCTAssertFalse(rendered.contains("unavailable") || rendered.contains("latest"), "No measured rate leaves the slot empty at \(width)pt: \(rendered)")
+                } else {
+                    XCTAssertTrue(rendered.contains("latest 124"), "The complete rate label must remain visible at \(width)pt: \(rendered)")
+                }
                 if item.state != "idle" { XCTAssertTrue(rendered.contains(item.state), rendered) }
                 let height = hosted.fittingSize.height
                 if width == 226 { wideHeights[id] = height }

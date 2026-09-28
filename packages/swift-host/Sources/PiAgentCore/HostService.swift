@@ -229,16 +229,18 @@ public actor NativeHostService {
                 }
                 let original=try Profile(params["profile"]), (profile,key)=try ProfileFiles.credentials(profile:original,supplied:params["apiKey"].text)
                 let mode=params["toolMode"].text ?? "editing"; guard ["editing","read-only"].contains(mode) else { throw AgentError("tool_mode", "Unknown tool mode") }
-                let titleTask = params["backgroundTask"].text == "session-title"
+                // Utility requests: a chat's title, or a webhook's notification.
+                let utility = params["backgroundTask"].text == "webhook" ? "webhook" : "title"
+                let titleTask = ["session-title", "webhook"].contains(params["backgroundTask"].text ?? "")
                 guard params["backgroundTask"].isNull || titleTask else { throw AgentError("invalid_params", "Unknown background task") }
-                let sessionResources = titleTask ? Resources(cwd: cwd, titleTask: true) : resources
+                let sessionResources = titleTask ? Resources(cwd: cwd, titleTask: true, utility: utility) : resources
                 // Opening parses and replays the whole journal. Do it off this
                 // actor, which every other chat's commands go through; the
                 // runtime gate still serializes opens and closes.
                 let tools: any ToolExecuting = titleTask || params["connectionTest"].flag == true ? DisabledTools() : nativeTools
                 let client=ProviderClient(traces:traces), traces=traces, gate=editingGate, changed=notification(), resume=params["path"].text, readOnly=titleTask || mode == "read-only", outcomes=unknownToolOutcomes
                 let session=try await Task.detached(priority:.userInitiated) {
-                    try AgentSession(id:id,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:readOnly,resources:sessionResources,client:client,tools:tools,traces:traces,editingGate:gate,resumePath:resume,autoCompaction:!titleTask,titleTask:titleTask,unknownToolOutcomes:outcomes,changed:changed)
+                    try AgentSession(id:id,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:readOnly,resources:sessionResources,client:client,tools:tools,traces:traces,editingGate:gate,resumePath:resume,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utility,unknownToolOutcomes:outcomes,changed:changed)
                 }.value
                 sessions[id]=session; profiles[id]=(profile,key); touch(id)
                 if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }

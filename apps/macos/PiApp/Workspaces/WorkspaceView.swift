@@ -109,6 +109,7 @@ struct WorkspaceView: View {
         .sheet(isPresented: $model.showWorkspaceManager) { WorkspaceManagerView(model: model) }
         .sheet(item: $model.renameTarget) { target in RenameChatSheet(model: model, chatID: target.id) }
         .sheet(item: $model.topicEditor) { target in TopicSheet(model: model, target: target) }
+        .sheet(item: $model.webhookPreviewTarget) { target in WebhookPreviewSheet(model: model, chatID: target.id) }
         .sheet(isPresented: $model.showGit) {
             if let project = model.workspaces.first(where: { $0.id == (model.gitWorkspaceID ?? model.selectedWorkspaceID) }) { GitPanelView(model: model, roots: project.roots) }
         }

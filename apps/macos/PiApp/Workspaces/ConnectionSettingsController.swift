@@ -102,6 +102,7 @@ import SwiftUI
         if edits.completionSoundEnabled != baseline.completionSoundEnabled { merged.completionSoundEnabled = edits.completionSoundEnabled }
         if edits.transcriptView != baseline.transcriptView { merged.transcriptView = edits.transcriptView }
         if edits.chatCostLimit != baseline.chatCostLimit { merged.chatCostLimit = edits.chatCostLimit }
+        if edits.webhook != baseline.webhook { merged.webhook = edits.webhook }
         return merged
     }
     /// Reads the vault. Stashed edits survive a load caused by a save; the reload button discards them.
