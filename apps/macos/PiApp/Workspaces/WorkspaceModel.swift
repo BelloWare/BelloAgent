@@ -120,6 +120,9 @@ enum WorkspacePage: String, Sendable { case chats, report }
     @Published var topicEditor: TopicEditorTarget?
     /// The chat whose webhook the preview sheet shows.
     @Published var webhookPreviewTarget: RenameTarget?
+    /// The Settings section open in the sheet and the window, kept while the
+    /// app runs so Settings reopens where it was left.
+    @Published var settingsSection: SettingsSection = .connections
     var topicExpansionRequests: [String: Bool] = [:]
     var topicExpansionWrites: [String: Task<Void, Never>] = [:]
     var topicOperationsInFlight = 0

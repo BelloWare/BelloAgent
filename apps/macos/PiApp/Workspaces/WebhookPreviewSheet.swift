@@ -23,7 +23,7 @@ struct WebhookPreviewSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: PiSpacing.lg) {
                     if settings == nil {
-                        PiNote("The webhook is off. Turn it on in Settings → Notifications.", tone: .warning)
+                        PiNote("The webhook is off. Turn it on in Settings → Chats & notifications.", tone: .warning)
                     } else if chat?.webhookOff == true {
                         PiNote("This chat sends no webhook when it finishes; its ⋯ menu turns it back on. Send Now still sends this one.", tone: .warning)
                     }
