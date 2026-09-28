@@ -211,7 +211,10 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         elif "large" in prompt.lower():
             text += "\n\n" + "\n\n".join(f"### Section {i}\nSynthetic searchable paragraph {i}: **bold**, `code`, 中文🙂, and stable scroll anchors." for i in range(1, 101))
         elif "slow" in prompt.lower():
-            text += "\n\n" + " ".join(f"stream-{i:02d}" for i in range(1, 81))
+            # PI_APP_UI_FIXTURE_SLOW_WORDS lengthens the slow turn (80 words,
+            # about 20 s, by default) for a caller that must stop it first.
+            words = int(os.environ.get("PI_APP_UI_FIXTURE_SLOW_WORDS", "80"))
+            text += "\n\n" + " ".join(f"stream-{i:02d}" for i in range(1, words + 1))
         chunk_size = 1024 if stress_markdown else 8192 if bulk else 36
         delay = float(os.environ.get("PI_APP_UI_FIXTURE_SUMMARY_DELAY", "0.03")) if summary else (
             0.03 if webhook else 0.025 if stress_markdown else 0.002 if bulk else 0.8 if "slow" in prompt.lower() else 0.035 if "large" in prompt.lower() else 0.03)

@@ -49,7 +49,10 @@ final class UIScreenshotTests: XCTestCase {
         fixture.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         fixture.arguments = ["-u", repository.appendingPathComponent("fixtures/native/ui-gateway.py").path]
         fixture.currentDirectoryURL = folder; fixture.standardOutput = pipe; fixture.standardError = FileHandle.nullDevice
-        fixture.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": folder.path]
+        // The slow turn (13) is stopped at about 20 s, after four captures: at
+        // the default 20 s it could end first, under a loaded gate, and its
+        // follow-up then ran instead of waiting in the queue (13c).
+        fixture.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": folder.path, "PI_APP_UI_FIXTURE_SLOW_WORDS": "200"]
         try fixture.run()
         defer { if fixture.isRunning { fixture.terminate(); fixture.waitUntilExit() } }
         let handle = pipe.fileHandleForReading
