@@ -196,6 +196,9 @@ public actor AgentSession {
     // integer increment each, on paths that already build a page.
     var displayProjectionBuildCount = 0
     var displayRowProjectionCount = 0
+    /// How every run-state record this helper writes begins: the journal is
+    /// written with sorted keys, and `customType` sorts first.
+    static let stateRecordPrefix = Data(#"{"customType":"pi-app.native.state.v1","#.utf8)
     public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
         self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.editingGate=editingGate; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.utilityPurpose=utilityPurpose; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
@@ -208,11 +211,20 @@ public actor AgentSession {
         guard within(url,canonical(directory.path)) else { throw AgentError("session_scope", "Writable sessions must be in the app-managed directory") }
         let opened=try SessionJournal(url:url,id:id,cwd:cwd,binding:profile.binding,create:resumePath == nil,beforeAppend:beforeJournalAppend,beforeSynchronize:beforeJournalSynchronize); journal=opened
         var stateRecord: JSON?
+        // The run state is written several times a turn and only the newest
+        // counts; in a long chat those snapshots were most of the journal and
+        // most of the time it took to open. Keep the newest one's line and
+        // parse it once, at the end; a superseded one is not read at all. A
+        // line of another shape is read as before.
+        var newestStateLine: Data?
         // A journal this runtime creates counts every attempt from its first;
         // a reopened one does when it holds a cost record (below).
         spendTracked = resumePath == nil
         let replay=try opened.recordReader()
-        while let item=try replay.next() {
+        while let line=try replay.nextLine() {
+            if line.isEmpty { continue }
+            if line.starts(with: Self.stateRecordPrefix) { newestStateLine=line; continue }
+            let item=try JSON.parse(line)
             if item["customType"].text == SessionSpend.recordType { spend.add(record: item["data"]); spendTracked = true; continue }
             if item["type"].text == "message" {
                 let message=try ChatMessage(id:required(item["id"],"message id"),pi:item["message"]); history.append(message); if !["execution","requestLedger"].contains(message.kind ?? "") { context.append(message) }; visible.append(message)
@@ -246,7 +258,7 @@ public actor AgentSession {
                 // New branches publish their replacement queue in the same
                 // durable record. A crash before delivery restores it paused.
                 }
-                if !item["nativeState"].isNull { stateRecord=item["nativeState"] }
+                if !item["nativeState"].isNull { stateRecord=item["nativeState"]; newestStateLine=nil }
                 contextRecovery = .null; compactionState = .null
             } else if item["customType"].text == "pi-app.presentation.update.v1" {
                 let target = try identity(item["data"]["id"])
@@ -261,7 +273,7 @@ public actor AgentSession {
                 guard task.valid, task.terminal else { throw AgentError("session_damaged", "Invalid task completion evidence") }
                 recentTaskPresentations.removeAll { $0.key == task.key }; recentTaskPresentations.append(task)
                 if recentTaskPresentations.count > 64 { recentTaskPresentations.removeFirst() }
-            } else if item["customType"].text == "pi-app.native.state.v1" { stateRecord=item["data"] }
+            } else if item["customType"].text == "pi-app.native.state.v1" { stateRecord=item["data"]; newestStateLine=nil }
             else if item["customType"].text == "pi-app.compaction-failure.v1" { failedCompactionFingerprint=item["data"]["fingerprint"].text }
             else if item["customType"].text == "pi-app.context-recovery.v1" { contextRecovery=item["data"] }
             else if item["customType"].text == "pi-app.native.context.v1" {
@@ -288,6 +300,11 @@ public actor AgentSession {
             if let shown = visible.firstIndex(where: { $0.id == replacement.id }) { visible[shown] = replacement }
         }
         presentationOrdinal = history.compactMap(\.responseTimeline).flatMap(\.segments).map { $0.part.sessionOrdinal ?? $0.part.ordinal }.max() ?? 0
+        if let line=newestStateLine {
+            let item=try JSON.parse(line)
+            guard item["customType"].text == "pi-app.native.state.v1" else { throw AgentError("session_damaged", "Invalid session state record") }
+            stateRecord=item["data"]
+        }
         if let saved=stateRecord {
             if !saved["taskPresentation"].isNull,
                var task = try? JSONDecoder().decode(TaskPresentationRecord.self, from: saved["taskPresentation"].data()),

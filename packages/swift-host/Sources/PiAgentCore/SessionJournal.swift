@@ -47,10 +47,21 @@ final class SessionJournal {
             guard let header=try reader.next(), header["type"].text == "session", header["version"].int == 3, header["id"].text == id else { throw AgentError("session_identity", "Session header does not match its identity") }
             var last: String?, seen=Set<String>()
             var marker: JSON?
-            while let item=try reader.next() {
-                let rid=try identity(item["id"])
-                guard seen.insert(rid).inserted, item["parentId"].text == last else { throw AgentError("session_damaged", "Native journal must be a valid single branch") }; last=rid
-                if marker == nil, item["customType"].text == "pi-app.native.v1" { marker=item }
+            // The chain needs each record's id, parent and kind, which a scan
+            // reads without building the record; the replay that follows
+            // parses what it uses. A line the scan cannot read plainly is
+            // parsed in full, as before.
+            while let line=try reader.nextLine() {
+                if line.isEmpty { continue }
+                let item: JSON?, fields: JournalLineScan.Fields
+                if let scanned=JournalLineScan.fields(line), scanned.id != nil { item = nil; fields = scanned }
+                else {
+                    let parsed=try JSON.parse(line); item = parsed
+                    fields = JournalLineScan.Fields(id: parsed["id"].text, parentID: parsed["parentId"].text, customType: parsed["customType"].text)
+                }
+                let rid=try identity(item?["id"] ?? .string(fields.id ?? ""))
+                guard seen.insert(rid).inserted, fields.parentID == last else { throw AgentError("session_damaged", "Native journal must be a valid single branch") }; last=rid
+                if marker == nil, fields.customType == "pi-app.native.v1" { marker=try item ?? JSON.parse(line) }
             }
             if !create {
                 guard let marker, marker["data"]["binding"] == binding else { throw AgentError("legacy_session", "This is not a compatible native session. Original Pi history remains read-only; use an explicit portable handoff.") }
