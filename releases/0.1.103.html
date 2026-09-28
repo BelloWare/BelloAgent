@@ -1,0 +1,7 @@
+<h2>Bello Agent 0.1.103</h2>
+<ul>
+<li>The request log no longer stops recording. One slow save, for example while a large compaction request was being written, switched capture off until the helper restarted, so later requests showed no body, headers or events. Capture now catches up instead, and a model request never waits for the log.</li>
+<li>Nothing in the request log is capped any more: every request, every body at full size, every streamed event and every message link is kept. Retention still applies, and the payload quota if you set one.</li>
+<li>Settings: the payload quota has an Unlimited choice, which never deletes a body to make room.</li>
+<li>Editing a queued message now happens in the chat's composer, in the same style as editing an earlier message. Return saves it in its place in the queue, Cancel leaves it as it was, and your draft comes back either way.</li>
+</ul>
