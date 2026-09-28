@@ -30,10 +30,13 @@ extension WorkspaceModel {
             // A record this build cannot read is no record: the launch opens
             // what it always did.
             let remembered = (try? await savedSelection)?.sanitized
+            // In the same turn as the rows: a chat opened from the first
+            // painted row brings its side back, and a pane opened or closed
+            // from then on is kept track of on top of what was read.
             chats = restored
+            adoptRememberedSelection(remembered)
             await dropLeftoverTitleSuggestions()
             await nameUnnamedJournals()
-            adoptRememberedSelection(remembered)
             try await restoreTopics()
             try await restoreReadStates()
             await reconcileSideKeeps()
