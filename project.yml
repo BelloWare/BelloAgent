@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.105
-    CURRENT_PROJECT_VERSION: 109
+    MARKETING_VERSION: 0.1.106
+    CURRENT_PROJECT_VERSION: 110
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "A chat that finishes and waits for you can send a webhook, with a title and summary written by the mini model. A message sent while the queue is paused now joins it."
+    RELEASE_MESSAGE: "A turn's usage line counts the request that is still running once, so a turn of four requests no longer reads 3 of 5."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO
