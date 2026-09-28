@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.103
-    CURRENT_PROJECT_VERSION: 107
+    MARKETING_VERSION: 0.1.104
+    CURRENT_PROJECT_VERSION: 108
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "The request log never stops recording and keeps everything, the payload quota can be Unlimited, and a queued message is edited in the chat's composer."
+    RELEASE_MESSAGE: "Compaction no longer shows a strip in the input box: the line under it says what a compaction is doing, and the chat shows the result."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO
