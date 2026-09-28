@@ -42,7 +42,19 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.108/build 112 is publicly released** at
+**Bello Agent 0.1.109/build 113 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.109](https://github.com/BelloWare/BelloAgent/tree/v0.1.109) and website commit
+`885a2a3f7939d5e2c6d94d192ab3a49306eda5a4`. The signed/notarized DMG is **11,136,371 bytes (10.62 MiB)**;
+SHA-256 `cf57be2f34ae7c4b5a4965297fe2772f8c98de453450b7d6eef760ca21116b38`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-09-28 16:28:53 UTC**. A chat opens from its journal's metadata file: each journal gets a
+small JSON file beside it, written after a compaction, an edit or a full open,
+and a chat opens from its latest checkpoint, replaying only what follows, while
+older rows load when something reaches for them. A first gate, before two fixes, failed on a wire test (an edited message's versions after reopening from the new file) and a gallery timing flake; the full gate on the fixed tip ran 213 serial and 1,452 parallel native tests, 128 gallery screenshots, 480 helper tests and the script checks, all passing. The fixture end-to-end compaction test passed 3 of 3.
+See the [0.1.109 validation record](validation/Bello-Agent-0.1.109-2026-09-29.md).
+
+**Bello Agent 0.1.108/build 112 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.108](https://github.com/BelloWare/BelloAgent/tree/v0.1.108) and website commit
 `1a31fa54bb2a5c04fd3ad6abd1f21d76341f595f`. The signed/notarized DMG is **10,990,336 bytes (10.48 MiB)**;
