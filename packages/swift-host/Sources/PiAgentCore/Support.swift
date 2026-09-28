@@ -27,10 +27,19 @@ func required(_ value: JSON, _ name: String, maximum: Int = 4096) throws -> Stri
     guard let s = value.text, !s.isEmpty, s.utf8.count <= maximum else { throw AgentError("invalid_params", "Invalid \(name)") }
     return s
 }
+/// Letters, digits and `. _ : -`, but not `.` or `..`: checked byte by byte,
+/// since this runs for every record of a journal a chat opens.
 func identity(_ value: JSON) throws -> String {
     let s = try required(value, "identity", maximum: 128)
-    guard s.range(of: "^[A-Za-z0-9._:-]+$", options: .regularExpression) != nil, s != ".", s != ".." else { throw AgentError("invalid_identity", "Invalid identity") }
+    guard s.utf8.allSatisfy(isIdentityByte), s != ".", s != ".." else { throw AgentError("invalid_identity", "Invalid identity") }
     return s
+}
+private func isIdentityByte(_ byte: UInt8) -> Bool {
+    switch byte {
+    case UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "a")...UInt8(ascii: "z"), UInt8(ascii: "0")...UInt8(ascii: "9"),
+         UInt8(ascii: "."), UInt8(ascii: "_"), UInt8(ascii: ":"), UInt8(ascii: "-"): return true
+    default: return false
+    }
 }
 func boundedInt(_ value: JSON, fallback: Int = 0, maximum: Int = 1_000_000) throws -> Int {
     if value.isNull { return fallback }

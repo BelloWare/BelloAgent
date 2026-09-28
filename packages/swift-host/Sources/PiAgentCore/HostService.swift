@@ -332,7 +332,7 @@ public actor NativeHostService {
             let text=params["text"].text ?? "", tools=await nativeTools.capabilityIDs(readOnly:session.readOnly)
             let selected=try await resources.freeze(params["skills"].list,text:text,tools:tools)
             let overrides=try Self.turnOverrides(params)
-            let input=Submission(commandID:commandID,turnID:try identity(params["clientTurnId"]),text:text,attachments:params["attachments"].list,skills:selected,model:overrides.model,thinkingLevel:overrides.thinkingLevel,contextWindow:overrides.contextWindow,maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit)
+            let input=Submission(commandID:commandID,turnID:try identity(params["clientTurnId"]),text:text,attachments:params["attachments"].list,skills:selected,model:overrides.model,thinkingLevel:overrides.thinkingLevel,contextWindow:overrides.contextWindow,maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit,input:overrides.input)
             if method == "turn.edit" { return try await session.edit(fromMessageID:try identity(params["messageId"]),input:input,expectedTimeline:params["editSourceTimeline"].text,expectedTextDigest:params["editSourceTextDigest"].text) }
             return try await session.submit(input,steer:method == "turn.steer")
         }
@@ -387,8 +387,8 @@ public actor NativeHostService {
         if let cwd=params["cwd"].text, !cwd.isEmpty, canonical(cwd) != result.first { throw AgentError("invalid_params", "cwd must be the primary workspace root") }
         return result
     }
-    /// Optional per-turn model, thinking and model-specific capacity overrides.
-    static func turnOverrides(_ params: JSON) throws -> (model: String?, thinkingLevel: String?, contextWindow: Int?, maxOutputTokens: Int?, modelOutputLimit: Int?) {
+    /// Optional per-turn model, thinking, model-specific capacity and input overrides.
+    static func turnOverrides(_ params: JSON) throws -> (model: String?, thinkingLevel: String?, contextWindow: Int?, maxOutputTokens: Int?, modelOutputLimit: Int?, input: [String]?) {
         var model: String?, level: String?
         if !params["model"].isNull {
             guard let text=params["model"].text, !text.isEmpty, text.utf8.count <= 200, !text.utf8.contains(where: { $0 < 32 || $0 == 127 }) else { throw AgentError("invalid_params", "Invalid model override") }
@@ -403,7 +403,15 @@ public actor NativeHostService {
             guard let value=params[name].int, value > 0, value <= maximum else { throw AgentError("invalid_params", "Invalid turn \(name) override") }
             return value
         }
-        return (model,level,try limit("contextWindow",maximum:10_000_000),try limit("maxOutputTokens",maximum:1_000_000),try limit("modelOutputLimit",maximum:1_000_000))
+        return (model,level,try limit("contextWindow",maximum:10_000_000),try limit("maxOutputTokens",maximum:1_000_000),try limit("modelOutputLimit",maximum:1_000_000),try turnInput(params["input"]))
+    }
+    /// What the turn's model takes, as the app's catalog declares it: pi's
+    /// input kinds, "text" and "image".
+    static func turnInput(_ value: JSON) throws -> [String]? {
+        if value.isNull { return nil }
+        let kinds = value.list.compactMap(\.text)
+        guard case .array(let items) = value, kinds.count == items.count, Profile.validInput(kinds) else { throw AgentError("invalid_params", "Invalid turn input override") }
+        return kinds
     }
     /// A journal whose last record was cut off (a power loss or a full disk
     /// mid-write) cannot be reopened. This copies every complete record,

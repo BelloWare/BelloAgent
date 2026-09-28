@@ -76,8 +76,8 @@ public struct Profile: Sendable {
     /// A different alias leaves the configured pinned route, so opaque
     /// reasoning produced by that turn is recorded portably rather than replayed
     /// into another model later.
-    public func overriding(model: String?, thinkingLevel: String?, contextWindow: Int? = nil, maxOutputTokens: Int? = nil, modelOutputLimit: Int? = nil) throws -> Profile {
-        guard model != nil || thinkingLevel != nil || contextWindow != nil || maxOutputTokens != nil || modelOutputLimit != nil else { return self }
+    public func overriding(model: String?, thinkingLevel: String?, contextWindow: Int? = nil, maxOutputTokens: Int? = nil, modelOutputLimit: Int? = nil, input: [String]? = nil) throws -> Profile {
+        guard model != nil || thinkingLevel != nil || contextWindow != nil || maxOutputTokens != nil || modelOutputLimit != nil || input != nil else { return self }
         var value = raw
         let capacity=contextWindow ?? self.contextWindow, output=maxOutputTokens ?? maxOutput
         let ceiling = modelOutputLimit ?? (model == nil || model == self.model ? self.modelOutputLimit : nil)
@@ -102,6 +102,19 @@ public struct Profile: Sendable {
             // omitted reasoning support. Model default omits inherited options.
             value["reasoning"] = JSON(thinkingLevel != "default")
         }
+        if let input {
+            guard Self.validInput(input) else { throw AgentError("invalid_params", "Invalid turn input override") }
+            value["input"] = .array(input.map(JSON.string))
+        }
         return try Profile(value)
+    }
+    /// The profile a submission's turn runs with.
+    public func overriding(_ submission: Submission) throws -> Profile {
+        try overriding(model: submission.model, thinkingLevel: submission.thinkingLevel, contextWindow: submission.contextWindow,
+                       maxOutputTokens: submission.maxOutputTokens, modelOutputLimit: submission.modelOutputLimit, input: submission.input)
+    }
+    /// Pi's model input kinds, each once.
+    static func validInput(_ kinds: [String]) -> Bool {
+        !kinds.isEmpty && Set(kinds).count == kinds.count && Set(kinds).isSubset(of: ["text", "image"])
     }
 }

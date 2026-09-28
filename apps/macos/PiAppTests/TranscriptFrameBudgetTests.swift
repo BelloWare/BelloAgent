@@ -826,12 +826,21 @@ final class TranscriptMotionTimingTests: XCTestCase, SerialTestLane {
 /// conversation when it was first shown holds it for the window's lifetime.
 /// These narrow it down: the transcript alone, then the whole pane.
 final class ConversationPaneRetentionTests: XCTestCase {
-    @MainActor private func model() throws -> (WorkspaceModel, URL, WorkspaceRecord) {
+    /// The project and the connection are saved in the vault, as the app's
+    /// are. Set on the model alone, they went when the model read its
+    /// configuration part of the way through a test, and the foot of the pane
+    /// turned to "Project unavailable" under whichever chat was showing; the
+    /// composer that notice displaced kept that chat, at random.
+    @MainActor private func model() async throws -> (WorkspaceModel, URL, WorkspaceRecord) {
         let base = testEnvironment("PI_APP_SCRATCH_ROOT") ?? NSTemporaryDirectory()
         let root = URL(fileURLWithPath: base).appendingPathComponent("pane-retention-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         let workspace = WorkspaceRecord(id: "project", path: root.path, trusted: true)
+        var profile = ProfileRecord(); profile.id = "profile"; profile.modelId = "fixture-model"
+        profile.baseUrl = "https://fixture.invalid/v1"
+        let vault = ConfigurationVault(storage: MemoryVaultStorage()), saved = VaultProfile(profile: profile, apiKey: "retention-test-key")
+        _ = try await vault.update(expectedRevision: 0) { $0.workspaces = [workspace]; $0.profiles = [saved] }
+        let model = WorkspaceModel(stateRoot: root, vault: vault)
         model.workspaces = [workspace]
         return (model, root, workspace)
     }
@@ -858,24 +867,23 @@ final class ConversationPaneRetentionTests: XCTestCase {
     /// The whole window, the way the shell's own memory test drives it: the
     /// reader clicks from chat to chat in the sidebar. The model keeps the
     /// last eight chats it showed; what this pins down is that the window
-    /// adds at most one to them and grows by nothing as the reader goes on.
+    /// adds none to them and grows by nothing as the reader goes on.
     ///
-    /// The one it adds is SwiftUI's, not ours. The foot of the pane is a
-    /// chain of five — a notice for a chat whose project is gone, one for a
-    /// background task, one for an archive, one for an import, and otherwise
-    /// the composer — and a conditional keeps the value of a branch it has
-    /// displaced. The first time that chain changes under a chat, that
-    /// chat's composer is kept, and its page with it. Bisected: the
-    /// transcript, the composer and the footer each let the chat go, with
-    /// the pane's own callbacks and its tool-input task, and so do all three
-    /// together; the pane lets it go too once the composer is not a branch
-    /// of that chain, and holds it again as soon as it is. Neither the
-    /// chain's identity nor the branch order changes that. It is one chat
-    /// per window, not one per chat visited, and it goes with the window.
-    /// (The starter card used to add a second one; it now holds the chat's
+    /// It used to allow one more. The foot of the pane is a chain of five —
+    /// a notice for a chat whose project is gone, one for a background task,
+    /// one for an archive, one for an import, and otherwise the composer —
+    /// and SwiftUI keeps the value of a branch a conditional has displaced:
+    /// when that chain changed under a chat, that chat's composer was kept,
+    /// and its page with it. What changed it was this test's own setup. Its
+    /// project was set on the model and not saved in the vault, so it went
+    /// when the model read its configuration, and "Project unavailable"
+    /// replaced the composer under whichever chat was showing. With the
+    /// project saved (`model()`) the chain never changes and no chat is
+    /// kept; in the app it changes only when a chat's project really goes.
+    /// (The starter card used to add one as well; it now holds the chat's
     /// id rather than its page — see the card's own test.)
     @MainActor func testTheWholeWindowKeepsAtMostOneChatBeyondItsCache() async throws {
-        let (model, root, workspace) = try model()
+        let (model, root, workspace) = try await model()
         defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
         var profile = ProfileRecord(); profile.id = "profile"; profile.modelId = "fixture-model"
         profile.baseUrl = "https://fixture.invalid/v1"
@@ -917,7 +925,7 @@ final class ConversationPaneRetentionTests: XCTestCase {
         print("PERF the window after twelve chats: \(live.count) pages alive against \(cached) the model keeps; "
               + "\(afterViews.count) once the window's views went \(afterViews)")
         XCTAssertTrue(middle.isEmpty, "chats the reader passed through are still in memory: \(middle)")
-        XCTAssertLessThanOrEqual(live.count, cached + 1, "the window is holding more than the one chat its graph pins: \(live)")
+        XCTAssertLessThanOrEqual(live.count, cached, "the window is holding a chat the model let go of: \(live)")
         XCTAssertLessThanOrEqual(afterViews.count, cached, "a chat outlived the window's views: \(afterViews)")
     }
 
@@ -955,7 +963,7 @@ final class ConversationPaneRetentionTests: XCTestCase {
     /// page and answers whether it went. The view is built once and driven by
     /// the model, exactly as the window drives the pane.
     @MainActor private func firstChatFreed<Surface: View>(_ prefix: String, prefilled: Bool = false, _ surface: (WorkspaceModel) -> Surface) async throws -> Bool {
-        let (model, root, workspace) = try model()
+        let (model, root, workspace) = try await model()
         defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
         var profile = ProfileRecord(); profile.id = "profile"; profile.modelId = "fixture-model"
         profile.baseUrl = "https://fixture.invalid/v1"
@@ -993,7 +1001,7 @@ final class ConversationPaneRetentionTests: XCTestCase {
     /// The other half of the window: the chrome and the sidebar, with no
     /// conversation on screen at all.
     @MainActor func testTheSidebarAloneReleasesTheChatTheReaderLeft() async throws {
-        let (model, root, workspace) = try model()
+        let (model, root, workspace) = try await model()
         defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
         var profile = ProfileRecord(); profile.id = "profile"; profile.modelId = "fixture-model"
         profile.baseUrl = "https://fixture.invalid/v1"
@@ -1032,7 +1040,7 @@ final class ConversationPaneRetentionTests: XCTestCase {
     /// the pane: this separates what `select` leaves behind from what the
     /// rest of the window holds.
     @MainActor func testSelectingChatsWithOnlyThePaneOnScreenReleasesThem() async throws {
-        let (model, root, workspace) = try model()
+        let (model, root, workspace) = try await model()
         defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
         var profile = ProfileRecord(); profile.id = "profile"; profile.modelId = "fixture-model"
         profile.baseUrl = "https://fixture.invalid/v1"
@@ -1069,7 +1077,7 @@ final class ConversationPaneRetentionTests: XCTestCase {
     /// The whole pane — transcript, composer, queue panel, live bar — shown
     /// one chat after another without being rebuilt, as the shell shows it.
     @MainActor func testTheWholePaneReleasesTheChatTheReaderLeft() async throws {
-        let (model, root, workspace) = try model()
+        let (model, root, workspace) = try await model()
         defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1_000, height: 760),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)

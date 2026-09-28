@@ -76,7 +76,7 @@ extension WorkspaceModel {
         do {
             let prepared = try await prepareWebhook(for: id, settings: settings, status: outcome, error: failure, finishedAt: finishedAt)
             try Task.checkCancellation()
-            _ = try await deliverWebhook(prepared.request)
+            _ = try await deliverWebhook(prepared.request, retrying: true)
             // Said in the chat's footer only: the webhook went out.
             if let note = prepared.modelNote { displays[id]?.notice = "Webhook sent without the mini model's parameters. " + note }
         } catch is CancellationError {
@@ -154,8 +154,40 @@ extension WorkspaceModel {
     }
 
     /// Sends a request and returns the HTTP status; anything but 2xx fails.
-    /// No cookies, cache or stored credentials, and no retry.
-    func deliverWebhook(_ request: WebhookRequest) async throws -> Int {
+    /// No cookies, cache or stored credentials. `retrying`: a finished
+    /// chat's webhook, which nobody is watching, is sent once more a few
+    /// seconds later when the network failed or the address answered 429 or
+    /// 5xx; an address that refused it (other 4xx) is not asked again. The
+    /// preview's and Settings' sends answer at once.
+    func deliverWebhook(_ request: WebhookRequest, retrying: Bool = false) async throws -> Int {
+        do { return try await sendWebhookOnce(request) }
+        catch let failure as WebhookDeliveryFailure where retrying && failure.transient {
+            try await Task.sleep(for: webhookRetryDelay)
+            do { return try await sendWebhookOnce(request) }
+            catch let again as WebhookDeliveryFailure { throw WebhookError.failed(again.message + " Tried twice, a few seconds apart.") }
+        } catch let failure as WebhookDeliveryFailure { throw WebhookError.failed(failure.message) }
+    }
+
+    /// The Settings group's Send Test: the webhook as typed, filled from a
+    /// sample chat, its parameters with sample words rather than a mini
+    /// model's (a test needs no model request).
+    func sendTestWebhook(_ settings: WebhookSettings) async throws -> Int {
+        var test = settings; test.enabled = true
+        try test.validate()
+        var context = WebhookContext()
+        context.chatID = "sample-chat"; context.chatTitle = "Sample chat"; context.project = "sample-project"
+        context.lastRequest = "Add a unit test for the retry loop."
+        context.lastReply = "Added the test and ran the suite: 12 passed."
+        context.model = requestProfiles.first?.modelId ?? "model"
+        context.finishedAt = ISO8601DateFormatter().string(from: Date())
+        var values = context.values
+        for parameter in try test.parameterList() {
+            values[parameter.name] = parameter.name == "title" ? "Webhook test from Bello Agent" : "Sample \(parameter.name) written by the mini model"
+        }
+        return try await deliverWebhook(try WebhookRequest.render(test, values: values))
+    }
+
+    private func sendWebhookOnce(_ request: WebhookRequest) async throws -> Int {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 20
         configuration.timeoutIntervalForResource = 30
@@ -172,9 +204,17 @@ extension WorkspaceModel {
             status = (response as? HTTPURLResponse)?.statusCode ?? 0
         } catch {
             if Task.isCancelled { throw CancellationError() }
-            throw WebhookError.failed(error.localizedDescription)
+            throw WebhookDeliveryFailure(message: error.localizedDescription, transient: true)
         }
-        guard (200..<300).contains(status) else { throw WebhookError.failed("\(request.url.host ?? "The address") answered HTTP \(status).") }
+        guard (200..<300).contains(status) else {
+            throw WebhookDeliveryFailure(message: "\(request.url.host ?? "The address") answered HTTP \(status).", transient: status == 429 || status >= 500)
+        }
         return status
     }
+}
+
+/// Why one send failed, and whether trying again a little later may help.
+struct WebhookDeliveryFailure: Error {
+    let message: String
+    let transient: Bool
 }

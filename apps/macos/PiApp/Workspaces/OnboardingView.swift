@@ -110,6 +110,7 @@ struct OnboardingView: View {
                                             if let context = item?.contextLabel { PiBadge(text: context) }
                                             if let output = item?.outputLimitLabel { PiBadge(text: output) }
                                             if let efforts = item?.reasoning, !efforts.isEmpty { PiBadge(text: "effort " + efforts.joined(separator: "/"), icon: "brain") }
+                                            if item?.takesImages == true { PiBadge(text: "images", icon: "photo") }
                                         }
                                         if let text = item?.description, !text.isEmpty { Text(text).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(2) }
                                     }

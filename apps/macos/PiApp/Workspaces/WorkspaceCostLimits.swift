@@ -134,7 +134,7 @@ extension WorkspaceModel {
                 let lease = try connectionLease(for: item)
                 let host = try await open(item)
                 try requireConnection(lease)
-                do { _ = try await host.request("turn.retry", sessionID: id, params: TurnOverrides.params(for: item)) }
+                do { _ = try await host.request("turn.retry", sessionID: id, params: turnOverrides(for: item)) }
                 catch HostError.rejected(let code, _) where code == "nothing_to_retry" {
                     _ = try await host.request("queue.resume", sessionID: id)
                 }

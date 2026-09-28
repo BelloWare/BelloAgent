@@ -106,6 +106,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
     var titleGenerationTasks: [String: Task<Void, Never>] = [:]
     /// Webhooks on their way: the mini model's request, then the send.
     var webhookTasks: [UUID: Task<Void, Never>] = [:]
+    /// How long a finished chat's webhook waits before its one retry.
+    var webhookRetryDelay: Duration = .seconds(4)
     /// Connections already told, this launch, that titles need a mini model.
     var titleMiniModelNotified: Set<String> = []
     @Published var showGit = false
@@ -152,6 +154,12 @@ enum WorkspacePage: String, Sendable { case chats, report }
     func closeReport() { page = .chats }
     func toggleReport() { page = page == .report ? .chats : .report }
     var conversationCommandsEnabled: Bool { page == .chats && !presentsSheet && (focusedSessionID ?? selectedID).flatMap(record) != nil }
+    /// First-run setup fills the window: the vault has answered, and there is
+    /// no connection or no chat yet. Its steps end with the project, so
+    /// nothing else offers one meanwhile.
+    var presentsSetup: Bool {
+        !launching && OnboardingState.shouldPresent(configurationLoaded: configurationLoaded, hasProfiles: !requestProfiles.isEmpty, hasChats: !chats.isEmpty)
+    }
     /// A sheet of the workspace window is up. Its fields own the keyboard:
     /// the conversation's shortcuts (⌘↩, ⌘., ⌘F) must not act on the chat
     /// behind it, nor present a second sheet over it.
@@ -189,7 +197,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// finds out without opening SQLite on the main actor at launch.
     private(set) var store: MetadataStore?
     let history = HistoryReader()
-    let modelCatalog = ModelCatalog()
+    let modelCatalog: ModelCatalog
     let traces: PayloadArchive
     /// Owned by `WorkspaceChatLifecycle.swift`: the throwaway archive a
     /// portable handoff writes into.
@@ -313,8 +321,9 @@ enum WorkspacePage: String, Sendable { case chats, report }
 
     let completionSound: CompletionSound
 
-    init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil, launching: Bool = false) {
+    init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil, launching: Bool = false, modelCatalog: ModelCatalog? = nil) {
         self.launching = launching
+        self.modelCatalog = modelCatalog ?? ModelCatalog()
         self.vault = vault
         self.completionSound = completionSound ?? CompletionSound()
         let benchmarkRoot = PerformanceProbe.shared.enabled ? ProcessInfo.processInfo.environment["PI_APP_BENCHMARK_STATE_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) } : nil

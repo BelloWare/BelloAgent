@@ -53,7 +53,7 @@ extension WorkspaceModel {
         }
     }
     private func contextPreviewParams(_ item: ChatRecord, view: SessionDisplay) -> [String: WireValue] {
-        TurnOverrides.params(for:item,base:["text":.string(view.draft),"skills":.array(view.skills.map(\.wire)),"attachments":.array(view.attachments.map(\.wire))])
+        turnOverrides(for:item,base:["text":.string(view.draft),"skills":.array(view.skills.map(\.wire)),"attachments":.array(view.attachments.map(\.wire))])
     }
     func contextPresentation(_ view: SessionDisplay) -> ContextPresentation {
         let presentation=ContextPresentation.resolve(state:view.footer.contextState,observation:view.footer.requestObservation,

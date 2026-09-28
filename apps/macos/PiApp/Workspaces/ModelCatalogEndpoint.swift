@@ -18,6 +18,10 @@ struct ModelDescriptor: Codable, Sendable, Equatable, Identifiable {
     /// Optional operator recommendation for inexpensive utility work such as titles.
     /// nil is retained for compatibility with older encoded descriptor snapshots.
     var mini: Bool?
+    /// What the model takes, pi's `input`: "text" and "image". nil means
+    /// unreported, and the connection's Model capabilities decide.
+    var input: [String]?
+    var takesImages: Bool { input?.contains("image") == true }
     var displayName: String { name.isEmpty ? id : name }
     var offeredThinkingLevels: [ThinkingLevel] {
         guard let reasoning else { return ThinkingLevel.allCases }
@@ -201,6 +205,12 @@ struct ModelCatalogEndpoint: Sendable {
             if let order = record["order"] {
                 guard let value = integer(order) else { throw Failure.malformed("order must be an integer") }
                 descriptor.order = value
+            }
+            if let input = record["input"] {
+                // Like reasoning efforts: unknown kinds are ignored and
+                // duplicates collapse.
+                guard let kinds = input as? [String] else { throw Failure.malformed("input must be an array of \"text\" and \"image\"") }
+                descriptor.input = ["text", "image"].filter(kinds.contains)
             }
             models.append((position, descriptor))
         }

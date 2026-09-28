@@ -269,7 +269,7 @@ struct ProfileSettings: View {
                 }
             }
         }
-        WebhookSettingsGroup(settings: webhook)
+        WebhookSettingsGroup(settings: webhook, test: { try await model.sendTestWebhook($0) })
     }
     /// The helpers' runtime and app updates.
     @ViewBuilder private var app: some View {

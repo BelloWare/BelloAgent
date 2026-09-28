@@ -50,7 +50,10 @@ public enum JSON: Codable, Equatable, Sendable, ExpressibleByDictionaryLiteral, 
         get { map[key] ?? .null }
         set { var v = map; v[key] = newValue; self = .object(v) }
     }
-    public static func parse(_ bytes: Data) throws -> JSON { try JSONDecoder().decode(JSON.self, from: bytes) }
+    /// Every journal line and protocol frame goes through here: the byte
+    /// parser, not `Codable`, which tried each kind in turn and threw for
+    /// every miss — four discarded errors for each number.
+    public static func parse(_ bytes: Data) throws -> JSON { try JSONByteParser.parse(bytes) }
     public func data() throws -> Data { let e = JSONEncoder(); e.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]; return try e.encode(self) }
     public func encoded() -> String { String(data: (try? data()) ?? Data(), encoding: .utf8) ?? "null" }
     public func removing(_ keys: Set<String>) -> JSON { .object(map.filter { !keys.contains($0.key) }) }

@@ -140,7 +140,7 @@ extension WorkspaceModel {
                 if !steer, !view.busy { shown = ("running", view.state); view.state = "running" }
                 sendSteps?("dispatched")
                 let reply = try await host.request(steer ? "turn.steer" : "turn.submit", sessionID: item.id,
-                                                   params: TurnOverrides.params(for: item, base: ["text": .string(text), "clientTurnId": .string(turnID), "attachments": .array(attachments.map(\.wire)), "skills": .array(skills.map(\.wire))]), commandID: commandID)
+                                                   params: turnOverrides(for: item, base: ["text": .string(text), "clientTurnId": .string(turnID), "attachments": .array(attachments.map(\.wire)), "skills": .array(skills.map(\.wire))]), commandID: commandID)
                 sendSteps?("submitted")
                 // A run this chat had not shown yet was going: the helper
                 // queued the message behind it, and the queue panel shows it.
@@ -250,7 +250,7 @@ extension WorkspaceModel {
         guard !item.isArchived || method == "turn.stop" else { displays[id]?.notice = Self.archivedNotice; return }
         // Compact uses the same selected model/effort/limits as Send. Freeze
         // the originating pane's choice before opening or awaiting its helper.
-        let requestParams = method == "context.compact" ? TurnOverrides.params(for: item, base: params) : params
+        let requestParams = method == "context.compact" ? turnOverrides(for: item, base: params) : params
         let commandID = UUID().uuidString
         Task { do {
             let lease = try connectionLease(for: item)

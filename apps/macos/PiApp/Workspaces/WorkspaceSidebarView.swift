@@ -72,7 +72,9 @@ struct WorkspaceSidebar: View {
             .environment(\.piSelectionNamespace, selectionGlide)
             .modifier(SidebarMinuteClock())
             .overlay {
-                if model.sidebarProjects.isEmpty {
+                // During first-run setup the setup's own last step adds the
+                // project: a second way in beside it read as two paths.
+                if model.sidebarProjects.isEmpty && !model.presentsSetup {
                     VStack(spacing: 10) {
                         Image(systemName: "folder.badge.plus").font(.system(size: 24)).foregroundStyle(Color.piInkTertiary)
                         Text("Add a project to start chatting.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary).multilineTextAlignment(.center)

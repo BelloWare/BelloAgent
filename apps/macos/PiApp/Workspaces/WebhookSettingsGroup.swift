@@ -5,6 +5,11 @@ import SwiftUI
 /// off for that chat and previews it.
 struct WebhookSettingsGroup: View {
     @Binding var settings: WebhookSettings
+    /// Sends the webhook as typed, with a sample chat; returns the HTTP status.
+    var test: ((WebhookSettings) async throws -> Int)? = nil
+    @State private var testing = false
+    @State private var testResult = ""
+    @State private var testTone: PiTone = .neutral
 
     static let footer = "Sent when a chat finishes and waits for you: its run completed or failed and nothing else is queued. A run you stop sends nothing. "
         + "Placeholders: " + WebhookSettings.builtIns.map { "{{\($0)}}" }.joined(separator: ", ")
@@ -36,8 +41,35 @@ struct WebhookSettingsGroup: View {
                 WebhookEditorRow(label: "Mini model parameters", detail: "JSON: each name → what the mini model writes for it. Leave empty to send without asking it.",
                                  text: $settings.parameters, height: 100)
                 WebhookEditorRow(label: "Instructions for the mini model", detail: "Optional: tone, language, what to point out.",
-                                 text: $settings.prompt, height: 52, last: true)
+                                 text: $settings.prompt, height: 52, last: test == nil)
+                if let test {
+                    PiRow(label: "Try it", detail: "Sends the webhook as typed, before you save, filled from a sample chat. The parameters get sample words: no mini model is asked.", last: true) {
+                        HStack(spacing: PiSpacing.sm) {
+                            if testing { ProgressView().controlSize(.small) }
+                            Button { Task { await run(test) } } label: { Label(testing ? "Sending…" : "Send Test", systemImage: "paperplane") }
+                                .buttonStyle(.piSecondaryCompact).fixedSize().disabled(testing)
+                                .accessibilityIdentifier("settings-webhook-test")
+                        }
+                    }
+                    if !testResult.isEmpty {
+                        PiStatusLine(text: testResult, tone: testTone).padding(.horizontal, PiSpacing.lg).padding(.bottom, 10)
+                            .accessibilityIdentifier("settings-webhook-test-result")
+                    }
+                }
             }
+        }
+    }
+}
+
+extension WebhookSettingsGroup {
+    private func run(_ test: (WebhookSettings) async throws -> Int) async {
+        testing = true; testResult = ""
+        defer { testing = false }
+        do {
+            let status = try await test(settings)
+            testResult = "Sent. \(WebhookRequest.address(settings.url, values: [:])?.host ?? "The address") answered HTTP \(status)."; testTone = .success
+        } catch {
+            testResult = "Not sent: " + error.localizedDescription; testTone = .danger
         }
     }
 }

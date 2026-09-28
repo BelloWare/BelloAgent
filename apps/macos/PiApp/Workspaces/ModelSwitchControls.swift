@@ -267,6 +267,7 @@ struct CatalogModelPicker: View {
                                         HStack(alignment: .firstTextBaseline, spacing: 5) {
                                             Text(item.displayName).font(PiFont.body).foregroundStyle(Color.piInk)
                                             if item.mini == true { Text("Mini").font(PiFont.caption).foregroundStyle(Color.piAccent) }
+                                            if item.takesImages { Text("Images").font(PiFont.caption).foregroundStyle(Color.piInkSecondary) }
                                             if item.deprecated { Text("Deprecated").font(PiFont.caption).foregroundStyle(Color.piWarning) }
                                         }
                                         if item.displayName != item.id { Text(item.id).font(PiFont.mono).foregroundStyle(Color.piInkSecondary) }
