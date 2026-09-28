@@ -422,6 +422,13 @@ ordinary negative acknowledgment stops only that request's kind of page. The
 HTTP stream pauses its download when its consumer falls behind (1 MiB pending)
 and resumes at 512 KiB; it never fails a response for its size. The app
 refreshes accounting when a late final capture lands (`captureDidPersist`).
+While the log is busy, a request's small chunks join its page still waiting in
+the queue (up to 32 KiB) unless something else of that request was queued after
+it, so nothing of a request is reordered. Because streams no longer pause when
+the app is slow to read, the helper's output writer keeps at most one change
+notice per chat, carrying the latest sequence number (the app also keeps only
+the latest); other frames keep the 64-frame bound. Without this, twenty
+streaming chats filled that bound during a brief stall and the helper stopped.
 
 The 20-session acceptance target uses per-session actors and independent async
 URLSession requests. Since 0.1.52, synchronous read/list/search jobs leave the

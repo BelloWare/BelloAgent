@@ -36,7 +36,7 @@ def encoded(value):
 
 class ConcurrentPeer:
     """Multiplexes command replies while independently acknowledging captures."""
-    def __init__(self, cwd, capture_delay=0):
+    def __init__(self, cwd, capture_delay=0, stall=0):
         self.process = subprocess.Popen([str(BINARY)], cwd=cwd, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.frames = queue.Queue()
@@ -49,7 +49,11 @@ class ConcurrentPeer:
 
         def read():
             try:
+                count = 0
                 for line in self.process.stdout:
+                    count += 1
+                    if stall and count % 40 == 0:
+                        time.sleep(stall)  # a reader that is busy now and then
                     frame = json.loads(line)
                     if frame.get('kind') == 'capture':
                         self.captures.append(frame['packet'])
@@ -301,7 +305,7 @@ class TwentySessionIntegration(unittest.TestCase):
             self.server_thread.join(timeout=2)
         self.temp.cleanup()
 
-    def setup_projects(self, projects=1, tools=True, delay=0):
+    def setup_projects(self, projects=1, tools=True, delay=0, stall=0):
         self.scenario = Scenario(20, tools)
         self.server = Server(('127.0.0.1', 0), Gateway)
         self.server.scenario = self.scenario
@@ -316,7 +320,7 @@ class TwentySessionIntegration(unittest.TestCase):
         for project in range(projects):
             root = self.root / ('project-' + str(project))
             root.mkdir()
-            peer = ConcurrentPeer(root, capture_delay=delay)
+            peer = ConcurrentPeer(root, capture_delay=delay, stall=stall)
             self.peers.append(peer)
             peer.command('workspace.open', params={'cwd': str(root), 'directory': str(root / 'state'),
                 'captureProtocol': 1, 'resources': {'codexHome': str(root / 'codex'), 'skills': False}})
@@ -427,10 +431,10 @@ class TwentySessionIntegration(unittest.TestCase):
         self.assertFalse(self.scenario.errors, self.scenario.errors)
         return finishes
 
-    def run_roundtrip(self, projects):
+    def run_roundtrip(self, projects, stall=0):
         # Delay durable ACKs enough to overlap twenty recorder submissions: a
         # slow recorder delays the log, never the sessions, and drops nothing.
-        self.setup_projects(projects=projects, tools=True, delay=.01)
+        self.setup_projects(projects=projects, tools=True, delay=.01, stall=stall)
         self.start_all()
         self.assertEqual(self.scenario.maximum, 20)
         self.assertTrue(all(v['state'] not in ('idle', 'error', 'paused') for v in self.states().values()))
@@ -457,6 +461,14 @@ class TwentySessionIntegration(unittest.TestCase):
 
     def test_twenty_sessions_across_four_projects(self):
         self.run_roundtrip(4)
+
+    def test_a_reader_busy_now_and_then_never_stops_the_helper(self):
+        # Streams do not pause for the request log, so while the app is busy
+        # reading, twenty chats keep changing. Their change notices must not
+        # fill the helper's output queue: it used to stop itself (exit 70).
+        self.run_roundtrip(1, stall=.15)
+        for peer in self.peers:
+            self.assertIsNone(peer.process.poll(), bytes(peer.stderr).decode(errors='replace'))
 
     def test_cancel_error_and_queued_followup_are_session_local(self):
         self.setup_projects(tools=False)
