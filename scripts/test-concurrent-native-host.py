@@ -356,6 +356,13 @@ class TwentySessionIntegration(unittest.TestCase):
         self.fail('Not every concurrent session settled: ' + repr(diagnostics))
 
     def assert_captures(self, expected_attempts):
+        # The log trails the sessions: a slow recorder delays it and never
+        # holds them up or loses a packet. Wait for every final record.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            finished = sum(1 for peer in self.peers for packet in list(peer.captures) if packet['type'] == 'finish')
+            if finished >= expected_attempts: break
+            time.sleep(.05)
         attempts = {}
         bodies = {}
         finishes = {}
@@ -421,8 +428,8 @@ class TwentySessionIntegration(unittest.TestCase):
         return finishes
 
     def run_roundtrip(self, projects):
-        # Delay durable ACKs enough to overlap twenty recorder submissions;
-        # a healthy slow recorder must apply backpressure, never drop captures.
+        # Delay durable ACKs enough to overlap twenty recorder submissions: a
+        # slow recorder delays the log, never the sessions, and drops nothing.
         self.setup_projects(projects=projects, tools=True, delay=.01)
         self.start_all()
         self.assertEqual(self.scenario.maximum, 20)

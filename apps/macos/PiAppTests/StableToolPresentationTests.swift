@@ -65,10 +65,12 @@ final class StableToolPresentationTests: XCTestCase {
         let completed = try XCTUnwrap(view.taskPresentation?.recent.last)
         XCTAssertNotNil(completed.endedAtUnixMs)
         XCTAssertLessThan(try XCTUnwrap(completed.elapsedMilliseconds()),60000)
+        // The log trails the chat by a moment: a request is listed from its
+        // first packet, and its bodies are whole once its record is final.
         var attempts: [[String:WireValue]] = []
-        for _ in 0..<500 {
+        for _ in 0..<1000 {
             attempts = try await model.traces.list(sessionID:chat.id)
-            if attempts.count == 3 { break }
+            if attempts.count == 3, attempts.allSatisfy({ $0["outcome"]?.string != "running" }) { break }
             try await Task.sleep(for:.milliseconds(10))
         }
         XCTAssertEqual(attempts.count,3)

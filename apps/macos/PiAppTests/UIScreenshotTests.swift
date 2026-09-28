@@ -428,7 +428,11 @@ final class UIScreenshotTests: XCTestCase {
         model.send(sessionID: mainID)
         try await settle(1.5)
         try await pair("13-running-with-queue", hold: 0.8)
-        // 13c · The follow-up being rewritten in the composer, a draft set aside for it.
+        model.stop(sessionID: mainID)
+        // 13c · The stopped run's follow-up, paused in the queue, being
+        // rewritten in the composer with a draft set aside for it.
+        let stopped = Date().addingTimeInterval(20)
+        while Date() < stopped, session.busy { try await settle(0.3) }
         if let queued = QueuedMessage.from(session.queue).first {
             session.draft = "A thought still being typed."
             model.editQueued(queued.id, sessionID: mainID)
@@ -443,9 +447,8 @@ final class UIScreenshotTests: XCTestCase {
             session.draft = ""
             try await settle(0.4)
         } else {
-            XCTFail("The follow-up never reached the queue; 13c has nothing to show.")
+            XCTFail("The stopped run's follow-up is not in the queue; 13c has nothing to show.")
         }
-        model.stop(sessionID: mainID)
         let deadline = Date().addingTimeInterval(45)
         while Date() < deadline, session.hasWork || !session.queue.isEmpty { try await settle(0.3) }
         try await settle(1.0)
