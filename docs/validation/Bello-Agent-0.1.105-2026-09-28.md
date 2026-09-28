@@ -1,6 +1,6 @@
 # Bello Agent 0.1.105 — a webhook when a chat finishes
 
-Status: candidate; publication pending.
+Status: publicly released and verified at 2026-09-28 09:40:58 UTC.
 Starting main: `9b3e2978484c01587519ab26016a2b40edc80fb4` (0.1.104's verified record).
 
 ## Changes
@@ -81,9 +81,25 @@ Starting main: `9b3e2978484c01587519ab26016a2b40edc80fb4` (0.1.104's verified re
   no tools or project instructions, its own system prompt, purpose `webhook`.
 - **Gallery:** 19 (Settings at the webhook group), 19a (its end) and 19b (the
   preview with the mini model's parameters), light and dark.
+- **Live compaction test, fixture mode, on the release helper:** 3 of 3
+  scenarios passed (mid-run recalled 10 of 10 markers); reported cost $0.83 of
+  the fixture's $5.00 cap (synthetic).
 - Installation and updater rehearsals are excluded by the owner's standing
   instruction.
 
 ## Publication
 
-Pending.
+- Release source: `572bc3b85520f6577517fd4dfd3b13987c83389c`, pushed to GitHub `main`; annotated tag
+  `v0.1.105` is pushed and resolves to that commit.
+- Website publication: `7933bb16d75a506a832fb07417db156404b3fa47`, pushed to `BelloWare/belloware.com` `main`.
+- Signed/notarized Bello Agent 0.1.105, build 109. App notarization
+  `967e215d-c6a3-4b6f-ae32-df945d9cd7d0` and DMG notarization `b7397e0f-63de-4dd0-baaa-13133fbd3ad8` were accepted. Stapling,
+  signature, Gatekeeper and artifact validation passed.
+- `BelloAgent-0.1.105.dmg`: **10,937,390 bytes (10.43 MiB)**; SHA-256
+  `e691255ea799cab98b8e7d60a0928a9f11448baa752b2a7670fde9f92c4bab9b`.
+- At 2026-09-28 09:40:58 UTC, the public product page linked to 0.1.105.
+  `scripts/verify-published.py` downloaded the public archive, verified its
+  SHA-256 and Ed25519 signature, and confirmed that both public update feeds
+  match the intended release and are byte-identical.
+- No install or updater rehearsal was performed, at the owner's standing
+  instruction.
