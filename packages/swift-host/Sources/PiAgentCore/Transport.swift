@@ -351,7 +351,16 @@ public actor TraceStore {
     private func deliverBytes(_ id: String, kind: String, offset: Int, bytes: Data) {
         for start in stride(from: 0, to: bytes.count, by: 32_768) {
             let page = bytes.subdata(in: start..<min(start + 32_768, bytes.count))
-            post(["type":"bytes", "attemptId":JSON(id), "body":JSON(kind), "offset":JSON(offset+start), "bytes":JSON(page.base64EncodedString())], attempt: id, stage: .bytes)
+            // A page that continues this request's page still waiting joins
+            // it, up to 32 KiB, when nothing else of the request was queued
+            // after it: while the app is busy, a stream's small chunks go as
+            // one page instead of one acknowledgment each.
+            if let index = openPages[id], index >= outboxHead, index < outbox.count, var waiting = outbox[index].page,
+               waiting.body == kind, waiting.offset + waiting.bytes.count == offset + start, waiting.bytes.count + page.count <= 32_768 {
+                waiting.bytes.append(page); outbox[index].page = waiting
+            } else {
+                post(.null, attempt: id, stage: .bytes, page: Page(body: kind, offset: offset + start, bytes: page))
+            }
         }
     }
     public func head(_ id:String, status:Int, headers:[String:String]) {
@@ -489,17 +498,23 @@ public actor TraceStore {
 
     /// What a rejected packet means for its request's later packets.
     private enum Stage { case begin, update, links, bytes, masking, events, operation, finish }
-    private struct Outgoing { let packet: JSON; let attempt: String; let stage: Stage }
+    private struct Outgoing { let packet: JSON; let attempt: String; let stage: Stage; var page: Page? }
+    /// A body page's bytes stay raw until sent, so a later page can join it.
+    private struct Page { let body: String, offset: Int; var bytes: Data }
     private struct Delivery { var refused = false, bytesStopped = false, linksStopped = false, eventsStopped = false }
     /// Every capture packet, in the order it was made. One consumer sends
     /// them, each after the app confirmed the one before. Neither a model
     /// request nor its stream waits on this queue: a slow app delays its log,
     /// never the chat, and nothing is dropped for being slow.
     private var outbox: [Outgoing] = [], outboxHead = 0, draining = false
+    /// Each request's last queued packet, when it is a body page: the page a
+    /// following chunk of the same body may join.
+    private var openPages: [String: Int] = [:]
     private var deliveries: [String: Delivery] = [:]
     private var idle: [CheckedContinuation<Void, Never>] = []
-    private func post(_ packet: JSON, attempt: String, stage: Stage) {
-        outbox.append(Outgoing(packet: packet, attempt: attempt, stage: stage))
+    private func post(_ packet: JSON, attempt: String, stage: Stage, page: Page? = nil) {
+        outbox.append(Outgoing(packet: packet, attempt: attempt, stage: stage, page: page))
+        if page != nil { openPages[attempt] = outbox.count - 1 } else { openPages.removeValue(forKey: attempt) }
         guard !draining else { return }
         draining = true
         Task { await self.drain() }
@@ -513,16 +528,20 @@ public actor TraceStore {
     private func drain() async {
         while outboxHead < outbox.count {
             let item = outbox[outboxHead]; outboxHead += 1
-            if outboxHead >= 256, outboxHead * 2 >= outbox.count { outbox.removeFirst(outboxHead); outboxHead = 0 }
+            if outboxHead >= 256, outboxHead * 2 >= outbox.count {
+                outbox.removeFirst(outboxHead)
+                openPages = openPages.compactMapValues { $0 >= outboxHead ? $0 - outboxHead : nil }; outboxHead = 0
+            }
             let delivery = deliveries[item.attempt] ?? Delivery()
             // A request the log refused, or a kind of packet it stopped taking
             // for that request, sends nothing more of that kind.
             if delivery.refused || (item.stage == .bytes && delivery.bytesStopped) || (item.stage == .links && delivery.linksStopped)
                 || (item.stage == .events && delivery.eventsStopped) { continue }
-            let accepted = await sink(item.packet)
+            let packet: JSON = item.page.map { ["type":"bytes", "attemptId":JSON(item.attempt), "body":JSON($0.body), "offset":JSON($0.offset), "bytes":JSON($0.bytes.base64EncodedString())] } ?? item.packet
+            let accepted = await sink(packet)
             recorded(item.stage, accepted: accepted, attempt: item.attempt)
         }
-        outbox.removeAll(); outboxHead = 0; draining = false
+        outbox.removeAll(); outboxHead = 0; draining = false; openPages.removeAll()
         let waiting = idle; idle.removeAll()
         for waiter in waiting { waiter.resume() }
     }

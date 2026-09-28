@@ -139,6 +139,87 @@ extension CaptureTraceTests {
     }
 }
 
+extension CaptureTraceTests {
+    /// While the app is busy saving, a stream's small chunks join the page
+    /// still waiting, up to 32 KiB, instead of costing one acknowledgment
+    /// each; offsets and bytes are unchanged.
+    func testSmallChunksJoinTheWaitingPageWhileTheLogIsBusy() async throws {
+        let recorder = HeldRecorder(), traces = TraceStore(sink: { await recorder.accept($0) })
+        _ = try await traces.command("debug.mode", session: "s", params: ["mode": "persist"])
+        let request = Data("{\"input\":\"question\"}".utf8)
+        let id = await traces.begin(session: "s", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: request, headers: [:])
+        try await eventually { await recorder.types == ["begin"] }
+        var expected = Data()
+        for index in 0..<2_000 {
+            let chunk = Data("data: {\"delta\":\"\(index)\"}\n\n".utf8)
+            expected.append(chunk); await traces.append(id, data: chunk)
+        }
+        await traces.transport(id, observation: ["transportOutcome": "eof"])
+        await traces.finish(id, outcome: "completed", modelOutcome: "completed")
+        await recorder.open()
+        await traces.delivered()
+        let pages = await recorder.packets.filter { $0["type"].text == "bytes" && $0["body"].text == "response" }
+        var durable = Data()
+        for page in pages {
+            XCTAssertEqual(page["offset"].int, durable.count)
+            let bytes = try XCTUnwrap(Data(base64Encoded: page["bytes"].text ?? "")); XCTAssertLessThanOrEqual(bytes.count, 32_768)
+            durable.append(bytes)
+        }
+        XCTAssertEqual(durable, expected)
+        XCTAssertEqual(pages.count, (expected.count + 32_767) / 32_768, "\(expected.count) bytes in 2,000 chunks travel as full pages")
+        let requestPages = await recorder.packets.filter { $0["type"].text == "bytes" && $0["body"].text == "request" }
+        XCTAssertEqual(requestPages.count, 1); XCTAssertEqual(Data(base64Encoded: requestPages.first?["bytes"].text ?? ""), request)
+    }
+
+    /// Twenty streams interleave in one helper's queue: each request's chunks
+    /// still join its own waiting page. A packet of that request queued after
+    /// the page (here the credential-masking notice) closes it, so nothing of a
+    /// request is ever reordered.
+    func testInterleavedStreamsJoinTheirOwnPagesWithoutReordering() async throws {
+        let recorder = HeldRecorder(), traces = TraceStore(sink: { await recorder.accept($0) })
+        let profile = try fixtureProfile(), key = "private-fixture-key"
+        var ids: [String] = []
+        for index in 0..<20 {
+            _ = try await traces.command("debug.mode", session: "s\(index)", params: ["mode": "persist"])
+            ids.append(await traces.begin(session: "s\(index)", turn: "t", profile: profile, purpose: "turn", body: Data("{}".utf8), headers: ["Authorization": "Bearer " + key]))
+        }
+        try await eventually { await recorder.types == ["begin"] }
+        var expected = Array(repeating: Data(), count: 20)
+        for round in 0..<200 {
+            for (index, id) in ids.enumerated() {
+                // Session zero echoes the credential halfway: its response is masked from there on.
+                let text = index == 0 && round == 100 ? "data: \(key)\n\n" : "data: {\"delta\":\"\(round)\"}\n\n"
+                let chunk = Data(text.utf8)
+                expected[index].append(index == 0 && round == 100 ? Data(("data: " + String(repeating: "*", count: key.utf8.count) + "\n\n").utf8) : chunk)
+                await traces.append(id, data: chunk)
+            }
+        }
+        for id in ids {
+            await traces.transport(id, observation: ["transportOutcome": "eof"])
+            await traces.finish(id, outcome: "completed", modelOutcome: "completed")
+        }
+        await recorder.open()
+        await traces.delivered()
+        let packets = await recorder.packets
+        for (index, id) in ids.enumerated() {
+            let own = packets.enumerated().filter { $0.element["attemptId"].text == id || $0.element["metadata"]["attemptId"].text == id }
+            let pages = own.filter { $0.element["type"].text == "bytes" && $0.element["body"].text == "response" }
+            var durable = Data()
+            for page in pages {
+                XCTAssertEqual(page.element["offset"].int, durable.count)
+                durable.append(try XCTUnwrap(Data(base64Encoded: page.element["bytes"].text ?? "")))
+            }
+            XCTAssertEqual(durable, expected[index], "session \(index)")
+            XCTAssertLessThanOrEqual(pages.count, 3, "session \(index): \(pages.count) pages for 200 chunks")
+            if index == 0 {
+                let notice = try XCTUnwrap(own.first { $0.element["type"].text == "metadata" && $0.element["metadata"]["response"]["byteExact"].flag == false })
+                let masked = try XCTUnwrap(pages.first { Data(base64Encoded: $0.element["bytes"].text ?? "")?.contains(42) ?? false })
+                XCTAssertLessThan(notice.offset, masked.offset, "The masking notice still precedes the masked bytes")
+            }
+        }
+    }
+}
+
 /// Refuses the body pages of the requests it is told to, like a full disk.
 private actor SelectiveRecorder {
     var packets: [JSON] = [], refused: Set<String> = []
