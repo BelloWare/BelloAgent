@@ -9,15 +9,16 @@ private struct ComposerDraftEdit: Equatable { let session: String; let text: Str
 
 /// Attach Image, on when the chat's model takes images: its connection says
 /// so, or the model catalog does once it has loaded, which redraws this
-/// button and not the whole bar.
+/// button and not the whole bar. It holds the chat's id, not its page: a view
+/// SwiftUI keeps after the reader moved on must not keep the chat with it.
 private struct AttachImageButton: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var catalog: ModelCatalog
-    @ObservedObject var session: SessionDisplay
-    let queueEditing: Bool
+    let sessionID: String
+    let enabled: Bool
     var body: some View {
-        PiIconButton(symbol: "photo.badge.plus", label: "Attach Image…", size: 28, filled: true) { model.attachImages(sessionID: session.id) }
-            .disabled(!session.draftReady || !model.supportsImages(session.id) || queueEditing)
+        PiIconButton(symbol: "photo.badge.plus", label: "Attach Image…", size: 28, filled: true) { [model, sessionID] in model.attachImages(sessionID: sessionID) }
+            .disabled(!enabled || !model.supportsImages(sessionID))
     }
 }
 
@@ -92,7 +93,7 @@ struct ComposerInput: View {
                 let form = barForm
                 HStack(spacing: ComposerBarMetrics.spacing) {
                     // A queued message keeps only its text.
-                    AttachImageButton(model: model, catalog: model.modelCatalog, session: session, queueEditing: queueEditing)
+                    AttachImageButton(model: model, catalog: model.modelCatalog, sessionID: session.id, enabled: session.draftReady && !queueEditing)
                     PiIconButton(symbol: "command", label: "Skills…", size: 28, filled: true) { model.inspectResources(session.id) }.disabled(queueEditing)
                     Spacer()
                     runControlRow(form.runControls)
