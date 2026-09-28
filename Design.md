@@ -693,7 +693,11 @@ refreshing the report also refreshes cached message/session totals.
 
 User message Details retains attempts triggered by or linked to its turn. Inline
 accounting prefers one linked assistant, then its streaming answer, then the user
-row until an answer exists. Tool rows show no duplicate inline totals. Inherited
+row until an answer exists. The helper links each request to its hidden ledger
+row (`requestLedger`) from dispatch on; the answer row the ledger stands for
+(`presentationSourceID`) claims the request through that link, streaming or done
+(0.1.106: before, the ledger's link sent a streaming request to the user row
+while the answer's own stand-in counted it again). Tool rows show no duplicate inline totals. Inherited
 side origins may still be displayed. Indexed turn/output queries select one owner;
 session totals use only that session's dispatched local attempts, and report
 totals use the selected filter scope. Tool rounds and compaction are included
