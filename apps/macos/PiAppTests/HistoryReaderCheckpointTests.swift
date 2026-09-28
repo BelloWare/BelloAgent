@@ -92,6 +92,21 @@ final class HistoryReaderCheckpointTests: XCTestCase {
         XCTAssertEqual(seen, ["q0", "a0", "q1", "a1", "q2", "a2", "q3", "a3", "summary", "q4", "a4", "q5", "a5"], "Every row, once, in order")
     }
 
+    /// Search, copy, an edit's timeline and a row's role read the whole chat:
+    /// they index the whole journal, whatever the page before them did.
+    func testWholeChatReadersIndexTheWholeJournal() async throws {
+        let (path, checkpoint) = try journal()
+        try checkpoint.write(for: path)
+        let reader = HistoryReader()
+        let page = try await reader.read(path: path.path)
+        XCTAssertNotNil(page.older, "The page came from the checkpoint")
+        let found = try await reader.searchContent(path: path.path, query: "Question 0", start: 0)
+        XCTAssertEqual(found.hits.map(\.id), ["q0"], "Search covers the rows before the checkpoint")
+        XCTAssertEqual(found.total, 13)
+        let role = try await reader.messageRole(path: path.path, id: "q1")
+        XCTAssertEqual(role, "user")
+    }
+
     func testAFileTheJournalDoesNotMatchIsNotUsed() async throws {
         let (path, checkpoint) = try journal()
         let full = try await HistoryReader().read(path: path.path)

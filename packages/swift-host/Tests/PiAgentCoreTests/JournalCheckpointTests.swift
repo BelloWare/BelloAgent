@@ -165,6 +165,64 @@ final class JournalCheckpointTests: XCTestCase {
         await searching.close(); await reference.close()
     }
 
+    /// An edited message's earlier version is a row the edit hid: it is in no
+    /// checkpoint's rows, so a chat opened from the file after the edit reads
+    /// it from the journal when its versions are asked for.
+    func testAnEditedMessagesVersionsReadAfterReopening() async throws {
+        let chat = try await chat(after: 1, edit: true)
+        let reopened = try session(chat)
+        let partial = await reopened.partialHistory, older = await reopened.olderRows
+        XCTAssertTrue(partial, "Opened from the file written after the edit")
+        XCTAssertGreaterThan(older, 0)
+        let versions = try await reopened.messageVersions(["messageId": "t6"])
+        XCTAssertEqual(versions["count"].int, 2, "The original question and its edit")
+        let page = try await reopened.versionPage(["messageId": "t6"])
+        XCTAssertTrue(page["messages"].list.contains { $0["id"].text == "t6" }, "The original question reads as it was")
+        let loaded = await reopened.partialHistory
+        XCTAssertFalse(loaded)
+        await reopened.close()
+
+        // Opened from the file again, with no older shown rows to page to:
+        // the hidden version is still read from the journal.
+        let again = try session(chat)
+        let read = try await again.messageRead(id: "t6", field: "text", offset: 0)
+        XCTAssertEqual(read["text"].text, "Question 6")
+        await again.close()
+    }
+
+    /// The wire test's case: a short chat with no compaction, its second
+    /// question edited. The file written after the edit starts at the first
+    /// row, so no shown row is older, but the original second question is a
+    /// row the edit hid: asking for its versions reads it from the journal.
+    func testAHiddenVersionIsReadWhenNoShownRowIsOlder() async throws {
+        let root = try temporaryDirectory(); addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let state = root.appendingPathComponent("state"), profile = try fixtureProfile(), resources = Resources(cwd: root, home: root), traces = TraceStore()
+        let writer = try AgentSession(id: "checkpointed", profile: profile, apiKey: "test", cwd: root, directory: state, readOnly: true, resources: resources,
+                                      client: ScriptClient([answer("First answer"), answer("Second answer"), answer("Edited answer")]), tools: RecordingTools(),
+                                      traces: traces, autoCompaction: false)
+        try await send(writer, 0); try await send(writer, 1)
+        _ = try await writer.edit(fromMessageID: "t1", input: Submission(commandID: "edit", turnID: "t1-edited", text: "Question 1, edited"))
+        try await eventually { !(await writer.isRunning) }
+        let written = await writer.path
+        let path = try XCTUnwrap(written)
+        await writer.close()
+        let chat = Chat(root: root, state: state, profile: profile, resources: resources, traces: traces, path: path)
+        let checkpoint = try XCTUnwrap(meta(chat), "The edit wrote the file")
+        XCTAssertEqual(checkpoint.rowsBefore, 0, "Every shown row is loaded")
+        XCTAssertFalse(checkpoint.rows.contains { $0.id == "t1" }, "The original question is hidden, not shown")
+
+        let reopened = try session(chat)
+        let partial = await reopened.partialHistory, older = await reopened.olderRows
+        XCTAssertTrue(partial); XCTAssertEqual(older, 0)
+        let versions = try await reopened.messageVersions(["messageId": "t1"])
+        XCTAssertEqual(versions["count"].int, 2, "The original question and its edit")
+        await reopened.close()
+        let reading = try session(chat)
+        let read = try await reading.messageRead(id: "t1", field: "text", offset: 0)
+        XCTAssertEqual(read["text"].text, "Question 1")
+        await reading.close()
+    }
+
     func testAFileThatDoesNotMatchItsJournalIsWrittenAgain() async throws {
         let chat = try await chat()
         // The file a full open writes (the one written during the chat

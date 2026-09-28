@@ -202,6 +202,10 @@ public actor AgentSession {
     /// Shown rows before the loaded ones when the chat was opened from its
     /// journal's metadata file; they load when something asks for them.
     var olderRows = 0
+    /// Opened from the metadata file and not yet loaded in full: rows before
+    /// the loaded ones, and rows an edit hid before the checkpoint (earlier
+    /// versions), are only in the journal.
+    var partialHistory = false
     /// The newest edit marker among all shown rows, from the metadata file,
     /// when it is before the loaded rows: the timeline a page cursor names.
     var checkpointLineage: String?
@@ -233,7 +237,7 @@ public actor AgentSession {
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
         failedCompactionFingerprint=replayed.failedCompactionFingerprint; parentInfo=replayed.parentInfo
         presentationOrdinal=replayed.presentationOrdinal; rowSpans=replayed.rowSpans; olderRows=replayed.olderRows
-        if replayed.resumed { checkpointLineage=opened.resumedFrom?.lineage }
+        if replayed.resumed { checkpointLineage=opened.resumedFrom?.lineage; partialHistory=true }
         liveStateSource=replayed.stateSource
         let stateRecord=replayed.stateRecord
         if let saved=stateRecord {

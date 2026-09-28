@@ -71,7 +71,7 @@ extension AgentSession {
             return ["id": JSON(callID), "messageId": JSON(messageID), "name": card["name"], "input": JSON(input),
                     "inputTruncated": card["inputTruncated"], "inputBytes": JSON(input.utf8.count), "streaming": true]
         }
-        if olderRows > 0, !history.contains(where: { $0.id == messageID }) { try ensureFullHistory() }
+        if partialHistory, !history.contains(where: { $0.id == messageID }) { try ensureFullHistory() }
         guard let message = history.first(where: { $0.id == messageID }) else { throw AgentError("message_missing", "Message is not retained") }
         guard let block = message.content.first(where: { $0["type"].text == "toolCall" && $0["id"].text == callID }) else {
             throw AgentError("tool_call_missing", "That message does not retain this tool call")
@@ -81,12 +81,12 @@ extension AgentSession {
                 "inputTruncated": false, "inputBytes": JSON(input.utf8.count), "streaming": false]
     }
     public func messageRead(id: String, field: String, offset: Int) throws -> JSON {
-        if olderRows > 0, !history.contains(where: { $0.id == id }) { try ensureFullHistory() }
+        if partialHistory, !history.contains(where: { $0.id == id }) { try ensureFullHistory() }
         guard let message=history.first(where:{$0.id == id}) else { throw AgentError("message_missing", "Message is not retained") }; return try textPage(field == "thinking" ? message.thinking : message.retainedDisplayText,offset:offset)
     }
     public func eventPage(since: Int?) -> JSON { let since=since ?? max(0,sequence-128); return ["events":.array(events.filter{($0["seq"].int ?? 0)>since}.prefix(128).map{$0}),"seq":JSON(sequence),"resyncRequired":JSON(since < (events.first?["seq"].int ?? 1)-1)] }
     public func contentSearch(_ params: JSON) throws -> JSON {
-        try ensureFullHistory()
+        if olderRows > 0 { try ensureFullHistory() }
         let query=params["query"].text ?? "", start=try boundedInt(params["start"],maximum:100000); guard query.count <= 256 else { throw AgentError("search_limit", "Search query too long") }
         var hits: [JSON]=[], cursor=min(start,visible.count)
         while cursor < visible.count && hits.count < 100 { let m=visible[cursor], text=m.retainedDisplayText; if query.isEmpty || text.localizedCaseInsensitiveContains(query) { hits.append(["id":JSON(m.id),"position":JSON(cursor+1),"preview":JSON(preview(text,bytes:240))]) }; cursor += 1 }
@@ -95,7 +95,7 @@ extension AgentSession {
     // A branch shortens the visible timeline, so its count alone cannot identify a selection.
     var contentRevision: String { "\(visible.count):\(history.count)" }
     public func contentPage(_ params: JSON) throws -> JSON {
-        try ensureFullHistory()
+        if olderRows > 0 { try ensureFullHistory() }
         guard params["revision"].text == contentRevision else { throw AgentError("history_changed", "History changed; refresh the selection") }
         let first=try boundedInt(params["first"],fallback:1,maximum:100000), last=try boundedInt(params["last"],maximum:100000), index=try boundedInt(params["index"],fallback:1,maximum:100000), offset=try boundedInt(params["offset"],maximum:128*1024*1024)
         guard first>=1,last>=first,last<=visible.count,index>=first,index<=last else { throw AgentError("invalid_range", "Invalid history range") }

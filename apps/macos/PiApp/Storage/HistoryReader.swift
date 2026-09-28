@@ -174,6 +174,9 @@ actor HistoryReader {
         /// Shown rows before the ones held, for an index built from the
         /// journal's metadata file; a page that reaches them indexes it all.
         var olderRows = 0
+        /// Built from the metadata file: rows before the checkpoint, shown or
+        /// hidden by an edit, are not in it.
+        var partial = false
         /// Edited messages' versions, numbered from the branch records as the helper numbers them.
         var versions = MessageVersionLedger() }
     private var indexes: [String: Index] = [:]
@@ -243,7 +246,7 @@ actor HistoryReader {
         return ConversationContent.text(try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:])
     }
     func editTarget(path: String, id: String) throws -> [String: WireValue] {
-        let page = try read(path: path, around: id, targetTurns: 1)
+        let page = try read(path: path, around: id, targetTurns: 1, whole: true)
         guard page.notice == nil, let index = indexes[path], try index.branch.index(of: id) != nil,
               let ref = try index.branch.ref(id), ref.type == "message", ref.role == "user" else {
             throw HostError.failure("The editable user message is unavailable, abandoned, or its history needs recovery.")
@@ -265,13 +268,13 @@ actor HistoryReader {
     /// A retained message's role, from the offset index: any record of the
     /// journal, in the timeline shown now or in an earlier version.
     func messageRole(path: String, id: String) throws -> String? {
-        let page = try read(path: path)
+        let page = try read(path: path, whole: true)
         guard page.notice == nil, let index = indexes[path] else { return nil }
         return try index.branch.ref(id)?.role
     }
     func searchContent(path: String, query: String, start: Int) throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
-        let page = try read(path: path)
+        let page = try read(path: path, whole: true)
         guard page.notice == nil, let index = indexes[path] else { throw HostError.failure("Validate or recover damaged history before searching it") }
         let file = try open(path); defer { try? file.close() }
         guard try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
@@ -293,6 +296,8 @@ actor HistoryReader {
         return .init(hits: hits, total: index.branch.count, next: cursor < index.branch.count ? cursor : nil, revision: revision(index.stamp))
     }
     func copyContentPage(path: String, first: Int, last: Int, cursor: ContentCursor, revision expected: String) throws -> ContentPage {
+        // Positions count every shown row, as the search that gave them did.
+        if indexes[path]?.partial == true { _ = try read(path: path, whole: true) }
         let file = try open(path); defer { try? file.close() }
         guard let index = indexes[path], try stamp(file) == index.stamp, revision(index.stamp) == expected else { throw HostError.failure("History changed. Refresh the range before copying") }
         guard first >= 1, last >= first, last <= index.branch.count, cursor.index >= first, cursor.index <= last else { throw StoreError.unreadableRecord }
@@ -394,17 +399,19 @@ actor HistoryReader {
         try read(path: path, before: newer ? nil : cursor?.entry, around: around,
                  after: newer ? cursor?.entry : nil, targetTurns: HistoryWindowPolicy.turns, expected: cursor, progress: progress)
     }
+    /// `whole` indexes every record: what reads the whole chat (search, copy,
+    /// an edit's timeline, a record's role in any version) needs it.
     func read(path: String, before: String? = nil, around: String? = nil, after: String? = nil,
-              targetTurns: Int? = nil, expected: ConversationCursor? = nil, progress: Progress? = nil) throws -> HistoryPage {
+              targetTurns: Int? = nil, expected: ConversationCursor? = nil, progress: Progress? = nil, whole: Bool = false) throws -> HistoryPage {
         try Task.checkCancellation()
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file)
         let size = try file.seekToEnd(); try file.seek(toOffset: 0)
         // A page reaching past the rows an index built from the metadata
         // file holds needs the whole journal indexed.
-        var wholeJournal = false
-        if let cached = indexes[path], cached.stamp == identity, cached.olderRows > 0,
-           try Self.reachesPast(cached.branch, before: before, around: around, after: after) { indexes.removeValue(forKey: path); wholeJournal = true }
+        var wholeJournal = whole
+        if let cached = indexes[path], cached.stamp == identity, cached.partial,
+           try whole || Self.reachesPast(cached.branch, before: before, around: around, after: after) { indexes.removeValue(forKey: path); wholeJournal = true }
         var branch: HistoryOffsetIndex
         if let cached = indexes[path], cached.stamp == identity { branch = cached.branch }
         else { branch = try HistoryOffsetIndex() }
@@ -608,7 +615,7 @@ actor HistoryReader {
         retainedRun = lastWork?.retained(unanswered: activeCalls.subtracting(activeResults))
         if resume != nil, try Self.reachesPast(branch, before: before, around: around, after: after) { continue build }
         if notice == nil { indexes[path] = Index(stamp: identity, branch: branch, assistantCount: assistantCount, latestAssistantID: latestAssistantID,
-                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords, retainedRun: retainedRun, olderRows: olderRows, versions: versions) }
+                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords, retainedRun: retainedRun, olderRows: olderRows, partial: resume != nil, versions: versions) }
         break build
         }
         }
