@@ -27,7 +27,32 @@ struct AttachmentRecord: Codable, Sendable, Identifiable, Hashable {
     }
 }
 extension WorkspaceModel {
-    func supportsImages(_ id: String) -> Bool { profiles.first(where: { $0.id == record(id)?.profileID })?.configuration["input"]?.array?.contains(.string("image")) == true }
+    static let imagesUnsupported = "This chat's model is not known to take images. List \"image\" in the model's catalog `input`, or add \"input\": [\"text\", \"image\"] to the connection's Model capabilities in Settings."
+    /// What a chat's model takes: what its connection declares under Model
+    /// capabilities, and what the model catalog lists for the model the chat
+    /// uses, its own choice or the connection's model. Either one listing
+    /// "image" lets images in.
+    func modelInput(for chat: ChatRecord) -> Set<String> {
+        guard let profile = profiles.first(where: { $0.id == chat.profileID }) else { return [] }
+        var kinds = Set(Self.declaredInput(profile))
+        if let listed = catalogEntry(for: profile).descriptor(for: TurnOverrides.normalizedModel(chat.model) ?? profile.modelId)?.input {
+            kinds.formUnion(listed)
+        }
+        return kinds
+    }
+    static func declaredInput(_ profile: ProfileRecord) -> [String] { profile.configuration["input"]?.array?.compactMap(\.string) ?? [] }
+    func supportsImages(_ id: String) -> Bool { record(id).map { modelInput(for: $0).contains("image") } ?? false }
+    /// A chat's per-turn choices for the helper. When the catalog says the
+    /// chat's model takes images and its connection does not, they say so
+    /// too, and the helper accepts and sends the chat's images.
+    func turnOverrides(for chat: ChatRecord, base: [String: WireValue] = [:]) -> [String: WireValue] {
+        var params = TurnOverrides.params(for: chat, base: base)
+        let kinds = modelInput(for: chat)
+        if kinds.contains("image"), let profile = profiles.first(where: { $0.id == chat.profileID }), !Self.declaredInput(profile).contains("image") {
+            params["input"] = .array(["text", "image"].filter(kinds.contains).map(WireValue.string))
+        }
+        return params
+    }
     func attachImages(sessionID: String? = nil) {
         guard let id = sessionID ?? selectedID, supportsImages(id), displays[id] != nil else { return }
         // A sheet on the chat's window: choosing a file must not stop the run
@@ -40,7 +65,7 @@ extension WorkspaceModel {
     /// Shared by the file panel, paste and drag-and-drop.
     func attachImageFiles(_ urls: [URL], sessionID: String? = nil) {
         guard let id = sessionID ?? selectedID, let view = displays[id], !urls.isEmpty else { return }
-        guard supportsImages(id) else { error = "The selected model does not declare image support, so images cannot be attached to this chat."; return }
+        guard supportsImages(id) else { error = Self.imagesUnsupported; return }
         Task { do {
             let items = try await Task.detached { try urls.map(AttachmentRecord.inspect) }.value
             guard view.attachments.count + items.count <= 4, (view.attachments + items).reduce(0, { $0 + $1.bytes }) <= 16 * 1024 * 1024 else { throw HostError.failure("A submission supports four images and 16 MiB in total") }

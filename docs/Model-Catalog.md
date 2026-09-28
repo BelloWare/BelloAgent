@@ -27,6 +27,7 @@ requests time out after eight seconds, and responses are capped at 2 MiB and
       "contextWindow": 400000,
       "maxOutputTokens": 128000,
       "reasoning": ["minimal", "low", "medium", "high"],
+      "input": ["text", "image"],
       "deprecated": false,
       "order": 1
     },
@@ -54,8 +55,22 @@ when present, only version `1` is supported.
 | `contextWindow` | no | Context capacity in tokens, an integer from 2 through 10,000,000. Aliases `context_window`, `context`. |
 | `maxOutputTokens` | no | Supported model output ceiling, an integer from 1 through 1,000,000. Stored as `modelOutputLimit` on profiles/chats; it does not become the requested output budget. The budget is separately clamped below context capacity and within this ceiling. Aliases `max_output_tokens`, `maxOutput`. |
 | `reasoning` | no | Accepted efforts: any of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. An object with an `efforts` array is also accepted. Omission means unknown support; `[]` means no explicit effort. Unknown entries are ignored and duplicates collapse. |
+| `input` | no | What the model takes, pi's input kinds: `["text"]` or `["text", "image"]`. Omission means unknown, and the connection's Model capabilities decide. Unknown kinds are ignored and duplicates collapse; anything but an array of strings is refused. |
 | `deprecated` | no | Hidden from pickers unless a chat already uses it; shown with a badge then. |
 | `order` | no | Integer sort key; lower first. Equal keys preserve array order; entries without it follow all ordered entries. |
+
+**Images.** A chat takes images, attached, pasted or dropped, when the model
+it uses (its own choice, or its connection's model) lists `image` in `input`,
+or when its connection lists it under Settings → Connections → Model
+capabilities (`"input": ["text", "image"]`). The catalog is read live: a
+catalog updated to list `image` applies to existing chats once the app reads
+it again (a custom catalog when a model picker next needs it after five
+minutes, or on Refresh; the bundled one with the next release), without
+choosing the model again. When only the catalog says so, each turn tells the
+helper, which then accepts the images and sends them, and pi's `read` tool
+returns image files to the model as images. Pickers mark such models
+"Images". A model that is not known to take images gets pi's placeholder
+text in place of images already in the conversation.
 
 The optional boolean **mini** marks a recommendation for inexpensive auxiliary
 work, initially automatic session titles. The first active recommended entry

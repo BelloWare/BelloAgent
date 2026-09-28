@@ -7,6 +7,20 @@ import SwiftUI
 /// Which chat's draft changed, and to what: see the `onChange` below.
 private struct ComposerDraftEdit: Equatable { let session: String; let text: String }
 
+/// Attach Image, on when the chat's model takes images: its connection says
+/// so, or the model catalog does once it has loaded, which redraws this
+/// button and not the whole bar.
+private struct AttachImageButton: View {
+    @ObservedObject var model: WorkspaceModel
+    @ObservedObject var catalog: ModelCatalog
+    @ObservedObject var session: SessionDisplay
+    let queueEditing: Bool
+    var body: some View {
+        PiIconButton(symbol: "photo.badge.plus", label: "Attach Image…", size: 28, filled: true) { model.attachImages(sessionID: session.id) }
+            .disabled(!session.draftReady || !model.supportsImages(session.id) || queueEditing)
+    }
+}
+
 struct ComposerInput: View {
     @ObservedObject var model: WorkspaceModel
     @ObservedObject var session: SessionDisplay
@@ -78,7 +92,7 @@ struct ComposerInput: View {
                 let form = barForm
                 HStack(spacing: ComposerBarMetrics.spacing) {
                     // A queued message keeps only its text.
-                    PiIconButton(symbol: "photo.badge.plus", label: "Attach Image…", size: 28, filled: true) { model.attachImages(sessionID: session.id) }.disabled(!session.draftReady || !model.supportsImages(session.id) || queueEditing)
+                    AttachImageButton(model: model, catalog: model.modelCatalog, session: session, queueEditing: queueEditing)
                     PiIconButton(symbol: "command", label: "Skills…", size: 28, filled: true) { model.inspectResources(session.id) }.disabled(queueEditing)
                     Spacer()
                     runControlRow(form.runControls)

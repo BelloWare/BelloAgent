@@ -197,7 +197,7 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// finds out without opening SQLite on the main actor at launch.
     private(set) var store: MetadataStore?
     let history = HistoryReader()
-    let modelCatalog = ModelCatalog()
+    let modelCatalog: ModelCatalog
     let traces: PayloadArchive
     /// Owned by `WorkspaceChatLifecycle.swift`: the throwaway archive a
     /// portable handoff writes into.
@@ -321,8 +321,9 @@ enum WorkspacePage: String, Sendable { case chats, report }
 
     let completionSound: CompletionSound
 
-    init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil, launching: Bool = false) {
+    init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil, launching: Bool = false, modelCatalog: ModelCatalog? = nil) {
         self.launching = launching
+        self.modelCatalog = modelCatalog ?? ModelCatalog()
         self.vault = vault
         self.completionSound = completionSound ?? CompletionSound()
         let benchmarkRoot = PerformanceProbe.shared.enabled ? ProcessInfo.processInfo.environment["PI_APP_BENCHMARK_STATE_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) } : nil

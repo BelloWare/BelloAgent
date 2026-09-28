@@ -14,7 +14,7 @@ extension AgentSession {
         guard !input.text.isEmpty || !input.skills.isEmpty || !input.attachments.isEmpty else { throw AgentError("empty_message", "Enter a message or select a skill") }
         guard input.text.utf8.count <= 262144, queue.count + steering.count < 64 else { throw AgentError("queue_limit", "Message or queue limit exceeded") }
         guard !commands.contains(where:{$0["turnId"].text == input.turnID}), !history.contains(where:{$0.id == input.turnID}) else { throw AgentError("duplicate_turn", "Turn identity already accepted; no duplicate submission was made") }
-        _ = try profile.overriding(model:input.model,thinkingLevel:input.thinkingLevel,contextWindow:input.contextWindow,maxOutputTokens:input.maxOutputTokens,modelOutputLimit:input.modelOutputLimit)
+        _ = try profile.overriding(input)
         if steer, runTask == nil { throw AgentError("not_running", "Steering requires an active run; send a normal message") }
         // A message sent to a chat at its cost limit is refused where it was
         // typed, with the same words as a run stopped there, also when earlier
@@ -99,8 +99,8 @@ extension AgentSession {
     /// Runs the failed or stopped turn again from where it stopped: the last
     /// user message, or the tool results after it, go to the model once more,
     /// with the chat's current choices (`overrides`: model, thinkingLevel,
-    /// contextWindow, maxOutputTokens, modelOutputLimit; absent keys mean the
-    /// connection's defaults), which the app sends with every retry so the
+    /// contextWindow, maxOutputTokens, modelOutputLimit, input; absent keys
+    /// mean the connection's defaults), which the app sends with every retry so the
     /// request follows the pills, not a remembered turn or a restarted helper.
     /// The partial reply of the failed attempt stays in the transcript as what
     /// arrived but is never replayed. Queued follow-ups go on after the turn.
@@ -113,20 +113,20 @@ extension AgentSession {
         var submission = retrySubmission ?? Submission(commandID: UUID().uuidString, turnID: turnID, text: "")
         submission.model = overrides["model"].text; submission.thinkingLevel = overrides["thinkingLevel"].text
         submission.contextWindow = overrides["contextWindow"].int; submission.maxOutputTokens = overrides["maxOutputTokens"].int
-        submission.modelOutputLimit = overrides["modelOutputLimit"].int
-        _ = try profile.overriding(model:submission.model,thinkingLevel:submission.thinkingLevel,contextWindow:submission.contextWindow,maxOutputTokens:submission.maxOutputTokens,modelOutputLimit:submission.modelOutputLimit)
+        submission.modelOutputLimit = overrides["modelOutputLimit"].int; submission.input = try NativeHostService.turnInput(overrides["input"])
+        _ = try profile.overriding(submission)
         currentTurnID = submission.turnID
         activeSubmission=submission; retrying=true; queuePaused=false; errorMessage=nil; errorCode=nil; try persistState(); launch()
     }
     func deliver(_ submission: Submission, lane: String = "follow-up", newTask: Bool = true) async throws {
-        _ = try profile.overriding(model:submission.model,thinkingLevel:submission.thinkingLevel,contextWindow:submission.contextWindow,maxOutputTokens:submission.maxOutputTokens,modelOutputLimit:submission.modelOutputLimit)
+        let turn = try profile.overriding(submission)
         // A new task is a new turn, also when a queued follow-up starts inside
         // a run that is already going: its clock and model/tool split start
         // now, not when the run's first task did.
         if newTask { begin=nowMS(); end=nil; turnModelMs=0; turnToolMs=0; beginPresentedTask(submission.turnID); event("state") }
         try await resources.validate(submission.skills,tools:await tools.capabilityIDs(readOnly:readOnly)); appliedSnapshot=try await resources.resolve(); appliedRevision=appliedSnapshot?.revision; try Task.checkCancellation()
         let images=try loadImages(submission.attachments)
-        guard images.isEmpty || profile.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
+        guard images.isEmpty || turn.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
         let expanded=Self.userMessageText(submission.text,skills:submission.skills,turnID:submission.turnID)
         var message=ChatMessage(role:"user",content:[textBlock(expanded)]+images); message.displayText=submission.text; message.id=submission.turnID; message.turn=submission.turnID
         message.contextNote=pendingContextNote()

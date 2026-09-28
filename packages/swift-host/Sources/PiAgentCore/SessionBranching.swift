@@ -22,7 +22,7 @@ extension AgentSession {
         guard let journal else { throw AgentError("session_closed", "Session runtime is unloaded") }
         let plan = try Self.planEdit(messageID, history: history, visible: visible, context: context)
         let images = try loadImages(input.attachments)
-        let effective = try profile.overriding(model: input.model, thinkingLevel: input.thinkingLevel, contextWindow: input.contextWindow, maxOutputTokens: input.maxOutputTokens, modelOutputLimit: input.modelOutputLimit)
+        let effective = try profile.overriding(input)
         guard images.isEmpty || effective.raw["input"].list.contains("image") else { throw AgentError("unsupported_image", "Selected model does not declare image support") }
         guard expectedTimeline == nil || expectedTimeline == plan.sourceTimeline else { throw AgentError("edit_changed", "The selected branch changed. Select the message again.") }
         let target = history.first { $0.id == messageID }

@@ -145,7 +145,7 @@ extension WorkspaceModel {
         let attachments = view.attachments, skills = view.skills
         let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString
         let savedDraft = view.savedDraft
-        var params = TurnOverrides.params(for: item, base: Self.editTurnParams(messageID: messageID, text: text, turnID: turnID, attachments: attachments, skills: skills))
+        var params = turnOverrides(for: item, base: Self.editTurnParams(messageID: messageID, text: text, turnID: turnID, attachments: attachments, skills: skills))
         if let timeline = view.editSourceTimeline { params["editSourceTimeline"] = .string(timeline) }
         if let digest = view.editSourceTextDigest { params["editSourceTextDigest"] = .string(digest) }
         let generation = view.editGeneration

@@ -6,7 +6,7 @@ import Foundation
 extension AgentSession {
     /// The profile for the active turn's requests: the session profile with the
     /// delivered submission's model, thinking and limits, validated at submit time.
-    var turnProfile: Profile { applyingTaskCap((try? profile.overriding(model:activeSubmission?.model,thinkingLevel:activeSubmission?.thinkingLevel,contextWindow:activeSubmission?.contextWindow,maxOutputTokens:activeSubmission?.maxOutputTokens,modelOutputLimit:activeSubmission?.modelOutputLimit)) ?? profile) }
+    var turnProfile: Profile { applyingTaskCap(activeSubmission.flatMap { try? profile.overriding($0) } ?? profile) }
     /// A title task is a bounded utility request: its budget is its cap.
     /// Conversation turns send the model ceiling instead.
     func applyingTaskCap(_ effective: Profile) -> Profile { titleTask ? ((try? effective.capped(effective.maxOutput)) ?? effective) : effective }
@@ -67,7 +67,7 @@ extension AgentSession {
         let startingSequence = sequence, startingMutation = contextMutation, active = runTask != nil
         let startingProfile=turnProfile.raw, startingResources=appliedSnapshot?.revision
         let overrides = try NativeHostService.turnOverrides(params)
-        let effective = active ? turnProfile : applyingTaskCap(try profile.overriding(model:overrides.model, thinkingLevel:overrides.thinkingLevel, contextWindow:overrides.contextWindow, maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit))
+        let effective = active ? turnProfile : applyingTaskCap(try profile.overriding(model:overrides.model, thinkingLevel:overrides.thinkingLevel, contextWindow:overrides.contextWindow, maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit,input:overrides.input))
         let snapshot: ResourceSnapshot
         if active, let appliedSnapshot { snapshot = appliedSnapshot }
         else { snapshot = try await resources.resolve() }

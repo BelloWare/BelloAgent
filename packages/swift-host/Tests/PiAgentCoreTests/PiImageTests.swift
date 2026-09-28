@@ -80,3 +80,50 @@ final class PiImageTests: XCTestCase {
         await session.close()
     }
 }
+
+extension PiImageTests {
+    /// The app's model catalog can say that a chat's model takes images when
+    /// its connection does not. The turn carries that, and its image goes to
+    /// the model; a turn that does not stops before any request, as before.
+    func testATurnThatSaysItsModelTakesImagesSendsThem() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let data = png(width: 400, height: 300), file = root.appendingPathComponent("small.png")
+        try data.write(to: file)
+        let attachment: JSON = ["path": JSON(file.path), "bytes": JSON(data.count), "sha256": JSON(sha256(data)), "mimeType": "image/png"]
+        let profile = try fixtureProfile()
+        XCTAssertFalse(profile.raw["input"].list.contains("image"), "The connection does not declare images")
+        func run(_ id: String, input: [String]?) async throws -> (JSON, ScriptClient) {
+            let client = ScriptClient([answer("A gradient.")])
+            let session = try AgentSession(id: id, profile: profile, apiKey: "k", cwd: root, directory: root.appendingPathComponent(id), readOnly: true,
+                                           resources: Resources(cwd: root, home: root), client: client, tools: ScreenshotTool(image: data), traces: TraceStore(), autoCompaction: false)
+            _ = try await session.submit(Submission(commandID: "c", turnID: "t", text: "What is this?", attachments: [attachment], input: input), steer: false)
+            try await eventually { !(await session.isRunning) }
+            let state = await session.snapshot()
+            await session.close()
+            return (state, client)
+        }
+        let (refused, silent) = try await run("undeclared", input: nil)
+        XCTAssertEqual(refused["state"].text, "error")
+        let unsent = await silent.requests.count
+        XCTAssertEqual(unsent, 0, "Nothing is sent for a model not known to take images")
+
+        let (sent, client) = try await run("declared", input: ["text", "image"])
+        XCTAssertEqual(sent["state"].text, "idle")
+        let profiles = await client.profiles, requests = await client.requests
+        let used = try XCTUnwrap(profiles.first)
+        XCTAssertEqual(used.raw["input"], ["text", "image"], "The turn's requests use what the turn declared")
+        let body = try ProviderClient.requestBody(profile: used, messages: try XCTUnwrap(requests.first), instructions: "", tools: [], sessionID: "s")
+        let content = try XCTUnwrap(body["input"].list.last?["content"].list)
+        XCTAssertEqual(content.last?["type"].text, "input_image")
+        XCTAssertEqual(content.last?["image_url"].text, "data:image/png;base64," + data.base64EncodedString())
+    }
+
+    func testATurnsInputIsPisKindsEachOnce() throws {
+        XCTAssertEqual(try NativeHostService.turnOverrides(["input": ["text", "image"]]).input, ["text", "image"])
+        XCTAssertNil(try NativeHostService.turnOverrides([:]).input)
+        for invalid: JSON in [[], ["video"], ["image", "image"], "image", [1], ["text", .null]] {
+            XCTAssertThrowsError(try NativeHostService.turnOverrides(["input": invalid]), "\(invalid)")
+        }
+        XCTAssertThrowsError(try fixtureProfile().overriding(model: nil, thinkingLevel: nil, input: ["audio"]))
+    }
+}

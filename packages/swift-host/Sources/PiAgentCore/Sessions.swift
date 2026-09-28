@@ -6,7 +6,10 @@ public struct Submission: Codable, Sendable {
     /// apply to every request of this turn only and survive a queued restart.
     public var model: String? = nil, thinkingLevel: String? = nil
     public var contextWindow: Int? = nil, maxOutputTokens: Int? = nil, modelOutputLimit: Int? = nil
-    public init(commandID: String, turnID: String, text: String, attachments: [JSON] = [], skills: [FrozenSkill] = [], model: String? = nil, thinkingLevel: String? = nil, contextWindow: Int? = nil, maxOutputTokens: Int? = nil, modelOutputLimit: Int? = nil) { self.commandID=commandID; self.turnID=turnID; self.text=text; self.attachments=attachments; self.skills=skills; self.model=model; self.thinkingLevel=thinkingLevel; self.contextWindow=contextWindow; self.maxOutputTokens=maxOutputTokens; self.modelOutputLimit=modelOutputLimit }
+    /// What the turn's model takes ("text", "image") when the app's model
+    /// catalog says more than the connection does; nil keeps the connection's.
+    public var input: [String]? = nil
+    public init(commandID: String, turnID: String, text: String, attachments: [JSON] = [], skills: [FrozenSkill] = [], model: String? = nil, thinkingLevel: String? = nil, contextWindow: Int? = nil, maxOutputTokens: Int? = nil, modelOutputLimit: Int? = nil, input: [String]? = nil) { self.commandID=commandID; self.turnID=turnID; self.text=text; self.attachments=attachments; self.skills=skills; self.model=model; self.thinkingLevel=thinkingLevel; self.contextWindow=contextWindow; self.maxOutputTokens=maxOutputTokens; self.modelOutputLimit=modelOutputLimit; self.input=input }
     /// The whole submission, as the durable queue record keeps it.
     var savedValue: JSON { (try? JSON.parse(JSONEncoder().encode(self))) ?? [:] }
     /// The queue row the app shows. `text` is a bounded preview, so the app
