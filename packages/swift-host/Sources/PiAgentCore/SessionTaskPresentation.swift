@@ -7,7 +7,7 @@ extension AgentSession {
     }
     var presentationTimeline: String {
         if let cachedPresentationTimeline { return cachedPresentationTimeline }
-        let value = visible.last(where: { $0.kind == "branch" })?.id ?? "root"
+        let value = visible.last(where: { $0.kind == "branch" })?.id ?? checkpointLineage ?? "root"
         cachedPresentationTimeline = value
         return value
     }

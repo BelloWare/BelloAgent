@@ -11,7 +11,7 @@ import Foundation
 /// the same records in the same order and so number versions alike. It reads
 /// what every edit already wrote: a chat edited before versions were shown
 /// reads the same way, and no journal is rewritten.
-struct MessageVersionLedger: Sendable, Equatable {
+struct MessageVersionLedger: Sendable, Equatable, Codable {
     /// At most this many edited messages are tracked; later edits still work,
     /// they just show no earlier versions.
     static let groupLimit = 4096

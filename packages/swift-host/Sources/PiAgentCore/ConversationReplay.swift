@@ -36,6 +36,7 @@ struct ConversationReplay {
 extension AgentSession {
     public func prepareEdit(_ messageID: String, offset: Int = 0, expectedTimeline: String? = nil, expectedTextDigest: String? = nil) throws -> JSON {
         guard !closed, !ephemeral else { throw AgentError("edit_unavailable", "Keep and reopen this conversation before editing.") }
+        try ensureFullHistory()
         let plan = try Self.planEdit(messageID, history: history, visible: visible, context: context)
         guard let message = history.first(where: { $0.id == messageID }) else { throw AgentError("edit_target", "The message is not retained.") }
         let text = message.displayText ?? message.text

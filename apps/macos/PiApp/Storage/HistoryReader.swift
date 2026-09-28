@@ -74,7 +74,7 @@ actor HistoryReader {
         }
     }
     private typealias Ref = HistoryOffset
-    private struct IndexRecord: Decodable {
+    fileprivate struct IndexRecord: Decodable {
         var type: String?; var id: String?; var parentId: String?
         var fromMessageId: String?; var keptIds: [String]?; var nativeKeptIDs: [String]?; var contextIDs: [String]?
         var version: Int?; var customType: String?; var pendingWork: PendingWork?
@@ -171,6 +171,9 @@ actor HistoryReader {
         var device: Int32; var inode: UInt64; var size: Int64; var modified: Int; var modifiedNS: Int; var changed: Int; var changedNS: Int
     }
     private struct Index { var stamp: Stamp; var branch: HistoryOffsetIndex; var assistantCount: Int; var latestAssistantID: String?; var sessionID: String?; var automaticContextSafe: Bool; var failureMessage: String?; var taskRecords: [TaskPresentationRecord]; var retainedRun: RetainedRun?
+        /// Shown rows before the ones held, for an index built from the
+        /// journal's metadata file; a page that reaches them indexes it all.
+        var olderRows = 0
         /// Edited messages' versions, numbered from the branch records as the helper numbers them.
         var versions = MessageVersionLedger() }
     private var indexes: [String: Index] = [:]
@@ -180,13 +183,19 @@ actor HistoryReader {
     private static let retainedIndexes = 8
     private var recency: [String] = []
     private var digests: [String: (stamp: Stamp, bytes: UInt64, digest: String)] = [:]
+    /// What a page cursor records of the journal it was read from: its
+    /// length, and its first and last 64 KiB up to there. A journal only ever
+    /// grows; a replaced or rewritten one differs in these. Hashing the whole
+    /// of a long journal was a large part of opening it.
     private func fingerprint(_ file: FileHandle, bytes: UInt64) throws -> String {
-        try file.seek(toOffset: 0)
-        var hash = SHA256(), read: UInt64 = 0
-        while read < bytes {
-            try Task.checkCancellation()
-            guard let data = try file.read(upToCount: Int(min(65_536, bytes - read))), !data.isEmpty else { throw StoreError.unreadableRecord }
-            hash.update(data: data); read += UInt64(data.count)
+        var hash = SHA256(), length = bytes
+        withUnsafeBytes(of: &length) { hash.update(bufferPointer: $0) }
+        let window: UInt64 = 65_536
+        for start in Set([0, bytes > window ? bytes - window : 0]).sorted() where bytes > start {
+            try file.seek(toOffset: start)
+            let count = Int(min(window, bytes - start))
+            guard let data = try file.read(upToCount: count), data.count == count else { throw StoreError.unreadableRecord }
+            hash.update(data: data)
         }
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
@@ -391,13 +400,19 @@ actor HistoryReader {
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file)
         let size = try file.seekToEnd(); try file.seek(toOffset: 0)
-        let branch: HistoryOffsetIndex
+        // A page reaching past the rows an index built from the metadata
+        // file holds needs the whole journal indexed.
+        var wholeJournal = false
+        if let cached = indexes[path], cached.stamp == identity, cached.olderRows > 0,
+           try Self.reachesPast(cached.branch, before: before, around: around, after: after) { indexes.removeValue(forKey: path); wholeJournal = true }
+        var branch: HistoryOffsetIndex
         if let cached = indexes[path], cached.stamp == identity { branch = cached.branch }
         else { branch = try HistoryOffsetIndex() }
         var notice: String?, assistantCount = 0, latestAssistantID: String?, failureMessage: String?
         var taskRecords: [TaskPresentationRecord] = [], retainedRun: RetainedRun?, incompleteTail = false
-        var versions = MessageVersionLedger()
+        var versions = MessageVersionLedger(), olderRows = 0
         if let cached = indexes[path], cached.stamp == identity {
+            olderRows = cached.olderRows
             assistantCount = cached.assistantCount; latestAssistantID = cached.latestAssistantID; versions = cached.versions
             failureMessage = cached.failureMessage; retainedRun = cached.retainedRun
             taskRecords = cached.taskRecords
@@ -405,6 +420,16 @@ actor HistoryReader {
         }
         else {
         indexes.removeValue(forKey: path)
+        // A journal with a metadata file (`JournalCheckpoint`) is indexed from
+        // the file's checkpoint: the rows it names, then only the records after
+        // it. A file the journal no longer matches, an edit after it, or a
+        // page reaching past its rows, and the whole journal is indexed.
+        let resumable = wholeJournal ? nil : JournalCheckpoint.read(for: URL(fileURLWithPath: path))
+        build: for resume in (resumable.map { [$0, nil] } ?? [nil]) as [JournalCheckpoint?] {
+        if resume == nil, resumable != nil {
+            branch = try HistoryOffsetIndex(); notice = nil; assistantCount = 0; latestAssistantID = nil; failureMessage = nil
+            taskRecords = []; retainedRun = nil; incompleteTail = false; versions = MessageVersionLedger(); olderRows = 0
+        }
         var pending = Data(), offset: UInt64 = 0, leaf: String?
         // Where the newest run-state record is, when it was read from its
         // tail: what it says about unfinished work is decoded after the loop.
@@ -416,6 +441,24 @@ actor HistoryReader {
         var contextSafe = true, callCount = 0
         var progressAt = ProcessInfo.processInfo.systemUptime
         var presentationOperations: [String:String] = [:]
+        // Rows named by the checkpoint: shown as they are, not replayed as edits.
+        var seeded: Set<String> = [], seededTail: String?
+        if let resume {
+            guard let seed = Self.seed(resume, file: file) else { continue build }
+            for ref in seed.rows { try branch.insert(ref) }
+            if let tail = seed.tail { try branch.insert(tail); seededTail = tail.id }
+            seeded = Set(seed.rows.map(\.id)); branch.startLineage(resume.lineage)
+            sessionID = seed.sessionID; native = true
+            leaf = resume.lastID; offset = resume.start; olderRows = resume.rowsBefore
+            orderedContext = resume.context; contextIDs = Set(resume.context)
+            contextMessages = seed.contextMessages; roles = seed.roles; replayNodes = seed.replayNodes
+            selectedTimeline = seed.rows.map(\.id); presentationOperations = seed.presentationOperations
+            contextSafe = seed.contextSafe; callCount = seed.callCount
+            assistantCount = resume.assistantMessageCount; latestAssistantID = resume.latestAssistantMessageID
+            versions = resume.versions; taskRecords = resume.tasks
+            if let work = seed.work { pendingWork = work.exists; failureMessage = work.failure; lastWork = work }
+            try file.seek(toOffset: resume.start)
+        } else { try file.seek(toOffset: 0) }
         while let chunk = try file.read(upToCount: 65_536), !chunk.isEmpty {
             try Task.checkCancellation()
             var start = chunk.startIndex
@@ -429,6 +472,8 @@ actor HistoryReader {
                     let value: IndexRecord
                     if let tail = StateRecordTail.read(pending) { value = IndexRecord(stateID: tail.id, parentID: tail.parent); newestState = (offset, pending.count) }
                     else { value = try JSONDecoder().decode(IndexRecord.self, from: pending); if value.pendingWork != nil { newestState = nil } }
+                    // An edit or a fork boundary after the checkpoint is replayed from the start.
+                    if resume != nil, value.type == "branch" || value.customType == "pi-app.native.context.v1" { continue build }
                     if value.type == "session", offset == 0, value.version == 3 { sessionID = value.id }
                     if value.customType == "pi-app.native.v1" { native = true }
                     if let work = value.pendingWork { pendingWork = work.exists; failureMessage = work.failure; lastWork = work }
@@ -539,6 +584,8 @@ actor HistoryReader {
         // Native edits keep the append-only source, while the disk-backed
         // visible position table follows their explicit branch records.
         try branch.replayChain { ref in
+            if seeded.contains(ref.id) { try branch.append(ref); return }
+            if ref.id == seededTail { return }
             if ref.type == "branch" {
                 let kept = ref.keptIDs ?? []
                 for id in kept { guard try branch.hasSeen(id) else { throw StoreError.unreadableRecord } }
@@ -559,8 +606,11 @@ actor HistoryReader {
         let activeCalls = Set(contextIDs.flatMap { contextMessages[$0]?.calls ?? [] })
         let activeResults = Set(contextIDs.compactMap { contextMessages[$0]?.result })
         retainedRun = lastWork?.retained(unanswered: activeCalls.subtracting(activeResults))
+        if resume != nil, try Self.reachesPast(branch, before: before, around: around, after: after) { continue build }
         if notice == nil { indexes[path] = Index(stamp: identity, branch: branch, assistantCount: assistantCount, latestAssistantID: latestAssistantID,
-                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords, retainedRun: retainedRun, versions: versions) }
+                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords, retainedRun: retainedRun, olderRows: olderRows, versions: versions) }
+        break build
+        }
         }
         recency.removeAll { $0 == path }; recency.append(path)
         while recency.count > Self.retainedIndexes { indexes.removeValue(forKey: recency.removeFirst()) }
@@ -659,15 +709,90 @@ actor HistoryReader {
                 }
             }
         }
-        return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: branch.count, notice: notice,
+        return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, notice: notice,
                            assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil,
                            failureMessage: notice == nil ? failureMessage : nil,
                            revision: notice == nil ? HistoryRevision(path: path, stamp: revision(identity)) : nil,
                            incarnation: incarnation, lineage: lineage,
-                           older: start > 0 && !messages.isEmpty ? pageCursor(try branch.at(start).id) : nil,
+                           older: (start > 0 || olderRows > 0) && !messages.isEmpty ? pageCursor(try branch.at(start).id) : nil,
                            newer: end < branch.count && !messages.isEmpty ? pageCursor(try branch.at(end - 1).id) : nil,
                            partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil, taskRecords:taskRecords,
                            retainedRun: notice == nil ? retainedRun : nil, incompleteTail: incompleteTail)
+    }
+}
+
+extension HistoryReader {
+    /// What the checkpoint's rows contribute to an index, read from the
+    /// journal and checked against the file; nil when anything differs.
+    fileprivate struct Seed {
+        var rows: [HistoryOffset] = [], tail: HistoryOffset?
+        var sessionID: String?
+        var roles: [String: String] = [:], contextMessages: [String: (calls: [String], result: String?)] = [:]
+        var replayNodes: [String: ReplayNode] = [:], presentationOperations: [String: String] = [:]
+        var contextSafe = true, callCount = 0
+        var work: IndexRecord.PendingWork?
+    }
+    fileprivate static func seed(_ checkpoint: JournalCheckpoint, file: FileHandle) -> Seed? {
+        guard let headerLine = JournalCheckpoint.verified(checkpoint.header, in: file),
+              let header = try? JSONDecoder().decode(IndexRecord.self, from: headerLine), header.type == "session", header.version == 3,
+              header.id == checkpoint.sessionID,
+              let markerLine = JournalCheckpoint.verified(checkpoint.marker, in: file),
+              let marker = try? JSONDecoder().decode(IndexRecord.self, from: markerLine), marker.customType == "pi-app.native.v1",
+              let lastLine = JournalCheckpoint.verified(checkpoint.last, in: file),
+              let last = try? JSONDecoder().decode(IndexRecord.self, from: lastLine), last.id == checkpoint.lastID else { return nil }
+        var seed = Seed(); seed.sessionID = header.id
+        var parent: String?, operations: [String: Int] = [:]
+        for row in checkpoint.rows {
+            guard let bytes = JournalCheckpoint.rowBytes(row, in: file), let value = try? JSONDecoder().decode(IndexRecord.self, from: bytes) else { return nil }
+            var ref = HistoryOffset(id: row.id, parent: parent, offset: row.offset, length: row.length, type: nil)
+            switch row.kind {
+            case .message, .update:
+                guard (row.kind == .message ? value.type == "message" && value.id == row.id : value.presentationTarget == row.id), let message = value.message else { return nil }
+                ref.type = "message"; ref.role = message.role
+                ref.presentation = ["execution", "requestLedger"].contains(message.nativeKind ?? "")
+                if let operation = message.nativeOperationID { operations[operation] = seed.rows.count; seed.presentationOperations[operation] = row.id }
+                seed.roles[row.id] = message.role
+                if message.contentIndexed != true { seed.contextSafe = false }
+                seed.callCount += message.calls.count
+                if seed.callCount > 100_000 { seed.contextSafe = false }
+                seed.contextMessages[row.id] = (seed.callCount <= 100_000 ? message.calls : [], message.role == "toolResult" ? message.toolCallId : nil)
+                seed.replayNodes[row.id] = ReplayNode(id: row.id, role: message.role ?? "", eligible: message.nativeReplayEligible != false,
+                                                      summary: message.nativeKind == "compaction", dependencies: message.nativeCompaction?.dependencyIDs,
+                                                      summarized: message.nativeCompaction?.summarySourceIDs, calls: message.calls, result: message.toolCallId)
+            case .compaction:
+                guard value.type == "compaction", value.id == row.id else { return nil }
+                ref.type = "compaction"
+                if let operation = value.nativeCompaction?.operationId, let position = operations[operation] { seed.rows[position].adopted = true }
+                seed.replayNodes[row.id] = ReplayNode(id: row.id, role: "system", summary: true, dependencies: value.nativeCompaction?.dependencyIDs,
+                                                      summarized: value.nativeCompaction?.summarySourceIDs)
+                seed.contextMessages[row.id] = ([], nil)
+            case .branch:
+                guard value.type == "branch", value.id == row.id else { return nil }
+                ref.type = "branch"
+                seed.replayNodes[row.id] = ReplayNode(id: row.id, role: "system", eligible: false)
+                seed.contextMessages[row.id] = ([], nil)
+            }
+            seed.rows.append(ref); parent = row.id
+        }
+        guard checkpoint.context.allSatisfy({ seed.contextMessages[$0] != nil }) else { return nil }
+        // The record the checkpoint follows, when it is not a row itself, joins
+        // the chain so the records after it find their parent.
+        if !checkpoint.rows.contains(where: { $0.id == checkpoint.lastID }) {
+            seed.tail = HistoryOffset(id: checkpoint.lastID, parent: parent, offset: checkpoint.last.offset, length: checkpoint.last.length, type: last.type)
+        }
+        if let state = checkpoint.state {
+            guard let line = JournalCheckpoint.verified(state, in: file), let value = try? JSONDecoder().decode(IndexRecord.self, from: line) else { return nil }
+            seed.work = value.pendingWork
+        }
+        return seed
+    }
+    /// Whether a request names rows before the ones an index built from the
+    /// journal's metadata file holds: its first row as the boundary to read
+    /// before, or a row it does not have.
+    fileprivate static func reachesPast(_ branch: HistoryOffsetIndex, before: String?, around: String?, after: String?) throws -> Bool {
+        if let before, (try branch.index(of: before) ?? 0) == 0 { return true }
+        for id in [around, after].compactMap({ $0 }) where try branch.index(of: id) == nil { return true }
+        return false
     }
 }
 

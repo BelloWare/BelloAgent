@@ -29,7 +29,16 @@ final class SessionJournal {
     private(set) var appends = 0, synchronizations = 0
     private let beforeAppend: @Sendable (JSON) throws -> Void
     private let beforeSynchronize: @Sendable () throws -> Void
-    init(url: URL, id: String, cwd: URL, binding: JSON, create: Bool, beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeSynchronize: @escaping @Sendable () throws -> Void = {}) throws {
+    /// The checkpoint this journal was opened from, when its records all
+    /// still match it and nothing after it rewrites the context; the replay
+    /// then resumes there (`JournalCheckpoint`).
+    private(set) var resumedFrom: JournalCheckpoint?
+    /// The session header and the native marker as written, for a checkpoint.
+    private(set) var headerCheck: JournalCheckpoint.Check?, markerCheck: JournalCheckpoint.Check?
+    /// Where the last append went, and its bytes, for a checkpoint.
+    private(set) var lastAppend: (offset: UInt64, length: Int)?
+    private(set) var lastAppendLine: Data?
+    init(url: URL, id: String, cwd: URL, binding: JSON, create: Bool, checkpoint: JournalCheckpoint? = nil, beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeSynchronize: @escaping @Sendable () throws -> Void = {}) throws {
         self.url=url; self.beforeAppend=beforeAppend; self.beforeSynchronize=beforeSynchronize
         try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
         lockFD=open(url.path + ".lock",O_CREAT|O_RDWR|O_NOFOLLOW,0o600)
@@ -43,33 +52,83 @@ final class SessionJournal {
                 let header: JSON = ["type":"session","version":3,"id":JSON(id),"cwd":JSON(cwd.path),"timestamp":JSON(isoNow())]
                 var data=try header.data(); data.append(10); try data.write(to:url)
             }
-            let reader=try JournalRecordReader(url)
-            guard let header=try reader.next(), header["type"].text == "session", header["version"].int == 3, header["id"].text == id else { throw AgentError("session_identity", "Session header does not match its identity") }
-            var last: String?, seen=Set<String>()
-            var marker: JSON?
-            // The chain needs each record's id, parent and kind, which a scan
-            // reads without building the record; the replay that follows
-            // parses what it uses. A line the scan cannot read plainly is
-            // parsed in full, as before.
+            if !create, let checkpoint, let resumed=Self.resume(url:url,id:id,binding:binding,from:checkpoint) {
+                tail=resumed.last; bytes=resumed.size; resumedFrom=checkpoint; headerCheck=checkpoint.header; markerCheck=checkpoint.marker
+            } else {
+                let scanned=try Self.chain(url:url,id:id,binding:binding,requireMarker:!create)
+                tail=scanned.last; bytes=scanned.size; headerCheck=scanned.header; markerCheck=scanned.marker
+            }
+            handle=try FileHandle(forWritingTo:url); try handle.seekToEnd()
+        } catch { _=flock(lockFD,LOCK_UN); _=close(lockFD); throw error }
+        if create {
+            try append(["type":"custom","customType":"pi-app.native.v1","data":["binding":binding,"version":1]])
+            if let span=lastAppend, let line=lastAppendLine { markerCheck=JournalCheckpoint.Check(offset:span.offset,length:span.length,sha256:JournalCheckpoint.digest(line)) }
+        }
+    }
+    /// The whole journal checked as one unbroken chain, as every open did
+    /// before checkpoints. The chain needs each record's id, parent and kind,
+    /// which a scan reads without building the record; the replay parses what
+    /// it uses. A line the scan cannot read plainly is parsed in full.
+    private static func chain(url: URL, id: String, binding: JSON, requireMarker: Bool) throws
+        -> (last: String?, size: UInt64, header: JournalCheckpoint.Check, marker: JournalCheckpoint.Check?) {
+        let reader=try JournalRecordReader(url)
+        // Empty lines are tolerated, as the JSONL reader always has.
+        var headerStart: UInt64=0, headerLine=Data()
+        while headerLine.isEmpty { headerStart=reader.completeBytes; guard let line=try reader.nextLine() else { break }; headerLine=line }
+        guard !headerLine.isEmpty, let header=try? JSON.parse(headerLine),
+              header["type"].text == "session", header["version"].int == 3, header["id"].text == id else { throw AgentError("session_identity", "Session header does not match its identity") }
+        let headerCheck=JournalCheckpoint.Check(offset:headerStart,length:headerLine.count,sha256:JournalCheckpoint.digest(headerLine))
+        var last: String?, seen=Set<String>()
+        var marker: JSON?, markerCheck: JournalCheckpoint.Check?
+        while true {
+            let start=reader.completeBytes
+            guard let line=try reader.nextLine() else { break }
+            if line.isEmpty { continue }
+            let item: JSON?, fields: JournalLineScan.Fields
+            if let tail=JournalLineScan.stateTail(line) { item = nil; fields = tail }
+            else if let scanned=JournalLineScan.fields(line), scanned.id != nil { item = nil; fields = scanned }
+            else {
+                let parsed=try JSON.parse(line); item = parsed
+                fields = JournalLineScan.Fields(id: parsed["id"].text, parentID: parsed["parentId"].text, customType: parsed["customType"].text)
+            }
+            let rid=try identity(item?["id"] ?? .string(fields.id ?? ""))
+            guard seen.insert(rid).inserted, fields.parentID == last else { throw AgentError("session_damaged", "Native journal must be a valid single branch") }; last=rid
+            if marker == nil, fields.customType == "pi-app.native.v1" {
+                marker=try item ?? JSON.parse(line)
+                markerCheck=JournalCheckpoint.Check(offset:start,length:line.count,sha256:JournalCheckpoint.digest(line))
+            }
+        }
+        if requireMarker {
+            guard let marker, marker["data"]["binding"] == binding else { throw AgentError("legacy_session", "This is not a compatible native session. Original Pi history remains read-only; use an explicit portable handoff.") }
+        }
+        return (last, reader.size, headerCheck, markerCheck)
+    }
+    /// The chain from a checkpoint on, when the records the checkpoint relies
+    /// on are still exactly as it recorded them and nothing after it rewrites
+    /// the model context (an edit or a fork boundary, which only a full replay
+    /// applies). nil means: check and replay the whole journal.
+    private static func resume(url: URL, id: String, binding: JSON, from checkpoint: JournalCheckpoint) -> (last: String?, size: UInt64)? {
+        guard checkpoint.sessionID == id, let file=try? FileHandle(forReadingFrom:url) else { return nil }
+        defer { try? file.close() }
+        guard let headerLine=JournalCheckpoint.verified(checkpoint.header,in:file), let header=try? JSON.parse(headerLine),
+              header["type"].text == "session", header["version"].int == 3, header["id"].text == id,
+              let markerLine=JournalCheckpoint.verified(checkpoint.marker,in:file), let marker=try? JSON.parse(markerLine),
+              marker["customType"].text == "pi-app.native.v1", marker["data"]["binding"] == binding,
+              let lastLine=JournalCheckpoint.verified(checkpoint.last,in:file), let last=try? JSON.parse(lastLine),
+              last["id"].text == checkpoint.lastID, let reader=try? JournalRecordReader(url,startingAt:checkpoint.start) else { return nil }
+        var tail: String? = checkpoint.lastID, seen=Set<String>()
+        do {
             while let line=try reader.nextLine() {
                 if line.isEmpty { continue }
-                let item: JSON?, fields: JournalLineScan.Fields
-                if let tail=JournalLineScan.stateTail(line) { item = nil; fields = tail }
-                else if let scanned=JournalLineScan.fields(line), scanned.id != nil { item = nil; fields = scanned }
-                else {
-                    let parsed=try JSON.parse(line); item = parsed
-                    fields = JournalLineScan.Fields(id: parsed["id"].text, parentID: parsed["parentId"].text, customType: parsed["customType"].text)
-                }
-                let rid=try identity(item?["id"] ?? .string(fields.id ?? ""))
-                guard seen.insert(rid).inserted, fields.parentID == last else { throw AgentError("session_damaged", "Native journal must be a valid single branch") }; last=rid
-                if marker == nil, fields.customType == "pi-app.native.v1" { marker=try item ?? JSON.parse(line) }
+                let fields: JournalLineScan.Fields
+                if let scanned=JournalLineScan.stateTail(line) ?? JournalLineScan.fields(line), scanned.id != nil { fields=scanned }
+                else { let parsed=try JSON.parse(line); fields = .init(id:parsed["id"].text,parentID:parsed["parentId"].text,customType:parsed["customType"].text,type:parsed["type"].text) }
+                let rid=try identity(.string(fields.id ?? ""))
+                guard seen.insert(rid).inserted, fields.parentID == tail, fields.type != "branch", fields.customType != "pi-app.native.context.v1" else { return nil }
+                tail=rid
             }
-            if !create {
-                guard let marker, marker["data"]["binding"] == binding else { throw AgentError("legacy_session", "This is not a compatible native session. Original Pi history remains read-only; use an explicit portable handoff.") }
-            }
-            tail=last; bytes=reader.size; handle=try FileHandle(forWritingTo:url); try handle.seekToEnd()
-        } catch { _=flock(lockFD,LOCK_UN); _=close(lockFD); throw error }
-        if create { try append(["type":"custom","customType":"pi-app.native.v1","data":["binding":binding,"version":1]]) }
+        } catch { return nil }
+        return (tail, reader.size)
     }
     /// `flush` false leaves the record written but not yet forced to stable
     /// storage. The bytes are in the file either way — another reader, a fork
@@ -83,6 +142,7 @@ final class SessionJournal {
         guard data.count - 1 <= JournalRecordReader.maximumRecordBytes else { throw AgentError("session_record_limit", "This individual journal record exceeds 32 MiB; the existing conversation is preserved") }
         try beforeAppend(v)
         do { try handle.write(contentsOf:data) } catch { poisoned=true; throw error }
+        lastAppend=(bytes, data.count - 1); lastAppendLine=data.dropLast()
         tail=id; bytes += UInt64(data.count); unsynced=true; appends += 1
         if flush { try synchronize() }
         return id
@@ -105,11 +165,20 @@ final class SessionJournal {
         try? FileManager.default.removeItem(atPath:old.path+".lock")
     }
     /// Stream replay/copies without a second parsed copy of the whole journal.
-    func recordReader() throws -> JournalRecordReader {
+    func recordReader(from start: UInt64 = 0) throws -> JournalRecordReader {
         guard !poisoned else { throw AgentError("session_damaged", "A failed journal write must be recovered before forking") }
+        if start > 0 { return try JournalRecordReader(url,expectedBytes:bytes,startingAt:start) }
         let reader=try JournalRecordReader(url,expectedBytes:bytes)
         _=try reader.next() // The header is validated at open, not a replay record.
         return reader
+    }
+    /// The journal's size as written so far: where the next record goes.
+    var size: UInt64 { bytes }
+    /// Checks the whole chain after an open that resumed from a checkpoint
+    /// whose rows then failed to load; the caller replays the whole journal.
+    func checkWhole(id: String, binding: JSON) throws {
+        let scanned=try Self.chain(url:url,id:id,binding:binding,requireMarker:true)
+        tail=scanned.last; bytes=scanned.size; headerCheck=scanned.header; markerCheck=scanned.marker; resumedFrom=nil
     }
     deinit { try? synchronize(); try? handle.close(); _=flock(lockFD,LOCK_UN); _=close(lockFD) }
 }

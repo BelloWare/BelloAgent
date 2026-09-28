@@ -26,7 +26,7 @@ extension AgentSession {
         context = plan.replay.compactMap { nodes[$0] }
         visible = plan.displayPrefix.compactMap { nodes[$0] }
         let displayed = Set(visible.map(\.id)); visible += context.filter { !displayed.contains($0.id) }
-        var marker = ChatMessage(role: "system", content: []); marker.id = markerID; marker.kind = "branch"; marker.replayEligible = false; marker.displayText = branchMarkerText
+        let marker = branchMarker(markerID)
         history.append(marker); visible.append(marker)
     }
 }

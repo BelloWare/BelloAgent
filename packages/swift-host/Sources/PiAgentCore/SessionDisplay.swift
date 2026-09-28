@@ -218,7 +218,7 @@ extension AgentSession {
             value["before"]=projection.start>0 ? JSON(projection.start):.null
             let lineage = presentationTimeline
             value["historyIncarnation"] = JSON(displayEpoch); value["historyLineage"] = JSON(lineage)
-            value["historyOlder"] = projection.start > 0 && projection.start < visible.count ?
+            value["historyOlder"] = (projection.start > 0 || olderRows > 0) && projection.start < visible.count ?
                 ["incarnation":JSON(displayEpoch),"lineage":JSON(lineage),"entry":JSON(visible[projection.start].id)] : .null
             // The row the page starts right after. A reply longer than the
             // page leaves no room for itself once rows follow it; a reader

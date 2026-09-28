@@ -195,6 +195,9 @@ final class CompactionGatewayTests: XCTestCase {
         let noReplay=ScriptClient([]),reopened=try AgentSession(id:"compaction-golden",profile:profile,apiKey:"synthetic-compaction-key",cwd:root,directory:state,readOnly:false,resources:Resources(cwd:root,home:root),client:noReplay,tools:tools,traces:traces,resumePath:path)
         let restored=await reopened.context,calls=await noReplay.count
         XCTAssertEqual(restored.map(\.id),context.map(\.id));XCTAssertEqual(restored.map(\.text),context.map(\.text));XCTAssertEqual(calls,0)
+        // The reopen resumed from the journal's metadata file; the rows before
+        // the checkpoint load as any reader that reaches for them loads them.
+        try await reopened.ensureFullHistory()
         let historyAfter = await reopened.history.filter { $0.responseTimeline != nil }
         XCTAssertEqual(historyAfter.map(\.id),ordered.map(\.id))
         XCTAssertEqual(historyAfter.map(\.responseTimeline),ordered.map(\.responseTimeline))

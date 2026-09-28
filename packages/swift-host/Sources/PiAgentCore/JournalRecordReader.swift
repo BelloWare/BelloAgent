@@ -22,7 +22,10 @@ final class JournalRecordReader {
     private(set) var rawLine = Data()
     var omittedBytes: UInt64 { size - completeBytes }
 
-    init(_ url: URL, expectedBytes: UInt64? = nil, allowIncompleteTail: Bool = false, hash: Bool = false, chunkBytes: Int = 64 * 1024) throws {
+    /// `startingAt` reads from a record boundary the caller knows (a
+    /// checkpoint's resume point); `completeBytes` then counts from the
+    /// file's start as always.
+    init(_ url: URL, expectedBytes: UInt64? = nil, allowIncompleteTail: Bool = false, hash: Bool = false, chunkBytes: Int = 64 * 1024, startingAt start: UInt64 = 0) throws {
         let fd = open(url.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw AgentError("file_unavailable", "Cannot open \(url.path)") }
         file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -35,6 +38,10 @@ final class JournalRecordReader {
         self.allowIncompleteTail = allowIncompleteTail
         hasher = hash ? StreamingSHA256() : nil
         self.chunkBytes = max(1, min(chunkBytes, 1024 * 1024))
+        if start > 0 {
+            guard !hash, start <= size else { throw Self.changed() }
+            try file.seek(toOffset: start); bytesRead = start; completeBytes = start
+        }
     }
 
     func next() throws -> JSON? {

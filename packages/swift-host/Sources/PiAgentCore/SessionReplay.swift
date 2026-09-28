@@ -1,0 +1,181 @@
+import Foundation
+
+/// What a chat's journal replays to: its rows and model context, and what its
+/// records add up to. Opening a chat replays its journal this way, from its
+/// metadata file's checkpoint when that still matches the journal
+/// (`JournalCheckpoint`), and a chat opened from a checkpoint loads its older
+/// rows the same way when something asks for them (`ensureFullHistory`).
+struct JournalReplay {
+    var history: [ChatMessage] = [], visible: [ChatMessage] = [], context: [ChatMessage] = []
+    var versions = MessageVersionStore()
+    var spend = SessionSpend(), spendTracked = false
+    var assistantMessageCount = 0, latestAssistantMessageID: String?
+    var pendingRequestLinks: [String: [String]] = [:]
+    var recentTaskPresentations: [TaskPresentationRecord] = []
+    var compactionState: JSON = .null, contextRecovery: JSON = .null, failedCompactionFingerprint: String?, parentInfo: JSON = .null
+    var presentationOrdinal = 0
+    var rowSpans: [String: JournalCheckpoint.Row] = [:]
+    /// Shown rows before the loaded ones, when resumed from a checkpoint.
+    var olderRows = 0
+    var stateRecord: JSON?
+    /// The latest point the next open can resume from, if any.
+    var captured: JournalCheckpoint?
+    /// Whether this replay resumed from the metadata file's checkpoint.
+    var resumed = false
+    /// The newest run state's record: its bytes, where it is, and its key.
+    var stateSource: StateSource?
+}
+
+/// A run-state record a checkpoint points at.
+struct StateSource {
+    var line: Data
+    var offset: UInt64
+    var key: String
+}
+
+extension AgentSession {
+    /// `resume` false replays the whole journal whatever its metadata file
+    /// says. `spendTracked` is what a journal with no cost record counts as.
+    static func replay(_ opened: SessionJournal, url: URL, id: String, binding: JSON, spendTracked: Bool, resume: Bool) throws -> JournalReplay {
+        var r = JournalReplay(); r.spendTracked = spendTracked
+        // The newest run state's record, for a checkpoint: its bytes, where it
+        // is, and the key it holds the state under.
+        var stateSource: (line: Data, offset: UInt64, key: String)?
+        // The latest point the next open can resume from, and the highest
+        // presentation ordinal so far (`JournalCheckpoint`).
+        var ordinalMax = 0
+        // The run state is written several times a turn and only the newest
+        // counts; in a long chat those snapshots were most of the journal and
+        // most of the time it took to open. Keep the newest one's line and
+        // parse it once, at the end; a superseded one is not read at all. A
+        // line of another shape is read as before.
+        var newestStateLine: Data?
+        let replay: JournalRecordReader
+        if resume, let checkpoint=opened.resumedFrom, let loaded=Self.loadCheckpoint(checkpoint, url: url) {
+            // Opened from the metadata file: the rows it names, then only the
+            // records after it. Rows shown before them load when asked for.
+            r.resumed=true
+            r.history=loaded.rows; r.visible=loaded.rows; r.context=loaded.context
+            for (row, message) in zip(checkpoint.rows, loaded.rows) {
+                r.rowSpans[row.id]=row
+                if row.kind != .branch { for attempt in message.requestAttemptIDs ?? [] { r.pendingRequestLinks[attempt, default: []].append(message.id) } }
+            }
+            r.olderRows=checkpoint.rowsBefore
+            r.assistantMessageCount=checkpoint.assistantMessageCount; r.latestAssistantMessageID=checkpoint.latestAssistantMessageID
+            r.versions.ledger=checkpoint.versions; r.recentTaskPresentations=checkpoint.tasks
+            let saved=(try? JSON.parse(Data(checkpoint.helper.utf8))) ?? [:]
+            r.spend.add(record: saved["spend"]); r.spendTracked=saved["spendTracked"].flag == true
+            r.failedCompactionFingerprint=saved["failedCompactionFingerprint"].text
+            r.contextRecovery=saved["contextRecovery"]; r.compactionState=saved["compactionState"]; r.parentInfo=saved["parentInfo"]
+            ordinalMax=saved["presentationOrdinal"].int ?? 0
+            r.stateRecord=loaded.state
+            if let check=checkpoint.state, let key=checkpoint.stateKey, let line=loaded.stateLine { stateSource=(line, check.offset, key) }
+            replay=try opened.recordReader(from: checkpoint.start)
+        } else {
+            if resume, opened.resumedFrom != nil { try opened.checkWhole(id: id, binding: binding) }
+            replay=try opened.recordReader()
+        }
+        while true {
+            let lineStart=replay.completeBytes
+            guard let line=try replay.nextLine() else { break }
+            if line.isEmpty { continue }
+            if line.starts(with: JournalLineScan.statePrefix) { newestStateLine=line; stateSource=(line, lineStart, "data"); continue }
+            let item=try JSON.parse(line)
+            if item["customType"].text == SessionSpend.recordType { r.spend.add(record: item["data"]); r.spendTracked = true; continue }
+            if item["type"].text == "message" {
+                let message=try ChatMessage(id:required(item["id"],"message id"),pi:item["message"]); r.history.append(message); if !["execution","requestLedger"].contains(message.kind ?? "") { r.context.append(message) }; r.visible.append(message)
+                r.rowSpans[message.id] = .init(id:message.id,kind:.message,offset:lineStart,length:line.count); ordinalMax=max(ordinalMax,Self.maxOrdinal(message))
+                if message.role=="assistant" { r.assistantMessageCount += 1; r.latestAssistantMessageID=message.id }
+                if message.role=="user" { r.versions.ledger.recorded(userMessage: message.id) }
+                for attempt in message.requestAttemptIDs ?? [] { r.pendingRequestLinks[attempt, default: []].append(message.id) }
+            } else if item["type"].text == "compaction" {
+                let restored=try CompactionCheckpoint.restore(item,context:r.context)
+                let summary=restored.summary, kept=restored.kept
+                for attempt in summary.requestAttemptIDs ?? [] { r.pendingRequestLinks[attempt, default: []].append(summary.id) }
+                r.context=[summary]+kept; r.history.append(summary); r.visible.append(summary)
+                r.rowSpans[summary.id] = .init(id:summary.id,kind:.compaction,offset:lineStart,length:line.count)
+                if let operation = summary.operationID, let position = r.history.firstIndex(where: { $0.kind == "execution" && $0.operationID == operation }) {
+                    r.history[position].responseTimeline?.finish("completed"); r.history[position].detail="Compaction · Checkpoint durably adopted"
+                    let replacement=r.history[position]
+                    if let index=r.visible.firstIndex(where: { $0.id == replacement.id }) { r.visible[index]=replacement }
+                }
+                r.compactionState=summary.compaction ?? .null
+                if let recovery=summary.compaction?["recovery"], !recovery.isNull { r.contextRecovery=recovery }
+            } else if item["type"].text == "branch" {
+                // Replay an edit: the live context becomes exactly the kept ids and
+                // the abandoned tail leaves the displayed timeline, never the journal.
+                // What it hides stays readable as the edited message's earlier version.
+                r.versions.hide(from: item["fromMessageId"].text ?? "", visible: r.visible, history: r.history)
+                let markerID=try identity(item["id"])
+                if !item["nativeBranchVersion"].isNull {
+                    let plan = try Self.restoreBranch(item, history: r.history, visible: r.visible, context: r.context)
+                    Self.adoptBranch(plan, history: &r.history, visible: &r.visible, context: &r.context, markerID: markerID)
+                } else {
+                let ordered=try CompactionCheckpoint.identities(item["keptIds"]), ids=Set(ordered)
+                guard r.context.filter({ ids.contains($0.id) }).map(\.id)==ordered else { throw AgentError("session_damaged","Branch references missing, abandoned or reordered messages") }
+                Self.branch(history:&r.history,context:&r.context,visible:&r.visible,from:item["fromMessageId"].text ?? "",keptIDs:ids,markerID:markerID)
+                // New branches publish their replacement queue in the same
+                // durable record. A crash before delivery restores it paused.
+                }
+                r.rowSpans[markerID] = .init(id:markerID,kind:.branch,offset:lineStart,length:line.count)
+                if !item["nativeState"].isNull { r.stateRecord=item["nativeState"]; newestStateLine=nil; stateSource=(line, lineStart, "nativeState") }
+                r.contextRecovery = .null; r.compactionState = .null
+            } else if item["customType"].text == "pi-app.presentation.update.v1" {
+                let target = try identity(item["data"]["id"])
+                // An update follows the row it updates closely: search from the end.
+                if let position = r.history.lastIndex(where: { $0.id == target }), ["execution","requestLedger"].contains(r.history[position].kind ?? "") {
+                    var replacement = try ChatMessage(id:target,pi:item["message"]); replacement.replayEligible=false
+                    r.history[position]=replacement
+                    r.rowSpans[target] = .init(id:target,kind:.update,offset:lineStart,length:line.count); ordinalMax=max(ordinalMax,Self.maxOrdinal(replacement))
+                    if let index=r.visible.lastIndex(where: { $0.id == target }) { r.visible[index]=replacement }
+                }
+            } else if item["customType"].text == "pi-app.task-terminal.v1" {
+                let task = try JSONDecoder().decode(TaskPresentationRecord.self, from: item["data"].data())
+                guard task.valid, task.terminal else { throw AgentError("session_damaged", "Invalid task completion evidence") }
+                r.recentTaskPresentations.removeAll { $0.key == task.key }; r.recentTaskPresentations.append(task)
+                if r.recentTaskPresentations.count > 64 { r.recentTaskPresentations.removeFirst() }
+            } else if item["customType"].text == "pi-app.native.state.v1" { r.stateRecord=item["data"]; newestStateLine=nil; stateSource=(line, lineStart, "data") }
+            else if item["customType"].text == "pi-app.compaction-failure.v1" { r.failedCompactionFingerprint=item["data"]["fingerprint"].text }
+            else if item["customType"].text == "pi-app.context-recovery.v1" { r.contextRecovery=item["data"] }
+            else if item["customType"].text == "pi-app.native.context.v1" {
+                let byID=Dictionary(r.history.map { ($0.id,$0) },uniquingKeysWith:{_,b in b})
+                let ids=try CompactionCheckpoint.identities(item["data"]["ids"])
+                r.context=try ids.map { guard let message=byID[$0] else { throw AgentError("session_damaged","Unknown context reference") }; return message }
+                let selected = EditReplayPlan.forkTimeline(visible: r.visible.map(\.id), boundary: ids)
+                if !item["data"]["visibleIDs"].isNull, try CompactionCheckpoint.identities(item["data"]["visibleIDs"]) != selected { throw AgentError("session_damaged", "Fork timeline does not match the complete boundary") }
+                r.visible = selected.compactMap { byID[$0] }
+            } else if ["pi-app.side-origin.v1", "pi-app.fork-origin.v1"].contains(item["customType"].text ?? "") {
+                r.parentInfo=item["data"]
+                if item["customType"].text == "pi-app.fork-origin.v1" { r.contextRecovery = .null; r.compactionState = .null }
+            }
+            // A record that sets the model context is where the next open can
+            // resume from: the metadata file records what it takes to.
+            if ["compaction", "branch"].contains(item["type"].text ?? "") || item["customType"].text == "pi-app.native.context.v1" {
+                let helper: JSON=["spend":r.spend.record,"spendTracked":JSON(r.spendTracked),"failedCompactionFingerprint":r.failedCompactionFingerprint.map { JSON($0) } ?? .null,
+                                  "contextRecovery":r.contextRecovery,"compactionState":r.compactionState,"parentInfo":r.parentInfo,"presentationOrdinal":JSON(ordinalMax)]
+                r.captured=Self.checkpoint(sessionID:id,header:opened.headerCheck,marker:opened.markerCheck,last:line,at:lineStart,lastID:try identity(item["id"]),
+                                         visible:r.visible,context:r.context,spans:r.rowSpans,state:stateSource,assistantMessageCount:r.assistantMessageCount,
+                                         latestAssistantMessageID:r.latestAssistantMessageID,versions:r.versions.ledger,tasks:r.recentTaskPresentations,helper:helper)
+            }
+        }
+        // A process restart cannot manufacture terminal evidence. Retained
+        // parts stay in place, with an explicit gap after the last checkpoint.
+        for index in r.history.indices {
+            let prior = r.history[index]
+            guard ["execution","requestLedger"].contains(prior.kind ?? ""), prior.responseTimeline?.terminal == nil else { continue }
+            r.history[index].responseTimeline?.finish("interrupted")
+            r.history[index].responseTimeline?.coverage = "partial"
+            r.history[index].detail = (r.history[index].kind == "requestLedger" ? "Request":"Compaction") + " interrupted · no terminal receipt"
+            let replacement=r.history[index]
+            if let shown = r.visible.firstIndex(where: { $0.id == replacement.id }) { r.visible[shown] = replacement }
+        }
+        r.presentationOrdinal = max(r.history.compactMap(\.responseTimeline).flatMap(\.segments).map { $0.part.sessionOrdinal ?? $0.part.ordinal }.max() ?? 0, r.resumed ? ordinalMax : 0)
+        if let line=newestStateLine {
+            let item=try JSON.parse(line)
+            guard item["customType"].text == "pi-app.native.state.v1" else { throw AgentError("session_damaged", "Invalid session state record") }
+            r.stateRecord=item["data"]
+        }
+        r.stateSource = stateSource.map { StateSource(line: $0.line, offset: $0.offset, key: $0.key) }
+        return r
+    }
+}

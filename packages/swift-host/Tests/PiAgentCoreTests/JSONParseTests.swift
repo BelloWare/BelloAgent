@@ -144,14 +144,14 @@ final class JournalLineScanTests: XCTestCase {
     private func scanned(_ text: String) -> JournalLineScan.Fields? { JournalLineScan.fields(Data(text.utf8)) }
     private func parsedFields(_ text: String) -> JournalLineScan.Fields? {
         guard let item = try? JSON.parse(Data(text.utf8)) else { return nil }
-        return .init(id: item["id"].text, parentID: item["parentId"].text, customType: item["customType"].text)
+        return .init(id: item["id"].text, parentID: item["parentId"].text, customType: item["customType"].text, type: item["type"].text)
     }
 
     func testTheRecordsOwnFieldsAreRead() {
         XCTAssertEqual(scanned(#"{"customType":"pi-app.native.v1","data":{"id":"inner","parentId":"x"},"id":"a1","parentId":null}"#),
                        .init(id: "a1", parentID: nil, customType: "pi-app.native.v1"))
         XCTAssertEqual(scanned(#"{"id":"b2","message":{"content":[{"text":"\"id\":\"fake\" {[","type":"text"}],"id":"m"},"parentId":"a1","type":"message"}"#),
-                       .init(id: "b2", parentID: "a1", customType: nil))
+                       .init(id: "b2", parentID: "a1", customType: nil, type: "message"))
         XCTAssertEqual(scanned(" {\"id\" : \"c3\" , \"n\" : -1.5e3 , \"ok\" : true , \"parentId\" : \"b2\" } "), .init(id: "c3", parentID: "b2", customType: nil))
     }
 
@@ -172,7 +172,7 @@ final class JournalLineScanTests: XCTestCase {
             var record: [String: JSON] = [:]
             for key in keys where random.next() % 3 != 0 {
                 switch key {
-                case "id", "parentId", "customType": record[key] = random.next() % 5 == 0 ? .null : .string(random.plainIdentity())
+                case "id", "parentId", "customType", "type": record[key] = random.next() % 5 == 0 ? .null : .string(random.plainIdentity())
                 default: record[key] = random.document(depth: 1)
                 }
             }
@@ -201,7 +201,7 @@ final class JournalStateTailTests: XCTestCase {
         for (id, parent) in [("s1", Optional("p0")), ("s2", nil)] {
             let bytes = line(state(decoy, id: id, parent: parent))
             let parsed = try JSON.parse(bytes)
-            XCTAssertEqual(JournalLineScan.stateTail(bytes), .init(id: parsed["id"].text, parentID: parsed["parentId"].text, customType: "pi-app.native.state.v1"))
+            XCTAssertEqual(JournalLineScan.stateTail(bytes), .init(id: parsed["id"].text, parentID: parsed["parentId"].text, customType: "pi-app.native.state.v1", type: "custom"))
         }
         var random = SeededRandom(seed: 0x57A7E)
         for _ in 0..<200 {

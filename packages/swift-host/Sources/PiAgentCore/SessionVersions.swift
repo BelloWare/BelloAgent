@@ -85,6 +85,7 @@ extension AgentSession {
     /// `session.versions`: one message's versions, or with no message every
     /// edited message's, in the order each was first edited.
     public func messageVersions(_ params: JSON) throws -> JSON {
+        try ensureFullHistory()
         if params["messageId"].isNull {
             return ["groups": .array(versions.ledger.edited.suffix(256).map(versionList))]
         }
@@ -98,6 +99,7 @@ extension AgentSession {
     /// transcript's own row format, each with the request attempts it came
     /// from. Byte-bounded like a history window; `next` continues it.
     public func versionPage(_ params: JSON) throws -> JSON {
+        try ensureFullHistory()
         let id = try identity(params["messageId"])
         guard let ids = versions.ledger.versions(of: id), let index = ids.firstIndex(of: id) else {
             throw AgentError("version_missing", "That message has no earlier versions.")

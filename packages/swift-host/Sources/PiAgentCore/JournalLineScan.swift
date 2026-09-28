@@ -17,6 +17,7 @@ enum JournalLineScan {
         var id: String?
         var parentID: String?
         var customType: String?
+        var type: String? = nil
     }
 
     /// How every run-state record this helper writes begins: the journal is
@@ -70,7 +71,7 @@ enum JournalLineScan {
             else if literal("null") { parent = nil }
             else { return nil }
             guard literal(#","timestamp":"#), plainString() != nil, literal(#","type":"custom"}"#), finished() else { return nil }
-            return Fields(id: id, parentID: parent, customType: "pi-app.native.state.v1")
+            return Fields(id: id, parentID: parent, customType: "pi-app.native.state.v1", type: "custom")
         }
 
         mutating func fields() -> Fields? {
@@ -86,7 +87,7 @@ enum JournalLineScan {
                 guard take(UInt8(ascii: ":")) else { return nil }
                 skipSpace()
                 switch key {
-                case "id", "parentId", "customType":
+                case "id", "parentId", "customType", "type":
                     // A repeated key is the parser's to settle: it keeps the first.
                     guard seen.insert(key).inserted else { return nil }
                     let value: String?
@@ -96,6 +97,7 @@ enum JournalLineScan {
                     switch key {
                     case "id": fields.id = value
                     case "parentId": fields.parentID = value
+                    case "type": fields.type = value
                     default: fields.customType = value
                     }
                 default:

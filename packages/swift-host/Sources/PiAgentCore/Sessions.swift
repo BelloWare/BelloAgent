@@ -199,6 +199,20 @@ public actor AgentSession {
     // integer increment each, on paths that already build a page.
     var displayProjectionBuildCount = 0
     var displayRowProjectionCount = 0
+    /// Shown rows before the loaded ones when the chat was opened from its
+    /// journal's metadata file; they load when something asks for them.
+    var olderRows = 0
+    /// The newest edit marker among all shown rows, from the metadata file,
+    /// when it is before the loaded rows: the timeline a page cursor names.
+    var checkpointLineage: String?
+    /// The newest run state's record, and how far the journal has been read
+    /// for rows' places, for the next metadata file written while the chat is
+    /// open (`refreshCheckpoint`).
+    var liveStateSource: StateSource?
+    var spansScannedTo: UInt64 = 0
+    /// Where each loaded row's content is in the journal, for the next
+    /// metadata file (`JournalCheckpoint`).
+    var rowSpans: [String: JournalCheckpoint.Row] = [:]
     public init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, editingGate: AsyncGate = AsyncGate(), resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
         self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.editingGate=editingGate; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.utilityPurpose=utilityPurpose; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
@@ -209,102 +223,19 @@ public actor AgentSession {
         }
         let url=resumePath.map(canonical) ?? directory.appendingPathComponent(id + ".jsonl")
         guard within(url,canonical(directory.path)) else { throw AgentError("session_scope", "Writable sessions must be in the app-managed directory") }
-        let opened=try SessionJournal(url:url,id:id,cwd:cwd,binding:profile.binding,create:resumePath == nil,beforeAppend:beforeJournalAppend,beforeSynchronize:beforeJournalSynchronize); journal=opened
-        var stateRecord: JSON?
-        // The run state is written several times a turn and only the newest
-        // counts; in a long chat those snapshots were most of the journal and
-        // most of the time it took to open. Keep the newest one's line and
-        // parse it once, at the end; a superseded one is not read at all. A
-        // line of another shape is read as before.
-        var newestStateLine: Data?
-        // A journal this runtime creates counts every attempt from its first;
-        // a reopened one does when it holds a cost record (below).
-        spendTracked = resumePath == nil
-        let replay=try opened.recordReader()
-        while let line=try replay.nextLine() {
-            if line.isEmpty { continue }
-            if line.starts(with: JournalLineScan.statePrefix) { newestStateLine=line; continue }
-            let item=try JSON.parse(line)
-            if item["customType"].text == SessionSpend.recordType { spend.add(record: item["data"]); spendTracked = true; continue }
-            if item["type"].text == "message" {
-                let message=try ChatMessage(id:required(item["id"],"message id"),pi:item["message"]); history.append(message); if !["execution","requestLedger"].contains(message.kind ?? "") { context.append(message) }; visible.append(message)
-                if message.role=="assistant" { assistantMessageCount += 1; latestAssistantMessageID=message.id }
-                if message.role=="user" { versions.ledger.recorded(userMessage: message.id) }
-                for attempt in message.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(message.id) }
-            } else if item["type"].text == "compaction" {
-                let restored=try CompactionCheckpoint.restore(item,context:context)
-                let summary=restored.summary, kept=restored.kept
-                for attempt in summary.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(summary.id) }
-                context=[summary]+kept; history.append(summary); visible.append(summary)
-                if let operation = summary.operationID, let position = history.firstIndex(where: { $0.kind == "execution" && $0.operationID == operation }) {
-                    history[position].responseTimeline?.finish("completed"); history[position].detail="Compaction · Checkpoint durably adopted"
-                    let replacement=history[position]
-                    if let index=visible.firstIndex(where: { $0.id == replacement.id }) { visible[index]=replacement }
-                }
-                compactionState=summary.compaction ?? .null
-                if let recovery=summary.compaction?["recovery"], !recovery.isNull { contextRecovery=recovery }
-            } else if item["type"].text == "branch" {
-                // Replay an edit: the live context becomes exactly the kept ids and
-                // the abandoned tail leaves the displayed timeline, never the journal.
-                // What it hides stays readable as the edited message's earlier version.
-                versions.hide(from: item["fromMessageId"].text ?? "", visible: visible, history: history)
-                if !item["nativeBranchVersion"].isNull {
-                    let plan = try Self.restoreBranch(item, history: history, visible: visible, context: context)
-                    Self.adoptBranch(plan, history: &history, visible: &visible, context: &context, markerID: try identity(item["id"]))
-                } else {
-                let ordered=try CompactionCheckpoint.identities(item["keptIds"]), ids=Set(ordered)
-                guard context.filter({ ids.contains($0.id) }).map(\.id)==ordered else { throw AgentError("session_damaged","Branch references missing, abandoned or reordered messages") }
-                Self.branch(history:&history,context:&context,visible:&visible,from:item["fromMessageId"].text ?? "",keptIDs:ids,markerID:try identity(item["id"]))
-                // New branches publish their replacement queue in the same
-                // durable record. A crash before delivery restores it paused.
-                }
-                if !item["nativeState"].isNull { stateRecord=item["nativeState"]; newestStateLine=nil }
-                contextRecovery = .null; compactionState = .null
-            } else if item["customType"].text == "pi-app.presentation.update.v1" {
-                let target = try identity(item["data"]["id"])
-                // An update follows the row it updates closely: search from the end.
-                if let position = history.lastIndex(where: { $0.id == target }), ["execution","requestLedger"].contains(history[position].kind ?? "") {
-                    var replacement = try ChatMessage(id:target,pi:item["message"]); replacement.replayEligible=false
-                    history[position]=replacement
-                    if let index=visible.lastIndex(where: { $0.id == target }) { visible[index]=replacement }
-                }
-            } else if item["customType"].text == "pi-app.task-terminal.v1" {
-                let task = try JSONDecoder().decode(TaskPresentationRecord.self, from: item["data"].data())
-                guard task.valid, task.terminal else { throw AgentError("session_damaged", "Invalid task completion evidence") }
-                recentTaskPresentations.removeAll { $0.key == task.key }; recentTaskPresentations.append(task)
-                if recentTaskPresentations.count > 64 { recentTaskPresentations.removeFirst() }
-            } else if item["customType"].text == "pi-app.native.state.v1" { stateRecord=item["data"]; newestStateLine=nil }
-            else if item["customType"].text == "pi-app.compaction-failure.v1" { failedCompactionFingerprint=item["data"]["fingerprint"].text }
-            else if item["customType"].text == "pi-app.context-recovery.v1" { contextRecovery=item["data"] }
-            else if item["customType"].text == "pi-app.native.context.v1" {
-                let byID=Dictionary(history.map { ($0.id,$0) },uniquingKeysWith:{_,b in b})
-                let ids=try CompactionCheckpoint.identities(item["data"]["ids"])
-                context=try ids.map { guard let message=byID[$0] else { throw AgentError("session_damaged","Unknown context reference") }; return message }
-                let selected = EditReplayPlan.forkTimeline(visible: visible.map(\.id), boundary: ids)
-                if !item["data"]["visibleIDs"].isNull, try CompactionCheckpoint.identities(item["data"]["visibleIDs"]) != selected { throw AgentError("session_damaged", "Fork timeline does not match the complete boundary") }
-                visible = selected.compactMap { byID[$0] }
-            } else if ["pi-app.side-origin.v1", "pi-app.fork-origin.v1"].contains(item["customType"].text ?? "") {
-                parentInfo=item["data"]
-                if item["customType"].text == "pi-app.fork-origin.v1" { contextRecovery = .null; compactionState = .null }
-            }
-        }
-        // A process restart cannot manufacture terminal evidence. Retained
-        // parts stay in place, with an explicit gap after the last checkpoint.
-        for index in history.indices {
-            let prior = history[index]
-            guard ["execution","requestLedger"].contains(prior.kind ?? ""), prior.responseTimeline?.terminal == nil else { continue }
-            history[index].responseTimeline?.finish("interrupted")
-            history[index].responseTimeline?.coverage = "partial"
-            history[index].detail = (history[index].kind == "requestLedger" ? "Request":"Compaction") + " interrupted · no terminal receipt"
-            let replacement=history[index]
-            if let shown = visible.firstIndex(where: { $0.id == replacement.id }) { visible[shown] = replacement }
-        }
-        presentationOrdinal = history.compactMap(\.responseTimeline).flatMap(\.segments).map { $0.part.sessionOrdinal ?? $0.part.ordinal }.max() ?? 0
-        if let line=newestStateLine {
-            let item=try JSON.parse(line)
-            guard item["customType"].text == "pi-app.native.state.v1" else { throw AgentError("session_damaged", "Invalid session state record") }
-            stateRecord=item["data"]
-        }
+        let stored = resumePath == nil ? nil : JournalCheckpoint.read(for: url)
+        let opened=try SessionJournal(url:url,id:id,cwd:cwd,binding:profile.binding,create:resumePath == nil,checkpoint:stored,beforeAppend:beforeJournalAppend,beforeSynchronize:beforeJournalSynchronize); journal=opened
+        let replayed=try Self.replay(opened, url: url, id: id, binding: profile.binding, spendTracked: resumePath == nil, resume: true)
+        history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
+        spend=replayed.spend; spendTracked=replayed.spendTracked
+        assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
+        pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
+        compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
+        failedCompactionFingerprint=replayed.failedCompactionFingerprint; parentInfo=replayed.parentInfo
+        presentationOrdinal=replayed.presentationOrdinal; rowSpans=replayed.rowSpans; olderRows=replayed.olderRows
+        if replayed.resumed { checkpointLineage=opened.resumedFrom?.lineage }
+        liveStateSource=replayed.stateSource
+        let stateRecord=replayed.stateRecord
         if let saved=stateRecord {
             if !saved["taskPresentation"].isNull,
                var task = try? JSONDecoder().decode(TaskPresentationRecord.self, from: saved["taskPresentation"].data()),
@@ -349,6 +280,7 @@ public actor AgentSession {
             result.toolStats=["durationMs":.null,"outcome":"unknown"]
             result.requestAttemptIDs=pending.attempts; result.turn=pending.turn
             try opened.append(["type":"message","message":result.pi],id:result.id); history.append(result); context.append(result); visible.append(result); queuePaused=true
+            if let span=opened.lastAppend { rowSpans[result.id] = .init(id:result.id,kind:.message,offset:span.offset,length:span.length) }
             for attempt in result.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(result.id) }
         }
         let retainedTaskSources = Set(visible.map(\.id))
@@ -360,6 +292,10 @@ public actor AgentSession {
         toolHistory=ToolHistoryIndex(history)
         taskRootID=context.last(where: { $0.role == "user" })?.taskRootID
         boundary=context; state=runStatus == "failed" ? "error" : queuePaused ? "paused" : "idle"
+        spansScannedTo=opened.size
+        // The metadata file follows the journal; it is only ever a shortcut.
+        if let captured=replayed.captured { try? captured.write(for: url) }
+        else if stored != nil, !replayed.resumed { JournalCheckpoint.remove(for: url) }
     }
     public var isRunning: Bool { runTask != nil }
     public var isEphemeral: Bool { ephemeral }
