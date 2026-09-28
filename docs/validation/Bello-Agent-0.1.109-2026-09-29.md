@@ -1,6 +1,6 @@
 # Bello Agent 0.1.109 — a chat opens from its journal's metadata file
 
-Status: candidate; publication pending.
+Status: publicly released and verified at 2026-09-28 16:28:53 UTC.
 Starting main: `f93981d2849f18792bf232f5d69abc33a6c95493` (0.1.108's verified record).
 
 ## Changes
@@ -117,9 +117,28 @@ without the file.
 - The timings (`HistoryReaderStateTailTests.testIndexingAKeptJournal`,
   `SessionOpenPerformanceTests.testOpeningAKeptJournal` and
   `testOpeningALongChat`) are opt-in, so the gate skips them.
+- **Live compaction test, fixture mode, on the release helper:** 3 of 3
+  scenarios passed (mid-run recalled 10 of 10 markers); reported cost $0.82 of
+  the fixture's $5.00 cap (synthetic).
 - Installation and updater rehearsals are excluded by the owner's standing
   instruction.
 
 ## Publication
 
-Pending.
+- Release source: `30e23235594d2c759d19029d3469c45ead0f4ba6`, pushed to GitHub `main`; annotated tag
+  `v0.1.109` is pushed and resolves to that commit.
+- Website publication: `885a2a3f7939d5e2c6d94d192ab3a49306eda5a4`, pushed to `BelloWare/belloware.com` `main`.
+- Signed/notarized Bello Agent 0.1.109, build 113. App notarization
+  `cb263c8a-caec-458a-ae87-22fe028f9dd9` and DMG notarization `ea2eaea7-d657-49bb-8e86-c27c447290cc` were accepted. Stapling,
+  signature, Gatekeeper and artifact validation passed.
+- `BelloAgent-0.1.109.dmg`: **11,136,371 bytes (10.62 MiB)**; SHA-256
+  `cf57be2f34ae7c4b5a4965297fe2772f8c98de453450b7d6eef760ca21116b38`.
+- At 2026-09-28 16:28:53 UTC, the public product page linked to 0.1.109.
+  `scripts/verify-published.py` downloaded the public archive, verified its
+  SHA-256 and Ed25519 signature, and confirmed that both public update feeds
+  match the intended release and are byte-identical.
+- The site deployed about 12 minutes after the website push (16:16:29 UTC);
+  until then the feeds still named 0.1.108 and the new DMG returned 404. The
+  publish also moved `sitemap.xml`'s `lastmod` to the local date, 2026-09-29.
+- No install or updater rehearsal was performed, at the owner's standing
+  instruction.
