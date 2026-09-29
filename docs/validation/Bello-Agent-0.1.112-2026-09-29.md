@@ -1,6 +1,6 @@
 # Bello Agent 0.1.112 — a chat's rows drawn once, at their final height
 
-Status: candidate; publication pending.
+Status: publicly released and verified at 2026-09-29 01:46:37 UTC.
 Starting main: `0d98fa80fbfcbbdebd165aa5da0c764ee57d7d9d` (0.1.111's verified record).
 
 ## Changes
@@ -64,9 +64,25 @@ window probe that samples every 4 ms (`d82ede1`).
   `TranscriptActivityTests.testAReplyStoppedAtTheOutputBudgetCarriesItsReason`
   and
   `TranscriptPageStressTests.testATwentyKilobyteEditReadFromAJournalShowsAPartialDiff`.
+- **Live compaction test, fixture mode, on the release helper:** 3 of 3
+  scenarios passed (mid-run recalled 10 of 10 markers); reported cost $0.82 of
+  the fixture's $5.00 cap (synthetic).
 - Installation and updater rehearsals are excluded by the owner's standing
   instruction.
 
 ## Publication
 
-Pending.
+- Release source: `74fdbefd37e5fa45516f3abf2a24f0ed3d6c5e81`, pushed to GitHub `main`; annotated tag
+  `v0.1.112` is pushed and resolves to that commit.
+- Website publication: `a8b826947bd447ebceda381686fe47df7628943f`, pushed to `BelloWare/belloware.com` `main`.
+- Signed/notarized Bello Agent 0.1.112, build 116. App notarization
+  `bc67e876-1178-4ea2-a4a0-186fd836d2dc` and DMG notarization `f7908189-9816-40b1-8239-2c9cbe87b1c9` were accepted. Stapling,
+  signature, Gatekeeper and artifact validation passed.
+- `BelloAgent-0.1.112.dmg`: **11,140,706 bytes (10.62 MiB)**; SHA-256
+  `a250e00ac29dcfe039ba8af04e0bfb0b3850c513e163f6e610d79fb7b538943b`.
+- At 2026-09-29 01:46:37 UTC, the public product page linked to 0.1.112.
+  `scripts/verify-published.py` downloaded the public archive, verified its
+  SHA-256 and Ed25519 signature, and confirmed that both public update feeds
+  match the intended release and are byte-identical.
+- No install or updater rehearsal was performed, at the owner's standing
+  instruction.
