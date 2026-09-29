@@ -70,6 +70,8 @@ extension WorkspaceModel {
             if unlisted > 0, self.error == nil {
                 self.error = "\(unlisted) saved chat\(unlisted == 1 ? "" : "s") could not be listed by this version. Their conversation files are untouched."
             }
+            // Journals written before 0.1.111, slimmed once while nothing else is going on.
+            scheduleJournalSlimming()
         } catch { restoring = false; launching = false; self.error = "Chats could not be restored. \(error.localizedDescription)" }
     }
     /// A chat's journal is named in its record only once the helper has made

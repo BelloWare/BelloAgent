@@ -293,6 +293,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// Owned by `WorkspaceRefresh.swift`: the delayed shutdown of an idle
     /// project's helper, cancelled the moment it is used again.
     var idleTasks: [String: Task<Void, Never>] = [:]
+    /// The once-per-launch pass that slims journals written before 0.1.111 (`WorkspaceJournalSlimming.swift`).
+    var journalSlimming: Task<Void, Never>?
     /// Owned by `WorkspaceHosts.swift`: helpers stopped on purpose for being
     /// idle, whose exit therefore is not a lost host.
     var retiringHosts: Set<ObjectIdentifier> = []

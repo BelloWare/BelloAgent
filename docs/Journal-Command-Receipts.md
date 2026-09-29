@@ -59,6 +59,43 @@ replayed in full and the file written again.
 Journals written before 0.1.111 hold whole lists only, and open as they
 always did.
 
+## Slimming journals written before 0.1.111
+
+Those journals still hold every whole list they were written with. Once per
+chat, the app has the chat's helper write the journal again without them
+(`JournalSlimming`,
+`packages/swift-host/Sources/PiAgentCore/JournalSlimming.swift`, through the
+helper command `journal.slim`):
+
+- **What goes.** Only standalone run-state records go, except the one the
+  chat's run state comes from. That one stays, with its receipts written
+  whole. An edit's record keeps the state it carries. A record after one that
+  went names the record before it as its parent, so the journal is still one
+  chain, and no id changes. An edit that recorded the journal's head
+  (`sourceJournalHead`) as a record that went names that same parent instead;
+  nothing reads that field to replay.
+- **Checking.** The copy is written beside the journal, and both are replayed
+  in full. The copy takes the journal's place only when every row, the model
+  context, edited messages' versions, spend, receipts, queue and run state,
+  task records, request links, compaction state and the chat's origin all come
+  out the same. The original then goes to the Trash, and the metadata file is
+  written for the new journal as a full open writes it.
+- **Safety.** The journal's own lock is held throughout, so no session opens
+  it meanwhile. The helper refuses a chat it has open, and an open of a chat
+  being slimmed waits for it. Anything that fails leaves the journal as it
+  was, with nothing sent to the Trash. A copy left behind by an app that
+  quit mid-way is removed by a later slimming once it is an hour old.
+- **When.** The app asks about each chat once, about 20 seconds after launch
+  and only while nothing is going on. It skips chats open in the helper or on
+  screen, imported chats and background tasks, and journals under 2 MiB. The
+  helper leaves a journal whose run-state records would free less than 1 MiB.
+  The answer is kept in the app's store (`journal-slim`). A chat that was
+  open or locked is asked about again at a later launch.
+
+A 1,000-turn synthetic chat written in the old format took 71.0 MB. Slimmed,
+it takes 13.6 MB, and a full open went from about 500 ms to about 400 ms
+(Release). Slimming it took 2.8 s, both replays included.
+
 ## Older versions
 
 A version before 0.1.111 reads `commands` in the newest record as the whole

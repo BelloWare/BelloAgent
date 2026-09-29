@@ -52,6 +52,7 @@ extension WorkspaceModel {
         SessionInspectorWindows.shared.closeAll(owner: self)
         for task in titleGenerationTasks.values { task.cancel() }
         titleGenerationTasks.removeAll()
+        journalSlimming?.cancel()
         for task in webhookTasks.values { task.cancel() }
         webhookTasks.removeAll()
         accountingStopped = true
