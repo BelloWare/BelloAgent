@@ -674,21 +674,7 @@ actor HistoryReader {
             if let digest { cursor.committedBytes = size; cursor.fingerprint = digest }
             return cursor
         }
-        let anchorIndex = try around.flatMap { try branch.index(of: $0) }
-        let beforeIndex = try before.flatMap { try branch.index(of: $0) }
-        let afterIndex = try after.flatMap { try branch.index(of: $0) }
-        guard (around == nil || anchorIndex != nil), (before == nil || beforeIndex != nil), (after == nil || afterIndex != nil) else {
-            throw HostError.failure("That history boundary is no longer in this branch. Reload history or inspect its retained source.")
-        }
-        let forward = anchorIndex != nil || afterIndex != nil
-        let range: Range<Int>
-        if let targetTurns {
-            let pivot = anchorIndex ?? afterIndex ?? beforeIndex ?? branch.count
-            let users = try branch.userPositions(in: max(0, pivot - HistoryWindowPolicy.rows)..<min(branch.count, pivot + HistoryWindowPolicy.rows + 1))
-            range = HistoryWindowPolicy.range(count: branch.count, before: beforeIndex, after: afterIndex,
-                                              around: anchorIndex, target: targetTurns, isUser: { users.contains($0) })
-        } else if let start = anchorIndex ?? afterIndex.map({ $0 + 1 }) { range = start..<min(branch.count, start + 60) }
-        else { let end = beforeIndex ?? branch.count; range = max(0, end - 60)..<end }
+        let (range, forward) = try Self.pageRange(in: branch, before: before, around: around, after: after, targetTurns: targetTurns)
         var messages: [TranscriptMessage] = [], bytes = HistoryWindowPolicy.metadataAllowance
         var start = forward ? range.lowerBound : range.upperBound, end = start
         // What each call's result recorded, so the reply that made the call
@@ -752,6 +738,28 @@ actor HistoryReader {
                            newer: end < branch.count && !messages.isEmpty ? pageCursor(try branch.at(end - 1).id) : nil,
                            partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil, taskRecords:taskRecords,
                            retainedRun: notice == nil ? retainedRun : nil, incompleteTail: incompleteTail)
+    }
+    /// The rows a page holds, and whether it reads forward from its first:
+    /// the turns around, after or before a row, or sixty rows when no count
+    /// of turns is asked for. A boundary no longer in the branch throws.
+    private static func pageRange(in branch: HistoryOffsetIndex, before: String?, around: String?, after: String?,
+                                  targetTurns: Int?) throws -> (range: Range<Int>, forward: Bool) {
+        let anchorIndex = try around.flatMap { try branch.index(of: $0) }
+        let beforeIndex = try before.flatMap { try branch.index(of: $0) }
+        let afterIndex = try after.flatMap { try branch.index(of: $0) }
+        guard (around == nil || anchorIndex != nil), (before == nil || beforeIndex != nil), (after == nil || afterIndex != nil) else {
+            throw HostError.failure("That history boundary is no longer in this branch. Reload history or inspect its retained source.")
+        }
+        let forward = anchorIndex != nil || afterIndex != nil
+        let range: Range<Int>
+        if let targetTurns {
+            let pivot = anchorIndex ?? afterIndex ?? beforeIndex ?? branch.count
+            let users = try branch.userPositions(in: max(0, pivot - HistoryWindowPolicy.rows)..<min(branch.count, pivot + HistoryWindowPolicy.rows + 1))
+            range = HistoryWindowPolicy.range(count: branch.count, before: beforeIndex, after: afterIndex,
+                                              around: anchorIndex, target: targetTurns, isUser: { users.contains($0) })
+        } else if let start = anchorIndex ?? afterIndex.map({ $0 + 1 }) { range = start..<min(branch.count, start + 60) }
+        else { let end = beforeIndex ?? branch.count; range = max(0, end - 60)..<end }
+        return (range, forward)
     }
 }
 
