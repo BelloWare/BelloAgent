@@ -182,6 +182,14 @@ actor HistoryReader {
         var partial = false
         /// Edited messages' versions, numbered from the branch records as the helper numbers them.
         var versions = MessageVersionLedger() }
+    /// What indexing a journal found besides where each row is: what a page
+    /// says about the chat, from the index kept between reads or built now.
+    private struct JournalFacts {
+        var branch: HistoryOffsetIndex
+        var notice: String? = nil, assistantCount = 0, latestAssistantID: String? = nil, failureMessage: String? = nil
+        var taskRecords: [TaskPresentationRecord] = [], retainedRun: RetainedRun? = nil, incompleteTail = false
+        var versions = MessageVersionLedger(), olderRows = 0
+    }
     private var indexes: [String: Index] = [:]
     // As many bounded offset indexes as the workspace keeps transcript pages, so
     // cycling between open chats does not re-index a large journal each time.
@@ -434,25 +442,80 @@ actor HistoryReader {
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file)
         let size = try file.seekToEnd(); try file.seek(toOffset: 0)
+        let journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
+                                       targetTurns: targetTurns, progress: progress, whole: whole)
+        let branch = journal.branch, notice = journal.notice, olderRows = journal.olderRows, versions = journal.versions
+        let assistantCount = journal.assistantCount, latestAssistantID = journal.latestAssistantID, failureMessage = journal.failureMessage
+        let taskRecords = journal.taskRecords, retainedRun = journal.retainedRun, incompleteTail = journal.incompleteTail
+        recency.removeAll { $0 == path }; recency.append(path)
+        while recency.count > Self.retainedIndexes { indexes.removeValue(forKey: recency.removeFirst()) }
+        let incarnation = "file:\(identity.device):\(identity.inode)"
+        let lineage = branch.lineage
+        if let expected {
+            if let bytes = expected.committedBytes, let hash = expected.fingerprint {
+                let cached = digests[path]
+                let actual = cached?.stamp == identity && cached?.bytes == bytes ? cached!.digest : try fingerprint(file, bytes: bytes)
+                guard bytes <= size, hash == actual else { throw HostError.failure("History was replaced or edited. Reload it to reanchor safely.") }
+            }
+            guard expected.incarnation == incarnation, expected.lineage == lineage else {
+                throw HostError.failure("History changed. Reload this conversation to reanchor it.")
+            }
+        }
+        let digest: String?
+        if targetTurns != nil {
+            if let cached = digests[path], cached.stamp == identity, cached.bytes == size { digest = cached.digest }
+            else {
+                digest = try fingerprint(file, bytes: size)
+                digests[path] = (identity, size, digest!)
+                if digests.count > Self.retainedIndexes { digests = digests.filter { recency.contains($0.key) } }
+            }
+        } else { digest = nil }
+        func pageCursor(_ entry: String) -> ConversationCursor {
+            var cursor = ConversationCursor(incarnation: incarnation, lineage: lineage, entry: entry)
+            if let digest { cursor.committedBytes = size; cursor.fingerprint = digest }
+            return cursor
+        }
+        let (range, forward) = try Self.pageRange(in: branch, before: before, around: around, after: after, targetTurns: targetTurns)
+        let (messages, start, end) = try decodePage(range, forward: forward, from: file, path: path, identity: identity,
+                                                    branch: branch, versions: versions, retainedRun: retainedRun)
+        return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, notice: notice,
+                           assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil,
+                           failureMessage: notice == nil ? failureMessage : nil,
+                           revision: notice == nil ? HistoryRevision(path: path, stamp: revision(identity)) : nil,
+                           incarnation: incarnation, lineage: lineage,
+                           older: (start > 0 || olderRows > 0) && !messages.isEmpty ? pageCursor(try branch.at(start).id) : nil,
+                           newer: end < branch.count && !messages.isEmpty ? pageCursor(try branch.at(end - 1).id) : nil,
+                           partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil, taskRecords:taskRecords,
+                           retainedRun: notice == nil ? retainedRun : nil, incompleteTail: incompleteTail)
+    }
+    /// The journal's offset index and what it says about the chat: the one
+    /// kept from an earlier read while the file is unchanged, else one built
+    /// now (`buildIndex`).
+    private func journalIndex(path: String, file: FileHandle, identity: Stamp, size: UInt64, before: String?, around: String?, after: String?,
+                              targetTurns: Int?, progress: Progress?, whole: Bool) throws -> JournalFacts {
         // A page reaching past the rows an index built from the metadata
         // file holds needs the whole journal indexed.
         var wholeJournal = whole
         if let cached = indexes[path], cached.stamp == identity, cached.partial,
            try whole || Self.reachesPast(cached.branch, before: before, around: around, after: after) { indexes.removeValue(forKey: path); wholeJournal = true }
-        var branch: HistoryOffsetIndex
-        if let cached = indexes[path], cached.stamp == identity { branch = cached.branch }
-        else { branch = try HistoryOffsetIndex(directory: indexDirectory) }
+        if let cached = indexes[path], cached.stamp == identity {
+            return JournalFacts(branch: cached.branch,
+                                notice: targetTurns != nil && cached.sessionID == nil ? "History has no valid session header. Its source was left untouched." : nil,
+                                assistantCount: cached.assistantCount, latestAssistantID: cached.latestAssistantID, failureMessage: cached.failureMessage,
+                                taskRecords: cached.taskRecords, retainedRun: cached.retainedRun, versions: cached.versions, olderRows: cached.olderRows)
+        }
+        return try buildIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
+                              targetTurns: targetTurns, progress: progress, wholeJournal: wholeJournal)
+    }
+    /// Indexes the journal: from its metadata file's checkpoint when one
+    /// still matches the file, else every record from the start. The index
+    /// is kept for the next read unless a record was damaged.
+    private func buildIndex(path: String, file: FileHandle, identity: Stamp, size: UInt64, before: String?, around: String?, after: String?,
+                            targetTurns: Int?, progress: Progress?, wholeJournal: Bool) throws -> JournalFacts {
+        var branch = try HistoryOffsetIndex(directory: indexDirectory)
         var notice: String?, assistantCount = 0, latestAssistantID: String?, failureMessage: String?
         var taskRecords: [TaskPresentationRecord] = [], retainedRun: RetainedRun?, incompleteTail = false
         var versions = MessageVersionLedger(), olderRows = 0
-        if let cached = indexes[path], cached.stamp == identity {
-            olderRows = cached.olderRows
-            assistantCount = cached.assistantCount; latestAssistantID = cached.latestAssistantID; versions = cached.versions
-            failureMessage = cached.failureMessage; retainedRun = cached.retainedRun
-            taskRecords = cached.taskRecords
-            if targetTurns != nil && cached.sessionID == nil { notice = "History has no valid session header. Its source was left untouched." }
-        }
-        else {
         indexes.removeValue(forKey: path)
         // A journal with a metadata file (`JournalCheckpoint`) is indexed from
         // the file's checkpoint: the rows it names, then only the records after
@@ -645,47 +708,9 @@ actor HistoryReader {
                                                sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords, retainedRun: retainedRun, olderRows: olderRows, partial: resume != nil, versions: versions) }
         break build
         }
-        }
-        recency.removeAll { $0 == path }; recency.append(path)
-        while recency.count > Self.retainedIndexes { indexes.removeValue(forKey: recency.removeFirst()) }
-        let incarnation = "file:\(identity.device):\(identity.inode)"
-        let lineage = branch.lineage
-        if let expected {
-            if let bytes = expected.committedBytes, let hash = expected.fingerprint {
-                let cached = digests[path]
-                let actual = cached?.stamp == identity && cached?.bytes == bytes ? cached!.digest : try fingerprint(file, bytes: bytes)
-                guard bytes <= size, hash == actual else { throw HostError.failure("History was replaced or edited. Reload it to reanchor safely.") }
-            }
-            guard expected.incarnation == incarnation, expected.lineage == lineage else {
-                throw HostError.failure("History changed. Reload this conversation to reanchor it.")
-            }
-        }
-        let digest: String?
-        if targetTurns != nil {
-            if let cached = digests[path], cached.stamp == identity, cached.bytes == size { digest = cached.digest }
-            else {
-                digest = try fingerprint(file, bytes: size)
-                digests[path] = (identity, size, digest!)
-                if digests.count > Self.retainedIndexes { digests = digests.filter { recency.contains($0.key) } }
-            }
-        } else { digest = nil }
-        func pageCursor(_ entry: String) -> ConversationCursor {
-            var cursor = ConversationCursor(incarnation: incarnation, lineage: lineage, entry: entry)
-            if let digest { cursor.committedBytes = size; cursor.fingerprint = digest }
-            return cursor
-        }
-        let (range, forward) = try Self.pageRange(in: branch, before: before, around: around, after: after, targetTurns: targetTurns)
-        let (messages, start, end) = try decodePage(range, forward: forward, from: file, path: path, identity: identity,
-                                                    branch: branch, versions: versions, retainedRun: retainedRun)
-        return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, notice: notice,
-                           assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil,
-                           failureMessage: notice == nil ? failureMessage : nil,
-                           revision: notice == nil ? HistoryRevision(path: path, stamp: revision(identity)) : nil,
-                           incarnation: incarnation, lineage: lineage,
-                           older: (start > 0 || olderRows > 0) && !messages.isEmpty ? pageCursor(try branch.at(start).id) : nil,
-                           newer: end < branch.count && !messages.isEmpty ? pageCursor(try branch.at(end - 1).id) : nil,
-                           partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil, taskRecords:taskRecords,
-                           retainedRun: notice == nil ? retainedRun : nil, incompleteTail: incompleteTail)
+        return JournalFacts(branch: branch, notice: notice, assistantCount: assistantCount, latestAssistantID: latestAssistantID,
+                            failureMessage: failureMessage, taskRecords: taskRecords, retainedRun: retainedRun, incompleteTail: incompleteTail,
+                            versions: versions, olderRows: olderRows)
     }
     /// A page's rows decoded from the journal in the order they are read,
     /// until the display envelope is full, from a file that must not have
