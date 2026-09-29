@@ -220,14 +220,14 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let activityChanged = PassthroughSubject<Void, Never>()
     let liveActivity = LiveActivityStore()
     private var monitoredDisplays: [String: String] = [:]
-    var activityRows: [String: MenuBarActivityRow] = [:]
-    var activityDirtyIDs: Set<String> = []
-    var activitySnapshot = MenuBarActivitySnapshot()
-    var activityProjectionCount = 0
+    /// Owned by `MenuBarActivity.swift`: the menu bar's rows, kept between projections.
+    var menuBarProjection = MenuBarProjection()
+    /// Test seam: how many rows the menu bar has worked out.
+    var activityProjectionCount: Int { menuBarProjection.count }
     var menuBarActivityChanges: AnyPublisher<Void, Never> { activityChanged.eraseToAnyPublisher() }
     func noteActivityChanged(_ id: String? = nil) {
-        if let id { activityDirtyIDs.insert(id) }
-        else { activityDirtyIDs.formUnion(displays.keys); activityDirtyIDs.formUnion(unreadStates.keys); activityDirtyIDs.formUnion(activityRows.keys) }
+        if let id { menuBarProjection.dirty.insert(id) }
+        else { menuBarProjection.dirty.formUnion(displays.keys); menuBarProjection.dirty.formUnion(unreadStates.keys); menuBarProjection.dirty.formUnion(menuBarProjection.rows.keys) }
         activityChanged.send()
         // Read only the affected committed phase, never text or the chat array.
         if let id, let view = displays[id], let item = record(id) {

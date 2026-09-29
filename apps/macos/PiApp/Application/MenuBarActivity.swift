@@ -67,18 +67,30 @@ struct MenuBarActivitySnapshot: Equatable, Sendable {
     var pending: Int { rows.reduce(0) { $0 + $1.followUps + $1.steering } }
 }
 
+/// The menu bar's rows, kept between projections: each chat's row, the chats
+/// whose row has to be worked out again, and the snapshot last built from
+/// them. A change marks its chat (`noteActivityChanged`); opening the menu
+/// works out only the marked rows.
+struct MenuBarProjection {
+    var rows: [String: MenuBarActivityRow] = [:]
+    var dirty: Set<String> = []
+    var snapshot = MenuBarActivitySnapshot()
+    /// How many rows were worked out, for the tests that hold it down.
+    var count = 0
+}
+
 extension WorkspaceModel {
     /// Reads the existing bounded display snapshots. Opening the menu does not
     /// load a session, poll a provider, or sum completed-request average speeds.
     func menuBarActivity(now: Double = ProcessInfo.processInfo.systemUptime) -> MenuBarActivitySnapshot {
-        guard !activityDirtyIDs.isEmpty else { return activitySnapshot }
+        guard !menuBarProjection.dirty.isEmpty else { return menuBarProjection.snapshot }
         let started = PerformanceProbe.now
-        for id in activityDirtyIDs {
-            activityRows[id] = activityRow(id)
-            activityProjectionCount += 1
+        for id in menuBarProjection.dirty {
+            menuBarProjection.rows[id] = activityRow(id)
+            menuBarProjection.count += 1
         }
-        activityDirtyIDs.removeAll(keepingCapacity: true)
-        var rows = Array(activityRows.values)
+        menuBarProjection.dirty.removeAll(keepingCapacity: true)
+        var rows = Array(menuBarProjection.rows.values)
         rows.sort {
             let a = $0.running ? 0 : $0.phase == "queued" ? 1 : ["paused", "error"].contains($0.phase) ? 2 : 3
             let b = $1.running ? 0 : $1.phase == "queued" ? 1 : ["paused", "error"].contains($1.phase) ? 2 : 3
@@ -86,9 +98,9 @@ extension WorkspaceModel {
             if $0.title != $1.title { return $0.title.localizedStandardCompare($1.title) == .orderedAscending }
             return $0.id < $1.id
         }
-        activitySnapshot = MenuBarActivitySnapshot(rows: rows, unreadChats: rows.filter { $0.unread > 0 }.count)
+        menuBarProjection.snapshot = MenuBarActivitySnapshot(rows: rows, unreadChats: rows.filter { $0.unread > 0 }.count)
         PerformanceProbe.shared.observe("menuActivityProjectionMs", milliseconds: PerformanceProbe.now - started)
-        return activitySnapshot
+        return menuBarProjection.snapshot
     }
     private func activityRow(_ id: String) -> MenuBarActivityRow? {
         guard let record = record(id), !record.isArchived, record.connectionTest != true else { return nil }
