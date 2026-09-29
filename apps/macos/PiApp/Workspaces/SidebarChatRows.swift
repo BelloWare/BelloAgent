@@ -124,7 +124,7 @@ struct ChatRow: View {
     /// What this row's metrics line has to itself; see `ChatRowMetrics`.
     var available: CGFloat = .infinity
     var toggle: () -> Void = {}
-    private var symbol: String { chat.imported ? "doc.text" : chat.parentSessionID != nil ? "arrow.triangle.branch" : chat.connectionTest == true ? "checkmark.seal" : chat.toolMode == "read-only" ? "eye" : "bubble.left" }
+    private var symbol: String { chat.imported ? "doc.text" : chat.parentSessionID != nil ? "arrow.triangle.branch" : chat.connectionTest == true ? "checkmark.seal" : chat.toolMode == ChatRecord.readOnlyTools ? "eye" : "bubble.left" }
     private var archiveAction: (() -> Void)? { chat.isBackgroundTask || chat.connectionTest == true ? nil : { model.toggleSessionArchive(chat.id) } }
     @Environment(\.sidebarMinute) private var minute
     var body: some View {

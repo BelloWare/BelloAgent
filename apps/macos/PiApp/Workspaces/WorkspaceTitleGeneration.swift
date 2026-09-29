@@ -154,7 +154,7 @@ extension WorkspaceModel {
                       result: ([TranscriptMessage]) throws -> String) async throws -> [TranscriptMessage] {
         guard let store else { throw StoreError.unavailable }
         let taskID = UUID().uuidString
-        var item = ChatRecord(id: taskID, workspaceID: WorkspaceRecord.scratchID, title: request.title, path: nil, profileID: profile.id, toolMode: "read-only", connectionTest: true,
+        var item = ChatRecord(id: taskID, workspaceID: WorkspaceRecord.scratchID, title: request.title, path: nil, profileID: profile.id, toolMode: ChatRecord.readOnlyTools, connectionTest: true,
                               model: request.model, thinkingLevel: request.thinkingLevel, contextWindow: request.contextWindow, maxOutputTokens: request.maxOutputTokens, modelOutputLimit: request.modelOutputLimit)
         item.backgroundTask = request.task; item.sourceSessionID = sourceID
         beginBackgroundRequest(&item)
@@ -322,7 +322,7 @@ extension WorkspaceModel {
         }
         let taskID = UUID().uuidString
         var item = ChatRecord(id: taskID, workspaceID: WorkspaceRecord.scratchID, title: TitleGenerationPlan.fixedTitle,
-                              path: nil, profileID: profile.id, toolMode: "read-only", connectionTest: true,
+                              path: nil, profileID: profile.id, toolMode: ChatRecord.readOnlyTools, connectionTest: true,
                               model: plan.model, thinkingLevel: plan.thinkingLevel,
                               contextWindow: plan.contextWindow, maxOutputTokens: plan.maxOutputTokens, modelOutputLimit: plan.modelOutputLimit)
         item.backgroundTask = BackgroundRequestKind.title.raw; item.sourceSessionID = sourceID; item.backgroundTaskStartedAt = Date()

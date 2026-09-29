@@ -369,7 +369,7 @@ struct ConversationActionsMenu: View {
         if model.side(session.id) == nil && !chat.isBackgroundTask {
             PiMenuEntry.button("Open Side", enabled: model.canOpenSide(session.id)) { model.openSide(parentID: session.id) }
             PiMenuEntry.button("Portable Context Handoff…") { model.portableHandoff() }
-            if chat.toolMode == "read-only" && chat.connectionTest != true && chat.workspaceID != WorkspaceRecord.scratchID {
+            if chat.toolMode == ChatRecord.readOnlyTools && chat.connectionTest != true && chat.workspaceID != WorkspaceRecord.scratchID {
                 PiMenuEntry.button("Enable Editing Tools…", enabled: !session.hasWork) { model.enableEditing(session.id) }
             }
             PiMenuEntry.divider
@@ -437,7 +437,7 @@ struct StarterPanel: View {
             HStack(spacing: PiSpacing.sm) {
                 PiBadge(text: profile?.name ?? "No connection", tone: profile == nil ? .danger : .neutral, icon: "antenna.radiowaves.left.and.right")
                 PiBadge(text: modelName, icon: "cpu")
-                PiBadge(text: chat.toolMode == "read-only" ? "Read-only tools" : "Editing tools", icon: chat.toolMode == "read-only" ? "eye" : "pencil")
+                PiBadge(text: chat.toolMode == ChatRecord.readOnlyTools ? "Read-only tools" : "Editing tools", icon: chat.toolMode == ChatRecord.readOnlyTools ? "eye" : "pencil")
             }
             .piStaggered(2)
             Text("Type below to start. Your first message creates the chat.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary)

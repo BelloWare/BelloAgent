@@ -570,7 +570,7 @@ actor MetadataStore {
         guard task.id != sourceID, !task.id.isEmpty, task.id.utf8.count <= 128,
               task.backgroundTask == BackgroundRequestKind.title.raw, task.sourceSessionID == sourceID,
               task.workspaceID == WorkspaceRecord.scratchID, task.title == TitleGenerationPlan.fixedTitle,
-              task.connectionTest == true, task.toolMode == "read-only", task.parentSessionID == nil,
+              task.connectionTest == true, task.toolMode == ChatRecord.readOnlyTools, task.parentSessionID == nil,
               task.path == nil, !task.imported else { throw StoreError.invalidRecord }
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
         do {
@@ -635,7 +635,7 @@ struct WorkspaceRecord: Codable, Sendable, Identifiable, Hashable {
     }
 }
 struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
-    var id: String; var workspaceID: String; var title: String; var path: String?; var profileID: String; var toolMode: String = "editing"; var imported = false; var connectionTest: Bool?
+    var id: String; var workspaceID: String; var title: String; var path: String?; var profileID: String; var toolMode: String = ChatRecord.editingTools; var imported = false; var connectionTest: Bool?
     /// Per-chat overrides of the profile route; nil keeps the profile defaults (contract H3/H6).
     var model: String?
     var thinkingLevel: String?
@@ -683,6 +683,10 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var isArchived: Bool { archivedAt != nil }
     /// What a new chat is called until its first message names it.
     static let defaultTitle = "New chat"
+    /// `toolMode`: tools that may change the project, as every chat has
+    /// until the reader chooses otherwise, or only ones that read it (a side
+    /// until it is kept, a connection test, a background request).
+    static let editingTools = "editing", readOnlyTools = "read-only"
     mutating func migrateOutputBudget(profile: ProfileRecord) {
         guard outputBudgetVersion == nil else { return }
         if !isBackgroundTask, let legacyCeiling = maxOutputTokens {

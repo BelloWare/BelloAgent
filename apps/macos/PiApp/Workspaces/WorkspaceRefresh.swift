@@ -334,7 +334,7 @@ extension WorkspaceModel {
     /// The line under the composer that says what the chat's tools may do,
     /// unless something the reader has to review is there instead.
     private func applyToolNotice(_ result: [String: WireValue], to view: SessionDisplay, id: String, item: ChatRecord) {
-        let notice = item.isBackgroundTask ? (record(id)?.backgroundTaskNotice ?? "Tools disabled · Title generation") : item.connectionTest == true || item.workspaceID == WorkspaceRecord.scratchID ? "Tools disabled · Connection test" : item.toolMode == "read-only" ? "Read-only tools" : ""
+        let notice = item.isBackgroundTask ? (record(id)?.backgroundTaskNotice ?? "Tools disabled · Title generation") : item.connectionTest == true || item.workspaceID == WorkspaceRecord.scratchID ? "Tools disabled · Connection test" : item.toolMode == ChatRecord.readOnlyTools ? "Read-only tools" : ""
         // An interruption or preflight explanation stays until the
         // user has reviewed it; the static tool notice must not replace it.
         if view.notice != notice, !view.uncertain, view.failureMessage == nil { view.notice = notice }

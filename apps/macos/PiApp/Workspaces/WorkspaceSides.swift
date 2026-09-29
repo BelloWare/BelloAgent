@@ -22,7 +22,7 @@ struct SideRecord: Identifiable {
     /// What follows its chat's title in a new side's, until its first
     /// message names it.
     static let titleSuffix = " — side"
-    var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: "read-only", model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, topicID: topicID, parentSessionID: parentID, costLimit: costLimit) }
+    var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: ChatRecord.readOnlyTools, model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, topicID: topicID, parentSessionID: parentID, costLimit: costLimit) }
 }
 struct SideKeepIntent: Codable, Sendable { var chat: ChatRecord }
 
@@ -476,7 +476,7 @@ extension WorkspaceModel {
         parent.draft = draft; parent.directCommand = false; parent.completionVisible = false; draftChanged(parent)
     }
     func enableEditing(_ id: String) {
-        guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == "read-only", displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else { error = "Close the saved side panel and wait for idle before changing tools."; return }
+        guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else { error = "Close the saved side panel and wait for idle before changing tools."; return }
         guard store != nil else { error = StoreError.unavailable.localizedDescription; return }
         let question = ChatQuestion(title: "Enable editing tools for this saved chat?",
                                     detail: "Future turns may run shell commands and change files in this project with your account's permissions.",
@@ -488,7 +488,7 @@ extension WorkspaceModel {
     }
     func enableEditingAfterConfirmation(_ id: String) async throws {
         guard let store else { throw StoreError.unavailable }
-        guard var item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == "read-only", displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else {
+        guard var item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else {
             throw HostError.failure("Close the saved side panel and wait for idle before changing tools.")
         }
         let view = displays[id]
@@ -498,9 +498,9 @@ extension WorkspaceModel {
             guard let host = hosts[item.workspaceID], host.isReady else { throw HostError.failure("Wait for this project's host to recover before changing tools.") }
             _ = try await host.request("session.close", sessionID: id); opened.remove(id)
         }
-        item.toolMode = "editing"
+        item.toolMode = ChatRecord.editingTools
         try await store.put(item, kind: "chat", id: id)
-        if let index = chats.firstIndex(where: { $0.id == id }) { chats[index].toolMode = "editing" }
+        if let index = chats.firstIndex(where: { $0.id == id }) { chats[index].toolMode = ChatRecord.editingTools }
         displays[id]?.notice = "Editing tools apply to the next turn."
     }
 }
