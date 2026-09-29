@@ -65,11 +65,13 @@ extension AgentSession {
                 // and all message bytes, but never authorize its command twice.
                 try prepared.append(record.removing(["id","parentId","timestamp","nativeState"]),id:try identity(record["id"]),flush:false)
             }
-            try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(contextIDs.map { JSON($0) }),"visibleIDs":.array(timeline.map { JSON($0) })]])
-            try prepared.append(["type":"custom","customType":"pi-app.fork-origin.v1","data":origin])
+            // As with the copied records, `publish` forces these to disk
+            // before the fork takes its name.
+            try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(contextIDs.map { JSON($0) }),"visibleIDs":.array(timeline.map { JSON($0) })]],flush:false)
+            try prepared.append(["type":"custom","customType":"pi-app.fork-origin.v1","data":origin],flush:false)
             var fresh = SessionSpend().record; fresh["source"] = "fork"
-            try prepared.append(["type":"custom","customType":JSON(SessionSpend.recordType),"data":fresh])
-            try prepared.append(["type":"custom","customType":"pi-app.native.state.v1","data":["active":false,"queue":[],"steering":[],"commands":[],"queuePaused":false,"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode)]])
+            try prepared.append(["type":"custom","customType":JSON(SessionSpend.recordType),"data":fresh],flush:false)
+            try prepared.append(["type":"custom","customType":"pi-app.native.state.v1","data":["active":false,"queue":[],"steering":[],"commands":[],"queuePaused":false,"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode)]],flush:false)
             try prepared.publish(to:destination)
         } catch { try? FileManager.default.removeItem(at:temporary); try? FileManager.default.removeItem(atPath:temporary.path+".lock"); throw error }
         return ["accepted":true,"sessionId":JSON(newID),"path":JSON(destination.path),"origin":origin]
@@ -182,13 +184,16 @@ extension AgentSession {
         let temporary=directory.appendingPathComponent(".side-\(UUID().uuidString).jsonl"), destination=directory.appendingPathComponent("side_"+id+".jsonl")
         do {
             let prepared=try SessionJournal(url:temporary,id:id,cwd:cwd,binding:profile.binding,create:true)
-            for message in history { try prepared.append(["type":"message","message":message.pi],id:message.id) }
-            try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(context.map { JSON($0.id) })]])
-            try prepared.append(["type":"custom","customType":"pi-app.side-origin.v1","data":parentInfo])
+            // No record is forced to disk on its own: `publish` forces the whole
+            // journal there before it takes the side's name. A side opened from
+            // a long chat paid one fsync per message of its parent's context.
+            for message in history { try prepared.append(["type":"message","message":message.pi],id:message.id,flush:false) }
+            try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(context.map { JSON($0.id) })]],flush:false)
+            try prepared.append(["type":"custom","customType":"pi-app.side-origin.v1","data":parentInfo],flush:false)
             // What the side spent before it was kept goes with it.
-            try prepared.append(carriedSpendRecord())
+            try prepared.append(carriedSpendRecord(),flush:false)
             let state=try savedState()
-            try prepared.append(["type":"custom","customType":"pi-app.native.state.v1","data":state])
+            try prepared.append(["type":"custom","customType":"pi-app.native.state.v1","data":state],flush:false)
             try prepared.publish(to:destination); journal=prepared; ephemeral=false; keepRequested=false
             journaledWholeCommands(state)
         } catch { try? FileManager.default.removeItem(at:temporary); try? FileManager.default.removeItem(atPath:temporary.path+".lock"); throw error }
