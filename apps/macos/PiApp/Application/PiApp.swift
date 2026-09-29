@@ -127,7 +127,7 @@ extension FocusedValues {
                 Button("Search and Copy Conversation…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspectConversation(id) } }.keyboardShortcut("f").disabled(!conversationCommands)
             }
         }
-        Settings { ProfileSettings(model: model, windowChrome: true).frame(width: 880, height: 780) }
+        Settings { SettingsWindowContent(model: model) }
     }
     private func installMenuBar() {
         // The App owns this controller, so closing the last workspace window

@@ -140,9 +140,18 @@ extension WorkspaceModel {
     /// read in beside them); otherwise the read replaces them.
     func withAccounting(_ rows: [TranscriptMessage], view: SessionDisplay, workspaceID: String, adding: Bool = false) async -> [TranscriptMessage] {
         let shown = TranscriptPage.displayPage(rows)
-        if !accountingStopped, shown.contains(where: { $0.role == "assistant" }),
-           let read = await accounting(of: shown, sessionID: view.id, workspaceID: workspaceID, within: Self.accountingBeforeShowing) {
-            if adding { view.messageAccounting.merge(read) { _, new in new } } else { view.messageAccounting = read }
+        if !accountingStopped, shown.contains(where: { $0.role == "assistant" }) {
+            // A refresh still reading an earlier page gives way to this one.
+            view.accountingRevision += 1
+            let revision = view.accountingRevision, totals = beginChatStatsQuery(view.id), generation = view.presentationGeneration
+            if let read = await accounting(of: shown, sessionID: view.id, workspaceID: workspaceID, within: Self.accountingBeforeShowing),
+               view.accountingRevision == revision {
+                if adding { view.messageAccounting.merge(read.messages) { _, new in new } } else { view.messageAccounting = read.messages }
+                // The chat's totals come with the same read.
+                if view.footer.gateway != read.session { view.footer.gateway = read.session }
+                publishChatStats(read.session, sessionID: view.id, revision: totals)
+                if !adding { view.accountingReadFor = generation }
+            }
         }
         return rows.map { row in
             guard let figures = view.messageAccounting[row.id], row.accounting != figures else { return row }
@@ -152,14 +161,14 @@ extension WorkspaceModel {
 
     /// The request log's figures for `rows`, or nil when they are not back
     /// within `budget`; the read then finishes on its own and is dropped.
-    private func accounting(of rows: [TranscriptMessage], sessionID: String, workspaceID: String, within budget: Duration) async -> [String: GatewayTotals]? {
+    private func accounting(of rows: [TranscriptMessage], sessionID: String, workspaceID: String, within budget: Duration) async -> SessionGatewayAccounting? {
         let traces = self.traces
         return await withCheckedContinuation { continuation in
             let answer = FirstAnswer(continuation)
             let timer = Task { try? await Task.sleep(for: budget); answer.give(nil) }
             Task {
                 let value = try? await traces.gatewayAccounting(sessionID: sessionID, workspaceID: workspaceID, messages: rows)
-                timer.cancel(); answer.give(value?.messages)
+                timer.cancel(); answer.give(value)
             }
         }
     }

@@ -50,7 +50,12 @@ extension WorkspaceModel {
             for chat in self.chats where chat.workspaceID == workspace.id {
                 self.opened.remove(chat.id); self.displays[chat.id]?.captureAvailable = false
                 self.displays[chat.id]?.lastSequence = -1
-                if !retired { self.displays[chat.id]?.observeContext([:],baseline:true) }
+                if !retired, let view = self.displays[chat.id] {
+                    view.observeContext([:],baseline:true)
+                    // The reading it last counted stands again, and nothing
+                    // reopens the helper to count it.
+                    self.adoptContextReading(view, item: chat)
+                }
                 self.displays[chat.id]?.footer.pendingContextSubmission=nil
                 // A message the helper took but never showed is not drawn as
                 // sent any more; its record says the outcome is uncertain. A

@@ -36,12 +36,19 @@ extension WorkspaceModel {
         PerformanceProbe.shared.count("sessionSelectionCalls")
         PerformanceProbe.shared.beginSelection(id, hasHistory: item.path != nil)
         let view = displays[id] ?? SessionDisplay(id: id), cached = view.hasPresentedRows
+        // What the rows shown were read under, should they still be the chat's rows.
+        let heldIdentity = view.presentation.identity, heldTurnInput = view.presentation.partialTurnInput
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
-        view.historyState = .loading; view.refreshingCachedRows = cached; view.olderPage = .init(); view.newerPage = .init()
+        // Reads under way end with the page they were for; the boundaries
+        // themselves stay until a page read in replaces them, since the rows
+        // shown may turn out to be the chat's rows still.
+        view.historyState = .loading; view.refreshingCachedRows = cached
+        view.olderPage = .init(cursor: view.olderPage.cursor); view.newerPage = .init(cursor: view.newerPage.cursor)
         view.historyProgress = nil
         view.contextSelectionReady = false; view.browsingHistory = true
         view.draftReady = view.selectionMetadataLoaded
         view.used = Date(); displays[id] = view
+        adoptContextReading(view, item: item)
         selectedID = id; selected = view; profileChoice = item.profileID
         focusedSessionID = id; page = .chats
         // An empty New chat is dropped once the next chat is in its place, so
@@ -112,6 +119,21 @@ extension WorkspaceModel {
                 // under the new one instead of being dropped with nothing in
                 // its place.
                 let held = view.scrollAnchor
+                // Shown earlier this launch, its journal unchanged, and its rows
+                // still the newest page as read in, with the reader at the
+                // bottom or on one of them: a fresh read returns those same
+                // rows, and drew them again. Anything else is read as before:
+                // rows paged in since come back as one page from where the
+                // reader was, and a place no longer in the chat opens the newest.
+                if cached, let revision = view.historyRevision, revision.path == item.path, !view.messages.isEmpty,
+                   view.adoptedPage == view.pageRows, view.newerPage.cursor == nil,
+                   view.scrollAnchor.map({ anchor in anchor.followsBottom || view.messages.contains { $0.id == anchor.id } }) ?? true,
+                   await self.history.unchanged(revision) {
+                    guard current() else { return }
+                    self.presentHeldHistory(view, identity: heldIdentity, partialTurnInput: heldTurnInput)
+                    if self.opened.contains(id) { self.refresh(id) }
+                    return
+                }
                 var source = item, page = try await self.readInitialWindow(source, holding: held)
                 for _ in 0..<3 {
                     guard current(), let now = self.record(id), now.path != source.path else { break }

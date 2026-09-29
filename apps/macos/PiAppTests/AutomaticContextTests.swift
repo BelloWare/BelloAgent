@@ -257,6 +257,7 @@ final class AutomaticContextTests: XCTestCase {
         let prepared = try XCTUnwrap(display.footer.preparedContext)
         XCTAssertEqual(prepared.summary["dispatched"], .bool(false))
         XCTAssertNotNil(ContextMeterPresentation(context: model.displayedContext(display)).fraction)
+        let shown = model.displayedContext(display)
         let item = try XCTUnwrap(model.record("a")), path = try XCTUnwrap(item.path)
         let saved = try await model.store?.get(ChatRecord.self, kind: "chat", id: "a")
         XCTAssertEqual(saved?.path, path, "An unsent chat must retain the allocated journal before helper eviction")
@@ -269,11 +270,13 @@ final class AutomaticContextTests: XCTestCase {
         XCTAssertTrue(requests.isEmpty)
         try await host.shutdownAndWait()
         model.hosts.removeValue(forKey: item.workspaceID); model.opened.remove(item.id)
-        display.footer.preparedContext = nil
+        display.observeContext([:], baseline: true)
         await model.select(item.id); await presentationReady(model)
-        let reopened = try XCTUnwrap(model.automaticContextTask)
-        await reopened.task.value
-        XCTAssertNotNil(display.footer.preparedContext, "A selected saved tab calculates again after helper eviction")
+        // Its journal and settings are as they were counted: the tab shows the
+        // reading it had, and opens no helper to count it again.
+        XCTAssertNil(model.automaticContextTask, "A selected saved tab does not calculate again after helper eviction")
+        XCTAssertTrue(model.hosts.isEmpty, "and starts no helper")
+        XCTAssertEqual(model.displayedContext(display), shown, "It shows the figures it had")
         XCTAssertEqual(model.record(item.id)?.path, path)
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), before, "Read-only context does not append messages or repair history")
         try await close(model)

@@ -46,7 +46,7 @@ struct RetainedRun: Equatable, Sendable {
 
 /// The journal identity used for a retained display, including replacements
 /// with the same path, length and modification time. It never retains bodies.
-struct HistoryRevision: Equatable, Sendable {
+struct HistoryRevision: Codable, Equatable, Sendable {
     let path: String
     let stamp: String
 }
@@ -237,7 +237,18 @@ actor HistoryReader {
         if field == "thinking" { return blocks.compactMap { $0.object?["type"]?.string == "thinking" ? $0.object?["thinking"]?.string : nil }.joined() }
         return value["message"]?.object?["nativeDisplayText"]?.string ?? content?.string ?? blocks.compactMap { $0.object?["type"]?.string == "text" ? $0.object?["text"]?.string : nil }.joined()
     }
-    private func revision(_ stamp: Stamp) -> String { "\(stamp.device):\(stamp.inode):\(stamp.size):\(stamp.modified):\(stamp.modifiedNS):\(stamp.changed):\(stamp.changedNS)" }
+    private func revision(_ stamp: Stamp) -> String { Self.revision(stamp) }
+    private static func revision(_ stamp: Stamp) -> String { "\(stamp.device):\(stamp.inode):\(stamp.size):\(stamp.modified):\(stamp.modifiedNS):\(stamp.changed):\(stamp.changedNS)" }
+    /// The revision a page read from `path` now would carry: the file's
+    /// identity, size and change times, looked at without reading it or
+    /// waiting on this reader.
+    nonisolated static func currentRevision(path: String) -> HistoryRevision? {
+        var value = stat()
+        guard stat(path, &value) == 0 else { return nil }
+        let stamp = Stamp(device: value.st_dev, inode: value.st_ino, size: value.st_size, modified: value.st_mtimespec.tv_sec, modifiedNS: value.st_mtimespec.tv_nsec,
+                          changed: value.st_ctimespec.tv_sec, changedNS: value.st_ctimespec.tv_nsec)
+        return HistoryRevision(path: path, stamp: revision(stamp))
+    }
     private func content(_ ref: Ref, file: FileHandle) throws -> String {
         if ref.type == "branch" { return "## Edit\n\n" + Self.branchText + "\n\n" }
         decodedRecords += 1
@@ -313,6 +324,14 @@ actor HistoryReader {
     private func stamp(_ file: FileHandle) throws -> Stamp {
         var value = stat(); guard fstat(file.fileDescriptor, &value) == 0 else { throw StoreError.unreadableRecord }
         return Stamp(device: value.st_dev, inode: value.st_ino, size: value.st_size, modified: value.st_mtimespec.tv_sec, modifiedNS: value.st_mtimespec.tv_nsec, changed: value.st_ctimespec.tv_sec, changedNS: value.st_ctimespec.tv_nsec)
+    }
+    /// Whether a journal is still the file a page was read from: the same
+    /// file, size and change times. Nothing is read from it.
+    func unchanged(_ held: HistoryRevision) -> Bool {
+        guard let file = try? open(held.path) else { return false }
+        defer { try? file.close() }
+        guard let current = try? stamp(file) else { return false }
+        return revision(current) == held.stamp
     }
     func validateIdentity(path: String, id: String) throws {
         let file = try open(path); defer { try? file.close() }

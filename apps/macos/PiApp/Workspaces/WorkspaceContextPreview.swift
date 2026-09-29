@@ -49,6 +49,7 @@ extension WorkspaceModel {
             // not a provider measurement or a substitute for captured HTTP bytes.
             view.footer.preparedContext = PreparedContextMetrics(summary:result,binding:ContextPreviewBinding(current),
                 params:params,configurationRevision:revision,directCommand:directCommand)
+            if !automatic { retainContextReading(view) }
             return result
         }
     }
@@ -56,6 +57,11 @@ extension WorkspaceModel {
         turnOverrides(for:item,base:["text":.string(view.draft),"skills":.array(view.skills.map(\.wire)),"attachments":.array(view.attachments.map(\.wire))])
     }
     func contextPresentation(_ view: SessionDisplay) -> ContextPresentation {
+        if let reading = servingContextReading(view) {
+            let presentation = ContextPresentation(context: reading.context)
+            ContextDiagnostics.shared.record(sessionID:view.id,state:view.footer.contextState,presentation:presentation)
+            return presentation
+        }
         let presentation=ContextPresentation.resolve(state:view.footer.contextState,observation:view.footer.requestObservation,
             preview:matchingPreparedContext(view)?.context,fallback:view.context,preparing:view.footer.preparingContext,
             submissionPending:view.footer.pendingContextSubmission != nil,busy:view.busy,runStatus:view.runStatus)
@@ -109,6 +115,10 @@ extension WorkspaceModel {
     func scheduleAutomaticContext(_ id: String, delay: Duration = WorkspaceModel.selectionPreviewDelay) {
         guard automaticContextEligible(id), let view = displays[id], let item = record(id) else { cancelAutomaticContext(id); return }
         guard matchingPreparedContext(view) == nil else { cancelAutomaticContext(id); return }
+        // The reading the pill shows was counted for this input and still
+        // stands: nothing to count, and no helper to open for it. A helper
+        // already open for the chat counts at no such cost.
+        if !opened.contains(id), servingContextReading(view, forScheduling: true) != nil { cancelAutomaticContext(id); return }
         let signature = automaticContextSignature(item, view: view)
         if let pending = automaticContextTask, pending.id == id, pending.signature == signature { return }
         // A keystroke restarts this chat's own estimate, which stays
@@ -145,7 +155,14 @@ extension WorkspaceModel {
                           previewMatchesInput(result,view:view) else { return }
                     view.footer.preparedContext = PreparedContextMetrics(summary: result, binding: signature.binding,
                         params: signature.params, configurationRevision: signature.configurationRevision, directCommand: signature.directCommand)
-                } else { _ = try await preparedContext(id, automatic: true) }
+                    view.footer.preparingContext = false
+                    retainContextReading(view)
+                } else {
+                    _ = try await preparedContext(id, automatic: true)
+                    guard automaticContextTask?.token == token, displays[id] === view else { return }
+                    view.footer.preparingContext = false
+                    retainContextReading(view)
+                }
             } catch {
                 // Selection is read-only UI work. A locked key, removed project
                 // or unavailable helper must not interrupt chat navigation.
@@ -281,7 +298,7 @@ struct AutomaticContextTask {
 
 /// Journal allocation, title edits and sidebar organization do not change a
 /// request's inputs. Route/tool changes do and invalidate an in-flight preview.
-struct ContextPreviewBinding: Equatable {
+struct ContextPreviewBinding: Codable, Equatable, Sendable {
     let id: String, workspaceID: String, profileID: String, toolMode: String
     let imported: Bool, connectionTest: Bool
     let model: String?, thinkingLevel: String?

@@ -36,6 +36,60 @@ final class SessionOpenPerformanceTests: XCTestCase {
         }
     }
 
+    /// `PI_PERF_SLIM_JOURNAL`: a journal kept with `PI_PERF_KEEP_JOURNAL`,
+    /// written again with every run-state record whole, as before 0.1.111,
+    /// then slimmed (`JournalSlimming`): its size and a full open, before and
+    /// after. The journal is changed in place; the original goes to a folder
+    /// of the test's, not the Trash.
+    func testSlimmingAKeptJournal() async throws {
+        guard let kept = ProcessInfo.processInfo.environment["PI_PERF_SLIM_JOURNAL"] else {
+            throw XCTSkip("Set PI_PERF_SLIM_JOURNAL to a journal kept with PI_PERF_KEEP_JOURNAL.")
+        }
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let profile = try fixtureProfile(), path = URL(fileURLWithPath: kept), directory = path.deletingLastPathComponent()
+        // Every run-state record whole, as the helper wrote them before 0.1.111.
+        var lines: [Data] = [], list: [JSON] = []
+        let reader = try JournalRecordReader(path)
+        while let line = try reader.nextLine() {
+            if line.isEmpty { continue }
+            var record = try JSON.parse(line)
+            if record["customType"].text == "pi-app.native.state.v1" {
+                let data = record["data"]
+                list = data[CommandReceipts.deltaKey].flag == true ? CommandReceipts.apply(data["commands"].list, to: list) : data["commands"].list
+                var whole = data.removing([CommandReceipts.deltaKey]); whole["commands"] = .array(list); record["data"] = whole
+                lines.append(try record.data())
+            } else {
+                if !record["nativeState"].isNull { list = record["nativeState"]["commands"].list }
+                lines.append(line)
+            }
+        }
+        var whole = Data(); for line in lines { whole.append(line); whole.append(10) }
+        try whole.write(to: path)
+        func open(_ label: String) async throws {
+            for attempt in 1...3 {
+                JournalCheckpoint.remove(for: path)
+                let clock = ContinuousClock(), start = clock.now
+                let session = try AgentSession(id: "long", profile: profile, apiKey: "fixture", cwd: root, directory: directory, readOnly: true,
+                                               resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: BulkTools(), traces: TraceStore(),
+                                               resumePath: path.path, autoCompaction: false)
+                let opened = clock.now - start
+                print("PERF \(label) full open \(attempt): \(opened.formatted(.units(allowed: [.milliseconds])))")
+                await session.close()
+            }
+        }
+        func size() throws -> Double { Double((try FileManager.default.attributesOfItem(atPath: path.path)[.size] as? NSNumber)?.uint64Value ?? 0) / 1_048_576 }
+        print(String(format: "PERF whole-list journal: %.1f MB", try size()))
+        try await open("whole-list")
+        JournalCheckpoint.remove(for: path)
+        let bin = root.appendingPathComponent("bin"); try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let clock = ContinuousClock(), start = clock.now
+        let outcome = try JournalSlimming.slim(url: path, id: "long", discard: { try FileManager.default.moveItem(at: $0, to: bin.appendingPathComponent($0.lastPathComponent)) })
+        print("PERF slimming took \((clock.now - start).formatted(.units(allowed: [.milliseconds]))): \(outcome)")
+        XCTAssertTrue(outcome.slimmed)
+        print(String(format: "PERF slimmed journal: %.1f MB", try size()))
+        try await open("slimmed")
+    }
+
     func testOpeningALongChat() async throws {
         guard let turns = ProcessInfo.processInfo.environment["PI_PERF_SESSION_TURNS"].flatMap(Int.init), turns > 0 else {
             throw XCTSkip("Set PI_PERF_SESSION_TURNS to measure opening a long chat.")

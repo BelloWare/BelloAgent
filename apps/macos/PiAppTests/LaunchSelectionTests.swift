@@ -544,6 +544,48 @@ final class LaunchSelectionTests: XCTestCase {
         XCTAssertEqual(second.sides[fixture.b2.id]?.id, side.id, "and the next launch reopens it beside its chat")
     }
 
+    /// Going back to a chat shown earlier in this launch reads nothing when its
+    /// journal has not changed: its rows, and the pages read around them, are
+    /// still its rows. A journal that changed meanwhile is read again.
+    @MainActor func testGoingBackToAnUnchangedChatDoesNotReadItAgain() async throws {
+        let fixture = try await fixture()
+        let model = await launch(fixture)
+        let reader = HistoryReader(), reads = ReadCount()
+        let path = try XCTUnwrap(fixture.b2.path)
+        let b2 = fixture.b2.id
+        model.historyWindowLoader = { id, cursor, newer, around in
+            guard id == b2 else {
+                return try ConversationHistoryPage(.object(["version": .number(2), "messages": .array([]),
+                    "incarnation": .string("new:" + id), "lineage": .string("root"), "older": .null, "newer": .null]))
+            }
+            reads.add()
+            return try ConversationHistoryPage(await reader.window(path: path, cursor: cursor, newer: newer, around: around))
+        }
+        let (window, _) = self.window(for: model)
+        await model.select(fixture.b2.id)
+        let view = try XCTUnwrap(model.displays[fixture.b2.id])
+        await waitFor("The chat never became ready", drawing: window) { view.historyState == .ready }
+        let rows = view.messages.map(\.id), older = view.olderPage.cursor
+        XCTAssertEqual(reads.value, 1)
+        await model.select(fixture.b1.id)
+        await model.select(fixture.b2.id)
+        await waitFor("The chat never became ready again", drawing: window) { view.historyState == .ready }
+        XCTAssertEqual(reads.value, 1, "Its journal is unchanged: nothing is read")
+        XCTAssertEqual(view.messages.map(\.id), rows, "and the rows are the ones it had")
+        XCTAssertEqual(view.olderPage.cursor, older, "with the way to earlier rows")
+
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try handle.seekToEnd()
+        let row: [String: WireValue] = ["type": .string("message"), "id": .string("b2-q3"), "parentId": .string("b2-a2"),
+                                        "message": .object(["role": .string("user"), "content": .string("Question 3")])]
+        try handle.write(contentsOf: try JSONEncoder().encode(row) + Data([10])); try handle.close()
+        await model.select(fixture.b1.id)
+        await model.select(fixture.b2.id)
+        await waitFor("The chat never became ready after its journal changed", drawing: window) { view.historyState == .ready }
+        XCTAssertGreaterThan(reads.value, 1, "A changed journal is read again")
+        XCTAssertEqual(view.messages.last?.id, "b2-q3")
+    }
+
     /// An older chat reopens where it was being read: the question the reader
     /// left it on is back near the top of the pane, not the bottom of the
     /// chat and not the question of its last turn, where a chat opened for
@@ -669,6 +711,13 @@ final class LaunchSelectionTests: XCTestCase {
         XCTAssertEqual(model.displays.count, 1)
         XCTAssertTrue(model.hosts.isEmpty)
     }
+}
+
+/// How many pages a test's loader was asked for.
+private final class ReadCount: @unchecked Sendable {
+    private let lock = NSLock(); private var count = 0
+    func add() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }
 
 /// Holds the request archive's actor until the test lets it go, the way

@@ -172,7 +172,9 @@ struct ResourceInspector: View {
                 }
             }
             ScrollView {
-                LazyVStack(spacing: 0) {
+                // A plain stack: a page of at most 32 sources, and a lazy one in
+                // a sheet makes SwiftUI report a layout cycle when it opens.
+                VStack(spacing: 0) {
                     ForEach(Array((snapshot["sources"]?.array ?? []).enumerated()), id: \.offset) { index, value in
                         InstructionSourceRow(position: sourceOffset + index + 1, source: value.object ?? [:])
                         Rectangle().fill(Color.piHairline).frame(height: 1)

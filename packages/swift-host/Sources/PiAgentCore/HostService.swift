@@ -35,6 +35,8 @@ public actor NativeHostService {
     private let traces: TraceStore, capture: CaptureDelivery
     private let editingGate=AsyncGate(), runtimeGate=AsyncGate()
     private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:], sideParents:[String:String]=[:], recency:[String]=[]
+    /// Journals being slimmed (`JournalSlimming`), by session: an open of one waits for it.
+    private var slimming:[String:Task<JournalSlimming.Outcome,Error>]=[:]
     private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:JSON]=[:], replyOrder:[String]=[]
     private var mutationLedger = MutationLedger()
     private var dirty:[String:Int]=[:], flushTask:Task<Void,Never>?
@@ -221,6 +223,8 @@ public actor NativeHostService {
                 guard let captureMode, case .object(var fields)=snapshot else { return snapshot }
                 fields["captureMode"]=JSON(captureMode); return .object(fields)
             }
+            // A journal being slimmed is opened once its copy has taken its place, or not.
+            if let slim=slimming[id] { _=await slim.result }
             try await runtimeGate.acquire()
             do {
                 if let existing=sessions[id] {
@@ -251,6 +255,18 @@ public actor NativeHostService {
         }
         if method == "session.portable.preview" || method == "session.import.inspect" { return try portable(params) }
         if method == "session.recover" { return try recoverCopy(params) }
+        if method == "journal.slim" {
+            // A chat's journal without the run-state records that repeated its
+            // receipts (`JournalSlimming`), for a chat not open here.
+            let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
+            let url=canonical(try required(params["path"],"journal path"))
+            guard within(url,canonical(directory.path)), url.pathExtension == "jsonl" else { throw AgentError("session_scope", "Only this workspace's own journals are slimmed") }
+            guard sessions[id] == nil, slimming[id] == nil else { return JournalSlimming.Outcome(reason:"session-open").json }
+            let task=Task.detached(priority:.utility) { try JournalSlimming.slim(url:url,id:id) }
+            slimming[id]=task
+            defer { slimming[id]=nil }
+            return try await task.value.json
+        }
         if method == "session.import.continue" || method == "session.import.recover" { throw AgentError("portable_handoff_required", "Pi journals are preserved read-only. Preview and explicitly create a native portable handoff rather than replaying incompatible provider state.") }
         let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
         if method.hasPrefix("debug.") { return try await traces.command(method,session:id,params:params) }

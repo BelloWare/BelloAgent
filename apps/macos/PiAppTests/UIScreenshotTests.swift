@@ -1087,6 +1087,8 @@ final class UIScreenshotTests: XCTestCase {
     // does not fail the warnings-as-errors build; ScreenCaptureKit would need
     // TCC consent.
     @MainActor private func capture(_ window: NSWindow, to url: URL, includingOwnedPanels: Bool = false) throws {
+        // Which screen a diagnostic on standard error came before.
+        FileHandle.standardError.write(Data("GALLERY-CAPTURE \(url.lastPathComponent)\n".utf8))
         typealias ListImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage") else { throw XCTSkip("Window capture unavailable") }
         let create = unsafeBitCast(symbol, to: ListImage.self)

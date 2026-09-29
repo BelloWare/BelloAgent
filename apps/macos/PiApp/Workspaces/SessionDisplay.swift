@@ -18,6 +18,9 @@ import Combine
     var contextInputIdentity: ContextInputIdentity? { ContextInputIdentity(contextState) }
     @Published var preparedContext: PreparedContextMetrics?
     @Published var preparingContext = false
+    /// The reading this chat's pill showed when it was last counted, while it
+    /// still stands (`ContextReading`).
+    @Published var retainedContext: ContextReading?
     let activityChanges = PassthroughSubject<Void, Never>()
     @Published var metrics: [String: WireValue] = [:] { didSet { if metrics != oldValue { activityChanges.send() } } }
     @Published var turnTiming: [String: WireValue] = [:] { didSet { if turnTiming != oldValue { activityChanges.send() } } }
@@ -538,6 +541,12 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// settled row is a pointer check rather than a string compare.
     var projectedRows: [TranscriptMessage] = []
     var historyRevision: HistoryRevision?
+    /// The rows of the page last read in, by count and ends: while the rows
+    /// are still those, the page is what a fresh read of an unchanged journal
+    /// returns. Paging in or out changes them.
+    struct PageRows: Equatable { var count: Int; var first: String?; var last: String? }
+    var adoptedPage: PageRows?
+    var pageRows: PageRows { PageRows(count: messages.count, first: messages.first?.id, last: messages.last?.id) }
     /// Once hydrated, the live draft/anchor remain authoritative while their
     /// debounced writes catch up. A warm tab must not restore old saved text.
     var selectionMetadataLoaded = false
@@ -547,6 +556,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     var browsingHistory = false
     var footerUpdatedAt = 0.0
     var accountingRevision = 0
+    /// The presentation whose rows' cost and usage were read before they were
+    /// shown (`withAccounting`): its refresh after it is ready reads only the
+    /// chat's totals and timing.
+    var accountingReadFor: UUID?
     var messageAccounting: [String: GatewayTotals] = [:]
     var lastSequence: Double = -1
     /// The finished tasks of the last task presentation, decoded once.

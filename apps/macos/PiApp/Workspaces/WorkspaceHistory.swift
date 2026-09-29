@@ -56,6 +56,7 @@ extension WorkspaceModel {
         view.projectedRows = []; view.projectionRevision = nil
         view.historyState = page.messages.isEmpty ? .empty : .preparing
         view.messages = page.messages
+        view.adoptedPage = view.pageRows
         view.viewportRequest += 1
         if let count = page.assistantCount {
             observeAssistantOutputs(sessionID: view.id, snapshot: ["assistantMessageCount": .number(Double(count)),
@@ -66,6 +67,18 @@ extension WorkspaceModel {
         view.presentation.sourceReadyAt = PerformanceProbe.now
         PerformanceProbe.shared.observe("selectionSourceReadyMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
         if page.messages.isEmpty { historyViewportReady(view.id, generation: view.presentationGeneration) }
+    }
+
+    /// A chat's rows shown again as they were, when its journal has not
+    /// changed since they were read: placed where the reader left them, then
+    /// ready, as a page read in is.
+    func presentHeldHistory(_ view: SessionDisplay, identity: (incarnation: String, lineage: String)?, partialTurnInput: String?) {
+        view.presentation.identity = identity; view.presentation.partialTurnInput = partialTurnInput
+        view.historyProgress = nil
+        view.browsingHistory = view.newerPage.cursor != nil
+        view.historyState = .preparing
+        view.viewportRequest += 1
+        view.presentation.sourceReadyAt = PerformanceProbe.now
     }
 
     /// Called only after the destination's native visible band and placement
@@ -91,7 +104,9 @@ extension WorkspaceModel {
                   let item = self.record(id), id == self.selectedID || self.sides[self.selectedID ?? ""]?.id == id else { return }
             view.contextSelectionReady = true
             self.scheduleAutomaticContext(id)
-            await self.refreshAccounting(view, workspaceID: item.workspaceID)
+            // Rows whose figures were read before they were shown are not read
+            // for again; the chat's totals and timing still are.
+            await self.refreshAccounting(view, workspaceID: item.workspaceID, includeMessages: view.accountingReadFor != generation)
         }
     }
 
