@@ -72,13 +72,11 @@ struct ChatRowStats: Equatable {
     var costLabel: String? {
         guard let costUSD, costUSD.isFinite, costUSD >= 0 else { return requests > 0 ? "cost n/a" : nil }
         if costUSD == 0 { return "$0" }
-        return costUSD < 0.01 ? String(format: "$%.4f", costUSD) : String(format: "$%.2f", costUSD)
+        return MetricFormat.centsUSD(costUSD, places: 4, padded: true)
     }
     var tokensLabel: String? {
         guard let tokens, tokens.isFinite, tokens >= 0 else { return requests > 0 ? "tok n/a" : nil }
-        if tokens >= 1_000_000 { return String(format: "%.1fM tok", tokens / 1_000_000) }
-        if tokens >= 1_000 { return String(format: "%.1fk tok", tokens / 1000) }
-        return String(format: "%.0f tok", tokens)
+        return MetricFormat.rowTokenCount(tokens)
     }
     static func relative(_ date: Date, now: Date = Date()) -> String {
         let seconds = max(0, now.timeIntervalSince(date))

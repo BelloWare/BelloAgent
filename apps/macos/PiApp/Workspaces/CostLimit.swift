@@ -24,14 +24,13 @@ enum CostLimit: Hashable, Sendable, Codable {
     /// "$25.00", "$0.001" or "No limit".
     var label: String { usd.map(Self.dollars) ?? "No limit" }
 
-    /// Dollars as a limit reads: cents, or the digits a sub-cent amount needs
-    /// so it never reads as $0.00. The helper's stop notice says them the same way.
+    /// Dollars as a limit reads: cents, or the digits a sub-cent amount needs,
+    /// up to six, so it never reads as $0.00 (`MetricFormat.centsUSD`). The
+    /// helper's stop notice (`SessionCost.costText`) writes the same digits
+    /// but still rounds in binary: a tie such as $2.675 reads $2.67 there.
     static func dollars(_ value: Double) -> String {
         guard value.isFinite, value > 0 else { return "$0.00" }
-        if value >= 0.01 { return String(format: "$%.2f", value) }
-        var text = String(format: "%.6f", value)
-        while text.hasSuffix("0") { text.removeLast() }
-        return "$" + text
+        return MetricFormat.centsUSD(value, places: 6, padded: false)
     }
     /// A typed amount — "5", "$5", "12.50", "0.001" — or nil when it is not a
     /// positive number of dollars within the limit's range.
