@@ -613,3 +613,26 @@ struct TranscriptVersionView: Equatable, Sendable {
     var busy: Bool { runState.isBusy }
     var hasWork: Bool { busy || queueCount > 0 }
 }
+
+extension SessionDisplay {
+    /// What the chat is doing, in the one vocabulary the menu bar, the live
+    /// monitor and the activity graph share: "error", "paused", "stopping",
+    /// "starting", "model", "tool", "compacting", "queued" or "idle".
+    ///
+    /// In the order the helper gives its own activity phase, a stopped run
+    /// before a busy one: a failed run, then a run whose queue waits for
+    /// Resume (paused or interrupted, or one whose last command's outcome is
+    /// uncertain), then a stop not yet landed, then a message the app is
+    /// still sending, then what the running turn reports it is doing.
+    var activityPhase: String {
+        if runState == .error { return "error" }
+        if runState.holdsQueue || uncertain { return "paused" }
+        if runState == .stopping { return "stopping" }
+        if loading { return "starting" }
+        if busy {
+            let reported = activity["phase"]?.string ?? ""
+            return ["starting", "model", "tool", "compacting", "queued"].contains(reported) ? reported : runState == .queued ? "queued" : "starting"
+        }
+        return "idle"
+    }
+}

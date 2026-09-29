@@ -243,8 +243,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         activityChanged.send()
         // Read only the affected committed phase, never text or the chat array.
         if let id, let view = displays[id], let item = record(id) {
-            let phase = view.uncertain ? "interrupted" : view.state == "error" ? "error" : view.state == "paused" ? "paused" : view.loading ? "starting" : view.busy ? (view.activity["phase"]?.string ?? (view.state == "queued" ? "queued" : "starting")) : "idle"
-            liveActivity.phase(phase, workspace: item.workspaceID, session: id)
+            liveActivity.phase(view.activityPhase, workspace: item.workspaceID, session: id)
         }
     }
     private var activityObservers: [ObjectIdentifier: AnyCancellable] = [:]

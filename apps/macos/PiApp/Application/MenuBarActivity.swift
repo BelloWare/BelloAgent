@@ -94,15 +94,8 @@ extension WorkspaceModel {
         guard let record = record(id), !record.isArchived, record.connectionTest != true else { return nil }
         if let view = displays[id] {
             let raw = view.activity, unread = unreadOutputCount(sessionID: view.id)
-            let phase: String
-            if view.state == "error" { phase = "error" }
-            else if ["paused", "interrupted"].contains(view.state) || view.uncertain { phase = "paused" }
-            else if view.state == "stopping" { phase = "stopping" }
-            else if view.loading { phase = "starting" }
-            else if view.busy {
-                let candidate = raw["phase"]?.string ?? ""
-                phase = ["starting", "model", "tool", "compacting", "queued"].contains(candidate) ? candidate : (view.state == "queued" ? "queued" : "starting")
-            } else { phase = "idle" }
+            // The same phase the live monitor's activity graph counts.
+            let phase = view.activityPhase
             let followUps = activityCount(raw["pendingFollowUps"]) ?? max(0, view.queueCount)
             let steering = activityCount(raw["pendingSteering"]) ?? 0
             guard phase != "idle" || followUps + steering > 0 || unread > 0 else { return nil }
@@ -125,7 +118,7 @@ extension WorkspaceModel {
             row.latestRate = view.footer.timing.latest.flatMap(SessionTimingMetric.rate.value(in:))
             row.ttft = view.footer.timing.latest?.ttftMilliseconds
             row.utility = record.isBackgroundTask
-            row.uncertain = view.uncertain || view.state == "interrupted"
+            row.uncertain = view.uncertain || view.runState == .interrupted
             row.errorDetail = (view.failureMessage ?? (row.uncertain ? view.notice : nil)).map { String($0.prefix(512)) }
             row.tokens = totals?.tokens?.total
             row.costUSD = totals?.costUSD
