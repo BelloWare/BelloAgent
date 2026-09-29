@@ -1887,6 +1887,7 @@ struct NativeTranscriptView: View {
     }
 
     var body: some View {
+        let _ = RedrawCounter.note("transcript")
         VStack(spacing: 0) {
             if let error = page.projectionError { PiNote(error).padding(8) }
             TranscriptScrollSurface(revision: page.snapshot?.sequence ?? 0, page: page, actions: actions)
@@ -1946,7 +1947,7 @@ struct NativeTranscriptView: View {
             // Not re-identified by the presentation generation: a new page of
             // the same chat (a revisit, a reload, an earlier version) keeps the
             // bar where it stands instead of replaying its entrance.
-            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion)
+            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion).equatable()
         }
         // The run state is read where it is used, never from the value this
         // body happened to be built with: a task runs a turn of the run loop
@@ -1975,6 +1976,20 @@ struct NativeTranscriptView: View {
     }
 }
 
+/// The pane is drawn again for every change to the workspace, and makes the
+/// transcript's actions afresh each time, though each still reaches the chat
+/// through the same model and session. For the same session, in the same run
+/// state, offering the same actions, the transcript is the same: drawing it
+/// again laid the live bar and every overlay out again for nothing. What the
+/// session itself changes still reaches it, since it observes the session.
+extension NativeTranscriptView: Equatable {
+    nonisolated static func == (lhs: NativeTranscriptView, rhs: NativeTranscriptView) -> Bool {
+        MainActor.assumeIsolated {
+            lhs.session === rhs.session && lhs.state == rhs.state && lhs.actions.offered == rhs.actions.offered
+        }
+    }
+}
+
 /// The live bar's slot at the foot of the conversation. The slot itself is
 /// a layout change and never animates: it opens in one step when a run
 /// starts and closes in one step once the bar has gone, so the conversation
@@ -1983,13 +1998,22 @@ struct NativeTranscriptView: View {
 /// slides up into the slot and fades in, and slides back down and fades out
 /// when the run settles — an offset and an opacity, which decide no
 /// layout and so cost the page nothing per tick. Reduce Motion snaps.
-private struct LiveTurnBarSlot: View {
+private struct LiveTurnBarSlot: View, Equatable {
     let turn: TurnSummary?
     let state: String
     let actions: TranscriptActions
     let reduceMotion: Bool
     @State private var arrived = false
+    /// The transcript is drawn again for every page of a streaming reply;
+    /// the bar only when its own turn or run state changes. Its actions are
+    /// the transcript's, made for the same session (see `NativeTranscriptView`).
+    nonisolated static func == (lhs: LiveTurnBarSlot, rhs: LiveTurnBarSlot) -> Bool {
+        MainActor.assumeIsolated {
+            lhs.turn == rhs.turn && lhs.state == rhs.state && lhs.reduceMotion == rhs.reduceMotion && lhs.actions.offered == rhs.actions.offered
+        }
+    }
     var body: some View {
+        let _ = RedrawCounter.note("liveTurnBar")
         // No delayed exit owns a second structural mutation. The snapshot that
         // inserts a terminal summary also releases (or retargets) this slot.
         Group {

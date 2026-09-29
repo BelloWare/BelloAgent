@@ -118,10 +118,14 @@ struct SessionStatsPresentation: Equatable {
 /// no figure that ticks while a request runs. Each opens the Session
 /// Inspector where its figure is explained: the first two its Overview, the
 /// context ring the next request.
-struct SessionStatsPills: View {
-    @ObservedObject var model: WorkspaceModel
+struct SessionStatsPills: View, Equatable {
     @ObservedObject var session: SessionDisplay
     @ObservedObject var footer: SessionMetrics
+    /// The context the ring reads (`WorkspaceModel.displayedContext`), worked
+    /// out by the footer that holds the pills. The pills do not observe the
+    /// whole workspace for this one reading: every change to it laid the
+    /// pills out again, twice, for the two forms the footer tries.
+    let context: [String: WireValue]
     let selectedContextWindow: Int?
     /// A side conversation shares the window with its parent; it keeps the two
     /// readings that are its own and drops the session gauge.
@@ -129,21 +133,32 @@ struct SessionStatsPills: View {
     /// Opens the Session Inspector at a page.
     let open: (InspectorFocus) -> Void
 
-    init(model: WorkspaceModel, session: SessionDisplay, footer: SessionMetrics, selectedContextWindow: Int?, compact: Bool = false,
+    init(session: SessionDisplay, footer: SessionMetrics, context: [String: WireValue], selectedContextWindow: Int?, compact: Bool = false,
          open: @escaping (InspectorFocus) -> Void) {
-        self.model = model; self.session = session; self.footer = footer
+        self.session = session; self.footer = footer; self.context = context
         self.selectedContextWindow = selectedContextWindow; self.compact = compact; self.open = open
+    }
+    /// What the session and its figures change reaches the pills through
+    /// their own observation; a footer drawn again for anything else hands
+    /// them the same reading. `open` goes to the Inspector of the session
+    /// they were made for.
+    nonisolated static func == (lhs: SessionStatsPills, rhs: SessionStatsPills) -> Bool {
+        MainActor.assumeIsolated {
+            lhs.session === rhs.session && lhs.footer === rhs.footer && lhs.context == rhs.context
+                && lhs.selectedContextWindow == rhs.selectedContextWindow && lhs.compact == rhs.compact
+        }
     }
 
     private var presentation: SessionStatsPresentation {
         SessionStatsPresentation(gateway: footer.gateway, work: WorkSplit(timing: footer.turnTiming), cost: footer.cost)
     }
     private var meter: ContextMeterPresentation {
-        ContextMeterPresentation(context: model.displayedContext(session),
+        ContextMeterPresentation(context: context,
                                  capacity: session.hasWork ? nil : selectedContextWindow.map(Double.init))
     }
 
     var body: some View {
+        let _ = RedrawCounter.note("statsPills")
         let stats = presentation
         // The pills flow like a sentence: a narrow pane wraps between them
         // rather than cutting a figure in half.

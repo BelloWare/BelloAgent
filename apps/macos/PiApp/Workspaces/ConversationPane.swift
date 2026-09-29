@@ -78,6 +78,7 @@ struct ConversationPane: View {
                                  onLoadNewer: { model.loadNewer(sessionID: $0) },
                                  onLatest: { model.latest(sessionID: $0) },
                                  onViewportReady: { model.historyViewportReady($0, generation: $1) })
+                .equatable()
                 .environment(\.transcriptForks, model.canForkFromReply(session.id))
                 // A card whose arguments the host had to cut asks it for the
                 // rest when the reader opens it.
