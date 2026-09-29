@@ -4,6 +4,18 @@ import Foundation
 // during it. A draft write is debounced per chat and the last write wins;
 // `flushDrafts()` is what quit and update wait for.
 
+/// The model's debounced draft writes.
+struct DraftWrites {
+    /// The write of each chat's draft that is waiting or under way.
+    var tasks: [String: Task<Void, Never>] = [:]
+    /// Which write owns each entry above: a newer write replaces the token
+    /// first, so a cancelled write's own cleanup never drops the newer entry.
+    var tokens: [String: UUID] = [:]
+    /// A draft write has already failed, so the next failure does not repeat
+    /// the same banner.
+    var failed = false
+}
+
 extension WorkspaceModel {
     func draftChanged(_ view: SessionDisplay) {
         // Writing a message is the moment to have its helper ready.
@@ -12,26 +24,26 @@ extension WorkspaceModel {
         // Unkept side drafts stay in memory by design; on host loss their text
         // is moved into the parent composer instead (discardLostSides).
         guard !isEphemeral(view.id), !pendingChatIDs.contains(view.id) else { return }
-        draftTasks[view.id]?.cancel()
+        draftWrites.tasks[view.id]?.cancel()
         // The entry is cleared when this write finishes, and only by the write
         // that owns it: a newer one replaces the token first, so a cancelled
         // task's own cleanup can never drop it.
         let draft = view.savedDraft, id = view.id, token = UUID()
-        draftTaskTokens[id] = token
-        draftTasks[id] = Task {
-            defer { if draftTaskTokens[id] == token { draftTaskTokens.removeValue(forKey: id); draftTasks.removeValue(forKey: id) } }
+        draftWrites.tokens[id] = token
+        draftWrites.tasks[id] = Task {
+            defer { if draftWrites.tokens[id] == token { draftWrites.tokens.removeValue(forKey: id); draftWrites.tasks.removeValue(forKey: id) } }
             do {
                 guard let store else { throw StoreError.unavailable }
                 let revision = try await store.reserveRevision(kind: "draft", id: draft.id)
                 try await Task.sleep(for: .milliseconds(150)); guard !Task.isCancelled else { return }
-                try await store.put(draft, kind: "draft", id: draft.id, revision: revision); draftSaveFailed = false
+                try await store.put(draft, kind: "draft", id: draft.id, revision: revision); draftWrites.failed = false
             }
             catch is CancellationError { }
             catch StoreError.staleRevision { /* A newer send, flush or edit already saved this draft. */ }
             catch {
                 // A full disk fails every debounce tick; report it once, not per keystroke.
-                guard !draftSaveFailed else { return }
-                draftSaveFailed = true; self.error = "Draft could not be saved. \(error.localizedDescription)"
+                guard !draftWrites.failed else { return }
+                draftWrites.failed = true; self.error = "Draft could not be saved. \(error.localizedDescription)"
             }
         }
     }
@@ -39,7 +51,7 @@ extension WorkspaceModel {
     /// 150 ms debounce cannot lose the last thing typed; the update path does
     /// the same inside prepareForInstall.
     func flushDrafts() async throws {
-        for task in draftTasks.values { task.cancel() }; draftTasks.removeAll(); draftTaskTokens.removeAll()
+        for task in draftWrites.tasks.values { task.cancel() }; draftWrites.tasks.removeAll(); draftWrites.tokens.removeAll()
         let retained = displays.values.filter { !isEphemeral($0.id) }
         guard !retained.isEmpty else { return }
         guard let store else { throw StoreError.unavailable }

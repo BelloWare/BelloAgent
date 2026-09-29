@@ -324,13 +324,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `WorkspaceHosts.swift`: helpers stopped on purpose for being
     /// idle, whose exit therefore is not a lost host.
     var retiringHosts: Set<ObjectIdentifier> = []
-    /// Owned by `WorkspaceDrafts.swift`: the debounced write of each chat's
-    /// draft, and the token saying which write owns the entry.
-    var draftTasks: [String: Task<Void, Never>] = [:]
-    /// Which write owns each entry above; see `draftChanged`.
-    var draftTaskTokens: [String: UUID] = [:]
+    /// Owned by `WorkspaceDrafts.swift`: the debounced draft writes under way.
+    var draftWrites = DraftWrites()
     /// Test seam: draft writes still in flight or not yet cleaned up.
-    var pendingDraftWrites: Int { draftTasks.count }
+    var pendingDraftWrites: Int { draftWrites.tasks.count }
     /// True while `restore()` is reading the store, so a second call is a
     /// no-op rather than a second pass over the same rows. Owned by
     /// `WorkspaceRestore.swift`; a chat's own `loading` is a different thing.
@@ -346,9 +343,6 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var isShutDown = false
     /// The old name of `isShutDown`, until `WorkspaceRefresh.swift` reads the new one.
     var accountingStopped: Bool { isShutDown }
-    /// Owned by `WorkspaceDrafts.swift`: a draft write has already failed, so
-    /// the next failure does not repeat the same banner.
-    var draftSaveFailed = false
     /// Owned by `WorkspaceChatLifecycle.swift`: onboarding creates exactly one
     /// first chat however many times its button is pressed.
     var creatingOnboardingChat = false
