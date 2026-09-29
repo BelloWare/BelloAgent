@@ -33,7 +33,7 @@ final class HardeningTests: XCTestCase {
         XCTAssertFalse(projected.text.contains("\u{FFFD}"), "No character is cut in half")
         XCTAssertEqual(projected.truncated, false, "Nothing was shortened, so nothing says it was")
         XCTAssertTrue(projected.tools?.allSatisfy { card in
-            card.inputTruncated == nil && !card.input.contains("\u{FFFD}") && card.input.contains(text)
+            card.inputTruncated != true && !card.input.contains("\u{FFFD}") && card.input.contains(text)
         } == true, "Each card holds the whole parseable request it was given")
         XCTAssertEqual(projected.toolCallCount, 100)
         // The rows travel in bounded IPC frames, not in one bounded row: the

@@ -68,7 +68,7 @@ struct TitleGenerationPlan: Sendable {
     /// Up to `limit` distinct suggestion lines from a reply; bullets, numbering and quotes are stripped.
     static func titles(from messages: [TranscriptMessage], limit: Int) -> [String] {
         guard let answer = messages.last(where: { $0.role == "assistant" }),
-              !["streaming", "error", "aborted", "failed", "cancelled", "interrupted"].contains(answer.state ?? "") else { return [] }
+              !answer.endedUnfinished else { return [] }
         var seen: Set<String> = [], result: [String] = []
         for raw in answer.text.split(separator: "\n") {
             var line = raw.trimmingCharacters(in: .whitespaces)
@@ -88,7 +88,7 @@ struct TitleGenerationPlan: Sendable {
     /// themselves after the title, or answer at length, still yield a title.
     static func title(from messages: [TranscriptMessage]) -> String? {
         guard let answer = messages.last(where: { $0.role == "assistant" }),
-              !["streaming", "error", "aborted", "failed", "cancelled", "interrupted"].contains(answer.state ?? ""), answer.truncated != true,
+              !answer.endedUnfinished, answer.truncated != true,
               answer.tools?.isEmpty != false else { return nil }
         for raw in answer.text.split(separator: "\n") {
             var line = raw.trimmingCharacters(in: .whitespaces)

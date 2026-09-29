@@ -306,6 +306,18 @@ enum TranscriptRenderIdentity {
 
 extension TranscriptMessage {
     var isStreaming: Bool { state == "streaming" }
+    /// How a reply ended when it failed or was stopped, "error" or "aborted":
+    /// the row's state when the app shows the failure itself, else its stop
+    /// reason, which is where the helper's rows and the journal's both keep it.
+    var failedEnd: String? {
+        for value in [state, stopReason] { if let value, ["error", "aborted"].contains(value) { return value } }
+        return nil
+    }
+    /// A reply still being written, or one that ended without finishing.
+    var endedUnfinished: Bool {
+        let unfinished: Set<String> = ["streaming", "error", "aborted", "failed", "cancelled", "interrupted"]
+        return unfinished.contains(state ?? "") || unfinished.contains(stopReason ?? "")
+    }
     /// A reply with no prose: only tool calls, exposed reasoning, or both. It folds into the next reply's block.
     var isActivityOnly: Bool {
         role == "assistant" && !TranscriptActivity.hasVisibleText(text)
@@ -817,7 +829,8 @@ enum TranscriptActivity {
     /// it short, so a card never presents a fragment as the whole request.
     static func argumentsText(_ tool: ToolView) -> (text: String, complete: Bool) {
         let decoded = decodeArguments(tool.input)
-        if decoded.complete { return (tool.input, tool.inputTruncated != true) }
+        // Laid out for reading, whichever way the document was encoded.
+        if decoded.complete { return ((try? JSONDecoder().decode(WireValue.self, from: Data(tool.input.utf8)))?.pretty ?? tool.input, tool.inputTruncated != true) }
         guard !decoded.values.isEmpty,
               let data = try? JSONSerialization.data(withJSONObject: decoded.values, options: [.prettyPrinted, .sortedKeys]),
               let text = String(data: data, encoding: .utf8) else {

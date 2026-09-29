@@ -118,6 +118,8 @@ extension WorkspaceModel {
                     source = now; page = try await self.readInitialWindow(source, holding: held)
                 }
                 guard current(), self.record(id)?.path == source.path else { return }
+                page.messages = await self.withAccounting(page.messages, view: view, workspaceID: source.workspaceID)
+                guard current(), self.record(id)?.path == source.path else { return }
                 self.adoptInitialHistory(page, into: view)
                 if let profile = self.profiles.first(where: { $0.id == item.profileID }), profile.api != LiteLLMConfiguration.supportedAPI {
                     view.notice = LiteLLMConfiguration.unsupportedAPIMessage

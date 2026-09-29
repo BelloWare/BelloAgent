@@ -2229,8 +2229,8 @@ final class TranscriptPageStressTests: TranscriptStressTestCase {
         XCTAssertEqual(tool.name, "edit")
         // Since 0.1.78 a projection keeps the whole parseable request: nothing
         // is cut on the way out of a journal, so nothing claims it was.
-        XCTAssertNil(tool.inputTruncated, "a projected reply is complete, so no card says it was shortened")
-        XCTAssertNil(tool.inputBytes)
+        XCTAssertEqual(tool.inputTruncated, false, "a projected reply is complete, so no card says it was shortened")
+        XCTAssertEqual(tool.inputBytes, tool.input.utf8.count, "and it counts the whole request, as the helper's card does")
         XCTAssertGreaterThan(tool.input.utf8.count, 20_000, "the whole request reached the card")
         XCTAssertNotNil(try? JSONSerialization.jsonObject(with: Data(tool.input.utf8)),
                         "what a journal hands a card must parse, so the card is never a fragment of JSON")

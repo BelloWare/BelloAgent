@@ -243,7 +243,9 @@ extension WorkspaceModel {
                 view.recovered = metadata?.recovered ?? []; view.uncertain = !view.recovered.isEmpty
                 view.draftReady = true
                 if self.focusedSessionID == id { view.composerFocusRequest += 1 }
-                let page = try await self.readInitialWindow(child, holding: view.scrollAnchor)
+                var page = try await self.readInitialWindow(child, holding: view.scrollAnchor)
+                guard current() else { return }
+                page.messages = await self.withAccounting(page.messages, view: view, workspaceID: child.workspaceID)
                 guard current() else { return }
                 self.adoptInitialHistory(page, into: view)
                 if self.opened.contains(id) { self.refresh(id) }
