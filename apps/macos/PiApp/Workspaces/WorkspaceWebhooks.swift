@@ -29,7 +29,7 @@ extension WorkspaceModel {
     /// imported history, archived chats or unsaved sides.
     func webhookEligible(_ id: String) -> Bool {
         guard let item = chatRecord(id), !isEphemeral(id) else { return false }
-        return !item.isBackgroundTask && item.connectionTest != true && !item.imported && !item.isArchived && item.workspaceID != WorkspaceRecord.scratchID
+        return !item.isUtilityChat && !item.imported && !item.isArchived && item.workspaceID != WorkspaceRecord.scratchID
     }
     /// Whether the chat sends the webhook when it finishes.
     func sendsWebhook(_ id: String) -> Bool { activeWebhook != nil && webhookEligible(id) && chatRecord(id)?.webhookOff != true }

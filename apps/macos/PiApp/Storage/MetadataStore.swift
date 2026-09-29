@@ -296,7 +296,7 @@ actor MetadataStore {
             var selected: [String: ChatRecord] = [:]
             for id in ids.sorted() {
                 guard let chat = try get(ChatRecord.self, kind: "chat", id: id), chat.workspaceID == workspaceID,
-                      !chat.isBackgroundTask, chat.connectionTest != true else { throw StoreError.invalidRecord }
+                      !chat.isUtilityChat else { throw StoreError.invalidRecord }
                 selected[id] = chat
             }
             // A kept side can commit just before its UI row is published.
@@ -332,7 +332,7 @@ actor MetadataStore {
         try transaction {
             guard !ids.isEmpty, !ids.contains(targetID), Set(ids).count == ids.count,
                   let target = try get(ChatRecord.self, kind: "chat", id: targetID), target.workspaceID == workspaceID,
-                  !target.isBackgroundTask, target.connectionTest != true else { throw StoreError.invalidRecord }
+                  !target.isUtilityChat else { throw StoreError.invalidRecord }
             let selected = Set(ids)
             var group = try organizationRows().filter {
                 $0.workspaceID == workspaceID && $0.groupable && $0.topicID == target.topicID &&
@@ -576,7 +576,7 @@ actor MetadataStore {
         do {
             guard var source = try get(ChatRecord.self, kind: "chat", id: sourceID),
                   source.titleTaskSessionID == nil, source.titleWasEdited != true,
-                  !source.isBackgroundTask, source.connectionTest != true, !source.imported,
+                  !source.isUtilityChat, !source.imported,
                   source.workspaceID != WorkspaceRecord.scratchID,
                   source.profileID == task.profileID,
                   try get(ChatRecord.self, kind: "chat", id: task.id) == nil else {
@@ -659,6 +659,9 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var sourceSessionID: String?
     var backgroundTaskNotice: String?
     var isBackgroundTask: Bool { backgroundTask != nil }
+    /// A chat the app runs for itself rather than the reader's: a background
+    /// request or a connection test.
+    var isUtilityChat: Bool { isBackgroundTask || connectionTest == true }
     /// A background request's own account (`BackgroundRequests.swift`): when
     /// it was sent and ended, how it ended ("completed", "failed" or
     /// "interrupted"; nil while it runs), and what it produced (the title, the

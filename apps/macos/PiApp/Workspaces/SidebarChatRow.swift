@@ -253,7 +253,7 @@ extension WorkspaceModel {
                 liveIdentity: displays[chat.id].map(ObjectIdentifier.init),
                 hasSide: entry.hasChildren || side?.kept == false,
                 expanded: !folded.contains(chat.id),
-                draggable: projectDraggable && !chat.isBackgroundTask && chat.connectionTest != true,
+                draggable: projectDraggable && !chat.isUtilityChat,
                 subtitle: sidebarRowSubtitle(chat, namesConnection: namesConnection),
                 available: ChatRowMetrics.availableWidth(sidebar: sidebarWidth, indent: indent, depth: entry.depth),
                 indent: indent + CGFloat(min(entry.depth, 3) * 14)))

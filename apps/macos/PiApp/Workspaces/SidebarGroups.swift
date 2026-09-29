@@ -348,7 +348,7 @@ enum SessionOrganizationActions {
         PiMenuEntry.button(chat.isArchived ? "Restore Chat" : "Archive Chat", systemImage: chat.isArchived ? "arrow.uturn.backward" : "archivebox") {
             model.toggleSessionArchive(chat.id)
         }
-        if chat.workspaceID != WorkspaceRecord.scratchID, !chat.isBackgroundTask, chat.connectionTest != true {
+        if chat.workspaceID != WorkspaceRecord.scratchID, !chat.isUtilityChat {
             let current = model.effectiveTopicID(for: chat)
             PiMenuEntry.menu("Move to Topic", systemImage: "folder", identifier: "moveSessionToTopic-" + chat.id,
                              help: "Move this chat and its saved side chats within this project") {

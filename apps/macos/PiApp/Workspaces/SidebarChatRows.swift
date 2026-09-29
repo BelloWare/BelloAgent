@@ -125,7 +125,7 @@ struct ChatRow: View {
     var available: CGFloat = .infinity
     var toggle: () -> Void = {}
     private var symbol: String { chat.imported ? "doc.text" : chat.parentSessionID != nil ? "arrow.triangle.branch" : chat.connectionTest == true ? "checkmark.seal" : chat.toolMode == ChatRecord.readOnlyTools ? "eye" : "bubble.left" }
-    private var archiveAction: (() -> Void)? { chat.isBackgroundTask || chat.connectionTest == true ? nil : { model.toggleSessionArchive(chat.id) } }
+    private var archiveAction: (() -> Void)? { chat.isUtilityChat ? nil : { model.toggleSessionArchive(chat.id) } }
     @Environment(\.sidebarMinute) private var minute
     var body: some View {
         if live, let display = model.displays[chat.id] {

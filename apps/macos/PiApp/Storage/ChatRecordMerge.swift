@@ -48,7 +48,7 @@ extension ChatRecord {
         guard topicID != nil else { return self }
         var chat = self
         if topic?.workspaceID != workspaceID || topic?.isValid != true
-            || workspaceID == WorkspaceRecord.scratchID || isBackgroundTask || connectionTest == true {
+            || workspaceID == WorkspaceRecord.scratchID || isUtilityChat {
             chat.topicID = nil
         }
         return chat

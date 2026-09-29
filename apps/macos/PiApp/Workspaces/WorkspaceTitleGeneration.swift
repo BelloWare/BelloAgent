@@ -226,7 +226,7 @@ extension WorkspaceModel {
     func scheduleTitleGeneration(sourceID: String, input: String, force: Bool = false) {
         guard titleGenerationTasks[sourceID] == nil, !installPreparing,
               let source = record(sourceID), force || (source.titleWasEdited != true && source.titleWasGenerated != true),
-              !source.imported, !source.isBackgroundTask, source.connectionTest != true, !source.isArchived,
+              !source.imported, !source.isUtilityChat, !source.isArchived,
               source.workspaceID != WorkspaceRecord.scratchID else { return }
         titleGenerationTasks[sourceID] = Task { [weak self] in
             guard let self else { return }
@@ -267,7 +267,7 @@ extension WorkspaceModel {
     /// The chat's action menu asks for a title again, from the first message,
     /// replacing an edited or earlier generated one; failures show in the footer.
     func regenerateTitle(_ chatID: String) {
-        guard let item = record(chatID), !item.imported, !item.isArchived, !item.isBackgroundTask, item.connectionTest != true, store != nil else { return }
+        guard let item = record(chatID), !item.imported, !item.isArchived, !item.isUtilityChat, store != nil else { return }
         let text = displays[chatID]?.messages.first(where: { $0.role == "user" && $0.kind == nil })?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !text.isEmpty else { displays[chatID]?.notice = "The title comes from the first message; send one first."; return }
         // A request already on its way for this chat answers this press too.
