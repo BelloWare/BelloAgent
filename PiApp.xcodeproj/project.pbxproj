@@ -135,6 +135,7 @@
 		4779A645FBAF2A7AD5D38B06 /* WorkspaceWebhooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8238005BB4836ADC69C07AE1 /* WorkspaceWebhooks.swift */; };
 		47F69D086A3FF74DB2E21EFD /* WorkspaceContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48B202B6A630835604556E2C /* WorkspaceContent.swift */; };
 		4826E8F0562AA5984D60E1AA /* WorkspaceRedrawTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D30D6F28DFAF77F4E8F328 /* WorkspaceRedrawTests.swift */; };
+		4915CF0EDEF0D96E9D967D78 /* KeyCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 994545FF52002DB9E5DC25B7 /* KeyCode.swift */; };
 		49973F424C808887EA8FCA1D /* GitDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51B1A941BBD60D3F64FE2342 /* GitDiff.swift */; };
 		49B3A1BDFD86715C254CFA18 /* PiStatPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF2A4D833450F78AD09D546B /* PiStatPill.swift */; };
 		4A4F93F5FDD96B73CF0F749E /* PiChartParts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5BD3D9A0AD5306083506975 /* PiChartParts.swift */; };
@@ -839,6 +840,7 @@
 		97F28C73B410E2075C3A1ACE /* ComposerSubmissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerSubmissionTests.swift; sourceTree = "<group>"; };
 		98877A5BADE0F1F5B86EFD0F /* SessionInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionInspectorView.swift; sourceTree = "<group>"; };
 		99124E7DA6403C08A9684779 /* LivePopupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePopupTests.swift; sourceTree = "<group>"; };
+		994545FF52002DB9E5DC25B7 /* KeyCode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCode.swift; sourceTree = "<group>"; };
 		9973FC6FF08F61D3E2A5F8C1 /* TranscriptPagingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPagingTests.swift; sourceTree = "<group>"; };
 		99C1BFC13393B96F2CA94B0D /* MenuBarActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarActivity.swift; sourceTree = "<group>"; };
 		99CF1D77DB34C71572D60F56 /* TranscriptLayoutClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptLayoutClock.swift; sourceTree = "<group>"; };
@@ -1114,6 +1116,7 @@
 				6663D82E5EC8EAC4A690C9BA /* Attachments.swift */,
 				21919BFCBBC3B70C12F9AD4D /* ComposerSkillTokens.swift */,
 				644B9F5FC44D5E0EFCDC8311 /* ComposerSubmissionIntent.swift */,
+				994545FF52002DB9E5DC25B7 /* KeyCode.swift */,
 				6427530A7EFDEB3F383961E5 /* NativeCodeEditor.swift */,
 				E2916E66A89662304989C664 /* NativeComposer.swift */,
 				671F8D3471EED2713B980C23 /* SkillCatalog.swift */,
@@ -1905,6 +1908,7 @@
 				E41973D88ABC6BDB3A195853 /* InspectorRequestPage.swift in Sources */,
 				35E0242529E351A6CAADE6DC /* InspectorTurnPage.swift in Sources */,
 				980427FB53CCAF877F96E5D3 /* JournalCheckpoint.swift in Sources */,
+				4915CF0EDEF0D96E9D967D78 /* KeyCode.swift in Sources */,
 				E288EBCD53F0004C16820C8B /* KeychainVaultStorage.swift in Sources */,
 				30D417328D097D651689D87F /* LargeMarkdownTable.swift in Sources */,
 				97897D9AEF727ED97C67D9C1 /* LiveActivityStore.swift in Sources */,

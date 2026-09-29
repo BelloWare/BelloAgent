@@ -2,7 +2,28 @@ import Foundation
 
 /// The bytes a key sends, honouring the application cursor and keypad modes.
 enum TerminalKeyEncoder {
-    enum Key { case up, down, left, right, home, end, pageUp, pageDown, insert, delete, tab, backTab, enter, escape, backspace, function(Int) }
+    enum Key: Equatable { case up, down, left, right, home, end, pageUp, pageDown, insert, delete, tab, backTab, enter, escape, backspace, function(Int) }
+    /// The key a key code is, for the keys that send a sequence of their
+    /// own; nil for a key that types a character.
+    static func key(forKeyCode code: UInt16, shift: Bool) -> Key? {
+        switch code {
+        case KeyCode.upArrow: return .up
+        case KeyCode.downArrow: return .down
+        case KeyCode.leftArrow: return .left
+        case KeyCode.rightArrow: return .right
+        case KeyCode.home: return .home
+        case KeyCode.end: return .end
+        case KeyCode.pageUp: return .pageUp
+        case KeyCode.pageDown: return .pageDown
+        case KeyCode.forwardDelete: return .delete
+        case KeyCode.help: return .insert
+        case KeyCode.escape: return .escape
+        case KeyCode.tab: return shift ? .backTab : .tab
+        case KeyCode.returnKey, KeyCode.keypadEnter: return .enter
+        case KeyCode.delete: return .backspace
+        default: return KeyCode.functionKeys.firstIndex(of: code).map { .function($0 + 1) }
+        }
+    }
     static func encode(_ key: Key, applicationCursor: Bool, shift: Bool = false, control: Bool = false, option: Bool = false) -> Data {
         let modifier: String = {
             var value = 1

@@ -315,35 +315,9 @@ import SwiftUI
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) { super.keyDown(with: event); return }
         let shift = flags.contains(.shift), control = flags.contains(.control), option = flags.contains(.option)
-        func special(_ key: TerminalKeyEncoder.Key) { send(TerminalKeyEncoder.encode(key, applicationCursor: emulator.applicationCursorKeys, shift: shift, control: control, option: option)) }
-        switch event.keyCode {
-        case 126: special(.up); return
-        case 125: special(.down); return
-        case 123: special(.left); return
-        case 124: special(.right); return
-        case 115: special(.home); return
-        case 119: special(.end); return
-        case 116: special(.pageUp); return
-        case 121: special(.pageDown); return
-        case 117: special(.delete); return
-        case 114: special(.insert); return
-        case 53: special(.escape); return
-        case 48: special(shift ? .backTab : .tab); return
-        case 36, 76: special(.enter); return
-        case 51: special(.backspace); return
-        case 122: special(.function(1)); return
-        case 120: special(.function(2)); return
-        case 99: special(.function(3)); return
-        case 118: special(.function(4)); return
-        case 96: special(.function(5)); return
-        case 97: special(.function(6)); return
-        case 98: special(.function(7)); return
-        case 100: special(.function(8)); return
-        case 101: special(.function(9)); return
-        case 109: special(.function(10)); return
-        case 103: special(.function(11)); return
-        case 111: special(.function(12)); return
-        default: break
+        if let key = TerminalKeyEncoder.key(forKeyCode: event.keyCode, shift: shift) {
+            send(TerminalKeyEncoder.encode(key, applicationCursor: emulator.applicationCursorKeys, shift: shift, control: control, option: option))
+            return
         }
         if control, let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first {
             let value = scalar.value

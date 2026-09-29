@@ -244,10 +244,10 @@ struct ComposerEditMeasurement {
     /// The keys that belong to the conversation rather than to the draft.
     static func conversationScroll(for keyCode: UInt16) -> TranscriptKeyScroll? {
         switch keyCode {
-        case 116: return .pageUp
-        case 121: return .pageDown
-        case 115: return .top
-        case 119: return .bottom
+        case KeyCode.pageUp: return .pageUp
+        case KeyCode.pageDown: return .pageDown
+        case KeyCode.home: return .top
+        case KeyCode.end: return .bottom
         default: return nil
         }
     }
@@ -485,14 +485,14 @@ struct ComposerEditMeasurement {
     /// take it there: the message was queued as a follow-up instead. The
     /// composer the reader is typing in claims ⌘↩ first; keyDown decides.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if [36, 76].contains(event.keyCode), event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
+        if KeyCode.isReturn(event.keyCode), event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
            window?.firstResponder === self {
             keyDown(with: event); return true
         }
         return super.performKeyEquivalent(with: event)
     }
     override func keyDown(with event: NSEvent) {
-        let sends = [36, 76].contains(event.keyCode) && !event.modifierFlags.contains(.shift) && !hasMarkedText()
+        let sends = KeyCode.isReturn(event.keyCode) && !event.modifierFlags.contains(.shift) && !hasMarkedText()
         if PerformanceProbe.shared.enabled && !event.modifierFlags.contains(.command) && !sends {
             let now = PerformanceProbe.now
             PerformanceProbe.shared.observe("nativeEventDispatchDelayMs", milliseconds: now - event.timestamp * 1000)
@@ -501,7 +501,7 @@ struct ComposerEditMeasurement {
         defer { measurement.end() }
         if !hasMarkedText(), event.characters == "/", selectedRange().location == 0 { directSlash?() }
         if !hasMarkedText(), !event.modifierFlags.contains(.shift), completionKey?(event.keyCode, event.modifierFlags) == true { return }
-        if [36, 76].contains(event.keyCode), !hasMarkedText() {
+        if KeyCode.isReturn(event.keyCode), !hasMarkedText() {
             if event.modifierFlags.contains(.shift) { insertNewline(nil); return }
             if !event.modifierFlags.contains(.option), !event.modifierFlags.contains(.control) {
                 send?(event.modifierFlags.contains(.command) ? .steer : .followUp); return
