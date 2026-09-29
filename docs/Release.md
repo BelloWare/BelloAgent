@@ -42,7 +42,21 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.114/build 118 is publicly released** at
+**Bello Agent 0.1.115/build 119 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.115](https://github.com/BelloWare/BelloAgent/tree/v0.1.115) and website commit
+`f3fd11cc1878c51c8586db9d56dfa1652e030e34`. The signed/notarized DMG is **11,473,953 bytes (10.94 MiB)**;
+SHA-256 `5b851f0722b7d81eb65e71ddbc51b26478d75c4a59970456aced6db7e7ee1ff3`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-09-29 23:28:24 UTC**. A sides panel waits at the window's right edge; newer rows load by
+themselves; a reply no longer stops halfway in a long chat; a long chat's rows
+stay still while its context is counted; and the same cost reads the same
+everywhere. Its notes correct the 0.1.113 and 0.1.114 claims about closed
+sheets' memory: closed sheets, windows and popovers are freed in the real app,
+and the figures came from the test runner. The gate on e30876a ran 251 serial and 1,555 parallel native tests, 144 gallery screenshots, 511 helper tests and the script checks; its one failure, a test's two-second wait that ran out under the parallel lane's load, was fixed in the test (3255a51), and that class then passed 6 of 6 in three runs. The fixture end-to-end compaction test passed 3 of 3.
+See the [0.1.115 validation record](validation/Bello-Agent-0.1.115-2026-09-30.md).
+
+**Bello Agent 0.1.114/build 118 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.114](https://github.com/BelloWare/BelloAgent/tree/v0.1.114) and website commit
 `dee17af66c5e7f44d61f8adf8d056884519f5aef`. The signed/notarized DMG is **11,442,935 bytes (10.91 MiB)**;

@@ -1,6 +1,6 @@
 # Bello Agent 0.1.115 — a sides panel, newer rows that load by themselves, a reply that no longer stops halfway
 
-Status: candidate; publication pending.
+Status: publicly released and verified at 2026-09-29 23:28:24 UTC.
 Starting main: `362d7ff68f3fe5a28bb1253194c61cb79aeaf24d` (0.1.114's verified record).
 
 ## Scope
@@ -117,9 +117,30 @@ The release notes (`releases/0.1.115.html`) give the user-facing items in full.
   `c4adfc5`, after which only test-harness files changed. In the developer's
   earlier full gate, `SmoothShellTests` failed once in the serial lane under
   load and passed 3 of 3 alone.
+- **Live compaction test, fixture mode, on the release helper:** 3 of 3
+  scenarios passed (mid-run recalled 10 of 10 markers); reported cost $0.83 of
+  the fixture's $5.00 cap (synthetic).
 - Installation and updater rehearsals are excluded by the owner's standing
   instruction.
 
 ## Publication
 
-Pending.
+- Release source: `1f6285f7888439cf6fb97cf2210036d61e06fbbb`, pushed to GitHub `main`; annotated tag
+  `v0.1.115` is pushed and resolves to that commit.
+- Website publication: `f3fd11cc1878c51c8586db9d56dfa1652e030e34`, pushed to `BelloWare/belloware.com` `main`.
+- Signed/notarized Bello Agent 0.1.115, build 119. App notarization
+  `ee52773b-f8f5-488a-9661-23530431c7ca` and DMG notarization `fd4fcd77-137e-499a-a211-059d3ef84876` were accepted. Stapling,
+  signature, Gatekeeper and artifact validation passed.
+- `BelloAgent-0.1.115.dmg`: **11,473,953 bytes (10.94 MiB)**; SHA-256
+  `5b851f0722b7d81eb65e71ddbc51b26478d75c4a59970456aced6db7e7ee1ff3`.
+- At 2026-09-29 23:28:24 UTC, the public product page linked to 0.1.115.
+  `scripts/verify-published.py` downloaded the public archive, verified its
+  SHA-256 and Ed25519 signature, and confirmed that both public update feeds
+  match the intended release and are byte-identical.
+- No GitHub release page was made: the `gh` CLI is not logged in here. The
+  tag and `main` went to GitHub over SSH, as the owner asked; the page can be
+  made later from the same notes once `gh auth login` has been run.
+- The publish also moved `sitemap.xml`'s `lastmod` to the local date,
+  2026-09-30.
+- No install or updater rehearsal was performed, at the owner's standing
+  instruction.
