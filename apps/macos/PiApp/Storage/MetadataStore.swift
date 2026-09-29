@@ -111,35 +111,10 @@ actor MetadataStore {
         } else { savedRevision = try revision ?? reserveRevision(kind: kind, id: id) }
         let data: Data
         if kind == "chat", var chat = value as? ChatRecord {
-            if let previous = try get(ChatRecord.self, kind: kind, id: id) {
-                // Path/model/turn updates can finish after a rename, pin,
-                // archive or topic move. They must not restore stale grouping.
-                if (previous.organizationRevision ?? 0) > (chat.organizationRevision ?? 0) { chat.applyOrganization(from: previous) }
-                if chat.sidebarOrder == nil { chat.sidebarOrder = previous.sidebarOrder }
-                if chat.parentSessionID == nil { chat.parentSessionID = previous.parentSessionID }
-                // Only the explicit release path may drop a title claim; other
-                // writes that omit it keep the running task's claim intact.
-                if chat.titleTaskSessionID == nil, !releasingTitleClaim { chat.titleTaskSessionID = previous.titleTaskSessionID }
-                if previous.isBackgroundTask {
-                    chat.title = previous.title; chat.backgroundTask = previous.backgroundTask; chat.sourceSessionID = previous.sourceSessionID
-                    if chat.backgroundTaskNotice == nil { chat.backgroundTaskNotice = previous.backgroundTaskNotice }
-                    // How a request ended is written once; a copy read before then
-                    // (a path update) must not take it back.
-                    if chat.backgroundTaskStartedAt == nil { chat.backgroundTaskStartedAt = previous.backgroundTaskStartedAt }
-                    if chat.backgroundTaskEndedAt == nil { chat.backgroundTaskEndedAt = previous.backgroundTaskEndedAt }
-                    if chat.backgroundTaskOutcome == nil { chat.backgroundTaskOutcome = previous.backgroundTaskOutcome }
-                    if chat.backgroundTaskResult == nil { chat.backgroundTaskResult = previous.backgroundTaskResult }
-                }
-            }
-            if let topicID = chat.topicID {
-                let topic = try get(TopicRecord.self, kind: TopicRecord.recordKind, id: topicID)
-                if topic?.workspaceID != chat.workspaceID || topic?.isValid != true
-                    || chat.workspaceID == WorkspaceRecord.scratchID || chat.isBackgroundTask || chat.connectionTest == true {
-                    // A send/fork can finish after its group is removed. Keep
-                    // the durable path/model write and leave that chat ungrouped.
-                    chat.topicID = nil
-                }
-            }
+            // A chat's record is written from many places at once; what an
+            // older copy may not take back is in `ChatRecordMerge.swift`.
+            if let previous = try get(ChatRecord.self, kind: kind, id: id) { chat = chat.merged(over: previous, releasingTitleClaim: releasingTitleClaim) }
+            if let topicID = chat.topicID { chat = chat.fitting(topic: try get(TopicRecord.self, kind: TopicRecord.recordKind, id: topicID)) }
             data = try JSONEncoder().encode(chat)
         } else { data = try JSONEncoder().encode(value) }
         guard data.count <= 524_288 else { throw StoreError.invalidRecord }

@@ -168,16 +168,13 @@ struct WebhookFinishTracker {
             states = next
         } else if epoch != nextEpoch { states = nil }
         guard !baseline else { return nil }
-        let state = snapshot["state"]?.string ?? "idle"
-        switch state {
-        case "queued", "running", "stopping", "compacting": return nil
-        case "paused", "interrupted": pending = nil; return nil
-        default: break
-        }
+        let state = RunState(rawValue: snapshot["state"]?.string ?? "idle")
+        if state.isBusy { return nil }
+        if state.holdsQueue { pending = nil; return nil }
         guard let outcome = pending else { return nil }
-        if state != "error", (snapshot["queueCount"]?.number ?? 0) > 0 { return nil }
+        if state != .error, (snapshot["queueCount"]?.number ?? 0) > 0 { return nil }
         pending = nil
-        return state == "error" || snapshot["runStatus"]?.string == "failed" ? "failed" : outcome
+        return state == .error || snapshot["runStatus"]?.string == "failed" ? "failed" : outcome
     }
 }
 

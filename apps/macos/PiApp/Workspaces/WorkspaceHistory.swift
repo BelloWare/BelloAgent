@@ -167,9 +167,6 @@ extension WorkspaceModel {
         guard let id = sessionID ?? selectedID else { return false }
         return await loadHistoryPage(id, newer: false)
     }
-    // Compatibility for old callers; the source now chooses turn boundaries.
-    func ensurePageStartsAtTurn(sessionID: String, refreshAfterRepair: Bool = true) async { }
-
     @discardableResult func loadHistoryPage(_ id: String, newer: Bool) async -> Bool {
         guard let view = displays[id], let item = record(id), !view.historyState.loading else { return false }
         let boundary = newer ? view.newerPage : view.olderPage

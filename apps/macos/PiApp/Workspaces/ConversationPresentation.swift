@@ -127,11 +127,11 @@ extension SessionDisplay {
         if queue != run.queue { queue = run.queue }
         queuePaused = run.queuePaused
         if run.active {
-            state = "interrupted"; runStatus = "interrupted"; uncertain = true
+            runState = .interrupted; runStatus = "interrupted"; uncertain = true
             failureMessage = "The previous run was interrupted before it finished. No model or tool request was replayed. Inspect tool effects before continuing."
             notice = "Previous run interrupted. Outcome uncertain; nothing was replayed."
-        } else if state != "error" {
-            state = "paused"; runStatus = run.runStatus ?? "cancelled"
+        } else if runState != .error {
+            runState = .paused; runStatus = run.runStatus ?? "cancelled"
         }
     }
 }

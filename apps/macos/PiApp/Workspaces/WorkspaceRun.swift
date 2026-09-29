@@ -100,8 +100,8 @@ extension WorkspaceModel {
             // The state this send put up before the helper answered, and the
             // one it replaced. Only that write is ever undone, and only while
             // it is still showing: a snapshot may have moved the chat on since.
-            var shown: (state: String, replaced: String)?
-            @MainActor func undoShownState() { if let shown, view.state == shown.state { view.state = shown.replaced } }
+            var shown: (state: RunState, replaced: RunState)?
+            @MainActor func undoShownState() { if let shown, view.runState == shown.state { view.runState = shown.replaced } }
             do {
                 // A new chat's record is written before anything names it.
                 try await materializeChat(item.id)
@@ -137,7 +137,7 @@ extension WorkspaceModel {
                 // A new message shows the run starting at once. A steer joins
                 // a run that is already showing, and may reach the helper
                 // after it ended: it never puts "running" up itself.
-                if !steer, !view.busy { shown = ("running", view.state); view.state = "running" }
+                if !steer, !view.busy { shown = (.running, view.runState); view.runState = .running }
                 sendSteps?("dispatched")
                 let reply = try await host.request(steer ? "turn.steer" : "turn.submit", sessionID: item.id,
                                                    params: turnOverrides(for: item, base: ["text": .string(text), "clientTurnId": .string(turnID), "attachments": .array(attachments.map(\.wire)), "skills": .array(skills.map(\.wire))]), commandID: commandID)
@@ -208,8 +208,8 @@ extension WorkspaceModel {
                     // state it had when this was pressed may be long gone (a
                     // steer that lost the race with the end of the run found
                     // "running"); the helper's own snapshot says what it is.
-                    if rejection == "connection_unavailable" { view.state = "interrupted" } else { undoShownState(); refresh(item.id) }
-                } else if dispatched { view.uncertain = true; view.state = "interrupted" }
+                    if rejection == "connection_unavailable" { view.runState = .interrupted } else { undoShownState(); refresh(item.id) }
+                } else if dispatched { view.uncertain = true; view.runState = .interrupted }
                 else { undoShownState() }
             }
         }
@@ -294,12 +294,12 @@ extension WorkspaceModel {
             // unloaded, or its project was closed). Doing nothing would leave
             // the live bar and its Stop button up with nothing behind them.
             guard userInitiated, view.busy else { return }
-            view.state = "interrupted"; view.runStatus = "interrupted"; view.settleInterruptedRows()
+            view.runState = .interrupted; view.runStatus = "interrupted"; view.settleInterruptedRows()
             view.notice = "The helper is no longer running this chat, so there was nothing left to stop. Send again to start a new command."
             return
         }
-        view.state = "stopping"
+        view.runState = .stopping
         Task { do { _ = try await host.request("turn.stop", sessionID: item.id); refresh(item.id) }
-            catch { view.state = "interrupted"; view.uncertain = true; view.notice = error.localizedDescription } }
+            catch { view.runState = .interrupted; view.uncertain = true; view.notice = error.localizedDescription } }
     }
 }

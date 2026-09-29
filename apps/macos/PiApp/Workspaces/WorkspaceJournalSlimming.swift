@@ -53,12 +53,12 @@ extension WorkspaceModel {
         defer { for (workspaceID, host) in touched { scheduleIdle(workspaceID: workspaceID, host: host) } }
         for (candidate, _) in slimmingCandidates(marked: marked) {
             if waitForQuiet {
-                while !Task.isCancelled, !accountingStopped, !installPreparing,
+                while !Task.isCancelled, !isShutDown, !installPreparing,
                       launching || hasActiveWork || TranscriptIdleScheduler.shared.remainingInputQuietTime > 0 {
                     try? await Task.sleep(for: .seconds(2))
                 }
             }
-            guard !Task.isCancelled, !accountingStopped, !installPreparing else { return }
+            guard !Task.isCancelled, !isShutDown, !installPreparing else { return }
             // Whatever the reader has open, or may open any moment, waits.
             guard let chat = record(candidate.id), let path = chat.path, !opened.contains(chat.id), !isSessionOpening(chat.id),
                   chat.id != selectedID, sides[selectedID ?? ""]?.id != chat.id, displays[chat.id]?.hasWork != true,

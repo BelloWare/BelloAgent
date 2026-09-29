@@ -20,6 +20,7 @@ struct UnreadDot: View {
 /// cached-input and output tokens. The composer footer owns the separate
 /// context-size estimate.
 struct ChatRowStats: Equatable {
+    /// The chat's `RunState` as a string, or "tool" while its run waits on a tool.
     var state = "idle"
     /// The last run stopped at the chat's cost limit: a stop, not a failure.
     var costLimited = false
@@ -95,9 +96,9 @@ struct ChatRowStats: Equatable {
     }
     mutating func updateActivity(state: String, loading: Bool, activity: [String: WireValue]) {
         self.state = state; self.loading = loading
-        busy = ["queued", "running", "stopping", "compacting"].contains(state)
+        busy = RunState(rawValue: state).isBusy
         let phase = activity["phase"]?.string ?? ""
-        generating = busy && !loading && state != "stopping" && [1, 2].contains(activity["version"]?.number ?? 0)
+        generating = busy && !loading && RunState(rawValue: state) != .stopping && [1, 2].contains(activity["version"]?.number ?? 0)
             && activity["modelActive"]?.bool == true && ["model", "compacting"].contains(phase)
         if busy && phase == "tool" { self.state = "tool" }
     }
@@ -332,8 +333,8 @@ struct ChatRowMetrics: View {
     @ViewBuilder private var stateAndCost: some View {
         if (stats.busy || stats.loading) && !stats.generating {
             Text(PiSessionState.label(stats.state, loading: stats.loading)).foregroundStyle(Color.piWarning).fontWeight(.medium)
-        } else if ["error", "interrupted", "paused"].contains(stats.state) {
-            Text(PiSessionState.label(stats.state, costLimited: stats.costLimited)).foregroundStyle(stats.state == "paused" ? Color.piInfo : stats.costLimited ? Color.piWarning : Color.piDanger).fontWeight(.medium)
+        } else if RunState(rawValue: stats.state).isStopped {
+            Text(PiSessionState.label(stats.state, costLimited: stats.costLimited)).foregroundStyle(RunState(rawValue: stats.state) == .paused ? Color.piInfo : stats.costLimited ? Color.piWarning : Color.piDanger).fontWeight(.medium)
         }
         if let cost = stats.costLabel { Text(cost) }
     }
