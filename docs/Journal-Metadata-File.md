@@ -48,12 +48,29 @@ the whole journal once and writes the file.
 
 ## Older rows
 
-Rows before the checkpoint load from the journal the first time something
-reaches for them: a page past the loaded rows, a message read, search, a
-message's versions, an edit or a fork. The helper replays the whole journal and
-keeps the live rows, context, queue and run as they are; the app indexes the
-whole journal. Page cursors name rows by id, so a cursor from before stays
-valid.
+Rows before the checkpoint come from the journal the first time something
+reaches for them. Page cursors name rows by id, so a cursor from before stays
+valid. The app indexes the whole journal. The helper
+(`packages/swift-host/Sources/PiAgentCore/SessionOlderRows.swift`) does one of
+two things:
+
+- **A page past the loaded rows, a message read, a tool call's input, search
+  or a copied range.** The helper replays the whole journal once and keeps only
+  where each row it did not load is (`OlderRows`). It reads each row from the
+  journal when a read asks for it, as the replay would have made it. The chat
+  goes on holding only the rows it loaded. The few rows a replay changes after
+  reading their record, such as a progress row a compaction adopted, are held
+  whole. Every read answers as it did when every row was loaded. A row that is
+  no longer where the replay found it has every row loaded instead.
+- **A message's versions, an edit or a fork.** The helper replays the whole
+  journal and keeps every row, with the live rows, context, queue and run as
+  they are.
+
+In a 3,000-turn synthetic chat (61 MB, Release), paging past the loaded rows
+used to leave the helper holding about 139 MB more for as long as the chat was
+open. It now holds about 10 MB more. The first such page takes about 10% longer
+(1.43 s instead of 1.31 s). A search that matches nothing reads every row back
+from the journal: 0.34 s instead of 0.16 s.
 
 ## When it is not used
 

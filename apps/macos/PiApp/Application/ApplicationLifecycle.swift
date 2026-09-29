@@ -10,7 +10,11 @@ final class ApplicationLifecycle: NSObject, NSApplicationDelegate {
     /// Tests drive a quit without asking AppKit to end the test host.
     var answerTermination: ((Bool) -> Void)?
 
-    func applicationDidFinishLaunching(_ notification: Notification) { DismissedSheets.shared.start() }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        DismissedSheets.shared.start()
+        // History index files an earlier launch left behind, once nothing holds them.
+        Task.detached(priority: .utility) { HistoryIndexFiles.removeStale() }
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if terminating || asking { return .terminateLater }
@@ -60,6 +64,8 @@ final class ApplicationLifecycle: NSObject, NSApplicationDelegate {
                 // Stop does and are waited for, so a reply cut off mid-stream
                 // stays in the chat as an interrupted one.
                 await model.stopHostsAndWait()
+                // History indexes have files in the temporary folder.
+                await model.history.releaseIndexes()
                 model.shutdown()
                 answer(sender, true)
             } catch {

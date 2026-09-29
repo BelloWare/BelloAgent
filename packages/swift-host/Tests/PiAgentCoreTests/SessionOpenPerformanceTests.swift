@@ -36,6 +36,70 @@ final class SessionOpenPerformanceTests: XCTestCase {
         }
     }
 
+    /// The process's footprint, as Activity Monitor reports it: dirty memory
+    /// it holds, compressed included.
+    static func footprint() -> UInt64 {
+        var info = task_vm_info_data_t(), count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+        }
+        return result == KERN_SUCCESS ? info.phys_footprint : 0
+    }
+
+    /// `PI_PERF_MEMORY_JOURNAL` with `PI_PERF_MEMORY_MODE` (`partial`,
+    /// `paged`, `searched` or `full`): what one open chat holds, measured in a
+    /// process of its own so nothing earlier is counted. `partial` opens from
+    /// the metadata file, `paged` then pages back past the rows it loaded,
+    /// `searched` searches every row for words none has, and `full` opens
+    /// without the metadata file. Held memory is read after two idle seconds,
+    /// once freed memory has gone back to the system.
+    func testMemoryOfOneOpenChat() async throws {
+        guard let kept = ProcessInfo.processInfo.environment["PI_PERF_MEMORY_JOURNAL"],
+              let mode = ProcessInfo.processInfo.environment["PI_PERF_MEMORY_MODE"] else {
+            throw XCTSkip("Set PI_PERF_MEMORY_JOURNAL and PI_PERF_MEMORY_MODE.")
+        }
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let profile = try fixtureProfile(), path = URL(fileURLWithPath: kept), directory = path.deletingLastPathComponent()
+        let meta = JournalCheckpoint.url(for: path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: meta.path), "The journal needs its metadata file; run the partial mode once first")
+        let saved = mode == "full" ? try Data(contentsOf: meta) : nil
+        if mode == "full" { try FileManager.default.removeItem(at: meta) }
+        defer { if let saved { try? saved.write(to: meta) } }
+        malloc_zone_pressure_relief(nil, 0)
+        let baseline = Self.footprint()
+        let clock = ContinuousClock(), started = clock.now
+        let reader = try AgentSession(id: "long", profile: profile, apiKey: "fixture", cwd: root, directory: directory, readOnly: true,
+                                      resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: BulkTools(), traces: TraceStore(),
+                                      resumePath: path.path, autoCompaction: false)
+        _ = await reader.snapshot()
+        var peak = Self.footprint()
+        if mode == "paged" {
+            // Page back to the first page past the rows the open loaded.
+            var window = try await reader.historyWindow(["version": 2, "direction": "older"]), pages = 1
+            while await reader.partialHistory, await reader.olderIndex == nil, !window["older"].isNull, pages < 500 {
+                window = try await reader.historyWindow(["version": 2, "direction": "older", "cursor": window["older"]]); pages += 1
+            }
+            peak = max(peak, Self.footprint())
+        }
+        if mode == "searched" {
+            let searchStarted = clock.now
+            let found = try await reader.contentSearch(["query": "no such words anywhere", "start": 0])
+            let again = clock.now
+            _ = try await reader.contentSearch(["query": "no such words anywhere", "start": 0])
+            print("PERF search: first \((again - searchStarted).formatted(.units(allowed: [.milliseconds]))), again \((clock.now - again).formatted(.units(allowed: [.milliseconds]))), \(found["total"].int ?? 0) rows")
+            peak = max(peak, Self.footprint())
+        }
+        let took = clock.now - started
+        try await Task.sleep(for: .seconds(2))
+        malloc_zone_pressure_relief(nil, 0)
+        let held = Self.footprint()
+        let partial = await reader.partialHistory, older = await reader.olderRows, rows = await reader.visible.count
+        print(String(format: "PERF one chat (%@): peak +%.1f MB, held +%.1f MB after idle; %d rows held, %d older rows not loaded, partial %@, took %@",
+                     mode, Double(Int64(peak) - Int64(baseline)) / 1_048_576, Double(Int64(held) - Int64(baseline)) / 1_048_576, rows, older, partial ? "yes" : "no",
+                     took.formatted(.units(allowed: [.milliseconds]))))
+        await reader.close()
+    }
+
     /// `PI_PERF_SLIM_JOURNAL`: a journal kept with `PI_PERF_KEEP_JOURNAL`,
     /// written again with every run-state record whole, as before 0.1.111,
     /// then slimmed (`JournalSlimming`): its size and a full open, before and
