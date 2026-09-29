@@ -13,12 +13,12 @@ final class WorkspaceFollowupTests: XCTestCase {
     @MainActor private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
         (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants(type, in: $0) }
     }
+    /// The suite's one wait (`eventually`). A hundred polls of 20 ms, about
+    /// two seconds, ran out in the parallel lane's load while the scratch
+    /// chat's composer mounted (the 0.1.115 gate); the time is now read from
+    /// a clock, with the suite's allowance.
     @MainActor private func waitFor(_ message: String = "Conversation view did not settle", file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool) async throws {
-        for _ in 0..<100 {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        XCTFail(message, file: file, line: line)
+        try await eventually(message, file: file, line: line, condition)
     }
 
     @MainActor func testScratchChatRendersComposerAndPreparesToolFreeRequestWithoutProject() async throws {
