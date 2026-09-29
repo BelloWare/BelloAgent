@@ -129,13 +129,17 @@ extension AgentSession {
         for entry in projection.settled { versions[entry.id]=entry.version }
         sentVersions=versions; sentStreaming=projection.streaming
     }
-    func displayMessage(_ message: ChatMessage) -> JSON {
+    /// `results` pairs the calls of a row this chat did not load
+    /// (`displayShown`); a loaded row's are in `toolHistory`.
+    func displayMessage(_ message: ChatMessage, results: [String: ChatMessage]? = nil) -> JSON {
         var states: [String: JSON] = [:]
         for call in message.content where call["type"].text == "toolCall" {
             guard let id = call["id"].text else { continue }
             if toolStateOwners[id] == message.id, let live = toolStates[id] { states[id] = live; continue }
-            guard let index = toolHistory.results[message.id]?[id], history.indices.contains(index) else { continue }
-            let result = history[index], output = result.text
+            let result: ChatMessage
+            if let results { guard let found = results[id] else { continue }; result = found }
+            else { guard let index = toolHistory.results[message.id]?[id], history.indices.contains(index) else { continue }; result = history[index] }
+            let output = result.text
             // The recorded outcome decides the card, as it did live: unknown
             // after an interruption, cancelled when the call never ran. Old
             // journals have no outcome or execution clock; they keep their

@@ -172,6 +172,17 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // Only the sidebar with the archive switch on.
+        if testEnvironment("PI_APP_UI_GALLERY_ARCHIVE_ONLY") == "1" {
+            let topic = try await model.createTopic(in: workspace.id, title: "Payments")
+            try await model.moveSessions([second.id], in: workspace.id, toTopic: topic.id)
+            try await captureArchiveScene(model: model, window: window, gallery: gallery, appearances: appearances, workspaceID: workspace.id,
+                                          profileID: connections[0].profile.id, topicID: topic.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         if testEnvironment("PI_APP_UI_GALLERY_WEBHOOK_ONLY") == "1" {
             try await captureWebhookScenes(model: model, window: window, gallery: gallery, appearances: appearances, chatID: main.id)
             XCTAssertNil(model.error, model.error ?? "")
@@ -497,6 +508,8 @@ final class UIScreenshotTests: XCTestCase {
         model.clearSessionMarks()
         UserDefaults.standard.set(Double(WindowChrome.sidebarWidth), forKey: "sidebarWidth")
         try await settle(0.8)
+        try await captureArchiveScene(model: model, window: window, gallery: gallery, appearances: appearances, workspaceID: workspaceID,
+                                      profileID: try XCTUnwrap(model.record(mainID)?.profileID), topicID: topic?.id)
 
         // 15 · The error strip over a chat: a gateway failure with a long body.
         model.error = "The gateway refused the request: 400 invalid_request_error — the model \"fixture-fast\" does not accept a 300000-token output limit on this route. Reduce the output budget in Settings, or choose a model whose catalog ceiling covers it, then send again."
@@ -510,6 +523,30 @@ final class UIScreenshotTests: XCTestCase {
         try await pair("16b-window-wide")
         window.setContentSize(NSSize(width: 1440, height: 900)); window.center(); try await settle(0.8)
         XCTAssertNil(model.error, model.error ?? "")
+    }
+
+    /// 14c · The archive switch on: each group of every project lists its
+    /// archived chats after its active ones, under an "Archived" heading. One
+    /// archived chat in the topic, one at the project's root and one in the
+    /// other project. They stay archived, and with the switch off again the
+    /// scenes after this one are as they were.
+    @MainActor private func captureArchiveScene(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                appearances: [(String, NSAppearance.Name)], workspaceID: String,
+                                                profileID: String, topicID: String?) async throws {
+        let other = try XCTUnwrap(model.workspaces.first { $0.id != workspaceID }?.id, "The gallery's second project")
+        for (title, project, topic) in [("Refund edge cases", workspaceID, topicID), ("Spike: jittered backoff", workspaceID, nil),
+                                        ("Old palette exploration", other, nil)] {
+            let chat = ChatRecord(id: UUID().uuidString, workspaceID: project, title: title, path: nil, profileID: profileID)
+            model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+            if let topic { try await model.moveSessions([chat.id], in: project, toTopic: topic) }
+            try await model.setSessionArchived(chat.id, archived: true)
+        }
+        model.setArchivedChatsShown(true)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+            try capture(window, to: gallery.appendingPathComponent("14c-sidebar-archive-\(name).png"))
+        }
+        model.setArchivedChatsShown(false); try await settle(0.8)
     }
 
     /// 17 · Skills rendered inline: two selected skills leading the

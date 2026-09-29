@@ -6,7 +6,6 @@ import AppKit
 /// checkboxes, amend and discard; the history with filters and ref badges;
 /// and a unified or side-by-side diff of whatever is selected.
 struct GitPanelView: View {
-    @ObservedObject var model: WorkspaceModel
     @StateObject private var controller: GitController
     @Environment(\.dismiss) private var dismiss
     @State private var newBranchName = ""
@@ -18,9 +17,13 @@ struct GitPanelView: View {
     /// refused by another question about discarding.
     @StateObject private var questions = PiQuestion()
 
-    init(model: WorkspaceModel, roots: [String]) {
-        self.model = model
+    init(roots: [String]) {
         _controller = StateObject(wrappedValue: GitController(roots: roots))
+    }
+    /// A panel over a controller made elsewhere: the tests that time the
+    /// sheet drive its controller directly.
+    init(controller: @autoclosure @escaping () -> GitController) {
+        _controller = StateObject(wrappedValue: controller())
     }
 
     var body: some View {
@@ -28,7 +31,11 @@ struct GitPanelView: View {
             VStack(spacing: 0) {
                 toolbar
                 Rectangle().fill(Color.piHairline).frame(height: 1)
-                if controller.repositoryRoot == nil && !controller.loading {
+                // The layout the panel keeps is there from its first frame. A
+                // sheet whose first frame said "Not a git repository", in the
+                // moment before its first read, reported layout cycles on every
+                // update after the panel took its place, until it closed.
+                if controller.statusRead && controller.repositoryRoot == nil && !controller.loading {
                     notARepository
                 } else {
                     HStack(spacing: 0) {
@@ -193,7 +200,7 @@ struct GitPanelView: View {
         VStack(spacing: 0) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
-                    if controller.status.entries.isEmpty {
+                    if controller.statusRead && controller.status.entries.isEmpty {
                         Text("No changes. The working tree matches HEAD.").font(PiFont.caption).foregroundStyle(Color.piInkSecondary).padding(PiSpacing.lg)
                     }
                     if !controller.staged.isEmpty {

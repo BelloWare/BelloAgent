@@ -412,7 +412,7 @@ extension SessionReadStateTests {
         model.selectedID = "other"
         model.markRunFailed(sessionID: "chat")
         XCTAssertTrue(model.projectHasUnread(project.id))
-        let header = model.topicGroupContents(in: project, topic: model.topics[0], archived: false, filter: "", sidebarWidth: 300, namesConnection: false).header
+        let header = model.topicGroupContents(in: project, topic: model.topics[0], includesArchive: false, filter: "", sidebarWidth: 300, namesConnection: false).header
         XCTAssertTrue(header.hasUnread, "The topic's header shows the failed chat inside it")
         try await close(model, root: root)
     }

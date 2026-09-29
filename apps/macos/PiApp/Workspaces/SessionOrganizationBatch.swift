@@ -86,7 +86,7 @@ extension WorkspaceModel {
                         let destination = SessionOrganizationSelection.afterArchive(selected: selected, targets: targets,
                             archived: patched, records: chats)
                         if destination != selected, let item = record(destination) {
-                            await select(destination, preserveArchiveFilter: item.isArchived)
+                            await select(destination, preserveArchiveSwitch: item.isArchived)
                         }
                     }
                 case .archived(false):

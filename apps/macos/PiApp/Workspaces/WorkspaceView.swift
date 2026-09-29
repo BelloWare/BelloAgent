@@ -115,7 +115,7 @@ struct WorkspaceView: View {
         .sheet(item: $model.topicEditor) { target in TopicSheet(model: model, target: target) }
         .sheet(item: $model.webhookPreviewTarget) { target in WebhookPreviewSheet(model: model, chatID: target.id) }
         .sheet(isPresented: $model.showGit) {
-            if let project = model.workspaces.first(where: { $0.id == (model.gitWorkspaceID ?? model.selectedWorkspaceID) }) { GitPanelView(model: model, roots: project.roots) }
+            if let project = model.workspaces.first(where: { $0.id == (model.gitWorkspaceID ?? model.selectedWorkspaceID) }) { GitPanelView(roots: project.roots) }
         }
         .frame(minWidth: 920, minHeight: 600)
         .background(WindowActivityGuard(model: model))

@@ -234,7 +234,8 @@ enum InspectorLoad<Value> {
             }
             conversation = .loading(loaded: 0, total: 0)
             document = try await requestDocument(row, source: source) { [weak self] loaded, total in
-                guard let self, self.row?.id == row.id, self.conversation.loading else { return }
+                guard let self, self.row?.id == row.id, case .loading(let shown, let known) = self.conversation,
+                      known == 0 || CapturedBodyReader.progressWorthShowing(loaded, of: total, shown: shown) else { return }
                 self.conversation = .loading(loaded: loaded, total: total)
             }
             try Task.checkCancellation()
@@ -270,7 +271,8 @@ enum InspectorLoad<Value> {
         }
         bodyReads += 1
         let (bytes, described) = try await CapturedBodyReader.readBytes(kind: "response", source: source) { [weak self] loaded, total in
-            guard let self, self.row?.id == row.id, self.response.loading else { return }
+            guard let self, self.row?.id == row.id, case .loading(let shown, let known) = self.response,
+                  known == 0 || CapturedBodyReader.progressWorthShowing(loaded, of: total, shown: shown) else { return }
             self.response = .loading(loaded: loaded, total: total)
         }
         let document = try await CapturedBodyWorker.shared.run { try ResponseDocument.parse(bytes) }

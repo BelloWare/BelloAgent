@@ -64,9 +64,10 @@ struct MetricsFooter: View {
     /// fast, what it consumed, and how full the window is. Each pill opens the
     /// Session Inspector where its figure is explained.
     private func pills(compact: Bool) -> some View {
-        SessionStatsPills(model: model, session: session, footer: footer,
+        SessionStatsPills(session: session, footer: footer, context: model.displayedContext(session),
                           selectedContextWindow: selectedContextWindow, compact: compact,
                           open: { [weak model, id = session.id] focus in model?.openInspector(session: id, focus: focus) })
+            .equatable()
     }
     // A notice is the one line here that tells the reader what to do next
     // ("Run cancelled. Pending messages are paused; resume below"). Capped at

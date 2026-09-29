@@ -8,7 +8,7 @@ final class ProjectSidebarTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }
-    @MainActor func testProjectDisclosureAndArchiveFiltersPersistIndependentlyWithoutStoppingWork() async throws {
+    @MainActor func testProjectDisclosurePersistsAndTheArchiveSwitchStopsNoWork() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
@@ -21,17 +21,18 @@ final class ProjectSidebarTests: XCTestCase {
         model.displays[record.id] = display; model.selected = display; model.opened.insert(record.id)
         XCTAssertTrue(model.projectIsExpanded(first.id)); XCTAssertTrue(model.projectIsExpanded(second.id))
         model.setProjectExpanded(first.id, expanded: false)
-        model.setProjectArchiveFilter(second.id, archived: true)
+        model.setArchivedChatsShown(true)
         await model.flushProjectSidebarState()
         XCTAssertTrue(model.projectSidebarWrites.isEmpty); XCTAssertTrue(model.dirtyProjectSidebarStates.isEmpty)
         XCTAssertFalse(model.projectIsExpanded(first.id)); XCTAssertTrue(model.projectIsExpanded(second.id))
-        XCTAssertFalse(model.projectShowsArchive(first.id)); XCTAssertTrue(model.projectShowsArchive(second.id))
+        XCTAssertTrue(model.sidebarShowsArchived, "One switch for the whole sidebar")
+        XCTAssertNil(model.projectSidebarStates[second.id], "and no project's own preference")
         XCTAssertEqual(model.selectedID, record.id); XCTAssertTrue(model.selected === display)
         XCTAssertEqual(display.state, "running"); XCTAssertEqual(display.queueCount, 1); XCTAssertEqual(display.draft, "Unsent")
         XCTAssertTrue(model.opened.contains(record.id)); XCTAssertTrue(model.hosts.isEmpty)
         model.projectSidebarStates = [:]
         try await model.restoreProjectSidebarStates()
-        XCTAssertFalse(model.projectIsExpanded(first.id)); XCTAssertTrue(model.projectShowsArchive(second.id))
+        XCTAssertFalse(model.projectIsExpanded(first.id)); XCTAssertTrue(model.projectIsExpanded(second.id))
         // Rapid alternating toggles settle to the latest durable state.
         for value in [true, false, true, false] { model.setProjectExpanded(first.id, expanded: value) }
         await model.flushProjectSidebarState()
@@ -68,8 +69,9 @@ final class ProjectSidebarTests: XCTestCase {
         model.setProjectExpanded("first", expanded: false); model.setProjectExpanded("second", expanded: false)
         await model.select(target.id, revealInSidebar: false)
         XCTAssertFalse(model.projectIsExpanded("first"), "Startup must keep the saved disclosure state")
+        XCTAssertFalse(model.showArchivedSessions, "and the archive switch as the reader left it")
         await model.select(target.id)
-        XCTAssertTrue(model.projectIsExpanded("first")); XCTAssertTrue(model.projectShowsArchive("first"))
+        XCTAssertTrue(model.projectIsExpanded("first")); XCTAssertTrue(model.showArchivedSessions, "An archived chat revealed turns the archive switch on")
         XCTAssertFalse(model.projectIsExpanded("second")); XCTAssertTrue(model.record(target.id)?.isArchived == true)
         await model.flushProjectSidebarState(); await model.store?.close()
     }
@@ -201,9 +203,9 @@ final class ProjectSidebarTests: XCTestCase {
         model.sides[parent.id] = SideRecord(id: child.id, parentID: parent.id, workspaceID: "w", profileID: "p", title: child.title, kept: true)
         model.selectedID = parent.id; model.selected = parentView; model.focusedSessionID = child.id
         try await model.setSessionArchived(child.id, archived: true)
-        XCTAssertFalse(model.projectShowsArchive("w"), "Archiving never jumps the sidebar into the archive"); XCTAssertEqual(model.selectedID, parent.id); XCTAssertEqual(model.focusedSessionID, child.id)
+        XCTAssertFalse(model.sidebarShowsArchived, "Archiving never turns the archive switch on"); XCTAssertEqual(model.selectedID, parent.id); XCTAssertEqual(model.focusedSessionID, child.id)
         await model.selectSide(child.id)
-        XCTAssertTrue(model.projectShowsArchive("w")); XCTAssertEqual(model.focusedSessionID, child.id)
+        XCTAssertTrue(model.sidebarShowsArchived, "Selecting the archived side lists the archive, where its row is"); XCTAssertEqual(model.focusedSessionID, child.id)
         XCTAssertEqual(model.sidebarEntries(in: "w", archived: true, collapsed: []).map(\.id), [child.id])
         XCTAssertFalse(model.record(parent.id)?.isArchived ?? true); XCTAssertTrue(model.record(child.id)?.isArchived == true)
         await model.flushProjectSidebarState(); await model.store?.close()

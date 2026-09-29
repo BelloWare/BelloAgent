@@ -31,6 +31,8 @@ struct RememberedSelection: Codable, Sendable, Equatable {
     var reportOpen: Bool?
     /// True when the window showed the Background requests page.
     var backgroundRequestsOpen: Bool?
+    /// True when the sidebar's archive switch was on.
+    var showArchivedChats: Bool?
     var revision: Int64 = 0
 
     /// The same chat, project, sides and focus, whenever each was written.
@@ -59,14 +61,15 @@ struct RememberedSelection: Codable, Sendable, Equatable {
 /// Sidebar groups opened for this launch only, so the row of the chat a
 /// relaunch put back on screen can be seen. Never written: the collapse and
 /// archive choices the reader saved stay what they chose, and the first time
-/// they touch one of these groups themselves, their choice is what shows.
+/// they touch one of these themselves, their choice is what shows.
 struct SidebarLaunchReveal: Equatable {
     /// Collapsed projects shown open.
     var projects: Set<String> = []
     /// Collapsed topics shown open.
     var topics: Set<String> = []
-    /// Projects showing the other of their two lists: true for the archive.
-    var archive: [String: Bool] = [:]
+    /// The archived chats listed while the archive switch is off: the chat
+    /// the relaunch reopened is one of them.
+    var archivedChats = false
 }
 
 extension WorkspaceModel {
@@ -90,6 +93,7 @@ extension WorkspaceModel {
         value.shownSides = rememberedSides.isEmpty ? nil : rememberedSides
         value.reportOpen = page == .report ? true : nil
         value.backgroundRequestsOpen = page == .background ? true : nil
+        value.showArchivedChats = showArchivedSessions ? true : nil
         return value
     }
 
@@ -197,6 +201,7 @@ extension WorkspaceModel {
     /// chat the reader opens from the first painted row brings its side back.
     func adoptRememberedSelection(_ remembered: RememberedSelection?) {
         rememberedSelection = remembered
+        if remembered?.showArchivedChats == true { showArchivedSessions = true }
         savedSelectionRevision = remembered?.revision ?? 0
         rememberedSides = (remembered?.shownSides ?? [:]).filter { parent, side in
             chatRecord(parent) != nil && chatRecord(side).map { $0.parentSessionID == parent && !$0.imported } == true
@@ -262,25 +267,33 @@ extension WorkspaceModel {
     }
 
     /// Opens, for this launch only, whatever hides the reopened chat's row:
-    /// its collapsed project or topic, or the other of the project's two
-    /// lists. Nothing is written.
+    /// its collapsed project or topic, or the archived chats while the
+    /// archive switch is off. Nothing is written.
     func revealForLaunch(_ item: ChatRecord) {
         guard sidebarProjects.contains(where: { $0.id == item.workspaceID }) else { return }
         var reveal = SidebarLaunchReveal()
         let saved = projectSidebarStates[item.workspaceID]
         if saved?.expanded == false { reveal.projects.insert(item.workspaceID) }
-        if (saved?.archived ?? false) != item.isArchived { reveal.archive[item.workspaceID] = item.isArchived }
+        if item.isArchived && !showArchivedSessions { reveal.archivedChats = true }
         if let topicID = effectiveTopicID(for: item), topics.first(where: { $0.id == topicID })?.expanded == false {
             reveal.topics.insert(topicID)
         }
         if reveal != launchReveal { launchReveal = reveal }
     }
 
-    /// The reader chose this project's disclosure or list themselves.
+    /// The reader chose this project's disclosure themselves.
     func forgetLaunchReveal(project id: String) {
-        guard launchReveal.projects.contains(id) || launchReveal.archive[id] != nil else { return }
+        guard launchReveal.projects.contains(id) else { return }
         var next = launchReveal
-        next.projects.remove(id); next.archive[id] = nil
+        next.projects.remove(id)
+        launchReveal = next
+    }
+
+    /// The reader chose whether the archive is listed themselves.
+    func forgetLaunchRevealOfArchive() {
+        guard launchReveal.archivedChats else { return }
+        var next = launchReveal
+        next.archivedChats = false
         launchReveal = next
     }
 

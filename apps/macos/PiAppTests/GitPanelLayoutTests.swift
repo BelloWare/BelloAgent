@@ -98,8 +98,7 @@ final class GitPanelLayoutTests: GitPanelTestCase {
         print(String(format: "PERF 200 passes over a 3000-file changes list read its splits in %.1f ms", reads))
         XCTAssertLessThan(reads, 60, "the list is split when the status is read, not on every pass over the body")
 
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent(".state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        let window = host(GitPanelView(model: model, roots: [root.path]))
+        let window = host(GitPanelView(roots: [root.path]))
         defer { window.contentView = nil; window.close() }
         let layout = milliseconds {
             window.contentView?.layoutSubtreeIfNeeded()

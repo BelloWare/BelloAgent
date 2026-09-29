@@ -18,6 +18,10 @@ import AppKit
     @Published var panel = Panel.changes { didSet { if panel == .changes, oldValue != .changes, selectedDiffStale { startSelectedDiffLoad(silently: true) } } }
     @Published private(set) var status = GitRepositoryStatus() { didSet { splitStatus() } }
     @Published private(set) var loading = false
+    /// A read has said whether the folder is a repository and, when it is,
+    /// what changed in it. Until then the panel keeps its own layout, empty,
+    /// and says neither "Not a git repository" nor "No changes".
+    @Published private(set) var statusRead = false
     @Published private(set) var notice = ""
     @Published var selection: Selection? { didSet { if selection != oldValue { startSelectedDiffLoad() } } }
     @Published private(set) var diff: [GitDiffFile] = []
@@ -216,7 +220,7 @@ import AppKit
         publish(\.repositoryRoot, top)
         updateWatch(on: top)
         guard let top else {
-            publish(\.status, GitRepositoryStatus()); publish(\.diff, []); publish(\.commits, [])
+            publish(\.status, GitRepositoryStatus()); publish(\.statusRead, true); publish(\.diff, []); publish(\.commits, [])
             publish(\.selection, nil); publish(\.selectedCommit, nil); publish(\.detail, nil); return
         }
         do {
@@ -227,7 +231,7 @@ import AppKit
             if Self.statusReadDelay > .zero { try? await Task.sleep(for: Self.statusReadDelay); guard !Task.isCancelled else { return } }
             let status = try await service.status(in: top)
             guard current(generation) else { return }
-            publish(\.status, status)
+            publish(\.status, status); publish(\.statusRead, true)
             let paths = Set(status.entries.map(\.path))
             // Files arrive ticked until the reader says otherwise; once they
             // have, a refresh never ticks anything back on. Unticking every

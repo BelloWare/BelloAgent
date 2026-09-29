@@ -122,12 +122,17 @@ struct SessionRequestLedgerView: View {
                         .frame(maxWidth: .infinity, minHeight: 60)
                 } else {
                     header
-                    ForEach(shown) { row in
-                        Rectangle().fill(Color.piHairline).frame(height: 1)
-                        if let open {
-                            Button { open(row.id) } label: { line(row).contentShape(Rectangle()) }
-                                .buttonStyle(SessionLedgerRowStyle()).help("Open request \(row.number)")
-                        } else { line(row) }
+                    // Built as they scroll into view. The ledger sits under the
+                    // charts, off screen as the Overview opens, and building its
+                    // forty rows was most of what opening the page cost.
+                    LazyVStack(alignment: .leading, spacing: PiSpacing.sm) {
+                        ForEach(shown) { row in
+                            Rectangle().fill(Color.piHairline).frame(height: 1)
+                            if let open {
+                                Button { open(row.id) } label: { line(row).contentShape(Rectangle()) }
+                                    .buttonStyle(SessionLedgerRowStyle()).help("Open request \(row.number)")
+                            } else { line(row) }
+                        }
                     }
                 }
                 Text(ledger.coverageNote).font(PiFont.micro).foregroundStyle(Color.piInkTertiary)
@@ -146,7 +151,8 @@ struct SessionRequestLedgerView: View {
     }
 
     private func line(_ row: SessionRequestLedgerRow) -> some View {
-        HStack(alignment: .top, spacing: PiSpacing.sm) {
+        SessionStatsRenderCount.ledgerRowBuilt()
+        return HStack(alignment: .top, spacing: PiSpacing.sm) {
             Text("\(row.number)").font(PiFont.caption.monospacedDigit()).foregroundStyle(Color.piInkTertiary).frame(width: 30, alignment: .leading)
             VStack(alignment: .leading, spacing: 1) {
                 Text(row.status).font(PiFont.caption).foregroundStyle(row.status == "completed" ? Color.piInk : Color.piWarning).lineLimit(1)

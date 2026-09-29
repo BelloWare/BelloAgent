@@ -43,23 +43,8 @@ extension AgentSession {
         var rows: [ChatMessage] = []
         rows.reserveCapacity(checkpoint.rows.count)
         for row in checkpoint.rows {
-            guard let bytes = JournalCheckpoint.rowBytes(row, in: file), let record = try? JSON.parse(bytes) else { return nil }
-            switch row.kind {
-            case .message:
-                guard record["type"].text == "message", record["id"].text == row.id, let message = try? ChatMessage(id: row.id, pi: record["message"]) else { return nil }
-                rows.append(message)
-            case .update:
-                guard record["customType"].text == "pi-app.presentation.update.v1", record["data"]["id"].text == row.id,
-                      var message = try? ChatMessage(id: row.id, pi: record["message"]) else { return nil }
-                message.replayEligible = false
-                rows.append(message)
-            case .compaction:
-                guard record["type"].text == "compaction", record["id"].text == row.id, let summary = try? CompactionCheckpoint.summary(record) else { return nil }
-                rows.append(summary)
-            case .branch:
-                guard record["type"].text == "branch", record["id"].text == row.id else { return nil }
-                rows.append(branchMarker(row.id))
-            }
+            guard let message = journalRow(row, in: file) else { return nil }
+            rows.append(message)
         }
         // A compaction record adopts its progress row, as the replay does,
         // unless that row was replaced after it.
@@ -85,13 +70,40 @@ extension AgentSession {
         return (rows, context, state, stateLine)
     }
 
+    /// The row the record at `row` holds, as a replay makes it from that
+    /// record; nil when the record there is not the one named.
+    static func journalRow(_ row: JournalCheckpoint.Row, in file: FileHandle) -> ChatMessage? {
+        JournalCheckpoint.rowBytes(row, in: file).flatMap { journalRow(row, bytes: $0) }
+    }
+    static func journalRow(_ row: JournalCheckpoint.Row, bytes: Data) -> ChatMessage? {
+        guard let record = try? JSON.parse(bytes) else { return nil }
+        switch row.kind {
+        case .message:
+            guard record["type"].text == "message", record["id"].text == row.id else { return nil }
+            return try? ChatMessage(id: row.id, pi: record["message"])
+        case .update:
+            guard record["customType"].text == "pi-app.presentation.update.v1", record["data"]["id"].text == row.id,
+                  var message = try? ChatMessage(id: row.id, pi: record["message"]) else { return nil }
+            message.replayEligible = false
+            return message
+        case .compaction:
+            guard record["type"].text == "compaction", record["id"].text == row.id else { return nil }
+            return try? CompactionCheckpoint.summary(record)
+        case .branch:
+            guard record["type"].text == "branch", record["id"].text == row.id else { return nil }
+            return branchMarker(row.id)
+        }
+    }
+
     /// Loads every row a chat opened from its metadata file left in the
     /// journal (shown rows before the loaded ones, and earlier versions an
     /// edit hid): the whole journal replayed, as a full open does. The model
     /// context, the queue and the run stay the live ones; the rows, their
     /// versions, and the links and task records they carry come from the
     /// journal, which holds every record this chat has written. A row loaded
-    /// already keeps its live content.
+    /// already keeps its live content. An edit, a fork and a version read
+    /// need this; a read of older rows reads them where they are instead
+    /// (`loadOlderRows`).
     func ensureFullHistory() throws {
         guard partialHistory, let journal else { return }
         let replayed = try Self.replay(journal, url: journal.url, id: id, binding: profile.binding, spendTracked: spendTracked, resume: false)
@@ -101,17 +113,21 @@ extension AgentSession {
         versions = replayed.versions
         pendingRequestLinks = replayed.pendingRequestLinks
         rowSpans = replayed.rowSpans
-        let liveTasks = Dictionary(recentTaskPresentations.map { ($0.key, $0) }, uniquingKeysWith: { _, latest in latest })
-        var tasks = replayed.recentTaskPresentations.map { liveTasks[$0.key] ?? $0 }
-        for task in recentTaskPresentations where !tasks.contains(where: { $0.key == task.key }) { tasks.append(task) }
-        let shown = Set(visible.map(\.id))
-        tasks.removeAll { $0.lastSourceID.map { !shown.contains($0) } ?? true }
-        if tasks.count > 64 { tasks.removeFirst(tasks.count - 64) }
-        recentTaskPresentations = tasks
+        recentTaskPresentations = mergedTasks(replayed.recentTaskPresentations, shown: Set(visible.map(\.id)))
         toolHistory = ToolHistoryIndex(history)
-        olderRows = 0; partialHistory = false; checkpointLineage = nil; cachedPresentationTimeline = nil
+        olderRows = 0; partialHistory = false; checkpointLineage = nil; cachedPresentationTimeline = nil; olderIndex = nil
         spansScannedTo = journal.size
         invalidateDisplay(allRows: true)
+    }
+    /// The task records of a replay of the whole journal, with the live ones
+    /// kept: those of shown rows, the latest 64.
+    func mergedTasks(_ replayed: [TaskPresentationRecord], shown: Set<String>) -> [TaskPresentationRecord] {
+        let liveTasks = Dictionary(recentTaskPresentations.map { ($0.key, $0) }, uniquingKeysWith: { _, latest in latest })
+        var tasks = replayed.map { liveTasks[$0.key] ?? $0 }
+        for task in recentTaskPresentations where !tasks.contains(where: { $0.key == task.key }) { tasks.append(task) }
+        tasks.removeAll { $0.lastSourceID.map { !shown.contains($0) } ?? true }
+        if tasks.count > 64 { tasks.removeFirst(tasks.count - 64) }
+        return tasks
     }
 
     /// Writes the metadata file for a chat that just set its model context
