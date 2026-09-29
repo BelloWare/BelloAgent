@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.114
-    CURRENT_PROJECT_VERSION: 118
+    MARKETING_VERSION: 0.1.115
+    CURRENT_PROJECT_VERSION: 119
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "Faster redraws, chats drawn once where they stay, a native Changes diff, sheets that let go when closed, one Archive switch and a Background requests page."
+    RELEASE_MESSAGE: "A sides panel at the window's right edge, newer rows that load by themselves, and a reply that no longer stops halfway."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO
