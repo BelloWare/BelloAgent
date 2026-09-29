@@ -1218,10 +1218,18 @@ final class TranscriptNativeScrollView: NSScrollView {
         let size = CGSize(width: width, height: y + 13)
         if frame.size != size { setFrameSize(size) }
         enclosingScrollView?.transcriptReading.geometryChanged()
+        // A page that is placing itself lands in this pass, before anything
+        // is drawn (`TranscriptPage.layoutPlacement`).
+        var placed = false
+        if let scroll = enclosingScrollView, let target = page?.layoutPlacement(contentHeight: size.height, viewportHeight: scroll.contentView.bounds.height) {
+            let clip = scroll.contentView
+            if abs(clip.bounds.minY - target) > 0.5 { scroll.transcriptReading.setOrigin(NSPoint(x: clip.bounds.origin.x, y: target)) }
+            placed = true
+        }
         // A long chat that opens at its newest row is parked there before
         // anything is drawn. Otherwise the reader sees the top of the history
         // for a frame and the page has to measure both ends of it.
-        if parking, let scroll = enclosingScrollView {
+        if parking, !placed, let scroll = enclosingScrollView {
             let clip = scroll.contentView
             let bottom = max(0, size.height - clip.bounds.height)
             if clip.bounds.minY < bottom - 0.5 {

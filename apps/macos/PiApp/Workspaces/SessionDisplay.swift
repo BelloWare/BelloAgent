@@ -434,6 +434,13 @@ struct TranscriptVersionView: Equatable, Sendable {
     var pinnedHistoryIDs: Set<String> = []
     var scrollAnchor: TranscriptAnchor?
     @Published var viewportRequest = 0
+    /// Whether the newest `viewportRequest` opens the chat — its first page
+    /// read in, or its rows shown again on a revisit — rather than taking
+    /// the reader somewhere they asked to go. An opening starts where any
+    /// chat the reader opens starts (at the question of its last turn, when
+    /// that turn is taller than the pane); a jump lands where it was asked
+    /// to. Every site that asks sets it, just before asking.
+    var viewportRequestOpens = false
     let footer = SessionMetrics()
     var context: [String: WireValue] { get { footer.context } set { footer.context = newValue } }
     func observeContext(_ snapshot: [String: WireValue], baseline: Bool = false) {

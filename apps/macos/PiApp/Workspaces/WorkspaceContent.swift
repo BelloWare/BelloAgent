@@ -117,7 +117,7 @@ extension WorkspaceModel {
         guard let messageID else { return true }
         var expectedMessageIDs = view.messages.map(\.id)
         if view.messages.contains(where: { $0.id == messageID }) {
-            view.scrollAnchor = .init(id: messageID, offset: 0, followsBottom: false); view.viewportRequest += 1; anchorChanged(view)
+            view.scrollAnchor = .init(id: messageID, offset: 0, followsBottom: false); view.viewportRequestOpens = false; view.viewportRequest += 1; anchorChanged(view)
             return true
         }
         func current() -> Bool {
@@ -151,7 +151,7 @@ extension WorkspaceModel {
                 expectedMessageIDs = loaded.messages.map(\.id)
                 await refreshAccounting(view, workspaceID: item.workspaceID)
                 guard current() else { return false }
-                view.scrollAnchor = .init(id: messageID, offset: 0, followsBottom: false); view.viewportRequest += 1; anchorChanged(view)
+                view.scrollAnchor = .init(id: messageID, offset: 0, followsBottom: false); view.viewportRequestOpens = false; view.viewportRequest += 1; anchorChanged(view)
                 return true
             }
         }
