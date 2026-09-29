@@ -359,9 +359,7 @@ final class PiSheetWindowTests: XCTestCase {
     }
 
     /// A sheet opened again opens in the same window and hosting view, filled
-    /// afresh, and each closing lets go of what it showed: AppKit keeps every
-    /// window that has been on screen, a couple of megabytes each, and SwiftUI
-    /// can keep a hosting view it last saw the pointer over, so one of each per
+    /// afresh, and each closing lets go of what it showed: one of each per
     /// sheet rather than one for every opening.
     @MainActor func testASheetOpenedAgainReusesItsWindowAndHostingView() async throws {
         final class Count { var made = 0 }
