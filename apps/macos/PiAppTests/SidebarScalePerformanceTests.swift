@@ -324,7 +324,6 @@ private struct HeaderProbe: View {
         Button("New Topic…", systemImage: "folder.badge.plus") { }
         Button("Changes and History…", systemImage: "arrow.triangle.branch") { }
         Button("Collapse Project") { }
-        Button("Show Archived Chats", systemImage: "archivebox") { }
         Divider()
         Button("Manage Project…", systemImage: "folder.badge.gearshape") { }
     }

@@ -133,7 +133,8 @@ final class SessionOrganizationTests: XCTestCase {
         XCTAssertTrue(model.record(record.id)?.isArchived == true, "Opening report-linked history must not silently restore a chat")
         XCTAssertTrue(model.hosts.isEmpty)
         try await model.setSessionArchived(record.id, archived: false)
-        XCTAssertFalse(model.showArchivedSessions)
+        XCTAssertTrue(model.showArchivedSessions, "Restoring a chat leaves the archive switch as it was")
+        XCTAssertEqual(model.sidebarChats(in: "w", archived: false).map(\.id), [record.id], "The restored chat is listed with the active ones")
         await model.store?.close()
     }
 

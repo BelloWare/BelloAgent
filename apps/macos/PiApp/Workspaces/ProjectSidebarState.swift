@@ -8,6 +8,9 @@ struct ProjectSidebarState: Codable, Sendable, Equatable, Identifiable {
     static let maximumShownRoots = 100_000
     var id: String
     var expanded = true
+    /// Read by versions before the archive became one switch for the whole
+    /// sidebar (`WorkspaceModel.showArchivedSessions`), which required it:
+    /// kept as it was read, and read by nothing now.
     var archived = false
     var revision: Int64 = 0
     /// Chats of this project whose side chats are folded away. Optional so
@@ -74,7 +77,9 @@ extension WorkspaceModel {
     /// opened it for this launch to show the chat it reopened
     /// (`WorkspaceLaunchSelection.swift`).
     func projectIsExpanded(_ id: String) -> Bool { (projectSidebarStates[id]?.expanded ?? true) || launchReveal.projects.contains(id) }
-    func projectShowsArchive(_ id: String) -> Bool { launchReveal.archive[id] ?? projectSidebarStates[id]?.archived ?? false }
+    /// Whether the sidebar lists archived chats: the reader's switch, or, for
+    /// this launch only, the archived chat a relaunch reopened.
+    var sidebarShowsArchived: Bool { showArchivedSessions || launchReveal.archivedChats }
 
     func restoreProjectSidebarStates() async throws {
         let known = Set(sidebarProjects.map(\.id))
@@ -103,7 +108,7 @@ extension WorkspaceModel {
         saveSidebarPresentation(in: projectID)
     }
     /// Folding a chat's side chats is a decision about the sidebar, and it
-    /// outlives the group view, the archive filter and the launch.
+    /// outlives the group view, the archive switch and the launch.
     func setSidebarSideFolded(_ chatID: String, folded: Bool) {
         guard folded != collapsedSidebarSides.contains(chatID), let projectID = record(chatID)?.workspaceID else { return }
         if folded { collapsedSidebarSides.insert(chatID) } else { collapsedSidebarSides.remove(chatID) }
@@ -119,7 +124,7 @@ extension WorkspaceModel {
         var value = projectSidebarStates[projectID] ?? ProjectSidebarState(id: projectID)
         let folded = collapsedSidebarSides.filter { record($0)?.workspaceID == projectID }.sorted()
         value.collapsedSides = folded.isEmpty ? nil : Array(folded.prefix(ProjectSidebarState.maximumPresentationEntries))
-        let groups = Set([projectID] + topics(in: projectID).map(\.id))
+        let groups = Set(([projectID] + topics(in: projectID).map(\.id)).flatMap { [$0, SidebarSessionPresentation.archiveGroupID($0)] })
         let pages = sidebarPageSizes.filter { groups.contains($0.key) }
         value.shownRoots = pages.isEmpty ? nil : pages
         saveProjectSidebarState(value)
@@ -133,35 +138,24 @@ extension WorkspaceModel {
         guard value.expanded != expanded else { return }
         value.expanded = expanded; saveProjectSidebarState(value)
     }
-    /// Switching between the chats and the archive starts each of the
-    /// project's groups at its first page again.
-    private func resetSidebarPages(in projectID: String) {
-        let groups = Set([projectID] + topics(in: projectID).map(\.id))
-        guard sidebarPageSizes.keys.contains(where: groups.contains) else { return }
-        for group in groups { sidebarPageSizes.removeValue(forKey: group) }
+    /// The archive switch in the sidebar's footer and the View menu. The
+    /// reader's own choice replaces whatever a relaunch listed.
+    func setArchivedChatsShown(_ shown: Bool) {
+        forgetLaunchRevealOfArchive()
+        if showArchivedSessions != shown { showArchivedSessions = shown }
     }
-
-    func setProjectArchiveFilter(_ id: String, archived: Bool) {
-        guard sidebarProjects.contains(where: { $0.id == id }) else { return }
-        // Whether the list on screen changes, which is what starts it over.
-        let changing = projectShowsArchive(id) != archived
-        forgetLaunchReveal(project: id)
-        var value = projectSidebarStates[id] ?? ProjectSidebarState(id: id)
-        value.expanded = true; value.archived = archived
-        if selectedWorkspaceID == id { showArchivedSessions = archived }
-        if changing { resetSidebarPages(in: id); value.shownRoots = nil }
-        saveProjectSidebarState(value)
-    }
+    func toggleArchivedChats() { setArchivedChatsShown(!sidebarShowsArchived) }
 
     /// Selection from reports or the status panel reveals exactly its project.
-    /// Other projects keep their disclosure and archive state.
+    /// Other projects keep their disclosure. An archived chat's row is listed
+    /// only while the archive switch is on, so revealing one turns it on.
     func revealProjectChat(_ item: ChatRecord) {
         if item.isBackgroundTask { showBackgroundSessions = true }
-        showArchivedSessions = item.isArchived
+        if item.isArchived { showArchivedSessions = true }
         guard sidebarProjects.contains(where: { $0.id == item.workspaceID }) else { return }
         forgetLaunchReveal(project: item.workspaceID)
         var value = projectSidebarStates[item.workspaceID] ?? ProjectSidebarState(id: item.workspaceID)
-        value.expanded = true; value.archived = item.isArchived
+        value.expanded = true
         saveProjectSidebarState(value)
         if let topicID = effectiveTopicID(for: item) { setTopicExpanded(topicID, expanded: true) }
     }
@@ -176,14 +170,14 @@ extension WorkspaceModel {
         }
         selectedWorkspaceID = projectID
         if !requestProfiles.contains(where: { $0.id == profileChoice }) { profileChoice = requestProfiles.first?.id ?? "" }
-        setProjectArchiveFilter(projectID, archived: false)
+        setProjectExpanded(projectID, expanded: true)
         if let topicID { setTopicExpanded(topicID, expanded: true) }
         createNewChat(topicID: topicID)
     }
 
     private func saveProjectSidebarState(_ proposed: ProjectSidebarState) {
         let previous = projectSidebarStates[proposed.id] ?? ProjectSidebarState(id: proposed.id)
-        guard previous.expanded != proposed.expanded || previous.archived != proposed.archived
+        guard previous.expanded != proposed.expanded
                 || previous.collapsedSides != proposed.collapsedSides || previous.shownRoots != proposed.shownRoots else { return }
         var value = proposed
         value.revision = max(previous.revision + 1, Int64(Date().timeIntervalSince1970 * 1_000_000))

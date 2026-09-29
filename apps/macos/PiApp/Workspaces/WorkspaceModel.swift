@@ -83,7 +83,10 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// Owned by `WorkspaceLaunchSelection.swift`: sidebar groups a relaunch
     /// opened, for that launch only, to show the row of the chat it reopened.
     @Published var launchReveal = SidebarLaunchReveal() { didSet { sidebarIndex.invalidate() } }
-    @Published var showArchivedSessions = false
+    /// The sidebar's archive switch: while it is on, every project lists its
+    /// archived chats after its active ones (`SidebarGroups.swift`). One
+    /// switch for the whole sidebar, remembered with the selection.
+    @Published var showArchivedSessions = false { didSet { if showArchivedSessions != oldValue { sidebarIndex.invalidate(); noteSelectionChanged() } } }
     @Published var showBackgroundSessions = false { didSet { sidebarIndex.invalidate(); if showBackgroundSessions != oldValue { noteSelectionChanged() } } }
     /// Answers the sidebar's own queries once per change: chat lookups, per
     /// group entry lists, the project groups and the keyboard order.

@@ -5,7 +5,7 @@ import Foundation
 // focused, and the displays of chats nobody is reading let go of.
 
 extension WorkspaceModel {
-    func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveFilter: Bool = false, reopensSide: Bool = true) async {
+    func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveSwitch: Bool = false, reopensSide: Bool = true) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
         // A chat whose load ended without a page (nothing is reading it any
         // more) is read again rather than left on "Preparing…" for good.
@@ -29,10 +29,10 @@ extension WorkspaceModel {
         selectionRevision += 1
         let selection = selectionRevision
         let previous = selectedID
-        if preserveArchiveFilter {
+        if preserveArchiveSwitch {
             setProjectExpanded(item.workspaceID, expanded: true)
             if let topicID = effectiveTopicID(for: item) { setTopicExpanded(topicID, expanded: true) }
-        } else if revealInSidebar { revealProjectChat(item) } else { showArchivedSessions = item.isArchived }
+        } else if revealInSidebar { revealProjectChat(item) }
         PerformanceProbe.shared.count("sessionSelectionCalls")
         PerformanceProbe.shared.beginSelection(id, hasHistory: item.path != nil)
         let view = displays[id] ?? SessionDisplay(id: id), cached = view.hasPresentedRows

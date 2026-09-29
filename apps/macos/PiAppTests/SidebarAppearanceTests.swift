@@ -249,8 +249,8 @@ final class SidebarAppearanceTests: XCTestCase {
         try changes("another project became the chosen one") { model.selectedWorkspaceID = "somewhere-else" }
         try changes("the project was collapsed") { model.setProjectExpanded(project.id, expanded: false) }
         try changes("the project was expanded again") { model.setProjectExpanded(project.id, expanded: true) }
-        try changes("the archive filter was turned on") { model.setProjectArchiveFilter(project.id, archived: true) }
-        try changes("the archive filter went back to the chats") { model.setProjectArchiveFilter(project.id, archived: false) }
+        try changes("the archive switch was turned on") { model.setArchivedChatsShown(true) }
+        try changes("the archive switch was turned off") { model.setArchivedChatsShown(false) }
         // A group is compared on a signature of everything it draws. Each of
         // these changes something inside one group and nothing above it, so a
         // signature that leaves any of them out shows the sidebar it drew last.
