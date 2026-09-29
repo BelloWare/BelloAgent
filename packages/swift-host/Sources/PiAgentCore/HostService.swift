@@ -73,7 +73,7 @@ public actor NativeHostService {
         let id=frame["commandId"].text ?? ""
         guard hello, frame["v"].int == 1, frame["kind"].text == "command", frame["hostEpoch"].text == epoch, !id.isEmpty, id.utf8.count <= 128, let method=frame["method"].text, frame["params"].isNull || frame["params"].isObject else { reply(id,.failure(AgentError("invalid_command", "Invalid command or stale host epoch"))); return }
         let fingerprint=sha256(Data(frame.removing(["commandId"]).encoded().utf8))
-        let readOnly = method == "display.result.read" || method == "clock.sync" || method == "runtime.info" || method == "resources.inspect" || method == "resources.skill.read" || method.hasPrefix("session.content.") || ["session.status","session.snapshot","session.history","session.versions","session.version.page","session.message.read","session.edit.prepare","session.tool.input","queue.read","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"].contains(method)
+        let readOnly = Self.isReadOnly(method)
         if fingerprints[id] == nil {
             if let previous = mutationLedger.fingerprint(for: id) {
                 reply(id,.failure(AgentError(previous == fingerprint ? "command_result_expired" : "command_conflict", "Previously observed mutation will not be replayed; reconcile session state"))); return
@@ -162,12 +162,40 @@ public actor NativeHostService {
         do { let value=try await body(); await runtimeGate.release(); return value }
         catch { await runtimeGate.release(); throw error }
     }
+    /// The read-only commands: a repeat runs one again, where a command that
+    /// changes something is answered from the reply it was first sent
+    /// (`receive`). Every `session.content.` command reads too.
+    static let readOnlyMethods: Set<String> = ["display.result.read","clock.sync","runtime.info","resources.inspect","resources.skill.read","session.status","session.snapshot","session.history","session.versions","session.version.page","session.message.read","session.edit.prepare","session.tool.input","queue.read","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"]
+    static func isReadOnly(_ method: String) -> Bool { readOnlyMethods.contains(method) || method.hasPrefix("session.content.") }
+    /// Runs one command. The host checks, in this order, that it is not
+    /// closing, that a workspace is open, that the command names a session,
+    /// that the session is loaded and that the workspace is not quiesced,
+    /// and answers each command in the stage after the last check it needs
+    /// (`HostDispatchTests`). A command no stage knows meets every check.
     public func command(_ method:String, sessionID:String?, params:JSON, commandID:String=UUID().uuidString) async throws -> JSON {
+        // Read even while the host closes: the rest of a result already sent.
         if method == "display.result.read" { return try displayTransfers.read(required(params["id"],"transfer id"),offset:boundedInt(params["offset"],maximum:DisplayResultTransfers.maximumBytes)) }
         guard !closing else { throw AgentError("closing","Host is shutting down") }
-        if method == "runtime.info" { return ["engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"bundledNode":false,"protocolMajor":1,"protocolMinor":1] }
-        if method == "clock.sync" { return ["monotonic":JSON(nowMS()),"monotonicMs":JSON(nowMS()),"hostMonotonicMs":JSON(nowMS()),"wallTime":JSON(isoNow())] }
-        if method == "workspace.open" {
+        if let result=try await hostCommand(method,params:params) { return result }
+        guard let cwd, let directory, let resources, let mcp, let nativeTools else { throw AgentError("workspace_required", "Open a workspace first") }
+        let workspace=OpenWorkspace(cwd:cwd,directory:directory,resources:resources,mcp:mcp,nativeTools:nativeTools)
+        if let result=try await workspaceCommand(method,sessionID:sessionID,params:params,in:workspace) { return result }
+        let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
+        if let result=try await namedSessionCommand(method,id:id,params:params) { return result }
+        guard let session=sessions[id] else { throw AgentError("session_missing", "Session runtime is not loaded") }
+        if let result=try await sessionCommand(method,id:id,session:session,params:params,in:workspace) { return result }
+        guard !quiesced, !closing else { throw AgentError("closing", "Host is closing or quiesced") }
+        if let result=try await changeCommand(method,id:id,session:session,params:params,commandID:commandID,in:workspace) { return result }
+        throw AgentError("unsupported_command", "Unsupported native host command: \(method)")
+    }
+    /// The open workspace, as the commands that need one see it.
+    private struct OpenWorkspace { let cwd: URL, directory: URL, resources: Resources, mcp: MCPManager, nativeTools: NativeTools }
+    /// Commands a host that is not closing answers without a workspace.
+    private func hostCommand(_ method:String, params:JSON) async throws -> JSON? {
+        switch method {
+        case "runtime.info": return ["engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"bundledNode":false,"protocolMajor":1,"protocolMinor":1]
+        case "clock.sync": return ["monotonic":JSON(nowMS()),"monotonicMs":JSON(nowMS()),"hostMonotonicMs":JSON(nowMS()),"wallTime":JSON(isoNow())]
+        case "workspace.open":
             guard !opening else { throw AgentError("workspace_busy", "Workspace initialization is already in progress") }
             opening=true; defer { opening=false }
             let requestedRoots=try Self.workspaceRoots(params)
@@ -192,46 +220,45 @@ public actor NativeHostService {
             resources=Resources(cwd:requested,roots:extra,options:params["resources"].isNull ? [:] : params["resources"])
             nativeTools=NativeTools(cwd:requested,roots:extra,outputs:state.appendingPathComponent("tool-output"),mcp:manager)
             return ["opened":true,"cwd":JSON(requested.path),"roots":.array(requestedRoots.map { JSON($0.path) }),"directory":JSON(state.path)]
+        default: return nil
         }
-        guard let cwd, let directory, let resources, let mcp, let nativeTools else { throw AgentError("workspace_required", "Open a workspace first") }
-        if method == "workspace.quiesce" {
+    }
+    /// Commands on the open workspace, and on chats that are not open here.
+    private func workspaceCommand(_ method:String, sessionID:String?, params:JSON, in workspace:OpenWorkspace) async throws -> JSON? {
+        let cwd=workspace.cwd, directory=workspace.directory, resources=workspace.resources, mcp=workspace.mcp, nativeTools=workspace.nativeTools
+        switch method {
+        case "workspace.quiesce":
             quiesced=true
             for s in sessions.values { let idle=await s.isIdle, ephemeral=await s.isEphemeral; if !idle || ephemeral { quiesced=false; throw AgentError("session_busy", "A run is active; stop it before updating") } }
             return ["quiesced":true]
-        }
-        if method == "workspace.resume" { quiesced=false; return ["resumed":true] }
-        if method == "resources.configure" {
+        case "workspace.resume": quiesced=false; return ["resumed":true]
+        case "resources.configure":
             try await resources.configure(params["options"].isNull ? [:] : params["options"])
             for session in sessions.values { await session.resourcesChanged() }
             return try await resources.inspect(["refresh":true])
-        }
-        if method == "resources.inspect" {
+        case "resources.inspect":
             var applied: String?; if let id=sessionID, let session=sessions[id] { applied=await session.resourceRevision }
             let available=await nativeTools.capabilityIDs(readOnly:sessionID.flatMap { sessions[$0]?.readOnly } ?? params["readOnly"].flag ?? false)
             return try await resources.inspect(params,applied:applied,tools:available)
-        }
-        if method == "resources.skill.read" { return try await resources.readSkill(required(params["skillId"],"skill id"),offset:boundedInt(params["offset"],maximum:262144)) }
-        if method == "mcp.configure" {
+        case "resources.skill.read": return try await resources.readSkill(required(params["skillId"],"skill id"),offset:boundedInt(params["offset"],maximum:262144))
+        case "mcp.configure":
             for s in sessions.values { guard !(await s.isRunning) else { throw AgentError("session_busy", "Stop active runs before changing MCP connections") } }
             guard params["path"].isNull, params["config"].isObject else { throw AgentError("vault_configuration_required", "MCP configuration must come from the native vault over private IPC.") }
             try await mcp.configure(params["config"])
             for session in sessions.values { await session.resourcesChanged() }
             var result=try await mcp.perform(["action":"list"]);result["configurationSource"]="native vault via private IPC";return result
-        }
-        if ["mcp.list","mcp.describe"].contains(method) {
+        case "mcp.list", "mcp.describe":
             var args=params;args["action"]=JSON(method == "mcp.list" ? "list":"describe");var result=try await mcp.perform(args,readOnly:true)
             result["configurationSource"]="native vault via private IPC";return result
-        }
-        if method == "mcp.acknowledgeUnknown" { guard params["confirmed"].flag == true else { throw AgentError("confirmation_required","Confirm that the previous invocation outcome has been checked") }; try await mcp.acknowledgeUnknown(); return ["acknowledged":true] }
-        if method == "connection.test" {
+        case "mcp.acknowledgeUnknown": guard params["confirmed"].flag == true else { throw AgentError("confirmation_required","Confirm that the previous invocation outcome has been checked") }; try await mcp.acknowledgeUnknown(); return ["acknowledged":true]
+        case "connection.test":
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
             let id = try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
             // Credentials are supplied by the native vault. No profile file,
             // workspace instruction, skill or MCP connection participates.
             let original = try Profile(params["profile"]), (profile, key) = try ProfileFiles.credentials(profile: original, supplied: params["apiKey"].text)
             return try await ConnectionProbe.run(profile: profile, apiKey: key, sessionID: id, client: ProviderClient(traces: traces))
-        }
-        if method == "session.open" {
+        case "session.open":
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
             let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
             // The chat's cost limit, and the spend the app counted for a chat
@@ -270,10 +297,9 @@ public actor NativeHostService {
                 return session
             }
             return withMode(await session.snapshot())
-        }
-        if method == "session.portable.preview" || method == "session.import.inspect" { return try portable(params) }
-        if method == "session.recover" { return try recoverCopy(params) }
-        if method == "journal.slim" {
+        case "session.portable.preview", "session.import.inspect": return try portable(params)
+        case "session.recover": return try recoverCopy(params)
+        case "journal.slim":
             // A chat's journal without the run-state records that repeated its
             // receipts (`JournalSlimming`), for a chat not open here.
             let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
@@ -284,42 +310,51 @@ public actor NativeHostService {
             slimming[id]=task
             defer { slimming[id]=nil }
             return try await task.value.json
+        case "session.import.continue", "session.import.recover": throw AgentError("portable_handoff_required", "Pi journals are preserved read-only. Preview and explicitly create a native portable handoff rather than replaying incompatible provider state.")
+        default: return nil
         }
-        if method == "session.import.continue" || method == "session.import.recover" { throw AgentError("portable_handoff_required", "Pi journals are preserved read-only. Preview and explicitly create a native portable handoff rather than replaying incompatible provider state.") }
-        let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
+    }
+    /// Commands on a chat by its id, whether it is open here or not.
+    private func namedSessionCommand(_ method:String, id:String, params:JSON) async throws -> JSON? {
         if method.hasPrefix("debug.") { return try await traces.command(method,session:id,params:params) }
-        if method == "session.forget" {
+        switch method {
+        case "session.forget":
             if let existing=sessions[id] {
                 guard await existing.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
                 sessions.removeValue(forKey:id);profiles.removeValue(forKey:id)
             }
             _=try await traces.command("debug.clear",session:id,params:[:]); return ["accepted":true]
+        default: return nil
         }
-        guard let session=sessions[id] else { throw AgentError("session_missing", "Session runtime is not loaded") }
-        if method == "turn.stop" { await session.stop(); return ["accepted":true] }
-        if method == "session.status" {
+    }
+    /// Commands on an open chat that a quiesced workspace still answers:
+    /// reads, a stop, and a side kept or closed. A fork and a new side
+    /// refuse a quiesced workspace themselves.
+    private func sessionCommand(_ method:String, id:String, session:AgentSession, params:JSON, in workspace:OpenWorkspace) async throws -> JSON? {
+        let resources=workspace.resources, nativeTools=workspace.nativeTools
+        switch method {
+        case "turn.stop": await session.stop(); return ["accepted":true]
+        case "session.status":
             var statusParams = params; statusParams["includeMessages"] = false
             return await session.snapshot(statusParams)
-        }
-        if method == "session.edit.prepare" { return try await session.prepareEdit(identity(params["messageId"]),offset:boundedInt(params["offset"],maximum:262144),expectedTimeline:params["sourceTimeline"].text,expectedTextDigest:params["sourceTextDigest"].text) }
-        if method == "session.snapshot" { return await session.snapshot(params) }
-        if method == "context.info" { return await session.inspectContext() }
-        if method == "context.preview" { return try await session.prepareContext(params) }
-        if method == "context.preview.read" { return try await session.readPreparedContext(params) }
-        if method == "context.preview.clear" { await session.clearPreparedContext(params["revision"].text); return ["accepted":true] }
-        if method == "session.history" {
+        case "session.edit.prepare": return try await session.prepareEdit(identity(params["messageId"]),offset:boundedInt(params["offset"],maximum:262144),expectedTimeline:params["sourceTimeline"].text,expectedTextDigest:params["sourceTextDigest"].text)
+        case "session.snapshot": return await session.snapshot(params)
+        case "context.info": return await session.inspectContext()
+        case "context.preview": return try await session.prepareContext(params)
+        case "context.preview.read": return try await session.readPreparedContext(params)
+        case "context.preview.clear": await session.clearPreparedContext(params["revision"].text); return ["accepted":true]
+        case "session.history":
             if params["version"].int == 2 { return try await session.historyWindow(params) }
             return await session.historyPage(before:params["before"].int)
-        }
-        if method == "session.message.read" { return try await session.messageRead(id:required(params["messageId"],"message id"),field:params["field"].text ?? "text",offset:boundedInt(params["offset"],maximum:128*1024*1024)) }
-        if method == "session.tool.input" { return try await session.toolInput(messageID:required(params["messageId"],"message id"),callID:required(params["callId"],"tool call id",maximum:256)) }
-        if method == "session.content.search" { return try await session.contentSearch(params) }
-        if method == "session.content.page" { return try await session.contentPage(params) }
-        if method == "session.event-page" || method == "session.events" { return await session.eventPage(since:params["since"].int) }
+        case "session.message.read": return try await session.messageRead(id:required(params["messageId"],"message id"),field:params["field"].text ?? "text",offset:boundedInt(params["offset"],maximum:128*1024*1024))
+        case "session.tool.input": return try await session.toolInput(messageID:required(params["messageId"],"message id"),callID:required(params["callId"],"tool call id",maximum:256))
+        case "session.content.search": return try await session.contentSearch(params)
+        case "session.content.page": return try await session.contentPage(params)
+        case "session.event-page", "session.events": return await session.eventPage(since:params["since"].int)
         // An edited message's versions, and the rows of one of them.
-        if method == "session.versions" { return try await session.messageVersions(params) }
-        if method == "session.version.page" { return try await session.versionPage(params) }
-        if method == "session.fork" {
+        case "session.versions": return try await session.messageVersions(params)
+        case "session.version.page": return try await session.versionPage(params)
+        case "session.fork":
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
             let forkID=try identity(params["forkSessionId"]), costLimit=try AgentSession.costLimit(params["costLimit"])
             // Fork at one assistant reply rather than at the end: the journal up to it.
@@ -334,8 +369,7 @@ public actor NativeHostService {
                 _=try await traces.command("debug.mode",session:forkID,params:["mode":JSON(await traces.mode(id))])
                 return result
             }
-        }
-        if method == "side.open" {
+        case "side.open":
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
             let sideID=try identity(params["sideSessionId"]), costLimit=try AgentSession.costLimit(params["costLimit"])
             return try await withRuntimeGate {
@@ -349,37 +383,39 @@ public actor NativeHostService {
                 _=try await traces.command("debug.mode",session:sideID,params:["mode":JSON(await traces.mode(id))])
                 return ["accepted":true,"sessionId":JSON(sideID),"side":seed.info,"ephemeral":false,"path":saved["path"]]
             }
-        }
-        if method == "side.keep" { return try await session.keep(whenFinished:params["whenFinished"].flag == true) }
-        if method == "side.close" {
+        case "side.keep": return try await session.keep(whenFinished:params["whenFinished"].flag == true)
+        case "side.close":
             let saved=try await session.preserveSide()
             // This closes presentation only. The durable runtime and any active
             // work stay available as an ordinary saved child conversation.
             return saved
+        default: return nil
         }
-        guard !quiesced, !closing else { throw AgentError("closing", "Host is closing or quiesced") }
-        if method == "turn.submit" || method == "turn.steer" || method == "turn.edit" {
+    }
+    /// Commands that change an open chat, which a quiesced workspace refuses.
+    private func changeCommand(_ method:String, id:String, session:AgentSession, params:JSON, commandID:String, in workspace:OpenWorkspace) async throws -> JSON? {
+        let resources=workspace.resources, mcp=workspace.mcp, nativeTools=workspace.nativeTools
+        switch method {
+        case "turn.submit", "turn.steer", "turn.edit":
             let text=params["text"].text ?? "", tools=await nativeTools.capabilityIDs(readOnly:session.readOnly)
             let selected=try await resources.freeze(params["skills"].list,text:text,tools:tools)
             let overrides=try Self.turnOverrides(params)
             let input=Submission(commandID:commandID,turnID:try identity(params["clientTurnId"]),text:text,attachments:params["attachments"].list,skills:selected,model:overrides.model,thinkingLevel:overrides.thinkingLevel,contextWindow:overrides.contextWindow,maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit,input:overrides.input)
             if method == "turn.edit" { return try await session.edit(fromMessageID:try identity(params["messageId"]),input:input,expectedTimeline:params["editSourceTimeline"].text,expectedTextDigest:params["editSourceTextDigest"].text) }
             return try await session.submit(input,steer:method == "turn.steer")
-        }
-        if method == "queue.remove" { try await session.removeQueued(required(params["turnId"],"turn id")); return ["accepted":true] }
-        if method == "queue.reorder" {
+        case "queue.remove": try await session.removeQueued(required(params["turnId"],"turn id")); return ["accepted":true]
+        case "queue.reorder":
             let order=try params["turnIds"].list.map { try required($0,"turn id") }
             try await session.reorderQueue(order); return ["accepted":true]
-        }
-        if method == "queue.read" { return try await session.queuedText(required(params["turnId"],"turn id")) }
-        if method == "queue.update" { try await session.updateQueued(required(params["turnId"],"turn id"),text:params["text"].text ?? ""); return ["accepted":true] }
-        if method == "queue.steer" { try await session.steerQueued(required(params["turnId"],"turn id")); return ["accepted":true] }
-        if method == "queue.resume" { try await session.resumeQueue(); return ["accepted":true] }
-        if method == "turn.retry" { try await session.retryRun(overrides: params); return ["accepted":true] }
-        if method == "queue.configure" { try await session.configureQueue(params); return ["accepted":true] }
-        if method == "context.compact" { try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true] }
-        if method == "mcp.invoke" { var args=params; args["action"]="invoke"; return try await mcp.perform(args,readOnly:session.readOnly) }
-        if method == "session.configure" {
+        case "queue.read": return try await session.queuedText(required(params["turnId"],"turn id"))
+        case "queue.update": try await session.updateQueued(required(params["turnId"],"turn id"),text:params["text"].text ?? ""); return ["accepted":true]
+        case "queue.steer": try await session.steerQueued(required(params["turnId"],"turn id")); return ["accepted":true]
+        case "queue.resume": try await session.resumeQueue(); return ["accepted":true]
+        case "turn.retry": try await session.retryRun(overrides: params); return ["accepted":true]
+        case "queue.configure": try await session.configureQueue(params); return ["accepted":true]
+        case "context.compact": try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true]
+        case "mcp.invoke": var args=params; args["action"]="invoke"; return try await mcp.perform(args,readOnly:session.readOnly)
+        case "session.configure":
             // The chat's cost limit applies at once, also to a running session:
             // its next model request is checked against it. A configure that
             // carries only the limit leaves the connection as it is.
@@ -395,12 +431,11 @@ public actor NativeHostService {
             profiles[id]=(profile,key)
             if let costLimit { await session.setCostLimit(costLimit) }
             return ["accepted":true,"applied":JSON(applied)]
-        }
-        if method == "session.close" {
+        case "session.close":
             guard await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
             sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); return ["accepted":true]
+        default: return nil
         }
-        throw AgentError("unsupported_command", "Unsupported native host command: \(method)")
     }
     /// `roots` (1…16 absolute directories, primary first) or the legacy single
     /// `cwd`. Duplicates collapse after canonicalization; order is preserved.
