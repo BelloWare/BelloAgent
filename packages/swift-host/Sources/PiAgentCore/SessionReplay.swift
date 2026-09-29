@@ -106,7 +106,7 @@ extension AgentSession {
                 r.context=[summary]+kept; r.history.append(summary); r.visible.append(summary)
                 r.rowSpans[summary.id] = .init(id:summary.id,kind:.compaction,offset:lineStart,length:line.count)
                 if let operation = summary.operationID, let position = r.history.firstIndex(where: { $0.kind == "execution" && $0.operationID == operation }) {
-                    r.history[position].responseTimeline?.finish("completed"); r.history[position].detail="Compaction · Checkpoint durably adopted"
+                    Self.adoptCompactionProgress(&r.history[position])
                     let replacement=r.history[position]
                     if let index=r.visible.firstIndex(where: { $0.id == replacement.id }) { r.visible[index]=replacement }
                 }
@@ -169,8 +169,8 @@ extension AgentSession {
             // A record that sets the model context is where the next open can
             // resume from: the metadata file records what it takes to.
             if ["compaction", "branch"].contains(item["type"].text ?? "") || item["customType"].text == JournalRecordKind.context {
-                let helper: JSON=["spend":r.spend.record,"spendTracked":JSON(r.spendTracked),"failedCompactionFingerprint":r.failedCompactionFingerprint.map { JSON($0) } ?? .null,
-                                  "contextRecovery":r.contextRecovery,"compactionState":r.compactionState,"parentInfo":r.parentInfo,"presentationOrdinal":JSON(ordinalMax)]
+                let helper=Self.checkpointHelper(spend:r.spend,spendTracked:r.spendTracked,failedCompactionFingerprint:r.failedCompactionFingerprint,
+                                                 contextRecovery:r.contextRecovery,compactionState:r.compactionState,parentInfo:r.parentInfo,presentationOrdinal:ordinalMax)
                 r.captured=Self.checkpoint(sessionID:id,header:opened.headerCheck,marker:opened.markerCheck,last:line,at:lineStart,lastID:try identity(item["id"]),
                                          visible:r.visible,context:r.context,spans:r.rowSpans,state:stateSource,assistantMessageCount:r.assistantMessageCount,
                                          latestAssistantMessageID:r.latestAssistantMessageID,versions:r.versions.ledger,tasks:r.recentTaskPresentations,helper:helper)
