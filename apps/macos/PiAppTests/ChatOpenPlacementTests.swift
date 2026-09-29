@@ -306,6 +306,44 @@ final class ChatOpenPlacementTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(sample(second, since: 0).viewport, settled, accuracy: 0.5, "and settles where an idle chat stands")
     }
 
+    /// Found by `SoakTests`: a chat the reader left the moment its reply
+    /// ended, before the reply's figures had come, kept its rows without
+    /// them — a chat in the background had its totals read, not its rows'
+    /// figures. Opened again, those rows were drawn at once, and the reply
+    /// grew by its usage line a moment later, moving every row above it.
+    @MainActor func testAChatLeftBeforeItsFiguresCameIsDrawnWithThemWhenOpenedAgain() async throws {
+        let setup = try await setup()
+        let launched = await launch(setup)
+        await launched.model.restore()
+        launched.model.selectedWorkspaceID = setup.workspace.id; launched.model.profileChoice = setup.profile.id
+        func chat(_ name: String) -> ChatRecord { ChatRecord(id: "chat-\(name)-" + UUID().uuidString, workspaceID: setup.workspace.id, title: name, path: nil, profileID: setup.profile.id) }
+        let left = chat("left"), other = chat("other")
+        for (chat, texts) in [(other, ["And a short one"]), (left, ["Please read fixture README.md", "And a short one"])] {
+            launched.model.chats.append(chat); try await launched.model.store?.put(chat, kind: "chat", id: chat.id)
+            await launched.model.select(chat.id)
+            for text in texts {
+                launched.model.displays[chat.id]?.draft = text; launched.model.send(sessionID: chat.id)
+                await waitFor("“\(text)” never finished") { quiet(launched.model.displays[chat.id]) }
+            }
+        }
+        let view = try XCTUnwrap(launched.model.displays[left.id])
+        await waitFor("The reply's figures never came") { view.messages.last?.accounting != nil }
+        try await Task.sleep(for: .milliseconds(500))
+        // The reply's rows as they stand when the reader goes on the moment
+        // it ends: its figures are in the request log, not yet on the reply.
+        let reply = try XCTUnwrap(view.messages.last?.id)
+        view.messageAccounting[reply] = nil
+        view.messages[view.messages.count - 1].accounting = nil
+        _ = try await open(other.id, in: launched, for: 1)
+        // Its figures are persisted after the reader has gone on.
+        launched.model.scheduleAccounting(left.id, workspaceID: setup.workspace.id)
+        try await Task.sleep(for: .milliseconds(600))
+        await waitFor("The figures' read never ended") { launched.model.accountingTasks[left.id] == nil }
+        let opened = try await open(left.id, in: launched)
+        XCTAssertNotNil(view.messages.last?.accounting, "the reply's figures are on it")
+        XCTAssertEqual(Array(opened.changes.prefix(12)), [], "The chat is drawn with its figures, and nothing on it moves (\(opened.changes.count) changes)")
+    }
+
     /// Found by the kept-rows soak: a chat revisited after its journal
     /// changed — the reader ran a turn in it since it was read, then went
     /// on — was placed twice: its rows, still on the page, at the question
