@@ -188,6 +188,9 @@ public actor NativeHostService {
         if let result=try await changeCommand(method,id:id,session:session,params:params,commandID:commandID,in:workspace) { return result }
         throw AgentError("unsupported_command", "Unsupported native host command: \(method)")
     }
+    /// The background tasks a chat can be opened for, each a utility request
+    /// (`AgentSession.titleTask`), and the purpose each is logged under.
+    static let utilityPurposes = ["session-title": "title", "title-suggestions": "title-suggestions", "webhook": "webhook"]
     /// The open workspace, as the commands that need one see it.
     private struct OpenWorkspace { let cwd: URL, directory: URL, resources: Resources, mcp: MCPManager, nativeTools: NativeTools }
     /// Commands a host that is not closing answers without a workspace.
@@ -283,9 +286,10 @@ public actor NativeHostService {
                 }
                 let original=try Profile(params["profile"]), (profile,key)=try ProfileFiles.credentials(profile:original,supplied:params["apiKey"].text)
                 let mode=params["toolMode"].text ?? "editing"; guard ["editing","read-only"].contains(mode) else { throw AgentError("tool_mode", "Unknown tool mode") }
-                // Utility requests: a chat's title, or a webhook's notification.
-                let utility = params["backgroundTask"].text == "webhook" ? "webhook" : "title"
-                let titleTask = ["session-title", "webhook"].contains(params["backgroundTask"].text ?? "")
+                // Utility requests: a chat's title, titles to choose from, or a
+                // webhook's notification, by the purpose the request log names.
+                let background = params["backgroundTask"].text.flatMap { Self.utilityPurposes[$0] }
+                let utility = background ?? "title", titleTask = background != nil
                 guard params["backgroundTask"].isNull || titleTask else { throw AgentError("invalid_params", "Unknown background task") }
                 let sessionResources = titleTask ? Resources(cwd: cwd, titleTask: true, utility: utility) : resources
                 let tools: any ToolExecuting = titleTask || params["connectionTest"].flag == true ? DisabledTools() : nativeTools
