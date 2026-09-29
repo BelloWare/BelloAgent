@@ -538,6 +538,12 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// settled row is a pointer check rather than a string compare.
     var projectedRows: [TranscriptMessage] = []
     var historyRevision: HistoryRevision?
+    /// The rows of the page last read in, by count and ends: while the rows
+    /// are still those, the page is what a fresh read of an unchanged journal
+    /// returns. Paging in or out changes them.
+    struct PageRows: Equatable { var count: Int; var first: String?; var last: String? }
+    var adoptedPage: PageRows?
+    var pageRows: PageRows { PageRows(count: messages.count, first: messages.first?.id, last: messages.last?.id) }
     /// Once hydrated, the live draft/anchor remain authoritative while their
     /// debounced writes catch up. A warm tab must not restore old saved text.
     var selectionMetadataLoaded = false

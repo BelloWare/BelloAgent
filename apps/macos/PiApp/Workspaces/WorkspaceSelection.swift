@@ -118,10 +118,12 @@ extension WorkspaceModel {
                 // under the new one instead of being dropped with nothing in
                 // its place.
                 let held = view.scrollAnchor
-                // Shown earlier this launch, and its journal unchanged since
-                // its rows were read: they are its rows, with the pages read
-                // around them. Reading the file again drew the same rows again.
+                // Shown earlier this launch, its journal unchanged and its rows
+                // still the page read in: a fresh read returns those same rows,
+                // and drew them again. Rows paged in since are read again as one
+                // page from where the reader was, which keeps the chat bounded.
                 if cached, let revision = view.historyRevision, revision.path == item.path, !view.messages.isEmpty,
+                   view.adoptedPage == view.pageRows,
                    await self.history.unchanged(revision) {
                     guard current() else { return }
                     self.presentHeldHistory(view, identity: heldIdentity, partialTurnInput: heldTurnInput)

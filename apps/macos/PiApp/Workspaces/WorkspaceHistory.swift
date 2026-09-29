@@ -56,6 +56,7 @@ extension WorkspaceModel {
         view.projectedRows = []; view.projectionRevision = nil
         view.historyState = page.messages.isEmpty ? .empty : .preparing
         view.messages = page.messages
+        view.adoptedPage = view.pageRows
         view.viewportRequest += 1
         if let count = page.assistantCount {
             observeAssistantOutputs(sessionID: view.id, snapshot: ["assistantMessageCount": .number(Double(count)),
