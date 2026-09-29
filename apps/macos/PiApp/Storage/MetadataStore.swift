@@ -568,7 +568,7 @@ actor MetadataStore {
     func createTitleTask(_ task: ChatRecord, sourceID: String) throws -> ChatRecord? {
         let database = try ready()
         guard task.id != sourceID, !task.id.isEmpty, task.id.utf8.count <= 128,
-              task.backgroundTask == "session-title", task.sourceSessionID == sourceID,
+              task.backgroundTask == BackgroundRequestKind.title.raw, task.sourceSessionID == sourceID,
               task.workspaceID == WorkspaceRecord.scratchID, task.title == TitleGenerationPlan.fixedTitle,
               task.connectionTest == true, task.toolMode == "read-only", task.parentSessionID == nil,
               task.path == nil, !task.imported else { throw StoreError.invalidRecord }
@@ -603,7 +603,7 @@ actor MetadataStore {
               source.titleTaskSessionID == taskID, source.titleWasEdited != true,
               !source.isBackgroundTask, title.count <= 80,
               let task = try get(ChatRecord.self, kind: "chat", id: taskID),
-              task.backgroundTask == "session-title", task.sourceSessionID == sourceID else { return nil }
+              task.backgroundTask == BackgroundRequestKind.title.raw, task.sourceSessionID == sourceID else { return nil }
         source.title = try ChatRecord.normalizedTitle(title); source.titleWasGenerated = true
         source.organizationRevision = try nextOrganizationRevision(source)
         try put(source, kind: "chat", id: source.id)

@@ -135,7 +135,7 @@ extension WorkspaceModel {
         }
         let request = MiniModelRequest(model: plan.model, contextWindow: plan.contextWindow, maxOutputTokens: plan.maxOutputTokens,
                                        modelOutputLimit: plan.modelOutputLimit, thinkingLevel: plan.thinkingLevel, prompt: plan.prompt,
-                                       task: "title-suggestions", title: "Title suggestions", timeout: 45, name: "suggestion request")
+                                       task: BackgroundRequestKind.suggestions.raw, title: "Title suggestions", timeout: 45, name: "suggestion request")
         let messages = try await askMiniModel(request, profile: profile, sourceID: chatID) { messages in
             let titles = TitleGenerationPlan.titles(from: messages, limit: 3)
             guard !titles.isEmpty else { throw HostError.failure("The mini model did not return usable titles.") }
@@ -248,7 +248,7 @@ extension WorkspaceModel {
         guard titleGenerationTasks[sourceID] == nil, let store, let source = record(sourceID), let taskID = source.titleTaskSessionID,
               source.titleWasEdited != true, source.titleWasGenerated != true,
               displays[taskID]?.loading != true, !opened.contains(taskID), !backgroundRequestsRunning.contains(taskID),
-              var task = chats.first(where: { $0.id == taskID }), task.backgroundTask == "session-title",
+              var task = chats.first(where: { $0.id == taskID }), task.backgroundTask == BackgroundRequestKind.title.raw,
               task.backgroundTaskNotice == nil || task.backgroundTaskNotice == BackgroundRequests.interruptedNotice else { return }
         let input = displays[sourceID]?.messages.first(where: { $0.role == "user" && $0.kind == nil })?.text ?? source.title
         task.backgroundTaskNotice = BackgroundRequests.interruptedNotice + " Asked again with the next message."
@@ -325,7 +325,7 @@ extension WorkspaceModel {
                               path: nil, profileID: profile.id, toolMode: "read-only", connectionTest: true,
                               model: plan.model, thinkingLevel: plan.thinkingLevel,
                               contextWindow: plan.contextWindow, maxOutputTokens: plan.maxOutputTokens, modelOutputLimit: plan.modelOutputLimit)
-        item.backgroundTask = "session-title"; item.sourceSessionID = sourceID; item.backgroundTaskStartedAt = Date()
+        item.backgroundTask = BackgroundRequestKind.title.raw; item.sourceSessionID = sourceID; item.backgroundTaskStartedAt = Date()
         let display = SessionDisplay(id: taskID)
         var host: HostSupervisor?
         var commandID: String?
