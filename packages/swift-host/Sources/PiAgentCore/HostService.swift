@@ -34,7 +34,7 @@ public actor NativeHostService {
     private var cwd: URL?, roots: [URL]=[], directory: URL?, resources: Resources?, mcp: MCPManager?, nativeTools: NativeTools?
     private let traces: TraceStore, capture: CaptureDelivery
     private let editingGate=AsyncGate(), runtimeGate=AsyncGate()
-    private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:], sideParents:[String:String]=[:], recency:[String]=[]
+    private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:]
     /// Journals being slimmed (`JournalSlimming`), by session: an open of one waits for it.
     private var slimming:[String:Task<JournalSlimming.Outcome,Error>]=[:]
     private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:JSON]=[:], replyOrder:[String]=[]
@@ -122,10 +122,7 @@ public actor NativeHostService {
     var cachedReplies: (count: Int, bytes: Int) { (replies.count, replies.values.reduce(0) { $0 + ((try? $1.data().count) ?? 0) }) }
     /// Test seam: a loaded session.
     func loadedSession(_ id: String) -> AgentSession? { sessions[id] }
-    private func mark(_ id:String,_ seq:Int) async {
-        // Only a side chat can stop being one (it was kept); every other
-        // session's events skip the hop to its actor, once per streamed token.
-        if sideParents[id] != nil, let session=sessions[id], !(await session.isEphemeral) { sideParents.removeValue(forKey:id) }
+    private func mark(_ id:String,_ seq:Int) {
         dirty[id]=max(seq,dirty[id] ?? 0)
         // Owned by `flushTask` and cancelled by `shutdown`, which then flushes
         // once itself, so a pending coalescing window cannot outlive the host.
@@ -138,7 +135,6 @@ public actor NativeHostService {
     /// no resource, and drops itself once the host is gone (`weak self`);
     /// retaining one handle per event would cost more than the work it tracks.
     private func notification() -> @Sendable (String,Int)->Void { { [weak self] id, seq in Task { await self?.mark(id,seq) } } }
-    private func touch(_ id:String) { recency.removeAll{$0==id}; recency.append(id) }
     public func command(_ method:String, sessionID:String?, params:JSON, commandID:String=UUID().uuidString) async throws -> JSON {
         if method == "display.result.read" { return try displayTransfers.read(required(params["id"],"transfer id"),offset:boundedInt(params["offset"],maximum:DisplayResultTransfers.maximumBytes)) }
         guard !closing else { throw AgentError("closing","Host is shutting down") }
@@ -246,7 +242,7 @@ public actor NativeHostService {
                 let session=try await Task.detached(priority:.userInitiated) {
                     try AgentSession(id:id,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:readOnly,resources:sessionResources,client:client,tools:tools,traces:traces,editingGate:gate,resumePath:resume,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utility,unknownToolOutcomes:outcomes,changed:changed)
                 }.value
-                sessions[id]=session; profiles[id]=(profile,key); touch(id)
+                sessions[id]=session; profiles[id]=(profile,key)
                 if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
                 if let costLimit { await session.setCostLimit(costLimit) }
                 if let costSeed { await session.adoptSpendSeed(costSeed) }
@@ -272,12 +268,12 @@ public actor NativeHostService {
         if method.hasPrefix("debug.") { return try await traces.command(method,session:id,params:params) }
         if method == "session.forget" {
             if let existing=sessions[id] {
-                guard sideParents[id] == nil, !sideParents.values.contains(id), await existing.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
-                sessions.removeValue(forKey:id);profiles.removeValue(forKey:id);recency.removeAll{$0==id}
+                guard await existing.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
+                sessions.removeValue(forKey:id);profiles.removeValue(forKey:id)
             }
             _=try await traces.command("debug.clear",session:id,params:[:]); return ["accepted":true]
         }
-        guard let session=sessions[id] else { throw AgentError("session_missing", "Session runtime is not loaded") }; touch(id)
+        guard let session=sessions[id] else { throw AgentError("session_missing", "Session runtime is not loaded") }
         if method == "turn.stop" { await session.stop(); return ["accepted":true] }
         if method == "session.status" {
             var statusParams = params; statusParams["includeMessages"] = false
@@ -311,7 +307,7 @@ public actor NativeHostService {
                 guard sessions[forkID] == nil, let (profile,key)=profiles[id] else { throw AgentError("session_conflict", "Fork identity is already in use") }
                 let result=try await session.fork(to:forkID,at:point)
                 let fork=try await AgentSession(id:forkID,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:session.readOnly,resources:resources,client:ProviderClient(traces:traces),tools:session.isConnectionTest ? DisabledTools() : nativeTools,traces:traces,editingGate:editingGate,resumePath:result["path"].text,unknownToolOutcomes:unknownToolOutcomes,changed:notification())
-                sessions[forkID]=fork; profiles[forkID]=(profile,key); touch(forkID)
+                sessions[forkID]=fork; profiles[forkID]=(profile,key)
                 // A fork is a chat of its own, with its own limit.
                 if let costLimit { await fork.setCostLimit(costLimit) }
                 _=try await traces.command("debug.mode",session:forkID,params:["mode":JSON(await traces.mode(id))])
@@ -320,25 +316,23 @@ public actor NativeHostService {
         }
         if method == "side.open" {
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
-            guard sideParents[id] == nil else { throw AgentError("nested_side", "Nested side chats are not supported") }
             let sideID=try identity(params["sideSessionId"]), costLimit=try AgentSession.costLimit(params["costLimit"])
             try await runtimeGate.acquire()
             do {
-                if let existing=sideParents.first(where:{$0.value==id})?.key, let side=sessions[existing] { await runtimeGate.release(); return ["accepted":true,"sessionId":JSON(existing),"side":await side.snapshot()["side"],"ephemeral":true] }
                 guard sessions[sideID] == nil, let (profile,key)=profiles[id] else { throw AgentError("side_conflict", "Side identity is already in use") }
                 let seed=await session.sideSeed()
                 let side=try AgentSession(id:sideID,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:true,resources:resources,client:ProviderClient(traces:traces),tools:nativeTools,traces:traces,editingGate:editingGate,seed:seed.messages,parent:seed.info,unknownToolOutcomes:unknownToolOutcomes,changed:notification())
                 // A side is a session of its own: its own spend and limit.
                 if let costLimit { await side.setCostLimit(costLimit) }
                 let saved=try await side.preserveSide()
-                sessions[sideID]=side; profiles[sideID]=(profile,key); touch(sideID)
+                sessions[sideID]=side; profiles[sideID]=(profile,key)
                 _=try await traces.command("debug.mode",session:sideID,params:["mode":JSON(await traces.mode(id))])
                 await runtimeGate.release(); return ["accepted":true,"sessionId":JSON(sideID),"side":seed.info,"ephemeral":false,"path":saved["path"]]
             } catch { await runtimeGate.release(); throw error }
         }
-        if method == "side.keep" { let result=try await session.keep(whenFinished:params["whenFinished"].flag == true); if !(await session.isEphemeral) { sideParents.removeValue(forKey:id) }; return result }
+        if method == "side.keep" { return try await session.keep(whenFinished:params["whenFinished"].flag == true) }
         if method == "side.close" {
-            let saved=try await session.preserveSide(); sideParents.removeValue(forKey:id)
+            let saved=try await session.preserveSide()
             // This closes presentation only. The durable runtime and any active
             // work stay available as an ordinary saved child conversation.
             return saved
@@ -383,8 +377,8 @@ public actor NativeHostService {
             return ["accepted":true,"applied":JSON(applied)]
         }
         if method == "session.close" {
-            guard sideParents[id] == nil, !sideParents.values.contains(id), await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
-            sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); recency.removeAll{$0==id}; return ["accepted":true]
+            guard await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
+            sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); return ["accepted":true]
         }
         throw AgentError("unsupported_command", "Unsupported native host command: \(method)")
     }
