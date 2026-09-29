@@ -102,8 +102,9 @@ extension XCTestCase {
     /// `project`, holding the README the fixture's read tool reads when
     /// `readme` is set; and a vault with that project and the connection
     /// "Fixture" (`ui-fixture`, a 2M context and 300k output), whose Codex home
-    /// is inside the folder too.
-    @MainActor func gatewayWorkspace(_ name: String, projectID: String, readme: Bool = false,
+    /// is inside the folder too. `miniModel` gives the connection the mini
+    /// model titles are asked of.
+    @MainActor func gatewayWorkspace(_ name: String, projectID: String, readme: Bool = false, miniModel: String? = nil,
                                      gatewayEnvironment: [String: String] = [:]) async throws -> GatewayWorkspace {
         let root = scratchRoot(name)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -118,6 +119,7 @@ extension XCTestCase {
         var profile = ProfileRecord()
         profile.api = "openai-responses"; profile.baseUrl = gateway.base; profile.modelId = "ui-fixture"; profile.catalogUrl = gateway.base + "/catalog"
         profile.name = "Fixture"; profile.contextWindow = 2_000_000; profile.maxOutputTokens = 300_000; profile.modelOutputLimit = 300_000
+        profile.miniModelId = miniModel
         var configuration = VaultConfiguration()
         configuration.workspaces = [workspace]
         configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-loopback-only-key")]
