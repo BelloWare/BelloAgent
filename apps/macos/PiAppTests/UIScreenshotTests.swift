@@ -327,12 +327,12 @@ final class UIScreenshotTests: XCTestCase {
             model.report.advancedOpen = true; model.report.detailsOpen = true; try await settle(1.0)
             try capture(window, to: gallery.appendingPathComponent("03b-report-expanded-\(name).png"))
             model.report.advancedOpen = false; model.report.detailsOpen = false
-            model.report.grouping = "sessions"; try await settle(1.0)
+            model.report.grouping = .sessions; try await settle(1.0)
             if let first = model.report.sessions?.sessions.first { model.report.toggleSession(first.sessionID); try await settle(1.2) }
             try capture(window, to: gallery.appendingPathComponent("03c-report-sessions-\(name).png"))
-            model.report.grouping = "models"; try await settle(1.0)
+            model.report.grouping = .models; try await settle(1.0)
             try capture(window, to: gallery.appendingPathComponent("03e-report-models-\(name).png"))
-            model.report.grouping = "requests"; model.report.expandedSessions = []
+            model.report.grouping = .requests; model.report.expandedSessions = []
             window.setContentSize(NSSize(width: 920, height: 740)); window.center(); try await settle(0.8)
             try capture(window, to: gallery.appendingPathComponent("03c-report-compact-\(name).png"))
             window.setContentSize(NSSize(width: 920, height: 1100)); window.center(); try await settle(0.8)
