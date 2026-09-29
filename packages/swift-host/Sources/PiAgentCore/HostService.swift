@@ -495,7 +495,7 @@ public actor NativeHostService {
         // Written beside the destination, then linked into place: an existing
         // chat of that id is never replaced and a failed write leaves nothing.
         let temporary=sessions.appendingPathComponent(".recover-\(UUID().uuidString).jsonl")
-        let fd=open(temporary.path,O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW,0o600)
+        let fd=open(temporary.path,O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW|O_CLOEXEC,0o600)
         guard fd >= 0 else { throw AgentError("session_write","Cannot create the recovered copy") }
         let file=FileHandle(fileDescriptor:fd,closeOnDealloc:true)
         defer { try? file.close(); try? FileManager.default.removeItem(at:temporary) }

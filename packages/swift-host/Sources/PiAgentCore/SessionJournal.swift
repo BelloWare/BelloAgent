@@ -57,12 +57,12 @@ final class SessionJournal {
     init(url: URL, id: String, cwd: URL, binding: JSON, create: Bool, checkpoint: JournalCheckpoint? = nil, beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeSynchronize: @escaping @Sendable () throws -> Void = {}) throws {
         self.url=url; self.beforeAppend=beforeAppend; self.beforeSynchronize=beforeSynchronize
         try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
-        lockFD=open(url.path + ".lock",O_CREAT|O_RDWR|O_NOFOLLOW,0o600)
+        lockFD=open(url.path + ".lock",O_CREAT|O_RDWR|O_NOFOLLOW|O_CLOEXEC,0o600)
         guard lockFD >= 0 else { throw AgentError("session_lock", "Cannot create session writer lock") }
         guard flock(lockFD,LOCK_EX|LOCK_NB) == 0 else { _ = close(lockFD); throw AgentError("session_locked", "Another process owns this session") }
         do {
             if create {
-                let fd=open(url.path,O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW,0o600)
+                let fd=open(url.path,O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW|O_CLOEXEC,0o600)
                 guard fd >= 0 else { throw AgentError("session_exists", "Session path already exists; open it explicitly") }
                 _=close(fd)
                 let header: JSON = ["type":"session","version":3,"id":JSON(id),"cwd":JSON(cwd.path),"timestamp":JSON(isoNow())]
@@ -171,7 +171,7 @@ final class SessionJournal {
     }
     func publish(to destination: URL) throws {
         try synchronize()
-        let newFD=open(destination.path + ".lock",O_CREAT|O_RDWR|O_NOFOLLOW,0o600)
+        let newFD=open(destination.path + ".lock",O_CREAT|O_RDWR|O_NOFOLLOW|O_CLOEXEC,0o600)
         guard newFD >= 0 else { throw AgentError("session_lock", "Cannot acquire destination lock") }
         guard flock(newFD,LOCK_EX|LOCK_NB) == 0 else { _=close(newFD); throw AgentError("session_locked", "Destination is owned by another writer") }
         do { try FileManager.default.moveItem(at:url,to:destination) }
