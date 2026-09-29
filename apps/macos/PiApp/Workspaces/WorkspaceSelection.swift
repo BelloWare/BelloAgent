@@ -11,6 +11,23 @@ extension WorkspaceModel {
         // A background request is listed on its own page, not the sidebar:
         // the menu bar's running requests and the report open it there.
         if item.isBackgroundTask { openBackgroundRequests(selecting: id); return }
+        if reselectOpenChat(id, item: item, revealInSidebar: revealInSidebar) { return }
+        let (view, selection, heldRows) = prepareSelection(id, item: item, revealInSidebar: revealInSidebar, preserveArchiveSwitch: preserveArchiveSwitch)
+        restoreShownSide(of: id, selection: selection, reopensSide: reopensSide)
+        releaseUnreadDisplays(keeping: id)
+        let generation = view.presentationGeneration
+        PerformanceProbe.shared.observe("selectionLoadingFeedbackMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
+        let task = Task { [weak self, weak view] in
+            guard let self, let view else { return }
+            await self.loadSelectedChat(id, item: item, into: view, selection: selection, generation: generation, heldRows: heldRows)
+        }
+        navigationTask = task; view.presentation.navigation = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+    /// Opening the chat that is already open, with its page or reading it:
+    /// the chat is focused and looked at, and nothing is read again.
+    /// Returns whether it was that chat.
+    private func reselectOpenChat(_ id: String, item: ChatRecord, revealInSidebar: Bool) -> Bool {
         // A chat whose load ended without a page (nothing is reading it any
         // more) is read again rather than left on "Preparing…" for good.
         if selectedID == id, let selected, selected.historyState != .dormant,
@@ -23,8 +40,16 @@ extension WorkspaceModel {
             // Keep the transcript idempotent while allowing an expired or
             // missing optional preview to recover after helper eviction.
             if selected.presentation.readyAt != nil { scheduleAutomaticContext(id) }
-            return
+            return true
         }
+        return false
+    }
+    /// The switch itself, before anything is read: the chat being left stops
+    /// its reads, the sidebar shows the new one, and its display, kept or new,
+    /// becomes the selection and starts loading. Returns that display, the
+    /// selection's revision, and the rows it held.
+    private func prepareSelection(_ id: String, item: ChatRecord, revealInSidebar: Bool,
+                                  preserveArchiveSwitch: Bool) -> (view: SessionDisplay, selection: Int, heldRows: HeldRows) {
         navigationTask?.cancel()
         if let outgoing = selected {
             outgoing.presentation.cancel()
@@ -68,9 +93,12 @@ extension WorkspaceModel {
         view.publishTranscript()
         clearFailureMark(sessionID: id)
         if item.workspaceID != WorkspaceRecord.scratchID { selectedWorkspaceID = item.workspaceID }
-        // The side shown beside this chat comes back with it: the one open in
-        // this launch, or else the saved side it showed when the app last
-        // closed (`WorkspaceLaunchSelection.swift`).
+        return (view, selection, HeldRows(cached: cached, identity: heldIdentity, partialTurnInput: heldTurnInput))
+    }
+    /// The side shown beside this chat comes back with it: the one open in
+    /// this launch, or else the saved side it showed when the app last
+    /// closed (`WorkspaceLaunchSelection.swift`).
+    private func restoreShownSide(of id: String, selection: Int, reopensSide: Bool) {
         var shownSide: (child: ChatRecord, view: SessionDisplay)?
         if let info = sides[id], let sideView = displays[info.id], let child = record(info.id) {
             let sideCached = sideView.hasPresentedRows
@@ -90,6 +118,10 @@ extension WorkspaceModel {
                 await self.loadSideDisplay(child, view: sideView)
             }
         }
+    }
+    /// The displays of chats nobody is reading are let go of, least recently
+    /// used first, until no more than eight are kept.
+    private func releaseUnreadDisplays(keeping id: String) {
         // A new chat that was never sent has nothing written anywhere (see
         // `materializeChat`): its display is the only place its draft lives,
         // so it is not let go of while it holds one.
@@ -98,82 +130,81 @@ extension WorkspaceModel {
             other.presentation.cancel(); displays.removeValue(forKey: other.id)
             releaseHelperSession(other.id)
         }
-        let generation = view.presentationGeneration
-        PerformanceProbe.shared.observe("selectionLoadingFeedbackMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
-        let task = Task { [weak self, weak view] in
-            guard let self, let view else { return }
-            // However this ends, nothing is reading the chat any more.
-            defer { if view.presentationGeneration == generation { view.presentation.navigation = nil } }
-            @MainActor func current() -> Bool {
-                !Task.isCancelled && self.selectionRevision == selection && self.selectedID == id &&
-                    self.displays[id] === view && view.presentationGeneration == generation
-            }
-            do {
-                let wantsMetadata = !view.selectionMetadataLoaded
-                let draftAtStart = view.savedDraft
-                let metadata = try await self.store?.selectionMetadata(id: id, draft: wantsMetadata,
-                                                anchor: wantsMetadata && view.scrollAnchor == nil)
-                guard current() else { return }
-                if wantsMetadata {
-                    if let draft = metadata?.draft, view.draft == draftAtStart.text && view.attachments == (draftAtStart.attachments ?? []) && view.skills == (draftAtStart.skills ?? []),
-                       view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil { view.restoreDraft(draft) }
-                    if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
-                    view.selectionMetadataLoaded = true
-                }
-                view.draftReady = true
-                view.recovered = metadata?.recovered ?? []; view.uncertain = !view.recovered.isEmpty
-                view.composerFocusRequest += 1
-                // The chat's file can be named while its page is read: its
-                // first message writes the journal, and the helper can report
-                // a moved one. A page read under the old name is read again
-                // under the new one instead of being dropped with nothing in
-                // its place.
-                let held = view.scrollAnchor
-                // Shown earlier this launch, its journal unchanged, and its rows
-                // still the newest page as read in, with the reader at the
-                // bottom or on one of them: a fresh read returns those same
-                // rows, and drew them again. Anything else is read as before:
-                // rows paged in since come back as one page from where the
-                // reader was, and a place no longer in the chat opens the newest.
-                if cached, let revision = view.historyRevision, revision.path == item.path, !view.messages.isEmpty,
-                   view.adoptedPage == view.pageRows, view.newerPage.cursor == nil,
-                   view.scrollAnchor.map({ anchor in anchor.followsBottom || view.messages.contains { $0.id == anchor.id } }) ?? true,
-                   await self.history.unchanged(revision) {
-                    guard current() else { return }
-                    self.presentHeldHistory(view, identity: heldIdentity, partialTurnInput: heldTurnInput)
-                    if self.opened.contains(id) { self.refresh(id) }
-                    return
-                }
-                // The name can also change while the page's request figures
-                // are read, which takes up to `accountingBeforeShowing`: that
-                // page was dropped with nothing reading the chat any more, and
-                // it stayed on "Preparing…" until it was opened again.
-                var source = item, page = try await self.readInitialWindow(source, holding: held)
-                for reads in 1...4 {
-                    guard current(), let now = self.record(id) else { return }
-                    if now.path == source.path {
-                        page.messages = await self.withAccounting(page.messages, view: view, workspaceID: source.workspaceID)
-                        guard current() else { return }
-                        if self.record(id)?.path == source.path { break }
-                    }
-                    guard reads < 4, let renamed = self.record(id) else { return }
-                    source = renamed; page = try await self.readInitialWindow(source, holding: held)
-                }
-                self.adoptInitialHistory(page, into: view)
-                if let profile = self.profiles.first(where: { $0.id == item.profileID }), profile.api != LiteLLMConfiguration.supportedAPI {
-                    view.notice = LiteLLMConfiguration.unsupportedAPIMessage
-                }
-                if !view.recovered.isEmpty { view.notice = "Outcome uncertain for a previous command. Review the saved history before sending again." }
-                if self.opened.contains(id) { self.refresh(id) }
-            } catch is CancellationError { }
-            catch {
-                guard current() else { return }
-                view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false
-                view.notice = error.localizedDescription; view.draftReady = view.selectionMetadataLoaded
-            }
+    }
+    /// Reads the opened chat's saved draft and place, then its page, and shows
+    /// it: the rows it held when they are still its newest, else the page read.
+    /// It stops wherever the reader has moved on.
+    private func loadSelectedChat(_ id: String, item: ChatRecord, into view: SessionDisplay, selection: Int,
+                                  generation: UUID, heldRows: HeldRows) async {
+        // However this ends, nothing is reading the chat any more.
+        defer { if view.presentationGeneration == generation { view.presentation.navigation = nil } }
+        @MainActor func current() -> Bool {
+            !Task.isCancelled && self.selectionRevision == selection && self.selectedID == id &&
+                self.displays[id] === view && view.presentationGeneration == generation
         }
-        navigationTask = task; view.presentation.navigation = task
-        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        do {
+            let wantsMetadata = !view.selectionMetadataLoaded
+            let draftAtStart = view.savedDraft
+            let metadata = try await self.store?.selectionMetadata(id: id, draft: wantsMetadata,
+                                            anchor: wantsMetadata && view.scrollAnchor == nil)
+            guard current() else { return }
+            if wantsMetadata {
+                if let draft = metadata?.draft, view.draft == draftAtStart.text && view.attachments == (draftAtStart.attachments ?? []) && view.skills == (draftAtStart.skills ?? []),
+                   view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil { view.restoreDraft(draft) }
+                if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
+                view.selectionMetadataLoaded = true
+            }
+            view.draftReady = true
+            view.recovered = metadata?.recovered ?? []; view.uncertain = !view.recovered.isEmpty
+            view.composerFocusRequest += 1
+            // The chat's file can be named while its page is read: its
+            // first message writes the journal, and the helper can report
+            // a moved one. A page read under the old name is read again
+            // under the new one instead of being dropped with nothing in
+            // its place.
+            let held = view.scrollAnchor
+            // Shown earlier this launch, its journal unchanged, and its rows
+            // still the newest page as read in, with the reader at the
+            // bottom or on one of them: a fresh read returns those same
+            // rows, and drew them again. Anything else is read as before:
+            // rows paged in since come back as one page from where the
+            // reader was, and a place no longer in the chat opens the newest.
+            if heldRows.cached, let revision = view.historyRevision, revision.path == item.path, !view.messages.isEmpty,
+               view.adoptedPage == view.pageRows, view.newerPage.cursor == nil,
+               view.scrollAnchor.map({ anchor in anchor.followsBottom || view.messages.contains { $0.id == anchor.id } }) ?? true,
+               await self.history.unchanged(revision) {
+                guard current() else { return }
+                self.presentHeldHistory(view, identity: heldRows.identity, partialTurnInput: heldRows.partialTurnInput)
+                if self.opened.contains(id) { self.refresh(id) }
+                return
+            }
+            // The name can also change while the page's request figures
+            // are read, which takes up to `accountingBeforeShowing`: that
+            // page was dropped with nothing reading the chat any more, and
+            // it stayed on "Preparing…" until it was opened again.
+            var source = item, page = try await self.readInitialWindow(source, holding: held)
+            for reads in 1...4 {
+                guard current(), let now = self.record(id) else { return }
+                if now.path == source.path {
+                    page.messages = await self.withAccounting(page.messages, view: view, workspaceID: source.workspaceID)
+                    guard current() else { return }
+                    if self.record(id)?.path == source.path { break }
+                }
+                guard reads < 4, let renamed = self.record(id) else { return }
+                source = renamed; page = try await self.readInitialWindow(source, holding: held)
+            }
+            self.adoptInitialHistory(page, into: view)
+            if let profile = self.profiles.first(where: { $0.id == item.profileID }), profile.api != LiteLLMConfiguration.supportedAPI {
+                view.notice = LiteLLMConfiguration.unsupportedAPIMessage
+            }
+            if !view.recovered.isEmpty { view.notice = "Outcome uncertain for a previous command. Review the saved history before sending again." }
+            if self.opened.contains(id) { self.refresh(id) }
+        } catch is CancellationError { }
+        catch {
+            guard current() else { return }
+            view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false
+            view.notice = error.localizedDescription; view.draftReady = view.selectionMetadataLoaded
+        }
     }
     /// The page a chat opens on: its newest turns, or, when the reader left it
     /// further back than those, the turns from where they were, read the way
@@ -240,4 +271,14 @@ extension WorkspaceModel {
         while let next = parent, lineage.insert(next).inserted { parent = record(next)?.parentSessionID }
         return lineage
     }
+}
+
+/// What a chat's display showed as it was opened again: rows kept on screen
+/// while its page is read, and what they were read under, should they turn
+/// out to be the chat's rows still.
+private struct HeldRows {
+    /// The display had rows on screen.
+    let cached: Bool
+    let identity: (incarnation: String, lineage: String)?
+    let partialTurnInput: String?
 }
