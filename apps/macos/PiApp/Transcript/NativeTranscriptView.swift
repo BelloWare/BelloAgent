@@ -719,7 +719,11 @@ struct ContentGeometry: Equatable {
             }
             return nil
         }
-        if !followsBottom, let anchor = openingReadingAnchor, let frame = frames[rowIdentifier(for: anchor.id)] {
+        // Held in the pass while the page places it: the question a chat
+        // opened at, and a destination still landing. Once one has landed,
+        // the pane's reading correction holds the row the reader is on.
+        if !followsBottom, pagePlacesItself, let anchor = pendingAnchor ?? openingReadingAnchor,
+           let frame = frames[rowIdentifier(for: anchor.id)] {
             return min(max(0, frame.minY - anchor.offset), bottom)
         }
         return nil

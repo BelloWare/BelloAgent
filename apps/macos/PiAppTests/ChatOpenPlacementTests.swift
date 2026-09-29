@@ -196,4 +196,37 @@ final class ChatOpenPlacementTests: XCTestCase, SerialTestLane {
         }
         XCTAssertEqual(Array(changes.prefix(12)), [], "Once drawn, an opened chat's rows stay where they are (\(changes.count) changes)")
     }
+
+    /// Found by `SoakTests`: a chat left while its reply was still arriving
+    /// kept the reply as the reader left it, since a chat in the background
+    /// is asked for its status and not its rows. Opened again once the run
+    /// had finished, it showed the reply unfinished, and moved when the
+    /// finished page came: its usage line appeared, its turn's live report
+    /// gave way to the settled one. It now opens as it is, once.
+    @MainActor func testAChatWhoseReplyFinishedInTheBackgroundOpensAsItIsNow() async throws {
+        let setup = try await setup()
+        let launched = await launch(setup)
+        await launched.model.restore()
+        launched.model.selectedWorkspaceID = setup.workspace.id; launched.model.profileChoice = setup.profile.id
+        func chat(_ name: String) -> ChatRecord { ChatRecord(id: "chat-\(name)-" + UUID().uuidString, workspaceID: setup.workspace.id, title: name, path: nil, profileID: setup.profile.id) }
+        let running = chat("running"), other = chat("other")
+        for (chat, texts) in [(other, ["And a short one"]), (running, ["Please read fixture README.md", "And a short one"])] {
+            launched.model.chats.append(chat); try await launched.model.store?.put(chat, kind: "chat", id: chat.id)
+            await launched.model.select(chat.id)
+            for text in texts {
+                launched.model.displays[chat.id]?.draft = text; launched.model.send(sessionID: chat.id)
+                await waitFor("“\(text)” never finished") { quiet(launched.model.displays[chat.id]) }
+            }
+        }
+        // A long reply starts, and the reader moves on while it arrives.
+        let view = try XCTUnwrap(launched.model.displays[running.id])
+        view.draft = "A large answer, please"; launched.model.send(sessionID: running.id)
+        await waitFor("The long reply never started arriving") { view.messages.last?.isStreaming == true && (view.messages.last?.text.count ?? 0) > 400 }
+        await launched.model.select(other.id)
+        await waitFor("The long reply never finished in the background", seconds: 90) { !view.busy && view.state == "idle" }
+        try await Task.sleep(for: .milliseconds(600))
+        let opened = try await open(running.id, in: launched)
+        XCTAssertEqual(Array(opened.changes.prefix(12)), [], "The chat opens as it is now, and nothing on it moves (\(opened.changes.count) changes)")
+        XCTAssertFalse(view.messages.contains { $0.isStreaming }, "The finished reply is shown finished")
+    }
 }

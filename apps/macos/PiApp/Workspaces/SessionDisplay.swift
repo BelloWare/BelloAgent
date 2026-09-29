@@ -89,6 +89,15 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var refreshingCachedRows = false
     /// Rows this display has presented, which a revisit keeps on the page.
     var hasPresentedRows: Bool { !messages.isEmpty && (presentation.identity != nil || refreshingCachedRows) }
+    /// The rows held here are from a run that has finished since: a chat in
+    /// the background is asked for its status, not its rows, so they stopped
+    /// where the reader left them — a reply still arriving, its turn still
+    /// live. Kept on the page, they changed under the reader as soon as the
+    /// finished page replaced them.
+    var heldRowsOutlived: Bool {
+        !busy && !loading && state == "idle" && sendingRows.isEmpty
+            && (taskPresentation?.active != nil || messages.contains { $0.isStreaming || $0.isSending })
+    }
     @Published var historyProgress: String?
     @Published var olderPage = ConversationPageBoundary()
     @Published var newerPage = ConversationPageBoundary()

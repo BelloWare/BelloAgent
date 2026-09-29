@@ -35,7 +35,13 @@ extension WorkspaceModel {
         } else if revealInSidebar { revealProjectChat(item) } else { showArchivedSessions = item.isArchived }
         PerformanceProbe.shared.count("sessionSelectionCalls")
         PerformanceProbe.shared.beginSelection(id, hasHistory: item.path != nil)
-        let view = displays[id] ?? SessionDisplay(id: id), cached = view.hasPresentedRows
+        let view = displays[id] ?? SessionDisplay(id: id)
+        // Rows from a run that finished while the chat was in the background
+        // are not kept on the page: they are the run as the reader left it,
+        // and they would change under the reader when the finished page came.
+        // The chat opens as a chat opened for the first time does.
+        if view.hasPresentedRows, view.heldRowsOutlived { view.messages = []; view.presentation.identity = nil }
+        let cached = view.hasPresentedRows
         // What the rows shown were read under, should they still be the chat's rows.
         let heldIdentity = view.presentation.identity, heldTurnInput = view.presentation.partialTurnInput
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
