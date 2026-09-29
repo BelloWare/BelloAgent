@@ -5,8 +5,11 @@ import Foundation
 // focused, and the displays of chats nobody is reading let go of.
 
 extension WorkspaceModel {
-    func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveFilter: Bool = false, reopensSide: Bool = true) async {
+    func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveSwitch: Bool = false, reopensSide: Bool = true) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
+        // A background request is listed on its own page, not the sidebar:
+        // the menu bar's running requests and the report open it there.
+        if item.isBackgroundTask { openBackgroundRequests(selecting: id); return }
         // A chat whose load ended without a page (nothing is reading it any
         // more) is read again rather than left on "Preparing…" for good.
         if selectedID == id, let selected, selected.historyState != .dormant,
@@ -29,13 +32,19 @@ extension WorkspaceModel {
         selectionRevision += 1
         let selection = selectionRevision
         let previous = selectedID
-        if preserveArchiveFilter {
+        if preserveArchiveSwitch {
             setProjectExpanded(item.workspaceID, expanded: true)
             if let topicID = effectiveTopicID(for: item) { setTopicExpanded(topicID, expanded: true) }
-        } else if revealInSidebar { revealProjectChat(item) } else { showArchivedSessions = item.isArchived }
+        } else if revealInSidebar { revealProjectChat(item) }
         PerformanceProbe.shared.count("sessionSelectionCalls")
         PerformanceProbe.shared.beginSelection(id, hasHistory: item.path != nil)
-        let view = displays[id] ?? SessionDisplay(id: id), cached = view.hasPresentedRows
+        let view = displays[id] ?? SessionDisplay(id: id)
+        // Rows from a run that finished while the chat was in the background
+        // are not kept on the page: they are the run as the reader left it,
+        // and they would change under the reader when the finished page came.
+        // The chat opens as a chat opened for the first time does.
+        if view.hasPresentedRows, view.heldRowsOutlived { view.messages = []; view.presentation.identity = nil }
+        let cached = view.hasPresentedRows
         // What the rows shown were read under, should they still be the chat's rows.
         let heldIdentity = view.presentation.identity, heldTurnInput = view.presentation.partialTurnInput
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
@@ -134,14 +143,21 @@ extension WorkspaceModel {
                     if self.opened.contains(id) { self.refresh(id) }
                     return
                 }
+                // The name can also change while the page's request figures
+                // are read, which takes up to `accountingBeforeShowing`: that
+                // page was dropped with nothing reading the chat any more, and
+                // it stayed on "Preparing…" until it was opened again.
                 var source = item, page = try await self.readInitialWindow(source, holding: held)
-                for _ in 0..<3 {
-                    guard current(), let now = self.record(id), now.path != source.path else { break }
-                    source = now; page = try await self.readInitialWindow(source, holding: held)
+                for reads in 1...4 {
+                    guard current(), let now = self.record(id) else { return }
+                    if now.path == source.path {
+                        page.messages = await self.withAccounting(page.messages, view: view, workspaceID: source.workspaceID)
+                        guard current() else { return }
+                        if self.record(id)?.path == source.path { break }
+                    }
+                    guard reads < 4, let renamed = self.record(id) else { return }
+                    source = renamed; page = try await self.readInitialWindow(source, holding: held)
                 }
-                guard current(), self.record(id)?.path == source.path else { return }
-                page.messages = await self.withAccounting(page.messages, view: view, workspaceID: source.workspaceID)
-                guard current(), self.record(id)?.path == source.path else { return }
                 self.adoptInitialHistory(page, into: view)
                 if let profile = self.profiles.first(where: { $0.id == item.profileID }), profile.api != LiteLLMConfiguration.supportedAPI {
                     view.notice = LiteLLMConfiguration.unsupportedAPIMessage

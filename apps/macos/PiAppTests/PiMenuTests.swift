@@ -33,7 +33,7 @@ final class PiMenuTests: XCTestCase {
         XCTAssertEqual(PiMenus.built, before + 1, "One press, one menu")
         let menu = try XCTUnwrap(shown.last)
         XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
-                       ["New Chat", "New Topic…", "Changes and History…", "Collapse Project", "Show Archived Chats", "Manage Project…"])
+                       ["New Chat", "New Topic…", "Changes and History…", "Collapse Project", "Manage Project…"])
         XCTAssertTrue(PiMenus.perform("newTopic-pane-project", in: menu), "The menu's commands run as the old menu's did")
         XCTAssertEqual(model.topicEditor?.projectID, "pane-project")
         // The chat actions read the chat when they open.

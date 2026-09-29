@@ -328,6 +328,15 @@ enum CapturedBodyReader {
     /// only ever appended, so the prefix a read starts with never changes.
     static func growable(_ state: String) -> Bool { state == "recording" || state == "partial" }
 
+    /// Whether a read has come far enough since the progress on screen to
+    /// show again: a tenth of the body, never less than 128 KiB, or its end,
+    /// once. Each step shown lays the page out again: a 5 MB request redrew
+    /// the Inspector's request page some forty-five times on its way in, and
+    /// the Raw tab as often, at about 10 ms a time in a Debug build.
+    static func progressWorthShowing(_ loaded: Int, of total: Int, shown: Int) -> Bool {
+        loaded >= total ? shown < total : loaded - shown >= max(131_072, total / 10)
+    }
+
     /// `combine` also builds the combined response view before returning, so
     /// a document that replaces one on screen never passes through a spinner.
     @MainActor static func read(kind: String, source: CapturedBodySource, combine: Bool = false, progress: @escaping @MainActor @Sendable (Int, Int) -> Void = { _, _ in }) async throws -> CapturedBodyDocument {
@@ -399,7 +408,7 @@ enum CapturedBodyReader {
             try await CapturedBodyReader.read(kind: kind, source: source, combine: combine) { [weak self] loaded, total in
                 guard let self, self.generation == revision else { return }
                 // Coalesce UI progress without changing the archive's 32 KiB reads.
-                if loaded == total || loaded - self.loaded >= 131_072 || self.total == 0 {
+                if self.total == 0 || CapturedBodyReader.progressWorthShowing(loaded, of: total, shown: self.loaded) {
                     self.loaded = loaded; self.total = total
                 }
             }

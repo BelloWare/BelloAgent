@@ -18,6 +18,10 @@ import AppKit
     @Published var panel = Panel.changes { didSet { if panel == .changes, oldValue != .changes, selectedDiffStale { startSelectedDiffLoad(silently: true) } } }
     @Published private(set) var status = GitRepositoryStatus() { didSet { splitStatus() } }
     @Published private(set) var loading = false
+    /// A read has said whether the folder is a repository and, when it is,
+    /// what changed in it. Until then the panel keeps its own layout, empty,
+    /// and says neither "Not a git repository" nor "No changes".
+    @Published private(set) var statusRead = false
     @Published private(set) var notice = ""
     @Published var selection: Selection? { didSet { if selection != oldValue { startSelectedDiffLoad() } } }
     @Published private(set) var diff: [GitDiffFile] = []
@@ -60,11 +64,15 @@ import AppKit
     @Published var logFilter = GitLogFilter() { didSet { if logFilter != oldValue { startHistoryReload() } } }
     @Published var detailFile: String? { didSet { if detailFile != oldValue && !changingCommit { startCommitLoad() } } }
     @Published private(set) var detailFileDiff: [GitDiffFile] = []
-    @Published var splitDiff = false
+    /// How the diff is laid out and which diff is shown whole, held apart
+    /// from the state the panel observes: switching the layout, or opening
+    /// the whole diff, redraws the diff and not the whole panel.
+    let presentation = GitDiffPresentation()
+    var splitDiff: Bool { get { presentation.split } set { presentation.split = newValue } }
     /// Which diff the reader asked to see in full. It names the diff, so the
     /// row gate comes back for the next file or commit instead of quietly
     /// staying open and laying out a whole 20,000-line patch.
-    @Published var wholeDiffShown: String?
+    var wholeDiffShown: String? { get { presentation.whole } set { presentation.whole = newValue } }
     /// How many of a commit's file chips are on screen. Reset for each commit.
     @Published var commitFilesShown = GitCommitFileChips.step
     /// Names one diff: the selected file, or a commit and the file chosen in it.
@@ -156,6 +164,36 @@ import AppKit
         loading = false; diffLoading = false; commitLoading = false
     }
 
+    /// The sheet has closed for good. SwiftUI keeps a closed sheet's views and
+    /// state alive (macOS 14), so a controller that kept what it had read held
+    /// its diffs, its history and up to two dozen commits' patches for every
+    /// Changes sheet ever closed. It goes back to how it was made: a panel
+    /// that opens over it again reads everything afresh, as a first open does.
+    func letGo() {
+        selectedCommit = nil
+        selection = nil
+        status = GitRepositoryStatus(); statusRead = false; repositoryRoot = nil
+        diff = []; detail = nil; detailDiff = []; detailFileDiff = []; detailDiffDeferred = false
+        commits = []; historyExhausted = false; branches = []; stashes = []
+        commitCache = [:]; commitCacheOrder = []
+        applyChecked([]); checkedByReader = false
+        commitMessage = ""; amend = false; lastCommit = nil; notice = ""
+        selectedDiffStale = false; panel = .changes
+        splitDiff = false; wholeDiffShown = nil; commitFilesShown = GitCommitFileChips.step
+        logFilter = GitLogFilter()
+        // Last: the resets above may have started reads of their own. A write
+        // still running, whose refresh would read everything again, reads
+        // nothing until a panel opens over this controller.
+        stop()
+        closed = true
+    }
+    /// Let go of by a closed sheet; see `letGo()`.
+    private var closed = false
+    /// A panel is on screen over this controller: it reads again.
+    func opened() { closed = false }
+    /// Test seam: commits whose reads are kept for moving back to them.
+    var cachedCommits: Int { commitCache.count }
+
     /// The working tree changed under the panel. The reader is not moved: the
     /// selection, the ticks, the scroll position and the whole-diff gate stay
     /// where they are, and a spinner does not appear for a read nobody asked
@@ -196,7 +234,7 @@ import AppKit
     }
 
     func refresh(automatic: Bool = false) async {
-        guard let root else { return }
+        guard let root, !closed else { return }
         // Checked again here and not only where the task was made: the reader
         // may have started a refresh of their own in between, and theirs must
         // not be left half done with a spinner that never stops.
@@ -216,7 +254,7 @@ import AppKit
         publish(\.repositoryRoot, top)
         updateWatch(on: top)
         guard let top else {
-            publish(\.status, GitRepositoryStatus()); publish(\.diff, []); publish(\.commits, [])
+            publish(\.status, GitRepositoryStatus()); publish(\.statusRead, true); publish(\.diff, []); publish(\.commits, [])
             publish(\.selection, nil); publish(\.selectedCommit, nil); publish(\.detail, nil); return
         }
         do {
@@ -227,7 +265,7 @@ import AppKit
             if Self.statusReadDelay > .zero { try? await Task.sleep(for: Self.statusReadDelay); guard !Task.isCancelled else { return } }
             let status = try await service.status(in: top)
             guard current(generation) else { return }
-            publish(\.status, status)
+            publish(\.status, status); publish(\.statusRead, true)
             let paths = Set(status.entries.map(\.path))
             // Files arrive ticked until the reader says otherwise; once they
             // have, a refresh never ticks anything back on. Unticking every

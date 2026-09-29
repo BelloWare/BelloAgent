@@ -180,11 +180,7 @@ extension AgentSession {
         // A process restart cannot manufacture terminal evidence. Retained
         // parts stay in place, with an explicit gap after the last checkpoint.
         for index in r.history.indices {
-            let prior = r.history[index]
-            guard ["execution","requestLedger"].contains(prior.kind ?? ""), prior.responseTimeline?.terminal == nil else { continue }
-            r.history[index].responseTimeline?.finish("interrupted")
-            r.history[index].responseTimeline?.coverage = "partial"
-            r.history[index].detail = (r.history[index].kind == "requestLedger" ? "Request":"Compaction") + " interrupted · no terminal receipt"
+            guard Self.endWithoutReceipt(&r.history[index]) else { continue }
             let replacement=r.history[index]
             if let shown = r.visible.firstIndex(where: { $0.id == replacement.id }) { r.visible[shown] = replacement }
         }
@@ -206,5 +202,14 @@ extension AgentSession {
         }
         r.stateSource = stateSource.map { StateSource(line: $0.line, offset: $0.offset, key: $0.key) }
         return r
+    }
+    /// A progress row the journal holds no terminal receipt for, as a replay
+    /// leaves it: interrupted, with the gap said. False for any other row.
+    static func endWithoutReceipt(_ message: inout ChatMessage) -> Bool {
+        guard ["execution","requestLedger"].contains(message.kind ?? ""), message.responseTimeline?.terminal == nil else { return false }
+        message.responseTimeline?.finish("interrupted")
+        message.responseTimeline?.coverage = "partial"
+        message.detail = (message.kind == "requestLedger" ? "Request":"Compaction") + " interrupted · no terminal receipt"
+        return true
     }
 }

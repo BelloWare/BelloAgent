@@ -134,7 +134,7 @@ final class OrganizationBatchTests: XCTestCase {
         model.organizationWrite = nil
         _ = try await model.enqueueOrganization(["chat0", "chat1"], change: .archived(true)).value
         XCTAssertEqual(model.selectedID, "chat1"); XCTAssertEqual(model.focusedSessionID, "chat1")
-        XCTAssertFalse(model.showArchivedSessions); XCTAssertFalse(model.projectShowsArchive("p")); XCTAssertEqual(model.selectionRevision, 1)
+        XCTAssertFalse(model.showArchivedSessions); XCTAssertFalse(model.sidebarShowsArchived); XCTAssertEqual(model.selectionRevision, 1)
         await model.store?.close()
     }
 
@@ -148,7 +148,7 @@ final class OrganizationBatchTests: XCTestCase {
                     before[index].archivedAt = Date()
                     if expected == id, let next = before.filter({ $0.workspaceID == before[index].workspaceID && !$0.isArchived }).sorted(by: ChatRecord.sidebarPrecedes).first { expected = next.id }
                 }
-                XCTAssertEqual(SessionOrganizationSelection.afterArchive(selected: selected, targets: targets, archived: Set(targets), records: before, includeBackground: false), expected)
+                XCTAssertEqual(SessionOrganizationSelection.afterArchive(selected: selected, targets: targets, archived: Set(targets), records: before), expected)
             }
         }
     }

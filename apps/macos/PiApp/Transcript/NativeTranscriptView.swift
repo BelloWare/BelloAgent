@@ -129,6 +129,12 @@ struct ContentGeometry: Equatable {
     private var pendingAnchorRow: String?
     /// A chat opened while idle starts at its last question when the last turn does not fit above the bottom.
     private var openingPlacementPending = false
+    /// True from a new page or viewport request until the page has landed its
+    /// first placement. Until the document has laid this page's rows out,
+    /// its geometry is the chat shown before: a placement worked out against
+    /// it landed on that chat's height and drew the new rows where the old
+    /// chat was scrolled to, for the frames until the rows were placed.
+    private var awaitingFirstPlacement = false
     private var openingReadingAnchor: TranscriptAnchor? { didSet { syncReadingOwnership() } }
     private var seen: Set<String> = []
     private var completedAssistant: String?
@@ -225,6 +231,7 @@ struct ContentGeometry: Equatable {
     }
     private func reset() {
         initialized = false; followsBottom = true; atBottom = true; pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
+        awaitingFirstPlacement = true
         viewportResizePending = false
         settleScheduled = false; readCheckScheduled = false
         seen = []; completedAssistant = nil; firstRow = ""; jumping = false
@@ -345,7 +352,12 @@ struct ContentGeometry: Equatable {
             viewportRequest = request
             reset()
             explicitDestination = navigating && session.scrollAnchor?.followsBottom == false
-            navigated = navigating
+            // The chat's own opening page, read in or shown again on a
+            // revisit, is not a jump the reader asked for: it opens as any
+            // chat opens. Counted as one, it cancelled the opening placement
+            // the page had already drawn, and a revisit drew the last question
+            // and then jumped to the bottom a few frames later.
+            navigated = navigating && !session.viewportRequestOpens
         }
         if snapshot?.messages.first?.id != messages.first?.id, viewportRequest == request {
             preserveReadingPositionForLayout()
@@ -630,30 +642,26 @@ struct ContentGeometry: Equatable {
         // An explicit jump owns scrolling until it lands. A reply arriving
         // during that animation must not snap the clip view on every delta.
         guard !jumping else { requestReadCheck(); return }
+        // Until the transcript's document has laid this page's rows out, the
+        // geometry it reports is the chat shown before: landing on it put the
+        // new rows where that chat was scrolled to, and took the place of the
+        // first placement the layout pass makes (`layoutPlacement`).
+        if awaitingFirstPlacement, scrollView?.documentView is TranscriptNativeDocument,
+           let last = snapshot?.items.last, frames[last.id] == nil { return }
         if openingPlacementPending, documentSettled, viewport.height > 0, let snapshot {
-            // The reader opened this chat: show the question that started the last
-            // turn, unless the whole turn fits above the bottom anyway.
-            if let lastUser = snapshot.items.last(where: { if case .message(let m) = $0 { return m.role == "user" }; return false }), let frame = frames[lastUser.id] {
-                openingPlacementPending = false
-                let bottom = max(0, content.height - viewport.height)
-                if frame.minY < bottom - 1 {
-                    followsBottom = false
-                    pendingAnchor = TranscriptAnchor(id: lastUser.id, offset: 12, followsBottom: false)
-                    openingReadingAnchor = pendingAnchor
-                    if !detached { detached = true }
-                }
-            } else if !frames.isEmpty { openingPlacementPending = false }
+            resolveOpeningPlacement(snapshot, bottom: max(0, content.height - viewport.height))
         }
+        if openingReadingAnchor != nil, !detached { detached = true }
         if followsBottom {
             pendingAnchor = nil
             // Wait for exact native geometry instead of landing at a stale height.
-            if documentSettled { scrollToBottom() }
+            if documentSettled { scrollToBottom(); awaitingFirstPlacement = false }
             if detached && !jumping { detached = false }
             requestReadCheck()
             return
         }
         if scrollView?.transcriptReading.restore() == true {
-            pendingAnchor = nil; requestReadCheck(); return
+            pendingAnchor = nil; awaitingFirstPlacement = false; requestReadCheck(); return
         }
         guard let anchor = pendingAnchor, let snapshot else { requestReadCheck(); return }
         let rowID = rowIdentifier(for: anchor.id)
@@ -664,7 +672,7 @@ struct ContentGeometry: Equatable {
             // Keep the saved anchor until the native document attaches.
             guard let scrollView, let document = scrollView.documentView else { return }
             let destination = explicitDestination
-            pendingAnchor = nil
+            pendingAnchor = nil; awaitingFirstPlacement = false
             scroll(to: frame.minY - anchor.offset, animated: false)
             // A saved position or a jump lands on the heights the rows above
             // have so far, most of them estimated. Their measurement comes
@@ -676,6 +684,49 @@ struct ContentGeometry: Equatable {
             }
         }
         requestReadCheck()
+    }
+    /// The reader opened this chat: show the question that started the last
+    /// turn, unless the whole turn fits above the bottom anyway.
+    private func resolveOpeningPlacement(_ snapshot: Snapshot, bottom: CGFloat) {
+        if let lastUser = snapshot.items.last(where: { if case .message(let m) = $0 { return m.role == "user" }; return false }), let frame = frames[lastUser.id] {
+            openingPlacementPending = false
+            if frame.minY < bottom - 1 {
+                followsBottom = false
+                pendingAnchor = TranscriptAnchor(id: lastUser.id, offset: 12, followsBottom: false)
+                openingReadingAnchor = pendingAnchor
+            }
+        } else if !frames.isEmpty { openingPlacementPending = false }
+    }
+    /// Where the page belongs, worked out in the layout pass that has just
+    /// placed its rows, for the placements only the page makes: its first,
+    /// after a chat is opened or its rows shown again, and the question a
+    /// chat opened at while the rows above it measure. Landed a run-loop turn
+    /// later instead, the frame between drew the new rows where the chat
+    /// before was scrolled to, and a question the rows above had moved by
+    /// their difference. Nil when the page has nothing to place here; the
+    /// reader's own position is the pane's reading correction's to keep.
+    func layoutPlacement(contentHeight: CGFloat, viewportHeight: CGFloat) -> CGFloat? {
+        guard initialized, !jumping, viewportHeight > 0, let snapshot, let last = snapshot.items.last, frames[last.id] != nil else { return nil }
+        let bottom = max(0, contentHeight - viewportHeight)
+        if openingPlacementPending { resolveOpeningPlacement(snapshot, bottom: bottom) }
+        if awaitingFirstPlacement, !openingPlacementPending {
+            // Where the page was put is remembered once it is there, as it
+            // was when the landing came a turn after the first frame.
+            if followsBottom { awaitingFirstPlacement = false; scheduleReport(); return bottom }
+            if let anchor = pendingAnchor, let frame = frames[rowIdentifier(for: anchor.id)] {
+                awaitingFirstPlacement = false; scheduleReport()
+                return min(max(0, frame.minY - anchor.offset), bottom)
+            }
+            return nil
+        }
+        // Held in the pass while the page places it: the question a chat
+        // opened at, and a destination still landing. Once one has landed,
+        // the pane's reading correction holds the row the reader is on.
+        if !followsBottom, pagePlacesItself, let anchor = pendingAnchor ?? openingReadingAnchor,
+           let frame = frames[rowIdentifier(for: anchor.id)] {
+            return min(max(0, frame.minY - anchor.offset), bottom)
+        }
+        return nil
     }
     private var documentSettled: Bool {
         guard let document = scrollView?.documentView else { return true }
@@ -1294,6 +1345,19 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         revealFade.opacity = Float(min(1, max(0, fade)))
         CATransaction.commit()
     }
+    /// Ends any selection in this row's text, for a row kept out of sight
+    /// while the reader is in another chat (`TranscriptKeptRows`). A chat
+    /// they come back to has nothing selected, as it always had; a selection
+    /// left standing there would draw without the bar that acts on it.
+    func forgetTextSelection() {
+        func visit(_ view: NSView) {
+            if let text = view as? NSTextView, text.selectedRange().length > 0 {
+                text.setSelectedRange(NSRange(location: text.selectedRange().location, length: 0))
+            }
+            for child in view.subviews { visit(child) }
+        }
+        if let hosted { visit(hosted) }
+    }
     /// Lets go of the SwiftUI tree for a row the reader has scrolled well
     /// past. Everything that decides what the row is and how tall it is
     /// stays, so coming back to it is one native layout and no measuring.
@@ -1887,6 +1951,7 @@ struct NativeTranscriptView: View {
     }
 
     var body: some View {
+        let _ = RedrawCounter.note("transcript")
         VStack(spacing: 0) {
             if let error = page.projectionError { PiNote(error).padding(8) }
             TranscriptScrollSurface(revision: page.snapshot?.sequence ?? 0, page: page, actions: actions)
@@ -1946,15 +2011,20 @@ struct NativeTranscriptView: View {
             // Not re-identified by the presentation generation: a new page of
             // the same chat (a revisit, a reload, an earlier version) keeps the
             // bar where it stands instead of replaying its entrance.
-            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion)
+            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion, session: ObjectIdentifier(session)).equatable()
         }
         // The run state is read where it is used, never from the value this
-        // body happened to be built with: a task runs a turn of the run loop
-        // later, and a status that lands in between would otherwise be
-        // overwritten by a stale "idle" that nothing corrects — no spinner, no
-        // elapsed time and no Stop for the whole run.
+        // body happened to be built with: a status that lands between the
+        // body and the binding below would otherwise be overwritten by a
+        // stale "idle" that nothing corrects — no spinner, no elapsed time
+        // and no Stop for the whole run.
         .onChange(of: state, initial: true) { _, value in page.state = value }
-        .task(id: session.presentationGeneration) {
+        // The page takes the chat the pane is drawn for in the same update,
+        // not a turn of the run loop later: bound in a task, it held the chat
+        // shown before for the frames in between — its rows, and its live
+        // bar — under the one just opened, and they moved as its bar and its
+        // figures came and went (`TranscriptSwitchFirstFrameTests`).
+        .onChange(of: session.presentationGeneration, initial: true) {
             page.onAnchorChanged = onAnchorChanged; page.onReadReply = onReadReply; page.onLoadEarlier = onLoadEarlier; page.onViewportReady = onViewportReady
             page.state = session.state
             page.bind(session)
@@ -1975,6 +2045,20 @@ struct NativeTranscriptView: View {
     }
 }
 
+/// The pane is drawn again for every change to the workspace, and makes the
+/// transcript's actions afresh each time, though each still reaches the chat
+/// through the same model and session. For the same session, in the same run
+/// state, offering the same actions, the transcript is the same: drawing it
+/// again laid the live bar and every overlay out again for nothing. What the
+/// session itself changes still reaches it, since it observes the session.
+extension NativeTranscriptView: Equatable {
+    nonisolated static func == (lhs: NativeTranscriptView, rhs: NativeTranscriptView) -> Bool {
+        MainActor.assumeIsolated {
+            lhs.session === rhs.session && lhs.state == rhs.state && lhs.actions.offered == rhs.actions.offered
+        }
+    }
+}
+
 /// The live bar's slot at the foot of the conversation. The slot itself is
 /// a layout change and never animates: it opens in one step when a run
 /// starts and closes in one step once the bar has gone, so the conversation
@@ -1983,13 +2067,27 @@ struct NativeTranscriptView: View {
 /// slides up into the slot and fades in, and slides back down and fades out
 /// when the run settles — an offset and an opacity, which decide no
 /// layout and so cost the page nothing per tick. Reduce Motion snaps.
-private struct LiveTurnBarSlot: View {
+private struct LiveTurnBarSlot: View, Equatable {
     let turn: TurnSummary?
     let state: String
     let actions: TranscriptActions
     let reduceMotion: Bool
+    /// The session the actions were made for. The pane is kept across chats,
+    /// so the same slot shows the next chat's bar: compared without it, a
+    /// bar with the same turn (most often none) kept the actions of the chat
+    /// the reader left, and they held that chat's display in memory.
+    let session: ObjectIdentifier
     @State private var arrived = false
+    /// The transcript is drawn again for every page of a streaming reply;
+    /// the bar only when its own turn or run state changes. Its actions are
+    /// the transcript's, made for the same session (see `NativeTranscriptView`).
+    nonisolated static func == (lhs: LiveTurnBarSlot, rhs: LiveTurnBarSlot) -> Bool {
+        MainActor.assumeIsolated {
+            lhs.session == rhs.session && lhs.turn == rhs.turn && lhs.state == rhs.state && lhs.reduceMotion == rhs.reduceMotion && lhs.actions.offered == rhs.actions.offered
+        }
+    }
     var body: some View {
+        let _ = RedrawCounter.note("liveTurnBar")
         // No delayed exit owns a second structural mutation. The snapshot that
         // inserts a terminal summary also releases (or retargets) this slot.
         Group {

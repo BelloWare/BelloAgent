@@ -17,7 +17,7 @@ struct TopicSheet: View {
     @State private var title = ""
     @State private var saving = false
     @State private var notice = ""
-    @Environment(\.dismiss) private var dismiss
+    @PiDismiss private var dismiss
     private var editing: Bool { target.topicID != nil }
     private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
     var body: some View {

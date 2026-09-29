@@ -273,18 +273,49 @@ final class LaunchSelectionTests: XCTestCase {
         let fixture = try await fixture(archiveB2: true)
         let first = await launch(fixture)
         await first.select(fixture.b2.id)
-        // Back to the project's active chats, with the archived one still open.
-        first.setProjectArchiveFilter(fixture.second.id, archived: false)
+        XCTAssertTrue(first.showArchivedSessions, "Opening an archived chat lists the archive")
+        // The archive switch off again, with the archived chat still open.
+        first.setArchivedChatsShown(false)
         XCTAssertEqual(first.selectedID, fixture.b2.id)
+        XCTAssertFalse(first.sidebarChatOrder.contains(fixture.b2.id))
         try await quit(first)
 
         let second = await launch(fixture)
         XCTAssertEqual(second.selectedID, fixture.b2.id, "The reader was looking at it: archived is no reason not to reopen it")
         XCTAssertTrue(second.record(fixture.b2.id)?.isArchived == true)
         XCTAssertEqual(second.selected?.messages.map(\.id), fixture.b2Messages)
-        XCTAssertTrue(second.projectShowsArchive(fixture.second.id), "Its project lists the archive, where its row is")
+        XCTAssertTrue(second.sidebarShowsArchived, "The archive is listed, where its row is")
         XCTAssertTrue(second.sidebarChatOrder.contains(fixture.b2.id), "The highlighted row can be seen")
-        XCTAssertNotEqual(second.projectSidebarStates[fixture.second.id]?.archived, true, "The list the reader chose to save is not changed")
+        XCTAssertFalse(second.showArchivedSessions, "The switch the reader turned off stays off: this launch only lists it")
+        // The reader's own press of the switch is what shows from then on.
+        second.toggleArchivedChats()
+        XCTAssertFalse(second.sidebarShowsArchived)
+        XCTAssertFalse(second.sidebarChatOrder.contains(fixture.b2.id))
+        try await quit(second)
+    }
+
+    /// The archive switch is one choice for the whole sidebar, and a relaunch
+    /// puts it back as it was left, on or off.
+    @MainActor func testTheArchiveSwitchIsRememberedAcrossALaunch() async throws {
+        let fixture = try await fixture(archiveB2: true)
+        let first = await launch(fixture)
+        XCTAssertFalse(first.sidebarShowsArchived)
+        XCTAssertFalse(first.sidebarChatOrder.contains(fixture.b2.id), "The archived chat is not listed while the switch is off")
+        first.setArchivedChatsShown(true)
+        XCTAssertTrue(first.sidebarChatOrder.contains(fixture.b2.id))
+        try await quit(first)
+
+        let second = await launch(fixture)
+        XCTAssertTrue(second.showArchivedSessions, "The switch comes back on")
+        XCTAssertTrue(second.sidebarChatOrder.contains(fixture.b2.id))
+        XCTAssertNotEqual(second.selectedID, fixture.b2.id, "Listing the archive opens nothing")
+        second.setArchivedChatsShown(false)
+        try await quit(second)
+
+        let third = await launch(fixture)
+        XCTAssertFalse(third.showArchivedSessions, "and back off")
+        XCTAssertFalse(third.sidebarChatOrder.contains(fixture.b2.id))
+        try await quit(third)
     }
 
     @MainActor func testAChatThatIsGoneOrABackgroundTaskFallsBackToTheFirstChat() async throws {
@@ -306,12 +337,15 @@ final class LaunchSelectionTests: XCTestCase {
         let third = await launch(fixture)
         XCTAssertEqual(third.selectedID, fixture.a.id, "A chat that is gone falls back to the first chat, as every launch did before")
         XCTAssertEqual(third.selectedWorkspaceID, fixture.first.id)
+        // A background task opens on the Background requests page; the chat
+        // under it stays the one the reader had.
         await third.select(task.id)
-        XCTAssertEqual(third.selectedID, task.id)
+        XCTAssertEqual(third.page, .background); XCTAssertEqual(third.backgroundRequests.selectedID, task.id)
+        XCTAssertEqual(third.selectedID, fixture.a.id)
         try await quit(third)
 
         let fourth = await launch(fixture)
-        XCTAssertEqual(fourth.selectedID, fixture.a.id, "A background task falls back to the first chat")
+        XCTAssertEqual(fourth.selectedID, fixture.a.id, "A background task is never the chat a launch reopens")
         XCTAssertEqual(fourth.selectedWorkspaceID, fixture.first.id)
     }
 
@@ -643,7 +677,7 @@ final class LaunchSelectionTests: XCTestCase {
         XCTAssertTrue(second.projectIsExpanded(fixture.second.id), "The collapsed project is shown open")
         let project = try XCTUnwrap(second.sidebarProjects.first { $0.id == fixture.second.id }).record
         let group = second.topicGroupContents(in: project, topic: try XCTUnwrap(second.topics.first { $0.id == topic.id }),
-                                              archived: second.projectShowsArchive(project.id), filter: "", sidebarWidth: 280, namesConnection: false)
+                                              includesArchive: second.sidebarShowsArchived, filter: "", sidebarWidth: 280, namesConnection: false)
         XCTAssertTrue(group.expanded, "and so is the collapsed topic")
         XCTAssertEqual(group.contents.rows.first { $0.chat.id == fixture.b2.id }?.state.selected, true, "with the reopened chat's row highlighted in it")
         XCTAssertTrue(second.sidebarChatOrder.contains(fixture.b2.id))
@@ -659,10 +693,10 @@ final class LaunchSelectionTests: XCTestCase {
         XCTAssertEqual(second.projectSidebarStates[fixture.second.id]?.revision, revision)
         second.setProjectExpanded(fixture.second.id, expanded: true)
         let reopened = second.topicGroupContents(in: project, topic: try XCTUnwrap(second.topics.first { $0.id == topic.id }),
-                                                 archived: false, filter: "", sidebarWidth: 280, namesConnection: false)
+                                                 includesArchive: false, filter: "", sidebarWidth: 280, namesConnection: false)
         second.setTopicExpanded(topic.id, expanded: !reopened.expanded)
         XCTAssertFalse(second.topicGroupContents(in: project, topic: try XCTUnwrap(second.topics.first { $0.id == topic.id }),
-                                                 archived: false, filter: "", sidebarWidth: 280, namesConnection: false).expanded,
+                                                 includesArchive: false, filter: "", sidebarWidth: 280, namesConnection: false).expanded,
                        "Clicking the topic's chevron closes it")
         try await quit(second)
 
@@ -706,7 +740,7 @@ final class LaunchSelectionTests: XCTestCase {
         XCTAssertEqual(model.focusedSessionID, fixture.a.id)
         XCTAssertEqual(model.selectedWorkspaceID, fixture.first.id)
         XCTAssertFalse(model.projectIsExpanded(fixture.first.id), "The sidebar is as it was saved")
-        XCTAssertFalse(model.projectShowsArchive(fixture.second.id))
+        XCTAssertFalse(model.sidebarShowsArchived)
         XCTAssertTrue(model.sides.isEmpty)
         XCTAssertEqual(model.displays.count, 1)
         XCTAssertTrue(model.hosts.isEmpty)
@@ -749,25 +783,29 @@ private extension PayloadArchive {
 @MainActor private final class LaunchFlag { var value = false }
 
 extension LaunchSelectionTests {
-    /// "Show background tasks" and the report page were forgotten at every
-    /// launch: the toggle came back off and the window came back on Chats.
-    @MainActor func testTheReportPageAndShownBackgroundTasksComeBackAfterARelaunch() async throws {
+    /// The report page and the Background requests page were forgotten at
+    /// every launch: the window came back on Chats.
+    @MainActor func testTheReportAndBackgroundRequestsPagesComeBackAfterARelaunch() async throws {
         let fixture = try await fixture()
         let first = await launch(fixture)
         await first.select(fixture.b2.id)
-        first.showBackgroundSessions = true
         first.openReport()
         try await quit(first)
 
         let second = await launch(fixture)
-        XCTAssertTrue(second.showBackgroundSessions, "The sidebar still shows background tasks")
         XCTAssertEqual(second.page, .report, "The window comes back on the report")
         XCTAssertEqual(second.selectedID, fixture.b2.id, "with the chat the reader had open underneath")
-        second.closeReport(); second.showBackgroundSessions = false
+        second.openBackgroundRequests()
         try await quit(second)
 
         let third = await launch(fixture)
-        XCTAssertFalse(third.showBackgroundSessions); XCTAssertEqual(third.page, .chats, "Turning them off is remembered too")
-        third.report.suspend()
+        XCTAssertEqual(third.page, .background, "The window comes back on the Background requests page")
+        XCTAssertEqual(third.selectedID, fixture.b2.id)
+        third.closeReport()
+        try await quit(third)
+
+        let fourth = await launch(fixture)
+        XCTAssertEqual(fourth.page, .chats, "Going back to Chats is remembered too")
+        fourth.report.suspend()
     }
 }

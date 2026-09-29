@@ -107,4 +107,14 @@ struct JournalCheckpoint: Codable, Equatable, Sendable {
             return Data(bytes.prefix(row.length))
         } catch { return nil }
     }
+    /// The same, read at its place without moving the file's position, so
+    /// several rows can be read at once.
+    static func rowBytes(_ row: Row, descriptor: Int32) -> Data? {
+        guard row.length > 0, row.length <= 32 * 1024 * 1024 else { return nil }
+        var bytes = Data(count: row.length + 1)
+        let read = bytes.withUnsafeMutableBytes { pread(descriptor, $0.baseAddress, row.length + 1, off_t(row.offset)) }
+        guard read == row.length + 1, bytes.last == 10 else { return nil }
+        bytes.removeLast()
+        return bytes
+    }
 }

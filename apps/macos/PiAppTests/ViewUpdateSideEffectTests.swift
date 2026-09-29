@@ -149,12 +149,10 @@ final class ViewUpdateSideEffectTests: XCTestCase {
         try Data("first\n".utf8).write(to: root.appendingPathComponent("notes.txt"))
         try git(["add", "."]); try git(["commit", "-q", "-m", "First"])
         try Data("first\nsecond\n".utf8).write(to: root.appendingPathComponent("notes.txt"))
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent(".state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        defer { model.shutdown() }
         let start = Date()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: GitPanelView(model: model, roots: [root.path]))
+        window.contentView = NSHostingView(rootView: GitPanelView(roots: [root.path]))
         window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
         for _ in 0..<60 { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded(); try await Task.sleep(for: .milliseconds(25)) }

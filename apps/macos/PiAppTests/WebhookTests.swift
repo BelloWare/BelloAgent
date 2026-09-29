@@ -325,7 +325,13 @@ final class WebhookTests: XCTestCase {
         for part in [WebhookPrompt.opening, #"Chat title: "Live""#, "hello webhook", "Fixture reply: hello webhook", "Keep it short."] {
             XCTAssertTrue(question.contains(part), "The mini model reads \(part)")
         }
-        await live.waitUntil("The mini model's throwaway chat stayed") { !live.model.chats.contains { $0.backgroundTask == "webhook" } }
+        // Kept on the Background requests page: done, with the notification it wrote.
+        await live.waitUntil("The mini model's request was not kept as done") {
+            live.model.chats.contains { $0.backgroundTask == "webhook" && $0.backgroundTaskOutcome == "completed" }
+        }
+        let kept = try XCTUnwrap(live.model.chats.first { $0.backgroundTask == "webhook" })
+        XCTAssertEqual(kept.backgroundTaskResult, "title: Fixture title for Live\nsummary: Fixture summary for Live", "Its parameters, in the webhook's order")
+        XCTAssertEqual(kept.sourceSessionID, live.chat.id); XCTAssertNotNil(kept.path, "Its journal, for the page to read")
 
         // The preview builds the same request from the chat as it is.
         let preview = try await live.model.prepareWebhook(for: live.chat.id, settings: settings)

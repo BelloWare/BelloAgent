@@ -6,17 +6,20 @@ import Charts
 // it, so a hover redraws a rule, a band and a caption — never the marks,
 // never the page. A click on an item opens its request.
 
-/// How many times the Overview built its page and its charts' marks, and
-/// how often the parts that follow the pointer drew. A test seam: a hover
-/// must move only the last two.
+/// How many times the Overview built its page, its charts' marks and its
+/// ledger's rows, and how often the parts that follow the pointer drew. A
+/// test seam: a hover must move only the last two, and the ledger's rows are
+/// built as they scroll into view.
 @MainActor enum SessionStatsRenderCount {
     private(set) static var panels = 0
     private(set) static var marks = 0
+    private(set) static var ledgerRows = 0
     private(set) static var pointers = 0
     private(set) static var captions = 0
-    static func reset() { panels = 0; marks = 0; pointers = 0; captions = 0 }
+    static func reset() { panels = 0; marks = 0; ledgerRows = 0; pointers = 0; captions = 0 }
     static func panelBuilt() { panels &+= 1 }
     static func marksBuilt() { marks &+= 1 }
+    static func ledgerRowBuilt() { ledgerRows &+= 1 }
     static func pointerDrawn() { pointers &+= 1 }
     static func captionDrawn() { captions &+= 1 }
 }

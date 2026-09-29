@@ -14,7 +14,7 @@ struct RenameChatSheet: View {
     @State private var saving = false
     /// A suggestion asked for with the button; it ends with the sheet.
     @State private var requested: Task<Void, Never>?
-    @Environment(\.dismiss) private var dismiss
+    @PiDismiss private var dismiss
     private var chat: ChatRecord? { model.record(chatID) }
     private var canSuggest: Bool { chat.flatMap { item in model.profiles.first { $0.id == item.profileID } }.map { model.titleSuggestionsAvailable(for: $0) } ?? false }
 

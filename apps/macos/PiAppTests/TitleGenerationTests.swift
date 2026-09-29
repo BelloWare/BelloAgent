@@ -165,7 +165,10 @@ final class TitleGenerationTests: XCTestCase {
         await store.close()
     }
 
-    @MainActor func testBackgroundSessionsAreHiddenUntilRevealedWithoutChangingDraftOrFocus() async throws {
+    /// A background request is never a sidebar row: revealing or selecting
+    /// one opens the Background requests page on it, and the chat being read
+    /// keeps its draft and its focus.
+    @MainActor func testBackgroundRequestsOpenTheirPageWithoutChangingDraftOrFocus() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
@@ -174,18 +177,16 @@ final class TitleGenerationTests: XCTestCase {
         model.workspaces = [.init(id: "project", path: root.path, trusted: true)]
         model.chats = [source, background]; model.selectedID = source.id
         let display = SessionDisplay(id: source.id); display.draft = "Unsent content"; model.displays[source.id] = display
-        XCTAssertFalse(model.showBackgroundSessions)
         XCTAssertTrue(model.sidebarChats(in: WorkspaceRecord.scratchID, archived: false).isEmpty)
         XCTAssertFalse(model.sidebarProjects.contains { $0.id == WorkspaceRecord.scratchID })
         model.revealProjectChat(background)
-        XCTAssertTrue(model.showBackgroundSessions)
-        XCTAssertEqual(model.sidebarChats(in: WorkspaceRecord.scratchID, archived: false).map(\.id), [background.id])
-        XCTAssertTrue(model.sidebarProjects.contains { $0.id == WorkspaceRecord.scratchID })
+        XCTAssertTrue(model.sidebarChats(in: WorkspaceRecord.scratchID, archived: false).isEmpty)
+        XCTAssertFalse(model.sidebarProjects.contains { $0.id == WorkspaceRecord.scratchID })
+        await model.select(background.id)
+        XCTAssertEqual(model.page, .background); XCTAssertEqual(model.backgroundRequests.selectedID, background.id)
         XCTAssertEqual(model.selectedID, source.id); XCTAssertEqual(display.draft, "Unsent content")
         model.scheduleTitleGeneration(sourceID: background.id, input: "Do not recurse")
         XCTAssertTrue(model.titleGenerationTasks.isEmpty)
-        model.showBackgroundSessions = false
-        XCTAssertTrue(model.sidebarChats(in: WorkspaceRecord.scratchID, archived: false).isEmpty)
         await model.flushProjectSidebarState()
         await model.store?.close()
     }
@@ -217,8 +218,13 @@ final class TitleGenerationTests: XCTestCase {
         XCTAssertTrue(model.titleGenerationTasks.isEmpty, "A local title request should complete promptly")
         let background = try XCTUnwrap(model.chats.first(where: \.isBackgroundTask))
         XCTAssertEqual(model.record(source.id)?.title, "Improve the model picker", model.displays[background.id]?.notice ?? "")
-        XCTAssertEqual(model.selectedID, source.id); XCTAssertFalse(model.showBackgroundSessions)
+        XCTAssertEqual(model.selectedID, source.id)
         XCTAssertEqual(background.title, TitleGenerationPlan.fixedTitle); XCTAssertEqual(background.sourceSessionID, source.id)
+        let kept = try XCTUnwrap(model.record(background.id))
+        XCTAssertEqual(kept.backgroundTaskOutcome, "completed"); XCTAssertEqual(kept.backgroundTaskResult, "Improve the model picker")
+        XCTAssertNotNil(kept.backgroundTaskStartedAt); XCTAssertNotNil(kept.backgroundTaskEndedAt)
+        let stored = try await model.store?.get(ChatRecord.self, kind: "chat", id: background.id)
+        XCTAssertEqual(stored?.backgroundTaskOutcome, "completed", "How it ended is saved with it")
         XCTAssertEqual(background.workspaceID, WorkspaceRecord.scratchID); XCTAssertEqual(background.model, "mini-fixture")
         XCTAssertNotNil(background.path); XCTAssertEqual(gateway.requests.count, 1)
         let request = try XCTUnwrap(gateway.requests.first)
@@ -331,7 +337,7 @@ extension TitleGenerationTests {
         let hosted = NSHostingView(rootView: AnyView(RenameChatSheet(model: model, chatID: source.id)))
         window.contentView = hosted; window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
-        func asking() -> Bool { model.chats.contains { $0.backgroundTask == "title-suggestions" } }
+        func asking() -> Bool { model.chats.contains { $0.backgroundTask == "title-suggestions" && $0.backgroundTaskOutcome == nil } }
         for _ in 0..<600 where gateway.held == 0 { hosted.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(25)) }
         XCTAssertEqual(gateway.held, 1, "The open sheet asked the mini model for suggestions")
         XCTAssertTrue(asking())
@@ -339,6 +345,9 @@ extension TitleGenerationTests {
         hosted.rootView = AnyView(EmptyView())
         for _ in 0..<200 where asking() { hosted.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(25)) }
         XCTAssertFalse(asking(), "Closing the sheet ends its request instead of polling on")
+        let stopped = try XCTUnwrap(model.chats.first { $0.backgroundTask == "title-suggestions" }, "The request is kept")
+        XCTAssertEqual(stopped.backgroundTaskOutcome, "interrupted"); XCTAssertEqual(stopped.backgroundTaskNotice, BackgroundRequests.stoppedNotice)
+        XCTAssertEqual(stopped.sourceSessionID, source.id)
         try await model.hosts[WorkspaceRecord.scratchID]?.shutdownAndWait()
         try await model.traces.close(); await model.store?.close()
     }
@@ -458,8 +467,10 @@ private final class TitleGenerationGateway: @unchecked Sendable {
 extension TitleGenerationTests {
     /// A title request the app quit during kept its claim for good: only the
     /// first send asks for a title, so the chat kept its first-message title,
-    /// and its row, with no recorded end, read as an unknown outcome. A
-    /// suggestions row the rename sheet was using stayed in the list too.
+    /// and its row, with no recorded end, read as an unknown outcome. Launch
+    /// now marks it interrupted, and the next message asks again, once. A
+    /// suggestions request the rename sheet was waiting on is kept too,
+    /// interrupted, on the Background requests page.
     @MainActor func testATitleRequestInterruptedByAQuitIsAskedAgainOnTheNextMessage() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let state = root.appendingPathComponent("state")
@@ -477,9 +488,10 @@ extension TitleGenerationTests {
         model.automaticContextOperation = { _, _ in throw CancellationError() }
         defer { model.report.suspend(); model.shutdown() }
         await model.restore()
-        XCTAssertFalse(model.chats.contains { $0.id == "suggestions" }, "Launch removes a leftover suggestions row")
+        XCTAssertEqual(model.record("suggestions")?.backgroundTaskOutcome, "interrupted", "Launch keeps a leftover suggestions request, interrupted")
+        XCTAssertEqual(model.record("interrupted")?.backgroundTaskOutcome, "interrupted")
         let listed = try await model.store?.list(ChatRecord.self, kind: "chat") ?? []
-        XCTAssertFalse(listed.contains { $0.id == "suggestions" })
+        XCTAssertEqual(listed.first { $0.id == "suggestions" }?.backgroundTaskNotice, BackgroundRequests.interruptedNotice, "and saves how it ended")
         XCTAssertEqual(model.record("source")?.titleTaskSessionID, "interrupted", "Launch itself resends nothing")
         // What sending the next message in the chat does once it is accepted.
         model.resumeInterruptedTitle("source")

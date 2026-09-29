@@ -292,6 +292,11 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// How many row hosts this document has had to build. Creating one is a
     /// SwiftUI hosting view; opening a long chat must not build them all.
     private(set) var rowsBuiltCount = 0
+    /// The rows of the last chats this pane showed, waiting out of sight
+    /// (`TranscriptKeptRows`), and how many rows coming back to one has
+    /// taken from them instead of building.
+    let keptRows = TranscriptKeptRows()
+    private(set) var rowsTakenBackCount = 0
     /// How many rows the last pass had to measure for real, and how wide the
     /// band it measured was. Evidence for the fixtures that hold an opening
     /// page to measuring only what it draws.
@@ -364,6 +369,9 @@ final class TranscriptNativeScrollView: NSScrollView {
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.updateSeconds += TranscriptLayoutClock.now - clock } }
         updateInvocationCount += 1
+        // The chat on screen until now, with its own stores, for keeping its
+        // rows should this update take the pane to another chat.
+        let leaving = self.snapshot, leavingDisclosure = self.disclosure, leavingToolInputs = self.toolInputs
         actionRelay.current = actions
         quoteSelection.setEnabled(actions.quoteReply != nil)
         if let disclosure, self.disclosure !== disclosure { self.disclosure = disclosure }
@@ -379,7 +387,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         // the same order — every token of a reply. They were proved unique
         // when they came; hashing every id of a long chat again on each token
         // proves nothing new.
-        let sameIdentities = projected.count == rows.count && zip(projected, rows).allSatisfy { $0.id == $1.itemID }
+        var sameIdentities = projected.count == rows.count && zip(projected, rows).allSatisfy { $0.id == $1.itemID }
         if !sameIdentities, TranscriptLayoutClock.recording { TranscriptLayoutClock.identityWalks += 1 }
         guard sameIdentities || Set(projected.map(\.id)).count == projected.count && Set(rows.map(\.itemID)).count == rows.count else {
             let page = page, revision = page?.snapshot?.sequence
@@ -402,8 +410,24 @@ final class TranscriptNativeScrollView: NSScrollView {
         if (self.snapshot?.sessionID != snapshot?.sessionID || self.snapshot?.generation != snapshot?.generation) {
             quoteSelection.dismiss()
             finishDisclosureMotion(settling: false)
-            for row in rows { row.onHeightInvalidated = nil; row.onHeightValidated = nil; row.removeFromSuperview(); page?.rowGone(row.itemID) }
+            // A chat the reader leaves keeps its rows out of sight, when
+            // nothing in them is live; otherwise they go, as they always did.
+            let keeping = leaving.map { TranscriptKeptRows.keeps($0, rows: rows) } ?? false
+            for row in rows {
+                unwire(row); row.removeFromSuperview(); page?.rowGone(row.itemID)
+                if keeping { row.forgetTextSelection() }
+            }
+            if keeping, let leaving { keptRows.keep(rows, sessionID: leaving.sessionID, disclosure: leavingDisclosure, toolInputs: leavingToolInputs) }
             rows = []
+            // Coming back to a kept chat takes its rows back, with the
+            // stores they were made with: they are reconciled below with the
+            // chat's page as it is now, exactly as the rows on screen are.
+            if let sessionID = snapshot?.sessionID, let taken = keptRows.take(sessionID, disclosure: self.disclosure, toolInputs: self.toolInputs) {
+                for row in taken { wire(row) }
+                rows = taken
+                rowsTakenBackCount += taken.count
+            }
+            sameIdentities = projected.count == rows.count && zip(projected, rows).allSatisfy { $0.id == $1.itemID }
             // Another chat measures itself from its own viewport outward.
             // Its stores and the actions the pane made for it were adopted
             // above, so the ones the chat before it had are already gone.
@@ -467,31 +491,43 @@ final class TranscriptNativeScrollView: NSScrollView {
             let row = TranscriptRowContainer(item: item, fresh: fresh, actions: actionRelay.forwarded, environment: environment,
                                              geometryCache: geometryCache, geometrySessionID: snapshot?.sessionID, disclosure: disclosure,
                                              toolInputs: toolInputs)
-            row.onToolInputNeeded = { [weak self] messageID, callID in
-                self?.page?.requestToolInput(messageID: messageID, callID: callID)
-            }
-            row.onHeightInvalidated = { [weak self, weak row] in
-                if let row { self?.markDirty(from: row.layoutIndex) }
-                self?.scheduleLayout()
-            }
-            row.onHeightValidated = { [weak self] in self?.scheduleVisibilityUpdate() }
-            // Opening or closing part of a row is a direct answer to a click.
-            row.onDisclosureChanged = { [weak self, weak row] in
-                guard let self, let row else { return }
-                self.disclosureChanged(row)
-            }
+            wire(row)
             // An immutable warm row can borrow its exact baseline while still
             // detached. Cache misses mount for native measurement in layoutRows.
             row.layoutIndex = index
             return row
         }
-        for row in retained.values { row.onHeightInvalidated = nil; row.onHeightValidated = nil; row.removeFromSuperview(); page?.rowGone(row.itemID) }
+        for row in retained.values { unwire(row); row.removeFromSuperview(); page?.rowGone(row.itemID) }
         if let moving = motion, !moving.changes.allSatisfy({ change in rows.contains { $0.itemID == change.rowID } }) {
             for change in moving.changes { retained[change.rowID]?.endDisclosureMotion() }
             motion = nil; stopMotionLink()
         }
         markDirty(from: changedFrom)
         scheduleLayout()
+    }
+
+    /// What a row of this page tells the document: its height changed or
+    /// was confirmed, the reader opened or closed part of it, a card wants
+    /// its full arguments.
+    private func wire(_ row: TranscriptRowContainer) {
+        row.onToolInputNeeded = { [weak self] messageID, callID in
+            self?.page?.requestToolInput(messageID: messageID, callID: callID)
+        }
+        row.onHeightInvalidated = { [weak self, weak row] in
+            if let row { self?.markDirty(from: row.layoutIndex) }
+            self?.scheduleLayout()
+        }
+        row.onHeightValidated = { [weak self] in self?.scheduleVisibilityUpdate() }
+        // Opening or closing part of a row is a direct answer to a click.
+        row.onDisclosureChanged = { [weak self, weak row] in
+            guard let self, let row else { return }
+            self.disclosureChanged(row)
+        }
+    }
+    /// A row that leaves the page, for good or to be kept, tells it nothing more.
+    private func unwire(_ row: TranscriptRowContainer) {
+        row.onHeightInvalidated = nil; row.onHeightValidated = nil
+        row.onDisclosureChanged = nil; row.onToolInputNeeded = nil
     }
 
     /// The reader started dragging a pane's edge.
@@ -876,6 +912,11 @@ final class TranscriptNativeScrollView: NSScrollView {
 
     private func mountVisibleRows() {
         guard !layingOut, !isHiddenOrHasHiddenAncestor, let clip = enclosingScrollView?.contentView else { return }
+        // Nothing of this chat is placed yet: rows taken back from being kept
+        // still stand where they were in the last layout of another scroll
+        // position, and a pass now would let go of the trees they kept or
+        // mount them there for a frame. The layout that places them mounts.
+        guard placedWidth > 0 else { return }
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.mountSeconds += TranscriptLayoutClock.now - clock } }
         var buffered = clip.bounds.insetBy(dx: 0, dy: -max(240, clip.bounds.height / 2))
@@ -1218,10 +1259,18 @@ final class TranscriptNativeScrollView: NSScrollView {
         let size = CGSize(width: width, height: y + 13)
         if frame.size != size { setFrameSize(size) }
         enclosingScrollView?.transcriptReading.geometryChanged()
+        // A page that is placing itself lands in this pass, before anything
+        // is drawn (`TranscriptPage.layoutPlacement`).
+        var placed = false
+        if let scroll = enclosingScrollView, let target = page?.layoutPlacement(contentHeight: size.height, viewportHeight: scroll.contentView.bounds.height) {
+            let clip = scroll.contentView
+            if abs(clip.bounds.minY - target) > 0.5 { scroll.transcriptReading.setOrigin(NSPoint(x: clip.bounds.origin.x, y: target)) }
+            placed = true
+        }
         // A long chat that opens at its newest row is parked there before
         // anything is drawn. Otherwise the reader sees the top of the history
         // for a frame and the page has to measure both ends of it.
-        if parking, let scroll = enclosingScrollView {
+        if parking, !placed, let scroll = enclosingScrollView {
             let clip = scroll.contentView
             let bottom = max(0, size.height - clip.bounds.height)
             if clip.bounds.minY < bottom - 0.5 {

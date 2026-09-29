@@ -181,6 +181,11 @@ struct SidebarGroupRow: Equatable, Identifiable {
 struct SidebarGroupContents: Equatable {
     var groupID = ""
     var indent: CGFloat = 0
+    /// The group's archived chats, listed after its active ones while the
+    /// archive switch is on, under an "Archived" heading.
+    var archived = false
+    /// How many chats the group lists, across every page: the heading's count.
+    var total = 0
     var rows: [SidebarGroupRow] = []
     var hiddenRoots = 0
     var shownRoots = 0
@@ -196,6 +201,9 @@ struct TopicGroupContents: Equatable {
     var header = TopicHeaderState()
     var expanded = true
     var contents = SidebarGroupContents()
+    /// The topic's archived chats while the archive switch is on; nil when
+    /// the switch is off or the topic has none to list.
+    var archive: SidebarGroupContents?
 }
 
 extension WorkspaceModel {
@@ -213,12 +221,15 @@ extension WorkspaceModel {
         return state + " \u{b7} " + connection.name
     }
 
-    /// Everything one group of one project draws. Reading the model happens
-    /// here, once per pass; the group views take values.
+    /// Everything one group of one project draws: its active chats, or, with
+    /// `archived`, the archived ones listed after them while the archive
+    /// switch is on. Reading the model happens here, once per pass; the group
+    /// views take values.
     func sidebarGroupContents(in project: WorkspaceRecord, topicID: String?, archived: Bool, filter: String,
                               showEmpty: Bool, showAllMatches: Bool = false,
                               sidebarWidth: CGFloat, namesConnection: Bool) -> SidebarGroupContents {
-        let groupID = topicID ?? project.id
+        // The archived chats page on their own: they are a list of their own.
+        let groupID = archived ? SidebarSessionPresentation.archiveGroupID(topicID ?? project.id) : topicID ?? project.id
         let indent: CGFloat = topicID == nil ? 14 : 28
         let filtering = showAllMatches || !filter.isEmpty
         // The fold is ignored while filtering, so a match cannot be stranded
@@ -263,18 +274,36 @@ extension WorkspaceModel {
             }
             rows.append(row)
         }
-        let empty = showEmpty && visible.isEmpty
-            ? (archived ? "No archived chats" : filter.isEmpty ? "No chats yet" : "No matching chats") : nil
-        return SidebarGroupContents(groupID: groupID, indent: indent, rows: rows, hiddenRoots: hiddenRoots, shownRoots: shown,
+        var empty: String?
+        if showEmpty && visible.isEmpty {
+            // A group whose chats are all archived has chats: they are listed
+            // once the archive switch is on.
+            empty = archived ? "No archived chats" : !filter.isEmpty ? "No matching chats"
+                : sidebarEntries(in: project.id, topicID: topicID, archived: true, collapsed: []).isEmpty ? "No chats yet" : "No active chats"
+        }
+        return SidebarGroupContents(groupID: groupID, indent: indent, archived: archived, total: all.count, rows: rows,
+                                    hiddenRoots: hiddenRoots, shownRoots: shown,
                                     paginates: !filtering && (hiddenRoots > 0 || shown > SidebarSessionPresentation.pageSize),
                                     emptyLabel: empty)
     }
 
-    /// A topic's group, header included. The header's drop highlight is the
-    /// group view's own state and is filled in there.
-    func topicGroupContents(in project: WorkspaceRecord, topic: TopicRecord, archived: Bool, filter: String,
+    /// A group's archived chats while the archive switch is on, or nil when
+    /// the switch is off or none of them is listed.
+    func sidebarArchiveContents(in project: WorkspaceRecord, topicID: String?, includesArchive: Bool, filter: String,
+                                showAllMatches: Bool = false, sidebarWidth: CGFloat, namesConnection: Bool) -> SidebarGroupContents? {
+        guard includesArchive else { return nil }
+        let contents = sidebarGroupContents(in: project, topicID: topicID, archived: true, filter: filter, showEmpty: false,
+                                            showAllMatches: showAllMatches, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
+        return contents.rows.isEmpty ? nil : contents
+    }
+
+    /// A topic's group, header included, with its archived chats after its
+    /// active ones while the archive switch is on (`includesArchive`). The
+    /// header's drop highlight is the group view's own state and is filled
+    /// in there.
+    func topicGroupContents(in project: WorkspaceRecord, topic: TopicRecord, includesArchive: Bool, filter: String,
                             sidebarWidth: CGFloat, namesConnection: Bool) -> TopicGroupContents {
-        let entries = sidebarEntries(in: project.id, topicID: topic.id, archived: archived, collapsed: [])
+        let entries = sidebarEntries(in: project.id, topicID: topic.id, archived: false, collapsed: [])
         let expanded = topicIsExpanded(topic) || !filter.isEmpty
         // A topic whose own title matches lists all of its chats.
         let inner = topic.title.localizedCaseInsensitiveContains(filter) ? "" : filter
@@ -282,10 +311,12 @@ extension WorkspaceModel {
                                       expanded: expanded, filtering: !filter.isEmpty,
                                       hasUnread: entries.contains { unreadOutputCount(sessionID: $0.id) > 0 || unreadFailure(sessionID: $0.id) },
                                       chats: entries.count)
-        let contents = expanded
-            ? sidebarGroupContents(in: project, topicID: topic.id, archived: archived, filter: inner, showEmpty: true,
-                                   showAllMatches: !filter.isEmpty, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
-            : SidebarGroupContents()
-        return TopicGroupContents(header: header, expanded: expanded, contents: contents)
+        guard expanded else { return TopicGroupContents(header: header, expanded: false, contents: SidebarGroupContents()) }
+        let archive = sidebarArchiveContents(in: project, topicID: topic.id, includesArchive: includesArchive, filter: inner,
+                                             showAllMatches: !filter.isEmpty, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
+        // The topic's archived chats stand where "No chats yet" would.
+        let contents = sidebarGroupContents(in: project, topicID: topic.id, archived: false, filter: inner, showEmpty: archive == nil,
+                                            showAllMatches: !filter.isEmpty, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
+        return TopicGroupContents(header: header, expanded: expanded, contents: contents, archive: archive)
     }
 }

@@ -18,7 +18,7 @@ public struct ContextNote: Codable, Sendable, Equatable {
     var json: JSON { ["kind": JSON(kind), "text": JSON(text)] }
 }
 
-public struct ChatMessage: Codable, Sendable {
+public struct ChatMessage: Codable, Equatable, Sendable {
     public var id: String = UUID().uuidString
     public var role: String
     public var content: [JSON]

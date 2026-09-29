@@ -477,12 +477,14 @@ final class SidebarListedOrderTests: XCTestCase {
         fixture.settle()
         XCTAssertEqual(rows(fixture.hosted).count, 9, "The page is still open when the project comes back")
 
-        // Switching to the archive and back starts at the first page again:
-        // it is a different list.
-        fixture.model.setProjectArchiveFilter("project", archived: true)
-        fixture.model.setProjectArchiveFilter("project", archived: false)
+        // The archived chats page on their own: turning the archive switch
+        // on and off leaves the active list on the page it was on.
+        fixture.model.setArchivedChatsShown(true)
         fixture.settle()
-        XCTAssertEqual(rows(fixture.hosted).count, SidebarSessionPresentation.pageSize)
+        XCTAssertEqual(rows(fixture.hosted).count, 9, "Nothing here is archived: the list is as it was")
+        fixture.model.setArchivedChatsShown(false)
+        fixture.settle()
+        XCTAssertEqual(rows(fixture.hosted).count, 9)
     }
 
     /// A project reads from the start of its name unless a sibling shares it.

@@ -173,6 +173,32 @@ final class FreshPresentationTests: XCTestCase {
         while await gate.count < 4 { await Task.yield() }
         try await gate.finish(3, page: page("reloaded")); await view.presentation.navigation?.value
     }
+    /// A chat's file renamed while its opening page waits for its request
+    /// figures: a fork was recorded under the app's spelling of its file
+    /// until the helper's first snapshot gave the resolved one. That page was
+    /// dropped and nothing read the chat again, so it stayed on "Preparing…"
+    /// (the gallery's fork scene, now and then). It is read again under the
+    /// new name, as a rename during the read itself already was.
+    @MainActor func testARenameWhileTheOpeningPageIsCountedReadsItAgain() async throws {
+        let root = try folder(), model = try await model(root, path: root.appendingPathComponent("a.jsonl")), gate = Gate()
+        model.historyWindowLoader = { id, _, _, _ in try await gate.read(id) }
+        let opening = Task { await model.select("a") }
+        while await gate.count < 1 { await Task.yield() }
+        let view = try XCTUnwrap(model.selected), counting = view.accountingRevision
+        try await gate.finish(0, page: page("before"))
+        while view.accountingRevision == counting { await Task.yield() }
+        let index = try XCTUnwrap(model.chats.firstIndex { $0.id == "a" })
+        model.chats[index].path = root.appendingPathComponent("renamed.jsonl").path
+        let deadline = Date().addingTimeInterval(5)
+        while await gate.count < 2, Date() < deadline { await Task.yield() }
+        let reads = await gate.count
+        XCTAssertEqual(reads, 2, "The page read under the old name was dropped and not read again")
+        if reads == 2 { try await gate.finish(1, page: page("after")) }
+        await opening.value
+        XCTAssertEqual(view.historyState, .preparing, "The chat was left on Preparing…")
+        XCTAssertEqual(view.presentedMessages.map(\.id), ["after"])
+        XCTAssertNil(view.presentation.navigation)
+    }
     @MainActor func testFailedEarlierRequestCanRetryAtSameBoundary() async throws {
         let root = try folder(), path = try journal(40, root: root), model = try await model(root, path: path)
         await model.select("a")

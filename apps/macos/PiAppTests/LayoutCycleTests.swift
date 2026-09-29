@@ -3,32 +3,41 @@ import SwiftUI
 import AppKit
 @testable import PiApp
 
+/// The layout cycles SwiftUI reported while `body` ran: standard error goes
+/// to a file meanwhile, and what AttributeGraph wrote there is counted.
+@MainActor func layoutCycles(_ body: () async throws -> Void) async throws -> Int {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("cycles-" + UUID().uuidString + ".log")
+    FileManager.default.createFile(atPath: file.path, contents: nil)
+    let handle = try FileHandle(forWritingTo: file)
+    fflush(stderr)
+    let saved = dup(STDERR_FILENO)
+    dup2(handle.fileDescriptor, STDERR_FILENO)
+    var failure: Error?
+    do { try await body() } catch { failure = error }
+    fflush(stderr)
+    dup2(saved, STDERR_FILENO); close(saved); try? handle.close()
+    let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+    try? FileManager.default.removeItem(at: file)
+    if let failure { throw failure }
+    return text.components(separatedBy: "AttributeGraph: cycle detected").count - 1
+}
+
 /// SwiftUI reports a dependency cycle in a view graph as
 /// "=== AttributeGraph: cycle detected through attribute … ===" on standard
 /// error: it broke the cycle with a stale value, and the view laid out again.
 /// These count them while the window, its sheets and its other windows are
 /// shown and the appearance changes, as the screenshot gallery does.
 final class LayoutCycleTests: XCTestCase, SerialTestLane {
-    /// The cycles reported while `body` ran: standard error goes to a file
-    /// meanwhile, and what AttributeGraph wrote there is counted.
-    @MainActor func cycles(_ body: () async throws -> Void) async throws -> Int {
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("cycles-" + UUID().uuidString + ".log")
-        FileManager.default.createFile(atPath: file.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: file)
-        fflush(stderr)
-        let saved = dup(STDERR_FILENO)
-        dup2(handle.fileDescriptor, STDERR_FILENO)
-        var failure: Error?
-        do { try await body() } catch { failure = error }
-        fflush(stderr)
-        dup2(saved, STDERR_FILENO); close(saved); try? handle.close()
-        let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
-        try? FileManager.default.removeItem(at: file)
-        if let failure { throw failure }
-        return text.components(separatedBy: "AttributeGraph: cycle detected").count - 1
-    }
+    @MainActor func cycles(_ body: () async throws -> Void) async throws -> Int { try await layoutCycles(body) }
 
     @MainActor private func settle(_ seconds: Double) async throws { try await Task.sleep(for: .milliseconds(Int(seconds * 1000))) }
+
+    /// SwiftUI presents `.sheet` in a window class of its own, and keeps each
+    /// one it has presented, with its views, after it closes (macOS 14). The
+    /// app presents its sheets in windows of its own instead (`piSheetWindow`).
+    nonisolated static func presentedBySwiftUI(_ window: NSWindow) -> Bool {
+        String(describing: type(of: window)).contains("SheetPresentationWindow")
+    }
 
     /// Light, then dark, then light again, each drawn.
     @MainActor private func switchAppearance(_ window: NSWindow) async throws {
@@ -42,8 +51,9 @@ final class LayoutCycleTests: XCTestCase, SerialTestLane {
     /// The window and its sheets, opened and closed as a reader does, with the
     /// appearance switched. The screenshot gallery reported 2,948 cycles: most
     /// from closed sheets, still laid out whenever anything changed, and one
-    /// each time a sheet with a lazy list was presented. Closed sheets now let
-    /// go of their views (`DismissedSheets`), and short lists are plain stacks.
+    /// each time a sheet with a lazy list was presented. Every sheet is now a
+    /// window of the app's own, let go of whole once closed (`piSheetWindow`),
+    /// and short lists are plain stacks.
     /// The lists that can be long (search results, skills, changes) keep their
     /// lazy stacks and SwiftUI's one report as their sheet opens.
     @MainActor func testTheWindowAndItsSheetsLayOutWithoutCycles() async throws {
@@ -100,7 +110,9 @@ extension LayoutCycleTests {
     /// Settings sheet was opened and closed ten times.
     /// Ten Settings sheets opened and closed used to leave ten windows with
     /// their views in them, each redrawing with every change to the model: a
-    /// hundred changes cost 4.9 s instead of 1.0 s in a Debug build.
+    /// hundred changes cost 4.9 s instead of 1.0 s in a Debug build. SwiftUI
+    /// presents no sheet of its own any more, and a closed sheet's window,
+    /// which AppKit may keep a while, holds nothing.
     @MainActor func testClosedSheetsAndTheCostOfAModelChange() async throws {
         let root = scratchRoot("layout-cycles-cost")
         let project = root.appendingPathComponent("project")
@@ -142,8 +154,10 @@ extension LayoutCycleTests {
         }
         let after = await cost()
         try await Task.sleep(for: .milliseconds(300))
-        let holding = NSApp.windows.filter { DismissedSheets.presentedBySwiftUI($0) && !$0.isVisible && $0.contentView != nil }.count
-        print(String(format: "COST before %.1f ms, after ten Settings sheets %.1f ms, closed sheets holding views %d", before, after, holding))
+        let swiftUISheets = NSApp.windows.filter(Self.presentedBySwiftUI).count
+        let holding = NSApp.windows.filter { $0.styleMask.contains(.docModalWindow) && !$0.isVisible && $0.contentView != nil }.count
+        print(String(format: "COST before %.1f ms, after ten Settings sheets %.1f ms, closed sheets holding views %d, SwiftUI sheet windows %d", before, after, holding, swiftUISheets))
+        XCTAssertEqual(swiftUISheets, 0, "Every sheet is a window of the app's own (`piSheetWindow`), not one SwiftUI keeps")
         XCTAssertEqual(holding, 0, "A closed sheet's window lets go of its views")
         XCTAssertLessThan(after, before * 1.6, "Closed sheets no longer redraw with every change to the model (before \(Int(before)) ms, after \(Int(after)) ms)")
     }

@@ -26,7 +26,7 @@ struct ResourceInspector: View {
     @State private var overrideBudget = false
     @State private var notice = ""
     @State private var policyBusy = false
-    @Environment(\.dismiss) private var dismiss
+    @PiDismiss private var dismiss
 
     var body: some View {
         PiSheet("Skills, instructions and MCP", subtitle: "Discovered skills, the applied instruction chain, discovery settings and MCP servers for the selected project.", symbol: "book.closed", width: 1100, height: 800) {

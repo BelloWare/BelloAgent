@@ -219,7 +219,10 @@ struct ChatRowBody: View, Equatable {
             }.frame(width: 16, height: 16)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
-                    Text(title).font(.system(size: 13, weight: selected || unreadCount > 0 ? .semibold : .regular)).foregroundStyle(Color.piInk).lineLimit(1).truncationMode(.tail)
+                    // An archived chat reads quieter than the active ones above it,
+                    // until it is the one open.
+                    Text(title).font(.system(size: 13, weight: selected || unreadCount > 0 ? .semibold : .regular))
+                        .foregroundStyle(archived && !selected ? Color.piInkSecondary : Color.piInk).lineLimit(1).truncationMode(.tail)
                         .contentTransition(.opacity).piAnimation(PiMotion.base, value: title)
                     if pinned { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(Color.piInkTertiary).accessibilityLabel("Pinned chat") }
                     Spacer(minLength: 4)

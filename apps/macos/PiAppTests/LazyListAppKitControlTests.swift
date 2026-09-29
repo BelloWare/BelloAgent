@@ -149,7 +149,7 @@ final class LazyListAppKitControlTests: XCTestCase {
         }
         let changes = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
         changes.isReleasedWhenClosed = false
-        let panelView = NSHostingView(rootView: GitPanelView(model: model, roots: [repository.path]))
+        let panelView = NSHostingView(rootView: GitPanelView(roots: [repository.path]))
         changes.contentView = panelView; changes.orderFront(nil)
         defer { changes.contentView = nil; changes.close() }
         for _ in 0..<40 {

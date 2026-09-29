@@ -14,20 +14,20 @@ struct ProjectSidebarGroup: View {
     let name: String
     var filter = ""
     var sidebarWidth: CGFloat = WindowChrome.sidebarWidth
-    @Environment(\.piReduceMotion) private var reduceMotion
     @State private var dropTargeted = false
     private var query: String { filter.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var expanded: Bool { !query.isEmpty || model.projectIsExpanded(project.id) }
-    private var archived: Bool { model.projectShowsArchive(project.id) }
     private var projectTopics: [TopicRecord] { project.isScratch ? [] : model.topics(in: project.id) }
-    private var visibleTopics: [TopicRecord] {
+    /// The topics a filter leaves: a topic whose title matches, or one with
+    /// a chat that does, archived chats included while they are listed.
+    private func visibleTopics(archive: Bool) -> [TopicRecord] {
         guard !query.isEmpty else { return projectTopics }
         return projectTopics.filter { topic in
-            topic.title.localizedCaseInsensitiveContains(query)
-                || model.sidebarEntries(in: project.id, topicID: topic.id, archived: archived, collapsed: []).contains { $0.chat.title.localizedCaseInsensitiveContains(query) }
+            topic.title.localizedCaseInsensitiveContains(query) || (archive ? [false, true] : [false]).contains { archived in
+                model.sidebarEntries(in: project.id, topicID: topic.id, archived: archived, collapsed: []).contains { $0.chat.title.localizedCaseInsensitiveContains(query) }
+            }
         }
     }
-    private var archivedCount: Int { model.sidebarIndex.archivedCount(in: project.id, chats: model.chats) }
     private var hasUnread: Bool { model.projectHasUnread(project.id) }
     /// Whether the header still has room for its own changes and new-chat
     /// buttons beside the project's name.
@@ -42,7 +42,10 @@ struct ProjectSidebarGroup: View {
         // be compared rather than rebuilt. A collapsed project works out
         // nothing at all.
         let names = model.sidebarConnectionCount > 1
-        let topics = expanded ? visibleTopics : []
+        // The one archive switch: every project lists its archived chats
+        // after its active ones, group by group, or none of them.
+        let archive = model.sidebarShowsArchived
+        let topics = expanded ? visibleTopics(archive: archive) : []
         VStack(alignment: .leading, spacing: 3) {
             ProjectSidebarHeader(model: model, state: headerState).equatable()
             // Unfolding a project used to swap its rows in whole. They come
@@ -50,27 +53,22 @@ struct ProjectSidebarGroup: View {
             // header's own button owns the animation (`PiMotion.glide`).
             if expanded {
                 if !available { Text("Project unavailable · History only").font(PiFont.caption).foregroundStyle(Color.piInkTertiary).padding(.leading, 23).padding(.vertical, 3) }
-                if archived {
-                    Button { withAnimation(reduceMotion ? nil : PiMotion.glide) { model.setProjectArchiveFilter(project.id, archived: false) } } label: { Label("Archive · Back to Chats", systemImage: "arrow.uturn.backward") }
-                        .buttonStyle(.plain).piPointer().font(PiFont.caption).foregroundStyle(Color.piInkSecondary).padding(.leading, 23).padding(.vertical, 4)
-                        .accessibilityIdentifier("sessionArchiveFilter")
-                }
                 ForEach(topics) { topic in
                     TopicSidebarGroup(model: model, projectID: project.id, topicID: topic.id,
-                                      contents: model.topicGroupContents(in: project, topic: topic, archived: archived, filter: query,
+                                      contents: model.topicGroupContents(in: project, topic: topic, includesArchive: archive, filter: query,
                                                                          sidebarWidth: sidebarWidth, namesConnection: names))
                         .equatable()
                 }
+                let archived = model.sidebarArchiveContents(in: project, topicID: nil, includesArchive: archive, filter: query,
+                                                            sidebarWidth: sidebarWidth, namesConnection: names)
                 SidebarSessionGroup(model: model, projectID: project.id,
-                                    contents: model.sidebarGroupContents(in: project, topicID: nil, archived: archived, filter: query,
-                                                                         showEmpty: topics.isEmpty, sidebarWidth: sidebarWidth,
+                                    contents: model.sidebarGroupContents(in: project, topicID: nil, archived: false, filter: query,
+                                                                         showEmpty: topics.isEmpty && archived == nil, sidebarWidth: sidebarWidth,
                                                                          namesConnection: names))
                     .equatable()
-                if !archived && archivedCount > 0 {
-                    Button { withAnimation(reduceMotion ? nil : PiMotion.glide) { model.setProjectArchiveFilter(project.id, archived: true) } } label: { Label("Archive · \(archivedCount)", systemImage: "archivebox") }
-                        .buttonStyle(.plain).piPointer().font(PiFont.caption).foregroundStyle(Color.piInkTertiary).padding(.leading, 23).padding(.vertical, 4)
-                        .accessibilityLabel("Show \(archivedCount) archived chats in " + name)
-                        .accessibilityIdentifier("sessionArchiveFilter")
+                if let archived {
+                    SidebarSessionGroup(model: model, projectID: project.id, contents: archived).equatable()
+                        .transition(PiMotion.reveal)
                 }
             }
         }
@@ -96,7 +94,7 @@ struct ProjectSidebarGroup: View {
     }
     private var headerState: ProjectHeaderState {
         ProjectHeaderState(projectID: project.id, name: name, scratch: project.isScratch, trusted: project.trusted,
-                           available: available, expanded: expanded, archived: archived, filtering: !query.isEmpty,
+                           available: available, expanded: expanded, filtering: !query.isEmpty,
                            chosen: model.selectedWorkspaceID == project.id, hasUnread: hasUnread,
                            compact: compactHeader, truncatesInTheMiddle: truncatesInTheMiddle,
                            dropTargeted: dropTargeted, help: help)
@@ -163,6 +161,10 @@ private struct TopicSidebarGroup: View, Equatable {
             if contents.expanded {
                 SidebarSessionGroup(model: model, projectID: projectID, contents: contents.contents).equatable()
                     .transition(PiMotion.reveal)
+                if let archive = contents.archive {
+                    SidebarSessionGroup(model: model, projectID: projectID, contents: archive).equatable()
+                        .transition(PiMotion.reveal)
+                }
             }
         }
         // Header strip and chat rows are one drop zone: aiming at the topic's
@@ -189,6 +191,8 @@ private struct TopicSidebarGroup: View, Equatable {
 /// match keeps its ancestors visible, so filtering cannot strand a side chat.
 enum SidebarSessionPresentation {
     static let pageSize = 5
+    /// The group key of a group's archived chats: they page on their own.
+    static func archiveGroupID(_ group: String) -> String { "archived:" + group }
     static func filtered(_ entries: [SidebarChatEntry], by query: String) -> [SidebarChatEntry] {
         guard !query.isEmpty else { return entries }
         var kept: Set<Int> = [], ancestors: [Int] = []
@@ -229,6 +233,7 @@ private struct SidebarSessionGroup: View, Equatable {
     @Environment(\.piReduceMotion) private var reduceMotion
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
+            if contents.archived { SidebarArchiveHeading(groupID: contents.groupID, count: contents.total, indent: contents.indent) }
             ForEach(contents.rows) { row in
                 SidebarChatRow(model: model, chat: row.chat, projectID: projectID, state: row.state).equatable()
                     .transition(PiMotion.reveal)
@@ -268,6 +273,27 @@ private struct SidebarSessionGroup: View, Equatable {
                     .buttonStyle(.plain).piPointer().foregroundStyle(Color.piInkSecondary).accessibilityIdentifier("sessionShowLess-" + contents.groupID)
             }
         }.font(PiFont.caption).padding(.leading, contents.indent + 9).padding(.vertical, 4)
+    }
+}
+
+/// Where a group's archived chats begin while the archive switch is on: the
+/// archive glyph where the rows carry theirs, the word and how many there
+/// are, and a hairline to the edge. Quiet, like the rows under it.
+private struct SidebarArchiveHeading: View {
+    let groupID: String
+    let count: Int
+    let indent: CGFloat
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "archivebox").font(.system(size: 11, weight: .medium)).frame(width: 16)
+            Text("Archived · \(count)").font(PiFont.caption).lineLimit(1).fixedSize()
+            Rectangle().fill(Color.piHairline).frame(height: 1)
+        }
+        .foregroundStyle(Color.piInkTertiary)
+        .padding(.leading, indent + 10).padding(.trailing, 10).padding(.top, 6).padding(.bottom, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(count == 1 ? "1 archived chat" : "\(count) archived chats")
+        .accessibilityIdentifier("archivedChats-" + groupID)
     }
 }
 

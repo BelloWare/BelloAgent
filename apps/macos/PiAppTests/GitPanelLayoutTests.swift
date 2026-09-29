@@ -23,8 +23,12 @@ final class GitPanelLayoutTests: GitPanelTestCase {
         XCTAssertLessThan(capped, whole, "a card that draws 1500 rows must not pair 20000")
     }
 
-    /// A commit that touches thousands of files: the chip row is a flow layout,
-    /// which measures every chip it is given, twice, on the main thread.
+    /// A commit that touches thousands of files lists the first two hundred
+    /// as chips, and a chip that adds the next two hundred. As SwiftUI buttons
+    /// in a flow layout every chip was measured twice on the main thread, and
+    /// all three thousand at once took about fifty seconds; drawn natively
+    /// (`GitFileChipsView`) they cost little either way, and the step keeps a
+    /// wall of thousands of chips from pushing the diff out of sight.
     @MainActor func testACommitTouchingThousandsOfFilesListsThemInSteps() throws {
         let commit = GitCommit(hash: String(repeating: "a", count: 40), shortHash: "aaaaaaa", author: "Fixture", date: Date(), subject: "A very wide commit", parents: [])
         let files = (0..<3_000).map { GitStatusEntry(path: "src/module-\($0)/File\($0).swift", originalPath: nil, indexState: "M", worktreeState: ".", untracked: false) }
@@ -33,7 +37,7 @@ final class GitPanelLayoutTests: GitPanelTestCase {
         let detail = GitCommitDetail(commit: commit, message: "A very wide commit", files: files, stats: stats)
         XCTAssertTrue(detail.isLarge, "its patch waits to be asked for")
 
-        func cost(shown: Int) -> Double {
+        func show(_ shown: Int) -> (cost: Double, chips: [String]) {
             let holder = ChipHolder(); holder.shown = shown
             let view = GitCommitFileChips(detail: detail, selected: Binding(get: { holder.selected }, set: { holder.selected = $0 }),
                                           shown: Binding(get: { holder.shown }, set: { holder.shown = $0 }), showHistory: { _ in })
@@ -43,19 +47,21 @@ final class GitPanelLayoutTests: GitPanelTestCase {
                 window.contentView?.layoutSubtreeIfNeeded()
                 window.contentView?.displayIfNeeded()
             }
+            func chips(_ view: NSView) -> GitFileChipsView? { (view as? GitFileChipsView) ?? view.subviews.lazy.compactMap(chips).first }
+            let labels = (chips(window.contentView!)?.accessibilityChildren() as? [NSAccessibilityElement])?.compactMap { $0.accessibilityLabel() } ?? []
             window.contentView = nil; window.close()
-            return elapsed
+            return (elapsed, labels)
         }
-        let capped = cost(shown: GitCommitFileChips.step)
-        // Four times as many chips, to show what the cap is holding back.
-        // (All three thousand at once takes about fifty seconds.)
-        let quadruple = cost(shown: 4 * GitCommitFileChips.step)
-        print(String(format: "PERF commit chips: first %d of 3000 in %.0f ms, %d of them in %.0f ms", GitCommitFileChips.step, capped, 4 * GitCommitFileChips.step, quadruple))
+        let capped = show(GitCommitFileChips.step), all = show(files.count)
+        print(String(format: "PERF commit chips: first %d of 3000 in %.0f ms, all of them in %.0f ms", GitCommitFileChips.step, capped.cost, all.cost))
+        XCTAssertEqual(capped.chips.count, 1 + GitCommitFileChips.step + 1, "All, the first step, and the chip for the next")
+        XCTAssertEqual(capped.chips.first, "All 3000 files")
+        XCTAssertEqual(capped.chips.last, "2800 more files")
+        XCTAssertEqual(all.chips.count, 1 + files.count, "Every file once all are asked for, and no chip for more")
         // An absolute budget is a Release figure: in Debug, on a machine
-        // running other builds, it measures the machine. The shape check
-        // below holds in every configuration.
-        XCTAssertLessThan(capped, releaseBudget(1.0) * 1_000, "opening a commit that touches thousands of files must not stall the pane")
-        XCTAssertLessThan(capped * 3, quadruple, "and it is the cap that makes the difference")
+        // running other builds, it measures the machine.
+        XCTAssertLessThan(capped.cost, releaseBudget(1.0) * 1_000, "opening a commit that touches thousands of files must not stall the pane")
+        XCTAssertLessThan(all.cost, releaseBudget(1.0) * 1_000, "nor listing all of them")
 
         // The reader can still ask for more, a step at a time.
         let holder = ChipHolder()
@@ -98,8 +104,7 @@ final class GitPanelLayoutTests: GitPanelTestCase {
         print(String(format: "PERF 200 passes over a 3000-file changes list read its splits in %.1f ms", reads))
         XCTAssertLessThan(reads, 60, "the list is split when the status is read, not on every pass over the body")
 
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent(".state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        let window = host(GitPanelView(model: model, roots: [root.path]))
+        let window = host(GitPanelView(roots: [root.path]))
         defer { window.contentView = nil; window.close() }
         let layout = milliseconds {
             window.contentView?.layoutSubtreeIfNeeded()

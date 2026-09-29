@@ -123,6 +123,12 @@ actor MetadataStore {
                 if previous.isBackgroundTask {
                     chat.title = previous.title; chat.backgroundTask = previous.backgroundTask; chat.sourceSessionID = previous.sourceSessionID
                     if chat.backgroundTaskNotice == nil { chat.backgroundTaskNotice = previous.backgroundTaskNotice }
+                    // How a request ended is written once; a copy read before then
+                    // (a path update) must not take it back.
+                    if chat.backgroundTaskStartedAt == nil { chat.backgroundTaskStartedAt = previous.backgroundTaskStartedAt }
+                    if chat.backgroundTaskEndedAt == nil { chat.backgroundTaskEndedAt = previous.backgroundTaskEndedAt }
+                    if chat.backgroundTaskOutcome == nil { chat.backgroundTaskOutcome = previous.backgroundTaskOutcome }
+                    if chat.backgroundTaskResult == nil { chat.backgroundTaskResult = previous.backgroundTaskResult }
                 }
             }
             if let topicID = chat.topicID {
@@ -571,6 +577,17 @@ actor MetadataStore {
         } catch { sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
     }
 
+    /// Several chat records in one transaction, each written as `put` writes
+    /// it: launch settling every background request a quit left, at once.
+    func putChats(_ records: [ChatRecord]) throws {
+        let database = try ready()
+        guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        do {
+            for record in records { try put(record, kind: "chat", id: record.id) }
+            guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        } catch { sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+    }
+
     /// Claim one title job atomically so rapid submissions/restarts cannot
     /// duplicate an auxiliary request. Creating a record never resends work.
     func createTitleTask(_ task: ChatRecord, sourceID: String) throws -> ChatRecord? {
@@ -667,6 +684,16 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var sourceSessionID: String?
     var backgroundTaskNotice: String?
     var isBackgroundTask: Bool { backgroundTask != nil }
+    /// A background request's own account (`BackgroundRequests.swift`): when
+    /// it was sent and ended, how it ended ("completed", "failed" or
+    /// "interrupted"; nil while it runs), and what it produced (the title, the
+    /// suggestions one per line, or the notification's parameters). Records
+    /// written before these existed have none; launch reads their outcome
+    /// from what they left.
+    var backgroundTaskStartedAt: Date?
+    var backgroundTaskEndedAt: Date?
+    var backgroundTaskOutcome: String?
+    var backgroundTaskResult: String?
     var organizationRevision: Int64?
     /// Optional for existing sessions; topics never change project ownership.
     var topicID: String?

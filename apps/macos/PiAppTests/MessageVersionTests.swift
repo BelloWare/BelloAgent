@@ -291,6 +291,37 @@ final class ForkFromReplyTests: XCTestCase {
         XCTAssertTrue(ReplyMenu.forks(old, enabled: true), "A reply of an earlier version forks too")
     }
 
+    /// A fork, or a kept side, is recorded under the name the helper gives
+    /// its file, which is how every snapshot names it. The app recorded its
+    /// own spelling of the same file (/private/tmp for /tmp, a path through
+    /// a symlink), and the helper's first snapshot renamed the chat's file
+    /// while it was being opened.
+    @MainActor func testAForkIsRecordedUnderTheNameTheHelperGivesItsFile() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("fork-name-" + UUID().uuidString)
+        let sessions = root.appendingPathComponent("Sessions"), link = root.appendingPathComponent("Linked")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: sessions)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolved = sessions.appendingPathComponent("fork_f.jsonl"), encoder = JSONEncoder()
+        var journal = try encoder.encode(["type": WireValue.string("session"), "version": .number(3), "id": .string("f")]); journal.append(10)
+        journal.append(try encoder.encode(["type": WireValue.string("message"), "id": .string("u1"), "parentId": .null,
+                                           "message": .object(["role": .string("user"), "content": .string("First question")])])); journal.append(10)
+        try journal.write(to: resolved)
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        try await model.reloadConfiguration()
+        let parent = ChatRecord(id: "p", workspaceID: "project", title: "Parent", path: nil, profileID: "profile")
+        model.chats = [parent]; try await model.store?.put(parent, kind: "chat", id: parent.id)
+        var fork = ChatRecord(id: "f", workspaceID: "project", title: "Parent · fork", path: link.appendingPathComponent("fork_f.jsonl").path, profileID: "profile")
+        fork.parentSessionID = parent.id
+        try await model.store?.put(SideKeepIntent(chat: fork), kind: "side-keep", id: fork.id)
+        try await model.registerKeptSide(id: fork.id, path: resolved.path)
+        XCTAssertEqual(model.record(fork.id)?.path, resolved.path, "The fork kept the app's spelling of its file, for the first snapshot to rename")
+        let stored = try await model.store?.get(ChatRecord.self, kind: "chat", id: fork.id)
+        XCTAssertEqual(stored?.path, resolved.path)
+        try await model.traces.close(); await model.store?.close()
+    }
+
     /// Against the packaged helper: "Fork from here" on the first reply makes
     /// "‹title› · fork", nested under the chat, opens it with its composer
     /// focused, and its transcript ends at that reply.
