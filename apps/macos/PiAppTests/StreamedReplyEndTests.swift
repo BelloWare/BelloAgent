@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import AppKit
+import Combine
 @testable import PiApp
 
 /// A reply streamed into the open chat ends on screen whole. The owner saw a
@@ -157,6 +158,13 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         let seed = testEnvironment("PI_STREAM_STRESS_SEED").flatMap(UInt64.init) ?? UInt64(Date().timeIntervalSince1970 * 1000)
         print("STREAM seed \(seed)")
         var random = SplitMix64(state: seed)
+        // A smaller window fills in a few turns: PI_STREAM_STRESS_CAP_ROWS.
+        if let rows = testEnvironment("PI_STREAM_STRESS_CAP_ROWS").flatMap(Int.init) {
+            let caps = TranscriptPaging.residentCaps
+            TranscriptPaging.residentCaps = (rows: rows, bytes: caps.bytes)
+            addTeardownBlock { TranscriptPaging.residentCaps = caps }
+            print("STREAM window of \(rows) rows")
+        }
         let setup = try await setup()
         let launched = launch(setup)
         let model = launched.model
@@ -171,7 +179,8 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         _ = await wait(60) { self.quiet(model.displays[other.id]) }
         await model.select(main.id)
         let deadline = ProcessInfo.processInfo.systemUptime + seconds
-        var turns = 0, mismatches: [String] = []
+        var turns = 0, mismatches: [String] = [], readBack = 0, filled = 0
+        var firstRow: String?
         while ProcessInfo.processInfo.systemUptime < deadline {
             turns += 1
             if model.selectedID != main.id { await model.select(main.id) }
@@ -181,23 +190,45 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
             model.displays[main.id]?.draft = prompt; model.send(sessionID: main.id)
             var actions: [String] = []
             var gestureOpen = false
+            // Whether the reader read earlier rows during the turn: only such a
+            // read may leave the chat reading back past its window's start.
+            var readEarlier = false
+            var watching: Set<AnyCancellable> = []
+            model.displays[main.id]?.$olderPage.sink { if $0.loading { readEarlier = true } }.store(in: &watching)
             _ = await wait(15) { model.displays[main.id]?.busy == true }
             while model.displays[main.id]?.busy == true || model.displays[main.id]?.hasWork == true {
                 try await Task.sleep(for: .milliseconds(Int(40 + random.unit() * 400)))
                 guard let scroll = launched.scroll else { continue }
-                switch random.pick(9) {
+                switch random.pick(12) {
+                case 11:
+                    // The reader reads near the window's start, clear of the
+                    // band that reads earlier rows: the rows the next turn
+                    // pushes out of a full window are the ones they are on.
+                    let into = CGFloat(300 + random.unit() * 400)
+                    readerScrolls(launched, to: -scroll.contentInsets.top + into)
+                    actions.append(String(format: "read %.0f from the window's start", into))
+                case 9:
+                    // The reader clicks into an earlier reply's text, as to
+                    // select and copy some of it.
+                    let streaming = model.displays[main.id]?.messages.last(where: { $0.role == "assistant" })?.id
+                    let surfaces = launched.views(NativeMarkdownContainer.self).filter { $0.readingIdentity != nil && $0.readingIdentity != streaming }
+                    if !surfaces.isEmpty {
+                        launched.window.makeFirstResponder(surfaces[random.pick(surfaces.count)].textView); actions.append("hold an earlier reply")
+                    }
+                case 10:
+                    launched.window.makeFirstResponder(nil); actions.append("let go")
                 case 0:
                     NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
                     gestureOpen = true; actions.append("gesture begins")
                 case 1:
                     if gestureOpen { NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll); gestureOpen = false; actions.append("gesture ends") }
                 case 2:
-                    let clip = scroll.contentView, up = CGFloat(100 + random.unit() * 2000)
-                    clip.scroll(to: NSPoint(x: 0, y: max(-scroll.contentInsets.top, clip.bounds.minY - up))); scroll.reflectScrolledClipView(clip)
+                    let up = CGFloat(100 + random.unit() * 2000)
+                    readerScrolls(launched, to: max(-scroll.contentInsets.top, scroll.contentView.bounds.minY - up))
                     actions.append(String(format: "scroll up %.0f", up))
                 case 3:
-                    let clip = scroll.contentView, height = scroll.documentView?.frame.height ?? 0
-                    clip.scroll(to: NSPoint(x: 0, y: max(-scroll.contentInsets.top, height - clip.bounds.height))); scroll.reflectScrolledClipView(clip)
+                    let height = scroll.documentView?.frame.height ?? 0
+                    readerScrolls(launched, to: max(-scroll.contentInsets.top, height - scroll.contentView.bounds.height))
                     actions.append("scroll to bottom")
                 case 4:
                     await model.select(other.id); actions.append("switch away")
@@ -226,24 +257,47 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
             let found = await layers(launched, chat: main.id)
             let whole = found.helper
             var wrong: [String] = []
-            if found.display != whole { wrong.append("display") }
-            if model.selectedID == main.id {
-                if found.page != whole { wrong.append("page") }
-                if found.row != nil, found.row != whole { wrong.append("row") }
-                if found.rowHosted, let drawn = found.drawn, whole?.contains("paragraph 100") == true, !drawn.contains("paragraph 100") { wrong.append("drawn") }
+            let view = model.displays[main.id]
+            if firstRow == nil { firstRow = view?.messages.first?.id }
+            if let view, view.browsingHistory {
+                // Only a reader who read back past the window's start leaves
+                // its live tail: the newest rows made room for the earlier
+                // ones, and wait behind the newer edge. A chat that stopped
+                // taking the helper's rows without that is the bug.
+                if readEarlier && view.newerPage.available { readBack += 1 }
+                else { wrong.append("live tail disconnected\(readEarlier ? " with no newer edge" : "")") }
+            } else {
+                if found.display != whole { wrong.append("display") }
+                if model.selectedID == main.id {
+                    if found.page != whole { wrong.append("page") }
+                    if found.row != nil, found.row != whole { wrong.append("row") }
+                    if found.rowHosted, let drawn = found.drawn, whole?.contains("paragraph 100") == true, !drawn.contains("paragraph 100") { wrong.append("drawn") }
+                }
             }
-            let line = "turn \(turns) (\(prompt)): \(found)\(gestureOpen ? ", gesture left open" : "")"
+            // Every row of the chat can be scrolled back to.
+            if let view, let firstRow, !view.messages.contains(where: { $0.id == firstRow }) {
+                filled += 1
+                if !view.olderPage.available { wrong.append("earlier rows unreachable") }
+            }
+            let line = "turn \(turns) (\(prompt)): \(found), rows \(view?.messages.count ?? 0)\(view?.browsingHistory == true ? ", read back" : "")\(gestureOpen ? ", gesture left open" : "")"
             print("STREAM " + line)
             if !wrong.isEmpty {
                 let summary = "turn \(turns): \(wrong.joined(separator: ", ")) short of the helper — \(found); last actions: \(actions.suffix(12).joined(separator: " · "))"
                 print("STREAM MISMATCH " + summary)
                 mismatches.append(summary)
             }
+            withExtendedLifetime(watching) {}
             if gestureOpen, let scroll = launched.scroll { NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll) }
-            // Start the next turn from a chat shown as it now is.
+            // Start the next turn from a chat shown as it now is: a reader
+            // who read back returns to the latest reply, as Jump to latest does.
             if !wrong.isEmpty { await model.select(other.id); await model.select(main.id) }
+            else if view?.browsingHistory == true {
+                launched.window.makeFirstResponder(nil)
+                model.latest(sessionID: main.id)
+                _ = await wait(15) { model.displays[main.id]?.historyState == .ready && model.displays[main.id]?.browsingHistory == false }
+            }
         }
-        print("STREAM \(turns) turns, \(mismatches.count) mismatches, seed \(seed)")
+        print("STREAM \(turns) turns, \(mismatches.count) mismatches, \(filled) turns with rows past the window's start, \(readBack) read back past it, seed \(seed)")
         XCTAssertEqual(mismatches, [], "Every streamed reply ends on screen whole")
     }
 
@@ -299,5 +353,135 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         _ = await wait(2) { view.pinnedHistoryIDs.isEmpty }
         model.refresh(chat.id)
         _ = await wait(5) { !view.snapshotInFlight }
+    }
+
+    /// What the display and the helper say about a chat, when a turn will not settle.
+    @MainActor private func diagnose(_ model: WorkspaceModel, chat: String) async -> String {
+        guard let view = model.displays[chat] else { return "no display" }
+        let last = view.messages.last
+        var helper = "helper ?"
+        if let item = model.record(chat), let host = model.hosts[item.workspaceID],
+           let result = try? await host.request("session.status", sessionID: chat, params: [:]).object {
+            helper = "helper state \(result["state"]?.string ?? "?"), run \(result["runStatus"]?.string ?? "?"), seq \(result["seq"]?.number ?? -1), queue \(result["queueCount"]?.number ?? -1)"
+        }
+        return "display state \(view.state), busy \(view.busy), loading \(view.loading), hasWork \(view.hasWork), sending \(view.sendingRows.count), queue \(view.queue.count), active task \(view.taskPresentation?.active != nil), last \(last?.role ?? "-")/\(last?.state ?? "-") \"\(String((last?.text ?? "").prefix(40)))\", rows \(view.messages.count), browsing \(view.browsingHistory), inFlight \(view.snapshotInFlight), lastSeq \(view.lastSequence), opened \(model.opened.contains(chat)); \(helper); pinned \(view.pinnedHistoryIDs), anchor \(String(describing: view.scrollAnchor))"
+    }
+
+    /// Where each row on screen sits in the viewport.
+    @MainActor private func placesOnScreen(_ launched: Launched) -> [String: CGFloat] {
+        guard let document = launched.document, let clip = launched.scroll?.contentView else { return [:] }
+        let visible = document.convert(clip.bounds, from: clip)
+        var places: [String: CGFloat] = [:]
+        for row in document.retainedRows where row.superview === document && row.isHosted && !row.isHidden && row.frame.intersects(visible) {
+            places[row.itemID] = row.frame.minY - visible.minY
+        }
+        return places
+    }
+
+    /// The reader scrolls: a gesture that begins, moves the page and ends,
+    /// as a trackpad's does.
+    @MainActor private func readerScrolls(_ launched: Launched, to y: CGFloat) {
+        guard let scroll = launched.scroll as? TranscriptNativeScrollView else { return }
+        let clip = scroll.contentView
+        scroll.readerWillNavigate(upward: y < clip.bounds.minY)
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        clip.scroll(to: NSPoint(x: 0, y: y)); scroll.reflectScrolledClipView(clip)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+    }
+
+    /// Sends `prompt` in `chat` and waits for its turn to settle on a new
+    /// reply that reads as `whole` says.
+    @MainActor private func turn(_ model: WorkspaceModel, chat: String, _ prompt: String, whole: @escaping (String) -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        let previous = model.displays[chat]?.messages.last(where: { $0.role == "assistant" })?.id
+        model.displays[chat]?.draft = prompt; model.send(sessionID: chat)
+        let settled = await wait(60) {
+            guard self.quiet(model.displays[chat]), let reply = model.displays[chat]?.messages.last(where: { $0.role == "assistant" }) else { return false }
+            return reply.id != previous && whole(reply.text)
+        }
+        if !settled { XCTFail("“\(prompt)” never settled: \(await diagnose(model, chat: chat))", file: file, line: line) }
+    }
+
+    @MainActor private func chat(_ setup: Setup, _ model: WorkspaceModel, title: String) async throws -> ChatRecord {
+        await model.restore()
+        model.selectedWorkspaceID = setup.workspace.id; model.profileChoice = setup.profile.id
+        let chat = ChatRecord(id: "chat-" + title.lowercased() + "-" + UUID().uuidString, workspaceID: setup.workspace.id, title: title, path: nil, profileID: setup.profile.id)
+        model.chats = [chat]; try await model.store?.put(chat, kind: "chat", id: chat.id)
+        await model.select(chat.id)
+        return chat
+    }
+
+    /// A chat read from its first row grows past its window while the reader
+    /// follows it, on a page too short to scroll. The rows that leave the
+    /// window's start wait behind the earlier edge's control, and the chat
+    /// stays on its live tail: filling a full window with them on its own
+    /// would push out the rows on screen, the reply being written among them.
+    @MainActor func testAShortPageThatLostRowsOffersThemAndStaysLive() async throws {
+        let caps = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (rows: 8, bytes: caps.bytes)
+        addTeardownBlock { TranscriptPaging.residentCaps = caps }
+        let setup = try await setup()
+        let launched = launch(setup)
+        let model = launched.model
+        let chat = try await chat(setup, model, title: "Short")
+        for index in 1...6 { await turn(model, chat: chat.id, "And a short one \(index)", whole: { $0.contains("short one \(index)") && $0.hasSuffix("café.") }) }
+        let view = try XCTUnwrap(model.displays[chat.id])
+        let firstQuestion = { (rows: [TranscriptMessage]) in rows.contains { $0.role == "user" && $0.text.hasSuffix("short one 1") } }
+        XCTAssertTrue(view.messages.last(where: { $0.role == "assistant" })?.text.contains("short one 6") == true, "Every reply arrived")
+        XCTAssertFalse(view.browsingHistory, "The chat stayed on its live tail")
+        XCTAssertFalse(firstQuestion(view.messages), "The first turn has left the window")
+        XCTAssertNotNil(view.olderPage.cursor, "The rows that left have an earlier edge")
+        launched.draw()
+        _ = await wait(2) { launched.page?.earlierWaitsForReader == true }
+        XCTAssertTrue(launched.page?.earlierWaitsForReader == true, "The edge offers them to the reader")
+        // The reader presses the edge's control until the chat's first turn
+        // is back: each press reads one page, a few turns, before the edge.
+        for _ in 0..<6 where !firstQuestion(view.messages) {
+            guard view.olderPage.cursor != nil, view.olderPage.error == nil else { break }
+            _ = await model.loadEarlierPage(sessionID: chat.id)
+        }
+        if !firstQuestion(view.messages) { XCTFail("The edge reads the first turn back: \(await diagnose(model, chat: chat.id)); error \(view.olderPage.error ?? "none")") }
+        XCTAssertNil(view.olderPage.cursor, "The chat's first row is reached")
+    }
+
+    /// A long chat read from its first row grows past its window while the
+    /// reader follows it. Scrolling up to the top reads the rows that left
+    /// the window's start back through the earlier edge, and doing so does
+    /// not move the rows on screen. Before, a window that had held every row
+    /// kept no edge, and those rows came back only when the chat was opened
+    /// again.
+    @MainActor func testRowsThatLeaveTheWindowAsAChatGrowsCanBeScrolledBackTo() async throws {
+        let caps = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (rows: 6, bytes: caps.bytes)
+        addTeardownBlock { TranscriptPaging.residentCaps = caps }
+        let setup = try await setup()
+        let launched = launch(setup)
+        let model = launched.model
+        let chat = try await chat(setup, model, title: "Tall")
+        // Three long replies: a page taller than the window, nine rows
+        // through a window of six.
+        for _ in 1...3 { await turn(model, chat: chat.id, "Write bulk 24 of history", whole: { $0.hasPrefix("Fixture bulk reply.") && $0.utf8.count >= 24 * 1024 }) }
+        let view = try XCTUnwrap(model.displays[chat.id])
+        let firstRows = view.messages.map(\.id)
+        XCTAssertEqual(firstRows.count, 6, "The window holds its six newest rows")
+        XCTAssertNotNil(view.olderPage.cursor, "The rows that left have an earlier edge")
+        XCTAssertFalse(view.browsingHistory, "The chat is on its live tail")
+        // The reader scrolls up to the top; the edge reads the rows back.
+        launched.draw()
+        readerScrolls(launched, to: -(launched.scroll?.contentInsets.top ?? 0))
+        launched.draw()
+        try await Task.sleep(for: .milliseconds(100)); launched.draw()
+        let before = placesOnScreen(launched)
+        let read = await wait(15) { view.messages.first?.id != firstRows.first && !view.olderPage.loading && view.olderPage.cursor == nil }
+        if !read { XCTFail("Scrolling up reads the first turn back (edge \(String(describing: view.olderPage.cursor?.entry)), error \(view.olderPage.error ?? "none")): \(await diagnose(model, chat: chat.id))") }
+        XCTAssertTrue(view.messages.contains { $0.role == "user" } && view.messages.first?.role == "user", "The chat's first question is back at the top")
+        try await Task.sleep(for: .milliseconds(400))
+        launched.draw()
+        let after = placesOnScreen(launched)
+        var moved: [String] = []
+        for (id, y) in before { if let now = after[id], abs(now - y) > 0.5 { moved.append(String(format: "%@ %.1f → %.1f", String(id.prefix(12)), y, now)) } }
+        XCTAssertFalse(before.isEmpty, "Rows were on screen at the top")
+        XCTAssertEqual(moved, [], "Reading the earlier rows back does not move the rows on screen")
+        XCTAssertEqual(Set(before.keys).subtracting(after.keys), [], "The rows on screen stay on screen")
     }
 }

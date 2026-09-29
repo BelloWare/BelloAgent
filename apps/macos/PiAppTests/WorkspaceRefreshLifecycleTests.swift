@@ -258,6 +258,51 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         try await f.host.shutdownAndWait()
     }
 
+    /// A chat read from its first row, whose window then fills as it grows:
+    /// the rows that leave its start are reached again by scrolling up,
+    /// through the earlier edge, as any earlier rows are. Before, a window
+    /// that had every row kept no edge, and rows that left it came back only
+    /// when the chat was opened again.
+    @MainActor func testRowsThatLeaveAWholeChatsWindowCanBeScrolledBackTo() async throws {
+        let caps = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (rows: 8, bytes: caps.bytes)
+        defer { TranscriptPaging.residentCaps = caps }
+        let f = try await fixture()
+        f.view.historyState = .ready
+        f.view.presentation.identity = ("runtime", "root")
+        let role = { (index: Int) in index % 2 == 0 ? "user" : "assistant" }
+        let wire = { (index: Int) -> WireValue in .object(["id": .string("m\(index)"), "role": .string(role(index)), "text": .string("Message \(index)")]) }
+        // Every row of the chat, from its first: there is nothing before it.
+        f.view.messages = (0..<8).map { TranscriptMessage(id: "m\($0)", role: role($0), text: "Message \($0)") }
+        XCTAssertNil(f.view.olderPage.cursor)
+        f.model.refresh(f.chat.id)
+        try await wait { f.commands.frames.count == 1 }
+        // Two more turns; the helper's page holds its newest rows.
+        var value = snapshot(sequence: 2, revision: "runtime:2")
+        value["messages"] = .array((6..<12).map(wire))
+        value["historyIncarnation"] = .string("runtime"); value["historyLineage"] = .string("root")
+        value["historyOlder"] = .object(["incarnation": .string("runtime"), "lineage": .string("root"), "entry": .string("m6")])
+        try reply(f.commands.frames[0], on: f.host, result: value)
+        try await wait { !f.view.snapshotInFlight }
+        XCTAssertEqual(f.view.messages.map(\.id), (4..<12).map { "m\($0)" }, "The window keeps the newest rows")
+        XCTAssertEqual(f.view.olderPage.cursor?.entry, "m4", "The rows that left it have an earlier edge, at its first row")
+        XCTAssertEqual(f.view.olderPage.cursor?.incarnation, "runtime")
+        XCTAssertFalse(f.view.browsingHistory, "The chat stays on its live tail")
+        // Scrolling up reads them back, from that edge.
+        let earlier: WireValue = .array((0..<4).map(wire))
+        f.model.historyWindowLoader = { _, cursor, newer, _ in
+            guard !newer, cursor?.entry == "m4" else { throw HostError.failure("Read from the wrong edge") }
+            return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("runtime"), "lineage": .string("root"),
+                "older": .null, "newer": .object(["incarnation": .string("runtime"), "lineage": .string("root"), "entry": .string("m3")]),
+                "messages": earlier]))
+        }
+        let loaded = await f.model.loadEarlierPage(sessionID: f.chat.id)
+        XCTAssertTrue(loaded, "The earlier edge reads")
+        XCTAssertEqual(f.view.messages.first?.id, "m0", "Every row of the chat can be scrolled back to")
+        XCTAssertNil(f.view.olderPage.cursor, "The chat's first row is reached")
+        try await f.host.shutdownAndWait()
+    }
+
     @MainActor func testRealHelperUpdatesReopenedAndEarlierWindowsWithoutSwitchingTabs() async throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("reopened-gateway-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

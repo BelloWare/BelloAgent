@@ -73,6 +73,16 @@ was left and opened again. The page draws exactly the rows the display holds,
 with no second cut of its own, and the request log is asked about the newest
 500 of them; rows further up keep the figures they already show.
 
+Every row of a chat stays reachable by scrolling (0.1.115). Rows that leave the
+window's start as the chat grows leave an earlier edge at its first row, as a
+window read from the middle of the chat has, and the reader scrolls back to
+them. Before, a window that had read every row from the chat's first kept no
+edge, and those rows came back only when the chat was opened again. A page too
+short to scroll fills itself with earlier rows only while the window can take
+a whole page more without letting go of any row it holds; otherwise the edge's
+control waits for the reader, so a fill never pushes out the rows on screen or
+the live tail.
+
 The old 100,000-record index cutoff is removed. A cancellable worker scans the
 supported journal and builds a private, disposable SQLite offset/branch index.
 Offsets spill to disk; only the requested body window is decoded for display.

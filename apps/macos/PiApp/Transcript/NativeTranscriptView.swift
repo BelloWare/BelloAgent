@@ -906,8 +906,13 @@ struct ContentGeometry: Equatable {
               !session.historyState.loading, !session.olderPage.loading, session.olderPage.error == nil,
               session.olderPage.cursor != nil, session.presentation.readyAt != nil else { return }
         if short {
-            guard session.presentation.automaticFills < HistoryWindowPolicy.automaticFills else {
-                // A page this short cannot be scrolled to ask again.
+            // A page this short cannot be scrolled to ask again. Nor does a
+            // window fill itself when it could not take another page without
+            // letting go of rows it holds: the rows it pushed out would be the
+            // ones on screen, and the live tail with them, so a reply being
+            // written stopped arriving. The reader asks, at the edge.
+            guard session.presentation.automaticFills < HistoryWindowPolicy.automaticFills,
+                  TranscriptPaging.takesAnotherPage(session.messages) else {
                 earlierWaits = true
                 return
             }
