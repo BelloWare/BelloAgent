@@ -119,12 +119,15 @@ extension WorkspaceModel {
                 // under the new one instead of being dropped with nothing in
                 // its place.
                 let held = view.scrollAnchor
-                // Shown earlier this launch, its journal unchanged and its rows
-                // still the page read in: a fresh read returns those same rows,
-                // and drew them again. Rows paged in since are read again as one
-                // page from where the reader was, which keeps the chat bounded.
+                // Shown earlier this launch, its journal unchanged, and its rows
+                // still the newest page as read in, with the reader at the
+                // bottom or on one of them: a fresh read returns those same
+                // rows, and drew them again. Anything else is read as before:
+                // rows paged in since come back as one page from where the
+                // reader was, and a place no longer in the chat opens the newest.
                 if cached, let revision = view.historyRevision, revision.path == item.path, !view.messages.isEmpty,
-                   view.adoptedPage == view.pageRows,
+                   view.adoptedPage == view.pageRows, view.newerPage.cursor == nil,
+                   view.scrollAnchor.map({ anchor in anchor.followsBottom || view.messages.contains { $0.id == anchor.id } }) ?? true,
                    await self.history.unchanged(revision) {
                     guard current() else { return }
                     self.presentHeldHistory(view, identity: heldIdentity, partialTurnInput: heldTurnInput)
