@@ -286,11 +286,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         return record(id).map { !$0.isArchived } ?? false
     }
     /// A chat whose display went or was made again, or that was archived or
-    /// deleted, keeps no rows in any pane.
+    /// deleted, keeps no rows in any pane this workspace let keep them.
     private func forgetKeptTranscriptRows() {
         guard !TranscriptKeptRows.keptSessionIDs.isEmpty else { return }
-        TranscriptKeptRows.forgetEverywhere { entry in
-            !keepsTranscriptRows(entry.sessionID) || displays[entry.sessionID].map { ObjectIdentifier($0.disclosure) } != entry.disclosure
+        TranscriptKeptRows.forgetEverywhere(admittedBy: self) { entry in
+            !keepsTranscriptRows(entry.sessionID) || displays[entry.sessionID]?.disclosure !== entry.disclosure
         }
     }
     var hosts: [String: HostSupervisor] = [:]
@@ -377,7 +377,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         liveExporter = TraceArchive(root: FileManager.default.temporaryDirectory.appendingPathComponent("BelloAgent-Export-" + UUID().uuidString))
         store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         report.attach(self)
-        TranscriptKeptRows.admits = { [weak self] id in self?.keepsTranscriptRows(id) ?? true }
+        TranscriptKeptRows.policy = self
     }
     /// Opens the desktop database off the main actor and reports the one state
     /// the rest of the app checks synchronously: there is no storage at all.
@@ -391,3 +391,5 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         }
     }
 }
+
+extension WorkspaceModel: TranscriptKeptRowsPolicy {}

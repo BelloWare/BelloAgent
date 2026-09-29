@@ -7,6 +7,10 @@ import AppKit
 /// back instead of building every row's tree again (`TranscriptKeptRows`).
 /// One page and one document are bound to one chat after another, as the
 /// conversation pane is when the reader switches chats.
+///
+/// Rows are compared as objects the test holds (`===`), never by address: a
+/// row let go of frees its memory, and a row built right after it can stand
+/// at the same address, which read as the old row come back.
 final class TranscriptKeptRowsTests: XCTestCase {
     @MainActor private final class Pane {
         let page = TranscriptPage()
@@ -88,7 +92,8 @@ final class TranscriptKeptRowsTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        await MainActor.run { TranscriptKeptRows.admits = { _ in true } }
+        // No workspace decides here, unless a test makes one.
+        await MainActor.run { TranscriptKeptRows.policy = nil }
     }
 
     /// Going back to a chat takes back the very rows it had: nothing is built.
@@ -97,7 +102,7 @@ final class TranscriptKeptRowsTests: XCTestCase {
         let a = chat("back-a"), b = chat("back-b")
         pane.show(a)
         try await pane.settle { pane.showing(a) && abs(pane.offset - pane.bottom) < 0.5 }
-        let identities = Dictionary(uniqueKeysWithValues: pane.rows.map { ($0.itemID, ObjectIdentifier($0)) })
+        let before = Dictionary(uniqueKeysWithValues: pane.rows.map { ($0.itemID, $0) })
         pane.show(b)
         try await pane.settle { pane.showing(b) }
         XCTAssertEqual(pane.document.keptRows.sessionIDs, ["back-a"], "The chat the reader left keeps its rows")
@@ -107,7 +112,7 @@ final class TranscriptKeptRowsTests: XCTestCase {
         try await pane.settle { pane.showing(a) && abs(pane.offset - pane.bottom) < 0.5 }
         XCTAssertEqual(pane.document.rowsBuiltCount, built, "Going back built rows again")
         XCTAssertEqual(pane.document.rowsTakenBackCount, 30)
-        for row in pane.rows { XCTAssertEqual(ObjectIdentifier(row), identities[row.itemID], "Row \(row.itemID) was made again") }
+        for row in pane.rows { XCTAssertTrue(row === before[row.itemID], "Row \(row.itemID) was made again") }
         XCTAssertEqual(pane.document.keptRows.sessionIDs, ["back-b"], "The chat on screen is not kept; the one left is")
     }
 
@@ -129,27 +134,31 @@ final class TranscriptKeptRowsTests: XCTestCase {
         pane.show(b)
         try await pane.settle { pane.showing(b) }
         pane.show(a)
-        // From the first pass that shows the reader's row where it was left,
-        // nothing on screen moves or resizes.
+        // The first pass that shows the reader's row where it was left, on a
+        // machine however busy…
         var landed: [String: CGRect]?
-        var moves: [String] = []
-        let until = ProcessInfo.processInfo.systemUptime + 1.2
-        while ProcessInfo.processInfo.systemUptime < until {
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        while landed == nil, ProcessInfo.processInfo.systemUptime < deadline {
             pane.scroll.layoutSubtreeIfNeeded(); pane.window.displayIfNeeded()
             let frames = pane.visibleFrames()
-            if let was = landed {
-                for (id, frame) in frames { if let before = was[id], abs(before.minY - frame.minY) > 0.5 || abs(before.height - frame.height) > 0.5 {
-                    moves.append("\(id) from \(before) to \(frame)")
-                } }
-                landed = frames
-            } else if let at = frames["steady-a-m20"], let then = left["steady-a-m20"], abs(at.minY - then.minY) < 0.5 {
-                landed = frames
-            }
-            try await Task.sleep(for: .milliseconds(8))
+            if let at = frames["steady-a-m20"], let then = left["steady-a-m20"], abs(at.minY - then.minY) < 0.5 { landed = frames }
+            else { try await Task.sleep(for: .milliseconds(8)) }
         }
-        XCTAssertNotNil(landed, "The chat never came back to where the reader left it")
+        let first = try XCTUnwrap(landed, "The chat never came back to where the reader left it")
+        // …and from it, for 1.2 s, nothing on screen moves or resizes.
+        var moves: [String] = [], was = first
+        let until = ProcessInfo.processInfo.systemUptime + 1.2
+        while ProcessInfo.processInfo.systemUptime < until {
+            try await Task.sleep(for: .milliseconds(8))
+            pane.scroll.layoutSubtreeIfNeeded(); pane.window.displayIfNeeded()
+            let frames = pane.visibleFrames()
+            for (id, frame) in frames { if let before = was[id], abs(before.minY - frame.minY) > 0.5 || abs(before.height - frame.height) > 0.5 {
+                moves.append("\(id) from \(before) to \(frame)")
+            } }
+            was = frames
+        }
         XCTAssertEqual(moves, [], "Rows moved after the revisit landed")
-        for (id, frame) in left { if let now = landed?[id] { XCTAssertEqual(now.minY, frame.minY, accuracy: 0.5, "\(id) is not where it was left") } }
+        for (id, frame) in left { if let now = first[id] { XCTAssertEqual(now.minY, frame.minY, accuracy: 0.5, "\(id) is not where it was left") } }
         XCTAssertGreaterThan(pane.document.rowsTakenBackCount, 0)
     }
 
@@ -161,7 +170,7 @@ final class TranscriptKeptRowsTests: XCTestCase {
         let a = chat("changed-a", count: 12), b = chat("changed-b")
         pane.show(a)
         try await pane.settle { pane.showing(a) }
-        let identities = Dictionary(uniqueKeysWithValues: pane.rows.map { ($0.itemID, ObjectIdentifier($0)) })
+        let before = Dictionary(uniqueKeysWithValues: pane.rows.map { ($0.itemID, $0) })
         let tall = try XCTUnwrap(pane.rows.first { $0.itemID == "changed-a-m2" }).frame.height
         pane.show(b)
         try await pane.settle { pane.showing(b) }
@@ -178,7 +187,7 @@ final class TranscriptKeptRowsTests: XCTestCase {
         for row in pane.rows {
             guard case .message(let message) = row.contentItem else { return XCTFail("Unexpected row \(row.itemID)") }
             XCTAssertEqual(message.text, a.messages.first { $0.id == row.itemID }?.text, "Row \(row.itemID) shows stale content")
-            if let was = identities[row.itemID] { XCTAssertEqual(ObjectIdentifier(row), was, "Unchanged row \(row.itemID) was made again") }
+            if let was = before[row.itemID] { XCTAssertTrue(row === was, "Unchanged row \(row.itemID) was made again") }
         }
         let changed = try XCTUnwrap(pane.rows.first { $0.itemID == "changed-a-m2" })
         try await pane.settle { changed.frame.height > 0 && changed.frame.height < tall - 10 }
@@ -217,7 +226,8 @@ final class TranscriptKeptRowsTests: XCTestCase {
         }
         pane.show(b)
         try await pane.settle { pane.showing(b) }
-        for _ in 0..<20 { await Task.yield(); try await Task.sleep(for: .milliseconds(5)) }
+        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        while left != nil, ProcessInfo.processInfo.systemUptime < deadline { await Task.yield(); try await Task.sleep(for: .milliseconds(5)) }
         XCTAssertEqual(pane.document.keptRows.sessionIDs, ["hold-a"])
         XCTAssertNil(left, "Kept rows hold the display of the chat they were kept for")
     }
@@ -243,13 +253,17 @@ final class TranscriptKeptRowsTests: XCTestCase {
         let a = chat("again-a", count: 6), b = chat("again-b")
         pane.show(a)
         try await pane.settle { pane.showing(a) }
-        let old = Set(pane.rows.map(ObjectIdentifier.init))
+        // Held here: refused, they are let go of, and the rows built next
+        // could stand at their addresses.
+        let old = pane.rows
         pane.show(b)
         try await pane.settle { pane.showing(b) }
         let remade = chat("again-a", count: 6)
+        let built = pane.document.rowsBuiltCount
         pane.show(remade)
         try await pane.settle { pane.showing(remade) }
-        XCTAssertTrue(pane.rows.allSatisfy { !old.contains(ObjectIdentifier($0)) }, "Rows made with another display's stores came back")
+        XCTAssertFalse(pane.rows.contains { row in old.contains { $0 === row } }, "Rows made with another display's stores came back")
+        XCTAssertEqual(pane.document.rowsBuiltCount - built, 6, "Every row of the chat made again is built for its own stores")
         XCTAssertEqual(pane.document.rowsTakenBackCount, 0)
         XCTAssertEqual(pane.document.keptRows.sessionIDs, ["again-b"])
     }
@@ -281,7 +295,7 @@ final class TranscriptKeptRowsTests: XCTestCase {
         let root = scratchRoot("kept-rows-workspace")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        addTeardownBlock { @MainActor in TranscriptKeptRows.admits = { _ in true } }
+        addTeardownBlock { @MainActor in TranscriptKeptRows.policy = nil }
         let a = chat("workspace-a", count: 6), b = chat("workspace-b", count: 6)
         model.displays = [a.id: a, b.id: b]
         model.chats = [ChatRecord(id: a.id, workspaceID: "project", title: "A", path: nil, profileID: "profile"),
@@ -308,6 +322,38 @@ final class TranscriptKeptRowsTests: XCTestCase {
         XCTAssertEqual(pane.document.keptRows.sessionIDs, [], "Leaving an archived chat keeps nothing")
         model.chats.removeAll { $0.id == a.id }
         XCTAssertFalse(model.keepsTranscriptRows(a.id), "A deleted chat keeps nothing")
+        model.shutdown()
+    }
+
+    /// A workspace lets go only of rows it let a pane keep. Another's chats
+    /// are not among its own: a workspace still alive from before, whose
+    /// chats or displays change, left this pane's rows alone before too.
+    @MainActor func testAWorkspaceLetsGoOnlyOfWhatItLetKeep() async throws {
+        let pane = Pane(); defer { pane.close() }
+        let a = chat("scoped-a", count: 6), b = chat("scoped-b")
+        pane.show(a); try await pane.settle { pane.showing(a) }
+        pane.show(b); try await pane.settle { pane.showing(b) }
+        XCTAssertEqual(pane.document.keptRows.sessionIDs, ["scoped-a"], "Kept with no workspace deciding")
+        let root = scratchRoot("kept-rows-scoped")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        addTeardownBlock { @MainActor in TranscriptKeptRows.policy = nil }
+        // Its own chats and displays change; none of them is this pane's.
+        let other = chat("scoped-other")
+        model.displays = [other.id: other]
+        model.chats = [ChatRecord(id: other.id, workspaceID: "project", title: "Other", path: nil, profileID: "profile")]
+        model.displays = [:]
+        XCTAssertEqual(pane.document.keptRows.sessionIDs, ["scoped-a"], "A workspace let go of rows it had not let be kept")
+        // What it lets keep from here on is its own to let go of.
+        model.displays = [a.id: a, b.id: b]
+        model.chats = [ChatRecord(id: a.id, workspaceID: "project", title: "A", path: nil, profileID: "profile"),
+                       ChatRecord(id: b.id, workspaceID: "project", title: "B", path: nil, profileID: "profile")]
+        pane.show(a); try await pane.settle { pane.showing(a) }
+        pane.show(b); try await pane.settle { pane.showing(b) }
+        XCTAssertEqual(pane.document.keptRows.sessionIDs, [a.id])
+        XCTAssertTrue(pane.document.keptRows.entries.first?.admittedBy === model)
+        model.displays.removeValue(forKey: a.id)
+        XCTAssertEqual(pane.document.keptRows.sessionIDs, [], "A workspace kept rows whose display went")
         model.shutdown()
     }
 }
