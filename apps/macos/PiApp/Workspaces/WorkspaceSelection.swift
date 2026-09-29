@@ -36,8 +36,14 @@ extension WorkspaceModel {
         PerformanceProbe.shared.count("sessionSelectionCalls")
         PerformanceProbe.shared.beginSelection(id, hasHistory: item.path != nil)
         let view = displays[id] ?? SessionDisplay(id: id), cached = view.hasPresentedRows
+        // What the rows shown were read under, should they still be the chat's rows.
+        let heldIdentity = view.presentation.identity, heldTurnInput = view.presentation.partialTurnInput
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
-        view.historyState = .loading; view.refreshingCachedRows = cached; view.olderPage = .init(); view.newerPage = .init()
+        // Reads under way end with the page they were for; the boundaries
+        // themselves stay until a page read in replaces them, since the rows
+        // shown may turn out to be the chat's rows still.
+        view.historyState = .loading; view.refreshingCachedRows = cached
+        view.olderPage = .init(cursor: view.olderPage.cursor); view.newerPage = .init(cursor: view.newerPage.cursor)
         view.historyProgress = nil
         view.contextSelectionReady = false; view.browsingHistory = true
         view.draftReady = view.selectionMetadataLoaded
@@ -112,6 +118,16 @@ extension WorkspaceModel {
                 // under the new one instead of being dropped with nothing in
                 // its place.
                 let held = view.scrollAnchor
+                // Shown earlier this launch, and its journal unchanged since
+                // its rows were read: they are its rows, with the pages read
+                // around them. Reading the file again drew the same rows again.
+                if cached, let revision = view.historyRevision, revision.path == item.path, !view.messages.isEmpty,
+                   await self.history.unchanged(revision) {
+                    guard current() else { return }
+                    self.presentHeldHistory(view, identity: heldIdentity, partialTurnInput: heldTurnInput)
+                    if self.opened.contains(id) { self.refresh(id) }
+                    return
+                }
                 var source = item, page = try await self.readInitialWindow(source, holding: held)
                 for _ in 0..<3 {
                     guard current(), let now = self.record(id), now.path != source.path else { break }

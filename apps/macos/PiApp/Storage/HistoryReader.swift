@@ -314,6 +314,14 @@ actor HistoryReader {
         var value = stat(); guard fstat(file.fileDescriptor, &value) == 0 else { throw StoreError.unreadableRecord }
         return Stamp(device: value.st_dev, inode: value.st_ino, size: value.st_size, modified: value.st_mtimespec.tv_sec, modifiedNS: value.st_mtimespec.tv_nsec, changed: value.st_ctimespec.tv_sec, changedNS: value.st_ctimespec.tv_nsec)
     }
+    /// Whether a journal is still the file a page was read from: the same
+    /// file, size and change times. Nothing is read from it.
+    func unchanged(_ held: HistoryRevision) -> Bool {
+        guard let file = try? open(held.path) else { return false }
+        defer { try? file.close() }
+        guard let current = try? stamp(file) else { return false }
+        return revision(current) == held.stamp
+    }
     func validateIdentity(path: String, id: String) throws {
         let file = try open(path); defer { try? file.close() }
         guard let bytes = try file.read(upToCount: 65_536), let newline = bytes.firstIndex(of: 10) else { throw StoreError.unreadableRecord }

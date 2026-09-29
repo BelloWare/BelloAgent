@@ -547,6 +547,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     var browsingHistory = false
     var footerUpdatedAt = 0.0
     var accountingRevision = 0
+    /// The presentation whose rows' cost and usage were read before they were
+    /// shown (`withAccounting`): its refresh after it is ready reads only the
+    /// chat's totals and timing.
+    var accountingReadFor: UUID?
     var messageAccounting: [String: GatewayTotals] = [:]
     var lastSequence: Double = -1
     /// The finished tasks of the last task presentation, decoded once.
