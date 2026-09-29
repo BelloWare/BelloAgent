@@ -4,14 +4,16 @@ import AppKit
 @testable import PiApp
 
 /// A sheet closed with the pointer over it, the app in front, lets go of what
-/// it showed. SwiftUI keeps a hosting view that saw the pointer over a hover
-/// region (every Pi button has one) in a key window, and everything the view
-/// shows with it, until it sees the pointer leave, which it never does for a
-/// view no longer on screen: a Changes sheet closed with its Done button kept
-/// its views and its controller for good. Forcing that takes the app in front
-/// and the real pointer over the sheet, which events sent to the view do not
-/// reproduce, so the test runs only when asked (`PI_POINTER_TESTS=1`), in the
-/// serial lane, and puts the pointer back where it found it.
+/// it showed before the test returns. XCTest keeps whatever AppKit
+/// autoreleases until a test returns, and with the pointer over a hover
+/// region (every Pi button has one) in a key window that includes the sheet's
+/// hosting view: a Changes sheet closed with its Done button kept its views
+/// and its controller that long, and the checks that nothing keeps them failed
+/// now and then. The app itself lets go of them as the closing turn ends.
+/// Forcing it takes the app in front and the real pointer over the sheet,
+/// which events sent to the view do not reproduce, so the test runs only when
+/// asked (`PI_POINTER_TESTS=1`), in the serial lane, and puts the pointer back
+/// where it found it.
 final class SheetHoverReleaseTests: GitPanelTestCase, SerialTestLane {
     @MainActor final class Presenter: ObservableObject { @Published var showing = false }
 

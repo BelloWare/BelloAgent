@@ -39,7 +39,7 @@ extension AgentSession {
         task.lastSourceID = task.lastSourceID ?? task.anchorSourceID
         task.detail = detail.map { preview($0, bytes: 2048) }; task.preparingCalls = 0; task.currentTool = nil
         let value = try JSON.parse(JSONEncoder().encode(task))
-        try journal?.append(["type":"custom", "customType":"pi-app.task-terminal.v1", "data":value], flush:true)
+        try journal?.append(["type":"custom", "customType":JSON(JournalRecordKind.taskTerminal), "data":value], flush:true)
         recentTaskPresentations.append(task)
         if recentTaskPresentations.count > 64 { recentTaskPresentations.removeFirst(recentTaskPresentations.count - 64) }
         activeTaskPresentation = nil

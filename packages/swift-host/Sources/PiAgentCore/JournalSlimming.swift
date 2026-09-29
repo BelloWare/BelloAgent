@@ -125,7 +125,7 @@ enum JournalSlimming {
             if line.isEmpty { continue }
             seen += 1
             guard let record = try? JSON.parse(line) else { continue }
-            if record["customType"].text == "pi-app.native.v1" { return record["data"]["binding"] }
+            if record["customType"].text == JournalRecordKind.marker { return record["data"]["binding"] }
         }
         return nil
     }
@@ -181,7 +181,7 @@ enum JournalSlimming {
                 let branch = fields.type == "branch"
                 let carriesState = branch && !((try? JSON.parse(line))?["nativeState"].isNull ?? true)
                 lines.append(Line(start: start, length: line.count, id: id, parent: fields.parentID,
-                                  state: fields.customType == "pi-app.native.state.v1", branch: branch, carriesState: carriesState))
+                                  state: fields.customType == JournalRecordKind.state, branch: branch, carriesState: carriesState))
             }
             guard let headerSpan else { throw AgentError("session_identity", "The journal has no session header") }
             header = headerSpan; size = reader.size; self.lines = lines

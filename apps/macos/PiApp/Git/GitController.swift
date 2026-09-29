@@ -164,11 +164,12 @@ import AppKit
         loading = false; diffLoading = false; commitLoading = false
     }
 
-    /// The sheet has closed for good. SwiftUI keeps a closed sheet's views and
-    /// state alive (macOS 14), so a controller that kept what it had read held
-    /// its diffs, its history and up to two dozen commits' patches for every
-    /// Changes sheet ever closed. It goes back to how it was made: a panel
-    /// that opens over it again reads everything afresh, as a first open does.
+    /// The sheet has closed for good. Whatever still holds the sheet's views
+    /// holds this controller (in a test, XCTest does until the test returns),
+    /// and a controller that kept what it had read held its diffs, its history
+    /// and up to two dozen commits' patches with it. It goes back to how it
+    /// was made: a panel that opens over it again reads everything afresh, as
+    /// a first open does.
     func letGo() {
         selectedCommit = nil
         selection = nil

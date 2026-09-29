@@ -83,6 +83,34 @@ extension AgentSession {
         observe(observation,generation:generation)
         if observation.phase == "awaiting", !operation.isNull { await traces.operation(observation.attemptID,operation) }
     }
+    /// A model request as the context stands: the tools it offers, its
+    /// instructions, its body, and its count, which the chat's figures show.
+    struct PreparedRequest {
+        var snapshot: ResourceSnapshot
+        var definitions: [ToolDefinition]
+        var instructions: String
+        var body: JSON
+        var count: RequestContextCount
+    }
+    /// The next request, built from `snapshot`, the chat's resources as
+    /// applied, and the context as it now stands: before the first request,
+    /// and again whenever a compaction or delivered steering changed it.
+    func prepareRequest(_ snapshot: ResourceSnapshot) async throws -> PreparedRequest {
+        let definitions=await sessionDefinitions()
+        let instructions=Self.requestInstructions(snapshot.prompt)
+        let body=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
+        let count=try countContext(requestContext,request:body); currentContextCount=count
+        return PreparedRequest(snapshot:snapshot,definitions:definitions,instructions:instructions,body:body,count:count)
+    }
+    /// The reply streamed so far, as the row a cut-off request leaves: kept
+    /// and shown, never sent to the model again. Nil when nothing arrived.
+    func interruptedPartial(attemptIDs: [String]?) -> ChatMessage? {
+        guard let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty else { return nil }
+        var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]])
+        partial.responseTimeline=partialTimeline; partial.responseTimeline?.finish("interrupted")
+        partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"; partial.requestAttemptIDs=attemptIDs
+        return partial
+    }
     func run(compactOnly: Bool) async {
         do {
             try Task.checkCancellation(); state="running"; runStatus="running"; try persistState(active:true); event("state")
@@ -111,46 +139,32 @@ extension AgentSession {
                     try enforceCostLimit()
                     let drained=resumingFailedRequest ? false : try await drainSteering()
                     if drained { overflowRecoveryAttempted=false }
-                    var resourceSnapshot: ResourceSnapshot
+                    let resourceSnapshot: ResourceSnapshot
                     if let appliedSnapshot { resourceSnapshot=appliedSnapshot }
                     else { resourceSnapshot=try await resources.resolve(); appliedSnapshot=resourceSnapshot }
                     appliedRevision=resourceSnapshot.revision
-                    var definitions=await sessionDefinitions()
-                    var instructions=Self.requestInstructions(resourceSnapshot.prompt)
-                    var request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
-                    var count=try countContext(requestContext,request:request)
-                    currentContextCount=count
+                    var prepared=try await prepareRequest(resourceSnapshot)
                     // Include delivered input and complete tool results. Leave
                     // room for an intact-history summary before this request.
                     let threshold = autoCompaction && !titleTask && !resumingFailedRequest
-                        ? try compactionThreshold(requestContext,instructions:instructions,profile:turnProfile) : Int.max
-                    if count.requestTokens >= threshold, canCompact {
+                        ? try compactionThreshold(requestContext,instructions:prepared.instructions,profile:turnProfile) : Int.max
+                    if prepared.count.requestTokens >= threshold, canCompact {
                         do { try await compactContext(reason:"threshold") }
-                        catch let error as AgentError where error.code == "compact_unavailable" && count.fits { /* Nothing useful to replace; keep the intact request. */ }
+                        catch let error as AgentError where error.code == "compact_unavailable" && prepared.count.fits { /* Nothing useful to replace; keep the intact request. */ }
                         if !drained && !resumingFailedRequest, try await drainSteering() { overflowRecoveryAttempted=false }
-                        resourceSnapshot=appliedSnapshot ?? resourceSnapshot
-                        definitions=await sessionDefinitions()
-                        instructions=Self.requestInstructions(resourceSnapshot.prompt)
-                        request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
-                        count=try countContext(requestContext,request:request); currentContextCount=count
+                        prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
                     }
                     var modelMs=0.0
                     let operationID=UUID().uuidString
                     var recovered=false, completed: ModelReply?
                     while completed == nil {
                         try Task.checkCancellation()
-                        let dispatchProfile=try turnProfile.dispatching(count)
+                        let dispatchProfile=try turnProfile.dispatching(prepared.count)
                         partialID=UUID().uuidString; partialStartedAt=Date().timeIntervalSince1970 * 1000; activeTaskPresentation?.operationID=operationID
                         partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus="running"; modelActive=true; event("message_start")
                         do {
-                            completed=try await completeWithRetries(profile:dispatchProfile,messages:requestContext,instructions:instructions,tools:definitions,turnID:currentTurnID,purpose:titleTask ? utilityPurpose : "turn",operation:["logicalRequestId":JSON(operationID),"recovered":JSON(recovered),"recovery":recovered ? contextRecovery : .null],onDelta:{ [weak self] delta in await self?.delta(delta) },reset:{
-                                if let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty {
-                                    var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]])
-                                    partial.responseTimeline=partialTimeline; partial.responseTimeline?.finish("interrupted")
-                                    partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"
-                                    partial.requestAttemptIDs=requestObservation.map { [$0.attemptID] }
-                                    try append(partial)
-                                }
+                            completed=try await completeWithRetries(profile:dispatchProfile,messages:requestContext,instructions:prepared.instructions,tools:prepared.definitions,turnID:currentTurnID,purpose:titleTask ? utilityPurpose : "turn",operation:["logicalRequestId":JSON(operationID),"recovered":JSON(recovered),"recovery":recovered ? contextRecovery : .null],onDelta:{ [weak self] delta in await self?.delta(delta) },reset:{
+                                if let partial=interruptedPartial(attemptIDs:requestObservation.map { [$0.attemptID] }) { try append(partial) }
                                 partialID=UUID().uuidString; partialStartedAt=Date().timeIntervalSince1970 * 1000
                                 partialText=""; partialThinking=""; resetPartialRow()
                                 if let partialID { recordDisplayChange(partialID, at: displayClock()) }
@@ -158,12 +172,8 @@ extension AgentSession {
                                 // Pi retries by continuing its loop, which first delivers queued steering.
                                 guard try await drainSteering() else { return nil }
                                 overflowRecoveryAttempted=false
-                                resourceSnapshot=appliedSnapshot ?? resourceSnapshot
-                                definitions=await sessionDefinitions()
-                                instructions=Self.requestInstructions(resourceSnapshot.prompt)
-                                request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
-                                count=try countContext(requestContext,request:request); currentContextCount=count
-                                return (try turnProfile.dispatching(count),requestContext,instructions,definitions)
+                                prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
+                                return (try turnProfile.dispatching(prepared.count),requestContext,prepared.instructions,prepared.definitions)
                             })
                             modelMs += modelRequestsMs
                         } catch let error as AgentError {
@@ -173,16 +183,11 @@ extension AgentSession {
                             overflowRecoveryAttempted=true
                             // Recovery surrounds only this failed model operation.
                             // The completed tool batch is never entered a second time.
-                            if let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty {
-                                var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]])
-                                partial.responseTimeline=partialTimeline; partial.responseTimeline?.finish("interrupted")
-                                    partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"; partial.requestAttemptIDs=error.attemptID.map { [$0] }
-                                try append(partial)
-                            }
+                            if let partial=interruptedPartial(attemptIDs:error.attemptID.map { [$0] }) { try append(partial) }
                             partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); modelActive=false
                             let failure=error.failure.flatMap { $0.contextRejection ? $0.rawValue : nil } ?? "contextOverflow"
-                            let recovery: JSON=["logicalRequestId":JSON(operationID),"consumed":true,"failedAttemptId":error.attemptID.map { JSON($0) } ?? .null,"failedFingerprint":count.requestFingerprint.map { JSON($0) } ?? .null,"failure":JSON(failure)]
-                            try journal?.append(["type":"custom","customType":"pi-app.context-recovery.v1","data":recovery],flush:true)
+                            let recovery: JSON=["logicalRequestId":JSON(operationID),"consumed":true,"failedAttemptId":error.attemptID.map { JSON($0) } ?? .null,"failedFingerprint":prepared.count.requestFingerprint.map { JSON($0) } ?? .null,"failure":JSON(failure)]
+                            try journal?.append(["type":"custom","customType":JSON(JournalRecordKind.contextRecovery),"data":recovery],flush:true)
                             contextRecovery=recovery; recovered=true
                             // A recovery that cannot compact leaves the overflow as the run's failure, as in pi.
                             let overflow=error
@@ -193,11 +198,7 @@ extension AgentSession {
                             try Task.checkCancellation()
                             // Pi continues its loop after the compaction, delivering queued steering first.
                             if try await drainSteering() { overflowRecoveryAttempted=false }
-                            resourceSnapshot=appliedSnapshot ?? resourceSnapshot
-                            definitions=await sessionDefinitions()
-                            instructions=Self.requestInstructions(resourceSnapshot.prompt)
-                            request=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
-                            count=try countContext(requestContext,request:request); currentContextCount=count
+                            prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
                         }
                     }
                     guard let reply=completed else { throw AgentError("provider_failed","No model response") }
@@ -224,7 +225,7 @@ extension AgentSession {
                     if let stoppedEarly { assistant.stopReason = outputLimited ? "length" : stoppedEarly }
                     // The reply keeps its usage in pi's shape: the next count rests on it.
                     assistant.usage=PiContext.usage(reply.usage,api:turnProfile.api)
-                    assistant.contextUsageBinding = try reply.message.contextUsageBinding ?? RequestContextCounter.usageBinding(request,profile:turnProfile)
+                    assistant.contextUsageBinding = try reply.message.contextUsageBinding ?? RequestContextCounter.usageBinding(prepared.body,profile:turnProfile)
                     try append(assistant); cumulativeUsage.observe(reply.usage)
                     if !outputLimited { overflowRecoveryAttempted=false }
                     event("message_end")
@@ -268,14 +269,11 @@ extension AgentSession {
             errorMessage=(error as? AgentError)?.message ?? (runStatus == "cancelled" ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
             errorCode=runStatus == "failed" ? (error as? AgentError)?.code : nil
             if let activeSubmission { commandState(activeSubmission,runStatus) }
-            if let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty {
-                var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]]); partial.responseTimeline=partialTimeline; partial.responseTimeline?.finish("interrupted")
-                                    partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"
-                partial.requestAttemptIDs = partialTimeline.segments.first.map { [$0.part.attemptID] } ?? requestObservation.map { [$0.attemptID] }
+            if let partial=interruptedPartial(attemptIDs:partialTimeline.segments.first.map { [$0.part.attemptID] } ?? requestObservation.map { [$0.attemptID] }) {
                 // Publishing links can suspend below. Once the durable row
                 // exists, its former streaming placeholder must not duplicate
                 // the same row ID in snapshots taken during that suspension.
-                do { try append(partial); self.partialID=nil } catch { }
+                do { try append(partial); partialID=nil } catch { }
             }
             do { try finishPresentedTask(runStatus == "cancelled" ? "cancelled" : "failed", detail:errorMessage, code:errorCode) }
             catch { activeTaskPresentation=nil; errorMessage="Task outcome could not be saved. Inspect the retained conversation and tool effects before retrying." }

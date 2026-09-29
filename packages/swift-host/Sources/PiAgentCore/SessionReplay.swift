@@ -106,7 +106,7 @@ extension AgentSession {
                 r.context=[summary]+kept; r.history.append(summary); r.visible.append(summary)
                 r.rowSpans[summary.id] = .init(id:summary.id,kind:.compaction,offset:lineStart,length:line.count)
                 if let operation = summary.operationID, let position = r.history.firstIndex(where: { $0.kind == "execution" && $0.operationID == operation }) {
-                    r.history[position].responseTimeline?.finish("completed"); r.history[position].detail="Compaction · Checkpoint durably adopted"
+                    Self.adoptCompactionProgress(&r.history[position])
                     let replacement=r.history[position]
                     if let index=r.visible.firstIndex(where: { $0.id == replacement.id }) { r.visible[index]=replacement }
                 }
@@ -134,7 +134,7 @@ extension AgentSession {
                     receiptsBase = .list(item["nativeState"]["commands"].list); receiptChanges.removeAll(keepingCapacity: true)
                 }
                 r.contextRecovery = .null; r.compactionState = .null
-            } else if item["customType"].text == "pi-app.presentation.update.v1" {
+            } else if item["customType"].text == JournalRecordKind.presentationUpdate {
                 let target = try identity(item["data"]["id"])
                 // An update follows the row it updates closely: search from the end.
                 if let position = r.history.lastIndex(where: { $0.id == target }), ["execution","requestLedger"].contains(r.history[position].kind ?? "") {
@@ -143,34 +143,34 @@ extension AgentSession {
                     r.rowSpans[target] = .init(id:target,kind:.update,offset:lineStart,length:line.count); ordinalMax=max(ordinalMax,Self.maxOrdinal(replacement))
                     if let index=r.visible.lastIndex(where: { $0.id == target }) { r.visible[index]=replacement }
                 }
-            } else if item["customType"].text == "pi-app.task-terminal.v1" {
+            } else if item["customType"].text == JournalRecordKind.taskTerminal {
                 let task = try JSONDecoder().decode(TaskPresentationRecord.self, from: item["data"].data())
                 guard task.valid, task.terminal else { throw AgentError("session_damaged", "Invalid task completion evidence") }
                 r.recentTaskPresentations.removeAll { $0.key == task.key }; r.recentTaskPresentations.append(task)
                 if r.recentTaskPresentations.count > 64 { r.recentTaskPresentations.removeFirst() }
-            } else if item["customType"].text == "pi-app.native.state.v1" {
+            } else if item["customType"].text == JournalRecordKind.state {
                 r.stateRecord=item["data"]; newestStateLine=nil; stateSource=(line, lineStart, "data")
                 if item["data"][CommandReceipts.deltaKey].flag == true { receiptChanges.append(line) }
                 else { receiptsBase = .list(item["data"]["commands"].list); receiptChanges.removeAll(keepingCapacity: true) }
             }
-            else if item["customType"].text == "pi-app.compaction-failure.v1" { r.failedCompactionFingerprint=item["data"]["fingerprint"].text }
-            else if item["customType"].text == "pi-app.context-recovery.v1" { r.contextRecovery=item["data"] }
-            else if item["customType"].text == "pi-app.native.context.v1" {
+            else if item["customType"].text == JournalRecordKind.compactionFailure { r.failedCompactionFingerprint=item["data"]["fingerprint"].text }
+            else if item["customType"].text == JournalRecordKind.contextRecovery { r.contextRecovery=item["data"] }
+            else if item["customType"].text == JournalRecordKind.context {
                 let byID=Dictionary(r.history.map { ($0.id,$0) },uniquingKeysWith:{_,b in b})
                 let ids=try CompactionCheckpoint.identities(item["data"]["ids"])
                 r.context=try ids.map { guard let message=byID[$0] else { throw AgentError("session_damaged","Unknown context reference") }; return message }
                 let selected = EditReplayPlan.forkTimeline(visible: r.visible.map(\.id), boundary: ids)
                 if !item["data"]["visibleIDs"].isNull, try CompactionCheckpoint.identities(item["data"]["visibleIDs"]) != selected { throw AgentError("session_damaged", "Fork timeline does not match the complete boundary") }
                 r.visible = selected.compactMap { byID[$0] }
-            } else if ["pi-app.side-origin.v1", "pi-app.fork-origin.v1"].contains(item["customType"].text ?? "") {
+            } else if [JournalRecordKind.sideOrigin, JournalRecordKind.forkOrigin].contains(item["customType"].text ?? "") {
                 r.parentInfo=item["data"]
-                if item["customType"].text == "pi-app.fork-origin.v1" { r.contextRecovery = .null; r.compactionState = .null }
+                if item["customType"].text == JournalRecordKind.forkOrigin { r.contextRecovery = .null; r.compactionState = .null }
             }
             // A record that sets the model context is where the next open can
             // resume from: the metadata file records what it takes to.
-            if ["compaction", "branch"].contains(item["type"].text ?? "") || item["customType"].text == "pi-app.native.context.v1" {
-                let helper: JSON=["spend":r.spend.record,"spendTracked":JSON(r.spendTracked),"failedCompactionFingerprint":r.failedCompactionFingerprint.map { JSON($0) } ?? .null,
-                                  "contextRecovery":r.contextRecovery,"compactionState":r.compactionState,"parentInfo":r.parentInfo,"presentationOrdinal":JSON(ordinalMax)]
+            if ["compaction", "branch"].contains(item["type"].text ?? "") || item["customType"].text == JournalRecordKind.context {
+                let helper=Self.checkpointHelper(spend:r.spend,spendTracked:r.spendTracked,failedCompactionFingerprint:r.failedCompactionFingerprint,
+                                                 contextRecovery:r.contextRecovery,compactionState:r.compactionState,parentInfo:r.parentInfo,presentationOrdinal:ordinalMax)
                 r.captured=Self.checkpoint(sessionID:id,header:opened.headerCheck,marker:opened.markerCheck,last:line,at:lineStart,lastID:try identity(item["id"]),
                                          visible:r.visible,context:r.context,spans:r.rowSpans,state:stateSource,assistantMessageCount:r.assistantMessageCount,
                                          latestAssistantMessageID:r.latestAssistantMessageID,versions:r.versions.ledger,tasks:r.recentTaskPresentations,helper:helper)
@@ -187,7 +187,7 @@ extension AgentSession {
         r.presentationOrdinal = max(r.history.compactMap(\.responseTimeline).flatMap(\.segments).map { $0.part.sessionOrdinal ?? $0.part.ordinal }.max() ?? 0, r.resumed ? ordinalMax : 0)
         if let line=newestStateLine {
             let item=try JSON.parse(line)
-            guard item["customType"].text == "pi-app.native.state.v1" else { throw AgentError("session_damaged", "Invalid session state record") }
+            guard item["customType"].text == JournalRecordKind.state else { throw AgentError("session_damaged", "Invalid session state record") }
             r.stateRecord=item["data"]
         }
         if let state=r.stateRecord {

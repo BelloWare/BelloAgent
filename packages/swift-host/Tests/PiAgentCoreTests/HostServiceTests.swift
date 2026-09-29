@@ -106,19 +106,22 @@ final class HostServiceTests: XCTestCase {
         }
     }
 
+    /// A chat of 12,000 messages, long enough that replaying it takes time.
+    private func writeLongJournal(_ path: URL, cwd: URL, profile: Profile) throws {
+        let journal = try SessionJournal(url: path, id: "long", cwd: cwd, binding: profile.binding, create: true)
+        for index in 0..<12_000 {
+            var message = ChatMessage(role: index.isMultiple(of: 2) ? "user" : "assistant", content: [textBlock("Message \(index) " + String(repeating: "x", count: 200))])
+            message.id = "m-\(index)"
+            try journal.append(["type": "message", "message": message.pi], id: message.id, flush: false)
+        }
+        try journal.append(["type": "custom", "customType": "pi-app.native.state.v1", "data": ["active": false, "queue": [], "steering": [], "commands": [], "queuePaused": false]], flush: true)
+    }
+
     func testOpeningALongChatDoesNotHoldUpTheOthers() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let directory = root.appendingPathComponent("state"), profile = try fixtureProfile()
         let path = directory.appendingPathComponent("long.jsonl")
-        do {
-            let journal = try SessionJournal(url: path, id: "long", cwd: root, binding: profile.binding, create: true)
-            for index in 0..<12_000 {
-                var message = ChatMessage(role: index.isMultiple(of: 2) ? "user" : "assistant", content: [textBlock("Message \(index) " + String(repeating: "x", count: 200))])
-                message.id = "m-\(index)"
-                try journal.append(["type": "message", "message": message.pi], id: message.id, flush: false)
-            }
-            try journal.append(["type": "custom", "customType": "pi-app.native.state.v1", "data": ["active": false, "queue": [], "steering": [], "commands": [], "queuePaused": false]], flush: true)
-        }
+        try writeLongJournal(path, cwd: root, profile: profile)
         let host = NativeHostService(emit: { _ in })
         _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(directory.path)])
         _ = try await host.command("session.open", sessionID: "quick", params: ["profile": profile.raw, "apiKey": "fixture"])
@@ -139,6 +142,46 @@ final class HostServiceTests: XCTestCase {
         XCTAssertLessThan(worst, openMs / 3, "another chat is answered while the long one is still opening")
         await host.shutdown()
     }
+
+    /// A fork opens as a chat of its own from a copy of the journal, which
+    /// replays all of it. That replay is done off the host's actor too: it
+    /// was not, and every other chat waited for a long chat's fork.
+    func testForkingALongChatDoesNotHoldUpTheOthers() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("state"), profile = try fixtureProfile()
+        let path = directory.appendingPathComponent("long.jsonl")
+        try writeLongJournal(path, cwd: root, profile: profile)
+        let host = NativeHostService(emit: { _ in })
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(directory.path)])
+        _ = try await host.command("session.open", sessionID: "quick", params: ["profile": profile.raw, "apiKey": "fixture"])
+        let openedAt = nowMS()
+        _ = try await host.command("session.open", sessionID: "long", params: ["profile": profile.raw, "apiKey": "fixture", "path": JSON(path.path)])
+        let openMs = nowMS() - openedAt
+        // Another chat is asked again and again until the fork has answered,
+        // so one of the questions meets the fork's replay, wherever it runs.
+        let finished = Finished()
+        let forking = Task { defer { finished.set() }; return try await host.command("session.fork", sessionID: "long", params: ["forkSessionId": "long-fork"]) }
+        var worst = 0.0
+        while !finished.isSet {
+            let asked = nowMS()
+            _ = try await host.command("session.snapshot", sessionID: "quick", params: ["includeMessages": false])
+            worst = max(worst, nowMS() - asked)
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        let forked = try await forking.value, loaded = await host.loadedSession("long-fork")
+        print("PERF fork-long-chat messages=12000 openMs=\(Int(openMs)) otherChatWorstMs=\(Int(worst))")
+        XCTAssertEqual(forked["accepted"].flag, true, forked.encoded())
+        XCTAssertNotNil(loaded, "the fork is open")
+        XCTAssertGreaterThan(openMs, 150, "the journal is long enough to measure")
+        XCTAssertLessThan(worst, openMs / 3, "another chat is answered while the fork's journal is replayed")
+        await host.shutdown()
+    }
+}
+
+private final class Finished: @unchecked Sendable {
+    private let lock = NSLock(); private var value = false
+    func set() { lock.lock(); value = true; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
 }
 
 private final class ReadyFrames: @unchecked Sendable {

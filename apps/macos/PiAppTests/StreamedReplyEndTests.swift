@@ -14,7 +14,9 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         let workspace: WorkspaceRecord, profile: ProfileRecord
     }
 
-    @MainActor private func setup() async throws -> Setup {
+    /// `slowWords`: how long a "slow" reply is (`PI_APP_UI_FIXTURE_SLOW_WORDS`),
+    /// streamed at a word or so every 0.8 s.
+    @MainActor private func setup(slowWords: Int? = nil) async throws -> Setup {
         var repository = URL(fileURLWithPath: #filePath)
         for _ in 0..<4 { repository.deleteLastPathComponent() }
         let script = repository.appendingPathComponent("fixtures/native/ui-gateway.py")
@@ -27,6 +29,7 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         gateway.arguments = ["-u", script.path]
         gateway.currentDirectoryURL = root; gateway.standardOutput = pipe; gateway.standardError = FileHandle.nullDevice
         gateway.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": root.path]
+        if let slowWords { gateway.environment?["PI_APP_UI_FIXTURE_SLOW_WORDS"] = String(slowWords) }
         try gateway.run()
         addTeardownBlock { gateway.terminate(); gateway.waitUntilExit() }
         let handle = pipe.fileHandleForReading
@@ -483,5 +486,74 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         XCTAssertFalse(before.isEmpty, "Rows were on screen at the top")
         XCTAssertEqual(moved, [], "Reading the earlier rows back does not move the rows on screen")
         XCTAssertEqual(Set(before.keys).subtracting(after.keys), [], "The rows on screen stay on screen")
+    }
+
+    /// The reader reads back past a full window's start while a reply is
+    /// being written, and the newest rows, the reply among them, make room
+    /// for the earlier ones. Coming back to the end reads the rows after the
+    /// window in, below the reader, and the reply joins them and goes on
+    /// arriving where they are reading: nothing pressed, and no row on screen
+    /// moving while the rows join. Before, the end offered "Load newer
+    /// messages", and the reply looked as if it had stopped until it was
+    /// pressed or the chat was opened again.
+    @MainActor func testAReplyReadBackPastTheWindowGoesOnWhenTheReaderComesBack() async throws {
+        let caps = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (rows: 24, bytes: caps.bytes)
+        addTeardownBlock { TranscriptPaging.residentCaps = caps }
+        let setup = try await setup(slowWords: 160)
+        let launched = launch(setup)
+        let model = launched.model
+        let chat = try await chat(setup, model, title: "Back")
+        for index in 1...10 { await turn(model, chat: chat.id, "And a short one \(index)", whole: { $0.contains("short one \(index)") && $0.hasSuffix("café.") }) }
+        let view = try XCTUnwrap(model.displays[chat.id])
+        XCTAssertNotNil(view.olderPage.cursor, "The window is full")
+        // A slow reply starts, and is being written.
+        view.draft = "slow: walk through it"; model.send(sessionID: chat.id)
+        let started = await wait(30) { view.messages.last?.role == "assistant" && view.messages.last?.isStreaming == true && (view.messages.last?.text.count ?? 0) > 60 }
+        if !started { XCTFail("The slow reply started: \(await diagnose(model, chat: chat.id))") }
+        let reply = try XCTUnwrap(view.messages.last).id
+        // The reader reads back to the window's start: the page reads the rows
+        // before it, and the reply makes room for them.
+        launched.draw()
+        for _ in 0..<6 where !view.browsingHistory {
+            readerScrolls(launched, to: -(launched.scroll?.contentInsets.top ?? 0))
+            _ = await wait(5) { view.browsingHistory }
+            launched.draw()
+        }
+        if !view.browsingHistory { XCTFail("Reading back past the window's start left the live tail: \(await diagnose(model, chat: chat.id))") }
+        XCTAssertFalse(view.messages.contains { $0.id == reply }, "The reply being written made room")
+        XCTAssertTrue(view.busy, "The reply is still being written")
+        // The reader comes back to the end, pressing nothing, as often as it
+        // takes. What is on screen as each read starts stays where it is as
+        // its rows join.
+        var moved: [String] = [], returns = 0
+        while (view.browsingHistory || !view.messages.contains(where: { $0.id == reply })) && returns < 12 {
+            returns += 1
+            let last = view.messages.last?.id
+            let bottom = max(0, (launched.scroll?.documentView?.frame.height ?? 0) - (launched.scroll?.contentView.bounds.height ?? 0))
+            readerScrolls(launched, to: bottom)
+            launched.draw()
+            let before = placesOnScreen(launched)
+            _ = await wait(10) { view.messages.last?.id != last || view.newerPage.error != nil }
+            try await Task.sleep(for: .milliseconds(200)); launched.draw()
+            let after = placesOnScreen(launched)
+            for (id, y) in before {
+                if let now = after[id] { if abs(now - y) > 0.5 { moved.append(String(format: "return %d: %@ %.1f → %.1f", returns, String(id.prefix(12)), y, now)) } }
+                else { moved.append("return \(returns): \(id.prefix(12)) left the screen") }
+            }
+            if let error = view.newerPage.error { XCTFail("A newer read failed: \(error)"); break }
+        }
+        if view.browsingHistory { XCTFail("Coming back to the end rejoined the live tail (\(returns) returns): \(await diagnose(model, chat: chat.id))") }
+        XCTAssertTrue(view.messages.contains { $0.id == reply }, "The reply is back in the window")
+        XCTAssertEqual(moved, [], "No row on screen moves while the rows after it join")
+        // The reply goes on arriving where the reader is.
+        let now = view.messages.first { $0.id == reply }?.text.count ?? 0
+        let grew = await wait(20) { (view.messages.first { $0.id == reply }?.text.count ?? 0) > now }
+        if !grew { XCTFail("The reply goes on arriving: \(await diagnose(model, chat: chat.id))") }
+        let ended = await wait(90) { self.quiet(model.displays[chat.id]) }
+        if !ended { XCTFail("The reply ended: \(await diagnose(model, chat: chat.id))") }
+        let found = await layers(launched, chat: chat.id)
+        XCTAssertEqual(found.display, found.helper, "The chat holds the whole reply: \(found)")
+        XCTAssertEqual(found.page, found.helper, "The page draws the whole reply: \(found)")
     }
 }

@@ -325,13 +325,13 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
         XCTAssertNil(notOne.repositoryRoot, "A plain folder is no repository")
     }
 
-    /// A closed Changes sheet lets go of everything it had. SwiftUI keeps a
-    /// closed sheet's window, views and state alive (macOS 14), and each
-    /// Changes sheet closed over a big diff kept its controller, with the diff,
-    /// the history and the commits it had read, and the views that showed
-    /// them: three closes took the process from 38 to 187 MB. Emptying the
-    /// controller brought that to 137 MB; SwiftUI still kept about 20 MB of
-    /// views a close. The workspace now presents the sheet in a window of its
+    /// A closed Changes sheet lets go of everything it had, before the test
+    /// returns. XCTest keeps whatever AppKit autoreleases until a test
+    /// returns, and here SwiftUI's own sheets kept each closed Changes sheet's
+    /// window, views and controller, with the diff, the history and the
+    /// commits it had read: three closes took the process from 38 to 187 MB.
+    /// Emptying the controller brought that to 137 MB; about 20 MB of views a
+    /// close stayed. The workspace now presents the sheet in a window of its
     /// own (`piSheetWindow`): opened as the workspace window opens it, a new
     /// controller each time, and closed three times over the whole long diff
     /// and two commits, nothing of any of the three sheets is left: not its

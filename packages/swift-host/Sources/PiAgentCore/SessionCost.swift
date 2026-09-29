@@ -14,7 +14,7 @@ struct SessionSpend: Sendable, Equatable {
     /// The journal record that carries spend: one per counted attempt, and
     /// one for spend a chat brings with it (the app's figure for a chat
     /// written before these records existed, or a kept side's spend so far).
-    static let recordType = "pi-app.cost.v1"
+    static let recordType = JournalRecordKind.cost
     var usd = 0.0
     var reported = 0
     var unreported = 0

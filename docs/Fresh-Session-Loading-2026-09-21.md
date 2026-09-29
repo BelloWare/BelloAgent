@@ -55,8 +55,12 @@ it is the first row. Tool occurrence IDs remain distinct even when a provider
 reuses its call ID. Full tool arguments, message inspection, source export and
 model replay remain independent of the display window.
 
-Earlier, Retry and Newer are explicit controls. A failed or non-progressing
-request retains its cursor and reports a recoverable error. Pages adopt
+Rows beyond either edge of the window are read as the reader reaches that edge:
+earlier rows at its top, newer rows at its end (since 0.1.115; before, Newer
+was a control to press). Retry, after a read that failed, is the only control;
+a short page that has filled itself as often as it may also offers its earlier
+rows behind one. A failed or non-progressing request retains its cursor and
+reports a recoverable error, and is not read again on its own. Pages adopt
 atomically only after identity, coverage and resident-window checks. Loading
 older content evicts the far newer edge, and vice versa, while protecting the
 reading anchor and active selection. Latest actually fetches the source tail.
@@ -82,6 +86,17 @@ short to scroll fills itself with earlier rows only while the window can take
 a whole page more without letting go of any row it holds; otherwise the edge's
 control waits for the reader, so a fill never pushes out the rows on screen or
 the live tail.
+
+A reply read back past keeps arriving where the reader comes back to (0.1.115).
+Reading back past a full window's start makes the newest rows, a reply being
+written among them, leave for the earlier ones. Coming back to the window's end
+reads the rows after it in, page by page as the reader goes on, and once it
+reaches the last rows the history holds the chat takes its live rows again: the
+reply joins them and goes on arriving, with nothing to press. The end of a
+window with rows after it is not followed like the conversation's end: the rows
+read in join below the reader, who stays where they are, and the bottom band
+decides whether the page follows only once the window reaches the latest. Latest
+still goes straight to the end of the conversation.
 
 The old 100,000-record index cutoff is removed. A cancellable worker scans the
 supported journal and builds a private, disposable SQLite offset/branch index.
