@@ -91,9 +91,13 @@ struct GitDiffTable: NSViewRepresentable {
     let showAll: Bool
     let identity: String
     /// What comes before the cards, hosted: the heading, and for a commit its
-    /// own header. `topKey` changes whenever its height may.
+    /// own header. `topKey` changes whenever what it shows does, and
+    /// `topHeightKey` whenever its height may: it is measured again only then.
     let top: AnyView
     let topKey: AnyHashable
+    var topHeightKey: AnyHashable? = nil
+    /// The diff on screen is still being read: its rows stay as they are.
+    var loading = false
     /// "Show the whole diff", hosted, after the cards; nil when there is no more.
     let more: AnyView?
 
@@ -139,7 +143,8 @@ struct GitDiffTable: NSViewRepresentable {
     }
 
     private var state: Coordinator.State {
-        Coordinator.State(files: files, split: split, wrap: wrap, showAll: showAll, identity: identity, top: top, topKey: topKey, more: more)
+        Coordinator.State(files: files, split: split, wrap: wrap, showAll: showAll, identity: identity, top: top, topKey: topKey,
+                          topHeightKey: topHeightKey ?? topKey, loading: loading, more: more)
     }
 
     // MARK: - Coordinator
@@ -153,6 +158,8 @@ struct GitDiffTable: NSViewRepresentable {
             var identity: String
             var top: AnyView
             var topKey: AnyHashable
+            var topHeightKey: AnyHashable
+            var loading: Bool
             var more: AnyView?
         }
         weak var table: GitDiffTableView?
@@ -173,7 +180,9 @@ struct GitDiffTable: NSViewRepresentable {
         /// What the hosted heading was last given: set again only when it changes.
         private var shownTop: AnyHashable?
         private var pending: State?
-        private var topKey: AnyHashable?
+        private var topHeightKey: AnyHashable?
+        /// A new diff was named: it is shown from its top once its rows are built.
+        private var freshDiff = false
         private var topHeight: CGFloat = 0
         private var moreHeight: CGFloat = 0
         private var measuredWidth: CGFloat = -1
@@ -230,11 +239,16 @@ struct GitDiffTable: NSViewRepresentable {
         private func apply(_ next: State) {
             guard let table else { return }
             let sameFiles = Self.same(files, next.files) && identity == next.identity
-            let rebuild = !sameFiles || split != next.split || showAll != next.showAll || (next.more != nil) != hasMore || rows.isEmpty
             let rewrap = wrap != next.wrap
             let newDiff = identity != next.identity
+            if newDiff { freshDiff = true }
+            // Another file or commit chosen and still being read: the last
+            // one's rows stay as they are until its diff arrives, rather than
+            // be built again under the new name and then replaced.
+            let waiting = freshDiff && next.loading && Self.same(files, next.files) && !rows.isEmpty
+            let rebuild = !waiting && (!sameFiles || split != next.split || showAll != next.showAll || (next.more != nil) != hasMore || rows.isEmpty)
             if !sameFiles || showAll != next.showAll || (next.more != nil) != hasMore { built = [:] }
-            if !sameFiles { anchor = nil; focus = nil }
+            if !sameFiles, anchor != nil { anchor = nil; focus = nil; redrawVisible() }
             let moreChanged = newDiff || (next.more != nil) != hasMore
             files = next.files; identity = next.identity; split = next.split; showAll = next.showAll
             wrap = next.wrap; hasMore = next.more != nil
@@ -245,8 +259,8 @@ struct GitDiffTable: NSViewRepresentable {
             if moreChanged, let more = next.more { moreHost.rootView = more }
             let width = table.bounds.width
             var heading = false
-            if next.topKey != topKey || width != measuredWidth {
-                topKey = next.topKey
+            if next.topHeightKey != topHeightKey || width != measuredWidth {
+                topHeightKey = next.topHeightKey
                 heading = remeasure(width: width)
             } else if moreChanged, hasMore {
                 // "Show the whole diff" arrives with a diff grown past the
@@ -257,8 +271,11 @@ struct GitDiffTable: NSViewRepresentable {
                 if let cached = built[split] { rows = cached.rows; splits = cached.splits } else { build(); built[split] = (rows, splits) }
                 measureRows(width: width)
                 table.reloadData()
-                if newDiff, let clip = table.enclosingScrollView?.contentView, clip.bounds.minY != 0 {
-                    clip.scroll(to: .zero); table.enclosingScrollView?.reflectScrolledClipView(clip)
+                if freshDiff {
+                    freshDiff = false
+                    if let clip = table.enclosingScrollView?.contentView, clip.bounds.minY != 0 {
+                        clip.scroll(to: .zero); table.enclosingScrollView?.reflectScrolledClipView(clip)
+                    }
                 }
             } else if rewrap || width != heightWidth {
                 measureRows(width: width)
@@ -551,11 +568,38 @@ enum GitDiffSide { case whole, left, right }
     static func line(_ text: String, font: NSFont, color: NSColor = .black) -> CTLine {
         CTLineCreateWithAttributedString(attributed(text, font: font, color: color))
     }
+    /// A short line that recurs: a line number, a marker, a chip's words.
+    /// Made once and kept, in the colour of the context it is drawn into, so
+    /// the same line serves light and dark. A redrawn row, or the next file's
+    /// rows, draw their numbers without laying them out again.
+    static func kept(_ text: String, font: NSFont) -> CTLine {
+        let key = KeptKey(text: text, font: ObjectIdentifier(font))
+        if let line = keptLines[key] { return line }
+        if keptLines.count >= 8_192 { keptLines.removeAll(keepingCapacity: true) }
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
+            .font: font, NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true]))
+        keptLines[key] = line
+        return line
+    }
+    private struct KeptKey: Hashable { let text: String, font: ObjectIdentifier }
+    private static var keptLines: [KeptKey: CTLine] = [:]
+    /// A kept line drawn in `color`, its baseline at `baseline`.
+    static func drawKept(_ text: String, font: NSFont, color: NSColor, x: CGFloat, baseline: CGFloat, in context: CGContext) {
+        let line = kept(text, font: font)
+        context.saveGState()
+        context.setFillColor(color.usingColorSpace(.sRGB)?.cgColor ?? color.cgColor)
+        context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+        context.textPosition = CGPoint(x: x, y: baseline)
+        CTLineDraw(line, context)
+        context.restoreGState()
+    }
+    /// A kept line's width.
+    static func keptWidth(_ text: String, font: NSFont) -> CGFloat { CGFloat(CTLineGetTypographicBounds(kept(text, font: font), nil, nil, nil)) }
     static func width(_ text: String, font: NSFont) -> CGFloat {
         CGFloat(CTLineGetTypographicBounds(line(text, font: font), nil, nil, nil))
     }
     /// A one-line text's width as SwiftUI sized it: up to the next pixel.
-    static func frameWidth(_ text: String, font: NSFont, scale: CGFloat) -> CGFloat { ceil(width(text, font: font) * scale) / scale }
+    static func frameWidth(_ text: String, font: NSFont, scale: CGFloat) -> CGFloat { ceil(keptWidth(text, font: font) * scale) / scale }
 
     /// Draws `text` on one line with its baseline at `baseline`, cut to
     /// `width` with an ellipsis at the end (or the middle). Returns the line
@@ -886,7 +930,7 @@ final class GitDiffRowCell: NSView {
         if file.removed > 0 { counts.append(("−\(file.removed)", .piDanger)) }
         for (text, color) in counts.reversed() {
             let width = GitDiffText.frameWidth(text, font: GitDiffMetrics.microDigits, scale: scale)
-            GitDiffText.draw(text, font: GitDiffMetrics.microDigits, color: color, x: right - width, baseline: 8 + GitDiffMetrics.microBaseline, in: context)
+            GitDiffText.drawKept(text, font: GitDiffMetrics.microDigits, color: color, x: right - width, baseline: 8 + GitDiffMetrics.microBaseline, in: context)
             right -= width + 8
         }
         let text = file.renamed ? "\(file.oldPath) → \(file.newPath)" : file.path
@@ -929,14 +973,14 @@ final class GitDiffRowCell: NSView {
         let x0 = left + 8, baseline = 1 + GitDiffMetrics.monoBaseline
         if let old = line.oldNumber {
             let text = String(old)
-            GitDiffText.draw(text, font: GitDiffMetrics.mono, color: .piInkTertiary, x: x0 + 44 - GitDiffText.frameWidth(text, font: GitDiffMetrics.mono, scale: scale), baseline: baseline, in: context)
+            GitDiffText.drawKept(text, font: GitDiffMetrics.mono, color: .piInkTertiary, x: x0 + 44 - GitDiffText.frameWidth(text, font: GitDiffMetrics.mono, scale: scale), baseline: baseline, in: context)
         }
         if let new = line.newNumber {
             let text = String(new)
-            GitDiffText.draw(text, font: GitDiffMetrics.mono, color: .piInkTertiary, x: x0 + 88 - GitDiffText.frameWidth(text, font: GitDiffMetrics.mono, scale: scale), baseline: baseline, in: context)
+            GitDiffText.drawKept(text, font: GitDiffMetrics.mono, color: .piInkTertiary, x: x0 + 88 - GitDiffText.frameWidth(text, font: GitDiffMetrics.mono, scale: scale), baseline: baseline, in: context)
         }
         let marker = switch line.kind { case .added: "+"; case .removed: "−"; case .context: " "; case .note: "\\" }
-        GitDiffText.draw(marker, font: GitDiffMetrics.mono, color: tint ?? .piInkTertiary, x: x0 + 96 + (12 - GitDiffText.width(marker, font: GitDiffMetrics.mono)) / 2, baseline: baseline, in: context)
+        GitDiffText.drawKept(marker, font: GitDiffMetrics.mono, color: tint ?? .piInkTertiary, x: x0 + 96 + (12 - GitDiffText.keptWidth(marker, font: GitDiffMetrics.mono)) / 2, baseline: baseline, in: context)
         let geometry = Self.textFrame(.line, side: .whole, card: card, rowWidth: bounds.width)
         drawText(GitDiffTable.Coordinator.shown(line.text), selectable: line.text, color: line.kind == .note ? .piInkTertiary : .piInk,
                  x: geometry.x, width: geometry.width, selection: coordinator.selected(in: row, side: .whole), wrap: coordinator.wrap, context: context)
@@ -956,8 +1000,8 @@ final class GitDiffRowCell: NSView {
             }
             if let number {
                 let text = String(number)
-                GitDiffText.draw(text, font: GitDiffMetrics.mono, color: .piInkTertiary, x: start + 48 - GitDiffText.frameWidth(text, font: GitDiffMetrics.mono, scale: scale),
-                                 baseline: 1 + GitDiffMetrics.monoBaseline, in: context)
+                GitDiffText.drawKept(text, font: GitDiffMetrics.mono, color: .piInkTertiary, x: start + 48 - GitDiffText.frameWidth(text, font: GitDiffMetrics.mono, scale: scale),
+                                     baseline: 1 + GitDiffMetrics.monoBaseline, in: context)
             }
             let geometry = Self.textFrame(.split, side: side, card: card, rowWidth: bounds.width)
             drawText(GitDiffTable.Coordinator.shown(line?.text ?? ""), selectable: line?.text ?? "", color: kind == .note ? .piInkTertiary : .piInk,
