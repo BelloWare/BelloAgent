@@ -39,6 +39,38 @@ final class TranscriptRowChangeTests: XCTestCase {
         }, "No work list")
     }
 
+    /// A reply without a timeline, still arriving: one body row of prose.
+    private func body(_ text: String) throws -> TranscriptItem {
+        let message = TranscriptMessage(id: "body", role: "assistant", text: text, state: "streaming")
+        return try XCTUnwrap(TaskTranscriptPlan.items([message], lifecycle: nil).first { item in
+            if case .block(let block) = item { return block.presentation == .body }
+            return false
+        }, "No body")
+    }
+
+    func testWhatAnUpdateDoesToARow() throws {
+        func change(_ old: TranscriptItem, _ was: Row.Look, _ new: TranscriptItem, _ now: Row.Look,
+                    tree: Bool = true, moving: Bool = false) -> Row.Change {
+            Row.change(from: old, was, to: new, now, sameItem: old == new, hasTree: tree, inMotion: moving)
+        }
+        let old = try body("Hello"), new = try body("Hello there")
+        XCTAssertEqual(change(old, closed, old, closed), .none)
+        var dark = closed; dark.environment.colorScheme = .dark
+        XCTAssertEqual(change(old, closed, old, dark), .repaint, "A colour is paint: every height stays")
+        var larger = closed; larger.environment.dynamicTypeSize = .xxLarge
+        XCTAssertEqual(change(old, closed, old, larger), .settled(.remeasure), "A type size is geometry")
+        XCTAssertEqual(change(old, closed, new, closed), .streamed(TranscriptStreamingTail.Append(messageID: "body", text: "Hello there")),
+                       "A token goes to the reply's own surface")
+        XCTAssertEqual(change(old, closed, new, closed, tree: false), .unseenGrowth, "A row with no tree stands at an estimate")
+        XCTAssertEqual(change(old, closed, new, closed, moving: true), .settled(.remeasure), "A row being moved takes no token through its surface")
+        var fresh = closed; fresh.fresh = true
+        XCTAssertEqual(change(old, closed, new, fresh), .settled(.remeasure), "A token with anything else is measured again")
+        let reasoning = try part("reasoningSummary", of: reply()), more = try part("reasoningSummary", of: reply(reasoning: "Thinking further"))
+        XCTAssertEqual(change(reasoning, closed, more, closed), .settled(.closedPart), "Reasoning arrives in its closed line, not the reply's surface")
+        let work = try workList(output: "one"), moreWork = try workList(output: "one\ntwo")
+        XCTAssertEqual(change(work, closed, moreWork, closed), .settled(.closedWork))
+    }
+
     func testAClosedPartKeepsItsHeightWhileItsTextArrives() throws {
         let old = try part("reasoningSummary", of: reply())
         let new = try part("reasoningSummary", of: reply(reasoning: "Thinking further"))

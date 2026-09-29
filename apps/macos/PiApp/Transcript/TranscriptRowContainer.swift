@@ -454,33 +454,18 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
             disclosure = disclosureStore.map { TranscriptRowDisclosure.of(item, in: $0, inputs: toolInputs) } ?? .default
         }
         disclosureRevisions = revisions
-        guard !sameItem || self.fresh != fresh || self.environment != environment || self.disclosure != disclosure else { return false }
-        // Only how the row is painted changed: it is drawn with the new values
-        // and keeps every height it has.
-        if sameItem, self.fresh == fresh, self.disclosure == disclosure, self.environment.hasSameGeometry(as: environment) {
+        let was = Look(disclosure: self.disclosure, environment: self.environment, fresh: self.fresh)
+        let now = Look(disclosure: disclosure, environment: environment, fresh: fresh)
+        switch Self.change(from: self.item, was, to: item, now, sameItem: sameItem, hasTree: hosted != nil, inMotion: pinnedContentHeight != nil) {
+        case .none:
+            return false
+        case .repaint:
             self.environment = environment
             measuring = true
             updateRoot()
             measuring = false
             return false
-        }
-        // A token: the reply's own surface takes the text and says how much
-        // taller the message became. The row's SwiftUI tree is not rebuilt and
-        // not sized again — the one measurement it already has is adjusted by
-        // that much, and the page places itself around the new height in this
-        // same pass.
-        // Every so often the row is measured properly again, so a long reply
-        // cannot drift away from what its tree actually needs.
-        // A reply arriving below (or above) the reader's screen has no tree at
-        // all: the reader scrolled well past it. Building and laying one out
-        // for every token of a reply nobody can see is what made scrolling
-        // during a reply expensive. Such a row stands at an estimate of its
-        // own growth, is never drawn at it, and is measured properly when the
-        // reader comes back to it.
-        let tail = TranscriptStreamingTail.append(from: self.item, to: item)
-        let unchangedOtherwise = self.fresh == fresh && self.environment == environment && self.disclosure == disclosure
-            && pinnedContentHeight == nil
-        if hosted == nil, unchangedOtherwise, tail != nil {
+        case .unseenGrowth:
             self.item = item
             measurements.removeAll(keepingCapacity: true)
             estimate = nil
@@ -488,39 +473,96 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
             restoredMeasurementNeedsValidation = false
             if TranscriptLayoutClock.recording { TranscriptLayoutClock.streamingEstimates += 1 }
             return true
+        case .streamed(let append):
+            if let grew = takeStreamed(append, item: item) { return grew != 0 }
+            return settle(Self.settledChange(from: self.item, was, to: item, now), to: item, now)
+        case .settled(let change):
+            return settle(change, to: item, now)
         }
-        if unchangedOtherwise, tokensSinceMeasured < Self.tokensPerMeasurement, let append = tail,
-           let surface = surface(for: append.messageID), let cached = measurements.last(where: { $0.width == width }) {
-            measuring = true
-            let grew = surface.appendStreaming(append.text, identity: append.messageID)
-            measuring = false
-            if let grew {
-                grewWithoutATree = false
-                self.item = item
-                streamingAppendCount += 1; tokensSinceMeasured += 1
-                estimate = nil
-                measurements = [CGSize(width: cached.width, height: max(1, cached.height + grew))]
-                if let hosted, hosted.frame.height != measurements[0].height {
-                    hosted.frame = CGRect(x: 0, y: 0, width: cached.width, height: measurements[0].height)
-                }
-                streamingHeightKnown = true
-                if TranscriptLayoutClock.recording { TranscriptLayoutClock.streamingAppends += 1 }
-                return grew != 0
-            }
+    }
+    /// What an update does to a row.
+    enum Change: Equatable {
+        /// Nothing the row draws changed.
+        case none
+        /// Only how the row is painted changed: it is drawn with the new
+        /// values and keeps every height it has.
+        case repaint
+        /// A token of a reply whose row holds no tree: the reader scrolled
+        /// well past it. Building and laying one out for every token of a
+        /// reply nobody can see is what made scrolling during a reply
+        /// expensive. The row stands at an estimate of its own growth, is
+        /// never drawn at it, and is measured when the reader comes back.
+        case unseenGrowth
+        /// A token the reply's own surface can take: it says how much taller
+        /// the message became, and the row's one measurement grows by that
+        /// much, with no SwiftUI rebuild and no sizing. Where the surface
+        /// cannot take it, the row does what `settledChange` says.
+        case streamed(TranscriptStreamingTail.Append)
+        /// A change no token explains.
+        case settled(Settled)
+    }
+    enum Settled: Equatable {
+        /// A closed part or card keeps its one-line height (`closedPartKeepsHeight`).
+        case closedPart
+        /// A closed work list keeps its height (`closedWorkKeepsHeight`).
+        case closedWork
+        /// The row is measured again.
+        case remeasure
+    }
+    /// What an update from `old`, drawn as `was`, to `new`, drawn as `now`,
+    /// does to a row. `sameItem` is `old == new`, which the caller has
+    /// already asked; `hasTree` says whether the row holds its SwiftUI tree,
+    /// and `inMotion` whether a disclosure is moving it.
+    nonisolated static func change(from old: TranscriptItem, _ was: Look, to new: TranscriptItem, _ now: Look,
+                                   sameItem: Bool, hasTree: Bool, inMotion: Bool) -> Change {
+        guard !sameItem || was != now else { return .none }
+        if sameItem, was.fresh == now.fresh, was.disclosure == now.disclosure, was.environment.hasSameGeometry(as: now.environment) {
+            return .repaint
         }
+        if was == now, !inMotion, let tail = TranscriptStreamingTail.append(from: old, to: new) {
+            return hasTree ? .streamed(tail) : .unseenGrowth
+        }
+        return .settled(settledChange(from: old, was, to: new, now))
+    }
+    nonisolated static func settledChange(from old: TranscriptItem, _ was: Look, to new: TranscriptItem, _ now: Look) -> Settled {
+        if closedPartKeepsHeight(from: old, was, to: new, now) { return .closedPart }
+        if closedWorkKeepsHeight(from: old, was, to: new, now) { return .closedWork }
+        return .remeasure
+    }
+    /// Takes a token through the reply's own surface, and returns how much
+    /// taller it made the row. Nil where the surface cannot take it, or where
+    /// the row is due a real measurement: every so often one is measured
+    /// properly, so a long reply cannot drift away from what its tree needs.
+    private func takeStreamed(_ append: TranscriptStreamingTail.Append, item: TranscriptItem) -> CGFloat? {
+        guard tokensSinceMeasured < Self.tokensPerMeasurement, let surface = surface(for: append.messageID),
+              let cached = measurements.last(where: { $0.width == width }) else { return nil }
+        measuring = true
+        let grew = surface.appendStreaming(append.text, identity: append.messageID)
+        measuring = false
+        guard let grew else { return nil }
+        grewWithoutATree = false
+        self.item = item
+        streamingAppendCount += 1; tokensSinceMeasured += 1
+        estimate = nil
+        measurements = [CGSize(width: cached.width, height: max(1, cached.height + grew))]
+        if let hosted, hosted.frame.height != measurements[0].height {
+            hosted.frame = CGRect(x: 0, y: 0, width: cached.width, height: measurements[0].height)
+        }
+        streamingHeightKnown = true
+        if TranscriptLayoutClock.recording { TranscriptLayoutClock.streamingAppends += 1 }
+        return grew
+    }
+    /// Takes the new item and look after a change no token explains.
+    private func settle(_ change: Settled, to item: TranscriptItem, _ look: Look) -> Bool {
         let oldItem = self.item
-        let was = Look(disclosure: self.disclosure, environment: self.environment, fresh: self.fresh)
-        let now = Look(disclosure: disclosure, environment: environment, fresh: fresh)
-        let fixedClosedPart = Self.closedPartKeepsHeight(from: oldItem, was, to: item, now)
-        let fixedClosedWork = Self.closedWorkKeepsHeight(from: oldItem, was, to: item, now)
-        self.item = item; self.fresh = fresh; self.environment = environment; self.disclosure = disclosure
-        if fixedClosedPart {
+        self.item = item; self.fresh = look.fresh; self.environment = look.environment; self.disclosure = look.disclosure
+        switch change {
+        case .closedPart:
             // The collapsed line keeps its height, but its latest reasoning
             // text still needs to reach the view while the reply streams.
             updateRoot()
             return false
-        }
-        if fixedClosedWork {
+        case .closedWork:
             workList = nil
             if case .block(let old) = oldItem, case .block(let new) = item,
                old.live != new.live || old.task?.outcome != new.task?.outcome ||
@@ -529,21 +571,22 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
                 updateRoot()
             }
             return false
+        case .remeasure:
+            if TranscriptLayoutClock.recording, TranscriptStreamingTail.textGrew(from: oldItem, to: item) {
+                TranscriptLayoutClock.streamingRebuilds += 1
+            }
+            streamingHeightKnown = false
+            measurements.removeAll(keepingCapacity: true)
+            estimate = nil
+            if hosted != nil { awaitingViewportLayout = true }
+            // Prose, freshness and the turn footer still remeasure the outer row,
+            // but do not throw away unchanged tool/reasoning geometry.
+            if workList?.key != workListKey { workList = nil }
+            restoredMeasurementNeedsValidation = false
+            updateRoot()
+            invalidateIntrinsicContentSize()
+            return true
         }
-        if TranscriptLayoutClock.recording, TranscriptStreamingTail.textGrew(from: oldItem, to: item) {
-            TranscriptLayoutClock.streamingRebuilds += 1
-        }
-        streamingHeightKnown = false
-        measurements.removeAll(keepingCapacity: true)
-        estimate = nil
-        if hosted != nil { awaitingViewportLayout = true }
-        // Prose, freshness and the turn footer still remeasure the outer row,
-        // but do not throw away unchanged tool/reasoning geometry.
-        if workList?.key != workListKey { workList = nil }
-        restoredMeasurementNeedsValidation = false
-        updateRoot()
-        invalidateIntrinsicContentSize()
-        return true
     }
     /// Only a new, unmeasured native host can borrow default-state geometry.
     /// No retained local disclosure state is ever replaced by a shared size.
