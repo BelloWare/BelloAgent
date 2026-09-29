@@ -62,7 +62,7 @@ extension WorkspaceModel {
     func servingContextReading(_ view: SessionDisplay, forScheduling: Bool = false) -> ContextReading? {
         guard let reading = view.footer.retainedContext, view.footer.contextState.isEmpty, view.footer.preparedContext == nil,
               forScheduling || !view.footer.preparingContext, view.footer.pendingContextSubmission == nil,
-              !view.busy, view.state == "idle", view.draft.isEmpty, view.skills.isEmpty, view.attachments.isEmpty, !view.directCommand,
+              !view.busy, view.runState == .idle, view.draft.isEmpty, view.skills.isEmpty, view.attachments.isEmpty, !view.directCommand,
               view.editingMessageID == nil, view.queueEditingID == nil,
               let item = record(view.id), reading.binding == ContextPreviewBinding(item),
               reading.configurationRevision == configuration.revision else { return nil }
@@ -74,7 +74,7 @@ extension WorkspaceModel {
     /// time without opening anything.
     func retainContextReading(_ view: SessionDisplay) {
         guard let item = record(view.id), !item.imported, !item.isBackgroundTask, !isEphemeral(item.id),
-              !view.busy, view.state == "idle", view.footer.pendingContextSubmission == nil, !view.footer.preparingContext,
+              !view.busy, view.runState == .idle, view.footer.pendingContextSubmission == nil, !view.footer.preparingContext,
               view.draft.isEmpty, view.skills.isEmpty, view.attachments.isEmpty, !view.directCommand,
               view.editingMessageID == nil, view.queueEditingID == nil,
               !view.footer.contextState.isEmpty || view.footer.preparedContext != nil else { return }

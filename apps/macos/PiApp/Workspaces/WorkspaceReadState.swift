@@ -128,7 +128,7 @@ extension WorkspaceModel {
         // A reply is unread only once the run has finished and reported back.
         // Tool-round messages appended mid-run wait for the idle snapshot, so
         // neither the sidebar dot nor the Dock badge appears while work continues.
-        if let state = snapshot["state"]?.string, ["queued", "running", "stopping", "compacting"].contains(state), unreadStates[sessionID] != nil { return }
+        if let state = snapshot["state"]?.string, RunState(rawValue: state).isBusy, unreadStates[sessionID] != nil { return }
         let count = Int(rawCount)
         var next = unreadStates[sessionID] ?? SessionReadState(id: sessionID, observedAssistantCount: count, latestAssistantID: latest)
         if count > next.observedAssistantCount, let latest, latest != next.latestAssistantID {

@@ -148,11 +148,11 @@ extension WorkspaceModel {
                     let (id, revision, view, host) = archiveStopQueue.removeFirst()
                     guard !isShutDown else { archiveStopQueue.removeAll(); return }
                     guard archiveStopRevisions[id] == revision, displays[id] === view, record(id) != nil else { continue }
-                    view.state = "stopping"
+                    view.runState = .stopping
                     do { _ = try await host.request("turn.stop", sessionID: id); refresh(id) }
                     catch {
                         guard displays[id] === view else { continue }
-                        view.state = "interrupted"; view.uncertain = true; view.notice = error.localizedDescription
+                        view.runState = .interrupted; view.uncertain = true; view.notice = error.localizedDescription
                     }
                 }
             }

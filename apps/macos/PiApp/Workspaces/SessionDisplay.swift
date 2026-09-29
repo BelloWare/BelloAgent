@@ -95,7 +95,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// live. Kept on the page, they changed under the reader as soon as the
     /// finished page replaced them.
     var heldRowsOutlived: Bool {
-        !busy && !loading && state == "idle" && sendingRows.isEmpty
+        !busy && !loading && runState == .idle && sendingRows.isEmpty
             && (taskPresentation?.active != nil || messages.contains { $0.isStreaming || $0.isSending })
     }
     @Published var historyProgress: String?
@@ -316,6 +316,8 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// so it stands for every later edit that leaves the prefix unchanged.
     var codeClassification: (generation: UUID, revision: UInt64, offset: Int, text: String, outside: Bool)?
     @Published var state = "idle" { didSet { if state != oldValue { activityChanges.send() } } }
+    /// `state` as a `RunState`, to read and to write.
+    var runState: RunState { get { RunState(rawValue: state) } set { state = newValue.rawValue } }
     @Published var runStatus = "idle" { didSet { if runStatus != oldValue { activityChanges.send() } } }
     /// Bumped when the pane should move keyboard focus into the composer.
     @Published var composerFocusRequest = 0
@@ -326,18 +328,18 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The chat's journal ends in a record cut off mid-write: its complete
     /// records are shown read-only and Recover Copy is offered instead of the composer.
     @Published var damagedTail = false
-    var canResumeQueue: Bool { !busy && (!queue.isEmpty || queuePaused || ["paused", "interrupted"].contains(state)) }
+    var canResumeQueue: Bool { !busy && (!queue.isEmpty || queuePaused || runState.holdsQueue) }
     func observeRunState(_ snapshot: [String: WireValue]) {
         let rawState = snapshot["state"]?.string ?? "idle", run = snapshot["runStatus"]?.string ?? rawState
         // Older helpers reported failed runs as paused. Keep the run's outcome
         // separate from whether its remaining follow-ups require Resume.
-        let nextState = run == "failed" && !["queued", "running", "stopping", "compacting"].contains(rawState) ? "error" : rawState
+        let nextState = run == "failed" && !RunState(rawValue: rawState).isBusy ? RunState.error.rawValue : rawState
         if state != nextState { state = nextState }
         if runStatus != run { runStatus = run }
-        let paused = snapshot["queuePaused"]?.bool ?? ["paused", "interrupted"].contains(rawState)
+        let paused = snapshot["queuePaused"]?.bool ?? RunState(rawValue: rawState).holdsQueue
         if queuePaused != paused { queuePaused = paused }
         let detail = snapshot["preflightError"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let failure = nextState == "error" ? (detail?.isEmpty == false ? detail : "Run failed.") : nil
+        let failure = RunState(rawValue: nextState) == .error ? (detail?.isEmpty == false ? detail : "Run failed.") : nil
         let code = failure == nil ? nil : snapshot["errorCode"]?.string
         // Both change before the notice is drawn again, so it never shows one failure's words with another's actions.
         if failureMessage != failure || failureCode != code {
@@ -377,9 +379,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     func observeRetainedFailure(_ message: String?) {
         guard !busy, !loading else { return }
         if let message {
-            state = "error"; runStatus = "failed"; failureMessage = message
-        } else if state == "error" {
-            state = "idle"; runStatus = "idle"; failureMessage = nil
+            runState = .error; runStatus = "failed"; failureMessage = message
+        } else if runState == .error {
+            runState = .idle; runStatus = "idle"; failureMessage = nil
         }
     }
     /// What a running compaction is doing, for the run line under the
@@ -608,6 +610,6 @@ struct TranscriptVersionView: Equatable, Sendable {
     init(id: String) {
         self.id = id
     }
-    var busy: Bool { ["queued", "running", "stopping", "compacting"].contains(state) }
+    var busy: Bool { runState.isBusy }
     var hasWork: Bool { busy || queueCount > 0 }
 }

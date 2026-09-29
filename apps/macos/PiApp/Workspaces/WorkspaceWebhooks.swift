@@ -95,7 +95,7 @@ extension WorkspaceModel {
         var context = WebhookContext()
         context.chatID = id; context.chatTitle = item.title
         context.project = workspace(for: item.workspaceID).map { URL(fileURLWithPath: $0.path).lastPathComponent } ?? ""
-        context.status = status ?? (display?.state == "error" ? "failed" : "completed")
+        context.status = status ?? (display?.runState == .error ? "failed" : "completed")
         context.error = failure ?? (context.status == "failed" ? display?.failureMessage ?? "Run failed." : "")
         context.model = item.model ?? profile?.modelId ?? ""
         context.finishedAt = ISO8601DateFormatter().string(from: finishedAt)

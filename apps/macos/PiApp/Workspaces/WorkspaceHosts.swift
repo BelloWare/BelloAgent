@@ -61,7 +61,7 @@ extension WorkspaceModel {
                 // sent any more; its record says the outcome is uncertain. A
                 // send still waiting for its answer settles that itself.
                 if !retired, let view = self.displays[chat.id], !view.loading { view.dropAllSending() }
-                if let view = self.displays[chat.id], view.hasWork, view.state != "error" { view.state = "interrupted"; view.runStatus = "interrupted"; view.queueCount = 0; view.uncertain = true; view.notice = "Host interrupted. Outcome uncertain. No command was replayed."; view.settleInterruptedRows() }
+                if let view = self.displays[chat.id], view.hasWork, view.runState != .error { view.runState = .interrupted; view.runStatus = "interrupted"; view.queueCount = 0; view.uncertain = true; view.notice = "Host interrupted. Outcome uncertain. No command was replayed."; view.settleInterruptedRows() }
             }
         }
         let state = root.appendingPathComponent("Workspaces/\(workspace.id)", isDirectory: true)
