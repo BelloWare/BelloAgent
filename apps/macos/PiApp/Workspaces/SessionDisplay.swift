@@ -305,7 +305,6 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var skills: [SkillChip] = []
     @Published var directCommand = false
     @Published var completionVisible = false
-    @Published var completionIndex = 0
     @Published var completionSelectionID: String?
     @Published var skillCatalog = SkillCatalog()
     var completionToken: SlashCompletionToken?

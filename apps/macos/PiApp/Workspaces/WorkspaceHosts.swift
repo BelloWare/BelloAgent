@@ -187,9 +187,7 @@ extension WorkspaceModel {
         try requireConnection(lease)
         if automaticContext { try requireAutomaticContext(item.id) }
         let key = credential["apiKey"]?.string ?? ""
-        do { if key.isEmpty { throw HostError.failure("Save an API key in Keychain for this profile") } }
-        catch let error as HostError { throw error }
-        catch { throw HostError.failure("The profile key is unavailable or Keychain access is locked. Review this profile in Settings.") }
+        if key.isEmpty { throw HostError.failure("Save an API key in Keychain for this profile") }
         let host = try await host(for: workspace)
         defer { if automaticContext { scheduleIdle(workspaceID: item.workspaceID, host: host) } }
         try Task.checkCancellation()
