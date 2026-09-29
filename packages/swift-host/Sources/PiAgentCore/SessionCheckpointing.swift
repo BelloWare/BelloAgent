@@ -35,6 +35,21 @@ extension AgentSession {
                                  versions: versions, tasks: tasks, helper: helper.encoded())
     }
 
+    /// What a checkpoint carries for the session besides its rows and
+    /// context, in its `helper` field, for an open that resumes from it to
+    /// take over (`replay`). The receipts are added where they are known.
+    static func checkpointHelper(spend: SessionSpend, spendTracked: Bool, failedCompactionFingerprint: String?, contextRecovery: JSON,
+                                 compactionState: JSON, parentInfo: JSON, presentationOrdinal: Int) -> JSON {
+        ["spend": spend.record, "spendTracked": JSON(spendTracked), "failedCompactionFingerprint": failedCompactionFingerprint.map { JSON($0) } ?? .null,
+         "contextRecovery": contextRecovery, "compactionState": compactionState, "parentInfo": parentInfo, "presentationOrdinal": JSON(presentationOrdinal)]
+    }
+    /// A compaction's progress row once the compaction's record is in the
+    /// journal: finished, and saying so. A replay and a checkpoint's rows
+    /// both make it, and must make it alike.
+    static func adoptCompactionProgress(_ row: inout ChatMessage) {
+        row.responseTimeline?.finish("completed"); row.detail = "Compaction · Checkpoint durably adopted"
+    }
+
     /// The rows and context a checkpoint names, and the run state it points
     /// at, read from the journal; nil when any record is not what it recorded.
     static func loadCheckpoint(_ checkpoint: JournalCheckpoint, url: URL) -> (rows: [ChatMessage], context: [ChatMessage], state: JSON?, stateLine: Data?)? {
@@ -52,7 +67,7 @@ extension AgentSession {
             guard let operation = rows[index].operationID,
                   let position = rows.firstIndex(where: { $0.kind == "execution" && $0.operationID == operation }),
                   checkpoint.rows[position].offset < row.offset else { continue }
-            rows[position].responseTimeline?.finish("completed"); rows[position].detail = "Compaction · Checkpoint durably adopted"
+            adoptCompactionProgress(&rows[position])
         }
         let byID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let context = checkpoint.context.compactMap { byID[$0] }
@@ -82,7 +97,7 @@ extension AgentSession {
             guard record["type"].text == "message", record["id"].text == row.id else { return nil }
             return try? ChatMessage(id: row.id, pi: record["message"])
         case .update:
-            guard record["customType"].text == "pi-app.presentation.update.v1", record["data"]["id"].text == row.id,
+            guard record["customType"].text == JournalRecordKind.presentationUpdate, record["data"]["id"].text == row.id,
                   var message = try? ChatMessage(id: row.id, pi: record["message"]) else { return nil }
             message.replayEligible = false
             return message
@@ -157,11 +172,11 @@ extension AgentSession {
                 case ("branch", _):
                     rowSpans[id] = .init(id: id, kind: .branch, offset: start, length: line.count)
                     if !item["nativeState"].isNull { liveStateSource = StateSource(line: line, offset: start, key: "nativeState") }
-                case (_, "pi-app.presentation.update.v1"):
+                case (_, JournalRecordKind.presentationUpdate):
                     if let target = item["data"]["id"].text, history.contains(where: { $0.id == target && ["execution", "requestLedger"].contains($0.kind ?? "") }) {
                         rowSpans[target] = .init(id: target, kind: .update, offset: start, length: line.count)
                     }
-                case (_, "pi-app.native.state.v1"): liveStateSource = StateSource(line: line, offset: start, key: "data")
+                case (_, JournalRecordKind.state): liveStateSource = StateSource(line: line, offset: start, key: "data")
                 default: break
                 }
             }
@@ -170,9 +185,9 @@ extension AgentSession {
         // A run-state write that failed may or may not be in the journal: the
         // receipts it stands for are not known until a whole list is written.
         guard let last, !journaledCommandsUncertain else { return }
-        let helper: JSON = ["spend": spend.record, "spendTracked": JSON(spendTracked), "failedCompactionFingerprint": failedCompactionFingerprint.map { JSON($0) } ?? .null,
-                            "contextRecovery": contextRecovery, "compactionState": compactionState, "parentInfo": parentInfo, "presentationOrdinal": JSON(presentationOrdinal),
-                            "commands": .array(journaledCommands)]
+        var helper = Self.checkpointHelper(spend: spend, spendTracked: spendTracked, failedCompactionFingerprint: failedCompactionFingerprint,
+                                           contextRecovery: contextRecovery, compactionState: compactionState, parentInfo: parentInfo, presentationOrdinal: presentationOrdinal)
+        helper["commands"] = .array(journaledCommands)
         let state = liveStateSource.map { (line: $0.line, offset: $0.offset, key: $0.key) }
         guard var checkpoint = Self.checkpoint(sessionID: id, header: journal.headerCheck, marker: journal.markerCheck, last: last.line, at: last.offset, lastID: last.id,
                                                visible: visible, context: context, spans: rowSpans, state: state, assistantMessageCount: assistantMessageCount,

@@ -7,16 +7,21 @@ import SwiftUI
 final class NativeTranscriptTests: XCTestCase {
     private func message(_ id: String, _ role: String = "assistant", _ text: String = "text") -> TranscriptMessage { TranscriptMessage(id: id, role: role, text: text) }
 
-    func testDisplayPagePreservesTheSourceSelectedReadingEdgeWithinTheRowAndByteLimits() {
+    /// The page draws the rows the display holds. The display owns the
+    /// resident window, and runs past it on purpose while the reader holds a
+    /// row further up: a page that cut it again, keeping the earliest rows,
+    /// lost the reply arriving at the live end. The request log is asked about
+    /// the newest rows one read may name, where new requests land.
+    func testThePageDrawsTheDisplaysRowsAndTheLogIsAskedAboutTheNewest() {
         let many = (0..<620).map { message("m\($0)", "user", "row \($0)") }
-        let page = TranscriptPage.displayPage(many)
-        XCTAssertEqual(page.count, 500); XCTAssertEqual(page.first?.id, "m0"); XCTAssertEqual(page.last?.id, "m499")
+        XCTAssertEqual(TranscriptPage.displayPage(many), many)
+        let asked = TranscriptPage.accountingPage(many)
+        XCTAssertEqual(asked.count, 500); XCTAssertEqual(asked.first?.id, "m120"); XCTAssertEqual(asked.last?.id, "m619")
         let heavy = (0..<40).map { message("h\($0)", "assistant", String(repeating: "x", count: 200_000)) }
-        let bounded = TranscriptPage.displayPage(heavy)
-        XCTAssertLessThan(bounded.count, 40, "The source chooses the edge; the render guard preserves its reading anchor")
-        XCTAssertEqual(bounded.first?.id, "h0")
-        XCTAssertGreaterThanOrEqual(bounded.count, 15)
+        XCTAssertEqual(TranscriptPage.displayPage(heavy), heavy, "How many bytes the page holds is the display's choice")
+        XCTAssertEqual(TranscriptPage.accountingPage(heavy), heavy, "A read names rows, not bytes")
         XCTAssertEqual(TranscriptPage.displayPage([]), [])
+        XCTAssertEqual(TranscriptPage.accountingPage([]), [])
     }
 
     @MainActor func testPageFollowsItsSessionAndMarksOnlyRowsThatArriveLaterAsFresh() {
@@ -123,7 +128,7 @@ extension NativeTranscriptTests {
             bytes.append(try JSONSerialization.data(withJSONObject: value)); bytes.append(10)
         }
         try bytes.write(to: path)
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         model.chats = [ChatRecord(id: "fixture", workspaceID: "workspace", title: "fixture", path: path.path, profileID: "profile")]
         await model.select("fixture")
         let view = try XCTUnwrap(model.selected)

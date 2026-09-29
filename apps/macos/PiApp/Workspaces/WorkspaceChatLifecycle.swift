@@ -34,7 +34,7 @@ extension WorkspaceModel {
         Task { defer { workspaceChangesInFlight.remove(workspaceID); if let id = selectedID { scheduleAutomaticContext(id) } }
             do {
                 await pendingChoice?.value
-                var item = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "New chat", path: nil, profileID: profileID)
+                var item = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: ChatRecord.defaultTitle, path: nil, profileID: profileID)
                 let remembered = try await store.get(ChatModelDefaults.self, kind: ChatModelDefaults.recordKind, id: profileID)
                 // On upgrade there may be a chosen model in the current chat
                 // but no defaults record yet. Never inherit another gateway.
@@ -106,7 +106,7 @@ extension WorkspaceModel {
         workspaceChangesInFlight.insert(workspaceID)
         defer { workspaceChangesInFlight.remove(workspaceID); if let id = selectedID { scheduleAutomaticContext(id) } }
         guard let store else { throw HostError.failure("Desktop storage is unavailable. Your setup is saved; try again after resolving the storage error.") }
-        let item = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "New chat", path: nil, profileID: profileChoice)
+        let item = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: ChatRecord.defaultTitle, path: nil, profileID: profileChoice)
         try await store.put(item, kind: "chat", id: item.id)
         chats.insert(item, at: 0)
         await select(item.id)

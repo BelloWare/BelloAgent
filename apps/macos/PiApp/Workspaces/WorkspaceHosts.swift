@@ -6,7 +6,7 @@ import Foundation
 extension WorkspaceModel {
     func host(for workspace: WorkspaceRecord) async throws -> HostSupervisor {
         try Task.checkCancellation()
-        guard !accountingStopped else { throw CancellationError() }
+        guard !isShutDown else { throw CancellationError() }
         guard !workspaceChangesInFlight.contains(workspace.id) else { throw HostError.failure("Wait for this project's folder changes to finish before starting work.") }
         idleTasks[workspace.id]?.cancel()
         // The protocol handshake is ready before workspace.open has installed
@@ -61,7 +61,7 @@ extension WorkspaceModel {
                 // sent any more; its record says the outcome is uncertain. A
                 // send still waiting for its answer settles that itself.
                 if !retired, let view = self.displays[chat.id], !view.loading { view.dropAllSending() }
-                if let view = self.displays[chat.id], view.hasWork, view.state != "error" { view.state = "interrupted"; view.runStatus = "interrupted"; view.queueCount = 0; view.uncertain = true; view.notice = "Host interrupted. Outcome uncertain. No command was replayed."; view.settleInterruptedRows() }
+                if let view = self.displays[chat.id], view.hasWork, view.runState != .error { view.runState = .interrupted; view.runStatus = "interrupted"; view.queueCount = 0; view.uncertain = true; view.notice = "Host interrupted. Outcome uncertain. No command was replayed."; view.settleInterruptedRows() }
             }
         }
         let state = root.appendingPathComponent("Workspaces/\(workspace.id)", isDirectory: true)
@@ -104,7 +104,7 @@ extension WorkspaceModel {
     /// first message. Typing counts as using the helper: the idle stop of a
     /// helper that is up starts over.
     func prewarm(_ id: String) {
-        guard prewarmsHelpers, !accountingStopped, !installPreparing, page == .chats, !prewarming.contains(id),
+        guard prewarmsHelpers, !isShutDown, !installPreparing, page == .chats, !prewarming.contains(id),
               let item = record(id), let view = displays[id], !view.loading, !view.uncertain, view.recovered.isEmpty,
               view.contextSelectionReady || side(id)?.pending == true,
               !item.imported, !item.isArchived, !item.isBackgroundTask, !workspaceChangesInFlight.contains(item.workspaceID),
@@ -161,7 +161,7 @@ extension WorkspaceModel {
         // this open is not answered by the session being unloaded.
         if let closing = sessionClosings[item.id] { await closing.task.value }
         try Task.checkCancellation()
-        guard !accountingStopped else { throw CancellationError() }
+        guard !isShutDown else { throw CancellationError() }
         if automaticContext { try requireAutomaticContext(item.id) }
         guard let store else { throw StoreError.unavailable }
         guard !workspaceChangesInFlight.contains(item.workspaceID) else { throw HostError.failure("Wait for this project's folder changes to finish before starting work.") }
@@ -183,17 +183,15 @@ extension WorkspaceModel {
         // A read already dispatched to Keychain may finish after shutdown.
         // It must not create a new helper once terminal teardown has begun.
         try Task.checkCancellation()
-        guard !accountingStopped else { throw CancellationError() }
+        guard !isShutDown else { throw CancellationError() }
         try requireConnection(lease)
         if automaticContext { try requireAutomaticContext(item.id) }
         let key = credential["apiKey"]?.string ?? ""
-        do { if key.isEmpty { throw HostError.failure("Save an API key in Keychain for this profile") } }
-        catch let error as HostError { throw error }
-        catch { throw HostError.failure("The profile key is unavailable or Keychain access is locked. Review this profile in Settings.") }
+        if key.isEmpty { throw HostError.failure("Save an API key in Keychain for this profile") }
         let host = try await host(for: workspace)
         defer { if automaticContext { scheduleIdle(workspaceID: item.workspaceID, host: host) } }
         try Task.checkCancellation()
-        guard !accountingStopped else { throw CancellationError() }
+        guard !isShutDown else { throw CancellationError() }
         if automaticContext {
             do { try requireAutomaticContext(item.id) }
             catch { scheduleIdle(workspaceID: item.workspaceID, host: host); throw error }
@@ -209,7 +207,9 @@ extension WorkspaceModel {
             params.merge(await costLimitParams(for: item)) { _, limit in limit }
             if automaticContext { try requireAutomaticContext(item.id) }
             if item.connectionTest == true || workspace.isScratch { params["connectionTest"] = .bool(true) }
-            if let task = item.backgroundTask, ["session-title", "webhook"].contains(task) { params["backgroundTask"] = .string(task) }
+            // A background request opens as the helper's utility request of its
+            // kind: its own short instructions, no tools, no project context.
+            if let task = item.backgroundTask, [BackgroundRequestKind.title, .suggestions, .webhook].contains(BackgroundRequestKind(task)) { params["backgroundTask"] = .string(task) }
             if let path = item.path { params["path"] = .string(path) }
             // Loading a retained handoff above yields too. Recheck immediately
             // before installing the shared operation, without another await.

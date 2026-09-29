@@ -6,7 +6,8 @@ final class CrashAuditRegressionTests: XCTestCase {
     func testTerminalBuffersHaveExplicitByteAndFrameBudgets() {
         let pending = PendingOutput()
         let bytes = Data(repeating: 0x61, count: PendingOutput.byteLimit)
-        XCTAssertTrue(pending.append(bytes)); XCTAssertEqual(pending.available, 0)
+        XCTAssertEqual(pending.append(bytes), .scheduled); XCTAssertEqual(pending.available, 0)
+        XCTAssertEqual(pending.append(Data([0x61])), .refused, "A full buffer takes nothing more")
         var drained = Data()
         while pending.count > 0 {
             let (chunk, _) = pending.take(); XCTAssertLessThanOrEqual(chunk.count, PendingOutput.deliveryBytes); drained.append(chunk)

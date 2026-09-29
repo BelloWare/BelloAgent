@@ -220,7 +220,7 @@ final class WebhookTests: XCTestCase {
         let address = try await receiver.start()
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("webhook-retry-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         model.webhookRetryDelay = .milliseconds(50)
         var settings = WebhookSettings(); settings.enabled = true; settings.url = address + "/hook"; settings.parameters = ""
@@ -257,7 +257,7 @@ final class WebhookTests: XCTestCase {
         let address = try await receiver.start()
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("webhook-test-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         var settings = WebhookSettings(); settings.url = address + "/hook/{{chat_id}}"
         settings.headers = #"{"X-Project": "{{project}}"}"#

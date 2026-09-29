@@ -22,44 +22,10 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
         addTeardownBlock { @MainActor in TranscriptKeptRows.chatLimit = limit }
     }
 
-    @MainActor private struct Setup {
-        let root: URL, state: URL
-        let vault: ConfigurationVault
-        let workspace: WorkspaceRecord, profile: ProfileRecord
-    }
+    private typealias Setup = GatewayWorkspace
 
     @MainActor private func setup() async throws -> Setup {
-        var repository = URL(fileURLWithPath: #filePath)
-        for _ in 0..<4 { repository.deleteLastPathComponent() }
-        let script = repository.appendingPathComponent("fixtures/native/ui-gateway.py")
-        guard FileManager.default.isReadableFile(atPath: script.path) else { throw XCTSkip("The synthetic gateway fixture is unavailable") }
-        let root = scratchRoot("redraw-cost")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        let gateway = Process(), pipe = Pipe()
-        gateway.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        gateway.arguments = ["-u", script.path]
-        gateway.currentDirectoryURL = root; gateway.standardOutput = pipe; gateway.standardError = FileHandle.nullDevice
-        gateway.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": root.path]
-        try gateway.run()
-        addTeardownBlock { gateway.terminate(); gateway.waitUntilExit() }
-        let handle = pipe.fileHandleForReading
-        let greeting = await Task.detached { handle.availableData }.value
-        let port = try XCTUnwrap(try JSONDecoder().decode([String: Int].self, from: greeting)["port"])
-        let base = "http://127.0.0.1:\(port)"
-        let workspace = WorkspaceRecord(id: "chat-load-project", path: root.appendingPathComponent("project").path, trusted: true)
-        try FileManager.default.createDirectory(atPath: workspace.path, withIntermediateDirectories: true)
-        try Data("Synthetic UI fixture file: read-tool round trip verified.\n".utf8).write(to: URL(fileURLWithPath: workspace.path).appendingPathComponent("README.md"))
-        var profile = ProfileRecord()
-        profile.api = "openai-responses"; profile.baseUrl = base; profile.modelId = "ui-fixture"; profile.catalogUrl = base + "/catalog"
-        profile.name = "Fixture"; profile.contextWindow = 2_000_000; profile.maxOutputTokens = 300_000; profile.modelOutputLimit = 300_000
-        var configuration = VaultConfiguration()
-        configuration.workspaces = [workspace]
-        configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-loopback-only-key")]
-        configuration.automaticUpdateChecks = false
-        configuration.resources[workspace.id] = .object(["codexHome": .string(root.appendingPathComponent("codex").path)])
-        let vault = ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration)))
-        return Setup(root: root, state: root.appendingPathComponent("app-state"), vault: vault, workspace: workspace, profile: profile)
+        try await gatewayWorkspace("redraw-cost", projectID: "chat-load-project", readme: true)
     }
 
     @MainActor private final class Launched {
@@ -201,8 +167,8 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
         let seconds = ProcessInfo.processInfo.systemUptime - wall, busy = Self.mainThreadCPU() - cpu
         let text = view.messages.last?.text.count ?? 0
         typealias C = TranscriptLayoutClock
-        print(String(format: "REDRAW transcript: update %.2f s, layout %.2f s, measure %.2f s (%d rows), markdown update %.2f s + layout %.2f s (%d blocks), row sizing %.2f s (%d passes), root updates %.2f s (%d), host builds %.2f s (%d), viewport layout %.2f s, mount %.2f s, row loop %.2f s, placement %.2f s, validation %.2f s; appends %d estimates %d rebuilds %d",
-                     C.updateSeconds, C.layoutSeconds, C.measureSeconds, C.measuredRows, C.markdownUpdateSeconds, C.markdownLayoutSeconds, C.markdownBlocksMeasured,
+        print(String(format: "REDRAW transcript: update %.2f s, layout %.2f s, measure %.2f s (%d rows), markdown update %.2f s + layout %.2f s (%d text measures), row sizing %.2f s (%d passes), root updates %.2f s (%d), host builds %.2f s (%d), viewport layout %.2f s, mount %.2f s, row loop %.2f s, placement %.2f s, validation %.2f s; appends %d estimates %d rebuilds %d",
+                     C.updateSeconds, C.layoutSeconds, C.measureSeconds, C.measuredRows, C.markdownUpdateSeconds, C.markdownLayoutSeconds, C.markdownMeasures,
                      C.rowSizingSeconds, C.rowSizingPasses, C.rootUpdateSeconds, C.rootUpdates, C.hostBuildSeconds, C.hostBuilds, C.viewportLayoutSeconds,
                      C.mountSeconds, C.rowLoopSeconds, C.placementSeconds, C.validationSeconds, C.streamingAppends, C.streamingEstimates, C.streamingRebuilds))
         withExtendedLifetime(subscriptions) {}

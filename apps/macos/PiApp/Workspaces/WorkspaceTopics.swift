@@ -92,7 +92,7 @@ extension WorkspaceModel {
         }
         let chosen = Set(ids)
         guard chosen.allSatisfy({ id in
-            chats.contains { $0.id == id && $0.workspaceID == projectID && !$0.isBackgroundTask && $0.connectionTest != true }
+            chats.contains { $0.id == id && $0.workspaceID == projectID && !$0.isUtilityChat }
         }) else { throw HostError.failure("Sessions can only move between topics in their own project.") }
         guard let store else { throw StoreError.unavailable }
         let knownChatIDs = Set(chats.map(\.id))
@@ -141,7 +141,7 @@ extension WorkspaceModel {
 
     private func topicBranchIDs(_ roots: Set<String>, in projectID: String) -> Set<String> {
         var children: [String: [String]] = [:]
-        for chat in chats where chat.workspaceID == projectID && !chat.isBackgroundTask && chat.connectionTest != true {
+        for chat in chats where chat.workspaceID == projectID && !chat.isUtilityChat {
             if let parent = chat.parentSessionID { children[parent, default: []].append(chat.id) }
         }
         for info in sides.values where info.workspaceID == projectID { children[info.parentID, default: []].append(info.id) }

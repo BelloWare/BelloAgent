@@ -68,7 +68,7 @@ extension WorkspaceModel {
                     var prepared = try await host.request("session.edit.prepare", sessionID: sessionID, params: ["messageId": .string(messageID)]).object ?? [:]
                     var full = prepared["text"]?.string ?? "", next = prepared["next"]?.nonnegativeInteger
                     let total = prepared["totalCharacters"]?.nonnegativeInteger ?? (full as NSString).length
-                    guard total <= 262_144 else { throw HostError.failure("The original input exceeds the editor limit.") }
+                    guard total <= SubmissionLimits.messageBytes else { throw HostError.failure("The original input exceeds the editor limit.") }
                     while let offset = next {
                         guard view.editGeneration == generation, view.draft == draft.text else { return }
                         guard offset == (full as NSString).length, offset < total else { throw HostError.failure("Edit preparation did not advance.") }
@@ -76,7 +76,7 @@ extension WorkspaceModel {
                             params: ["messageId": .string(messageID), "offset": .number(Double(offset)), "sourceTimeline": prepared["sourceTimeline"] ?? .null, "sourceTextDigest": prepared["sourceTextDigest"] ?? .null]).object ?? [:]
                         guard let part = page["text"]?.string, !part.isEmpty, page["totalCharacters"]?.nonnegativeInteger == total,
                               page["sourceTimeline"] == prepared["sourceTimeline"], page["sourceTextDigest"] == prepared["sourceTextDigest"] else { throw HostError.failure("The original input changed during preparation.") }
-                        full += part; guard full.utf8.count <= 262_144 else { throw HostError.failure("The original input exceeds the editor limit.") }
+                        full += part; guard full.utf8.count <= SubmissionLimits.messageBytes else { throw HostError.failure("The original input exceeds the editor limit.") }
                         next = page["next"]?.nonnegativeInteger
                     }
                     guard (full as NSString).length == total else { throw HostError.failure("The original input is incomplete.") }
@@ -86,7 +86,7 @@ extension WorkspaceModel {
                     result = try await history.editTarget(path: path, id: messageID)
                 }
                 guard view.editGeneration == generation, view.draft == draft.text, view.attachments == draft.attachments ?? [], view.skills == draft.skills ?? [] else { return }
-                guard result["messageId"]?.string == messageID, let text = result["text"]?.string, text.utf8.count <= 262_144 else { throw HostError.failure("The complete original input is unavailable.") }
+                guard result["messageId"]?.string == messageID, let text = result["text"]?.string, text.utf8.count <= SubmissionLimits.messageBytes else { throw HostError.failure("The complete original input is unavailable.") }
                 let input = result["input"]?.object
                 guard input == nil || input?["version"]?.number == 1 else { throw HostError.failure("Update Bello Agent to edit this input format.") }
                 let attachments = try input?["attachments"].map { try JSONDecoder().decode([AttachmentRecord].self, from: JSONEncoder().encode($0)) } ?? []
@@ -131,7 +131,7 @@ extension WorkspaceModel {
         guard !item.imported, !isEphemeral(id) else { view.notice = "Continue or keep this chat before editing its messages."; return }
         guard !item.isArchived else { view.notice = WorkspaceModel.archivedNotice; return }
         guard !view.busy, view.queue.isEmpty, view.queueCount == 0 else { view.notice = "Wait for the current run and queue to finish before resending an edited message."; return }
-        guard view.draft.utf8.count <= 262_144 else { error = "The draft exceeds the 256 KiB submission limit"; return }
+        guard view.draft.utf8.count <= SubmissionLimits.messageBytes else { error = "The draft exceeds the 256 KiB submission limit"; return }
         if view.uncertain {
             // A sheet on the chat's window, not a modal run loop: the other
             // chats keep streaming while this question waits for an answer.
@@ -156,8 +156,8 @@ extension WorkspaceModel {
             var dispatched = false
             // As in `send`: only this resend's own "queued" is ever undone, and
             // only while it is still what the chat shows.
-            var shown: (state: String, replaced: String)?
-            @MainActor func undoShownState() { if let shown, view.state == shown.state { view.state = shown.replaced } }
+            var shown: (state: RunState, replaced: RunState)?
+            @MainActor func undoShownState() { if let shown, view.runState == shown.state { view.runState = shown.replaced } }
             do {
                 let connection = Result { try connectionLease(for: item) }
                 if !isEphemeral(item.id) { try await store.put(savedDraft, kind: "draft", id: item.id) }
@@ -168,7 +168,7 @@ extension WorkspaceModel {
                 if !isEphemeral(item.id) { try await store.put(intent, kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
                 try requireConnection(lease)
                 dispatched = true
-                if !view.busy { shown = ("queued", view.state); view.state = "queued" }
+                if !view.busy { shown = (.queued, view.runState); view.runState = .queued }
                 // The branch this makes is the reader's own: the snapshot that
                 // first carries it is adopted where they are (`adoptOwnBranch`).
                 view.pendingBranch = .init(from: view.presentation.identity?.lineage, messageID: messageID, turnID: turnID)
@@ -195,16 +195,16 @@ extension WorkspaceModel {
             } catch {
                 view.notice = error.localizedDescription
                 if view.editGeneration == generation { view.editNotice = error.localizedDescription }
-                if case HostError.rejected(let code, _) = error, code == "journal_uncertain" { view.uncertain = true; view.state = "interrupted" }
+                if case HostError.rejected(let code, _) = error, code == "journal_uncertain" { view.uncertain = true; view.runState = .interrupted }
                 else if case HostError.rejected(let code, _) = error {
                     // Refused: no branch was made.
                     if view.pendingBranch?.turnID == turnID { view.pendingBranch = nil }
                     // At the chat's cost limit the conversation says so, with a way to raise it.
                     if code == SessionDisplay.costLimitCode { view.sendFailureCode = code; view.sendFailure = error.localizedDescription }
                     try? await store.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id)
-                    if code == "connection_unavailable" { view.state = "interrupted" } else { undoShownState() }
+                    if code == "connection_unavailable" { view.runState = .interrupted } else { undoShownState() }
                 }
-                else if dispatched { view.uncertain = true; view.state = "interrupted" }
+                else if dispatched { view.uncertain = true; view.runState = .interrupted }
                 else { undoShownState() }
             }
         }

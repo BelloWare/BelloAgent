@@ -36,7 +36,7 @@ final class LiveAccountingTests: XCTestCase {
         try await model.traces.configure(quota: 1_048_576, bodyRetention: 86400, metricRetention: 86400)
         let chat = ChatRecord(id: "streaming", workspaceID: "w", title: "Streaming", path: nil, profileID: "p")
         model.chats = [chat]; model.selectedID = chat.id
-        let view = SessionDisplay(id: chat.id); view.pageStartEnsured = true
+        let view = SessionDisplay(id: chat.id)
         model.displays[chat.id] = view; model.selected = view
         var sent: [[String: WireValue]] = []
         let host = HostSupervisor(commandSender: { sent.append($0) })
@@ -318,6 +318,11 @@ final class LiveAccountingTests: XCTestCase {
         model.chats = [chat]
         let view = SessionDisplay(id: chat.id)
         view.messages = (0..<600).map { .init(id: "row-\($0)", role: $0 % 2 == 0 ? "user" : "assistant", text: "Row \($0)") }
+        // A page past the read's limit is a window a held row stretched: its
+        // earliest rows were drawn with their figures already.
+        var earlier = GatewayTotals(); earlier.requests = 1; earlier.costUSD = 0.004
+        view.messageAccounting["row-1"] = earlier
+        view.messages[1].accounting = earlier
         model.displays[view.id] = view
         for (input, output, cost) in [(98, 101, 0.001), (200, 201, 0.002), (0, 1, 0.004)] {
             var value = metadata(UUID().uuidString, session: chat.id, cost: cost)
@@ -327,14 +332,16 @@ final class LiveAccountingTests: XCTestCase {
             try await model.traces.begin(value, workspace: "w"); try await model.traces.finish(value)
         }
         await model.refreshAccounting(view, workspaceID: "w")
-        XCTAssertEqual(TranscriptPage.displayPage(view.messages).count, 500)
+        XCTAssertEqual(TranscriptPage.accountingPage(view.messages).count, 500)
+        XCTAssertEqual(TranscriptPage.accountingPage(view.messages).first?.id, "row-100", "The read asks about the newest rows")
         XCTAssertEqual(view.footer.gateway.requests, 3)
         XCTAssertEqual(try XCTUnwrap(view.footer.gateway.costUSD), 0.007, accuracy: 0.00000001)
         XCTAssertEqual(view.footer.gatewayNotice, "")
         XCTAssertEqual(view.messageAccounting["row-101"]?.costUSD, 0.001, "An answer remains attributed when its input is outside the native page")
         XCTAssertEqual(view.messageAccounting["row-201"]?.costUSD, 0.002)
         XCTAssertNil(view.messageAccounting["row-200"], "A visible input does not duplicate its visible answer's request")
-        XCTAssertEqual(view.messageAccounting["row-1"]?.costUSD,0.004,"The retained earlier window includes this answer")
+        XCTAssertEqual(view.messageAccounting["row-1"]?.costUSD,0.004,"A row before the rows read keeps the figures it shows")
+        XCTAssertEqual(view.messages[1].accounting?.costUSD, 0.004)
         XCTAssertEqual(view.messageAccounting.count, 3)
         try await model.traces.close(); await model.store?.close()
     }

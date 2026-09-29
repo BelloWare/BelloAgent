@@ -16,7 +16,7 @@ extension AgentSession {
     func updatePresentation(_ message: ChatMessage, persist: Bool) throws {
         // The row being updated is recent: search from the end of history.
         guard let index = history.lastIndex(where: { $0.id == message.id }), ["execution","requestLedger"].contains(history[index].kind ?? "") else { return }
-        if persist { try journal?.append(["type":"custom","customType":"pi-app.presentation.update.v1","data":["id":JSON(message.id)],"message":message.pi],flush:journalFlushesEachRecord) }
+        if persist { try journal?.append(["type":"custom","customType":JSON(JournalRecordKind.presentationUpdate),"data":["id":JSON(message.id)],"message":message.pi],flush:journalFlushesEachRecord) }
         let oldAttempts = Set(history[index].requestAttemptIDs ?? [])
         for attempt in message.requestAttemptIDs ?? [] where !oldAttempts.contains(attempt) { pendingRequestLinks[attempt, default: []].append(message.id) }
         history[index] = message

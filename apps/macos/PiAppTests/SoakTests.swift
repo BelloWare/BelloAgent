@@ -23,47 +23,12 @@ import Darwin
 final class SoakTests: XCTestCase, SerialTestLane {
     // MARK: Setup, as ChatLoadStabilityTests sets it up
 
-    @MainActor private struct Setup {
-        let root: URL, state: URL
-        let vault: ConfigurationVault
-        let workspace: WorkspaceRecord, profile: ProfileRecord
-    }
+    private typealias Setup = GatewayWorkspace
 
     @MainActor private func setup() async throws -> Setup {
-        var repository = URL(fileURLWithPath: #filePath)
-        for _ in 0..<4 { repository.deleteLastPathComponent() }
-        let script = repository.appendingPathComponent("fixtures/native/ui-gateway.py")
-        guard FileManager.default.isReadableFile(atPath: script.path) else { throw XCTSkip("The synthetic gateway fixture is unavailable") }
-        let root = scratchRoot("soak")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        let gateway = Process(), pipe = Pipe()
-        gateway.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        gateway.arguments = ["-u", script.path]
-        gateway.currentDirectoryURL = root; gateway.standardOutput = pipe; gateway.standardError = FileHandle.nullDevice
-        gateway.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": root.path]
-        try gateway.run()
-        addTeardownBlock { gateway.terminate(); gateway.waitUntilExit() }
-        let handle = pipe.fileHandleForReading
-        let greeting = await Task.detached { handle.availableData }.value
-        let port = try XCTUnwrap(try JSONDecoder().decode([String: Int].self, from: greeting)["port"])
-        let base = "http://127.0.0.1:\(port)"
-        let workspace = WorkspaceRecord(id: "soak-project", path: root.appendingPathComponent("project").path, trusted: true)
-        try FileManager.default.createDirectory(atPath: workspace.path, withIntermediateDirectories: true)
-        try Data("Synthetic UI fixture file: read-tool round trip verified.\n".utf8).write(to: URL(fileURLWithPath: workspace.path).appendingPathComponent("README.md"))
-        var profile = ProfileRecord()
-        profile.api = "openai-responses"; profile.baseUrl = base; profile.modelId = "ui-fixture"; profile.catalogUrl = base + "/catalog"
-        profile.name = "Fixture"; profile.contextWindow = 2_000_000; profile.maxOutputTokens = 300_000; profile.modelOutputLimit = 300_000
         // Titles are asked of the mini model after each first message, as
         // for a reader whose connection has one.
-        profile.miniModelId = "fixture-fast"
-        var configuration = VaultConfiguration()
-        configuration.workspaces = [workspace]
-        configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-loopback-only-key")]
-        configuration.automaticUpdateChecks = false
-        configuration.resources[workspace.id] = .object(["codexHome": .string(root.appendingPathComponent("codex").path)])
-        let vault = ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration)))
-        return Setup(root: root, state: root.appendingPathComponent("app-state"), vault: vault, workspace: workspace, profile: profile)
+        try await gatewayWorkspace("soak", projectID: "soak-project", readme: true, miniModel: "fixture-fast")
     }
 
     @MainActor private final class Launched {
@@ -89,6 +54,30 @@ final class SoakTests: XCTestCase, SerialTestLane {
             if let cachedMarker, cachedMarker.window != nil { return cachedMarker.page }
             cachedMarker = views(TranscriptSurfaceMarker.self).first
             return cachedMarker?.page
+        }
+        /// The footer's press targets by identifier (the context pill, the
+        /// capture badge), found once each and kept while on screen.
+        /// One not found is looked for again a quarter of a second later at
+        /// the earliest: walking the window every sample would be the run's
+        /// own stall.
+        private var cachedTargets: [String: WeakTarget] = [:]
+        private struct WeakTarget { weak var view: NSView?; var lookedAt: Double }
+        func target(_ identifier: String) -> NSView? {
+            let now = ProcessInfo.processInfo.systemUptime
+            if let held = cachedTargets[identifier] {
+                if let view = held.view, view.window != nil { return view }
+                if held.view == nil, now - held.lookedAt < 0.25 { return nil }
+            }
+            // A plain loop: a lazy compactMap(...).first runs the search twice
+            // on the path it finds, which doubles with every level.
+            func find(_ view: NSView) -> NSView? {
+                if view.accessibilityIdentifier() == identifier { return view }
+                for child in view.subviews { if let found = find(child) { return found } }
+                return nil
+            }
+            let found = find(hosted)
+            cachedTargets[identifier] = WeakTarget(view: found, lookedAt: now)
+            return found
         }
         private weak var cachedComposer: ComposerTextView?
         /// The open chat's composer, found once per chat for the same reason.
@@ -164,6 +153,11 @@ final class SoakTests: XCTestCase, SerialTestLane {
         var jumps: [Jump] = []
         var actions: [String: Int] = [:]
         var footprints: [(cycle: Int, megabytes: Double)] = []
+        /// Each closed launch, held weakly: a model still alive long after its
+        /// launch closed is kept by something. (In a 17-launch run, each model
+        /// went within five launches; every closed window stayed alive in the
+        /// test runner, which the app, with its one window, never sees.)
+        var closed: [ClosedLaunch] = []
         var quitFailures: [Int] = []
         var recent: [String] = []
         func did(_ action: String, _ label: String) {
@@ -173,6 +167,7 @@ final class SoakTests: XCTestCase, SerialTestLane {
     }
 
     private struct Place { var y: CGFloat; var height: CGFloat; var item: TranscriptItem }
+    private struct ClosedLaunch { weak var model: WorkspaceModel?; weak var window: NSWindow?; weak var view: NSView? }
 
     /// The fields that differ between two values, by path, for a row whose
     /// height changed: what came in that changed it.
@@ -369,6 +364,7 @@ final class SoakTests: XCTestCase, SerialTestLane {
             await restoring.value
             if !(await quit(model)) { log.quitFailures.append(cycle) }
             await close(launched)
+            log.closed.append(ClosedLaunch(model: launched.model, window: launched.window, view: launched.hosted))
             try await Task.sleep(for: .milliseconds(300))
             log.footprints.append((cycle, Double(Self.footprint()) / 1_048_576))
         }
@@ -412,6 +408,16 @@ final class SoakTests: XCTestCase, SerialTestLane {
         if let composer = launched.composer(for: launched.model.selectedID) {
             let box = composer.convert(composer.bounds, to: nil)
             lastViewport += String(format: ", composer %.0f pt at y %.0f", box.height, box.minY)
+        }
+        // What the footer said: a label that changes there changes its rows.
+        for (name, identifier) in [("context", "session-stats-context"), ("capture", "capture-badge")] {
+            guard let target = launched.target(identifier) else { continue }
+            let box = target.convert(target.bounds, to: nil)
+            lastViewport += String(format: ", %@ “%@” at y %.0f", name, target.accessibilityLabel() ?? "", box.minY)
+        }
+        if let shown = launched.model.selectedID.flatMap({ launched.model.displays[$0] }) {
+            lastViewport += shown.captureAvailable ? ", capture on" : ", capture next"
+            if !shown.notice.isEmpty { lastViewport += ", notice “\(shown.notice)”" }
         }
         var shown: [String: Place] = [:]
         for row in document.retainedRows where row.superview === document && row.isHosted && !row.isHidden && row.frame.intersects(visible) {
@@ -465,6 +471,12 @@ final class SoakTests: XCTestCase, SerialTestLane {
                        first.megabytes, first.cycle, last.megabytes, last.cycle, peak,
                        log.footprints.count > 1 ? (last.megabytes - first.megabytes) / Double(last.cycle - first.cycle) : 0))
         }
+        // Every launch, the last one too: which ones is what tells a model
+        // let go late from one that is kept.
+        let closed = log.closed
+        say("SOAK closed launches still alive: \(closed.filter { $0.model != nil }.count) models, \(closed.filter { $0.window != nil }.count) windows, "
+            + "\(closed.filter { $0.view != nil }.count) views, of \(closed.count); models of cycles "
+            + closed.enumerated().filter { $0.element.model != nil }.map { String($0.offset + 1) }.joined(separator: " "))
         if !log.quitFailures.isEmpty { say("SOAK quit failed in cycles \(log.quitFailures)") }
         // Every frame again, with its image and load address, for atos.
         lines.append("## frames")

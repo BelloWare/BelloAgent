@@ -191,14 +191,64 @@ struct SessionStatsPills: View, Equatable {
 
     /// A 14 pt ring and its reading. A conversation whose context has not been
     /// counted yet says so instead of drawing an empty ring at zero.
+    ///
+    /// Its words ("Inspect context", "Calculating context…" while a shown
+    /// chat is counted, "Compacting context…") and its figures take different
+    /// room. Where the pill ends a row, a longer label used to start a row of
+    /// its own: the footer grew a row and the conversation above it jumped,
+    /// and jumped back when a shorter one came. The pill now keeps one room
+    /// for each showing of its chat (`ContextPillSlot`): words are cut to it
+    /// where the row has no more, a shorter figure keeps it, and only a wider
+    /// figure widens it. The room lies behind and after the pill, so its fill
+    /// and press target stay the size of what it says. A figure is never cut.
     private var contextPill: some View {
         let meter = meter
         let reading = meter.fraction.flatMap(MetricFormat.occupancyPercent)
-        let label = reading.map { $0 + "%" } ?? (footer.preparingContext ? "Calculating context…" : meter.compactLabel)
-        return PiStatButton(symbol: "square.stack.3d.up", ring: .some(meter.fraction), label: label,
-                            accessibility: reading.map { "\($0)% of context used" } ?? meter.detailLabel,
-                            identifier: "session-stats-context", help: meter.detailLabel + " Opens the next request in the Session Inspector.") { open(.nextRequest) }
+        let figure = reading.map { $0 + "%" }
+        let label = figure ?? (footer.preparingContext ? "Calculating context…" : meter.compactLabel)
+        // What the pill shows now is in the room already: a showing's first
+        // frame, and a wider figure, are laid out right the first time.
+        let slot = ContextPillSlot.of(footer.contextSlot, showing: session.presentationGeneration).adding(label, figure: figure != nil)
+        return ZStack(alignment: .leading) {
+            ForEach(slot.labels, id: \.self) { held in
+                PiStatPillFace(symbol: "square.stack.3d.up", ring: .some(meter.fraction), label: held).hidden()
+            }
+            PiStatButton(symbol: "square.stack.3d.up", ring: .some(meter.fraction), label: label, truncates: figure == nil,
+                         accessibility: reading.map { "\($0)% of context used" } ?? meter.detailLabel,
+                         identifier: "session-stats-context", help: meter.detailLabel + " Opens the next request in the Session Inspector.") { open(.nextRequest) }
+        }
+        .onChange(of: slot, initial: true) { [footer, session] _, slot in
+            // A room for a showing that has since ended is not kept.
+            if slot.showing == session.presentationGeneration, footer.contextSlot != slot { footer.contextSlot = slot }
+        }
+        .layoutValue(key: PiFlowFillsRow.self, value: true)
     }
+}
+
+/// The room the context pill keeps for one showing of its chat
+/// (`SessionDisplay.presentationGeneration`): the first thing it showed there,
+/// and the shape of every figure since, digits as zeros ("00%", "00.00%"),
+/// since the pill's digits are all one width. The pill takes the widest of
+/// them, so what it says next never needs a row it did not have.
+struct ContextPillSlot: Equatable {
+    let showing: UUID
+    private(set) var labels: [String] = []
+
+    /// The room kept for `showing`: the one held, if it is for this showing,
+    /// else an empty one that its first label starts.
+    static func of(_ held: ContextPillSlot?, showing: UUID) -> ContextPillSlot {
+        held?.showing == showing ? held! : ContextPillSlot(showing: showing)
+    }
+    /// With `label` shown: the first label starts the room, a figure adds its
+    /// shape, and words after the first never widen it.
+    func adding(_ label: String, figure: Bool) -> ContextPillSlot {
+        let held = figure ? Self.shape(of: label) : label
+        guard labels.isEmpty || (figure && !labels.contains(held)) else { return self }
+        var slot = self
+        slot.labels.append(held)
+        return slot
+    }
+    static func shape(of figure: String) -> String { String(figure.map { $0.isNumber ? "0" : $0 }) }
 }
 
 /// A stat pill that opens something: the pill's face, a soft fill under the
@@ -211,13 +261,15 @@ struct PiStatButton: View {
     let label: String
     /// A last figure in warning ink (see `PiStatPillFace.warningTail`).
     var warningTail: String? = nil
+    /// Words that may end in "…" (`PiStatPillFace.truncates`).
+    var truncates = false
     var accessibility: String? = nil
     var identifier: String? = nil
     var help: String = ""
     let action: () -> Void
     @State private var hovering = false
     var body: some View {
-        PiStatPillFace(symbol: symbol, ring: ring, label: label, highlighted: hovering, warningTail: warningTail)
+        PiStatPillFace(symbol: symbol, ring: ring, label: label, highlighted: hovering, warningTail: warningTail, truncates: truncates)
             .accessibilityHidden(true)
             .overlay {
                 PiPopoverTrigger(label: accessibility ?? label, identifier: identifier, help: help.isEmpty ? label : help,

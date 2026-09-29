@@ -209,6 +209,16 @@ final class TerminalEmulatorTests: XCTestCase {
         XCTAssertEqual(text(.backspace), "\u{7f}"); XCTAssertEqual(text(.backspace, option: true), "\u{1b}\u{7f}"); XCTAssertEqual(text(.backTab), "\u{1b}[Z")
     }
 
+    func testKeyCodesNameTheKeysThatSendASequence() {
+        func key(_ code: UInt16, shift: Bool = false) -> TerminalKeyEncoder.Key? { TerminalKeyEncoder.key(forKeyCode: code, shift: shift) }
+        XCTAssertEqual(key(126), .up); XCTAssertEqual(key(125), .down); XCTAssertEqual(key(123), .left); XCTAssertEqual(key(124), .right)
+        XCTAssertEqual(key(115), .home); XCTAssertEqual(key(119), .end); XCTAssertEqual(key(116), .pageUp); XCTAssertEqual(key(121), .pageDown)
+        XCTAssertEqual(key(117), .delete); XCTAssertEqual(key(114), .insert); XCTAssertEqual(key(53), .escape); XCTAssertEqual(key(51), .backspace)
+        XCTAssertEqual(key(48), .tab); XCTAssertEqual(key(48, shift: true), .backTab); XCTAssertEqual(key(36), .enter); XCTAssertEqual(key(76), .enter)
+        XCTAssertEqual([122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111].map { key($0) }, (1...12).map { .function($0) })
+        XCTAssertNil(key(0), "A key that types a character sends the character")
+    }
+
     @MainActor func testShellRunsWithAControllingTerminalAndReportsItsSize() async throws {
         let terminal = TerminalEmulator(columns: 60, rows: 12)
         let process = PseudoTerminal()

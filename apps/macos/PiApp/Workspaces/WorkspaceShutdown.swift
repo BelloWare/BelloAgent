@@ -55,7 +55,7 @@ extension WorkspaceModel {
         journalSlimming?.cancel()
         for task in webhookTasks.values { task.cancel() }
         webhookTasks.removeAll()
-        accountingStopped = true
+        isShutDown = true
         for task in accountingTasks.values { task.cancel() }
         accountingTasks.removeAll(); dirtyAccounting.removeAll()
         for host in hosts.values { host.shutdown() }

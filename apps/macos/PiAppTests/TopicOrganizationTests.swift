@@ -12,7 +12,7 @@ final class TopicOrganizationTests: XCTestCase {
     }
 
     @MainActor private func makeModel(_ root: URL) -> WorkspaceModel {
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         model.workspaces = [WorkspaceRecord(id: "project", path: root.path, trusted: true),
                             WorkspaceRecord(id: "other", path: root.appendingPathComponent("other").path, trusted: true)]
         return model
@@ -259,7 +259,7 @@ final class TopicOrganizationTests: XCTestCase {
         let savedProfile = profile, project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
         let vault = ConfigurationVault(storage: MemoryVaultStorage())
         _ = try await vault.update(expectedRevision: 0) { $0.workspaces = [project]; $0.profiles = [VaultProfile(profile: savedProfile, apiKey: "synthetic-topic-test-key")] }
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault); defer { model.shutdown() }
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault); defer { model.shutdown() }
         await model.restore(); model.selectedWorkspaceID = project.id; model.profileChoice = profile.id
         let first = try await model.createTopic(in: project.id, title: "First"), second = try await model.createTopic(in: project.id, title: "Second")
         model.newChat(in: project.id, topicID: first.id)
@@ -354,7 +354,7 @@ final class TopicOrganizationTests: XCTestCase {
         let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
         let vault = ConfigurationVault(storage: MemoryVaultStorage())
         _ = try await vault.update(expectedRevision: 0) { $0.workspaces = [project] }
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault); defer { model.shutdown() }
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault); defer { model.shutdown() }
         await model.restore()
         let topic = try await model.createTopic(in: project.id, title: "Empty but intentional")
         XCTAssertTrue(model.chats.isEmpty)

@@ -19,7 +19,10 @@ struct SideRecord: Identifiable {
     var topicID: String?
     /// The side's own cost limit; nil runs it under the Settings default.
     var costLimit: CostLimit? = nil
-    var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: "read-only", model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, topicID: topicID, parentSessionID: parentID, costLimit: costLimit) }
+    /// What follows its chat's title in a new side's, until its first
+    /// message names it.
+    static let titleSuffix = " — side"
+    var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: ChatRecord.readOnlyTools, model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, topicID: topicID, parentSessionID: parentID, costLimit: costLimit) }
 }
 struct SideKeepIntent: Codable, Sendable { var chat: ChatRecord }
 
@@ -69,7 +72,7 @@ extension WorkspaceModel {
         let quoted = quote.text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
             .components(separatedBy: "\n").map { "> " + $0 }.joined(separator: "\n")
         let draft = existingDraft + (existingDraft.isEmpty ? "" : "\n\n") + quoted + "\n\n"
-        guard draft.utf8.count <= 262_144 else { error = "The quoted draft exceeds 256 KiB. Select a shorter passage."; return }
+        guard draft.utf8.count <= SubmissionLimits.messageBytes else { error = "The quoted draft exceeds 256 KiB. Select a shorter passage."; return }
         openSide(parentID: parentID)
         guard let info = sides[parentID], info.pending, let view = displays[info.id] else { return }
         view.draft = draft; view.directCommand = false; view.completionVisible = false; view.completionToken = nil
@@ -78,6 +81,8 @@ extension WorkspaceModel {
     }
     func openSide(parentID: String? = nil, question: String = "") {
         guard !installPreparing, let parentID = parentID ?? selectedID, let parent = record(parentID), !parent.imported else { error = "Continue an imported original as a separate chat before opening a side."; return }
+        // A new side is listed under its chat, which unfolds to show it.
+        quietSidebarReveal = []
         guard canOpenSide(parentID) else { error = "Connection-test chats keep tools disabled and cannot open side chats."; return }
         guard side(parentID) == nil else { error = "Close this side panel before opening a side from its saved chat."; return }
         // Another side can open while one is shown: the shown side stays a
@@ -95,7 +100,7 @@ extension WorkspaceModel {
         }
         let id = UUID().uuidString, view = SessionDisplay(id: id)
         view.historyState = .empty; view.selectionMetadataLoaded = true
-        var info = SideRecord(id: id, parentID: parentID, workspaceID: parent.workspaceID, profileID: parent.profileID, title: parent.title + " — side", model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
+        var info = SideRecord(id: id, parentID: parentID, workspaceID: parent.workspaceID, profileID: parent.profileID, title: parent.title + SideRecord.titleSuffix, model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
         info.topicID = effectiveTopicID(for: parent)
         if question.isEmpty {
             // Nothing is created until the first message: no intent, journal or helper session.
@@ -195,17 +200,18 @@ extension WorkspaceModel {
     /// Shows a saved child chat in the side pane of its parent, replacing the
     /// side shown there. The replaced side keeps its display and any running
     /// work; only the pane changes.
-    func showSide(_ id: String) async {
+    func showSide(_ id: String, revealInSidebar: Bool = true) async {
         guard !installPreparing, let child = chats.first(where: { $0.id == id }), let parentID = child.parentSessionID, record(parentID) != nil, !child.imported else { return }
-        if let shown = sides[parentID], shown.id == id { await selectSide(id); return }
+        if let shown = sides[parentID], shown.id == id { await selectSide(id, revealInSidebar: revealInSidebar); return }
         if let shown = sides[parentID], shown.pending { discardPendingSide(shown) }
         if let shown = sides[parentID], !shown.kept || shown.keeping { error = "Wait for the current side to finish opening before switching."; return }
+        if revealInSidebar { quietSidebarReveal = [] }
         // This side is the one asked for, not the one the parent last showed.
-        if selectedID != parentID { await select(parentID, reopensSide: false) }
+        if selectedID != parentID { await select(parentID, revealInSidebar: revealInSidebar, reopensSide: false, focusesComposer: false) }
         guard selectedID == parentID else { return }
         let view = mountSide(child, beside: parentID)
         page = .chats; focusedSessionID = id
-        revealProjectChat(child)
+        if revealInSidebar { revealProjectChat(child) }
         await loadSideDisplay(child, view: view)
     }
     /// Puts a saved child chat in its parent's side pane, waiting to be read.
@@ -466,11 +472,11 @@ extension WorkspaceModel {
     func bringBack(_ text: String, from id: String, replace: Bool) throws {
         guard !text.isEmpty, let info = side(id), let parent = displays[info.parentID] else { throw HostError.failure("The parent draft is unavailable") }
         let draft = replace || parent.draft.isEmpty ? text : parent.draft + "\n\n" + text
-        guard draft.utf8.count <= 262_144 else { throw HostError.failure("The combined draft exceeds 256 KiB. Shorten the summary first.") }
+        guard draft.utf8.count <= SubmissionLimits.messageBytes else { throw HostError.failure("The combined draft exceeds 256 KiB. Shorten the summary first.") }
         parent.draft = draft; parent.directCommand = false; parent.completionVisible = false; draftChanged(parent)
     }
     func enableEditing(_ id: String) {
-        guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == "read-only", displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else { error = "Close the saved side panel and wait for idle before changing tools."; return }
+        guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else { error = "Close the saved side panel and wait for idle before changing tools."; return }
         guard store != nil else { error = StoreError.unavailable.localizedDescription; return }
         let question = ChatQuestion(title: "Enable editing tools for this saved chat?",
                                     detail: "Future turns may run shell commands and change files in this project with your account's permissions.",
@@ -482,7 +488,7 @@ extension WorkspaceModel {
     }
     func enableEditingAfterConfirmation(_ id: String) async throws {
         guard let store else { throw StoreError.unavailable }
-        guard var item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == "read-only", displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else {
+        guard var item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else {
             throw HostError.failure("Close the saved side panel and wait for idle before changing tools.")
         }
         let view = displays[id]
@@ -492,9 +498,9 @@ extension WorkspaceModel {
             guard let host = hosts[item.workspaceID], host.isReady else { throw HostError.failure("Wait for this project's host to recover before changing tools.") }
             _ = try await host.request("session.close", sessionID: id); opened.remove(id)
         }
-        item.toolMode = "editing"
+        item.toolMode = ChatRecord.editingTools
         try await store.put(item, kind: "chat", id: id)
-        if let index = chats.firstIndex(where: { $0.id == id }) { chats[index].toolMode = "editing" }
+        if let index = chats.firstIndex(where: { $0.id == id }) { chats[index].toolMode = ChatRecord.editingTools }
         displays[id]?.notice = "Editing tools apply to the next turn."
     }
 }

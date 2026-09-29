@@ -294,7 +294,7 @@ struct ReportPage: View {
     // MARK: Chart
 
     @ViewBuilder private func chart(_ snapshot: DashboardSnapshot) -> some View {
-        if report.chartMetric == "Output tok/s" {
+        if report.chartMetric == .outputRate {
             ReportThroughputPanel(live: model.liveActivity, snapshot: snapshot, window: report.appliedWindow, palette: routingPalette,
                 controls: { AnyView(chartMetricPicker) }, registerModels: { routingPalette.include($0) }, selection: report.chartSelection,
                 select: { range in
@@ -305,7 +305,7 @@ struct ReportPage: View {
     }
 
     private var chartMetricPicker: some View {
-        PiDropdown(selection: $report.chartMetric, items: [("Output tok/s", "Output tok/s"), ("Requests", "Requests"), ("Cost", "Cost"), ("Latency", "Latency"), ("Ratio", "Cache")], compact: true).frame(width: 140)
+        PiDropdown(selection: $report.chartMetric, items: [(ReportChartMetric.outputRate, "Output tok/s"), (.requests, "Requests"), (.cost, "Cost"), (.latency, "Latency"), (.cacheRatio, "Cache")], compact: true).frame(width: 140)
     }
 
     private func retainedChart(_ snapshot: DashboardSnapshot) -> some View {
@@ -321,8 +321,8 @@ struct ReportPage: View {
                     chartMetricPicker
                 }
                 Chart(snapshot.buckets) { bucket in
-                    if metric == "Latency" {
-                        let values = report.latencyMetric == "TTFT" ? bucket.ttft : report.latencyMetric == "Streaming" ? bucket.streaming : bucket.http
+                    if metric == .latency {
+                        let values = report.latencyMetric == .firstToken ? bucket.ttft : report.latencyMetric == .streaming ? bucket.streaming : bucket.http
                         if let p50 = values.p50 {
                             LineMark(x: .value("Time", bucket.start), y: .value("Milliseconds", p50), series: .value("Percentile", "p50")).foregroundStyle(by: .value("Percentile", "p50")).interpolationMethod(.monotone)
                             PointMark(x: .value("Time", bucket.start), y: .value("Milliseconds", p50)).foregroundStyle(by: .value("Percentile", "p50")).symbolSize(26)
@@ -333,13 +333,13 @@ struct ReportPage: View {
                             PointMark(x: .value("Time", bucket.start), y: .value("Milliseconds", p99)).foregroundStyle(by: .value("Percentile", "p99")).symbolSize(26)
                                 .accessibilityLabel("p99 at " + bucket.start.formatted()).accessibilityValue("\(p99) milliseconds, \(values.samples) samples")
                         }
-                    } else if metric == "Ratio" {
+                    } else if metric == .cacheRatio {
                         if let ratio = bucket.gateway.cacheHitRatio {
                             LineMark(x: .value("Time", bucket.start), y: .value("Hit ratio", ratio * 100)).foregroundStyle(Color.piSuccess).interpolationMethod(.monotone)
                             PointMark(x: .value("Time", bucket.start), y: .value("Hit ratio", ratio * 100)).foregroundStyle(Color.piSuccess).symbolSize(26)
                                 .accessibilityLabel(bucket.start.formatted()).accessibilityValue(String(format: "%.0f%% of %d reported", ratio * 100, bucket.gateway.cacheHits + bucket.gateway.cacheMisses))
                         }
-                    } else if metric == "Cost" {
+                    } else if metric == .cost {
                         if let cost = bucket.gateway.costUSD {
                             RectangleMark(xStart: .value("From", bucket.start), xEnd: .value("Until", bucket.end), yStart: .value("USD", 0), yEnd: .value("USD", cost))
                                 .foregroundStyle(Color.piBrandOrange).cornerRadius(3)
@@ -352,17 +352,17 @@ struct ReportPage: View {
                     }
                 }
                 .chartXScale(domain: domain)
-                .chartPercentScale(metric == "Ratio")
+                .chartPercentScale(metric == .cacheRatio)
                 .chartForegroundStyleScale(["p50": Color.piAccent, "p99": Color.piInfo])
-                .chartLegend(metric == "Latency" ? .visible : .hidden)
+                .chartLegend(metric == .latency ? .visible : .hidden)
                 .chartYAxis { AxisMarks(position: .leading) { AxisGridLine().foregroundStyle(Color.piHairline); AxisValueLabel().foregroundStyle(Color.piInkTertiary) } }
                 .chartXAxis { AxisMarks(preset: .aligned) { AxisGridLine().foregroundStyle(Color.piHairline); AxisValueLabel(format: axisFormat, centered: false, anchor: .top).foregroundStyle(Color.piInkTertiary) } }
                 .chartPlotStyle { $0.padding(.trailing, PiSpacing.sm) }
                 .dashboardBrush(filter: snapshot.filter, committed: report.chartSelection, commit: { report.applyBrush($0) })
                 .frame(height: 200)
                 if report.brush != nil { Button("Reset selection") { report.clearBrush() }.buttonStyle(.piGhost) }
-                if metric == "Latency" {
-                    PiTabs(selection: $report.latencyMetric, items: [("TTFT", "First token"), ("Streaming", "Streaming"), ("HTTP", "Whole request")]).transition(.opacity)
+                if metric == .latency {
+                    PiTabs(selection: $report.latencyMetric, items: [(ReportLatencyMetric.firstToken, "First token"), (.streaming, "Streaming"), (.wholeRequest, "Whole request")]).transition(.opacity)
                 }
             }
         }
@@ -371,11 +371,11 @@ struct ReportPage: View {
     /// "Bucket" is how the query groups rows; a reader sees a chart over time.
     private var chartSubtitle: String {
         switch report.chartMetric {
-        case "Output tok/s": return "Output tokens after the first / first-to-last-token time · drag to select a range"
-        case "Cost": return "Reported USD over time · drag to select a range"
-        case "Latency": return "p50 and p99 over time, in milliseconds · drag to select a range"
-        case "Ratio": return "Cache hit ratio over time, % of reported · drag to select a range"
-        default: return "Requests over time · drag to select a range"
+        case .outputRate: return "Output tokens after the first / first-to-last-token time · drag to select a range"
+        case .cost: return "Reported USD over time · drag to select a range"
+        case .latency: return "p50 and p99 over time, in milliseconds · drag to select a range"
+        case .cacheRatio: return "Cache hit ratio over time, % of reported · drag to select a range"
+        case .requests: return "Requests over time · drag to select a range"
         }
     }
 
@@ -384,7 +384,7 @@ struct ReportPage: View {
     private func requests(_ snapshot: DashboardSnapshot, width: CGFloat) -> some View {
         let titles = report.labels(for: model).titles
         return VStack(alignment: .leading, spacing: PiSpacing.sm) {
-            PiSectionHeader(report.grouping == "sessions" ? "Sessions" : report.grouping == "models" ? "Models" : "Requests", subtitle: report.grouping == "sessions" ? "Per-chat totals and medians · expand a session for its requests" : report.grouping == "models" ? "Per route: requests, cost, tokens, output rate and first-token median · click a row to filter by it" : "Click a row for exact retained bytes and model evidence")
+            PiSectionHeader(report.grouping == .sessions ? "Sessions" : report.grouping == .models ? "Models" : "Requests", subtitle: report.grouping == .sessions ? "Per-chat totals and medians · expand a session for its requests" : report.grouping == .models ? "Per route: requests, cost, tokens, output rate and first-token median · click a row to filter by it" : "Click a row for exact retained bytes and model evidence")
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: PiSpacing.sm) {
                     groupingTabs
@@ -398,9 +398,9 @@ struct ReportPage: View {
             }
             ScrollView(.horizontal) {
             VStack(spacing: 0) {
-                if report.grouping == "sessions" {
+                if report.grouping == .sessions {
                     sessionRows(titles: titles)
-                } else if report.grouping == "models" {
+                } else if report.grouping == .models {
                     modelRows(allRequests: snapshot.selectedRequests, allCost: snapshot.gateway.costUSD)
                 } else {
                 ReportGridRow(cells: ["Started", "Session", "Requested → final model", "Status", "Cost", "Tokens", "Duration", "Cache"], header: true)
@@ -424,15 +424,15 @@ struct ReportPage: View {
     }
 
     private var groupingTabs: some View {
-        PiTabs(selection: $report.grouping, items: [("requests", "Requests"), ("sessions", "By session"), ("models", "By model")])
+        PiTabs(selection: $report.grouping, items: [(ReportGrouping.requests, "Requests"), (.sessions, "By session"), (.models, "By model")])
             .fixedSize().accessibilityIdentifier("reportGrouping")
     }
 
     @ViewBuilder private func requestPager(_ snapshot: DashboardSnapshot) -> some View {
-        if report.grouping == "models" {
+        if report.grouping == .models {
             Text(report.modelSummaries.map { $0.isEmpty ? "No routes" : "\($0.count) \($0.count == 1 ? "route" : "routes")" + ($0.count >= PayloadArchive.modelGroupLimit ? " · busiest shown" : "") } ?? "Grouping…")
                 .font(PiFont.caption).foregroundStyle(Color.piInkTertiary)
-        } else if report.grouping == "sessions", let page = report.sessions {
+        } else if report.grouping == .sessions, let page = report.sessions {
             PiPager(previous: { Task { await report.pageSessions(offset: max(0, page.offset - PayloadArchive.sessionPageSize)) } },
                     next: { Task { await report.pageSessions(offset: page.offset + PayloadArchive.sessionPageSize) } },
                     canPrevious: page.offset > 0 && !report.loading, canNext: page.hasNext && !report.loading, previousLabel: "Previous", nextLabel: "Next") {

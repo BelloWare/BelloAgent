@@ -25,17 +25,9 @@ final class NativeUIAcceptanceTests: XCTestCase {
         try prepareResources(in: folder)
         var repository = URL(fileURLWithPath: #filePath)
         for _ in 0..<4 { repository.deleteLastPathComponent() }
-        let fixture = Process(), pipe = Pipe()
-        fixture.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        fixture.arguments = ["-u", repository.appendingPathComponent("fixtures/native/ui-gateway.py").path]
-        fixture.currentDirectoryURL = folder; fixture.standardOutput = pipe; fixture.standardError = FileHandle.nullDevice
-        fixture.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": folder.path, "PI_APP_UI_FIXTURE_MODEL": "auto-router"]
-        try fixture.run()
-        defer { if fixture.isRunning { fixture.terminate(); fixture.waitUntilExit() } }
-        let handle = pipe.fileHandleForReading
-        let greeting = await Task.detached { handle.availableData }.value
-        let value = try JSONDecoder().decode([String: Int].self, from: greeting)
-        let port = try XCTUnwrap(value["port"]), base = "http://127.0.0.1:\(port)"
+        let fixture = try await SyntheticGateway.start(in: folder, environment: ["PI_APP_UI_FIXTURE_MODEL": "auto-router"])
+        defer { fixture.stop() }
+        let base = fixture.base
         let mcpFixturePath = repository.appendingPathComponent("fixtures/native/mcp-server.py").path
         let workspace = WorkspaceRecord(id: "native-ui-fixture", path: folder.path, trusted: true)
         let referenceFolder = folder.appendingPathComponent("Reference Project", isDirectory: true)
@@ -110,7 +102,7 @@ final class NativeUIAcceptanceTests: XCTestCase {
         defer { window.orderOut(nil) }
         defer { metricsMenu.remove() }
         try Data("\(base)\n".utf8).write(to: folder.appendingPathComponent("ready.txt"))
-        try JSONEncoder().encode(["appPID": ProcessInfo.processInfo.processIdentifier, "gatewayPID": fixture.processIdentifier]).write(to: folder.appendingPathComponent("processes.json"))
+        try JSONEncoder().encode(["appPID": ProcessInfo.processInfo.processIdentifier, "gatewayPID": fixture.process.processIdentifier]).write(to: folder.appendingPathComponent("processes.json"))
         // The operator writes finish after observing the actual GUI workflows.
         // This keeps CUA evidence separate from assertions about model state.
         var previousCostSamples: [String: Int] = [:]

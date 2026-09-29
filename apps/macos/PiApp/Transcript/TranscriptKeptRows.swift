@@ -26,8 +26,14 @@ import AppKit
     struct Entry {
         let sessionID: String
         let rows: [TranscriptRowContainer]
-        let disclosure: ObjectIdentifier?
-        let toolInputs: ObjectIdentifier?
+        /// The stores the rows were made with, held and compared as the
+        /// objects they are. An address says nothing once its object is
+        /// gone: a store made since can stand at it.
+        let disclosure: TranscriptDisclosure?
+        let toolInputs: TranscriptToolInputs?
+        /// The workspace that let these rows be kept, and the only one that
+        /// lets go of them. Nil when none was deciding.
+        weak var admittedBy: TranscriptKeptRowsPolicy?
     }
     /// Three chats besides the one on screen: going back and forth between
     /// two or three chats is what a switch is for, and each kept chat holds
@@ -42,28 +48,27 @@ import AppKit
 
     init() { Self.keepers.append(WeakKeeper(self)) }
 
-    /// Whether the workspace wants a chat's rows kept while the reader is
-    /// away (`WorkspaceModel.keepsTranscriptRows`): not a chat that is
-    /// archived, deleted or has no display.
-    static var admits: @MainActor (String) -> Bool = { _ in true }
+    /// The workspace's say in what is kept (`WorkspaceModel`): not a chat
+    /// that is archived, deleted, running or has no display. With none, any
+    /// settled chat is kept.
+    static weak var policy: TranscriptKeptRowsPolicy?
 
     /// Whether a chat's rows may wait out of sight: nothing on its page is
     /// arriving, running, being sent or live.
     static func keeps(_ snapshot: TranscriptPage.Snapshot, rows: [TranscriptRowContainer]) -> Bool {
         guard chatLimit > 0, !rows.isEmpty, snapshot.lifecycle?.active == nil, snapshot.liveTurn == nil, !snapshot.sending,
-              admits(snapshot.sessionID) else { return false }
+              policy?.keepsTranscriptRows(snapshot.sessionID) ?? true else { return false }
         return rows.allSatisfy { !$0.isInDisclosureMotion && settled($0.contentItem) }
     }
     static func settled(_ item: TranscriptItem) -> Bool {
-        let running: Set<String> = ["running", "preparing", "prepared"]
         func quiet(_ message: TranscriptMessage) -> Bool {
-            !message.isStreaming && !message.isSending && !(message.tools ?? []).contains { running.contains($0.state) }
+            !message.isStreaming && !message.isSending && !(message.tools ?? []).contains { ToolState.inFlight.contains($0.state) }
         }
         switch item {
         case .message(let message): return quiet(message)
         case .block(let block):
             guard !block.live, block.turn?.live != true, block.taskSummary?.live != true, block.part?.state != "streaming" else { return false }
-            return block.replies.allSatisfy { quiet($0) } && !block.tools.contains { running.contains($0.state) }
+            return block.replies.allSatisfy { quiet($0) } && !block.tools.contains { ToolState.inFlight.contains($0.state) }
         }
     }
 
@@ -71,8 +76,7 @@ import AppKit
     func keep(_ rows: [TranscriptRowContainer], sessionID: String, disclosure: TranscriptDisclosure?, toolInputs: TranscriptToolInputs?) {
         entries.removeAll { $0.sessionID == sessionID }
         guard Self.chatLimit > 0 else { return }
-        entries.append(Entry(sessionID: sessionID, rows: rows, disclosure: disclosure.map(ObjectIdentifier.init),
-                             toolInputs: toolInputs.map(ObjectIdentifier.init)))
+        entries.append(Entry(sessionID: sessionID, rows: rows, disclosure: disclosure, toolInputs: toolInputs, admittedBy: Self.policy))
         while entries.count > Self.chatLimit { entries.removeFirst() }
     }
 
@@ -81,7 +85,7 @@ import AppKit
     func take(_ sessionID: String, disclosure: TranscriptDisclosure?, toolInputs: TranscriptToolInputs?) -> [TranscriptRowContainer]? {
         guard let index = entries.firstIndex(where: { $0.sessionID == sessionID }) else { return nil }
         let entry = entries.remove(at: index)
-        guard entry.disclosure == disclosure.map(ObjectIdentifier.init), entry.toolInputs == toolInputs.map(ObjectIdentifier.init) else { return nil }
+        guard entry.disclosure === disclosure, entry.toolInputs === toolInputs else { return nil }
         return entry.rows
     }
 
@@ -91,14 +95,22 @@ import AppKit
 
     private final class WeakKeeper { weak var keeper: TranscriptKeptRows?; init(_ keeper: TranscriptKeptRows) { self.keeper = keeper } }
     private static var keepers: [WeakKeeper] = []
-    /// Lets go of kept rows in every pane: a chat whose display went or was
-    /// made again, or that was archived or deleted, keeps nothing.
-    static func forgetEverywhere(_ shouldForget: (Entry) -> Bool) {
+    /// Lets go of kept rows in every pane, of those this workspace let be
+    /// kept: a chat whose display went or was made again, or that was
+    /// archived or deleted, keeps nothing. Another workspace's rows are not
+    /// its to judge, since its chats are not among them.
+    static func forgetEverywhere(admittedBy policy: TranscriptKeptRowsPolicy, _ shouldForget: (Entry) -> Bool) {
         keepers.removeAll { $0.keeper == nil }
-        for box in keepers { box.keeper?.forget(shouldForget) }
+        for box in keepers { box.keeper?.forget { entry in entry.admittedBy === policy && shouldForget(entry) } }
     }
     /// Every pane's kept chats, for checks that a chat keeps nothing.
     static var keptSessionIDs: [String] {
         keepers.compactMap(\.keeper).flatMap(\.sessionIDs)
     }
+}
+
+/// What decides, for a workspace, whether a chat's rows may wait out of sight
+/// while the reader is in another chat.
+@MainActor protocol TranscriptKeptRowsPolicy: AnyObject {
+    func keepsTranscriptRows(_ id: String) -> Bool
 }

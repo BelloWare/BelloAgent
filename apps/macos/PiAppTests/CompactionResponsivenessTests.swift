@@ -22,27 +22,17 @@ final class CompactionResponsivenessTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try Data("Synthetic UI fixture file: read-tool round trip verified.\n".utf8).write(to: folder.appendingPathComponent("README.md"))
 
-        var repository = URL(fileURLWithPath: #filePath)
-        for _ in 0..<4 { repository.deleteLastPathComponent() }
-        let fixture = Process(), pipe = Pipe()
-        fixture.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        fixture.arguments = ["-u", repository.appendingPathComponent("fixtures/native/ui-gateway.py").path]
-        fixture.currentDirectoryURL = folder; fixture.standardOutput = pipe; fixture.standardError = FileHandle.nullDevice
-        fixture.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": folder.path,
-                               "PI_APP_UI_FIXTURE_LENIENT_LIMIT": "1", "PI_APP_UI_FIXTURE_REAL_USAGE": "1",
-                               "PI_APP_UI_FIXTURE_SUMMARY_DELAY": testEnvironment("PI_APP_HANG_SUMMARY_DELAY") ?? "0.05"]
-        try fixture.run()
-        defer { if fixture.isRunning { fixture.terminate(); fixture.waitUntilExit() } }
+        let fixture = try await SyntheticGateway.start(in: folder, environment: [
+            "PI_APP_UI_FIXTURE_LENIENT_LIMIT": "1", "PI_APP_UI_FIXTURE_REAL_USAGE": "1",
+            "PI_APP_UI_FIXTURE_SUMMARY_DELAY": testEnvironment("PI_APP_HANG_SUMMARY_DELAY") ?? "0.05"])
+        defer { fixture.stop() }
         // A frozen window fails the run with a sample of the main thread, and
         // takes the gateway with it: nothing after the stall can clean up.
-        let gateway = fixture.processIdentifier
+        let gateway = fixture.process.processIdentifier
         let watchdog = MainThreadWatchdog(limit: Double(testEnvironment("PI_APP_HANG_LIMIT") ?? "") ?? 10,
                                           samplePath: folder.deletingLastPathComponent().appendingPathComponent("compaction-hang-sample.txt").path,
                                           onStall: { _ in kill(gateway, SIGTERM) })
-        let handle = pipe.fileHandleForReading
-        let greeting = await Task.detached { handle.availableData }.value
-        let port = try XCTUnwrap(try JSONDecoder().decode([String: Int].self, from: greeting)["port"])
-        let base = "http://127.0.0.1:\(port)"
+        let base = fixture.base
 
         let workspace = WorkspaceRecord(id: "hang-main", path: folder.path, trusted: true)
         var projects = [workspace]

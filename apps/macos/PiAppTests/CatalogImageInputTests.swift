@@ -28,8 +28,8 @@ final class CatalogImageInputTests: XCTestCase {
         let listed = [ModelDescriptor(id: "text-model", name: "Text", input: ["text"]),
                       ModelDescriptor(id: "vision-model", name: "Vision", input: ["text", "image"]),
                       ModelDescriptor(id: "unreported", name: "Unreported")]
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()),
-                                   modelCatalog: ModelCatalog(readBundled: { listed }))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()),
+                                       modelCatalog: ModelCatalog(readBundled: { listed }))
         defer { model.shutdown() }
         let connection = profile(); model.profiles = [connection]
         var chat = ChatRecord(id: "chat", workspaceID: "project", title: "New", path: nil, profileID: connection.id)

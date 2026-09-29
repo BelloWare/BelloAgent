@@ -109,6 +109,19 @@ final class NativeTranscriptDocumentTests: XCTestCase {
         }
     }
 
+    /// The band a pass measures first is worked out on the page the pass
+    /// then places: the same insets, the same heights, in the same order.
+    @MainActor func testTheMeasuringBandPlacesRowsWhereTheLayoutDoes() async throws {
+        let fixture = Fixture(messages: messages(count: 40))
+        defer { fixture.close() }
+        try await fixture.settle { fixture.rows.count == 40 && fixture.document.approximateRowCount == 0 && abs(fixture.offset - fixture.bottom) < 0.5 }
+        let rows = fixture.rows
+        let tops = TranscriptNativeDocument.rowTops(rows.map(\.frame.height))
+        XCTAssertEqual(Array(tops.dropLast()), rows.map(\.frame.minY))
+        XCTAssertEqual(tops.last, rows.last?.frame.maxY)
+        XCTAssertEqual(fixture.document.frame.height, (tops.last ?? 0) + TranscriptMetrics.pageBottomInset)
+    }
+
     @MainActor func testSelectedNativeFieldStaysAttachedWhenScrolledOutsideTheBuffer() async throws {
         let fixture = Fixture(messages: messages(count: 40))
         defer { fixture.close() }

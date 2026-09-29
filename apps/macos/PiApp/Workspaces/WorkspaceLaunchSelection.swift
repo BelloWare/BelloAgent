@@ -33,6 +33,8 @@ struct RememberedSelection: Codable, Sendable, Equatable {
     var backgroundRequestsOpen: Bool?
     /// True when the sidebar's archive switch was on.
     var showArchivedChats: Bool?
+    /// True when the sides panel was pinned open at the window's right edge.
+    var sidesPanelPinned: Bool?
     var revision: Int64 = 0
 
     /// The same chat, project, sides and focus, whenever each was written.
@@ -72,6 +74,27 @@ struct SidebarLaunchReveal: Equatable {
     var archivedChats = false
 }
 
+/// The model's memory of the selection: what the next launch should reopen,
+/// how far that got to disk, and whether it is written at all.
+struct SelectionMemory {
+    /// What the next launch should reopen.
+    var remembered: RememberedSelection?
+    /// The newest revision of `remembered` known to be on disk.
+    var savedRevision: Int64 = 0
+    /// The one write that carries a change there.
+    var write: Task<Void, Never>?
+    /// Whether changes are written at all: from the end of `restore()`, which
+    /// applies the saved one, to `shutdown()`.
+    var enabled = false
+    /// Set by `shutdown()`: a launch still reading when the app went does not
+    /// start writing again when it finishes.
+    var stopped = false
+    /// The saved side each chat last showed beside it, by chat id, which
+    /// `select` reopens after a relaunch. The model's `sides` is the same
+    /// thing for this launch, in memory.
+    var sides: [String: String] = [:]
+}
+
 extension WorkspaceModel {
     /// How long a changed selection waits before it is written. Every change
     /// made during the wait rides along with it, so stepping through the
@@ -85,27 +108,28 @@ extension WorkspaceModel {
     var selectionToRemember: RememberedSelection {
         var value: RememberedSelection
         if let id = selectedID, pendingChatIDs.contains(id) {
-            value = rememberedSelection ?? RememberedSelection()
+            value = selectionMemory.remembered ?? RememberedSelection()
         } else {
             value = RememberedSelection(chatID: selectedID, projectID: selectedWorkspaceID)
             if let id = selectedID, let side = sides[id], side.kept, focusedSessionID == side.id { value.sideFocused = true }
         }
-        value.shownSides = rememberedSides.isEmpty ? nil : rememberedSides
+        value.shownSides = selectionMemory.sides.isEmpty ? nil : selectionMemory.sides
         value.reportOpen = page == .report ? true : nil
         value.backgroundRequestsOpen = page == .background ? true : nil
         value.showArchivedChats = showArchivedSessions ? true : nil
+        value.sidesPanelPinned = sidesPanelPinned ? true : nil
         return value
     }
 
     /// Called whenever the open chat, its project, a side pane or the focus
     /// between a chat and its side may have changed. Cheap when nothing did.
     func noteSelectionChanged() {
-        guard remembersSelection, store != nil else { return }
+        guard selectionMemory.enabled, store != nil else { return }
         var next = selectionToRemember
-        if let current = rememberedSelection, current.names(next) { return }
-        let previous = min(rememberedSelection?.revision ?? 0, Int64.max - 1)
+        if let current = selectionMemory.remembered, current.names(next) { return }
+        let previous = min(selectionMemory.remembered?.revision ?? 0, Int64.max - 1)
         next.revision = max(previous + 1, Int64(Date().timeIntervalSince1970 * 1_000_000))
-        rememberedSelection = next
+        selectionMemory.remembered = next
         scheduleSelectionWrite(after: Self.selectionWriteDelay)
     }
 
@@ -118,37 +142,37 @@ extension WorkspaceModel {
     /// page can take seconds, went unrecorded, and launch then wrote the side
     /// it had read back: that side came back at every launch.
     func sidesChanged(from old: [String: SideRecord]) {
-        var next = rememberedSides
+        var next = selectionMemory.sides
         for parent in Set(old.keys).union(sides.keys) {
             let before = old[parent], after = sides[parent]
             guard before?.id != after?.id || before?.kept != after?.kept else { continue }
             if let after { if after.kept { next[parent] = after.id } } else { next.removeValue(forKey: parent) }
         }
-        if next != rememberedSides { rememberedSides = next }
+        if next != selectionMemory.sides { selectionMemory.sides = next }
         noteSelectionChanged()
     }
 
     /// The saved side a chat last showed beside it, while it is still that
     /// chat's side. `select` reopens it.
     func rememberedSide(of parentID: String) -> ChatRecord? {
-        guard let id = rememberedSides[parentID], let child = chatRecord(id),
+        guard let id = selectionMemory.sides[parentID], let child = chatRecord(id),
               child.parentSessionID == parentID, !child.imported else { return nil }
         return child
     }
 
     /// One write in flight at a time, carrying whatever is newest when it
-    /// runs. Only the task itself clears `selectionWrite`, so a newer task can
+    /// runs. Only the task itself clears `selectionMemory.write`, so a newer task can
     /// never be forgotten by an older one finishing.
     private func scheduleSelectionWrite(after delay: Duration?) {
-        guard selectionWrite == nil else { return }
-        selectionWrite = Task { [weak self] in
+        guard selectionMemory.write == nil else { return }
+        selectionMemory.write = Task { [weak self] in
             // A flush cancels the wait to write at once.
             if let delay { try? await Task.sleep(for: delay) }
             guard let self else { return }
-            defer { self.selectionWrite = nil }
+            defer { self.selectionMemory.write = nil }
             // Shut down: nothing more is written for this model.
-            guard self.remembersSelection else { return }
-            while let value = self.rememberedSelection, value.revision > self.savedSelectionRevision {
+            guard self.selectionMemory.enabled else { return }
+            while let value = self.selectionMemory.remembered, value.revision > self.selectionMemory.savedRevision {
                 guard await self.persistSelection(value) else { return }
             }
         }
@@ -163,7 +187,7 @@ extension WorkspaceModel {
         do { try await store.put(value, kind: RememberedSelection.recordKind, id: RememberedSelection.recordID, revision: value.revision) }
         catch StoreError.staleRevision { /* A newer selection is already on disk. */ }
         catch { return false }
-        savedSelectionRevision = max(savedSelectionRevision, value.revision)
+        selectionMemory.savedRevision = max(selectionMemory.savedRevision, value.revision)
         return true
     }
 
@@ -176,15 +200,15 @@ extension WorkspaceModel {
         // reopening or one the reader opened, with the panes as they are now.
         // Waiting for launch wrote nothing at all, and the next launch put back
         // what the last session left, a side closed meanwhile included.
-        if !remembersSelection, !selectionMemoryStopped, selectedID != nil {
-            remembersSelection = true; noteSelectionChanged()
+        if !selectionMemory.enabled, !selectionMemory.stopped, selectedID != nil {
+            selectionMemory.enabled = true; noteSelectionChanged()
         }
         let deadline = ProcessInfo.processInfo.systemUptime + max(0, timeout)
         var retried = false
-        while selectionWrite != nil || (rememberedSelection?.revision ?? 0) > savedSelectionRevision {
+        while selectionMemory.write != nil || (selectionMemory.remembered?.revision ?? 0) > selectionMemory.savedRevision {
             guard !Task.isCancelled, ProcessInfo.processInfo.systemUptime < deadline else { return false }
-            if let write = selectionWrite { write.cancel() }
-            else if remembersSelection, !retried { retried = true; scheduleSelectionWrite(after: nil) }
+            if let write = selectionMemory.write { write.cancel() }
+            else if selectionMemory.enabled, !retried { retried = true; scheduleSelectionWrite(after: nil) }
             else { return false }
             do { try await Task.sleep(for: .milliseconds(10)) } catch { return false }
         }
@@ -193,17 +217,18 @@ extension WorkspaceModel {
 
     /// Stops writing for good: this model is going away.
     func stopRememberingSelection() {
-        remembersSelection = false; selectionMemoryStopped = true
-        selectionWrite?.cancel()
+        selectionMemory.enabled = false; selectionMemory.stopped = true
+        selectionMemory.write?.cancel()
     }
 
     /// What the last session left, as soon as the chats are listed, so a
     /// chat the reader opens from the first painted row brings its side back.
     func adoptRememberedSelection(_ remembered: RememberedSelection?) {
-        rememberedSelection = remembered
+        selectionMemory.remembered = remembered
         if remembered?.showArchivedChats == true { showArchivedSessions = true }
-        savedSelectionRevision = remembered?.revision ?? 0
-        rememberedSides = (remembered?.shownSides ?? [:]).filter { parent, side in
+        if remembered?.sidesPanelPinned == true { sidesPanelPinned = true }
+        selectionMemory.savedRevision = remembered?.revision ?? 0
+        selectionMemory.sides = (remembered?.shownSides ?? [:]).filter { parent, side in
             chatRecord(parent) != nil && chatRecord(side).map { $0.parentSessionID == parent && !$0.imported } == true
         }
     }
@@ -239,7 +264,7 @@ extension WorkspaceModel {
         // From here on every change is written. Whatever the reader opened
         // while this was loading is the selection now, and is written first.
         // Not after a quit that came first: the app is going.
-        defer { if !selectionMemoryStopped { remembersSelection = true; noteSelectionChanged() } }
+        defer { if !selectionMemory.stopped { selectionMemory.enabled = true; noteSelectionChanged() } }
         guard selectedID == nil, selectionRevision == revision else { return false }
         // The report, or the Background requests page, comes back over the
         // reopened chat, unless the reader opened something of their own

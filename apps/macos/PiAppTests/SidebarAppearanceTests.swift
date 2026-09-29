@@ -10,8 +10,8 @@ import SwiftUI
 /// the assertions are about what would be cut off.
 final class SidebarAppearanceTests: XCTestCase {
     @MainActor private func crowdedModel(_ root: URL) throws -> (WorkspaceModel, WorkspaceRecord) {
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"),
-                                   vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"),
+                                       vault: ConfigurationVault(storage: MemoryVaultStorage()))
         let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
         model.workspaces = [project]
         model.selectedWorkspaceID = project.id
@@ -124,8 +124,8 @@ final class SidebarAppearanceTests: XCTestCase {
             let root = URL(fileURLWithPath: base).appendingPathComponent("sidebar-metrics-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: root) }
-            let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"),
-                                       vault: ConfigurationVault(storage: MemoryVaultStorage()))
+            let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"),
+                                           vault: ConfigurationVault(storage: MemoryVaultStorage()))
             defer { model.shutdown() }
             let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
             model.workspaces = [project]; model.selectedWorkspaceID = project.id

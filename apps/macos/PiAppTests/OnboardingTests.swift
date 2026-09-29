@@ -40,7 +40,7 @@ final class OnboardingTests: XCTestCase {
     @MainActor func testTheSidebarOffersNoProjectWhileSetupIsOnScreen() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("setup-path-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         await model.restore()
         XCTAssertTrue(model.presentsSetup, "An empty vault opens on setup, and the sidebar's prompt waits")
@@ -291,7 +291,7 @@ final class OnboardingTests: XCTestCase {
     @MainActor func testRealWorkspaceSetupPersistsOneConnectionAndChatAndResumesAfterRestart() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let storage = MemoryVaultStorage(), vault = ConfigurationVault(storage: storage)
-        let model = WorkspaceModel(stateRoot: root, vault: vault), state = ready()
+        let model = makeWorkspaceModel(stateRoot: root, vault: vault), state = ready()
         defer { model.shutdown() }
         try await model.reloadConfiguration()
         try await model.updateConfiguration { $0.capture.disclosureAccepted = true; $0.automaticUpdateChecks = false }
@@ -313,7 +313,7 @@ final class OnboardingTests: XCTestCase {
         let persisted = try await model.store?.list(ChatRecord.self, kind: "chat")
         XCTAssertEqual(persisted?.count, 1); XCTAssertEqual(persisted?.first?.id, model.selectedID)
         XCTAssertTrue(model.hosts.isEmpty, "Creating a first chat must not send a provider request")
-        let reopened = WorkspaceModel(stateRoot: root, vault: vault)
+        let reopened = makeWorkspaceModel(stateRoot: root, vault: vault)
         defer { reopened.shutdown() }
         await reopened.restore()
         XCTAssertEqual(reopened.profiles.count, 1); XCTAssertEqual(reopened.chats.count, 1)
@@ -331,7 +331,7 @@ final class OnboardingTests: XCTestCase {
         config.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-only")]
         config.workspaces = [WorkspaceRecord(id: "untrusted", path: root.path, trusted: false)]
         let vault = ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(config)))
-        let model = WorkspaceModel(stateRoot: root, vault: vault)
+        let model = makeWorkspaceModel(stateRoot: root, vault: vault)
         defer { model.shutdown() }
         try await model.reloadConfiguration(); model.selectedWorkspaceID = "untrusted"; model.profileChoice = profile.id
         do { try await model.verifyOnboardingConnection(profile); XCTFail("Untrusted workspace must not start a gateway probe") } catch { }
@@ -342,7 +342,7 @@ final class OnboardingTests: XCTestCase {
         let blockedRoot = root.appendingPathComponent("not-a-directory")
         try Data("fixture".utf8).write(to: blockedRoot)
         config.workspaces[0].trusted = true
-        let blocked = WorkspaceModel(stateRoot: blockedRoot, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(config))))
+        let blocked = makeWorkspaceModel(stateRoot: blockedRoot, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(config))))
         defer { blocked.shutdown() }
         try await blocked.reloadConfiguration(); blocked.selectedWorkspaceID = "untrusted"; blocked.profileChoice = profile.id
         let ready = await blocked.prepareStore()
@@ -360,7 +360,7 @@ final class OnboardingTests: XCTestCase {
         config.capture.disclosureAccepted = true; config.automaticUpdateChecks = false
         config.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-only")]
         config.workspaces = [WorkspaceRecord(id: "trusted", path: root.path, trusted: true)]
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(config))))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(config))))
         defer { model.shutdown() }
         try await model.reloadConfiguration(); model.profileChoice = profile.id; model.selectedWorkspaceID = "trusted"
         let store = try XCTUnwrap(model.store), gate = OnboardingStoreGate()

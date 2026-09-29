@@ -25,7 +25,7 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         let chat=ChatRecord(id:"chat",workspaceID:"project",title:"Chat",path:nil,profileID:"profile")
         let view=SessionDisplay(id:chat.id)
         view.messages=[TranscriptMessage(id:"question",role:"user",text:"Question")]
-        view.projectionRevision="old-runtime:1"; view.pageStartEnsured=true
+        view.projectionRevision="old-runtime:1"
         model.chats=[chat]; model.displays[chat.id]=view; model.selectedID=chat.id; model.selected=view
         let commands=RefreshCommandLog(), host=HostSupervisor(commandSender:{ commands.frames.append($0) })
         try await host.connect(cwd:root,state:root.appendingPathComponent("host"))
@@ -229,6 +229,11 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         try await f.host.shutdownAndWait()
     }
 
+    /// The reader has scrolled up to the first row of a full window while a
+    /// reply arrives. The row stays, and so does the live tail: the window
+    /// runs past its budget from the reader's row until they let go of it.
+    /// Before, the live page was set aside and the chat disconnected from it,
+    /// and the reply stopped arriving.
     @MainActor func testLiveUpdatesDoNotEvictTheReadingAnchorAtTheResidentLimit() async throws {
         let f = try await fixture()
         f.view.historyState = .ready
@@ -244,11 +249,57 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         value["historyIncarnation"] = .string("runtime"); value["historyLineage"] = .string("root")
         try reply(f.commands.frames[0], on: f.host, result: value)
         try await wait { !f.view.snapshotInFlight }
-        XCTAssertEqual(f.view.messages.first?.id, "m0")
-        XCTAssertEqual(f.view.messages.count, HistoryWindowPolicy.residentRows)
+        XCTAssertEqual(f.view.messages.first?.id, "m0", "The reader's row stays")
+        XCTAssertEqual(f.view.messages.last?.id, "m\(HistoryWindowPolicy.residentRows)", "The live tail arrives")
+        XCTAssertEqual(f.view.messages.count, HistoryWindowPolicy.residentRows + 1)
         XCTAssertEqual(f.view.scrollAnchor?.offset, -8)
-        XCTAssertEqual(f.view.newerPage.cursor?.entry, f.view.messages.last?.id)
-        XCTAssertTrue(f.view.browsingHistory, "Only an actual evicted tail gap disconnects the live window")
+        XCTAssertNil(f.view.newerPage.cursor)
+        XCTAssertFalse(f.view.browsingHistory, "Holding a row does not disconnect the live window")
+        try await f.host.shutdownAndWait()
+    }
+
+    /// A chat read from its first row, whose window then fills as it grows:
+    /// the rows that leave its start are reached again by scrolling up,
+    /// through the earlier edge, as any earlier rows are. Before, a window
+    /// that had every row kept no edge, and rows that left it came back only
+    /// when the chat was opened again.
+    @MainActor func testRowsThatLeaveAWholeChatsWindowCanBeScrolledBackTo() async throws {
+        let caps = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (rows: 8, bytes: caps.bytes)
+        defer { TranscriptPaging.residentCaps = caps }
+        let f = try await fixture()
+        f.view.historyState = .ready
+        f.view.presentation.identity = ("runtime", "root")
+        let role = { (index: Int) in index % 2 == 0 ? "user" : "assistant" }
+        let wire = { (index: Int) -> WireValue in .object(["id": .string("m\(index)"), "role": .string(role(index)), "text": .string("Message \(index)")]) }
+        // Every row of the chat, from its first: there is nothing before it.
+        f.view.messages = (0..<8).map { TranscriptMessage(id: "m\($0)", role: role($0), text: "Message \($0)") }
+        XCTAssertNil(f.view.olderPage.cursor)
+        f.model.refresh(f.chat.id)
+        try await wait { f.commands.frames.count == 1 }
+        // Two more turns; the helper's page holds its newest rows.
+        var value = snapshot(sequence: 2, revision: "runtime:2")
+        value["messages"] = .array((6..<12).map(wire))
+        value["historyIncarnation"] = .string("runtime"); value["historyLineage"] = .string("root")
+        value["historyOlder"] = .object(["incarnation": .string("runtime"), "lineage": .string("root"), "entry": .string("m6")])
+        try reply(f.commands.frames[0], on: f.host, result: value)
+        try await wait { !f.view.snapshotInFlight }
+        XCTAssertEqual(f.view.messages.map(\.id), (4..<12).map { "m\($0)" }, "The window keeps the newest rows")
+        XCTAssertEqual(f.view.olderPage.cursor?.entry, "m4", "The rows that left it have an earlier edge, at its first row")
+        XCTAssertEqual(f.view.olderPage.cursor?.incarnation, "runtime")
+        XCTAssertFalse(f.view.browsingHistory, "The chat stays on its live tail")
+        // Scrolling up reads them back, from that edge.
+        let earlier: WireValue = .array((0..<4).map(wire))
+        f.model.historyWindowLoader = { _, cursor, newer, _ in
+            guard !newer, cursor?.entry == "m4" else { throw HostError.failure("Read from the wrong edge") }
+            return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("runtime"), "lineage": .string("root"),
+                "older": .null, "newer": .object(["incarnation": .string("runtime"), "lineage": .string("root"), "entry": .string("m3")]),
+                "messages": earlier]))
+        }
+        let loaded = await f.model.loadEarlierPage(sessionID: f.chat.id)
+        XCTAssertTrue(loaded, "The earlier edge reads")
+        XCTAssertEqual(f.view.messages.first?.id, "m0", "Every row of the chat can be scrolled back to")
+        XCTAssertNil(f.view.olderPage.cursor, "The chat's first row is reached")
         try await f.host.shutdownAndWait()
     }
 
@@ -372,6 +423,112 @@ extension WorkspaceRefreshLifecycleTests {
         try await wait { f.commands.frames.count > count }
         try reply(f.commands.frames[count], on: f.host, result: result)
         try await wait { !f.view.snapshotInFlight }
+    }
+
+    /// Rows as the helper sends them.
+    private func wireRows(_ range: Range<Int>, text: (Int) -> String = { "Message \($0)" }) -> WireValue {
+        .array(range.map { .object(["id": .string("m\($0)"), "role": .string($0 % 2 == 0 ? "user" : "assistant"), "text": .string(text($0))]) })
+    }
+    private func liveSnapshot(_ sequence: Double, _ rows: WireValue) -> [String: WireValue] {
+        var value = snapshot(sequence: sequence, revision: "runtime:\(Int(sequence))")
+        value["messages"] = rows
+        value["historyIncarnation"] = .string("runtime"); value["historyLineage"] = .string("root")
+        return value
+    }
+
+    /// The display owns the resident window: it keeps the newest rows that
+    /// fit both of its caps, rows and bytes, whatever the helper sends, and
+    /// the rows it lets go of stay reachable through the earlier edge. The
+    /// page draws what it holds (`TranscriptPageStressTests`).
+    @MainActor func testSnapshotsKeepADisplayWithinBothOfItsCaps() async throws {
+        let f = try await fixture()
+        f.view.historyState = .ready
+        f.view.presentation.identity = ("runtime", "root")
+        let limit = HistoryWindowPolicy.residentRows
+        // Rows: a whole chat of `limit` rows, and sixty more arrive.
+        f.view.messages = (0..<limit).map { TranscriptMessage(id: "m\($0)", role: $0 % 2 == 0 ? "user" : "assistant", text: "Message \($0)") }
+        try await exchange(f, liveSnapshot(2, wireRows(limit - 40..<limit + 60)))
+        XCTAssertEqual(f.view.messages.count, limit, "The row cap holds")
+        XCTAssertEqual(f.view.messages.first?.id, "m60"); XCTAssertEqual(f.view.messages.last?.id, "m\(limit + 59)")
+        XCTAssertEqual(f.view.olderPage.cursor?.entry, "m60", "The rows let go of stay reachable")
+        // Bytes: a megabyte a row, four rows past the budget in all.
+        let big = String(repeating: "x", count: 1 << 20)
+        try await exchange(f, liveSnapshot(3, wireRows(limit + 50..<limit + 64, text: { $0 >= limit + 60 ? big + " \($0)" : "Message \($0)" })))
+        let bytes = f.view.messages.reduce(0) { $0 + TranscriptPaging.size($1) }
+        XCTAssertLessThanOrEqual(bytes, TranscriptPaging.residentCaps.bytes, "The byte cap holds")
+        XCTAssertEqual(f.view.messages.last?.id, "m\(limit + 63)", "The newest rows are the ones kept")
+        XCTAssertLessThan(f.view.messages.count, 5)
+        XCTAssertEqual(f.view.olderPage.cursor?.entry, f.view.messages.first?.id)
+        try await f.host.shutdownAndWait()
+    }
+
+    /// A held row stretches the window past its budget only for as long as it
+    /// is held. Let go of, the window goes back to its budget at once, even
+    /// with nothing more arriving, and the rows it lets go of stay reachable:
+    /// with nothing held, a display never keeps more than its window.
+    @MainActor func testAWindowAHeldRowStretchedGoesBackToItsBudgetWhenLetGo() async throws {
+        let caps = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (rows: 8, bytes: caps.bytes)
+        defer { TranscriptPaging.residentCaps = caps }
+        let f = try await fixture()
+        f.view.historyState = .ready
+        f.view.presentation.identity = ("runtime", "root")
+        f.view.messages = (0..<8).map { TranscriptMessage(id: "m\($0)", role: $0 % 2 == 0 ? "user" : "assistant", text: "Message \($0)") }
+        // A selection in the second row, then two rows more.
+        f.view.pinnedHistoryIDs = ["m1"]
+        try await exchange(f, liveSnapshot(2, wireRows(6..<10)))
+        XCTAssertEqual(f.view.messages.map(\.id), (1..<10).map { "m\($0)" }, "The held row stays, and the live tail arrives")
+        // Let go of: back to eight rows, with nothing more arriving.
+        f.view.pinnedHistoryIDs = []
+        try await wait { f.view.messages.count == 8 }
+        XCTAssertEqual(f.view.messages.map(\.id), (2..<10).map { "m\($0)" })
+        XCTAssertEqual(f.view.olderPage.cursor?.entry, "m2", "The rows let go of stay reachable")
+        // The row the reader reads from holds it the same way, until they
+        // return to the newest row.
+        f.view.scrollAnchor = .init(id: "m2", offset: -8, followsBottom: false)
+        try await exchange(f, liveSnapshot(3, wireRows(8..<12)))
+        XCTAssertEqual(f.view.messages.first?.id, "m2"); XCTAssertEqual(f.view.messages.last?.id, "m11")
+        XCTAssertEqual(f.view.messages.count, 10)
+        f.view.scrollAnchor = .init(id: "", offset: 0, followsBottom: true)
+        f.model.anchorChanged(f.view)
+        try await wait { f.view.messages.count == 8 }
+        XCTAssertEqual(f.view.messages.map(\.id), (4..<12).map { "m\($0)" })
+        XCTAssertEqual(f.view.olderPage.cursor?.entry, "m4")
+        // A window within its budget is left as it is.
+        f.view.pinnedHistoryIDs = ["m5"]; f.view.pinnedHistoryIDs = []
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(f.view.messages.count, 8)
+        try await f.host.shutdownAndWait()
+    }
+
+    /// A stretched window that stops taking updates goes back to its budget
+    /// as well once let go of: no next update is coming to cut it. Here the
+    /// chat moved onto another branch elsewhere, and waits for Reload.
+    @MainActor func testAStretchedWindowThatStoppedTakingUpdatesGoesBackToItsBudgetWhenLetGo() async throws {
+        let caps = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (rows: 8, bytes: caps.bytes)
+        defer { TranscriptPaging.residentCaps = caps }
+        let f = try await fixture()
+        f.view.historyState = .ready
+        f.view.presentation.identity = ("runtime", "root")
+        f.view.messages = (0..<8).map { TranscriptMessage(id: "m\($0)", role: $0 % 2 == 0 ? "user" : "assistant", text: "Message \($0)") }
+        f.view.pinnedHistoryIDs = ["m1"]
+        try await exchange(f, liveSnapshot(2, wireRows(6..<10)))
+        XCTAssertEqual(f.view.messages.map(\.id), (1..<10).map { "m\($0)" })
+        // The branch changes elsewhere: the rows stay as they were, the chat
+        // says why, and it takes no more of the helper's rows.
+        var moved = liveSnapshot(3, wireRows(6..<12))
+        moved["historyLineage"] = .string("elsewhere")
+        try await exchange(f, moved)
+        XCTAssertTrue(f.view.browsingHistory)
+        XCTAssertEqual(f.view.newerPage.error, WorkspaceModel.branchChangedElsewhere)
+        XCTAssertEqual(f.view.messages.map(\.id), (1..<10).map { "m\($0)" })
+        f.view.pinnedHistoryIDs = []
+        try await wait { f.view.messages.count == 8 }
+        XCTAssertEqual(f.view.messages.map(\.id), (2..<10).map { "m\($0)" })
+        XCTAssertEqual(f.view.olderPage.cursor?.entry, "m2", "The rows let go of stay reachable")
+        XCTAssertEqual(f.view.newerPage.error, WorkspaceModel.branchChangedElsewhere, "It still says what happened")
+        try await f.host.shutdownAndWait()
     }
 
     /// A streamed token changes the rows and nothing else the pane shows. The

@@ -38,7 +38,7 @@ struct SidebarMetricsFigures: Equatable {
     init(_ stats: ChatRowStats) {
         if (stats.busy || stats.loading) && !stats.generating {
             state = PiSessionState.label(stats.state, loading: stats.loading)
-        } else if ["error", "interrupted", "paused"].contains(stats.state) {
+        } else if RunState(rawValue: stats.state).isStopped {
             state = PiSessionState.label(stats.state, costLimited: stats.costLimited)
         }
         cost = stats.costLabel

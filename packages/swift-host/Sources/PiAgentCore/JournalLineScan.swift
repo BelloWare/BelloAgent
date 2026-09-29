@@ -22,7 +22,7 @@ enum JournalLineScan {
 
     /// How every run-state record this helper writes begins: the journal is
     /// written with sorted keys, and `customType` sorts first.
-    static let statePrefix = Data(#"{"customType":"pi-app.native.state.v1","#.utf8)
+    static let statePrefix = Data(("{\"customType\":\"" + JournalRecordKind.state + "\",").utf8)
 
     /// A run-state record's own id and parent, read from the end of its line.
     /// The journal writes keys sorted, so such a record ends with its id,
@@ -71,7 +71,7 @@ enum JournalLineScan {
             else if literal("null") { parent = nil }
             else { return nil }
             guard literal(#","timestamp":"#), plainString() != nil, literal(#","type":"custom"}"#), finished() else { return nil }
-            return Fields(id: id, parentID: parent, customType: "pi-app.native.state.v1", type: "custom")
+            return Fields(id: id, parentID: parent, customType: JournalRecordKind.state, type: "custom")
         }
 
         mutating func fields() -> Fields? {

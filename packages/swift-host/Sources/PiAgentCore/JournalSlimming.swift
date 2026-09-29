@@ -80,9 +80,12 @@ enum JournalSlimming {
         let before = try AgentSession.replay(original, url: url, id: id, binding: binding, spendTracked: false, resume: false)
 
         let copy = directory.appendingPathComponent(".slim-" + UUID().uuidString + ".jsonl")
+        // The copy's journal, and the lock it holds on the copy, live until
+        // the copy has taken the original's place or been removed.
         var copyJournal: SessionJournal?
+        func closeCopy() { withExtendedLifetime(copyJournal) {}; copyJournal = nil }
         func removeCopy() {
-            copyJournal = nil
+            closeCopy()
             try? FileManager.default.removeItem(at: copy); try? FileManager.default.removeItem(atPath: copy.path + ".lock")
         }
         do {
@@ -105,7 +108,7 @@ enum JournalSlimming {
             guard rename(copy.path, url.path) == 0 else { throw AgentError("session_damaged", "The slimmed journal could not take the original's place") }
             // The metadata file follows the new journal, as a full open writes it.
             if let captured = after.captured { try? captured.write(for: url) } else { JournalCheckpoint.remove(for: url) }
-            copyJournal = nil
+            closeCopy()
             try? FileManager.default.removeItem(atPath: copy.path + ".lock")
             outcome.slimmed = true; outcome.recordsRemoved = plan.removed.count
             outcome.bytesAfter = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.uint64Value ?? 0
@@ -122,7 +125,7 @@ enum JournalSlimming {
             if line.isEmpty { continue }
             seen += 1
             guard let record = try? JSON.parse(line) else { continue }
-            if record["customType"].text == "pi-app.native.v1" { return record["data"]["binding"] }
+            if record["customType"].text == JournalRecordKind.marker { return record["data"]["binding"] }
         }
         return nil
     }
@@ -178,7 +181,7 @@ enum JournalSlimming {
                 let branch = fields.type == "branch"
                 let carriesState = branch && !((try? JSON.parse(line))?["nativeState"].isNull ?? true)
                 lines.append(Line(start: start, length: line.count, id: id, parent: fields.parentID,
-                                  state: fields.customType == "pi-app.native.state.v1", branch: branch, carriesState: carriesState))
+                                  state: fields.customType == JournalRecordKind.state, branch: branch, carriesState: carriesState))
             }
             guard let headerSpan else { throw AgentError("session_identity", "The journal has no session header") }
             header = headerSpan; size = reader.size; self.lines = lines

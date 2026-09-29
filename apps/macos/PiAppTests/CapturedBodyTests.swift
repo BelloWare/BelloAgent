@@ -525,7 +525,7 @@ final class CapturedBodyTests: XCTestCase {
         }
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("body-preview-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         try await model.traces.configure(quota: 4_194_304, bodyRetention: 3600, metricRetention: 3600)
         let attemptID = UUID().uuidString
@@ -571,7 +571,7 @@ final class CapturedBodyTests: XCTestCase {
         }
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("sse-preview-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         try await model.traces.configure(quota: 4_194_304, bodyRetention: 3600, metricRetention: 3600)
         let attemptID = UUID().uuidString

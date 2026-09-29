@@ -52,7 +52,7 @@ final class InlineSkillTests: XCTestCase {
     @MainActor func testDifferentComposersLoadIndependentlyAndBadPagesDoNotAuthorize() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())); defer { model.shutdown() }
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())); defer { model.shutdown() }
         try await model.reloadConfiguration(); model.selectedWorkspaceID = "p"
         let a = SessionDisplay(id: "a"), b = SessionDisplay(id: "b"); model.displays = [a.id: a, b.id: b]
         model.chats = [ChatRecord(id: "a", workspaceID: "p", title: "A", profileID: "p"), ChatRecord(id: "b", workspaceID: "q", title: "B", profileID: "p", toolMode: "read-only")]
@@ -121,7 +121,7 @@ final class InlineSkillTests: XCTestCase {
     @MainActor func testTypingInsideTheSlashTokenNeverHidesTheList() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())); defer { model.shutdown() }
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())); defer { model.shutdown() }
         let view = SessionDisplay(id: "a"); model.displays[view.id] = view
         model.chats = [ChatRecord(id: view.id, workspaceID: "w", title: "A", profileID: "p")]
         let all = [skill("s1", name: "skill-review"), skill("s2", name: "skim-notes"), skill("s3", name: "sketch")]
@@ -173,7 +173,7 @@ final class InlineSkillTests: XCTestCase {
     @MainActor func testSlashListDoesNotResizeTheComposer() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())); defer { model.shutdown() }
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())); defer { model.shutdown() }
         let view = SessionDisplay(id: "a"); model.displays[view.id] = view
         model.chats = [ChatRecord(id: view.id, workspaceID: "w", title: "A", profileID: "p")]
         view.skillCatalog = SkillCatalog(state: .ready, scope: model.skillScope(sessionID: view.id, workspaceID: "w"), revision: "v1",
@@ -195,7 +195,7 @@ final class InlineSkillTests: XCTestCase {
         XCTAssertEqual(hosted.fittingSize.height, closed, accuracy: 0.5, "Opening the slash list resized the composer")
         view.completionToken = SlashCompletionToken.local(in: "/review-1", at: ComposerLocation(sessionID: view.id, editorGeneration: UUID(), draftRevision: 2,
                                                                                                  selectedRangeUTF16: NSRange(location: 9, length: 0), markedRangeUTF16: nil), directInput: false)
-        view.completionIndex += 1
+        view.objectWillChange.send()
         try await settle()
         XCTAssertEqual(model.completions(view).count, 1)
         XCTAssertEqual(hosted.fittingSize.height, closed, accuracy: 0.5, "Filtering the slash list resized the composer")
@@ -204,7 +204,7 @@ final class InlineSkillTests: XCTestCase {
     @MainActor func testMountedCaretSelectionBeyondEightAndStaleAcceptance() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())); defer { model.shutdown() }
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())); defer { model.shutdown() }
         let view = SessionDisplay(id: "a"); model.displays[view.id] = view
         model.chats = [ChatRecord(id: view.id, workspaceID: "w", title: "A", profileID: "p")]
         let all = (0..<12).map { skill("skill-\($0)", name: "review-\($0)") }

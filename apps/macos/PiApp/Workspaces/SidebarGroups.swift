@@ -121,7 +121,9 @@ struct ProjectSidebarGroup: View {
         revealAncestors(of: model.focusedSessionID)
     }
     private func revealAncestors(of id: String?) {
-        guard let id, let selected = model.record(id), selected.workspaceID == project.id else { return }
+        // A chat the reader clicked in the sidebar, or reached in a pane on
+        // screen, was already in view: nothing unfolds for it.
+        guard let id, !model.quietSidebarReveal.contains(id), let selected = model.record(id), selected.workspaceID == project.id else { return }
         var parent = selected.parentSessionID, seen: Set<String> = [], reveal: Set<String> = []
         while let id = parent, seen.insert(id).inserted, let item = model.record(id), item.workspaceID == project.id {
             reveal.insert(id); parent = item.parentSessionID
@@ -346,7 +348,7 @@ enum SessionOrganizationActions {
         PiMenuEntry.button(chat.isArchived ? "Restore Chat" : "Archive Chat", systemImage: chat.isArchived ? "arrow.uturn.backward" : "archivebox") {
             model.toggleSessionArchive(chat.id)
         }
-        if chat.workspaceID != WorkspaceRecord.scratchID, !chat.isBackgroundTask, chat.connectionTest != true {
+        if chat.workspaceID != WorkspaceRecord.scratchID, !chat.isUtilityChat {
             let current = model.effectiveTopicID(for: chat)
             PiMenuEntry.menu("Move to Topic", systemImage: "folder", identifier: "moveSessionToTopic-" + chat.id,
                              help: "Move this chat and its saved side chats within this project") {

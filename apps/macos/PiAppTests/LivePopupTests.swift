@@ -261,7 +261,7 @@ final class LivePopupTests: LivePopupTestCase {
     @MainActor func testNativePopupWithTwentyStreamsAndTenThousandChats() async throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("popup-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         model.workspaces = [WorkspaceRecord(id: "project", path: root.path, trusted: true)]
         model.chats = (0..<10_000).map { ChatRecord(id: "s\($0)", workspaceID: "project", title: "Task \($0)", path: nil, profileID: "fixture") }

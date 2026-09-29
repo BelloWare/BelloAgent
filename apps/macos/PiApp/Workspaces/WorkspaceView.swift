@@ -101,6 +101,17 @@ struct WorkspaceView: View {
               }
             }
             .background(Color.piContent)
+            // The open chat's sides, hidden at the window's right edge until
+            // the pointer rests there, and laid over the conversation when
+            // they come, so nothing under them moves (`SidesPanel.swift`).
+            .overlay(alignment: .trailing) { sidesPanelEdge }
+            // Pinned, the panel is a column of the window, docked at the right
+            // as the sidebar is at the left. Pinning and unpinning are the only
+            // times it changes the layout.
+            if model.sidesPanelPinned {
+                Rectangle().fill(Color.piHairline).frame(width: 1)
+                SidesPanel(model: model, parentID: model.selectedID, pinned: true)
+            }
         }
         .ignoresSafeArea(.container, edges: .top)
         .buttonStyle(.piSecondary)
@@ -108,9 +119,7 @@ struct WorkspaceView: View {
         .background(Color.piWindow)
         .focusedSceneValue(\.workspaceCommandModel, model)
         // Every sheet in a sheet window of the app's own, let go of whole once
-        // closed: SwiftUI keeps every sheet it has presented, with its views
-        // and state, and a closed Changes sheet over a big diff kept about
-        // 20 MB of them (`piSheetWindow`).
+        // closed (`piSheetWindow`).
         .piSheetWindow(isPresented: $model.showProfiles) { ProfileSettings(model: model).frame(width: 880, height: 780) }
         .piSheetWindow(isPresented: $model.showConversationContent) { if let id = model.contentSessionID { ConversationContentView(model: model, sessionID: id) } }
         .piSheetWindow(isPresented: $model.showResources) { ResourceInspector(model: model) }
@@ -134,6 +143,15 @@ struct WorkspaceView: View {
             }
         }
         .transaction { if reduceMotion { $0.animation = nil; $0.disablesAnimations = true } }
+    }
+
+    /// The sides panel while it is not pinned: only beside a chat on screen
+    /// that has sides, or could open one.
+    @ViewBuilder private var sidesPanelEdge: some View {
+        if !model.sidesPanelPinned, model.page == .chats, !model.launching, let parentID = model.selectedID,
+           model.sidesPanelAvailable(for: parentID) {
+            SidesPanelEdge(model: model, parentID: parentID, reveal: model.sidesPanelReveal)
+        }
     }
 
     /// Errors used to be a modal alert: a background save failure interrupted

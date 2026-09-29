@@ -25,7 +25,7 @@ extension WorkspaceModel {
         var params = params
         // An unopened session still has a deliberate tool mode. Discovery must
         // not borrow the editing capabilities of another pane or open a run.
-        if method == "resources.inspect", let item { params["readOnly"] = .bool(item.toolMode == "read-only") }
+        if method == "resources.inspect", let item { params["readOnly"] = .bool(item.toolMode == ChatRecord.readOnlyTools) }
         return try await host.request(method, sessionID: target, params: params).object ?? [:]
     }
     func saveResourceSettings(_ options: [String: WireValue], sessionID: String? = nil) async throws {
@@ -74,7 +74,7 @@ extension WorkspaceModel {
     func skillScope(sessionID: String?, workspaceID: String) -> String {
         let host = hosts[workspaceID]
         return [workspaceID, sessionID ?? "", String(configuration.revision),
-                sessionID.flatMap(record)?.toolMode ?? "editing", host?.connectionID?.uuidString ?? "", host?.epoch ?? ""].joined(separator: "|")
+                sessionID.flatMap(record)?.toolMode ?? ChatRecord.editingTools, host?.connectionID?.uuidString ?? "", host?.epoch ?? ""].joined(separator: "|")
     }
     func loadSkillCatalog(refresh: Bool = false, sessionID: String? = nil,
                           readPage: (@MainActor ([String: WireValue], String?) async throws -> [String: WireValue])? = nil) async {

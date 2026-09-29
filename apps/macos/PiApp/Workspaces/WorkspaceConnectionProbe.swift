@@ -130,7 +130,7 @@ extension WorkspaceModel {
     func createConnectionTestChat(profileID: String) async throws -> ChatRecord {
         guard requestProfiles.contains(where: { $0.id == profileID }) else { throw HostError.failure(LiteLLMConfiguration.unsupportedAPIMessage) }
         guard let store else { throw HostError.failure("Desktop storage is unavailable. Resolve the storage error before testing a connection.") }
-        let item = ChatRecord(id: UUID().uuidString, workspaceID: WorkspaceRecord.scratchID, title: "Connection test", path: nil, profileID: profileID, toolMode: "read-only", connectionTest: true)
+        let item = ChatRecord(id: UUID().uuidString, workspaceID: WorkspaceRecord.scratchID, title: "Connection test", path: nil, profileID: profileID, toolMode: ChatRecord.readOnlyTools, connectionTest: true)
         try await store.put(item, kind: "chat", id: item.id); chats.insert(item, at: 0)
         page = .chats
         await select(item.id)

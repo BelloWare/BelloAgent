@@ -21,6 +21,9 @@ import Combine
     /// The reading this chat's pill showed when it was last counted, while it
     /// still stands (`ContextReading`).
     @Published var retainedContext: ContextReading?
+    /// The room the context pill keeps for this showing of the chat
+    /// (`ContextPillSlot`). Not published; nothing is drawn again for it.
+    var contextSlot: ContextPillSlot?
     let activityChanges = PassthroughSubject<Void, Never>()
     @Published var metrics: [String: WireValue] = [:] { didSet { if metrics != oldValue { activityChanges.send() } } }
     @Published var turnTiming: [String: WireValue] = [:] { didSet { if turnTiming != oldValue { activityChanges.send() } } }
@@ -95,7 +98,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// live. Kept on the page, they changed under the reader as soon as the
     /// finished page replaced them.
     var heldRowsOutlived: Bool {
-        !busy && !loading && state == "idle" && sendingRows.isEmpty
+        !busy && !loading && runState == .idle && sendingRows.isEmpty
             && (taskPresentation?.active != nil || messages.contains { $0.isStreaming || $0.isSending })
     }
     @Published var historyProgress: String?
@@ -305,7 +308,6 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var skills: [SkillChip] = []
     @Published var directCommand = false
     @Published var completionVisible = false
-    @Published var completionIndex = 0
     @Published var completionSelectionID: String?
     @Published var skillCatalog = SkillCatalog()
     var completionToken: SlashCompletionToken?
@@ -317,9 +319,16 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// so it stands for every later edit that leaves the prefix unchanged.
     var codeClassification: (generation: UUID, revision: UInt64, offset: Int, text: String, outside: Bool)?
     @Published var state = "idle" { didSet { if state != oldValue { activityChanges.send() } } }
+    /// `state` as a `RunState`, to read and to write.
+    var runState: RunState { get { RunState(rawValue: state) } set { state = newValue.rawValue } }
     @Published var runStatus = "idle" { didSet { if runStatus != oldValue { activityChanges.send() } } }
     /// Bumped when the pane should move keyboard focus into the composer.
     @Published var composerFocusRequest = 0
+    /// Requests up to this one are not for a composer made from now on, which
+    /// otherwise acts on the last one it finds, even an earlier visit's
+    /// (`NativeComposer.settledFocusToken`). Set as a chat opens for its side
+    /// to take the cursor, and as a side comes back beside its chat.
+    var composerFocusSettled = 0
     @Published var failureMessage: String? { didSet { if failureMessage != oldValue { publishTranscript() } } }
     /// The helper's code for the run failure shown; `cost_limit` draws the stop notice.
     @Published var failureCode: String? { didSet { if failureCode != oldValue { publishTranscript() } } }
@@ -327,18 +336,18 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The chat's journal ends in a record cut off mid-write: its complete
     /// records are shown read-only and Recover Copy is offered instead of the composer.
     @Published var damagedTail = false
-    var canResumeQueue: Bool { !busy && (!queue.isEmpty || queuePaused || ["paused", "interrupted"].contains(state)) }
+    var canResumeQueue: Bool { !busy && (!queue.isEmpty || queuePaused || runState.holdsQueue) }
     func observeRunState(_ snapshot: [String: WireValue]) {
         let rawState = snapshot["state"]?.string ?? "idle", run = snapshot["runStatus"]?.string ?? rawState
         // Older helpers reported failed runs as paused. Keep the run's outcome
         // separate from whether its remaining follow-ups require Resume.
-        let nextState = run == "failed" && !["queued", "running", "stopping", "compacting"].contains(rawState) ? "error" : rawState
+        let nextState = run == "failed" && !RunState(rawValue: rawState).isBusy ? RunState.error.rawValue : rawState
         if state != nextState { state = nextState }
         if runStatus != run { runStatus = run }
-        let paused = snapshot["queuePaused"]?.bool ?? ["paused", "interrupted"].contains(rawState)
+        let paused = snapshot["queuePaused"]?.bool ?? RunState(rawValue: rawState).holdsQueue
         if queuePaused != paused { queuePaused = paused }
         let detail = snapshot["preflightError"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let failure = nextState == "error" ? (detail?.isEmpty == false ? detail : "Run failed.") : nil
+        let failure = RunState(rawValue: nextState) == .error ? (detail?.isEmpty == false ? detail : "Run failed.") : nil
         let code = failure == nil ? nil : snapshot["errorCode"]?.string
         // Both change before the notice is drawn again, so it never shows one failure's words with another's actions.
         if failureMessage != failure || failureCode != code {
@@ -378,9 +387,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     func observeRetainedFailure(_ message: String?) {
         guard !busy, !loading else { return }
         if let message {
-            state = "error"; runStatus = "failed"; failureMessage = message
-        } else if state == "error" {
-            state = "idle"; runStatus = "idle"; failureMessage = nil
+            runState = .error; runStatus = "failed"; failureMessage = message
+        } else if runState == .error {
+            runState = .idle; runStatus = "idle"; failureMessage = nil
         }
     }
     /// What a running compaction is doing, for the run line under the
@@ -437,10 +446,12 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var before: String?
     @Published var hostBefore: Double?
     var loadingEarlier = false
-    /// Set once the first page has been checked to begin at a user message.
-    var pageStartEnsured = false
     @Published var loading = false { didSet { if loading != oldValue { activityChanges.send() } } }
-    var pinnedHistoryIDs: Set<String> = []
+    /// The rows holding the reader's cursor or selection, which the resident
+    /// window does not let go of. A change is announced (`heldChanges`), so a
+    /// window they stretched goes back to its budget once let go of.
+    var pinnedHistoryIDs: Set<String> = [] { didSet { if pinnedHistoryIDs != oldValue { heldChanges.send() } } }
+    let heldChanges = PassthroughSubject<Void, Never>()
     var scrollAnchor: TranscriptAnchor?
     @Published var viewportRequest = 0
     /// Whether the newest `viewportRequest` opens the chat — its first page
@@ -609,6 +620,29 @@ struct TranscriptVersionView: Equatable, Sendable {
     init(id: String) {
         self.id = id
     }
-    var busy: Bool { ["queued", "running", "stopping", "compacting"].contains(state) }
+    var busy: Bool { runState.isBusy }
     var hasWork: Bool { busy || queueCount > 0 }
+}
+
+extension SessionDisplay {
+    /// What the chat is doing, in the one vocabulary the menu bar, the live
+    /// monitor and the activity graph share: "error", "paused", "stopping",
+    /// "starting", "model", "tool", "compacting", "queued" or "idle".
+    ///
+    /// In the order the helper gives its own activity phase, a stopped run
+    /// before a busy one: a failed run, then a run whose queue waits for
+    /// Resume (paused or interrupted, or one whose last command's outcome is
+    /// uncertain), then a stop not yet landed, then a message the app is
+    /// still sending, then what the running turn reports it is doing.
+    var activityPhase: String {
+        if runState == .error { return "error" }
+        if runState.holdsQueue || uncertain { return "paused" }
+        if runState == .stopping { return "stopping" }
+        if loading { return "starting" }
+        if busy {
+            let reported = activity["phase"]?.string ?? ""
+            return ["starting", "model", "tool", "compacting", "queued"].contains(reported) ? reported : runState == .queued ? "queued" : "starting"
+        }
+        return "idle"
+    }
 }

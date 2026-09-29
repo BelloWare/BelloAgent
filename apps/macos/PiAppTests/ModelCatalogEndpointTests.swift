@@ -32,13 +32,6 @@ class ModelCatalogEndpointTestCase: XCTestCase {
             .joined(separator: " ").lowercased()
     }
 
-    @MainActor fileprivate func waitForPickerCatalog(_ condition: () -> Bool) async throws {
-        for _ in 0..<100 {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        XCTFail("The visible session picker did not load its saved model catalog")
-    }
 }
 
 final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
@@ -343,7 +336,7 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         // Mount without ordering the window front: no pointer/hover or menu
         // activation can accidentally trigger the old loading path.
         hosted.layoutSubtreeIfNeeded()
-        try await waitForPickerCatalog { model.modelCatalog.entry(for: profile).models.count == models.count }
+        try await eventually("The visible session picker did not load its saved model catalog") { model.modelCatalog.entry(for: profile).models.count == models.count }
         XCTAssertEqual(model.modelCatalog.entry(for: profile).source, "catalog")
         XCTAssertEqual(model.modelCatalog.entry(for: profile).models.last, "catalog-130")
         XCTAssertTrue(model.modelCatalog.entry(for: unused).models.isEmpty)
@@ -359,7 +352,7 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         XCTAssertEqual(endpoint.requests.count, 1)
         model.profiles = [revised, unused]
         XCTAssertTrue(model.modelCatalog.entry(for: revised).models.isEmpty, "The old profile's cached list must not be presented as the revised catalog")
-        try await waitForPickerCatalog { model.modelCatalog.entry(for: revised).models == ["catalog-new"] }
+        try await eventually("The visible session picker did not load its saved model catalog") { model.modelCatalog.entry(for: revised).models == ["catalog-new"] }
         XCTAssertEqual(endpoint.requests.count, 2)
         XCTAssertTrue(endpoint.requests.allSatisfy { !$0.contains("/v1/models") && !$0.contains("/unused-catalog") })
         XCTAssertEqual(model.chats[0], chat, "Catalog refresh must preserve the connection default and session override")
@@ -397,7 +390,7 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         let hosted = NSHostingView(rootView: CatalogModelPicker(model: model, profile: profile, current: profile.modelId) { _ in })
         window.contentView = hosted; window.center(); window.makeKeyAndOrderFront(nil)
         defer { model.shutdown(); window.contentView = nil; window.close(); try? FileManager.default.removeItem(at: root) }
-        try await waitForPickerCatalog { model.modelCatalog.entry(for: profile).models == ["old-model"] }
+        try await eventually("The visible session picker did not load its saved model catalog") { model.modelCatalog.entry(for: profile).models == ["old-model"] }
         let initial = try await Self.renderedText(window, filename: "chat-picker-before-refresh.jpg")
         XCTAssertTrue(initial.contains("original catalog choice"), initial)
         // Exercise the same explicit-refresh action as the chat popover, then
@@ -445,7 +438,7 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         let hosted = NSHostingView(rootView: CatalogModelPicker(model: model, profile: original, current: chat.model, allowsCatalogSelection: true) { _ in })
         window.contentView = hosted; window.center(); window.makeKeyAndOrderFront(nil)
         defer { model.shutdown(); window.contentView = nil; window.close(); try? FileManager.default.removeItem(at: root) }
-        try await waitForPickerCatalog { model.catalogEntry(for: original).models == ["original-model"] }
+        try await eventually("The visible session picker did not load its saved model catalog") { model.catalogEntry(for: original).models == ["original-model"] }
         let before = try await Self.renderedText(window, filename: "legacy-picker-repair-before.jpg")
         XCTAssertTrue(before.contains("this chat uses its original model list"), before)
         XCTAssertTrue(before.contains("use this catalog"), before)
@@ -458,7 +451,7 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         let refresh = ModelCatalogRefreshState()
         await refresh.selectSource(model: model, sourceID: saved.id, profileID: original.id)
         XCTAssertNil(refresh.error)
-        try await waitForPickerCatalog { model.catalogEntry(for: original).models == ["repaired-model"] }
+        try await eventually("The visible session picker did not load its saved model catalog") { model.catalogEntry(for: original).models == ["repaired-model"] }
         let after = try await Self.renderedText(window, filename: "legacy-picker-repair-after.jpg")
         XCTAssertTrue(after.contains("repaired model choice"), after)
         XCTAssertFalse(after.contains("original model choice"), after)
@@ -490,7 +483,7 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         defer { model.shutdown(); window.contentView = nil; window.close(); try? FileManager.default.removeItem(at: root) }
         let hosted = NSHostingView(rootView: CatalogModelPicker(model: model, profile: profile, current: profile.modelId) { _ in })
         window.contentView = hosted; window.center(); window.makeKeyAndOrderFront(nil)
-        try await waitForPickerCatalog { model.modelCatalog.entry(for: profile).models.count == 6 }
+        try await eventually("The visible session picker did not load its saved model catalog") { model.modelCatalog.entry(for: profile).models.count == 6 }
         XCTAssertEqual(model.modelCatalog.entry(for: profile).source, "bundled")
         XCTAssertEqual(model.modelCatalog.entry(for: profile).descriptors, try ModelCatalogEndpoint.bundled())
         XCTAssertEqual(CatalogModelPicker.sourceLabel(profile), "Included with Bello Agent")
@@ -531,7 +524,7 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         defer { model.shutdown(); window.contentView = nil; window.close(); try? FileManager.default.removeItem(at: root) }
         let hosted = NSHostingView(rootView: CatalogModelPicker(model: model, profile: profile, current: profile.modelId) { _ in })
         window.contentView = hosted; window.center(); window.makeKeyAndOrderFront(nil)
-        try await waitForPickerCatalog { model.modelCatalog.entry(for: profile).models.count == 2 }
+        try await eventually("The visible session picker did not load its saved model catalog") { model.modelCatalog.entry(for: profile).models.count == 2 }
         let rendered = try await Self.renderedText(window, filename: "catalog-picker.jpg")
         XCTAssertTrue(rendered.contains("visible catalog choice"), "First rendered model name missing. OCR: \(rendered)")
         XCTAssertTrue(rendered.contains("second catalog choice"), "Second rendered model name missing. OCR: \(rendered)")
@@ -547,7 +540,7 @@ final class ModelCatalogEndpointTests: ModelCatalogEndpointTestCase {
         var revised = profile; revised.catalogUrl = base + "/broken"; revised.revision = UUID().uuidString
         model.profiles = [revised]
         hosted.rootView = CatalogModelPicker(model: model, profile: revised, current: profile.modelId) { _ in }
-        try await waitForPickerCatalog { model.modelCatalog.entry(for: revised).error != nil }
+        try await eventually("The visible session picker did not load its saved model catalog") { model.modelCatalog.entry(for: revised).error != nil }
         hosted.layoutSubtreeIfNeeded()
         XCTAssertEqual(model.modelCatalog.entry(for: revised).source, "catalog")
         XCTAssertTrue(model.modelCatalog.entry(for: revised).offered(current: profile.modelId).isEmpty)

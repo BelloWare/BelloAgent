@@ -130,7 +130,7 @@ extension WorkspaceModel {
     /// app's own, not an unkept side, an imported original or a background task.
     func canForkFromReply(_ sessionID: String) -> Bool {
         guard let item = record(sessionID) else { return false }
-        return !item.imported && !item.isBackgroundTask && item.connectionTest != true && !isEphemeral(sessionID)
+        return !item.imported && !item.isUtilityChat && !isEphemeral(sessionID)
     }
 
     /// "Fork from here" on a reply: a new chat, "‹title› · fork", nested

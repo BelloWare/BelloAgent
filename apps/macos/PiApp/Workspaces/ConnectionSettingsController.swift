@@ -239,7 +239,7 @@ import SwiftUI
 
     /// What the deletion touches: the key, the chats that keep their history, the runs that stop.
     var deletionSummary: String {
-        let using = model.chats.filter { $0.profileID == draft.profile.id && $0.connectionTest != true && !$0.isBackgroundTask }
+        let using = model.chats.filter { $0.profileID == draft.profile.id && !$0.isUtilityChat }
         let working = using.filter { model.displays[$0.id]?.hasWork == true }.count
         var parts = ["Its key leaves the Keychain item."]
         parts.append(using.isEmpty ? "No chat uses it." : using.count == 1 ? "One chat keeps its history and will need another connection."

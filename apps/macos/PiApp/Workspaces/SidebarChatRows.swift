@@ -20,6 +20,7 @@ struct UnreadDot: View {
 /// cached-input and output tokens. The composer footer owns the separate
 /// context-size estimate.
 struct ChatRowStats: Equatable {
+    /// The chat's `RunState` as a string, or "tool" while its run waits on a tool.
     var state = "idle"
     /// The last run stopped at the chat's cost limit: a stop, not a failure.
     var costLimited = false
@@ -71,13 +72,11 @@ struct ChatRowStats: Equatable {
     var costLabel: String? {
         guard let costUSD, costUSD.isFinite, costUSD >= 0 else { return requests > 0 ? "cost n/a" : nil }
         if costUSD == 0 { return "$0" }
-        return costUSD < 0.01 ? String(format: "$%.4f", costUSD) : String(format: "$%.2f", costUSD)
+        return MetricFormat.centsUSD(costUSD, places: 4, padded: true)
     }
     var tokensLabel: String? {
         guard let tokens, tokens.isFinite, tokens >= 0 else { return requests > 0 ? "tok n/a" : nil }
-        if tokens >= 1_000_000 { return String(format: "%.1fM tok", tokens / 1_000_000) }
-        if tokens >= 1_000 { return String(format: "%.1fk tok", tokens / 1000) }
-        return String(format: "%.0f tok", tokens)
+        return MetricFormat.rowTokenCount(tokens)
     }
     static func relative(_ date: Date, now: Date = Date()) -> String {
         let seconds = max(0, now.timeIntervalSince(date))
@@ -95,9 +94,9 @@ struct ChatRowStats: Equatable {
     }
     mutating func updateActivity(state: String, loading: Bool, activity: [String: WireValue]) {
         self.state = state; self.loading = loading
-        busy = ["queued", "running", "stopping", "compacting"].contains(state)
+        busy = RunState(rawValue: state).isBusy
         let phase = activity["phase"]?.string ?? ""
-        generating = busy && !loading && state != "stopping" && [1, 2].contains(activity["version"]?.number ?? 0)
+        generating = busy && !loading && RunState(rawValue: state) != .stopping && [1, 2].contains(activity["version"]?.number ?? 0)
             && activity["modelActive"]?.bool == true && ["model", "compacting"].contains(phase)
         if busy && phase == "tool" { self.state = "tool" }
     }
@@ -125,8 +124,8 @@ struct ChatRow: View {
     /// What this row's metrics line has to itself; see `ChatRowMetrics`.
     var available: CGFloat = .infinity
     var toggle: () -> Void = {}
-    private var symbol: String { chat.imported ? "doc.text" : chat.parentSessionID != nil ? "arrow.triangle.branch" : chat.connectionTest == true ? "checkmark.seal" : chat.toolMode == "read-only" ? "eye" : "bubble.left" }
-    private var archiveAction: (() -> Void)? { chat.isBackgroundTask || chat.connectionTest == true ? nil : { model.toggleSessionArchive(chat.id) } }
+    private var symbol: String { chat.imported ? "doc.text" : chat.parentSessionID != nil ? "arrow.triangle.branch" : chat.connectionTest == true ? "checkmark.seal" : chat.toolMode == ChatRecord.readOnlyTools ? "eye" : "bubble.left" }
+    private var archiveAction: (() -> Void)? { chat.isUtilityChat ? nil : { model.toggleSessionArchive(chat.id) } }
     @Environment(\.sidebarMinute) private var minute
     var body: some View {
         if live, let display = model.displays[chat.id] {
@@ -332,8 +331,8 @@ struct ChatRowMetrics: View {
     @ViewBuilder private var stateAndCost: some View {
         if (stats.busy || stats.loading) && !stats.generating {
             Text(PiSessionState.label(stats.state, loading: stats.loading)).foregroundStyle(Color.piWarning).fontWeight(.medium)
-        } else if ["error", "interrupted", "paused"].contains(stats.state) {
-            Text(PiSessionState.label(stats.state, costLimited: stats.costLimited)).foregroundStyle(stats.state == "paused" ? Color.piInfo : stats.costLimited ? Color.piWarning : Color.piDanger).fontWeight(.medium)
+        } else if RunState(rawValue: stats.state).isStopped {
+            Text(PiSessionState.label(stats.state, costLimited: stats.costLimited)).foregroundStyle(RunState(rawValue: stats.state) == .paused ? Color.piInfo : stats.costLimited ? Color.piWarning : Color.piDanger).fontWeight(.medium)
         }
         if let cost = stats.costLabel { Text(cost) }
     }

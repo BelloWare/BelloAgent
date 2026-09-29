@@ -18,6 +18,9 @@ struct NativeComposer: NSViewRepresentable {
     var attachFiles: ([URL]) -> Void = { _ in }
     /// A changed token moves keyboard focus into the editor once the view is in a window.
     var focusToken = 0
+    /// The token a new editor starts from. A new editor acts on a token
+    /// past this one, which may be a request made before it existed.
+    var settledFocusToken = 0
     /// The selected skills, drawn as tokens that lead the text.
     var skills: [SkillChip] = []
     /// Whose selection the tokens are: Backspace and Remove edit it.
@@ -112,7 +115,7 @@ struct NativeComposer: NSViewRepresentable {
         /// document, so a 200 KB draft used to cost about 10 ms per keystroke.
         /// Comparing against this copy is a pointer check in the usual case.
         private var settled: String?
-        init(_ parent: NativeComposer) { self.parent = parent }
+        init(_ parent: NativeComposer) { self.parent = parent; appliedFocusToken = parent.settledFocusToken }
         func adopt(_ text: String) { if settled != text { draftRevision &+= 1 }; settled = text }
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let editor = notification.object as? ComposerTextView else { return }
@@ -171,9 +174,12 @@ struct NativeComposer: NSViewRepresentable {
                 self.parent.focused()
             }
         }
+        /// The most a message may hold: 256 KiB of UTF-8, the helper's own
+        /// limit on what it is sent.
+        static let byteLimit = 262_144
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
             guard let replacementString else { return true }
-            guard replacementString.utf8.count <= 262_144, NSMaxRange(affectedCharRange) <= (textView.textStorage?.length ?? 0),
+            guard replacementString.utf8.count <= Self.byteLimit, NSMaxRange(affectedCharRange) <= (textView.textStorage?.length ?? 0),
                   Self.fits(textView, replacing: affectedCharRange, with: replacementString) else {
                 let message = "The composer accepts at most 256 KiB of text. Attach or reference larger files instead."
                 if applyingModelText { Task { @MainActor [weak self] in self?.parent.inputRejected(message) } }
@@ -188,9 +194,9 @@ struct NativeComposer: NSViewRepresentable {
         static func fits(_ textView: NSTextView, replacing range: NSRange, with replacement: String) -> Bool {
             let units = (textView.textStorage?.length ?? 0) - range.length
             let added = replacement.utf8.count
-            if units <= (262_144 - added) / 3 { return true }
+            if units <= (byteLimit - added) / 3 { return true }
             let text = textView.string
-            return text.utf8.count - (text as NSString).substring(with: range).utf8.count + added <= 262_144
+            return text.utf8.count - (text as NSString).substring(with: range).utf8.count + added <= byteLimit
         }
         func textDidChange(_ notification: Notification) {
             guard !applyingModelText, let editor = notification.object as? NSTextView else { return }
@@ -241,10 +247,10 @@ struct ComposerEditMeasurement {
     /// The keys that belong to the conversation rather than to the draft.
     static func conversationScroll(for keyCode: UInt16) -> TranscriptKeyScroll? {
         switch keyCode {
-        case 116: return .pageUp
-        case 121: return .pageDown
-        case 115: return .top
-        case 119: return .bottom
+        case KeyCode.pageUp: return .pageUp
+        case KeyCode.pageDown: return .pageDown
+        case KeyCode.home: return .top
+        case KeyCode.end: return .bottom
         default: return nil
         }
     }
@@ -350,7 +356,7 @@ struct ComposerEditMeasurement {
     private var reportedHeight: CGFloat = 0
     /// The tallest the field ever becomes; past it the exact text height no
     /// longer changes the layout, so it is never measured.
-    var maximumContentHeight: CGFloat = 240
+    var maximumContentHeight: CGFloat = ComposerScrollView.maximumHeight
     /// Reports the laid-out text height so the shell can grow the field with
     /// its content. A long draft is laid out only as far as the ceiling:
     /// `ensureLayout(for:)` would lay out every line of a 200 KB draft on every
@@ -482,14 +488,14 @@ struct ComposerEditMeasurement {
     /// take it there: the message was queued as a follow-up instead. The
     /// composer the reader is typing in claims ⌘↩ first; keyDown decides.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if [36, 76].contains(event.keyCode), event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
+        if KeyCode.isReturn(event.keyCode), event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command,
            window?.firstResponder === self {
             keyDown(with: event); return true
         }
         return super.performKeyEquivalent(with: event)
     }
     override func keyDown(with event: NSEvent) {
-        let sends = [36, 76].contains(event.keyCode) && !event.modifierFlags.contains(.shift) && !hasMarkedText()
+        let sends = KeyCode.isReturn(event.keyCode) && !event.modifierFlags.contains(.shift) && !hasMarkedText()
         if PerformanceProbe.shared.enabled && !event.modifierFlags.contains(.command) && !sends {
             let now = PerformanceProbe.now
             PerformanceProbe.shared.observe("nativeEventDispatchDelayMs", milliseconds: now - event.timestamp * 1000)
@@ -498,7 +504,7 @@ struct ComposerEditMeasurement {
         defer { measurement.end() }
         if !hasMarkedText(), event.characters == "/", selectedRange().location == 0 { directSlash?() }
         if !hasMarkedText(), !event.modifierFlags.contains(.shift), completionKey?(event.keyCode, event.modifierFlags) == true { return }
-        if [36, 76].contains(event.keyCode), !hasMarkedText() {
+        if KeyCode.isReturn(event.keyCode), !hasMarkedText() {
             if event.modifierFlags.contains(.shift) { insertNewline(nil); return }
             if !event.modifierFlags.contains(.option), !event.modifierFlags.contains(.control) {
                 send?(event.modifierFlags.contains(.command) ? .steer : .followUp); return

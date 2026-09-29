@@ -101,7 +101,7 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         /// tests that watch the motion drive its ticks instead.
         func frame(reset: Bool = true, _ change: () -> Void) -> Frame {
             var result = Frame()
-            let carried = (TranscriptLayoutClock.markdownUpdateSeconds, TranscriptLayoutClock.markdownLayoutSeconds, TranscriptLayoutClock.markdownBlocksMeasured)
+            let carried = (TranscriptLayoutClock.markdownUpdateSeconds, TranscriptLayoutClock.markdownLayoutSeconds, TranscriptLayoutClock.markdownMeasures)
             let carriedPage = (TranscriptLayoutClock.rowLoopSeconds, TranscriptLayoutClock.mountSeconds)
             let carriedSizing = (TranscriptLayoutClock.rowSizingPasses, TranscriptLayoutClock.rowSizingSeconds)
             TranscriptLayoutClock.recording = true
@@ -109,7 +109,7 @@ final class TranscriptFrameBudgetTests: XCTestCase {
             if !reset {
                 TranscriptLayoutClock.markdownUpdateSeconds = carried.0
                 TranscriptLayoutClock.markdownLayoutSeconds = carried.1
-                TranscriptLayoutClock.markdownBlocksMeasured = carried.2
+                TranscriptLayoutClock.markdownMeasures = carried.2
                 TranscriptLayoutClock.rowLoopSeconds = carriedPage.0
                 TranscriptLayoutClock.mountSeconds = carriedPage.1
                 TranscriptLayoutClock.rowSizingPasses = carriedSizing.0
@@ -370,8 +370,8 @@ final class TranscriptFrameBudgetTests: XCTestCase {
         print(String(format: "PERF streaming row: %.1f SwiftUI sizing passes per delta costing %.1f ms",
                      Double(TranscriptLayoutClock.rowSizingPasses) / Double(deltas),
                      TranscriptLayoutClock.rowSizingSeconds * 1000 / Double(deltas)))
-        print(String(format: "PERF streaming row's markdown: %d blocks, %d full text layouts, %d block measurements over %d deltas, container update %.1f ms, text layout %.1f ms per delta",
-                     container?.retainedBlockCount ?? 0, container?.layoutPasses ?? 0, TranscriptLayoutClock.markdownBlocksMeasured,
+        print(String(format: "PERF streaming row's markdown: %d blocks, %d full text layouts, %d text measurements over %d deltas, container update %.1f ms, text layout %.1f ms per delta",
+                     container?.retainedBlockCount ?? 0, container?.layoutPasses ?? 0, TranscriptLayoutClock.markdownMeasures,
                      deltas, TranscriptLayoutClock.markdownUpdateSeconds * 1000 / Double(deltas),
                      TranscriptLayoutClock.markdownLayoutSeconds * 1000 / Double(deltas)))
         print("PERF streaming delta into \(rows) rows — worst \(worst.line)")
@@ -689,6 +689,9 @@ final class TranscriptScrollBudgetTests: XCTestCase {
         // PI_PERF_SCROLL_ROWS varies the source; production paging still applies.
         let rows = Int(testEnvironment("PI_PERF_SCROLL_ROWS") ?? "") ?? 400
         let session = TranscriptFrameBudgetTests.chat("scroll-budget", rows: rows)
+        // The display keeps the resident window of the source, as the app's
+        // does (`WorkspaceRefresh`), and the page draws what it holds.
+        session.messages = TranscriptPaging.window(session.messages, keepingEarlier: false)
         let pane = Pane(session); defer { pane.close() }
         let ready = await pane.waitForRow(TranscriptFrameBudgetTests.lastUserID(rows: rows), seconds: 120)
         XCTAssertTrue(ready)
@@ -696,7 +699,7 @@ final class TranscriptScrollBudgetTests: XCTestCase {
         let scroll = try XCTUnwrap(pane.scroll)
         let document = try XCTUnwrap(pane.document)
         let renderedRows = document.retainedRows.count
-        XCTAssertEqual(renderedRows, min(rows, TranscriptPage.rowLimit))
+        XCTAssertEqual(renderedRows, min(rows, HistoryWindowPolicy.residentRows))
         let travel = max(0, document.frame.height - scroll.contentView.bounds.height)
         let sampleRows = Int(testEnvironment("PI_PERF_SCROLL_SAMPLE_ROWS") ?? "") ?? 100
         let end = sampleRows > 0 && sampleRows < renderedRows ? min(travel, document.retainedRows[sampleRows].frame.minY) : travel
@@ -840,7 +843,7 @@ final class ConversationPaneRetentionTests: XCTestCase {
         profile.baseUrl = "https://fixture.invalid/v1"
         let vault = ConfigurationVault(storage: MemoryVaultStorage()), saved = VaultProfile(profile: profile, apiKey: "retention-test-key")
         _ = try await vault.update(expectedRevision: 0) { $0.workspaces = [workspace]; $0.profiles = [saved] }
-        let model = WorkspaceModel(stateRoot: root, vault: vault)
+        let model = makeWorkspaceModel(stateRoot: root, vault: vault)
         model.workspaces = [workspace]
         return (model, root, workspace)
     }

@@ -63,23 +63,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     @Published var showProfiles = false
     @Published var profileChoice = ""
     @Published var selectedWorkspaceID: String? { didSet { if selectedWorkspaceID != oldValue { noteSelectionChanged() } } }
-    /// Owned by `WorkspaceLaunchSelection.swift`: what the next launch should
-    /// reopen, the newest revision of it known to be on disk, the one write
-    /// that carries a change there, and whether changes are written at all —
-    /// from the end of `restore()`, which applies the saved one, to `shutdown()`.
-    var rememberedSelection: RememberedSelection?
-    var savedSelectionRevision: Int64 = 0
-    var selectionWrite: Task<Void, Never>?
-    var remembersSelection = false
+    /// Owned by `WorkspaceLaunchSelection.swift`: what the next launch
+    /// reopens, the sides it puts back, and how that gets to disk.
+    var selectionMemory = SelectionMemory()
     /// Owned by `ContextReading.swift`: each chat's saved context reading.
     var contextReadings: [String: ContextReading] = [:]
-    /// Set by `shutdown()`: a launch still reading when the app went does not
-    /// start writing again when it finishes.
-    var selectionMemoryStopped = false
-    /// Owned by `WorkspaceLaunchSelection.swift`: the saved side each chat
-    /// last showed beside it, by chat id, which `select` reopens after a
-    /// relaunch. `sides` is the same thing for this launch, in memory.
-    var rememberedSides: [String: String] = [:]
     /// Owned by `WorkspaceLaunchSelection.swift`: sidebar groups a relaunch
     /// opened, for that launch only, to show the row of the chat it reopened.
     @Published var launchReveal = SidebarLaunchReveal() { didSet { sidebarIndex.invalidate() } }
@@ -87,6 +75,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// archived chats after its active ones (`SidebarGroups.swift`). One
     /// switch for the whole sidebar, remembered with the selection.
     @Published var showArchivedSessions = false { didSet { if showArchivedSessions != oldValue { sidebarIndex.invalidate(); noteSelectionChanged() } } }
+    /// The sides panel at the window's right edge stands open as a column of
+    /// its own, rather than hiding until the pointer rests at the edge
+    /// (`SidesPanel.swift`). Remembered with the selection.
+    @Published var sidesPanelPinned = false { didSet { if sidesPanelPinned != oldValue { noteSelectionChanged() } } }
+    /// Whether the sides panel is out over the window while it is not pinned.
+    /// Its own object: the panel coming and going redraws nothing else.
+    let sidesPanelReveal = SidesPanelReveal()
     /// Answers the sidebar's own queries once per change: chat lookups, per
     /// group entry lists, the project groups and the keyboard order.
     let sidebarIndex = SidebarIndex()
@@ -101,6 +96,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// of these are written into the project's sidebar record, so they come
     /// back with the disclosure they belong to on the next launch.
     @Published var collapsedSidebarSides: Set<String> = []
+    /// Chats the reader reached from the sidebar itself, or by putting the
+    /// cursor in a pane already on screen, with the chats above them: the
+    /// sidebar unfolds and expands nothing for these, since the reader could
+    /// already see what they clicked (`openFromSidebar`, `focusPane`). Opening
+    /// a chat from anywhere else (the menu bar, the Usage Report, search)
+    /// empties it and reveals as before.
+    var quietSidebarReveal: Set<String> = []
     /// How many root chats each sidebar group shows, keyed by topic id or, for
     /// the chats outside every topic, by the project's id.
     @Published var sidebarPageSizes: [String: Int] = [:]
@@ -196,7 +198,6 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var dirtyAccounting: Set<String> = []
     var chatStatsRevision = 0
     var chatStatsVersions: [String: Int] = [:]
-    var accountingStopped = false
     let root: URL
     let vault: ConfigurationVault
     @Published var configuration = VaultConfiguration()
@@ -219,19 +220,18 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let activityChanged = PassthroughSubject<Void, Never>()
     let liveActivity = LiveActivityStore()
     private var monitoredDisplays: [String: String] = [:]
-    var activityRows: [String: MenuBarActivityRow] = [:]
-    var activityDirtyIDs: Set<String> = []
-    var activitySnapshot = MenuBarActivitySnapshot()
-    var activityProjectionCount = 0
+    /// Owned by `MenuBarActivity.swift`: the menu bar's rows, kept between projections.
+    var menuBarProjection = MenuBarProjection()
+    /// Test seam: how many rows the menu bar has worked out.
+    var activityProjectionCount: Int { menuBarProjection.count }
     var menuBarActivityChanges: AnyPublisher<Void, Never> { activityChanged.eraseToAnyPublisher() }
     func noteActivityChanged(_ id: String? = nil) {
-        if let id { activityDirtyIDs.insert(id) }
-        else { activityDirtyIDs.formUnion(displays.keys); activityDirtyIDs.formUnion(unreadStates.keys); activityDirtyIDs.formUnion(activityRows.keys) }
+        if let id { menuBarProjection.dirty.insert(id) }
+        else { menuBarProjection.dirty.formUnion(displays.keys); menuBarProjection.dirty.formUnion(unreadStates.keys); menuBarProjection.dirty.formUnion(menuBarProjection.rows.keys) }
         activityChanged.send()
         // Read only the affected committed phase, never text or the chat array.
         if let id, let view = displays[id], let item = record(id) {
-            let phase = view.uncertain ? "interrupted" : view.state == "error" ? "error" : view.state == "paused" ? "paused" : view.loading ? "starting" : view.busy ? (view.activity["phase"]?.string ?? (view.state == "queued" ? "queued" : "starting")) : "idle"
-            liveActivity.phase(phase, workspace: item.workspaceID, session: id)
+            liveActivity.phase(view.activityPhase, workspace: item.workspaceID, session: id)
         }
     }
     private var activityObservers: [ObjectIdentifier: AnyCancellable] = [:]
@@ -243,8 +243,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         for view in displays.values where activityObservers[ObjectIdentifier(view)] == nil {
             let id = view.id
             if let item = record(id) { monitoredDisplays[id] = item.workspaceID }
-            activityObservers[ObjectIdentifier(view)] = view.activityChanges.merge(with: view.footer.activityChanges)
+            let activity = view.activityChanges.merge(with: view.footer.activityChanges)
                 .sink { [weak self] _ in self?.noteActivityChanged(id) }
+            // A selection let go of in a pass of the transcript's layout: the
+            // window it stretched is cut after that pass, not inside it.
+            let held = view.heldChanges.receive(on: DispatchQueue.main)
+                .sink { [weak self, weak view] _ in if let self, let view { self.releaseHeldWindow(view) } }
+            activityObservers[ObjectIdentifier(view)] = AnyCancellable { activity.cancel(); held.cancel() }
             noteActivityChanged(id)
             // A new display reads the chat's cost limit before its helper says anything.
             view.applyCostReading(costReading(for: id))
@@ -272,11 +277,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         return record(id).map { !$0.isArchived } ?? false
     }
     /// A chat whose display went or was made again, or that was archived or
-    /// deleted, keeps no rows in any pane.
+    /// deleted, keeps no rows in any pane this workspace let keep them.
     private func forgetKeptTranscriptRows() {
         guard !TranscriptKeptRows.keptSessionIDs.isEmpty else { return }
-        TranscriptKeptRows.forgetEverywhere { entry in
-            !keepsTranscriptRows(entry.sessionID) || displays[entry.sessionID].map { ObjectIdentifier($0.disclosure) } != entry.disclosure
+        TranscriptKeptRows.forgetEverywhere(admittedBy: self) { entry in
+            !keepsTranscriptRows(entry.sessionID) || displays[entry.sessionID]?.disclosure !== entry.disclosure
         }
     }
     var hosts: [String: HostSupervisor] = [:]
@@ -324,13 +329,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `WorkspaceHosts.swift`: helpers stopped on purpose for being
     /// idle, whose exit therefore is not a lost host.
     var retiringHosts: Set<ObjectIdentifier> = []
-    /// Owned by `WorkspaceDrafts.swift`: the debounced write of each chat's
-    /// draft, and the token saying which write owns the entry.
-    var draftTasks: [String: Task<Void, Never>] = [:]
-    /// Which write owns each entry above; see `draftChanged`.
-    var draftTaskTokens: [String: UUID] = [:]
+    /// Owned by `WorkspaceDrafts.swift`: the debounced draft writes under way.
+    var draftWrites = DraftWrites()
     /// Test seam: draft writes still in flight or not yet cleaned up.
-    var pendingDraftWrites: Int { draftTasks.count }
+    var pendingDraftWrites: Int { draftWrites.tasks.count }
     /// True while `restore()` is reading the store, so a second call is a
     /// no-op rather than a second pass over the same rows. Owned by
     /// `WorkspaceRestore.swift`; a chat's own `loading` is a different thing.
@@ -340,9 +342,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// neither the welcome nor onboarding in place of a chat about to appear.
     /// The app's model starts out launching, before its window's first frame.
     @Published var launching: Bool
-    /// Owned by `WorkspaceDrafts.swift`: a draft write has already failed, so
-    /// the next failure does not repeat the same banner.
-    var draftSaveFailed = false
+    /// Set by `shutdown()`: the model is coming down, and nothing may start
+    /// again — no helper, read or write. Every task that resumes after an
+    /// await checks it.
+    var isShutDown = false
     /// Owned by `WorkspaceChatLifecycle.swift`: onboarding creates exactly one
     /// first chat however many times its button is pressed.
     var creatingOnboardingChat = false
@@ -363,7 +366,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         liveExporter = TraceArchive(root: FileManager.default.temporaryDirectory.appendingPathComponent("BelloAgent-Export-" + UUID().uuidString))
         store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         report.attach(self)
-        TranscriptKeptRows.admits = { [weak self] id in self?.keepsTranscriptRows(id) ?? true }
+        TranscriptKeptRows.policy = self
     }
     /// Opens the desktop database off the main actor and reports the one state
     /// the rest of the app checks synchronously: there is no storage at all.
@@ -377,3 +380,5 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         }
     }
 }
+
+extension WorkspaceModel: TranscriptKeptRowsPolicy {}

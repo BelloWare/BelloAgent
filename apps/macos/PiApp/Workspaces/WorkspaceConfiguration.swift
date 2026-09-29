@@ -273,7 +273,7 @@ extension WorkspaceModel {
                     // `open` also rejects deleted connections before its cache hit.
                 }
             }
-            if let view, view.hasWork || view.loading { view.state = "interrupted"; view.queue = []; view.queueCount = 0; view.loading = false }
+            if let view, view.hasWork || view.loading { view.runState = .interrupted; view.queue = []; view.queueCount = 0; view.loading = false }
         }
         let remove: @Sendable (inout VaultConfiguration) -> Void = { saved in
             saved.profiles.removeAll { $0.profile.id == id }

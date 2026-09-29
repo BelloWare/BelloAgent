@@ -255,6 +255,51 @@ final class TitleGenerationTests: XCTestCase {
         try await model.traces.close(); await model.store?.close()
     }
 
+    /// The Rename sheet's suggestions go to the helper as its utility request
+    /// for them, as a chat title does: the helper's short instructions, no
+    /// tools, and none of the owner's global instructions. It opened them as
+    /// an ordinary chat request, with the whole agent prompt and AGENTS.md.
+    @MainActor func testPackagedHelperAsksForTitleSuggestionsAsAUtilityRequest() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let gateway = try TitleGenerationGateway(); defer { gateway.stop() }
+        let base = try await gateway.start()
+        let project = root.appendingPathComponent("project"), codex = root.appendingPathComponent("isolated-codex")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: codex, withIntermediateDirectories: true)
+        try Data("PRIVATE GLOBAL INSTRUCTION".utf8).write(to: codex.appendingPathComponent("AGENTS.md"))
+        var profile = ProfileRecord(); profile.id = "profile"; profile.baseUrl = base
+        profile.modelId = "conversation-model"; profile.miniModelId = "mini-fixture"
+        var configuration = VaultConfiguration(); configuration.automaticUpdateChecks = false
+        configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-title-key")]
+        configuration.workspaces = [.init(id: "project", path: project.path, trusted: true)]
+        configuration.resources[WorkspaceRecord.scratchID] = .object(["codexHome": .string(codex.path)])
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"),
+                                   vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
+        defer { model.shutdown() }
+        try await model.reloadConfiguration()
+        let source = ChatRecord(id: "source", workspaceID: "project", title: "Improve the model selection please", path: nil, profileID: profile.id)
+        model.chats = [source]
+        try await model.store?.put(source, kind: "chat", id: source.id)
+        let titles = try await model.suggestTitles(for: source.id)
+        XCTAssertEqual(titles, ["Improve the model picker", "Pick a model faster", "Model picker polish"])
+        let request = try XCTUnwrap(gateway.requests.last)
+        let split = try XCTUnwrap(request.range(of: "\r\n\r\n"))
+        let body = try JSONDecoder().decode(WireValue.self, from: Data(request[split.upperBound...].utf8)).object ?? [:]
+        XCTAssertTrue(body["input"]?.array?.first?.object?["content"]?.string?.contains("Suggest several short session titles") == true,
+                      "The helper's own instructions for suggestions come first")
+        XCTAssertEqual(body["tools"]?.array ?? [], [])
+        XCTAssertFalse(request.contains("PRIVATE GLOBAL INSTRUCTION"), "The owner's global instructions are not sent with a utility request")
+        let kept = try XCTUnwrap(model.chats.first { $0.backgroundTask == "title-suggestions" })
+        var attempts = try await model.traces.list(sessionID: kept.id, workspaceID: WorkspaceRecord.scratchID)
+        for _ in 0..<500 where attempts.count != 1 || attempts.first?["outcome"]?.string == "running" {
+            try await Task.sleep(for: .milliseconds(10))
+            attempts = try await model.traces.list(sessionID: kept.id, workspaceID: WorkspaceRecord.scratchID)
+        }
+        XCTAssertEqual(attempts.first?["purpose"]?.string, "title-suggestions", "Logged under its own purpose")
+        try await model.hosts[WorkspaceRecord.scratchID]?.shutdownAndWait()
+        try await model.traces.close(); await model.store?.close()
+    }
+
     /// Chat ▸ Generate Title asks again for a chat that already has a
     /// generated title. The finished request kept its claim on the chat, so
     /// the command showed "Asking the mini model for a title…" and then
@@ -447,13 +492,18 @@ private final class TitleGenerationGateway: @unchecked Sendable {
                 let request = String(decoding: bytes.prefix(split.upperBound + length), as: UTF8.self)
                 self.lock.withLock { self.captured.append(request) }
                 let body = try? JSONDecoder().decode(WireValue.self, from: Data(bytes[split.upperBound..<(split.upperBound + length)])).object
+                // A chat title, or the Rename sheet's suggestions: each under
+                // the helper's own instructions for it, which come first.
+                let instructions = body?["input"]?.array?.first?.object?["content"]?.string ?? ""
+                let suggestions = instructions.contains("Suggest several short session titles")
                 let valid = head.hasPrefix("POST /v1/responses HTTP/1.1") &&
                     head.lowercased().contains("authorization: bearer synthetic-title-key") &&
                     body?["model"]?.string == "mini-fixture" && body?["max_output_tokens"]?.number == 512 &&
                     (body?["tools"]?.array ?? []).isEmpty && !request.contains("PRIVATE PROJECT INSTRUCTION") &&
-                    body?["input"]?.array?.first?.object?["content"]?.string?.contains("Generate a short session title") == true
+                    (instructions.contains("Generate a short session title") || suggestions)
+                let text = suggestions ? "Improve the model picker\\nPick a model faster\\nModel picker polish" : "Improve the model picker"
                 let response = valid
-                    ? #"{"id":"resp_title","object":"response","status":"completed","model":"resolved-mini-fixture","output":[{"id":"msg_title","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Improve the model picker"}]}],"usage":{"input_tokens":24,"output_tokens":5,"total_tokens":29}}"#
+                    ? #"{"id":"resp_title","object":"response","status":"completed","model":"resolved-mini-fixture","output":[{"id":"msg_title","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"\#(text)"}]}],"usage":{"input_tokens":24,"output_tokens":5,"total_tokens":29}}"#
                     : #"{"error":{"message":"Title request failed fixture validation"}}"#
                 let payload = Data(response.utf8)
                 let reply = Data("HTTP/1.1 \(valid ? "200 OK" : "422 Unprocessable Entity")\r\nContent-Type: application/json\r\nContent-Length: \(payload.count)\r\nx-litellm-response-cost: 0.00001\r\nConnection: close\r\n\r\n".utf8) + payload
