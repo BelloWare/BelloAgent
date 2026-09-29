@@ -304,4 +304,36 @@ final class CostLimitTests: XCTestCase {
         for bad: JSON in [5, ["usd": 0], ["usd": -1], ["usd": "5"], ["usd": 2_000_000]] { XCTAssertThrowsError(try AgentSession.costLimit(bad)) }
         XCTAssertEqual(AgentSession.costText(5), "$5.00"); XCTAssertEqual(AgentSession.costText(5.123), "$5.12"); XCTAssertEqual(AgentSession.costText(0.00125), "$0.00125")
     }
+
+    /// The stop notice writes an amount as the app writes a cost limit
+    /// (`CostLimit.dollars`), value for value: the `limit` column of the app's
+    /// SidebarFigureGoldenTests. Rounded half-up in decimal, so $2.675 is
+    /// $2.68 in both, and an amount too small for six places is `<$0.000001`.
+    private static let dollars: [(value: Double, text: String)] = [
+        (0, "$0.00"), (1e-12, "<$0.000001"), (1e-7, "<$0.000001"), (4.9e-7, "<$0.000001"), (5e-7, "$0.000001"),
+        (0.000001, "$0.000001"), (0.0000015, "$0.000002"), (0.00004, "$0.00004"), (0.00005, "$0.00005"), (0.00015, "$0.00015"),
+        (0.000421875, "$0.000422"), (0.0005, "$0.0005"), (0.001, "$0.001"), (0.00125, "$0.00125"), (0.005, "$0.005"),
+        (0.0099, "$0.0099"), (0.0099949, "$0.009995"), (0.00995, "$0.00995"), (0.0099995, "$0.01"), (0.01, "$0.01"),
+        (0.015, "$0.02"), (0.125, "$0.13"), (0.5, "$0.50"), (1, "$1.00"), (1.005, "$1.01"), (2.675, "$2.68"), (4.125, "$4.13"),
+        (25, "$25.00"), (99.995, "$100.00"), (1234.5678, "$1234.57"), (1_000_000, "$1000000.00"),
+        (-1, "$0.00"), (.nan, "$0.00"), (.infinity, "$0.00"),
+    ]
+
+    func testTheStopNoticeWritesDollarsAsTheAppWritesALimit() {
+        for row in Self.dollars { XCTAssertEqual(AgentSession.costText(row.value), row.text, "\(row.value)") }
+    }
+
+    /// A tie the binary value rounds down: the notice says the limit as the
+    /// chat's limit field shows it, $2.68, and its words are otherwise as
+    /// they were.
+    func testTheNoticeSaysATiedLimitAsTheAppShowsIt() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 2.675), .reply(answer("Done"), cost: 0.01)])
+        let s = try await session(root, client: client, limit: 2.675)
+        try await send(s, "Work through it")
+        let state = try await settled(s)
+        XCTAssertEqual(state["errorCode"].text, "cost_limit")
+        XCTAssertEqual(state["preflightError"].text, "This chat reached its $2.68 cost limit ($2.68 spent). Raise the limit to continue.")
+        await s.close()
+    }
 }
