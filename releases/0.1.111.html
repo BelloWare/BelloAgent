@@ -1,0 +1,5 @@
+<h2>Bello Agent 0.1.111</h2>
+<ul>
+<li>Chat files grow much more slowly. Each time a chat's run state was saved, several times a turn, it repeated the receipts of your last 128 messages; now it saves only what changed, with the full list now and then. A long test chat takes 18.8 MB instead of 71 MB and is read in full about 30% faster.</li>
+<li>Existing chat files are not rewritten: what is already there stays as it is, and what is written from now on is smaller. An older version of the app still opens these chats.</li>
+</ul>

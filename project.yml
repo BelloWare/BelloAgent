@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.110
-    CURRENT_PROJECT_VERSION: 114
+    MARKETING_VERSION: 0.1.111
+    CURRENT_PROJECT_VERSION: 115
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "A side you closed stays closed at the next launch, even if you closed it or quit while the app was still opening."
+    RELEASE_MESSAGE: "Chat files grow much more slowly: each save of a chat's run state now keeps only the command receipts that changed."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO
