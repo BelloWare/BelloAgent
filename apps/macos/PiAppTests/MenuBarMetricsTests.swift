@@ -143,7 +143,7 @@ final class MenuBarMetricsTests: XCTestCase {
 
     @MainActor func testActivitySeparatesRunningPendingAndStaleSpeedAndKeepsUnopenedUnreadChats() throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         let workspace = WorkspaceRecord(id: "workspace", path: root.path, trusted: true)
         model.workspaces = [workspace]
         for id in ["live", "tool", "queued", "unopened"] {

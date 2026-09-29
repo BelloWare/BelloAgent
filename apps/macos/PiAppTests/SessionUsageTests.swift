@@ -41,14 +41,6 @@ class SessionUsageTestCase: XCTestCase {
     fileprivate let until = Date(timeIntervalSince1970: 1_000_000)
     fileprivate let scope = SessionUsageScope(sessionID: "session-a", workspaceID: "project-a")
 
-    @MainActor fileprivate func waitFor(_ message: String, seconds: Double = 0.5, _ condition: () -> Bool) async throws {
-        for _ in 0..<Int(seconds * 200) {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        XCTFail(message)
-        throw NSError(domain: "SessionUsageTests", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
-    }
 
     fileprivate func snapshot(requests: Int = 0, offset: Int = 0, models: [MenuBarModelDistribution] = [], groups: Int = 0, gateway: GatewayTotals? = nil) -> MenuBarSnapshot {
         let totals = gateway ?? GatewayTotals(requests: requests)
@@ -76,13 +68,13 @@ final class SessionUsageTests: SessionUsageTestCase {
         XCTAssertTrue(probe.reads.isEmpty, "Opening a conversation alone must not start usage polling")
 
         controller.setVisible(true)
-        try await waitFor("Visible usage did not start its first query") { probe.reads.count == 1 }
+        try await eventually("Visible usage did not start its first query") { probe.reads.count == 1 }
         XCTAssertTrue(controller.loading)
         XCTAssertEqual(probe.reads.first?.scope, scope)
         XCTAssertEqual(probe.reads.first?.until, until)
         controller.setVisible(false)
         probe.finish(0, with: snapshot(requests: 10))
-        try await waitFor("The old read did not return after hiding") { probe.completedCancellation.count == 1 }
+        try await eventually("The old read did not return after hiding") { probe.completedCancellation.count == 1 }
         XCTAssertEqual(probe.completedCancellation, [true])
         XCTAssertNil(controller.snapshot, "A late read must not populate a hidden panel")
         XCTAssertFalse(controller.loading)
@@ -91,9 +83,9 @@ final class SessionUsageTests: SessionUsageTestCase {
         XCTAssertEqual(probe.reads.count, 1, "A hidden usage panel must not poll or react to refresh keys")
 
         controller.setVisible(true)
-        try await waitFor("Reopening did not request fresh retained usage") { probe.reads.count == 2 }
+        try await eventually("Reopening did not request fresh retained usage") { probe.reads.count == 2 }
         probe.finish(1, with: snapshot(requests: 12))
-        try await waitFor("Fresh usage was not published") { controller.snapshot?.gateway.requests == 12 }
+        try await eventually("Fresh usage was not published") { controller.snapshot?.gateway.requests == 12 }
         controller.setVisible(false)
         let count = probe.reads.count
         try await Task.sleep(for: .milliseconds(80))
@@ -105,11 +97,11 @@ final class SessionUsageTests: SessionUsageTestCase {
         let controller = SessionUsageController(scope: scope, load: probe.load, interval: .seconds(60))
         defer { controller.setVisible(false); probe.cancelPending() }
         controller.setVisible(true)
-        try await waitFor("Initial usage read did not start") { probe.reads.count == 1 }
+        try await eventually("Initial usage read did not start") { probe.reads.count == 1 }
         probe.finish(0, with: snapshot(requests: 100))
-        try await waitFor("Initial usage was not published") { controller.snapshot != nil }
+        try await eventually("Initial usage was not published") { controller.snapshot != nil }
         controller.refresh()
-        try await waitFor("Refresh did not start") { probe.reads.count == 2 }
+        try await eventually("Refresh did not start") { probe.reads.count == 2 }
 
         // Identical session IDs in separate projects must remain distinct.
         let otherProject = SessionUsageScope(sessionID: scope.sessionID, workspaceID: "project-b")
@@ -117,12 +109,12 @@ final class SessionUsageTests: SessionUsageTestCase {
         XCTAssertEqual(controller.scope, otherProject)
         XCTAssertNil(controller.snapshot, "Never flash the previous project's bill in the new session")
         XCTAssertEqual(controller.offset, 0)
-        try await waitFor("New project scope did not start") { probe.reads.count == 3 }
+        try await eventually("New project scope did not start") { probe.reads.count == 3 }
         XCTAssertEqual(probe.reads[2].scope, otherProject)
         probe.finish(2, with: snapshot(requests: 2))
-        try await waitFor("New project result was not published") { controller.snapshot?.gateway.requests == 2 }
+        try await eventually("New project result was not published") { controller.snapshot?.gateway.requests == 2 }
         probe.finish(1, with: snapshot(requests: 999))
-        try await waitFor("The cancelled refresh did not finish") { probe.completedCancellation.count == 3 }
+        try await eventually("The cancelled refresh did not finish") { probe.completedCancellation.count == 3 }
         XCTAssertEqual(controller.snapshot?.gateway.requests, 2)
         XCTAssertEqual(probe.completedCancellation.last, true)
 
@@ -146,12 +138,12 @@ final class SessionUsageTests: SessionUsageTestCase {
         controller.previousPage(); controller.nextPage()
         XCTAssertEqual(controller.offset, 0)
         controller.setVisible(true)
-        try await waitFor("First model page did not load") { controller.snapshot != nil }
+        try await eventually("First model page did not load") { controller.snapshot != nil }
         XCTAssertEqual(controller.snapshot?.models.count, MenuBarSnapshot.pageSize)
         XCTAssertEqual(controller.snapshot?.hasNext, true)
 
         controller.nextPage()
-        try await waitFor("Second model page did not load") { controller.snapshot?.offset == MenuBarSnapshot.pageSize }
+        try await eventually("Second model page did not load") { controller.snapshot?.offset == MenuBarSnapshot.pageSize }
         let last = try XCTUnwrap(controller.snapshot), row = try XCTUnwrap(last.models.first)
         XCTAssertEqual(last.models.count, 1)
         XCTAssertFalse(last.hasNext)
@@ -164,12 +156,12 @@ final class SessionUsageTests: SessionUsageTestCase {
         XCTAssertEqual(offsets, [0, MenuBarSnapshot.pageSize], "Next at the last page must not read an unbounded empty page")
 
         controller.previousPage()
-        try await waitFor("Previous model page did not load") { controller.snapshot?.offset == 0 }
+        try await eventually("Previous model page did not load") { controller.snapshot?.offset == 0 }
         controller.previousPage()
         XCTAssertEqual(offsets, [0, MenuBarSnapshot.pageSize, 0])
         XCTAssertEqual(controller.offset, 0)
         controller.nextPage()
-        try await waitFor("Second model page did not load again") { controller.snapshot?.offset == MenuBarSnapshot.pageSize }
+        try await eventually("Second model page did not load again") { controller.snapshot?.offset == MenuBarSnapshot.pageSize }
         controller.setVisible(false)
         controller.setScope(SessionUsageScope(sessionID: "different-session", workspaceID: scope.workspaceID))
         XCTAssertEqual(controller.offset, 0)
@@ -192,7 +184,7 @@ final class SessionUsageTests: SessionUsageTestCase {
         let observer = controller.$snapshot.dropFirst().sink { _ in publications += 1 }
         defer { observer.cancel(); controller.setVisible(false) }
         controller.setVisible(true)
-        try await waitFor("The window did not keep polling") { polls >= 5 }
+        try await eventually("The window did not keep polling") { polls >= 5 }
         XCTAssertEqual(publications, 1, "The same figures are published once, however often they are read")
     }
 
@@ -206,16 +198,16 @@ final class SessionUsageTests: SessionUsageTestCase {
         }, interval: .seconds(60))
         defer { controller.setVisible(false) }
         controller.setVisible(true)
-        try await waitFor("First model page did not load") { controller.snapshot != nil }
+        try await eventually("First model page did not load") { controller.snapshot != nil }
         var blanks = 0
         let observer = controller.$snapshot.dropFirst().sink { if $0 == nil { blanks += 1 } }
         defer { observer.cancel() }
         controller.nextPage()
-        try await waitFor("The next page was not requested") { pending != nil }
+        try await eventually("The next page was not requested") { pending != nil }
         XCTAssertNotNil(controller.snapshot, "The current page stays while the next one is read")
         XCTAssertTrue(controller.loading)
         pending?.resume()
-        try await waitFor("Second model page did not load") { controller.snapshot?.offset == MenuBarSnapshot.pageSize }
+        try await eventually("Second model page did not load") { controller.snapshot?.offset == MenuBarSnapshot.pageSize }
         XCTAssertEqual(blanks, 0)
     }
 
@@ -239,9 +231,9 @@ final class SessionUsageTests: SessionUsageTestCase {
         }, interval: .seconds(60))
         defer { controller.setVisible(false) }
         controller.setVisible(true)
-        try await waitFor("First model page did not load") { controller.snapshot?.hasNext == true }
+        try await eventually("First model page did not load") { controller.snapshot?.hasNext == true }
         controller.nextPage()
-        try await waitFor("An expired last page did not return to the first page") { offsets.count == 3 && controller.snapshot?.offset == 0 }
+        try await eventually("An expired last page did not return to the first page") { offsets.count == 3 && controller.snapshot?.offset == 0 }
         XCTAssertEqual(offsets, [0, MenuBarSnapshot.pageSize, 0])
         XCTAssertEqual(controller.offset, 0)
     }
@@ -256,12 +248,12 @@ final class SessionUsageTests: SessionUsageTestCase {
         }, interval: .seconds(60))
         defer { controller.setVisible(false) }
         controller.setVisible(true)
-        try await waitFor("Query failure did not reach the usage panel") { !controller.notice.isEmpty }
+        try await eventually("Query failure did not reach the usage panel") { !controller.notice.isEmpty }
         XCTAssertFalse(controller.loading)
         XCTAssertNil(controller.snapshot)
         XCTAssertEqual(controller.notice, "Synthetic usage read failed")
         controller.refresh()
-        try await waitFor("Retry did not publish usage") { controller.snapshot != nil }
+        try await eventually("Retry did not publish usage") { controller.snapshot != nil }
         XCTAssertEqual(controller.scope, scope)
         XCTAssertEqual(controller.snapshot?.gateway.requests, 3)
         XCTAssertTrue(controller.notice.isEmpty)
@@ -414,7 +406,7 @@ final class SessionUsageTests: SessionUsageTestCase {
         model.openInspector(session: chat.id)
         let first = try XCTUnwrap(SessionInspectorWindows.shared.controller(sessionID: chat.id))
         first.inspector.pollInterval = .milliseconds(20)
-        try await waitFor("The Inspector did not read its session", seconds: 5) { first.inspector.indexReads >= 1 }
+        try await eventually("The Inspector did not read its session") { first.inspector.indexReads >= 1 }
         first.window?.performClose(nil)
         XCTAssertTrue(first.isClosed)
         XCTAssertNil(SessionInspectorWindows.shared.controller(sessionID: chat.id))
@@ -427,7 +419,7 @@ final class SessionUsageTests: SessionUsageTestCase {
         model.openInspector(session: chat.id)
         let reopened = try XCTUnwrap(SessionInspectorWindows.shared.controller(sessionID: chat.id))
         XCTAssertFalse(reopened === first)
-        try await waitFor("The reopened Inspector did not read its session", seconds: 5) { reopened.inspector.indexReads >= 1 }
+        try await eventually("The reopened Inspector did not read its session") { reopened.inspector.indexReads >= 1 }
         await finish()
     }
 
@@ -444,13 +436,13 @@ final class SessionUsageTests: SessionUsageTestCase {
         model.displays = [first.id: display, other.id: otherDisplay]; model.selectedID = first.id
         model.openInspector(session: first.id)
         let controller = try XCTUnwrap(SessionInspectorWindows.shared.controller(sessionID: first.id))
-        try await waitFor("The Inspector did not read its session", seconds: 5) { controller.inspector.indexReads == 1 }
+        try await eventually("The Inspector did not read its session") { controller.inspector.indexReads == 1 }
         model.selectedID = other.id
         first.title = "New session title"; model.chats = [first, other]
         XCTAssertEqual(controller.window?.title, "New session title — Session Inspector")
         XCTAssertEqual(controller.inspector.title, first.title)
         display.footer.gateway = GatewayTotals(requests: 5)
-        try await waitFor("Its chat's footer moving did not read the log again", seconds: 5) { controller.inspector.indexReads == 2 }
+        try await eventually("Its chat's footer moving did not read the log again") { controller.inspector.indexReads == 2 }
         otherDisplay.footer.gateway = GatewayTotals(requests: 20)
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertEqual(controller.inspector.indexReads, 2, "Another chat's footer reads nothing")

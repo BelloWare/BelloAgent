@@ -25,4 +25,18 @@ extension XCTestCase {
             try? FileManager.default.removeItem(at: root)
         }
     }
+
+    /// A model over `stateRoot`, taken down at the end of the test as every
+    /// model must be (`registerWorkspaceFixtureTeardown`), its state root
+    /// removed after it. Closing a store or shutting a model down twice is
+    /// harmless, so a test that takes its model down itself, or relaunches
+    /// over the same state, still can. The vault is an empty one in memory
+    /// unless the test passes its own: the app's default is the Keychain's,
+    /// the reader's own configuration, which no test may read or write.
+    @MainActor func makeWorkspaceModel(stateRoot: URL, vault: ConfigurationVault = ConfigurationVault(storage: MemoryVaultStorage()),
+                                       modelCatalog: ModelCatalog? = nil) -> WorkspaceModel {
+        let model = WorkspaceModel(stateRoot: stateRoot, vault: vault, modelCatalog: modelCatalog)
+        registerWorkspaceFixtureTeardown(model, root: stateRoot)
+        return model
+    }
 }

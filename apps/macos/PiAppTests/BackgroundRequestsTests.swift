@@ -49,7 +49,7 @@ final class BackgroundRequestsTests: XCTestCase {
         try await store.put(request("webhook", "webhook", started: started, outcome: "completed", result: "title: Done"), kind: "chat", id: "webhook")
         await store.close()
         var configuration = VaultConfiguration(); configuration.profiles = [VaultProfile(profile: profile(), apiKey: "synthetic")]; configuration.automaticUpdateChecks = false
-        let model = WorkspaceModel(stateRoot: state, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
+        let model = makeWorkspaceModel(stateRoot: state, vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration))))
         model.automaticContextOperation = { _, _ in throw CancellationError() }
         defer { model.report.suspend(); model.shutdown() }
         await model.restore()
@@ -85,7 +85,7 @@ final class BackgroundRequestsTests: XCTestCase {
     /// model, result and duration; the filter keeps one kind and counts each.
     @MainActor func testThePageListsNewestFirstAndFiltersByKind() async throws {
         let root = try scratch()
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.backgroundRequests.suspend(); model.shutdown() }
         let base = Date(timeIntervalSince1970: 1_790_000_000)
         model.workspaces = [.init(id: "project", path: root.appendingPathComponent("pi-app").path, trusted: true)]
@@ -139,7 +139,7 @@ final class BackgroundRequestsTests: XCTestCase {
     /// outside every project that is not one (a connection test) still is.
     @MainActor func testTheSidebarNeverListsBackgroundRequests() async throws {
         let root = try scratch()
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         model.workspaces = [.init(id: "project", path: root.path, trusted: true)]
         let source = ChatRecord(id: "source", workspaceID: "project", title: "First message", path: nil, profileID: "profile")
@@ -163,7 +163,7 @@ final class BackgroundRequestsTests: XCTestCase {
         let root = try scratch()
         SessionInspectorWindows.shared.closeAll()
         defer { SessionInspectorWindows.shared.closeAll() }
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.backgroundRequests.suspend(); model.shutdown() }
         model.workspaces = [.init(id: "project", path: root.path, trusted: true)]
         model.profiles = [profile()]

@@ -69,14 +69,32 @@ extension AgentSession {
         }
         var seed = SessionSpend(); seed.add(record: value); return seed
     }
-    /// Dollars as the stop notice says them: cents, or the digits a
-    /// sub-cent amount needs so it never reads as $0.00.
+    /// Dollars as the stop notice says them, and as the app writes a limit
+    /// (`CostLimit.dollars`, through `MetricFormat.centsUSD`): cents, or
+    /// under a cent the digits it needs, up to six, so it never reads as
+    /// $0.00, and `<$0.000001` for less. Rounded half-up in decimal, as the
+    /// app rounds every amount: $2.675 is $2.68, never the $2.67 that
+    /// rounding its binary value gives. The helper cannot import the app, so
+    /// the rule is written again here and pinned by the app's values.
     static func costText(_ usd: Double) -> String {
         guard usd.isFinite, usd > 0 else { return "$0.00" }
-        if usd >= 0.01 { return String(format: "$%.2f", usd) }
-        var text = String(format: "%.6f", usd)
-        while text.hasSuffix("0") { text.removeLast() }
-        return "$" + text
+        let places = 6, small = roundedDecimal(usd, places: places)
+        if small >= Decimal(sign: .plus, exponent: -2, significand: 1) { return "$" + fixed(roundedDecimal(usd, places: 2), places: 2) }
+        if small == 0 { return "<$" + fixed(Decimal(sign: .plus, exponent: -places, significand: 1), places: places) }
+        return "$" + NSDecimalNumber(decimal: small).stringValue
+    }
+    /// `value` as the decimal it is written as, rounded half-up at `places`.
+    private static func roundedDecimal(_ value: Double, places: Int) -> Decimal {
+        var decimal = Decimal(string: "\(value)") ?? Decimal(value)
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &decimal, places, .plain)
+        return rounded
+    }
+    /// A rounded amount with exactly `places` decimals: `4.10`, `0.000001`.
+    private static func fixed(_ value: Decimal, places: Int) -> String {
+        let parts = NSDecimalNumber(decimal: value).stringValue.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        let fraction = parts.count > 1 ? String(parts[1]) : ""
+        return String(parts[0]) + "." + fraction + String(repeating: "0", count: max(0, places - fraction.count))
     }
 
     /// Takes the chat's limit, nil for none. It applies from the next model

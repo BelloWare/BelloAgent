@@ -8,44 +8,11 @@ import AppKit
 /// packaged helper and the synthetic gateway behind both chats, and the
 /// app's own quit path between the two launches.
 final class SideRelaunchTests: XCTestCase {
-    @MainActor private struct Setup {
-        let root: URL, state: URL
-        let vault: ConfigurationVault
-        let workspace: WorkspaceRecord, profile: ProfileRecord
-    }
+    private typealias Setup = GatewayWorkspace
 
     @MainActor private func setup() async throws -> Setup {
-        var repository = URL(fileURLWithPath: #filePath)
-        for _ in 0..<4 { repository.deleteLastPathComponent() }
-        let script = repository.appendingPathComponent("fixtures/native/ui-gateway.py")
-        guard FileManager.default.isReadableFile(atPath: script.path) else { throw XCTSkip("The synthetic gateway fixture is unavailable") }
-        let root = scratchRoot("side-relaunch")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        let gateway = Process(), pipe = Pipe()
-        gateway.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        gateway.arguments = ["-u", script.path]
-        gateway.currentDirectoryURL = root; gateway.standardOutput = pipe; gateway.standardError = FileHandle.nullDevice
         // A slow turn streams for about three seconds: long enough to close its side mid-reply.
-        gateway.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": root.path, "PI_APP_UI_FIXTURE_SLOW_WORDS": "12"]
-        try gateway.run()
-        addTeardownBlock { gateway.terminate(); gateway.waitUntilExit() }
-        let handle = pipe.fileHandleForReading
-        let greeting = await Task.detached { handle.availableData }.value
-        let port = try XCTUnwrap(try JSONDecoder().decode([String: Int].self, from: greeting)["port"])
-        let base = "http://127.0.0.1:\(port)"
-        let workspace = WorkspaceRecord(id: "side-relaunch-project", path: root.appendingPathComponent("project").path, trusted: true)
-        try FileManager.default.createDirectory(atPath: workspace.path, withIntermediateDirectories: true)
-        var profile = ProfileRecord()
-        profile.api = "openai-responses"; profile.baseUrl = base; profile.modelId = "ui-fixture"; profile.catalogUrl = base + "/catalog"
-        profile.name = "Fixture"; profile.contextWindow = 2_000_000; profile.maxOutputTokens = 300_000; profile.modelOutputLimit = 300_000
-        var configuration = VaultConfiguration()
-        configuration.workspaces = [workspace]
-        configuration.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-loopback-only-key")]
-        configuration.automaticUpdateChecks = false
-        configuration.resources[workspace.id] = .object(["codexHome": .string(root.appendingPathComponent("codex").path)])
-        let vault = ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(configuration)))
-        return Setup(root: root, state: root.appendingPathComponent("app-state"), vault: vault, workspace: workspace, profile: profile)
+        try await gatewayWorkspace("side-relaunch", projectID: "side-relaunch-project", gatewayEnvironment: ["PI_APP_UI_FIXTURE_SLOW_WORDS": "12"])
     }
 
     /// A launch: a new model over the same state, in a window, restored as the app does.

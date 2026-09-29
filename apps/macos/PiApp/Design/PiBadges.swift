@@ -2,16 +2,6 @@ import SwiftUI
 
 // MARK: - Badges and chips
 
-/// Text helpers shared by headers and rows.
-enum PiFormat {
-    /// Abbreviates opaque identifiers (UUIDs, hashes) for headers; full IDs stay in help text and detail views.
-    static func shortID(_ id: String, keep: Int = 8) -> String {
-        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count > keep + 3 else { return trimmed }
-        return String(trimmed.prefix(keep)) + "…"
-    }
-}
-
 /// Rounded icon square: a soft tone tint like Bello Box's tool tiles, or the
 /// accent gradient with a coloured shadow for a header.
 struct PiIconBadge: View {

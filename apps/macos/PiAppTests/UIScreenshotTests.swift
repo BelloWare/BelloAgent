@@ -45,19 +45,12 @@ final class UIScreenshotTests: XCTestCase {
 
         var repository = URL(fileURLWithPath: #filePath)
         for _ in 0..<4 { repository.deleteLastPathComponent() }
-        let fixture = Process(), pipe = Pipe()
-        fixture.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        fixture.arguments = ["-u", repository.appendingPathComponent("fixtures/native/ui-gateway.py").path]
-        fixture.currentDirectoryURL = folder; fixture.standardOutput = pipe; fixture.standardError = FileHandle.nullDevice
         // The slow turn (13) is stopped at about 20 s, after four captures: at
         // the default 20 s it could end first, under a loaded gate, and its
         // follow-up then ran instead of waiting in the queue (13c).
-        fixture.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": folder.path, "PI_APP_UI_FIXTURE_SLOW_WORDS": "200"]
-        try fixture.run()
-        defer { if fixture.isRunning { fixture.terminate(); fixture.waitUntilExit() } }
-        let handle = pipe.fileHandleForReading
-        let greeting = await Task.detached { handle.availableData }.value
-        let port = try XCTUnwrap(try JSONDecoder().decode([String: Int].self, from: greeting)["port"]), base = "http://127.0.0.1:\(port)"
+        let fixture = try await SyntheticGateway.start(in: folder, environment: ["PI_APP_UI_FIXTURE_SLOW_WORDS": "200"])
+        defer { fixture.stop() }
+        let base = fixture.base
 
         let mcpFixturePath = repository.appendingPathComponent("fixtures/native/mcp-server.py").path
         let workspace = WorkspaceRecord(id: "native-ui-gallery", path: folder.path, trusted: true)
@@ -334,12 +327,12 @@ final class UIScreenshotTests: XCTestCase {
             model.report.advancedOpen = true; model.report.detailsOpen = true; try await settle(1.0)
             try capture(window, to: gallery.appendingPathComponent("03b-report-expanded-\(name).png"))
             model.report.advancedOpen = false; model.report.detailsOpen = false
-            model.report.grouping = "sessions"; try await settle(1.0)
+            model.report.grouping = .sessions; try await settle(1.0)
             if let first = model.report.sessions?.sessions.first { model.report.toggleSession(first.sessionID); try await settle(1.2) }
             try capture(window, to: gallery.appendingPathComponent("03c-report-sessions-\(name).png"))
-            model.report.grouping = "models"; try await settle(1.0)
+            model.report.grouping = .models; try await settle(1.0)
             try capture(window, to: gallery.appendingPathComponent("03e-report-models-\(name).png"))
-            model.report.grouping = "requests"; model.report.expandedSessions = []
+            model.report.grouping = .requests; model.report.expandedSessions = []
             window.setContentSize(NSSize(width: 920, height: 740)); window.center(); try await settle(0.8)
             try capture(window, to: gallery.appendingPathComponent("03c-report-compact-\(name).png"))
             window.setContentSize(NSSize(width: 920, height: 1100)); window.center(); try await settle(0.8)

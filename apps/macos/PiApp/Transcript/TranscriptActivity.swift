@@ -701,21 +701,8 @@ enum TranscriptActivity {
         var modelLabel: String?
         var usage: String
     }
-    private static func formatCost(_ value: Double) -> String {
-        if value == 0 { return "$0 USD" }
-        if value < 1e-8 {
-            // Three significant digits in exponent form, written as JavaScript does: 1.23e-9.
-            let exponent = Int(floor(log10(value)))
-            let mantissa = value / pow(10, Double(exponent))
-            return String(format: "$%.2fe%d USD", mantissa, exponent)
-        }
-        // Round the shortest decimal form half-up to eight places, as the gateway's
-        // figures were shown before: 0.000421875 reads $0.00042188, never …87.
-        var decimal = Decimal(string: "\(value)") ?? Decimal(value)
-        var rounded = Decimal()
-        NSDecimalRound(&rounded, &decimal, 8, .plain)
-        return "$" + NSDecimalNumber(decimal: rounded).stringValue + " USD"
-    }
+    /// The request's cost in full, as every exact figure reads (`MetricFormat.exactUSD`).
+    private static func formatCost(_ value: Double) -> String { MetricFormat.exactUSD(value) }
     private static func coverage(_ samples: Int, _ requests: Int) -> String { samples < requests ? " (\(samples)/\(requests))" : "" }
     /// The line shows only what the gateway reported; unreported figures are left out rather than named.
     static func accountingPresentation(_ a: GatewayTotals) -> AccountingPresentation {

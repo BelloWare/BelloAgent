@@ -840,7 +840,7 @@ final class ConversationPaneRetentionTests: XCTestCase {
         profile.baseUrl = "https://fixture.invalid/v1"
         let vault = ConfigurationVault(storage: MemoryVaultStorage()), saved = VaultProfile(profile: profile, apiKey: "retention-test-key")
         _ = try await vault.update(expectedRevision: 0) { $0.workspaces = [workspace]; $0.profiles = [saved] }
-        let model = WorkspaceModel(stateRoot: root, vault: vault)
+        let model = makeWorkspaceModel(stateRoot: root, vault: vault)
         model.workspaces = [workspace]
         return (model, root, workspace)
     }

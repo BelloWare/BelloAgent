@@ -38,13 +38,6 @@ final class WorkspaceMotionTests: XCTestCase {
         }
     }
 
-    @MainActor private func waitFor(_ condition: () -> Bool) async throws {
-        for _ in 0..<100 {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("The native workspace did not settle")
-    }
 
     @MainActor private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
         (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants(type, in: $0) }
@@ -61,9 +54,9 @@ final class WorkspaceMotionTests: XCTestCase {
         window.isReleasedWhenClosed = false; window.contentView = hosted
         defer { window.contentView = nil; window.close() }
         hosted.layoutSubtreeIfNeeded()
-        try await waitFor { state.observations.count == 2 }
+        try await eventually("The native workspace did not settle") { state.observations.count == 2 }
         state.revision = 1
-        try await waitFor {
+        try await eventually("The native workspace did not settle") {
             hosted.layoutSubtreeIfNeeded()
             return state.observations.values.allSatisfy { $0.revision == 1 }
         }
@@ -148,7 +141,7 @@ final class WorkspaceMotionTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosted
         defer { window.contentView = nil; window.close() }
-        try await waitFor {
+        try await eventually("The native workspace did not settle") {
             hosted.layoutSubtreeIfNeeded()
             return (self.descendants(ComposerTextView.self, in: hosted).first?.enclosingScrollView?.frame.width ?? 0) > 500
         }
@@ -156,7 +149,7 @@ final class WorkspaceMotionTests: XCTestCase {
         let fullFrame = initial.convert(initial.bounds, to: hosted)
 
         model.selectedID = chats[1].id; model.selected = sessions[1]; model.focusedSessionID = chats[1].id
-        try await waitFor {
+        try await eventually("The native workspace did not settle") {
             hosted.layoutSubtreeIfNeeded()
             return self.descendants(ComposerTextView.self, in: hosted).contains { $0.sessionID == chats[1].id }
         }
@@ -173,7 +166,7 @@ final class WorkspaceMotionTests: XCTestCase {
         let side = SessionDisplay(id: "side"); side.draft = "Unsent side draft"
         model.displays[side.id] = side
         model.sides[chats[1].id] = SideRecord(id: side.id, parentID: chats[1].id, workspaceID: project.id, profileID: profile.id, title: "Side")
-        try await waitFor {
+        try await eventually("The native workspace did not settle") {
             hosted.layoutSubtreeIfNeeded()
             return self.descendants(ComposerTextView.self, in: hosted).count == 2
         }
@@ -183,7 +176,7 @@ final class WorkspaceMotionTests: XCTestCase {
         sessions[1].queue = [["turnId": .string("queued"), "text": .string("Follow-up")]]
         sessions[1].loading = true; model.error = "A background operation could not be saved."
         model.sides.removeValue(forKey: chats[1].id)
-        try await waitFor {
+        try await eventually("The native workspace did not settle") {
             hosted.layoutSubtreeIfNeeded()
             return self.descendants(ComposerTextView.self, in: hosted).count == 1 && abs(scroll.frame.width - fullFrame.width) < 1
         }

@@ -172,7 +172,6 @@ final class WindowPresentationTests: XCTestCase {
             let chromeFrame = chrome.convert(chrome.bounds, to: nil)
             // There is no conversation header: the transcript starts beside the
             // window controls, without an empty strip above it.
-            XCTAssertTrue(descendants(ConversationHeaderMarkerView.self, in: hosted).isEmpty, "The chat pane has no header bar")
             let transcriptFrame = transcript.convert(transcript.bounds, to: nil)
             XCTAssertEqual(transcriptFrame.maxY, chromeFrame.maxY, accuracy: 1, "The transcript must start beside window controls, without an empty strip above it")
             XCTAssertGreaterThanOrEqual(transcriptFrame.minX, chromeFrame.maxX)

@@ -57,10 +57,7 @@ final class ActivityPhaseTests: XCTestCase {
     /// the case they used to disagree on, a message sent again in a run the
     /// app marked interrupted.
     @MainActor func testTheMenuBarAndTheActivityGraphAgree() throws {
-        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("activity-phase-" + UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        defer { model.shutdown() }
+        let model = makeWorkspaceModel(stateRoot: scratchRoot("activity-phase"))
         model.chats = [ChatRecord(id: "chat", workspaceID: "project", title: "Chat", path: nil, profileID: "profile")]
         let view = SessionDisplay(id: "chat"); model.displays[view.id] = view
         let key = LiveSessionKey(workspace: "project", session: "chat")

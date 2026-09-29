@@ -10,7 +10,7 @@ final class ProjectSidebarTests: XCTestCase {
     }
     @MainActor func testProjectDisclosurePersistsAndTheArchiveSwitchStopsNoWork() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         let first = WorkspaceRecord(id: "first", path: "/project/first", trusted: true)
         let second = WorkspaceRecord(id: "second", path: "/project/empty", trusted: true)
@@ -44,7 +44,7 @@ final class ProjectSidebarTests: XCTestCase {
 
     @MainActor func testProjectPreferenceFailureIsReportedAndCannotHangShutdown() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         model.workspaces = [WorkspaceRecord(id: "project", path: "/project", trusted: true)]
         await model.store?.close()
@@ -60,7 +60,7 @@ final class ProjectSidebarTests: XCTestCase {
 
     @MainActor func testExplicitSelectionRevealsOnlyTargetProjectWhileRestoreKeepsDisclosure() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         model.workspaces = [WorkspaceRecord(id: "first", path: "/first", trusted: true), WorkspaceRecord(id: "second", path: "/second", trusted: true)]
         var target = ChatRecord(id: "chat", workspaceID: "first", title: "Archived", path: nil, profileID: "p")
@@ -78,7 +78,7 @@ final class ProjectSidebarTests: XCTestCase {
 
     @MainActor func testDurableChildTreeHandlesCollapsedParentsPinArchiveAndCycles() throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         func chat(_ id: String, parent: String? = nil, order: Int64) -> ChatRecord {
             ChatRecord(id: id, workspaceID: "w", title: id, path: nil, profileID: "p", sidebarOrder: order, parentSessionID: parent)
@@ -106,7 +106,7 @@ final class ProjectSidebarTests: XCTestCase {
         let path = root.appendingPathComponent("retained.jsonl")
         try Data((#"{"type":"session","version":3,"id":"orphan"}"# + "\n" + #"{"type":"message","id":"answer","parentId":null,"message":{"role":"assistant","content":"Retained answer"}}"# + "\n").utf8).write(to: path)
         let storage = MemoryVaultStorage()
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: storage))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: storage))
         defer { model.shutdown() }
         let chat = ChatRecord(id: "orphan", workspaceID: "missing-project-id", title: "Retained", path: path.path, profileID: "missing-profile")
         model.chats = [chat]
@@ -133,7 +133,7 @@ final class ProjectSidebarTests: XCTestCase {
     /// back with it on the next launch, without a store kind of their own.
     @MainActor func testFoldedSidesAndOpenedPagesSurviveARelaunchInTheProjectRecord() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         let first = WorkspaceRecord(id: "first", path: "/project/first", trusted: true)
         let second = WorkspaceRecord(id: "second", path: "/project/second", trusted: true)
@@ -191,7 +191,7 @@ final class ProjectSidebarTests: XCTestCase {
 
     @MainActor func testFocusedSideArchiveAndReselectionKeepItsProjectArchiveVisible() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         model.workspaces = [WorkspaceRecord(id: "w", path: root.path, trusted: true)]
         let parent = ChatRecord(id: "parent", workspaceID: "w", title: "Parent", path: nil, profileID: "p")
