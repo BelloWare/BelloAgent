@@ -237,20 +237,19 @@ struct ContentGeometry: Equatable {
         seen = []; completedAssistant = nil; firstRow = ""; jumping = false
     }
 
-    /// Defend the source-selected resident window without evicting its reading
-    /// anchor. The history/live source already chooses which edge to retain.
-    nonisolated static func displayPage(_ messages: [TranscriptMessage]) -> [TranscriptMessage] {
-        // A message just sent, a retry notice and the failure where the
-        // conversation stopped come after it, added by the app rather than
-        // read from the history. The resident window is for the conversation:
-        // at a full window they were the rows it cut, so the retry and its
-        // Retry button never showed, and a message sent into a long chat
-        // would not have shown until the helper's own row arrived.
-        let added = messages.reversed().prefix { $0.isSending || $0.role == "system" && ["notice", "failure"].contains($0.kind ?? "")
-            && ($0.id.hasPrefix("notice:retry:") || $0.id.hasPrefix("failure:")) }.count
-        // Nothing added is the common case: the page itself, not a copy of it.
-        guard added > 0 else { return TranscriptPaging.window(messages, keepingEarlier: true) }
-        return TranscriptPaging.window(Array(messages.dropLast(added)), keepingEarlier: true) + messages.suffix(added)
+    /// The rows the page draws: the display's own. The display is the one
+    /// owner of the resident window — the snapshot loop and every history
+    /// read bound what they hold — and it may run past the budget on purpose
+    /// while the reader holds a row further up (`WorkspaceRefresh`). Cut here
+    /// again, keeping the earliest rows, that window lost its newest ones:
+    /// the reply arriving at the live tail.
+    nonisolated static func displayPage(_ messages: [TranscriptMessage]) -> [TranscriptMessage] { messages }
+    /// The rows the request log is asked about for their figures: the page,
+    /// or its newest rows when a held row has stretched it past what one
+    /// read may name (`HistoryWindowPolicy.residentRows`). New requests land
+    /// at the live end; rows further up keep the figures they already show.
+    nonisolated static func accountingPage(_ messages: [TranscriptMessage]) -> [TranscriptMessage] {
+        messages.count <= HistoryWindowPolicy.residentRows ? messages : Array(messages.suffix(HistoryWindowPolicy.residentRows))
     }
 
     /// One leading and one trailing presentation per pane, not a debounce:

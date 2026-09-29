@@ -229,6 +229,11 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         try await f.host.shutdownAndWait()
     }
 
+    /// The reader has scrolled up to the first row of a full window while a
+    /// reply arrives. The row stays, and so does the live tail: the window
+    /// runs past its budget from the reader's row until they let go of it.
+    /// Before, the live page was set aside and the chat disconnected from it,
+    /// and the reply stopped arriving.
     @MainActor func testLiveUpdatesDoNotEvictTheReadingAnchorAtTheResidentLimit() async throws {
         let f = try await fixture()
         f.view.historyState = .ready
@@ -244,11 +249,12 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         value["historyIncarnation"] = .string("runtime"); value["historyLineage"] = .string("root")
         try reply(f.commands.frames[0], on: f.host, result: value)
         try await wait { !f.view.snapshotInFlight }
-        XCTAssertEqual(f.view.messages.first?.id, "m0")
-        XCTAssertEqual(f.view.messages.count, HistoryWindowPolicy.residentRows)
+        XCTAssertEqual(f.view.messages.first?.id, "m0", "The reader's row stays")
+        XCTAssertEqual(f.view.messages.last?.id, "m\(HistoryWindowPolicy.residentRows)", "The live tail arrives")
+        XCTAssertEqual(f.view.messages.count, HistoryWindowPolicy.residentRows + 1)
         XCTAssertEqual(f.view.scrollAnchor?.offset, -8)
-        XCTAssertEqual(f.view.newerPage.cursor?.entry, f.view.messages.last?.id)
-        XCTAssertTrue(f.view.browsingHistory, "Only an actual evicted tail gap disconnects the live window")
+        XCTAssertNil(f.view.newerPage.cursor)
+        XCTAssertFalse(f.view.browsingHistory, "Holding a row does not disconnect the live window")
         try await f.host.shutdownAndWait()
     }
 
