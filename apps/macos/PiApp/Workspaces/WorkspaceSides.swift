@@ -320,16 +320,21 @@ extension WorkspaceModel {
     }
     func registerKeptSide(id: String, path: String?) async throws {
         guard let store, let intent = try await store.get(SideKeepIntent.self, kind: "side-keep", id: id), let expected = intent.chat.path,
-              Self.sameFile(path, expected) else {
+              let path, Self.sameFile(path, expected) else {
             if chats.contains(where: { $0.id == id }) { return }
             throw HostError.failure("Keep needs its saved recovery intent and expected conversation file.")
         }
-        try await history.validateIdentity(path: expected, id: id)
+        try await history.validateIdentity(path: path, id: id)
         let view = displays[id]
         let draft: DraftRecord
         if let view { draft = view.savedDraft }
         else { draft = try await store.get(DraftRecord.self, kind: "draft", id: id) ?? DraftRecord(id: id, text: "") }
         var retained = intent.chat
+        // The file as the helper names it, which is how every snapshot will
+        // name it. The app's own spelling of the same file (/private/tmp for
+        // /tmp, a path through a symlink) had the first snapshot rename the
+        // chat's file while it was being opened.
+        retained.path = path
         if let existing = chats.first(where: { $0.id == id }) { retained.applyOrganization(from: existing) }
         else if let parentID = retained.parentSessionID, let parent = record(parentID) {
             // A parent may move while the helper publishes this saved side.
