@@ -101,6 +101,17 @@ struct WorkspaceView: View {
               }
             }
             .background(Color.piContent)
+            // The open chat's sides, hidden at the window's right edge until
+            // the pointer rests there, and laid over the conversation when
+            // they come, so nothing under them moves (`SidesPanel.swift`).
+            .overlay(alignment: .trailing) { sidesPanelEdge }
+            // Pinned, the panel is a column of the window, docked at the right
+            // as the sidebar is at the left. Pinning and unpinning are the only
+            // times it changes the layout.
+            if model.sidesPanelPinned {
+                Rectangle().fill(Color.piHairline).frame(width: 1)
+                SidesPanel(model: model, parentID: model.selectedID, pinned: true)
+            }
         }
         .ignoresSafeArea(.container, edges: .top)
         .buttonStyle(.piSecondary)
@@ -134,6 +145,15 @@ struct WorkspaceView: View {
             }
         }
         .transaction { if reduceMotion { $0.animation = nil; $0.disablesAnimations = true } }
+    }
+
+    /// The sides panel while it is not pinned: only beside a chat on screen
+    /// that has sides, or could open one.
+    @ViewBuilder private var sidesPanelEdge: some View {
+        if !model.sidesPanelPinned, model.page == .chats, !model.launching, let parentID = model.selectedID,
+           model.sidesPanelAvailable(for: parentID) {
+            SidesPanelEdge(model: model, parentID: parentID, reveal: model.sidesPanelReveal)
+        }
     }
 
     /// Errors used to be a modal alert: a background save failure interrupted

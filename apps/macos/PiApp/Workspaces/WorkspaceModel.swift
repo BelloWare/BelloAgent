@@ -87,6 +87,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// archived chats after its active ones (`SidebarGroups.swift`). One
     /// switch for the whole sidebar, remembered with the selection.
     @Published var showArchivedSessions = false { didSet { if showArchivedSessions != oldValue { sidebarIndex.invalidate(); noteSelectionChanged() } } }
+    /// The sides panel at the window's right edge stands open as a column of
+    /// its own, rather than hiding until the pointer rests at the edge
+    /// (`SidesPanel.swift`). Remembered with the selection.
+    @Published var sidesPanelPinned = false { didSet { if sidesPanelPinned != oldValue { noteSelectionChanged() } } }
+    /// Whether the sides panel is out over the window while it is not pinned.
+    /// Its own object: the panel coming and going redraws nothing else.
+    let sidesPanelReveal = SidesPanelReveal()
     /// Answers the sidebar's own queries once per change: chat lookups, per
     /// group entry lists, the project groups and the keyboard order.
     let sidebarIndex = SidebarIndex()

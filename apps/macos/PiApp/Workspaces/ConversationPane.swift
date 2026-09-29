@@ -31,13 +31,6 @@ struct ConversationPane: View {
     /// The loading cover is due: shown once a read has taken longer than a
     /// glance (`coverDelay`), so a quick one never flashes it.
     @State private var coverDue = false
-    /// Nil in the app: other designs of the side pane's parts that the
-    /// screenshot gallery tries.
-    @Environment(\.sidePaneMockupSlots) private var sidePaneMockupSlots
-    private func sideContext(_ side: SideRecord, _ actions: SideActions) -> SidePaneHeaderContext {
-        SidePaneHeaderContext(model: model, session: session, chat: chat, side: side, actions: actions,
-                              boundary: boundary, boundaryDetail: boundaryDetail, paneWidth: paneWidth)
-    }
     static let coverDelay = Duration.milliseconds(150)
     /// Whether the loading cover stands over the transcript. A revisit of a
     /// chat whose rows are already on the page reads its fresh page behind
@@ -51,12 +44,7 @@ struct ConversationPane: View {
         VStack(spacing: 0) {
             // No header: the sidebar names the chat, the composer bar holds its
             // actions, and the live turn bar at the bottom shows what is going on.
-            if let side {
-                if let make = sidePaneMockupSlots?.header, let sideActions {
-                    make(sideContext(side, sideActions), AnyView(sideHeader))
-                } else { sideHeader }
-                Rectangle().fill(Color.piHairline).frame(height: 1)
-            }
+            if side != nil { sideHeader; Rectangle().fill(Color.piHairline).frame(height: 1) }
             if session.uncertain && !session.busy && !session.recovered.isEmpty { recoveredBanner }
             NativeTranscriptView(session: session, state: session.state,
                                  actions: TranscriptActions(inspect: { model.showMessageDetail(session.id, messageID: $0) },
@@ -169,10 +157,7 @@ struct ConversationPane: View {
                         Button("Open source chat") { Task { await model.select(source) } }.buttonStyle(.piSecondaryCompact)
                     }
                 }.padding(PiSpacing.md)
-            } else if chat.isArchived { archivedFooter } else if session.damagedTail { damagedFooter } else if chat.imported { importedFooter } else {
-                if let side, let sideActions, let make = sidePaneMockupSlots?.aboveComposer { make(sideContext(side, sideActions)) }
-                ComposerInput(model: model, session: session, paneWidth: paneWidth)
-            }
+            } else if chat.isArchived { archivedFooter } else if session.damagedTail { damagedFooter } else if chat.imported { importedFooter } else { ComposerInput(model: model, session: session, paneWidth: paneWidth) }
             // A side conversation repeats the whole status bar of the chat it
             // was opened from. In half a window that is two of everything; it
             // keeps the two figures that are its own.
