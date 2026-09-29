@@ -63,7 +63,7 @@ struct ComposerInput: View {
                     directSlash: { if !session.directCommand { session.directCommand = true } }, pasted: { session.directCommand = false; session.completionVisible = false },
                     completionKey: { model.completionKey($0, modifiers: $1, view: session) }, focused: { model.focusPane(session.id); model.prewarm(session.id) }, accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer", inputRejected: { session.notice = $0 },
                     attachFiles: { model.attachImageFiles($0, sessionID: session.id) },
-                    focusToken: session.composerFocusRequest,
+                    focusToken: session.composerFocusRequest, settledFocusToken: session.composerFocusSettled,
                     // The selected skills lead the text as tokens (ComposerSkillTokens.swift).
                     skills: session.skills, skillDisplay: session, skillsChanged: { model.draftChanged(session) },
                     skillPressed: { chip, token in

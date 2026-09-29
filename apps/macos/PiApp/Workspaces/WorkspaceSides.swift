@@ -204,7 +204,7 @@ extension WorkspaceModel {
         if let shown = sides[parentID], !shown.kept || shown.keeping { error = "Wait for the current side to finish opening before switching."; return }
         if revealInSidebar { quietSidebarReveal = [] }
         // This side is the one asked for, not the one the parent last showed.
-        if selectedID != parentID { await select(parentID, revealInSidebar: revealInSidebar, reopensSide: false) }
+        if selectedID != parentID { await select(parentID, revealInSidebar: revealInSidebar, reopensSide: false, focusesComposer: false) }
         guard selectedID == parentID else { return }
         let view = mountSide(child, beside: parentID)
         page = .chats; focusedSessionID = id
