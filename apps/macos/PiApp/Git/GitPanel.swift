@@ -50,8 +50,8 @@ struct GitPanelView: View {
             PiIconButton(symbol: "arrow.clockwise", label: "Refresh changes", size: 28) { Task { await controller.refresh() } }
             Button("Done") { dismiss() }.buttonStyle(.piSecondary)
         }
-        .background(GitPanelWindowReader { panelWindow = $0 })
-        .task { await controller.refresh() }
+        .background(GitPanelWindowReader(found: { panelWindow = $0 }, closed: { [controller] in controller.letGo() }))
+        .task { controller.opened(); await controller.refresh() }
         .onDisappear { controller.stop(); questions.cancel() }
         .accessibilityIdentifier("git-panel")
     }
@@ -483,22 +483,49 @@ struct GitPanelView: View {
     }
 }
 
-/// Hands the panel the window it is in, so a confirmation can be a sheet on it.
+/// Hands the panel the window it is in, so a confirmation can be a sheet on it,
+/// and says when that sheet has closed for good.
 ///
 /// Told on the next turn of the run loop, and only when the window changes:
 /// both `updateNSView` and a view moving into its window run inside SwiftUI's
 /// update, and the panel keeps the window in its `@State` — writing that from
 /// there, on every update of the panel, was a change made during a view update.
+///
+/// `closed` runs once the sheet has left the screen, its closing animation
+/// over, just before its window lets go of the panel (`DismissedSheets`).
+/// SwiftUI keeps a closed sheet's views and state alive regardless, with the
+/// values they last drew: the panel is laid out once more, emptied, so
+/// neither its controller nor those views go on holding what it read.
 struct GitPanelWindowReader: NSViewRepresentable {
     let found: (NSWindow?) -> Void
-    func makeNSView(context: Context) -> Reader { let view = Reader(); view.found = found; return view }
-    func updateNSView(_ view: Reader, context: Context) { view.found = found; view.report() }
+    var closed: () -> Void = {}
+    func makeNSView(context: Context) -> Reader { let view = Reader(); view.found = found; view.closed = closed; return view }
+    func updateNSView(_ view: Reader, context: Context) { view.found = found; view.closed = closed; view.report() }
     @MainActor final class Reader: NSView {
         var found: ((NSWindow?) -> Void)?
+        var closed: (() -> Void)?
         private weak var reported: NSWindow?
         private var reportedOnce = false
         private var scheduled = false
-        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); report() }
+        private weak var watched: NSWindow?
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); report(); watch(window) }
+        private func watch(_ window: NSWindow?) {
+            guard let window, window !== watched else { return }
+            if let watched { NotificationCenter.default.removeObserver(self, name: DismissedSheets.willRelease, object: watched) }
+            watched = window
+            NotificationCenter.default.addObserver(self, selector: #selector(sheetReleases(_:)), name: DismissedSheets.willRelease, object: window)
+        }
+        @objc private func sheetReleases(_ note: Notification) {
+            guard let window = note.object as? NSWindow, window === watched else { return }
+            NotificationCenter.default.removeObserver(self, name: DismissedSheets.willRelease, object: window)
+            watched = nil
+            closed?()
+            // Laid out once more, off screen: SwiftUI drops the views that
+            // showed what was read. Its layout pass does not come by itself
+            // for a window that has left the screen.
+            window.contentView?.needsLayout = true
+            window.contentView?.layoutSubtreeIfNeeded()
+        }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         func report() {
             guard !scheduled, !reportedOnce || reported !== window else { return }

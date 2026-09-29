@@ -44,11 +44,19 @@ import AppKit
     private func releaseEnded() {
         for held in sheets {
             guard let sheet = held.window, !sheet.isVisible, sheet.sheetParent == nil else { continue }
+            NotificationCenter.default.post(name: Self.willRelease, object: sheet)
             sheet.contentViewController = nil
             sheet.contentView = nil
         }
         sheets.removeAll { $0.window == nil || $0.window?.contentView == nil }
     }
+
+    /// Posted with a closed sheet's window, off screen, just before the window
+    /// lets go of its views. Letting go stops the views observing anything,
+    /// but SwiftUI's sheet window keeps them and their state all the same,
+    /// with the values they last drew. Content that holds much lets go of it
+    /// here, while its views can still be laid out once, emptied.
+    static let willRelease = Notification.Name("DismissedSheetsWillRelease")
 
     /// SwiftUI presents `.sheet` in a window class of its own.
     static func presentedBySwiftUI(_ window: NSWindow) -> Bool {

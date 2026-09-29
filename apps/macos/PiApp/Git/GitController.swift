@@ -160,6 +160,36 @@ import AppKit
         loading = false; diffLoading = false; commitLoading = false
     }
 
+    /// The sheet has closed for good. SwiftUI keeps a closed sheet's views and
+    /// state alive (macOS 14), so a controller that kept what it had read held
+    /// its diffs, its history and up to two dozen commits' patches for every
+    /// Changes sheet ever closed. It goes back to how it was made: a panel
+    /// that opens over it again reads everything afresh, as a first open does.
+    func letGo() {
+        selectedCommit = nil
+        selection = nil
+        status = GitRepositoryStatus(); statusRead = false; repositoryRoot = nil
+        diff = []; detail = nil; detailDiff = []; detailFileDiff = []; detailDiffDeferred = false
+        commits = []; historyExhausted = false; branches = []; stashes = []
+        commitCache = [:]; commitCacheOrder = []
+        applyChecked([]); checkedByReader = false
+        commitMessage = ""; amend = false; lastCommit = nil; notice = ""
+        selectedDiffStale = false; panel = .changes
+        splitDiff = false; wholeDiffShown = nil; commitFilesShown = GitCommitFileChips.step
+        logFilter = GitLogFilter()
+        // Last: the resets above may have started reads of their own. A write
+        // still running, whose refresh would read everything again, reads
+        // nothing until a panel opens over this controller.
+        stop()
+        closed = true
+    }
+    /// Let go of by a closed sheet; see `letGo()`.
+    private var closed = false
+    /// A panel is on screen over this controller: it reads again.
+    func opened() { closed = false }
+    /// Test seam: commits whose reads are kept for moving back to them.
+    var cachedCommits: Int { commitCache.count }
+
     /// The working tree changed under the panel. The reader is not moved: the
     /// selection, the ticks, the scroll position and the whole-diff gate stay
     /// where they are, and a spinner does not appear for a read nobody asked
@@ -200,7 +230,7 @@ import AppKit
     }
 
     func refresh(automatic: Bool = false) async {
-        guard let root else { return }
+        guard let root, !closed else { return }
         // Checked again here and not only where the task was made: the reader
         // may have started a refresh of their own in between, and theirs must
         // not be left half done with a spinner that never stops.
