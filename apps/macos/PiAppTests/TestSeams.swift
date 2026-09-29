@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 @testable import PiApp
 
 // The seams the suite drives, in one place: how a test reads an opt-in knob,
@@ -59,6 +60,32 @@ func releaseBudget(_ seconds: Double) -> Double {
     #else
     return .greatestFiniteMagnitude
     #endif
+}
+
+/// Why `eventually` stopped a test: the condition it named never held.
+struct EventuallyTimedOut: Error, CustomStringConvertible {
+    let what: String
+    var description: String { what }
+}
+
+/// Waits on the main actor until `condition` holds, and fails the test with
+/// `what` when it has not within `timeout`. The suite's one wait for a
+/// condition: the time allowed is read from a clock rather than counted in
+/// polls, so a loaded machine that oversleeps every poll does not shorten it,
+/// and it is long enough by default that the parallel lane's clones cannot
+/// run it out. A wait whose subject is promptness passes its own, named,
+/// timeout. Having failed, it throws, so what follows does not run against a
+/// state that never came.
+@MainActor func eventually(_ what: String, timeout: Duration = .seconds(10), poll: Duration = .milliseconds(10),
+                           file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool) async throws {
+    let clock = ContinuousClock(), deadline = clock.now.advanced(by: timeout)
+    while !condition() {
+        guard clock.now < deadline else {
+            XCTFail(what, file: file, line: line)
+            throw EventuallyTimedOut(what: what)
+        }
+        try await Task.sleep(for: poll)
+    }
 }
 
 /// Runs `body` with the transcript's optional idle work back to back instead
