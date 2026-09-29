@@ -25,7 +25,12 @@ final class MiniModelSettingsTests: XCTestCase {
         gateway.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         gateway.arguments = ["-u", script.path]
         gateway.currentDirectoryURL = folder; gateway.standardOutput = pipe; gateway.standardError = FileHandle.nullDevice
-        gateway.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": folder.path]
+        // Title suggestions are a utility request (0.1.115): the helper asks
+        // for a short reply, well under either model's catalog ceiling, so the
+        // gateway checks the limit as a ceiling, as it does a mini model's. A
+        // request with no limit at all, the failure this test is for, is still
+        // refused.
+        gateway.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": folder.path, "PI_APP_UI_FIXTURE_LENIENT_LIMIT": "1"]
         try gateway.run(); defer { gateway.terminate() }
         let handle = pipe.fileHandleForReading
         let greeting = await Task.detached { handle.availableData }.value

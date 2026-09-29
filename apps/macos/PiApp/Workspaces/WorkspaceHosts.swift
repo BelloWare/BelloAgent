@@ -207,7 +207,9 @@ extension WorkspaceModel {
             params.merge(await costLimitParams(for: item)) { _, limit in limit }
             if automaticContext { try requireAutomaticContext(item.id) }
             if item.connectionTest == true || workspace.isScratch { params["connectionTest"] = .bool(true) }
-            if let task = item.backgroundTask, ["session-title", "webhook"].contains(task) { params["backgroundTask"] = .string(task) }
+            // A background request opens as the helper's utility request of its
+            // kind: its own short instructions, no tools, no project context.
+            if let task = item.backgroundTask, ["session-title", "title-suggestions", "webhook"].contains(task) { params["backgroundTask"] = .string(task) }
             if let path = item.path { params["path"] = .string(path) }
             // Loading a retained handoff above yields too. Recheck immediately
             // before installing the shared operation, without another await.
