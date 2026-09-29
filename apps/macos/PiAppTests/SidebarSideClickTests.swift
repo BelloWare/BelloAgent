@@ -60,12 +60,10 @@ final class SidebarSideClickTests: XCTestCase {
         }
     }
 
+    /// The shared clock-timed wait. Three hundred sleeps of 10 ms gave a
+    /// loaded machine well under three seconds, and failed there.
     @MainActor private func waitUntil(_ what: String, _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<300 {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail(what, file: file, line: line)
+        try await eventually(what, file: file, line: line, condition)
     }
 
     @MainActor private func views<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {

@@ -11,6 +11,12 @@ import AppKit
 /// content is let go of, and its window and hosting view, emptied, are the
 /// next sheet's. What the Changes sheet lets go of once closed is
 /// `ChangesSheetFrameTests.testAClosedSheetLetsGoOfWhatItRead`.
+/// Every open and close below runs in its own autorelease pool. XCTest keeps
+/// whatever AppKit autoreleases in a test's own code until the test returns,
+/// so a close made outside a pool could leave the sheet's content alive for
+/// the whole test and fail a "let go of" check that the app itself passes:
+/// how much is autoreleased there depends on timing, which made these checks
+/// flaky under load.
 final class PiSheetWindowTests: XCTestCase {
     @MainActor final class Presenter: ObservableObject {
         @Published var showing = false
@@ -128,12 +134,12 @@ final class PiSheetWindowTests: XCTestCase {
         let presenter = Presenter()
         let before = Marker.live
         let window = parent(AppHost(presenter: presenter) { Probe() })
-        presenter.showing = true
+        autoreleasepool { presenter.showing = true }
         try await eventually("the sheet") { window.attachedSheet != nil }
         let sheet = try XCTUnwrap(window.attachedSheet)
         XCTAssertEqual(Marker.live, before + 1)
         try await Task.sleep(for: .milliseconds(400))
-        XCTAssertTrue(try XCTUnwrap(sheet.contentView).performKeyEquivalent(with: try escape()), "Escape leaves the sheet")
+        XCTAssertTrue(try autoreleasepool { try XCTUnwrap(sheet.contentView).performKeyEquivalent(with: try escape()) }, "Escape leaves the sheet")
         try await eventually("closed by Escape") { !presenter.showing && window.attachedSheet == nil }
         try await eventually("its content let go of") { Marker.live == before }
     }
@@ -152,12 +158,12 @@ final class PiSheetWindowTests: XCTestCase {
             GitPanelView(controller: { let controller = GitController(roots: [folder.path]); made.controller = controller; return controller }())
         })
         window.setContentSize(NSSize(width: 1280, height: 860))
-        presenter.showing = true
+        autoreleasepool { presenter.showing = true }
         try await eventually("the Changes sheet") { window.attachedSheet != nil && made.controller != nil }
         let sheet = try XCTUnwrap(window.attachedSheet)
         XCTAssertEqual(sheet.frame.size, CGSize(width: 1180, height: 780), "The panel's own size, as SwiftUI's sheet had it")
         try await Task.sleep(for: .milliseconds(800))
-        XCTAssertTrue(try XCTUnwrap(sheet.contentView).performKeyEquivalent(with: try escape()), "Escape leaves the Changes sheet")
+        XCTAssertTrue(try autoreleasepool { try XCTUnwrap(sheet.contentView).performKeyEquivalent(with: try escape()) }, "Escape leaves the Changes sheet")
         try await eventually("closed") { !presenter.showing && window.attachedSheet == nil }
         try await eventually("its controller let go of") { made.controller == nil }
     }
@@ -168,11 +174,11 @@ final class PiSheetWindowTests: XCTestCase {
         let presenter = Presenter()
         let before = Marker.live
         let window = parent(AppHost(presenter: presenter) { Probe() })
-        presenter.showing = true
+        autoreleasepool { presenter.showing = true }
         try await eventually("the sheet") { window.attachedSheet != nil }
         weak var sheet = window.attachedSheet
         try await Task.sleep(for: .milliseconds(400))
-        window.close()
+        autoreleasepool { window.close() }
         try await eventually("the binding told") { !presenter.showing }
         try await eventually("the sheet down and its content let go of") { sheet?.isVisible != true && Marker.live == before }
     }
@@ -183,11 +189,11 @@ final class PiSheetWindowTests: XCTestCase {
         let presenter = Presenter()
         let before = Marker.live
         let window = parent(AppHost(presenter: presenter) { Probe() })
-        presenter.showing = true
+        autoreleasepool { presenter.showing = true }
         try await eventually("the sheet") { window.attachedSheet != nil }
         weak var sheet = window.attachedSheet, content = window.attachedSheet?.contentView
         try await Task.sleep(for: .milliseconds(400))
-        window.contentView = NSView()
+        autoreleasepool { window.contentView = NSView() }
         try await eventually("the sheet down") { window.attachedSheet == nil && sheet?.isVisible != true }
         // Nothing presents this sheet again: its hosting view goes too.
         try await eventually("its content let go of") { Marker.live == before && content == nil }
@@ -201,17 +207,17 @@ final class PiSheetWindowTests: XCTestCase {
             let _ = count.made += 1
             Probe()
         })
-        presenter.showing = true
+        autoreleasepool { presenter.showing = true }
         try await eventually("the sheet") { window.attachedSheet != nil }
         try await Task.sleep(for: .milliseconds(400))
-        presenter.showing = false
+        autoreleasepool { presenter.showing = false }
         try await Task.sleep(for: .milliseconds(40))
-        presenter.showing = true
+        autoreleasepool { presenter.showing = true }
         try await eventually("a sheet again") { window.attachedSheet != nil && count.made == 2 }
         try await Task.sleep(for: .milliseconds(600))
         XCTAssertTrue(presenter.showing, "Still asked for")
         XCTAssertNotNil(window.attachedSheet, "and still up")
-        presenter.showing = false
+        autoreleasepool { presenter.showing = false }
         try await eventually("closed") { window.attachedSheet == nil }
     }
 
@@ -222,13 +228,13 @@ final class PiSheetWindowTests: XCTestCase {
         let presenter = Presenter(), seen = Seen()
         presenter.reduceMotion = true; presenter.disabled = true
         let window = parent(AppHost(presenter: presenter) { Recorder(seen: seen) })
-        presenter.showing = true
+        autoreleasepool { presenter.showing = true }
         try await eventually("the sheet") { window.attachedSheet != nil && seen.enabled != nil }
         XCTAssertEqual(seen.reduceMotion, true)
         XCTAssertEqual(seen.enabled, false)
         presenter.reduceMotion = false; presenter.disabled = false
         try await eventually("the change reaching the sheet") { seen.reduceMotion == false && seen.enabled == true }
-        presenter.showing = false
+        autoreleasepool { presenter.showing = false }
         try await eventually("closed") { window.attachedSheet == nil }
     }
 
@@ -254,17 +260,17 @@ final class PiSheetWindowTests: XCTestCase {
         let presenter = ItemPresenter()
         let window = parent(ItemHost(presenter: presenter))
         let before = Marker.live
-        presenter.item = Target(id: "a")
+        autoreleasepool { presenter.item = Target(id: "a") }
         try await eventually("a's sheet") { window.attachedSheet != nil }
         try await Task.sleep(for: .milliseconds(400))
-        presenter.item = nil
+        autoreleasepool { presenter.item = nil }
         try await eventually("closed") { window.attachedSheet == nil }
         try await eventually("its content let go of") { Marker.live == before }
-        presenter.item = Target(id: "b")
+        autoreleasepool { presenter.item = Target(id: "b") }
         try await eventually("b's sheet") { window.attachedSheet != nil }
         let sheet = try XCTUnwrap(window.attachedSheet)
         try await Task.sleep(for: .milliseconds(400))
-        XCTAssertTrue(try XCTUnwrap(sheet.contentView).performKeyEquivalent(with: try escape()), "Escape leaves it")
+        XCTAssertTrue(try autoreleasepool { try XCTUnwrap(sheet.contentView).performKeyEquivalent(with: try escape()) }, "Escape leaves it")
         try await eventually("the item cleared") { presenter.item == nil && window.attachedSheet == nil }
         XCTAssertEqual(presenter.made, ["a", "b"])
     }
@@ -275,19 +281,19 @@ final class PiSheetWindowTests: XCTestCase {
         let presenter = ItemPresenter()
         let window = parent(ItemHost(presenter: presenter))
         let before = Marker.live
-        presenter.item = Target(id: "a")
+        autoreleasepool { presenter.item = Target(id: "a") }
         try await eventually("a's sheet") { window.attachedSheet != nil }
         let first = try XCTUnwrap(window.attachedSheet?.contentView)
         try await Task.sleep(for: .milliseconds(400))
-        presenter.item = Target(id: "b")
+        autoreleasepool { presenter.item = Target(id: "b") }
         // a's own Escape, pressed as b is asked for, leaves b alone.
-        _ = first.performKeyEquivalent(with: try escape())
+        _ = try autoreleasepool { first.performKeyEquivalent(with: try escape()) }
         try await eventually("b's sheet in a's place") { window.attachedSheet != nil && presenter.made == ["a", "b"] }
         XCTAssertEqual(presenter.item?.id, "b")
         try await eventually("a's content let go of") { Marker.live == before + 1 }
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertNotNil(window.attachedSheet, "b's sheet stays")
-        presenter.item = nil
+        autoreleasepool { presenter.item = nil }
         try await eventually("closed") { window.attachedSheet == nil }
     }
 
@@ -338,7 +344,7 @@ final class PiSheetWindowTests: XCTestCase {
             func all(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap { all($0) } }
             let shown = all(host).map { view in { [weak view] in view } }
             XCTAssertFalse(shown.isEmpty, "\(name) shows views of its own")
-            XCTAssertTrue(host.performKeyEquivalent(with: try escape()), "Escape leaves \(name)")
+            XCTAssertTrue(try autoreleasepool { host.performKeyEquivalent(with: try escape()) }, "Escape leaves \(name)")
             try await eventually("\(name) to close") { !asked() && window.attachedSheet == nil }
             // Closed, none of it is on screen or in the hosting view the next
             // sheet of its kind opens in.
@@ -352,7 +358,7 @@ final class PiSheetWindowTests: XCTestCase {
         // the view that presents them, and nothing of any closed sheet is
         // left: nothing but the few views TextKit keeps of the Resources
         // sheet's text view, which AppKit holds after the text view has gone.
-        window.contentView = NSView()
+        autoreleasepool { window.contentView = NSView() }
         try await eventually("every closed sheet's views to be let go of") {
             everything.allSatisfy { $0().map { String(describing: type(of: $0)).hasPrefix("_NSText") } ?? true }
         }
@@ -371,14 +377,14 @@ final class PiSheetWindowTests: XCTestCase {
         let windows = NSApp.windows.count
         var sheets: [NSWindow] = [], hosts: [NSView] = []
         for pass in 1...3 {
-            presenter.showing = true
+            autoreleasepool { presenter.showing = true }
             try await eventually("the sheet") { window.attachedSheet?.contentView != nil }
             let sheet = try XCTUnwrap(window.attachedSheet)
             sheets.append(sheet); hosts.append(try XCTUnwrap(sheet.contentView))
             XCTAssertEqual(count.made, pass, "Opening \(pass): its content made afresh")
             XCTAssertEqual(Marker.live, before + 1, "Opening \(pass): one content alive, its own")
             try await Task.sleep(for: .milliseconds(300))
-            presenter.showing = false
+            autoreleasepool { presenter.showing = false }
             try await eventually("closed") { window.attachedSheet == nil }
             try await eventually("its content let go of") { Marker.live == before }
         }
