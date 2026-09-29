@@ -54,6 +54,7 @@
 		1649E0F289748949B894A155 /* WorkspaceTitleGeneration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4841FFEC7F7DDD143D8DE931 /* WorkspaceTitleGeneration.swift */; };
 		1672CEA1A86F2D3143735FDA /* TranscriptToolInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = D455296546CA3469F754BADC /* TranscriptToolInput.swift */; };
 		170B22566C299F63B7CF4C6F /* GitPanelDiffCaptureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A72F85E8A46CB44E5A0F3BC1 /* GitPanelDiffCaptureTests.swift */; };
+		186B35613FA194A2C7735682 /* PiSheetWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B56CB37CD2AF00EC67420910 /* PiSheetWindow.swift */; };
 		18815B8E71F23D6E37577D60 /* InspectorRequestModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 445CDF50DF000046DF303E44 /* InspectorRequestModel.swift */; };
 		196012F2697042871091B3CF /* SettingsSaveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 764160B5221CF53A26D54012 /* SettingsSaveTests.swift */; };
 		1C325502F4C70800A51F11C6 /* SessionStatsPills.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51EF418C928480CC64C5C716 /* SessionStatsPills.swift */; };
@@ -80,6 +81,7 @@
 		2914EEE7DAC796044594126F /* TurnInfoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1355E6FA85965C7FEBCE5A8A /* TurnInfoTests.swift */; };
 		295EFBABF72B68A91180C485 /* TerminalScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 094BA9BAED004F12DFEF0436 /* TerminalScreen.swift */; };
 		29783C7FDE747D9A4EFD8B3A /* ConversationSearchPagingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFC44946F28200C8D0AC91 /* ConversationSearchPagingTests.swift */; };
+		2B0BA49006E84BBDB51D8F08 /* PiSheetWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFCD156F0A9A339BC369804C /* PiSheetWindowTests.swift */; };
 		2B8EF1102E44368B82A8FFDD /* TranscriptQuoteSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E707EF3DE571D1E85799967 /* TranscriptQuoteSelection.swift */; };
 		2C30B78699D39A19992DC89F /* ModelCatalogEndpointTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6897FF60C60BA8224C9134D3 /* ModelCatalogEndpointTests.swift */; };
 		2D54962C112BC5D9DB4CC67B /* ModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F713C7BF568A767BE0B464B /* ModelCatalog.swift */; };
@@ -836,6 +838,7 @@
 		B3921B40B1C151EEDA7086F6 /* TranscriptIdleSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptIdleSchedulerTests.swift; sourceTree = "<group>"; };
 		B3FE9EC1E51DB6F6850942D9 /* SidebarMetricsLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarMetricsLayoutTests.swift; sourceTree = "<group>"; };
 		B4316F0B0B646C3E9888B037 /* WireContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireContractTests.swift; sourceTree = "<group>"; };
+		B56CB37CD2AF00EC67420910 /* PiSheetWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiSheetWindow.swift; sourceTree = "<group>"; };
 		B74A3097492A15D3817A77F3 /* NativeMarkdownSizingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMarkdownSizingTests.swift; sourceTree = "<group>"; };
 		B7BF1BFD75FA3127BFD57884 /* LaunchSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchSelectionTests.swift; sourceTree = "<group>"; };
 		B86F7ED7F3CCACE2FD042B50 /* HistoricalEditingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoricalEditingTests.swift; sourceTree = "<group>"; };
@@ -965,6 +968,7 @@
 		ED58A0DF4FB2506580C785FF /* BlockingAlertTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockingAlertTests.swift; sourceTree = "<group>"; };
 		EE64B83A42A9C33019FA7F01 /* InlineSkillPillTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineSkillPillTests.swift; sourceTree = "<group>"; };
 		EE9E83B9C79BC9AE68298D4F /* FullDisplayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullDisplayTests.swift; sourceTree = "<group>"; };
+		EFCD156F0A9A339BC369804C /* PiSheetWindowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiSheetWindowTests.swift; sourceTree = "<group>"; };
 		EFE67D1CED3D6BB07CBD3CFE /* TranscriptCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptCards.swift; sourceTree = "<group>"; };
 		EFE8AD793C228AD2764F26D3 /* PseudoTerminalReapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PseudoTerminalReapTests.swift; sourceTree = "<group>"; };
 		F0C098B88A60A82195491034 /* TranscriptFollowOwnershipTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptFollowOwnershipTests.swift; sourceTree = "<group>"; };
@@ -1097,6 +1101,7 @@
 				A27E4E2EC2ED5ADA7205F8CA /* MonitorRateChart.swift */,
 				59A6F8A3650D086F11FBE403 /* PerformanceProbe.swift */,
 				A5639D83C26A60B212F8C617 /* PiApp.swift */,
+				B56CB37CD2AF00EC67420910 /* PiSheetWindow.swift */,
 				420A910D7CFF9048A2926955 /* RedrawCounter.swift */,
 				EA303DDCE9A7E6CA07F66790 /* ReleaseConfiguration.swift */,
 				CBAF8A420019C37F3517A71D /* SettingsWindowContent.swift */,
@@ -1495,6 +1500,7 @@
 				345694E13B96EB76EE0B25A9 /* PiChoicePickerTests.swift */,
 				B21322F80F7292E7CCCD8B63 /* PiMenuTests.swift */,
 				D364649D2D42556361D06677 /* PiSheetCancelTests.swift */,
+				EFCD156F0A9A339BC369804C /* PiSheetWindowTests.swift */,
 				746CF8303B2935F27DB80E33 /* PlainTextCopyTests.swift */,
 				3381B77FFF7B0A812BFE83D9 /* PreparedContextLifecycleTests.swift */,
 				07BFFE87568383784B73AD10 /* ProjectSidebarTests.swift */,
@@ -1866,6 +1872,7 @@
 				7B98D83D794325C861B3D615 /* PiPopover.swift in Sources */,
 				DADD18D87C9FF8C9ED891539 /* PiQuestion.swift in Sources */,
 				D8686B775F66AE79CF3B6057 /* PiSheet.swift in Sources */,
+				186B35613FA194A2C7735682 /* PiSheetWindow.swift in Sources */,
 				49B3A1BDFD86715C254CFA18 /* PiStatPill.swift in Sources */,
 				44ABD31F4E840667E582DB45 /* PiSurfaces.swift in Sources */,
 				271B6B1EA2A68A1C69630931 /* PiTextWidth.swift in Sources */,
@@ -2134,6 +2141,7 @@
 				985053EA191C149D1ACA0814 /* PiChoicePickerTests.swift in Sources */,
 				61705390E77E8689495CC9E6 /* PiMenuTests.swift in Sources */,
 				9A98F625C481ED75A9E100C6 /* PiSheetCancelTests.swift in Sources */,
+				2B0BA49006E84BBDB51D8F08 /* PiSheetWindowTests.swift in Sources */,
 				679CC8116B2417E6CAD16DC8 /* PlainTextCopyTests.swift in Sources */,
 				7C697B14D3B6A67D397A66FA /* PreparedContextLifecycleTests.swift in Sources */,
 				C3593C9AB38E79D75E9C6979 /* ProjectSidebarTests.swift in Sources */,
