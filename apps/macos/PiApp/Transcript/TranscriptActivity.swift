@@ -31,6 +31,19 @@ enum ActionOutcome: String, Sendable { case running, done, failed, cancelled, un
 
 enum ActivityState: String, Sendable { case running, failed, completed }
 
+/// A tool call's `state` as the helper names it, grouped by what the
+/// transcript asks of it. Each group is spelled out here once.
+enum ToolState {
+    /// Not finished: its arguments are arriving or complete, or it runs.
+    static let inFlight: Set<String> = ["running", "preparing", "prepared"]
+    /// Still producing: its arguments or its output are arriving. A change to
+    /// such a call may wait for the next presentation (`TaskTranscriptPlan.cosmetic`).
+    static let producing: Set<String> = ["preparing", "running"]
+    /// Its card does not carry the call's result: the call is not finished,
+    /// or the card was read back holding only the request ("recorded").
+    static let withoutResult: Set<String> = ["preparing", "prepared", "running", "recorded"]
+}
+
 struct DiffRow: Equatable, Sendable {
     enum Kind: String, Sendable { case context, removed, added }
     let kind: Kind
@@ -512,7 +525,7 @@ enum TranscriptActivity {
         return string
     }
     static func outcome(of tool: ToolView) -> ActionOutcome {
-        if ["running", "preparing", "prepared"].contains(tool.state) { return .running }
+        if ToolState.inFlight.contains(tool.state) { return .running }
         if tool.state == "cancelled" { return .cancelled }
         if tool.state == "failed" { return .failed }
         // Sent only to an app that says it reads it (the hello's
@@ -624,7 +637,7 @@ enum TranscriptActivity {
         return files.count
     }
     static func state(of tools: [ToolView]) -> ActivityState {
-        if tools.contains(where: { ["running", "preparing", "prepared"].contains($0.state) }) { return .running }
+        if tools.contains(where: { ToolState.inFlight.contains($0.state) }) { return .running }
         if tools.contains(where: { ["failed", "cancelled", "unknown"].contains($0.state) }) { return .failed }
         return .completed
     }

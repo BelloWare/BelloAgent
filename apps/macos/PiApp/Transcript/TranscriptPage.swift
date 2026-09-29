@@ -78,7 +78,7 @@ struct ContentGeometry: Equatable {
         }
     }
     @Published var state = "idle"
-    var busy: Bool { ["queued", "running", "stopping", "compacting"].contains(state) }
+    var busy: Bool { RunState(rawValue: state).isBusy }
 
     var onAnchorChanged: (TranscriptAnchor?) -> Void = { _ in }
     var onReadReply: (String, String) -> Void = { _, _ in }
