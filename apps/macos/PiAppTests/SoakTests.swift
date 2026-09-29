@@ -83,6 +83,13 @@ final class SoakTests: XCTestCase, SerialTestLane {
             return cachedScroll
         }
         var document: TranscriptNativeDocument? { scroll?.documentView as? TranscriptNativeDocument }
+        private weak var cachedMarker: TranscriptSurfaceMarker?
+        /// The transcript's page, found once for the same reason.
+        var page: TranscriptPage? {
+            if let cachedMarker, cachedMarker.window != nil { return cachedMarker.page }
+            cachedMarker = views(TranscriptSurfaceMarker.self).first
+            return cachedMarker?.page
+        }
         private weak var cachedComposer: ComposerTextView?
         /// The open chat's composer, found once per chat for the same reason.
         func composer(for chat: String?) -> ComposerTextView? {
@@ -273,7 +280,7 @@ final class SoakTests: XCTestCase, SerialTestLane {
                     let rows = visibleRows(launched)
                     let viewport = lastViewport
                     if firstPaint == nil, !rows.isEmpty { firstPaint = now }
-                    let clean = self.clean(model, chat: chat, now: now, lastSend: lastSend, lastBusy: lastBusy)
+                    let clean = self.clean(launched, chat: chat, now: now, lastSend: lastSend, lastBusy: lastBusy)
                     if let previous, previousClean, clean {
                         var moved: [String] = [], largest: CGFloat = 0
                         for (id, place) in rows {
@@ -377,8 +384,12 @@ final class SoakTests: XCTestCase, SerialTestLane {
     /// Whether a movement in this chat's rows would be a jump: the chat is
     /// the one shown, it is not running or sending, the live bar has had
     /// time to leave after a run, and nothing was sent to it just now.
-    @MainActor private func clean(_ model: WorkspaceModel, chat: String, now: Double, lastSend: [String: Double], lastBusy: [String: Double]) -> Bool {
+    @MainActor private func clean(_ launched: Launched, chat: String, now: Double, lastSend: [String: Double], lastBusy: [String: Double]) -> Bool {
+        let model = launched.model
         guard !chat.isEmpty, model.selectedID == chat, let view = model.displays[chat] else { return false }
+        // The window is drawn a moment after the selection changes: until the
+        // page shows the chat, the rows on screen are the chat before's.
+        guard launched.page?.sessionID == chat else { return false }
         if view.busy || view.loading || !view.sendingRows.isEmpty || !view.queue.isEmpty { return false }
         // Rows under the loading cover are not on screen.
         if view.historyState.loading && !view.refreshingCachedRows { return false }
