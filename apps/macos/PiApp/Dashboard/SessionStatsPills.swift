@@ -191,13 +191,39 @@ struct SessionStatsPills: View, Equatable {
 
     /// A 14 pt ring and its reading. A conversation whose context has not been
     /// counted yet says so instead of drawing an empty ring at zero.
+    ///
+    /// Its words ("Calculating context…" while a shown chat is counted,
+    /// "Compacting context…") take the room of the figure they stand in for,
+    /// and end in "…" where the row has no more: longer than the figure, they
+    /// used to start a row of their own, so the footer grew a row and the
+    /// conversation above it jumped, and jumped back when the figure came.
+    /// A figure is never cut.
     private var contextPill: some View {
         let meter = meter
         let reading = meter.fraction.flatMap(MetricFormat.occupancyPercent)
-        let label = reading.map { $0 + "%" } ?? (footer.preparingContext ? "Calculating context…" : meter.compactLabel)
+        let figure = reading.map { $0 + "%" }
+        let label = figure ?? (footer.preparingContext ? "Calculating context…" : meter.compactLabel)
         return PiStatButton(symbol: "square.stack.3d.up", ring: .some(meter.fraction), label: label,
+                            footprint: figure ?? footer.shownContextFigure ?? knownFigure ?? label,
                             accessibility: reading.map { "\($0)% of context used" } ?? meter.detailLabel,
                             identifier: "session-stats-context", help: meter.detailLabel + " Opens the next request in the Session Inspector.") { open(.nextRequest) }
+            // Keyed by the chat too: the footer is kept across chats, and two
+            // chats showing the same figure are still two chats.
+            .onChange(of: ShownFigure(chat: ObjectIdentifier(footer), figure: figure), initial: true) { [footer] _, shown in
+                if let figure = shown.figure { footer.shownContextFigure = figure }
+            }
+            .layoutValue(key: PiFlowFillsRow.self, value: true)
+    }
+    private struct ShownFigure: Equatable { let chat: ObjectIdentifier; let figure: String? }
+    /// Before the pill has shown a figure: the one it will show, as far as the
+    /// chat knows it (its saved reading, else its last estimate). Nil for a
+    /// chat never counted.
+    private var knownFigure: String? {
+        for context in [footer.retainedContext?.context, footer.context].compactMap({ $0 }) {
+            let known = ContextMeterPresentation(context: context, capacity: session.hasWork ? nil : selectedContextWindow.map(Double.init))
+            if let reading = known.fraction.flatMap(MetricFormat.occupancyPercent) { return reading + "%" }
+        }
+        return nil
     }
 }
 
@@ -211,13 +237,15 @@ struct PiStatButton: View {
     let label: String
     /// A last figure in warning ink (see `PiStatPillFace.warningTail`).
     var warningTail: String? = nil
+    /// The narrowest the reading may be cut to (`PiStatPillFace.footprint`).
+    var footprint: String? = nil
     var accessibility: String? = nil
     var identifier: String? = nil
     var help: String = ""
     let action: () -> Void
     @State private var hovering = false
     var body: some View {
-        PiStatPillFace(symbol: symbol, ring: ring, label: label, highlighted: hovering, warningTail: warningTail)
+        PiStatPillFace(symbol: symbol, ring: ring, label: label, highlighted: hovering, warningTail: warningTail, footprint: footprint)
             .accessibilityHidden(true)
             .overlay {
                 PiPopoverTrigger(label: accessibility ?? label, identifier: identifier, help: help.isEmpty ? label : help,

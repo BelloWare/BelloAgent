@@ -332,6 +332,13 @@ struct PiSelectableRow<Content: View>: View {
     }
 }
 
+/// A `PiFlow` item that takes what is left of its row, down to its narrowest
+/// form, rather than starting a row of its own for longer words: it starts a
+/// row only where its narrowest form does not fit, and is otherwise given the
+/// room left, so its text ends in "…" there. What it reads between its forms
+/// then never changes the rows (the context pill's "Calculating context…").
+struct PiFlowFillsRow: LayoutValueKey { static let defaultValue = false }
+
 /// Wrapping horizontal layout for chips and metric pills.
 struct PiFlow: Layout {
     var spacing: CGFloat = 6
@@ -344,12 +351,30 @@ struct PiFlow: Layout {
         guard width.isFinite, ideal.width > width else { return ideal }
         return subview.sizeThatFits(ProposedViewSize(width: width, height: nil))
     }
+    /// Where a subview goes, `x` into its row: whether it starts the next
+    /// row, and its size. Measuring and placing both ask this, so the rows
+    /// they find are the same.
+    private func fit(_ subview: LayoutSubview, at x: CGFloat, row width: CGFloat) -> (wraps: Bool, size: CGSize) {
+        guard subview[PiFlowFillsRow.self] else {
+            let size = size(of: subview, row: width)
+            return (x > 0 && x + size.width > width, size)
+        }
+        let narrowest = subview.sizeThatFits(ProposedViewSize(width: 0, height: nil))
+        // Unbounded, it counts as its narrowest form: the flow's own width
+        // then does not change with what it reads either.
+        guard width.isFinite else { return (false, narrowest) }
+        let wraps = x > 0 && x + narrowest.width > width
+        let ideal = subview.sizeThatFits(.unspecified)
+        let room = max(narrowest.width, wraps ? width : width - x)
+        guard ideal.width > room else { return (wraps, ideal) }
+        return (wraps, subview.sizeThatFits(ProposedViewSize(width: room, height: nil)))
+    }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .infinity
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, maxX: CGFloat = 0
         for subview in subviews {
-            let size = size(of: subview, row: width)
-            if x > 0 && x + size.width > width { x = 0; y += rowHeight + rowSpacing; rowHeight = 0 }
+            let (wraps, size) = fit(subview, at: x, row: width)
+            if wraps { x = 0; y += rowHeight + rowSpacing; rowHeight = 0 }
             x += size.width + spacing; rowHeight = max(rowHeight, size.height); maxX = max(maxX, x - spacing)
         }
         return CGSize(width: width.isFinite ? width : maxX, height: y + rowHeight)
@@ -357,8 +382,8 @@ struct PiFlow: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
         for subview in subviews {
-            let size = size(of: subview, row: bounds.width)
-            if x > 0 && x + size.width > bounds.width { x = 0; y += rowHeight + rowSpacing; rowHeight = 0 }
+            let (wraps, size) = fit(subview, at: x, row: bounds.width)
+            if wraps { x = 0; y += rowHeight + rowSpacing; rowHeight = 0 }
             subview.place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + y), proposal: ProposedViewSize(size))
             x += size.width + spacing; rowHeight = max(rowHeight, size.height)
         }
