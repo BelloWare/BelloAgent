@@ -48,6 +48,7 @@ extension WorkspaceModel {
         view.contextSelectionReady = false; view.browsingHistory = true
         view.draftReady = view.selectionMetadataLoaded
         view.used = Date(); displays[id] = view
+        adoptContextReading(view, item: item)
         selectedID = id; selected = view; profileChoice = item.profileID
         focusedSessionID = id; page = .chats
         // An empty New chat is dropped once the next chat is in its place, so

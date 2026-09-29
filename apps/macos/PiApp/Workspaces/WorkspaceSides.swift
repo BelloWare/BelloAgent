@@ -213,6 +213,7 @@ extension WorkspaceModel {
     func mountSide(_ child: ChatRecord, beside parentID: String) -> SessionDisplay {
         if let previous = sides[parentID] { displays[previous.id]?.presentation.cancel() }
         let view = displays[child.id] ?? SessionDisplay(id: child.id); view.used = Date(); displays[child.id] = view
+        adoptContextReading(view, item: child)
         let cached = view.hasPresentedRows
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
         view.historyState = .loading; view.refreshingCachedRows = cached; view.draftReady = view.selectionMetadataLoaded
