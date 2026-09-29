@@ -884,6 +884,7 @@ struct ContentGeometry: Equatable {
             scrollView.transcriptReading.readerMoved()
             readerOwnsPosition()
             pinIfAtLatest(inBand)
+            scheduleReport()
             requestNewerIfNearBottom()
         } else if followsBottom {
             // Nothing the reader did. A page that was following stays
@@ -937,9 +938,9 @@ struct ContentGeometry: Equatable {
         if !readerNavigationStarted { scrollView?.transcriptReading.readerMoved() }
         if ended { readerNavigationStarted = false; upwardNavigation = false }
         evaluateFollowing()
+        scheduleReport()
         requestEarlierIfNearTop(scrollY: position.offset)
         requestNewerIfNearBottom()
-        scheduleReport()
     }
     private func evaluateFollowing() {
         guard position.viewport > 0 else { return }
@@ -970,6 +971,7 @@ struct ContentGeometry: Equatable {
         guard position.viewport > 0, !jumping, liveDistanceToBottom < Self.earlierThreshold, let sessionID,
               let session = presentationSession, session.newerPage.cursor != nil, !session.newerPage.loading,
               session.newerPage.error == nil, !session.historyState.loading, session.presentation.readyAt != nil else { return }
+        reportPendingAnchor()
         onLoadNewer(sessionID)
     }
     private func requestEarlierIfNearTop(scrollY: CGFloat) {
@@ -994,7 +996,18 @@ struct ContentGeometry: Equatable {
             session.presentation.automaticFills += 1
         }
         earlierWaits = false
+        reportPendingAnchor()
         onLoadEarlier(sessionID)
+    }
+    /// Says where the reader is now, ahead of a read at an edge, when a
+    /// movement has not been said yet (a movement of the reader's schedules
+    /// its report before the reads it asks for). The rows a read brings are
+    /// joined against the place last said, and the window keeps that row:
+    /// said a moment before a quick scroll to the edge, it was a row the
+    /// window then had to let go of, and the read failed as if a selection
+    /// held it.
+    private func reportPendingAnchor() {
+        if reportTask != nil { reportAnchor() }
     }
     private func scheduleReport() {
         guard reportTask == nil else { return }

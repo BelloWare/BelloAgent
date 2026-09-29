@@ -656,6 +656,48 @@ extension HistoryEdgeTests {
         XCTAssertFalse(Self.edges(chat.hosted).contains { $0.edge == "newer" && $0.kind != "latest" }, Self.describe(Self.edges(chat.hosted)))
     }
 
+    /// Reading on from an older window keeps the display within its resident
+    /// window, read after read: the rows the reader reaches join below, the
+    /// earliest leave above with the earlier edge where they were, and the
+    /// page draws exactly the rows the display holds. A reply that leaves
+    /// takes what the reader opened in it along.
+    @MainActor func testReadingOnFromAnOlderWindowKeepsTheDisplayWithinItsWindow() async throws {
+        let caps = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (rows: 24, bytes: caps.bytes)
+        addTeardownBlock { TranscriptPaging.residentCaps = caps }
+        let chat = try await PagedChat(turns: 60)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        defer { chat.close() }
+        try await chat.ready()
+        try await chat.model.revealConversationHit("a", hit: .init(id: "m20", position: 0, preview: "Question 10?"))
+        await chat.settle(30)
+        XCTAssertTrue(chat.view.browsingHistory)
+        // The reader reads the window's first reply as its source.
+        let opened = try XCTUnwrap(chat.view.messages.first { $0.role == "assistant" }?.id)
+        chat.view.disclosure.setOpen(true, .source(opened))
+        await chat.settle(4)
+        var trimmed = 0
+        for _ in 0..<60 where chat.view.browsingHistory {
+            let first = chat.view.messages.first?.id, last = chat.view.messages.last?.id
+            try chat.readerScrollsToBottom()
+            await chat.settle(while: { chat.view.messages.last?.id == last && chat.view.browsingHistory && chat.view.newerPage.error == nil }, seconds: 10)
+            XCTAssertNil(chat.view.newerPage.error)
+            if chat.view.messages.first?.id != first { trimmed += 1 }
+            XCTAssertLessThanOrEqual(chat.view.messages.count, 24, "The display keeps its resident window")
+            if let first = chat.view.messages.first?.id, first != "m0" {
+                XCTAssertEqual(chat.view.olderPage.cursor?.entry, first, "The rows let go of stay reachable")
+            }
+            await chat.settle(while: { chat.page?.snapshot?.messages.map(\.id) != chat.view.presentedMessages.map(\.id) }, seconds: 10)
+            XCTAssertEqual(chat.page?.snapshot?.messages.map(\.id), chat.view.presentedMessages.map(\.id), "The page draws the rows the display holds")
+        }
+        XCTAssertFalse(chat.view.browsingHistory, "Reading on reaches the latest message")
+        XCTAssertEqual(chat.view.messages.last?.id, "m119")
+        XCTAssertGreaterThan(trimmed, 0, "The window filled, and let go of its earliest rows")
+        XCTAssertFalse(chat.view.messages.contains { $0.id == opened })
+        await chat.settle(4)
+        XCTAssertEqual(chat.view.disclosure.changedCount, 0, "The reply that left took its source view with it")
+    }
+
     /// Latest, from an older window, goes to the end of the conversation at
     /// once, and the edges have nothing left to say.
     @MainActor func testLatestFromAnOlderWindowGoesToTheEnd() async throws {
@@ -751,6 +793,9 @@ extension HistoryEdgeTests {
         await chat.settle(10)
         XCTAssertNil(chat.view.newerPage.error, "Reload read the conversation again")
         XCTAssertFalse(chat.view.browsingHistory)
+        // The notice fades out as it goes (`PiMotion.quick`): waited for on
+        // the clock, as a loaded machine can take more passes than the fade.
+        await chat.settle(while: { Self.edges(chat.hosted).contains { $0.edge == "newer" && $0.kind != "latest" } })
         XCTAssertFalse(Self.edges(chat.hosted).contains { $0.edge == "newer" && $0.kind != "latest" }, Self.describe(Self.edges(chat.hosted)))
     }
 }

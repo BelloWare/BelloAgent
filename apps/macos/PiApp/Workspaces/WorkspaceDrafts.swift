@@ -94,6 +94,12 @@ extension WorkspaceModel {
         }
     }
     func anchorChanged(_ view: SessionDisplay) {
+        // A reader back at the newest row, or reading within the window's
+        // budget again, no longer holds a window their reading stretched.
+        // Let go of on the next turn: the page says where the reader is from
+        // inside its handling of their scroll, which a new page must not
+        // re-enter (`TranscriptPage.reportPendingAnchor`).
+        DispatchQueue.main.async { [weak self, weak view] in if let self, let view { self.releaseHeldWindow(view) } }
         guard !isEphemeral(view.id) else { return }
         let anchor = view.scrollAnchor
         Task { if let anchor { try? await store?.put(anchor, kind: "anchor", id: view.id) }

@@ -243,8 +243,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         for view in displays.values where activityObservers[ObjectIdentifier(view)] == nil {
             let id = view.id
             if let item = record(id) { monitoredDisplays[id] = item.workspaceID }
-            activityObservers[ObjectIdentifier(view)] = view.activityChanges.merge(with: view.footer.activityChanges)
+            let activity = view.activityChanges.merge(with: view.footer.activityChanges)
                 .sink { [weak self] _ in self?.noteActivityChanged(id) }
+            // A selection let go of in a pass of the transcript's layout: the
+            // window it stretched is cut after that pass, not inside it.
+            let held = view.heldChanges.receive(on: DispatchQueue.main)
+                .sink { [weak self, weak view] _ in if let self, let view { self.releaseHeldWindow(view) } }
+            activityObservers[ObjectIdentifier(view)] = AnyCancellable { activity.cancel(); held.cancel() }
             noteActivityChanged(id)
             // A new display reads the chat's cost limit before its helper says anything.
             view.applyCostReading(costReading(for: id))
