@@ -675,6 +675,26 @@ actor HistoryReader {
             return cursor
         }
         let (range, forward) = try Self.pageRange(in: branch, before: before, around: around, after: after, targetTurns: targetTurns)
+        let (messages, start, end) = try decodePage(range, forward: forward, from: file, path: path, identity: identity,
+                                                    branch: branch, versions: versions, retainedRun: retainedRun)
+        return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, notice: notice,
+                           assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil,
+                           failureMessage: notice == nil ? failureMessage : nil,
+                           revision: notice == nil ? HistoryRevision(path: path, stamp: revision(identity)) : nil,
+                           incarnation: incarnation, lineage: lineage,
+                           older: (start > 0 || olderRows > 0) && !messages.isEmpty ? pageCursor(try branch.at(start).id) : nil,
+                           newer: end < branch.count && !messages.isEmpty ? pageCursor(try branch.at(end - 1).id) : nil,
+                           partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil, taskRecords:taskRecords,
+                           retainedRun: notice == nil ? retainedRun : nil, incompleteTail: incompleteTail)
+    }
+    /// A page's rows decoded from the journal in the order they are read,
+    /// until the display envelope is full, from a file that must not have
+    /// changed meanwhile. Each call's result shows in its call's card, and a
+    /// call the stopped run never answered reads "unknown". Returns the rows
+    /// and where they start and end in the branch.
+    private func decodePage(_ range: Range<Int>, forward: Bool, from file: FileHandle, path: String, identity: Stamp,
+                            branch: HistoryOffsetIndex, versions: MessageVersionLedger,
+                            retainedRun: RetainedRun?) throws -> (messages: [TranscriptMessage], start: Int, end: Int) {
         var messages: [TranscriptMessage] = [], bytes = HistoryWindowPolicy.metadataAllowance
         var start = forward ? range.lowerBound : range.upperBound, end = start
         // What each call's result recorded, so the reply that made the call
@@ -729,15 +749,7 @@ actor HistoryReader {
                 }
             }
         }
-        return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, notice: notice,
-                           assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil,
-                           failureMessage: notice == nil ? failureMessage : nil,
-                           revision: notice == nil ? HistoryRevision(path: path, stamp: revision(identity)) : nil,
-                           incarnation: incarnation, lineage: lineage,
-                           older: (start > 0 || olderRows > 0) && !messages.isEmpty ? pageCursor(try branch.at(start).id) : nil,
-                           newer: end < branch.count && !messages.isEmpty ? pageCursor(try branch.at(end - 1).id) : nil,
-                           partialTurnInput: start < branch.count && messages.first?.role != "user" ? try branch.latestUser(before: start) : nil, taskRecords:taskRecords,
-                           retainedRun: notice == nil ? retainedRun : nil, incompleteTail: incompleteTail)
+        return (messages, start, end)
     }
     /// The rows a page holds, and whether it reads forward from its first:
     /// the turns around, after or before a row, or sixty rows when no count
