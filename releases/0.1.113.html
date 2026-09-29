@@ -1,0 +1,8 @@
+<h2>Bello Agent 0.1.113</h2>
+<ul>
+<li>Opening and closing sheets no longer slows the app over time. Every closed sheet used to stay alive in the background and redraw with each change; after ten openings of Settings each change took about five times as long. Closed sheets now let go, and the Settings window stops drawing while it is closed, keeping your unsaved edits.</li>
+<li>The context meter shows each chat's last count right away instead of starting the helper to count it again. It still counts again when you type, change the model or the chat changes.</li>
+<li>Going back to a chat you already opened no longer reads its file again when nothing changed.</li>
+<li>Chat files written before 0.1.111 are slimmed once in the background, after checking that each chat reads back exactly the same. The original goes to the Trash, so empty the Trash to get the space back.</li>
+<li>Far fewer layout warnings: 122 instead of 2,948 in the screenshot run.</li>
+</ul>
