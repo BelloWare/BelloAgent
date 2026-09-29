@@ -103,7 +103,7 @@ import Darwin
                 // thread each would be twenty thousand hops for one command.
                 // Bytes waiting for a delivery already scheduled join it, in
                 // arrival order, and no second delivery is scheduled.
-                guard pending.append(Data(buffer[0..<count])) else { return }
+                guard pending.append(Data(buffer[0..<count])) == .scheduled else { return }
                 DispatchQueue.main.async { MainActor.assumeIsolated {
                     self.deliver(pending, attempt: attempt, control: control)
                 } }
@@ -277,12 +277,22 @@ final class PendingOutput: @unchecked Sendable {
     private var scheduled = false
     var count: Int { lock.lock(); defer { lock.unlock() }; return data.count }
     var available: Int { Self.byteLimit - count }
-    func append(_ bytes: Data) -> Bool {
+    /// What became of bytes handed to `append`.
+    enum Appended {
+        /// They are waiting, and the caller must schedule their delivery.
+        case scheduled
+        /// They joined bytes whose delivery is already scheduled.
+        case joined
+        /// They would pass the limit and were not taken. A reader that reads
+        /// at most `available` never sees this: only a delivery frees room.
+        case refused
+    }
+    func append(_ bytes: Data) -> Appended {
         lock.lock(); defer { lock.unlock() }
-        guard bytes.count <= Self.byteLimit - data.count else { return false }
+        guard bytes.count <= Self.byteLimit - data.count else { return .refused }
         data.append(bytes)
-        guard !scheduled else { return false }
-        scheduled = true; return true
+        guard !scheduled else { return .joined }
+        scheduled = true; return .scheduled
     }
     func take() -> (Data, Bool) {
         lock.lock(); defer { lock.unlock() }
