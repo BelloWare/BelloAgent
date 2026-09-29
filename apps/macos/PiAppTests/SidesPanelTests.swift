@@ -312,6 +312,23 @@ final class SidesPanelTests: XCTestCase {
         XCTAssertEqual(try pointerAreas(fixture), 2, "With a side, the handle comes back beside the edge")
     }
 
+    /// Pinned, the panel stays beside the Usage Report and Background
+    /// Requests. New side there opens the side on the chats page, where it
+    /// can be seen, as a side chosen in the panel does.
+    @MainActor func testNewSideFromAPinnedPanelBesideAnotherPageShowsTheChats() async throws {
+        let fixture = try await fixture(sides: false)
+        let model = fixture.model
+        model.setSidesPanelPinned(true)
+        for page in [WorkspacePage.report, .background] {
+            model.page = page
+            try await draw(fixture)
+            model.openSideFromSidesPanel(parentID: "P")
+            XCTAssertEqual(model.page, .chats, "New side beside the \(page) page shows the chats")
+            try await eventually("New side opens a side beside the chat") { model.sides["P"]?.pending == true }
+            XCTAssertEqual(model.focusedSessionID, model.sides["P"]?.id, "and the side has the cursor")
+        }
+    }
+
     /// The panel lies over the conversation: its coming and going neither
     /// moves a row nor draws the transcript again.
     @MainActor func testThePanelComingAndGoingMovesAndRedrawsNothingUnderIt() async throws {

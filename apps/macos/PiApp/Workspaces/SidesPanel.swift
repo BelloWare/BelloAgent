@@ -297,7 +297,7 @@ struct SidesPanel: View {
     }
 
     private func newSide(_ parentID: String) -> some View {
-        PiSelectableRow(selected: false, action: { [model] in model.openSide(parentID: parentID) }) {
+        PiSelectableRow(selected: false, action: { [model] in model.openSideFromSidesPanel(parentID: parentID) }) {
             HStack(spacing: 9) {
                 Image(systemName: "plus").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.piAccent)
                     .frame(width: 16, height: 16)
@@ -451,6 +451,14 @@ extension WorkspaceModel {
     /// in the sidebar does, and nothing in the sidebar unfolds for it.
     func openFromSidesPanel(_ id: String) async {
         await openFromSidebar(id)
+    }
+
+    /// New side, from the panel. Pinned, the panel stays beside the Usage
+    /// Report and Background Requests too; the side opens on the chats page,
+    /// as a side chosen in the panel does, not behind the page on screen.
+    func openSideFromSidesPanel(parentID: String) {
+        if page != .chats { page = .chats }
+        openSide(parentID: parentID)
     }
 
     /// Pinned, the panel is a column of the window; unpinned under the
