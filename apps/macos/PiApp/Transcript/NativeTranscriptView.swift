@@ -2014,12 +2014,17 @@ struct NativeTranscriptView: View {
             LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion, session: ObjectIdentifier(session)).equatable()
         }
         // The run state is read where it is used, never from the value this
-        // body happened to be built with: a task runs a turn of the run loop
-        // later, and a status that lands in between would otherwise be
-        // overwritten by a stale "idle" that nothing corrects — no spinner, no
-        // elapsed time and no Stop for the whole run.
+        // body happened to be built with: a status that lands between the
+        // body and the binding below would otherwise be overwritten by a
+        // stale "idle" that nothing corrects — no spinner, no elapsed time
+        // and no Stop for the whole run.
         .onChange(of: state, initial: true) { _, value in page.state = value }
-        .task(id: session.presentationGeneration) {
+        // The page takes the chat the pane is drawn for in the same update,
+        // not a turn of the run loop later: bound in a task, it held the chat
+        // shown before for the frames in between — its rows, and its live
+        // bar — under the one just opened, and they moved as its bar and its
+        // figures came and went (`TranscriptSwitchFirstFrameTests`).
+        .onChange(of: session.presentationGeneration, initial: true) {
             page.onAnchorChanged = onAnchorChanged; page.onReadReply = onReadReply; page.onLoadEarlier = onLoadEarlier; page.onViewportReady = onViewportReady
             page.state = session.state
             page.bind(session)

@@ -113,7 +113,15 @@ extension WorkspaceModel {
                 guard record(id)?.workspaceID == workspaceID else { break }
                 if let view = displays[id] {
                     let visible = selectedID == id || sides[selectedID ?? ""]?.id == id
-                    await refreshAccounting(view, workspaceID: workspaceID, includeMessages: visible)
+                    // A chat the reader has left keeps its rows, and a revisit
+                    // shows them at once. Figures that came after the reader
+                    // went on — at the moment its reply ended — go on those
+                    // rows too, once its run is over: left off, the revisit drew
+                    // the reply without its usage line and grew it by that line
+                    // a moment later, moving every row. A chat still running
+                    // is read when it is shown (`heldRowsOutlived`).
+                    let keepsRows = !view.busy && !view.loading && view.hasPresentedRows
+                    await refreshAccounting(view, workspaceID: workspaceID, includeMessages: visible || keepsRows)
                 }
                 else {
                     let revision = beginChatStatsQuery(id)
