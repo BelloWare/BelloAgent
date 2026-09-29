@@ -465,12 +465,12 @@ public actor NativeHostService {
         let file=FileHandle(fileDescriptor:fd,closeOnDealloc:true)
         defer { try? file.close(); try? FileManager.default.removeItem(at:temporary) }
         try file.write(contentsOf:copy)
-        var last:String?, seen=Set<String>(), count=0, native=false
+        var branch=JournalChainCheck(), count=0, native=false
         while var line=try reader.nextLine() {
             if !line.isEmpty {
                 let item=try JSON.parse(line), rid=try identity(item["id"])
-                guard seen.insert(rid).inserted, item["parentId"].text == last else { throw AgentError("session_damaged","The journal is damaged before its last record; nothing was recovered") }
-                last=rid; count += 1
+                guard branch.extend(rid, parent: item["parentId"].text) else { throw AgentError("session_damaged","The journal is damaged before its last record; nothing was recovered") }
+                count += 1
                 if item["customType"].text == JournalRecordKind.marker { native=true }
             }
             line.append(10); try file.write(contentsOf:line)
@@ -488,11 +488,11 @@ public actor NativeHostService {
         // Native journals are linear. Replay as a stream, discarding old
         // presentation/state snapshots instead of retaining the complete file.
         if next?["customType"].text == JournalRecordKind.marker {
-            var replay=try ConversationReplay(), last:String?, seen=Set<String>()
+            var replay=try ConversationReplay(), branch=JournalChainCheck()
             while let item=next {
                 let id=try identity(item["id"])
-                guard seen.insert(id).inserted, item["parentId"].text==last else { throw AgentError("invalid_history","Native journal must be a valid single branch") }
-                last=id; try replay.consume(item); next=try reader.next()
+                guard branch.extend(id, parent: item["parentId"].text) else { throw AgentError("invalid_history","Native journal must be a valid single branch") }
+                try replay.consume(item); next=try reader.next()
             }
             guard reader.omittedBytes==0 else { throw AgentError("incomplete_history","History has an incomplete tail. Preserve and review it before making a portable handoff.") }
             let messages=replay.context.map { "[\($0.role)]\n" + ($0.displayText ?? $0.text) }

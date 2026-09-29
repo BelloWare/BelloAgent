@@ -7,6 +7,22 @@ import Glibc
 
 // The append-only session journal: the durable record of one chat.
 
+/// The rule every native journal keeps: one branch, each record's id new and
+/// its parent the record before it. Each walk that checks a journal (an open,
+/// one resumed from a checkpoint, a recovery, a portable preview) holds it
+/// alike, and says what breaking it means there.
+struct JournalChainCheck {
+    private(set) var last: String?
+    private var seen = Set<String>()
+    init(after last: String? = nil) { self.last = last }
+    /// Whether the record `id`, whose parent is `parent`, continues the
+    /// branch, which it then does.
+    mutating func extend(_ id: String, parent: String?) -> Bool {
+        guard seen.insert(id).inserted, parent == last else { return false }
+        last = id; return true
+    }
+}
+
 /// Append-only, locked native journal with the existing Pi-compatible *display*
 /// envelope. Opaque provider items are native metadata, not a Pi replay promise.
 ///
@@ -78,7 +94,7 @@ final class SessionJournal {
         guard !headerLine.isEmpty, let header=try? JSON.parse(headerLine),
               header["type"].text == "session", header["version"].int == 3, header["id"].text == id else { throw AgentError("session_identity", "Session header does not match its identity") }
         let headerCheck=JournalCheckpoint.Check(offset:headerStart,length:headerLine.count,sha256:JournalCheckpoint.digest(headerLine))
-        var last: String?, seen=Set<String>()
+        var branch=JournalChainCheck()
         var marker: JSON?, markerCheck: JournalCheckpoint.Check?
         while true {
             let start=reader.completeBytes
@@ -92,7 +108,7 @@ final class SessionJournal {
                 fields = JournalLineScan.Fields(id: parsed["id"].text, parentID: parsed["parentId"].text, customType: parsed["customType"].text)
             }
             let rid=try identity(item?["id"] ?? .string(fields.id ?? ""))
-            guard seen.insert(rid).inserted, fields.parentID == last else { throw AgentError("session_damaged", "Native journal must be a valid single branch") }; last=rid
+            guard branch.extend(rid, parent: fields.parentID) else { throw AgentError("session_damaged", "Native journal must be a valid single branch") }
             if marker == nil, fields.customType == JournalRecordKind.marker {
                 marker=try item ?? JSON.parse(line)
                 markerCheck=JournalCheckpoint.Check(offset:start,length:line.count,sha256:JournalCheckpoint.digest(line))
@@ -101,7 +117,7 @@ final class SessionJournal {
         if requireMarker {
             guard let marker, marker["data"]["binding"] == binding else { throw AgentError("legacy_session", "This is not a compatible native session. Original Pi history remains read-only; use an explicit portable handoff.") }
         }
-        return (last, reader.size, headerCheck, markerCheck)
+        return (branch.last, reader.size, headerCheck, markerCheck)
     }
     /// The chain from a checkpoint on, when the records the checkpoint relies
     /// on are still exactly as it recorded them and nothing after it rewrites
@@ -116,7 +132,7 @@ final class SessionJournal {
               marker["customType"].text == JournalRecordKind.marker, marker["data"]["binding"] == binding,
               let lastLine=JournalCheckpoint.verified(checkpoint.last,in:file), let last=try? JSON.parse(lastLine),
               last["id"].text == checkpoint.lastID, let reader=try? JournalRecordReader(url,startingAt:checkpoint.start) else { return nil }
-        var tail: String? = checkpoint.lastID, seen=Set<String>()
+        var branch=JournalChainCheck(after: checkpoint.lastID)
         do {
             while let line=try reader.nextLine() {
                 if line.isEmpty { continue }
@@ -124,11 +140,10 @@ final class SessionJournal {
                 if let scanned=JournalLineScan.stateTail(line) ?? JournalLineScan.fields(line), scanned.id != nil { fields=scanned }
                 else { let parsed=try JSON.parse(line); fields = .init(id:parsed["id"].text,parentID:parsed["parentId"].text,customType:parsed["customType"].text,type:parsed["type"].text) }
                 let rid=try identity(.string(fields.id ?? ""))
-                guard seen.insert(rid).inserted, fields.parentID == tail, fields.type != "branch", fields.customType != JournalRecordKind.context else { return nil }
-                tail=rid
+                guard branch.extend(rid, parent: fields.parentID), fields.type != "branch", fields.customType != JournalRecordKind.context else { return nil }
             }
         } catch { return nil }
-        return (tail, reader.size)
+        return (branch.last, reader.size)
     }
     /// `flush` false leaves the record written but not yet forced to stable
     /// storage. The bytes are in the file either way — another reader, a fork
