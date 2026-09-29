@@ -29,16 +29,14 @@ struct PiDismissAction {
 
 extension View {
     /// `.sheet(isPresented:)`, in a sheet window the app makes and lets go of
-    /// whole once the sheet has closed. SwiftUI keeps every sheet window it
-    /// has presented (macOS 14), hidden, and with it the sheet's views and
-    /// state, which went on observing the model: ten closed Settings sheets
-    /// made a model change cost five times what it did, and emptying those
-    /// windows (0.1.113) still left SwiftUI's own references keeping each
-    /// sheet's view graph, about 20 MB for a Changes sheet closed over a big
-    /// diff and 1 to 7 MB for the others. The sheet looks and closes as SwiftUI's does:
-    /// the same window, sized to its content, on the same AppKit sheet. Its
-    /// content is made as it opens; what it shows after that comes from what
-    /// the content itself observes.
+    /// whole once the sheet has closed. The sheet looks and closes as SwiftUI's
+    /// does: the same window, sized to its content, on the same AppKit sheet.
+    /// Its content is made as it opens; what it shows after that comes from
+    /// what the content itself observes. (SwiftUI's own sheets seemed to keep
+    /// every closed sheet's window and views, still observing the model, but
+    /// only in tests: XCTest keeps whatever AppKit autoreleases until a test
+    /// returns. In the app their windows go as they close, and at most the
+    /// last closed sheet's views stay, no longer updated.)
     func piSheetWindow<Content: View>(isPresented: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) -> some View {
         background(PiSheetWindowAnchor(wanted: isPresented.wrappedValue ? AnyHashable(true) : nil,
                                        dismiss: { _ in isPresented.wrappedValue = false },
@@ -114,11 +112,8 @@ final class PiSheetWindowAnchorView: NSView {
     private var presented: (identity: AnyHashable, sheet: PiSheetWindow)?
     private var scheduled = false
     /// The window and hosting view the last sheet was in, emptied, for the
-    /// next one. AppKit keeps every window that has been on screen, closed or
-    /// not, a couple of megabytes each, and SwiftUI can keep a hosting view it
-    /// last saw the pointer over (`PiSheetWindow.release`): one of each a
-    /// sheet, filled again each time it opens, instead of new ones for every
-    /// opening.
+    /// next one: one of each a sheet, filled again each time it opens,
+    /// instead of new ones for every opening.
     private var spare: PiSheetWindow.Reusable?
 
     func update(wanted: AnyHashable?, inherited: PiSheetWindowInherited, dismiss: @escaping (AnyHashable) -> Void, content: @escaping (AnyHashable) -> AnyView?) {
@@ -305,15 +300,15 @@ final class PiSheetWindowAnchorView: NSView {
         // What the content holds that is large lets go first, while its views
         // can still be laid out once, emptied.
         NotificationCenter.default.post(name: Self.willRelease, object: window)
-        // Then the content itself. SwiftUI keeps a hosting view that saw the
-        // pointer over a hover region (every Pi button has one) in a key
-        // window, and everything the view shows with it, until it sees the
-        // pointer leave, which it never does for a view no longer on screen:
-        // a Changes sheet closed with its Done button, the app in front, kept
-        // its views and its controller for good. An empty root, laid out and
-        // drawn while the window still holds the view, and the view then taken
-        // out of the window, lets go of the content whatever SwiftUI keeps of
-        // the view; the view is this sheet's again next time.
+        // Then the content itself: an empty root, laid out and drawn while the
+        // window still holds the view, and the view then taken out of the
+        // window, lets go of the content whoever else still holds the view;
+        // the view is this sheet's again next time. In a test something does:
+        // XCTest keeps whatever AppKit autoreleases until the test returns,
+        // and a sheet closed with the pointer over a hover region (every Pi
+        // button has one), the app in front, left its hosting view held that
+        // long, and a Changes sheet's controller with it. In the app nothing
+        // else holds the view once the closing turn is over.
         host.rootView = PiSheetWindowRoot(content: AnyView(EmptyView()), settings: settings, close: {})
         host.needsLayout = true
         host.layoutSubtreeIfNeeded()
@@ -325,10 +320,9 @@ final class PiSheetWindowAnchorView: NSView {
         if let parentObserver { NotificationCenter.default.removeObserver(parentObserver) }
         parentObserver = nil
         window.orderOut(nil)
-        // The window and the hosting view, emptied, hold nothing more. AppKit
-        // keeps the window regardless, as it keeps any window that has been on
-        // screen: the next sheet of the same kind opens in both (`recycle`),
-        // or the window is closed.
+        // The window and the hosting view, emptied, hold nothing more: the
+        // next sheet of the same kind opens in both (`recycle`), or the window
+        // is closed.
         window.initialFirstResponder = nil
         window.contentView = nil
         self.host = nil
