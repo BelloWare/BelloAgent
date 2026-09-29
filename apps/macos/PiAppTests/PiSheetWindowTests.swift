@@ -332,24 +332,34 @@ final class PiSheetWindowTests: XCTestCase {
         ]
         var everything: [() -> NSView?] = []
         for (name, size, open, asked) in sheets {
-            open()
+            autoreleasepool { open() }
             try await eventually("\(name) to open") { window.attachedSheet != nil }
-            let sheet = try XCTUnwrap(window.attachedSheet)
-            XCTAssertTrue(sheet === PiSheetWindow.newest, "\(name) is a window of the app's own")
-            XCTAssertFalse(LayoutCycleTests.presentedBySwiftUI(sheet), name)
-            XCTAssertEqual(sheet.frame.size, size, name)
+            try autoreleasepool {
+                let sheet = try XCTUnwrap(window.attachedSheet)
+                XCTAssertTrue(sheet === PiSheetWindow.newest, "\(name) is a window of the app's own")
+                XCTAssertFalse(LayoutCycleTests.presentedBySwiftUI(sheet), name)
+                XCTAssertEqual(sheet.frame.size, size, name)
+            }
             try await Task.sleep(for: .milliseconds(500))
-            // Every view the sheet shows, held weakly.
-            let host = try XCTUnwrap(sheet.contentView)
-            func all(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap { all($0) } }
-            let shown = all(host).map { view in { [weak view] in view } }
+            // Every view the sheet shows, held weakly, gathered in a pool of
+            // its own: the subview arrays read here, left to the test's own
+            // pool, would keep every view alive until the test returns.
+            let (shown, host): ([() -> NSView?], () -> NSView?) = try autoreleasepool {
+                let host = try XCTUnwrap(window.attachedSheet?.contentView)
+                @MainActor func all(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap { all($0) } }
+                return (all(host).map { view in { [weak view] in view } }, { [weak host] in host })
+            }
             XCTAssertFalse(shown.isEmpty, "\(name) shows views of its own")
-            XCTAssertTrue(try autoreleasepool { host.performKeyEquivalent(with: try escape()) }, "Escape leaves \(name)")
+            XCTAssertTrue(try autoreleasepool { try XCTUnwrap(host()).performKeyEquivalent(with: try escape()) }, "Escape leaves \(name)")
             try await eventually("\(name) to close") { !asked() && window.attachedSheet == nil }
             // Closed, none of it is on screen or in the hosting view the next
             // sheet of its kind opens in.
             try await eventually("\(name)'s views to be out of every window") {
-                shown.allSatisfy { $0().map { $0.window == nil && !$0.isDescendant(of: host) } ?? true }
+                autoreleasepool {
+                    shown.allSatisfy { view in
+                        view().map { shownView in shownView.window == nil && !(host().map { shownView.isDescendant(of: $0) } ?? false) } ?? true
+                    }
+                }
             }
             everything += shown
         }
@@ -360,7 +370,7 @@ final class PiSheetWindowTests: XCTestCase {
         // sheet's text view, which AppKit holds after the text view has gone.
         autoreleasepool { window.contentView = NSView() }
         try await eventually("every closed sheet's views to be let go of") {
-            everything.allSatisfy { $0().map { String(describing: type(of: $0)).hasPrefix("_NSText") } ?? true }
+            autoreleasepool { everything.allSatisfy { $0().map { String(describing: type(of: $0)).hasPrefix("_NSText") } ?? true } }
         }
     }
 
