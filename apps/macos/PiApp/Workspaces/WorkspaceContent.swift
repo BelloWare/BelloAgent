@@ -31,7 +31,7 @@ extension WorkspaceModel {
         guard records.count == ids.count else { error = "A selected chat is no longer available to copy."; return false }
         let scopes = records.map { SessionUsageScope(sessionID: $0.id, workspaceID: $0.workspaceID) }
         func isCurrent() -> Bool {
-            !Task.isCancelled && !accountingStopped && sessionReferenceCopyRevision == revision && pasteboard.changeCount == clipboardRevision
+            !Task.isCancelled && !isShutDown && sessionReferenceCopyRevision == revision && pasteboard.changeCount == clipboardRevision
         }
         do {
             let totals: [SessionUsageScope: GatewayTotals]

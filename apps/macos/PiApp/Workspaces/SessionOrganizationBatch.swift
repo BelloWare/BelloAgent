@@ -50,7 +50,7 @@ extension WorkspaceModel {
         var seen: Set<String> = []
         let targets = ids.filter { seen.insert($0).inserted }
         let task = organizationScheduler.enqueue(ids: Set(targets)) { [self] in
-            guard !installPreparing, !accountingStopped else { throw HostError.failure("Wait for the app update to finish before changing a chat.") }
+            guard !installPreparing, !isShutDown else { throw HostError.failure("Wait for the app update to finish before changing a chat.") }
             guard !targets.isEmpty, targets.count <= Self.markedSessionLimit, let store else { throw StoreError.invalidRecord }
             var existing: [String] = []
             for id in targets where record(id) != nil {
@@ -146,7 +146,7 @@ extension WorkspaceModel {
                 defer { archiveStopWorkers -= 1 }
                 while !archiveStopQueue.isEmpty {
                     let (id, revision, view, host) = archiveStopQueue.removeFirst()
-                    guard !accountingStopped else { archiveStopQueue.removeAll(); return }
+                    guard !isShutDown else { archiveStopQueue.removeAll(); return }
                     guard archiveStopRevisions[id] == revision, displays[id] === view, record(id) != nil else { continue }
                     view.state = "stopping"
                     do { _ = try await host.request("turn.stop", sessionID: id); refresh(id) }

@@ -6,7 +6,7 @@ import Foundation
 extension WorkspaceModel {
     func host(for workspace: WorkspaceRecord) async throws -> HostSupervisor {
         try Task.checkCancellation()
-        guard !accountingStopped else { throw CancellationError() }
+        guard !isShutDown else { throw CancellationError() }
         guard !workspaceChangesInFlight.contains(workspace.id) else { throw HostError.failure("Wait for this project's folder changes to finish before starting work.") }
         idleTasks[workspace.id]?.cancel()
         // The protocol handshake is ready before workspace.open has installed
@@ -104,7 +104,7 @@ extension WorkspaceModel {
     /// first message. Typing counts as using the helper: the idle stop of a
     /// helper that is up starts over.
     func prewarm(_ id: String) {
-        guard prewarmsHelpers, !accountingStopped, !installPreparing, page == .chats, !prewarming.contains(id),
+        guard prewarmsHelpers, !isShutDown, !installPreparing, page == .chats, !prewarming.contains(id),
               let item = record(id), let view = displays[id], !view.loading, !view.uncertain, view.recovered.isEmpty,
               view.contextSelectionReady || side(id)?.pending == true,
               !item.imported, !item.isArchived, !item.isBackgroundTask, !workspaceChangesInFlight.contains(item.workspaceID),
@@ -161,7 +161,7 @@ extension WorkspaceModel {
         // this open is not answered by the session being unloaded.
         if let closing = sessionClosings[item.id] { await closing.task.value }
         try Task.checkCancellation()
-        guard !accountingStopped else { throw CancellationError() }
+        guard !isShutDown else { throw CancellationError() }
         if automaticContext { try requireAutomaticContext(item.id) }
         guard let store else { throw StoreError.unavailable }
         guard !workspaceChangesInFlight.contains(item.workspaceID) else { throw HostError.failure("Wait for this project's folder changes to finish before starting work.") }
@@ -183,7 +183,7 @@ extension WorkspaceModel {
         // A read already dispatched to Keychain may finish after shutdown.
         // It must not create a new helper once terminal teardown has begun.
         try Task.checkCancellation()
-        guard !accountingStopped else { throw CancellationError() }
+        guard !isShutDown else { throw CancellationError() }
         try requireConnection(lease)
         if automaticContext { try requireAutomaticContext(item.id) }
         let key = credential["apiKey"]?.string ?? ""
@@ -191,7 +191,7 @@ extension WorkspaceModel {
         let host = try await host(for: workspace)
         defer { if automaticContext { scheduleIdle(workspaceID: item.workspaceID, host: host) } }
         try Task.checkCancellation()
-        guard !accountingStopped else { throw CancellationError() }
+        guard !isShutDown else { throw CancellationError() }
         if automaticContext {
             do { try requireAutomaticContext(item.id) }
             catch { scheduleIdle(workspaceID: item.workspaceID, host: host); throw error }

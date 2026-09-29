@@ -92,7 +92,7 @@ extension WorkspaceModel {
                                   configurationRevision: configuration.revision, directCommand: view.directCommand, inputIdentity:view.footer.contextInputIdentity)
     }
     private func automaticContextEligible(_ id: String) -> Bool {
-        guard !accountingStopped, !installPreparing, page == .chats, (focusedSessionID ?? selectedID) == id, !pendingChatIDs.contains(id),
+        guard !isShutDown, !installPreparing, page == .chats, (focusedSessionID ?? selectedID) == id, !pendingChatIDs.contains(id),
               let item = record(id), let view = displays[id], !view.loading,
               view.contextSelectionReady || (side(id) != nil && opened.contains(id)),
               !item.imported, !item.isArchived, !item.isBackgroundTask,

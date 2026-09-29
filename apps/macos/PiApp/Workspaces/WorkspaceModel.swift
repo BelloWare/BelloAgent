@@ -210,7 +210,6 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var dirtyAccounting: Set<String> = []
     var chatStatsRevision = 0
     var chatStatsVersions: [String: Int] = [:]
-    var accountingStopped = false
     let root: URL
     let vault: ConfigurationVault
     @Published var configuration = VaultConfiguration()
@@ -354,6 +353,12 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// neither the welcome nor onboarding in place of a chat about to appear.
     /// The app's model starts out launching, before its window's first frame.
     @Published var launching: Bool
+    /// Set by `shutdown()`: the model is coming down, and nothing may start
+    /// again — no helper, read or write. Every task that resumes after an
+    /// await checks it.
+    var isShutDown = false
+    /// The old name of `isShutDown`, until `WorkspaceRefresh.swift` reads the new one.
+    var accountingStopped: Bool { isShutDown }
     /// Owned by `WorkspaceDrafts.swift`: a draft write has already failed, so
     /// the next failure does not repeat the same banner.
     var draftSaveFailed = false
