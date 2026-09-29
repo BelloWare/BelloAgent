@@ -8,6 +8,8 @@ import AppKit
 struct GitPanelView: View {
     @StateObject private var controller: GitController
     @Environment(\.dismiss) private var dismiss
+    /// The sheet window the workspace presents the panel in (`piSheetWindow`).
+    @Environment(\.piSheetClose) private var sheetClose
     @State private var newBranchName = ""
     @State private var showNewBranch = false
     @State private var stashMessage = ""
@@ -48,7 +50,7 @@ struct GitPanelView: View {
         } actions: {
             if controller.loading || controller.busy { ProgressView().controlSize(.small) }
             PiIconButton(symbol: "arrow.clockwise", label: "Refresh changes", size: 28) { Task { await controller.refresh() } }
-            Button("Done") { dismiss() }.buttonStyle(.piSecondary)
+            Button("Done") { if let sheetClose { sheetClose() } else { dismiss() } }.buttonStyle(.piSecondary)
         }
         .background(GitPanelWindowReader(found: { panelWindow = $0 }, closed: { [controller] in controller.letGo() }))
         .task { controller.opened(); await controller.refresh() }

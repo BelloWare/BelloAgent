@@ -55,7 +55,9 @@ import AppKit
     /// lets go of its views. Letting go stops the views observing anything,
     /// but SwiftUI's sheet window keeps them and their state all the same,
     /// with the values they last drew. Content that holds much lets go of it
-    /// here, while its views can still be laid out once, emptied.
+    /// here, while its views can still be laid out once, emptied. A sheet in
+    /// a window of the app's own (`piSheetWindow`) is told the same way; its
+    /// views then go with the window, and SwiftUI keeps nothing of them.
     static let willRelease = Notification.Name("DismissedSheetsWillRelease")
 
     /// SwiftUI presents `.sheet` in a window class of its own.

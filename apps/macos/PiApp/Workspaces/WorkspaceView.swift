@@ -114,7 +114,10 @@ struct WorkspaceView: View {
         .sheet(item: $model.renameTarget) { target in RenameChatSheet(model: model, chatID: target.id) }
         .sheet(item: $model.topicEditor) { target in TopicSheet(model: model, target: target) }
         .sheet(item: $model.webhookPreviewTarget) { target in WebhookPreviewSheet(model: model, chatID: target.id) }
-        .sheet(isPresented: $model.showGit) {
+        // In a sheet window of the app's own: SwiftUI keeps every sheet it has
+        // presented, and a closed Changes sheet over a big diff kept about
+        // 20 MB of views with it (`piSheetWindow`).
+        .piSheetWindow(isPresented: $model.showGit) {
             if let project = model.workspaces.first(where: { $0.id == (model.gitWorkspaceID ?? model.selectedWorkspaceID) }) { GitPanelView(roots: project.roots) }
         }
         .frame(minWidth: 920, minHeight: 600)
