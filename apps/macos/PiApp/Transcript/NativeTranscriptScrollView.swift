@@ -598,7 +598,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             guard !self.approximate.isEmpty else { return }
             // Still moving: wait for the drag to settle rather than measuring
             // a width the reader is about to leave.
-            guard Date().timeIntervalSinceReferenceDate - self.approximatedAt >= Self.approximateGrace else {
+            guard ProcessInfo.processInfo.systemUptime - self.approximatedAt >= Self.approximateGrace else {
                 self.scheduleApproximateResolve(); return
             }
             self.liveResizing = false
@@ -1118,7 +1118,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             markDirty(from: moving.index)
         }
         if rowWidth != nextWidth {
-            approximatedAt = Date().timeIntervalSinceReferenceDate
+            approximatedAt = ProcessInfo.processInfo.systemUptime
             contentChangedAt = ProcessInfo.processInfo.systemUptime
         }
         layoutPassCount += 1
