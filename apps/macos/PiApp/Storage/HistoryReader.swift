@@ -54,6 +54,9 @@ struct HistoryRevision: Codable, Equatable, Sendable {
 // Read-only archive browsing does not launch an agent runtime.
 // First index record offsets and parent links; decode only the requested page.
 actor HistoryReader {
+    /// Where offset indexes are built (`HistoryOffsetIndex`).
+    private let indexDirectory: URL
+    init(indexDirectory: URL = FileManager.default.temporaryDirectory) { self.indexDirectory = indexDirectory }
     /// The next newline at or after `start`, found with `memchr`. `Data`'s
     /// `range(of:)` set up a Boyer-Moore search for every line of a journal,
     /// the largest single cost of reading a long one.
@@ -221,6 +224,11 @@ actor HistoryReader {
     private(set) var indexedBytes: UInt64 = 0
     /// Journals whose offset index is currently retained.
     var retainedIndexCount: Int { recency.count }
+    /// What the retained offset indexes take, together.
+    var retainedIndexBytes: Int { indexes.values.reduce(0) { $0 + $1.branch.bytes } }
+    /// Lets go of every retained offset index, and with it its file: the app
+    /// is quitting.
+    func releaseIndexes() { indexes.removeAll(); recency.removeAll(); digests.removeAll() }
     /// Progress/cancellation segment size, never a source EOF or record limit.
     /// Lowered in tests to exercise traversal across segment boundaries.
     private var indexRecordLimit = 100_000
@@ -433,7 +441,7 @@ actor HistoryReader {
            try whole || Self.reachesPast(cached.branch, before: before, around: around, after: after) { indexes.removeValue(forKey: path); wholeJournal = true }
         var branch: HistoryOffsetIndex
         if let cached = indexes[path], cached.stamp == identity { branch = cached.branch }
-        else { branch = try HistoryOffsetIndex() }
+        else { branch = try HistoryOffsetIndex(directory: indexDirectory) }
         var notice: String?, assistantCount = 0, latestAssistantID: String?, failureMessage: String?
         var taskRecords: [TaskPresentationRecord] = [], retainedRun: RetainedRun?, incompleteTail = false
         var versions = MessageVersionLedger(), olderRows = 0
@@ -453,7 +461,7 @@ actor HistoryReader {
         let resumable = wholeJournal ? nil : JournalCheckpoint.read(for: URL(fileURLWithPath: path))
         build: for resume in (resumable.map { [$0, nil] } ?? [nil]) as [JournalCheckpoint?] {
         if resume == nil, resumable != nil {
-            branch = try HistoryOffsetIndex(); notice = nil; assistantCount = 0; latestAssistantID = nil; failureMessage = nil
+            branch = try HistoryOffsetIndex(directory: indexDirectory); notice = nil; assistantCount = 0; latestAssistantID = nil; failureMessage = nil
             taskRecords = []; retainedRun = nil; incompleteTail = false; versions = MessageVersionLedger(); olderRows = 0
         }
         var pending = Data(), offset: UInt64 = 0, leaf: String?

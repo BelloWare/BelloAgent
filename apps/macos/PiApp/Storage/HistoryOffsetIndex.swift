@@ -12,15 +12,24 @@ struct HistoryOffset: Codable {
 /// Rebuildable read-only source index. Offset/branch tables spill to a private
 /// temporary database, not the source journal. SQLite's page cache is bounded;
 /// no 100k-record prefix can impersonate the latest conversation anymore.
+///
+/// Its file lives as long as the index: removed when the reader lets go of
+/// it and when the app quits (`HistoryReader.releaseIndexes`). The name
+/// carries the process id, so a later launch can tell a file a crashed app
+/// left from one a running copy is reading (`HistoryIndexFiles`). The file
+/// must keep its name while open: Apple's SQLite takes a database unlinked
+/// while in use for corruption and cuts its descriptor off, and an anonymous
+/// temporary database would be held in memory instead of on disk.
 final class HistoryOffsetIndex: @unchecked Sendable {
+    static let filePrefix = "bello-history-"
     private var db: OpaquePointer?
     private let path: URL
     private(set) var count = 0
     private(set) var recordCount = 0
     private(set) var lineage = "root"
     private var nextOrdinal = 0
-    init() throws {
-        path = FileManager.default.temporaryDirectory.appendingPathComponent("bello-history-" + UUID().uuidString + ".sqlite")
+    init(directory: URL = FileManager.default.temporaryDirectory) throws {
+        path = directory.appendingPathComponent(Self.filePrefix + "p\(getpid())-" + UUID().uuidString + ".sqlite")
         guard sqlite3_open(path.path, &db) == SQLITE_OK else { throw StoreError.unreadableRecord }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
         try execute("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-512; PRAGMA temp_store=FILE; CREATE TABLE refs(id TEXT PRIMARY KEY, payload BLOB NOT NULL); CREATE TABLE chain(n INTEGER PRIMARY KEY, id TEXT NOT NULL); CREATE TABLE visible(n INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, role TEXT); CREATE TABLE seen(id TEXT PRIMARY KEY); BEGIN")
@@ -126,6 +135,8 @@ final class HistoryOffsetIndex: @unchecked Sendable {
         try execute("CREATE TABLE ordered(n INTEGER PRIMARY KEY, id TEXT UNIQUE, role TEXT); INSERT INTO ordered SELECT ROW_NUMBER() OVER(ORDER BY n)-1,id,role FROM visible; DROP TABLE visible; ALTER TABLE ordered RENAME TO visible; DROP TABLE chain; COMMIT")
         count = try scalar("SELECT count(*) FROM visible")
     }
+    /// Test seam: the database's size, on disk or held.
+    var bytes: Int { ((try? scalar("PRAGMA page_count")) ?? 0) * ((try? scalar("PRAGMA page_size")) ?? 0) }
     func timelineIDs() throws -> [String] {
         let statement = try query("SELECT id FROM visible ORDER BY n"); defer { sqlite3_finalize(statement) }
         var ids: [String] = []
