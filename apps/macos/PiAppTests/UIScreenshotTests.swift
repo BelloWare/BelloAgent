@@ -172,6 +172,16 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // Only the mockups of switching sides beside the side (22*): proposals
+        // for the owner, not the app, so the full gallery never draws them.
+        if testEnvironment("PI_APP_UI_GALLERY_SIDES_ONLY") == "1" {
+            try await captureSideSwitcherMockups(model: model, window: window, gallery: gallery, appearances: appearances,
+                                                 parentID: main.id, profileID: connections[0].profile.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         // Only the sidebar with the archive switch on.
         if testEnvironment("PI_APP_UI_GALLERY_ARCHIVE_ONLY") == "1" {
             let topic = try await model.createTopic(in: workspace.id, title: "Payments")
@@ -547,6 +557,59 @@ final class UIScreenshotTests: XCTestCase {
             try capture(window, to: gallery.appendingPathComponent("14c-sidebar-archive-\(name).png"))
         }
         model.setArchivedChatsShown(false); try await settle(0.8)
+    }
+
+    /// 22 · Mockups of switching between a chat's sides beside the side
+    /// (`SideSwitcherMockups.swift`), for the owner to choose from. The same
+    /// chat with four saved sides — the one open, one working, one with a new
+    /// reply and one quiet — as the window is today (22), with tabs across the
+    /// side pane (22a), with a rail at the window's right edge, wide (22b) and
+    /// collapsed (22c), and with the side's title as a menu, open (22d).
+    @MainActor private func captureSideSwitcherMockups(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                       appearances: [(String, NSAppearance.Name)], parentID: String,
+                                                       profileID: String) async throws {
+        let parent = try XCTUnwrap(model.record(parentID), "The gallery's main chat")
+        model.openSide(parentID: parentID, question: "Is the retry budget shared with queued follow-ups, or per turn?")
+        try await settle(1.0)
+        let sideID = try XCTUnwrap(model.sides[parentID]?.id, "side did not open: \(String(describing: model.error))")
+        let side = try XCTUnwrap(model.displays[sideID])
+        try await waitIdle(side, model: model, minimumMessages: 2)
+        try await settle(0.8)
+        func retitle(_ id: String, _ title: String) async throws {
+            guard let index = model.chats.firstIndex(where: { $0.id == id }) else { return }
+            model.chats[index].title = title; model.chats[index].titleWasEdited = true
+            try await model.store?.put(model.chats[index], kind: "chat", id: id)
+        }
+        try await retitle(sideID, "Retry budget per turn")
+        // The side on screen has been read.
+        model.markSessionRead(sideID)
+        var siblings: [String] = []
+        for title in ["Idempotency keys for refunds", "Jitter bounds and the retry cap", "Cancellation path notes"] {
+            var chat = ChatRecord(id: UUID().uuidString, workspaceID: parent.workspaceID, title: title, path: nil, profileID: profileID, toolMode: "read-only")
+            chat.parentSessionID = parentID; chat.titleWasEdited = true
+            model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+            siblings.append(chat.id)
+        }
+        // One side working and one with a reply the reader has not seen: the
+        // marks the sidebar and every design draw from the same model.
+        let working = SessionDisplay(id: siblings[0]); working.state = "running"; model.displays[siblings[0]] = working
+        model.unreadStates[siblings[1]] = SessionReadState(id: siblings[1], observedAssistantCount: 1, unreadOutputs: 1)
+        let state = SideSwitcherMockupState()
+        state.activity = [sideID: "now", siblings[0]: "2m", siblings[1]: "3m ago", siblings[2]: "1h ago"]
+        window.contentView = NSHostingView(rootView: SideSwitcherMockupWindow(model: model, state: state))
+        try await settle(1.5)
+        let scenes: [(String, SideSwitcherMockupState.Variant)] = [
+            ("22-side-switcher-today", .today), ("22a-side-switcher-tabs", .tabs), ("22b-side-switcher-rail", .rail),
+            ("22c-side-switcher-rail-collapsed", .railCollapsed), ("22d-side-switcher-menu", .menu)
+        ]
+        for (scene, variant) in scenes {
+            state.variant = variant
+            for (name, appearance) in appearances {
+                NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+                try capture(window, to: gallery.appendingPathComponent("\(scene)-\(name).png"))
+            }
+        }
+        NSApp.appearance = nil
     }
 
     /// 17 · Skills rendered inline: two selected skills leading the

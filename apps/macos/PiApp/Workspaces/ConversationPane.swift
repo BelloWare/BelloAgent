@@ -31,6 +31,8 @@ struct ConversationPane: View {
     /// The loading cover is due: shown once a read has taken longer than a
     /// glance (`coverDelay`), so a quick one never flashes it.
     @State private var coverDue = false
+    /// Nil in the app: another header design the screenshot gallery tries.
+    @Environment(\.sidePaneHeader) private var sidePaneHeader
     static let coverDelay = Duration.milliseconds(150)
     /// Whether the loading cover stands over the transcript. A revisit of a
     /// chat whose rows are already on the page reads its fresh page behind
@@ -44,7 +46,13 @@ struct ConversationPane: View {
         VStack(spacing: 0) {
             // No header: the sidebar names the chat, the composer bar holds its
             // actions, and the live turn bar at the bottom shows what is going on.
-            if side != nil { sideHeader; Rectangle().fill(Color.piHairline).frame(height: 1) }
+            if let side {
+                if let slot = sidePaneHeader, let sideActions {
+                    slot.make(SidePaneHeaderContext(model: model, session: session, chat: chat, side: side, actions: sideActions,
+                                                    boundary: boundary, boundaryDetail: boundaryDetail, paneWidth: paneWidth))
+                } else { sideHeader }
+                Rectangle().fill(Color.piHairline).frame(height: 1)
+            }
             if session.uncertain && !session.busy && !session.recovered.isEmpty { recoveredBanner }
             NativeTranscriptView(session: session, state: session.state,
                                  actions: TranscriptActions(inspect: { model.showMessageDetail(session.id, messageID: $0) },
