@@ -63,6 +63,26 @@ reading anchor and active selection. Latest actually fetches the source tail.
 Nonoverlapping live snapshots preserve the reader's range and expose a newer
 boundary rather than deleting history or pretending that a gap is adjacency.
 
+Live output at a full window keeps arriving (0.1.114). While the reader holds a
+row the window would drop — the row they read from, or the one holding their
+cursor or selection — the window runs from that row to the live tail, past its
+budget, and the next update after they let go trims it again. From 0.1.80 to
+0.1.113 the chat kept its rows and stopped taking the helper's instead: a reply
+being written stopped mid-sentence behind "Load newer messages" until the chat
+was left and opened again. The page draws exactly the rows the display holds,
+with no second cut of its own, and the request log is asked about the newest
+500 of them; rows further up keep the figures they already show.
+
+Every row of a chat stays reachable by scrolling (0.1.115). Rows that leave the
+window's start as the chat grows leave an earlier edge at its first row, as a
+window read from the middle of the chat has, and the reader scrolls back to
+them. Before, a window that had read every row from the chat's first kept no
+edge, and those rows came back only when the chat was opened again. A page too
+short to scroll fills itself with earlier rows only while the window can take
+a whole page more without letting go of any row it holds; otherwise the edge's
+control waits for the reader, so a fill never pushes out the rows on screen or
+the live tail.
+
 The old 100,000-record index cutoff is removed. A cancellable worker scans the
 supported journal and builds a private, disposable SQLite offset/branch index.
 Offsets spill to disk; only the requested body window is decoded for display.

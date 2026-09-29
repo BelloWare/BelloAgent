@@ -54,6 +54,16 @@ enum TranscriptPaging {
         for row in messages.reversed() { guard admits(row) else { break } }
         return kept == messages.count ? messages : Array(messages.suffix(kept))
     }
+    /// Whether the window can take a whole page of earlier rows (a history
+    /// page is at most `HistoryWindowPolicy.rows` rows and one envelope)
+    /// without letting go of any row it holds. A page that fills itself with
+    /// earlier rows must never push out the rows the reader is at, the live
+    /// tail among them.
+    static func takesAnotherPage(_ messages: [TranscriptMessage]) -> Bool {
+        let caps = residentCaps
+        guard messages.count + HistoryWindowPolicy.rows <= caps.rows else { return false }
+        return messages.reduce(0) { $0 + size($1) } + HistoryWindowPolicy.envelopeBytes <= caps.bytes
+    }
     /// The resident window's two caps: `HistoryWindowPolicy`'s, which the app
     /// never changes. A test seam: a fixture lowers them so that a short chat
     /// passes both, rather than paging through a thousand long rows to do it.

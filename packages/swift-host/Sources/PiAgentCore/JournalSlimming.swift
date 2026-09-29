@@ -80,9 +80,12 @@ enum JournalSlimming {
         let before = try AgentSession.replay(original, url: url, id: id, binding: binding, spendTracked: false, resume: false)
 
         let copy = directory.appendingPathComponent(".slim-" + UUID().uuidString + ".jsonl")
+        // The copy's journal, and the lock it holds on the copy, live until
+        // the copy has taken the original's place or been removed.
         var copyJournal: SessionJournal?
+        func closeCopy() { withExtendedLifetime(copyJournal) {}; copyJournal = nil }
         func removeCopy() {
-            copyJournal = nil
+            closeCopy()
             try? FileManager.default.removeItem(at: copy); try? FileManager.default.removeItem(atPath: copy.path + ".lock")
         }
         do {
@@ -105,7 +108,7 @@ enum JournalSlimming {
             guard rename(copy.path, url.path) == 0 else { throw AgentError("session_damaged", "The slimmed journal could not take the original's place") }
             // The metadata file follows the new journal, as a full open writes it.
             if let captured = after.captured { try? captured.write(for: url) } else { JournalCheckpoint.remove(for: url) }
-            copyJournal = nil
+            closeCopy()
             try? FileManager.default.removeItem(atPath: copy.path + ".lock")
             outcome.slimmed = true; outcome.recordsRemoved = plan.removed.count
             outcome.bytesAfter = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.uint64Value ?? 0
