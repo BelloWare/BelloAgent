@@ -26,8 +26,7 @@ enum CostLimit: Hashable, Sendable, Codable {
 
     /// Dollars as a limit reads: cents, or the digits a sub-cent amount needs,
     /// up to six, so it never reads as $0.00 (`MetricFormat.centsUSD`). The
-    /// helper's stop notice (`SessionCost.costText`) writes the same digits
-    /// but still rounds in binary: a tie such as $2.675 reads $2.67 there.
+    /// helper's stop notice says them the same way (`SessionCost.costText`).
     static func dollars(_ value: Double) -> String {
         guard value.isFinite, value > 0 else { return "$0.00" }
         return MetricFormat.centsUSD(value, places: 6, padded: false)
