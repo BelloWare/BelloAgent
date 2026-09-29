@@ -129,6 +129,11 @@ final class SoakTests: XCTestCase, SerialTestLane {
         var jumps: [Jump] = []
         var actions: [String: Int] = [:]
         var footprints: [(cycle: Int, megabytes: Double)] = []
+        /// Each closed launch, held weakly: a model still alive long after its
+        /// launch closed is kept by something. (In a 17-launch run, each model
+        /// went within five launches; every closed window stayed alive in the
+        /// test runner, which the app, with its one window, never sees.)
+        var closed: [ClosedLaunch] = []
         var quitFailures: [Int] = []
         var recent: [String] = []
         func did(_ action: String, _ label: String) {
@@ -138,6 +143,7 @@ final class SoakTests: XCTestCase, SerialTestLane {
     }
 
     private struct Place { var y: CGFloat; var height: CGFloat; var item: TranscriptItem }
+    private struct ClosedLaunch { weak var model: WorkspaceModel?; weak var window: NSWindow?; weak var view: NSView? }
 
     /// The fields that differ between two values, by path, for a row whose
     /// height changed: what came in that changed it.
@@ -334,6 +340,7 @@ final class SoakTests: XCTestCase, SerialTestLane {
             await restoring.value
             if !(await quit(model)) { log.quitFailures.append(cycle) }
             await close(launched)
+            log.closed.append(ClosedLaunch(model: launched.model, window: launched.window, view: launched.hosted))
             try await Task.sleep(for: .milliseconds(300))
             log.footprints.append((cycle, Double(Self.footprint()) / 1_048_576))
         }
@@ -430,6 +437,12 @@ final class SoakTests: XCTestCase, SerialTestLane {
                        first.megabytes, first.cycle, last.megabytes, last.cycle, peak,
                        log.footprints.count > 1 ? (last.megabytes - first.megabytes) / Double(last.cycle - first.cycle) : 0))
         }
+        // Every launch, the last one too: which ones is what tells a model
+        // let go late from one that is kept.
+        let closed = log.closed
+        say("SOAK closed launches still alive: \(closed.filter { $0.model != nil }.count) models, \(closed.filter { $0.window != nil }.count) windows, "
+            + "\(closed.filter { $0.view != nil }.count) views, of \(closed.count); models of cycles "
+            + closed.enumerated().filter { $0.element.model != nil }.map { String($0.offset + 1) }.joined(separator: " "))
         if !log.quitFailures.isEmpty { say("SOAK quit failed in cycles \(log.quitFailures)") }
         // Every frame again, with its image and load address, for atos.
         lines.append("## frames")
