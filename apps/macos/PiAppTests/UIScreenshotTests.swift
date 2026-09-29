@@ -172,7 +172,7 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
-        // Only the mockups of switching sides beside the side (22*): proposals
+        // Only the mockups of switching sides beside the side (23*): proposals
         // for the owner, not the app, so the full gallery never draws them.
         if testEnvironment("PI_APP_UI_GALLERY_SIDES_ONLY") == "1" {
             try await captureSideSwitcherMockups(model: model, window: window, gallery: gallery, appearances: appearances,
@@ -559,51 +559,74 @@ final class UIScreenshotTests: XCTestCase {
         model.setArchivedChatsShown(false); try await settle(0.8)
     }
 
-    /// 22 · Mockups of switching between a chat's sides beside the side
-    /// (`SideSwitcherMockups.swift`), for the owner to choose from. The same
-    /// chat with four saved sides — the one open, one working, one with a new
-    /// reply and one quiet — as the window is today (22), with tabs across the
-    /// side pane (22a), with a rail at the window's right edge, wide (22b) and
-    /// collapsed (22c), and with the side's title as a menu, open (22d).
+    /// 23 · Mockups of switching between a chat's sides beside the side
+    /// (`SideSwitcherMockups.swift`), round two, for the owner to choose
+    /// from. The same chat with four saved sides, in the sidebar's order: one
+    /// quiet, the one open (2 of 4), one with a new reply and one working. The
+    /// window as it is today (23); a pager beside the side's title, and its
+    /// cards (23a); a capsule of marks under the header, and its list on hover
+    /// (23b); a strip on the seam, and a mark's card on hover (23c); chips
+    /// above the side's composer (23d); tabs in the window's top strip (23e);
+    /// the marks beside the title, and the overview of the sides (23f).
     @MainActor private func captureSideSwitcherMockups(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                        appearances: [(String, NSAppearance.Name)], parentID: String,
                                                        profileID: String) async throws {
         let parent = try XCTUnwrap(model.record(parentID), "The gallery's main chat")
-        model.openSide(parentID: parentID, question: "Is the retry budget shared with queued follow-ups, or per turn?")
+        let question = "Is the retry budget shared with queued follow-ups, or per turn?"
+        model.openSide(parentID: parentID, question: question)
         try await settle(1.0)
         let sideID = try XCTUnwrap(model.sides[parentID]?.id, "side did not open: \(String(describing: model.error))")
         let side = try XCTUnwrap(model.displays[sideID])
         try await waitIdle(side, model: model, minimumMessages: 2)
         try await settle(0.8)
-        func retitle(_ id: String, _ title: String) async throws {
-            guard let index = model.chats.firstIndex(where: { $0.id == id }) else { return }
-            model.chats[index].title = title; model.chats[index].titleWasEdited = true
-            try await model.store?.put(model.chats[index], kind: "chat", id: id)
-        }
-        try await retitle(sideID, "Retry budget per turn")
+        let open = try XCTUnwrap(model.chats.firstIndex { $0.id == sideID }, "The side is saved")
+        model.chats[open].title = "Retry budget per turn"; model.chats[open].titleWasEdited = true
+        try await model.store?.put(model.chats[open], kind: "chat", id: sideID)
         // The side on screen has been read.
         model.markSessionRead(sideID)
+        // The other three, placed around it in the sidebar's order (newest
+        // first), so it reads as the second of four.
+        let order = model.chats[open].sidebarOrder ?? Int64(Date().timeIntervalSince1970 * 1_000_000)
+        let plan: [(title: String, order: Int64, question: String, reply: String)] = [
+            ("Cancellation path notes", order + 10, "Does cancelling mid-retry leave a request in flight?",
+             "No. Cancelling the task group ends the sleeping attempt, and the caller gets the last error rather than a timeout."),
+            ("Jitter bounds and the retry cap", order - 10, "What bounds should the jitter use under a five-attempt cap?",
+             "Full jitter between zero and the capped backoff keeps retries apart. With a 200 ms base, the fifth attempt waits at most 3.2 s."),
+            ("Idempotency keys for refunds", order - 20, "Should a refund reuse the payment's idempotency key, or mint its own?",
+             "Reading RefundService.swift and PaymentClient.swift to see where the keys are made…")
+        ]
         var siblings: [String] = []
-        for title in ["Idempotency keys for refunds", "Jitter bounds and the retry cap", "Cancellation path notes"] {
-            var chat = ChatRecord(id: UUID().uuidString, workspaceID: parent.workspaceID, title: title, path: nil, profileID: profileID, toolMode: "read-only")
-            chat.parentSessionID = parentID; chat.titleWasEdited = true
+        let state = SideSwitcherMockupState()
+        for entry in plan {
+            var chat = ChatRecord(id: UUID().uuidString, workspaceID: parent.workspaceID, title: entry.title, path: nil, profileID: profileID, toolMode: "read-only")
+            chat.parentSessionID = parentID; chat.titleWasEdited = true; chat.sidebarOrder = entry.order
             model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
             siblings.append(chat.id)
+            state.questions[chat.id] = entry.question; state.snippets[chat.id] = entry.reply
         }
-        // One side working and one with a reply the reader has not seen: the
+        // One side with a reply the reader has not seen, and one working: the
         // marks the sidebar and every design draw from the same model.
-        let working = SessionDisplay(id: siblings[0]); working.state = "running"; model.displays[siblings[0]] = working
         model.unreadStates[siblings[1]] = SessionReadState(id: siblings[1], observedAssistantCount: 1, unreadOutputs: 1)
-        let state = SideSwitcherMockupState()
-        state.activity = [sideID: "now", siblings[0]: "2m", siblings[1]: "3m ago", siblings[2]: "1h ago"]
+        let working = SessionDisplay(id: siblings[2]); working.state = "running"; model.displays[siblings[2]] = working
+        state.parentTitle = parent.title
+        state.questions[sideID] = question
+        state.snippets[sideID] = side.messages.last { $0.role == "assistant" && !$0.text.isEmpty }?.text
+            .split(separator: "\n").first.map(String.init) ?? ""
+        state.activity = [siblings[0]: "1h ago", sideID: "now", siblings[1]: "3m ago", siblings[2]: "2m"]
+        state.hovered = siblings[1]
         window.contentView = NSHostingView(rootView: SideSwitcherMockupWindow(model: model, state: state))
         try await settle(1.5)
-        let scenes: [(String, SideSwitcherMockupState.Variant)] = [
-            ("22-side-switcher-today", .today), ("22a-side-switcher-tabs", .tabs), ("22b-side-switcher-rail", .rail),
-            ("22c-side-switcher-rail-collapsed", .railCollapsed), ("22d-side-switcher-menu", .menu)
+        let scenes: [(String, SideSwitcherMockupState.Design, Bool)] = [
+            ("23-side-switcher-today", .today, false),
+            ("23a-side-switcher-pager", .pager, false), ("23a-side-switcher-pager-open", .pager, true),
+            ("23b-side-switcher-capsule", .capsule, false), ("23b-side-switcher-capsule-open", .capsule, true),
+            ("23c-side-switcher-seam", .seam, false), ("23c-side-switcher-seam-hover", .seam, true),
+            ("23d-side-switcher-chips", .chips, false),
+            ("23e-side-switcher-top-tabs", .topTabs, false),
+            ("23f-side-switcher-overview", .overview, false), ("23f-side-switcher-overview-open", .overview, true)
         ]
-        for (scene, variant) in scenes {
-            state.variant = variant
+        for (scene, design, isOpen) in scenes {
+            state.design = design; state.isOpen = isOpen
             for (name, appearance) in appearances {
                 NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
                 try capture(window, to: gallery.appendingPathComponent("\(scene)-\(name).png"))
