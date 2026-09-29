@@ -89,6 +89,15 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var refreshingCachedRows = false
     /// Rows this display has presented, which a revisit keeps on the page.
     var hasPresentedRows: Bool { !messages.isEmpty && (presentation.identity != nil || refreshingCachedRows) }
+    /// The rows held here are from a run that has finished since: a chat in
+    /// the background is asked for its status, not its rows, so they stopped
+    /// where the reader left them — a reply still arriving, its turn still
+    /// live. Kept on the page, they changed under the reader as soon as the
+    /// finished page replaced them.
+    var heldRowsOutlived: Bool {
+        !busy && !loading && state == "idle" && sendingRows.isEmpty
+            && (taskPresentation?.active != nil || messages.contains { $0.isStreaming || $0.isSending })
+    }
     @Published var historyProgress: String?
     @Published var olderPage = ConversationPageBoundary()
     @Published var newerPage = ConversationPageBoundary()
@@ -434,6 +443,13 @@ struct TranscriptVersionView: Equatable, Sendable {
     var pinnedHistoryIDs: Set<String> = []
     var scrollAnchor: TranscriptAnchor?
     @Published var viewportRequest = 0
+    /// Whether the newest `viewportRequest` opens the chat — its first page
+    /// read in, or its rows shown again on a revisit — rather than taking
+    /// the reader somewhere they asked to go. An opening starts where any
+    /// chat the reader opens starts (at the question of its last turn, when
+    /// that turn is taller than the pane); a jump lands where it was asked
+    /// to. Every site that asks sets it, just before asking.
+    var viewportRequestOpens = false
     let footer = SessionMetrics()
     var context: [String: WireValue] { get { footer.context } set { footer.context = newValue } }
     func observeContext(_ snapshot: [String: WireValue], baseline: Bool = false) {

@@ -41,7 +41,7 @@ extension WorkspaceModel {
     }
 
     func adoptInitialHistory(_ page: ConversationHistoryPage, into view: SessionDisplay, around: String? = nil) {
-        view.beginTranscriptBatch(); defer { view.endTranscriptBatch() }
+        view.beginTranscriptBatch()
         if view.taskPresentation?.active == nil {
             view.taskPresentation = .init(sessionID:view.id, epoch:page.incarnation, timeline:page.lineage, sequence:0, sourceRevision:page.revision?.stamp ?? "history", active:nil, recent:page.taskRecords)
         }
@@ -57,13 +57,19 @@ extension WorkspaceModel {
         view.historyState = page.messages.isEmpty ? .empty : .preparing
         view.messages = page.messages
         view.adoptedPage = view.pageRows
-        view.viewportRequest += 1
         if let count = page.assistantCount {
             observeAssistantOutputs(sessionID: view.id, snapshot: ["assistantMessageCount": .number(Double(count)),
                 "latestAssistantMessageId": page.latestAssistantID.map(WireValue.string) ?? .null])
         }
         view.observeRetainedFailure(page.failure); view.observeRetainedRun(page)
         if let notice = page.notice { view.notice = notice }
+        view.endTranscriptBatch()
+        // The request goes after the rows it is for. Asked inside the batch,
+        // the page took it against the rows the batch was replacing — none,
+        // for a chat just opened — and the rows came after it as an update:
+        // a chat opened fresh never made the placement a chat makes when it
+        // opens.
+        view.viewportRequestOpens = true; view.viewportRequest += 1
         view.presentation.sourceReadyAt = PerformanceProbe.now
         PerformanceProbe.shared.observe("selectionSourceReadyMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
         if page.messages.isEmpty { historyViewportReady(view.id, generation: view.presentationGeneration) }
@@ -77,7 +83,7 @@ extension WorkspaceModel {
         view.historyProgress = nil
         view.browsingHistory = view.newerPage.cursor != nil
         view.historyState = .preparing
-        view.viewportRequest += 1
+        view.viewportRequestOpens = true; view.viewportRequest += 1
         view.presentation.sourceReadyAt = PerformanceProbe.now
     }
 
@@ -301,7 +307,7 @@ extension WorkspaceModel {
             // the whole conversation being read again behind the cover.
             if view.olderPage.loading { view.presentation.olderTask?.cancel() }
             view.scrollAnchor = .init(id: view.messages.last?.id ?? "", offset: 0, followsBottom: true)
-            view.viewportRequest += 1; anchorChanged(view)
+            view.viewportRequestOpens = false; view.viewportRequest += 1; anchorChanged(view)
             if refreshing { refresh(id) }
         }
     }
@@ -347,7 +353,7 @@ extension WorkspaceModel {
         } else if view.presentation.partialTurnInput == pending.messageID { view.presentation.partialTurnInput = nil }
         // The reader goes with their edit, to the new turn at the end.
         view.scrollAnchor = .init(id: "", offset: 0, followsBottom: true)
-        view.viewportRequest += 1; anchorChanged(view)
+        view.viewportRequestOpens = false; view.viewportRequest += 1; anchorChanged(view)
     }
     /// A change of branch nobody here asked for: another copy of the app, or
     /// a journal changed under the chat. The page stops following the live

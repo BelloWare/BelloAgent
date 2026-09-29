@@ -129,6 +129,12 @@ struct ContentGeometry: Equatable {
     private var pendingAnchorRow: String?
     /// A chat opened while idle starts at its last question when the last turn does not fit above the bottom.
     private var openingPlacementPending = false
+    /// True from a new page or viewport request until the page has landed its
+    /// first placement. Until the document has laid this page's rows out,
+    /// its geometry is the chat shown before: a placement worked out against
+    /// it landed on that chat's height and drew the new rows where the old
+    /// chat was scrolled to, for the frames until the rows were placed.
+    private var awaitingFirstPlacement = false
     private var openingReadingAnchor: TranscriptAnchor? { didSet { syncReadingOwnership() } }
     private var seen: Set<String> = []
     private var completedAssistant: String?
@@ -225,6 +231,7 @@ struct ContentGeometry: Equatable {
     }
     private func reset() {
         initialized = false; followsBottom = true; atBottom = true; pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
+        awaitingFirstPlacement = true
         viewportResizePending = false
         settleScheduled = false; readCheckScheduled = false
         seen = []; completedAssistant = nil; firstRow = ""; jumping = false
@@ -345,7 +352,12 @@ struct ContentGeometry: Equatable {
             viewportRequest = request
             reset()
             explicitDestination = navigating && session.scrollAnchor?.followsBottom == false
-            navigated = navigating
+            // The chat's own opening page, read in or shown again on a
+            // revisit, is not a jump the reader asked for: it opens as any
+            // chat opens. Counted as one, it cancelled the opening placement
+            // the page had already drawn, and a revisit drew the last question
+            // and then jumped to the bottom a few frames later.
+            navigated = navigating && !session.viewportRequestOpens
         }
         if snapshot?.messages.first?.id != messages.first?.id, viewportRequest == request {
             preserveReadingPositionForLayout()
@@ -630,30 +642,26 @@ struct ContentGeometry: Equatable {
         // An explicit jump owns scrolling until it lands. A reply arriving
         // during that animation must not snap the clip view on every delta.
         guard !jumping else { requestReadCheck(); return }
+        // Until the transcript's document has laid this page's rows out, the
+        // geometry it reports is the chat shown before: landing on it put the
+        // new rows where that chat was scrolled to, and took the place of the
+        // first placement the layout pass makes (`layoutPlacement`).
+        if awaitingFirstPlacement, scrollView?.documentView is TranscriptNativeDocument,
+           let last = snapshot?.items.last, frames[last.id] == nil { return }
         if openingPlacementPending, documentSettled, viewport.height > 0, let snapshot {
-            // The reader opened this chat: show the question that started the last
-            // turn, unless the whole turn fits above the bottom anyway.
-            if let lastUser = snapshot.items.last(where: { if case .message(let m) = $0 { return m.role == "user" }; return false }), let frame = frames[lastUser.id] {
-                openingPlacementPending = false
-                let bottom = max(0, content.height - viewport.height)
-                if frame.minY < bottom - 1 {
-                    followsBottom = false
-                    pendingAnchor = TranscriptAnchor(id: lastUser.id, offset: 12, followsBottom: false)
-                    openingReadingAnchor = pendingAnchor
-                    if !detached { detached = true }
-                }
-            } else if !frames.isEmpty { openingPlacementPending = false }
+            resolveOpeningPlacement(snapshot, bottom: max(0, content.height - viewport.height))
         }
+        if openingReadingAnchor != nil, !detached { detached = true }
         if followsBottom {
             pendingAnchor = nil
             // Wait for exact native geometry instead of landing at a stale height.
-            if documentSettled { scrollToBottom() }
+            if documentSettled { scrollToBottom(); awaitingFirstPlacement = false }
             if detached && !jumping { detached = false }
             requestReadCheck()
             return
         }
         if scrollView?.transcriptReading.restore() == true {
-            pendingAnchor = nil; requestReadCheck(); return
+            pendingAnchor = nil; awaitingFirstPlacement = false; requestReadCheck(); return
         }
         guard let anchor = pendingAnchor, let snapshot else { requestReadCheck(); return }
         let rowID = rowIdentifier(for: anchor.id)
@@ -664,7 +672,7 @@ struct ContentGeometry: Equatable {
             // Keep the saved anchor until the native document attaches.
             guard let scrollView, let document = scrollView.documentView else { return }
             let destination = explicitDestination
-            pendingAnchor = nil
+            pendingAnchor = nil; awaitingFirstPlacement = false
             scroll(to: frame.minY - anchor.offset, animated: false)
             // A saved position or a jump lands on the heights the rows above
             // have so far, most of them estimated. Their measurement comes
@@ -676,6 +684,49 @@ struct ContentGeometry: Equatable {
             }
         }
         requestReadCheck()
+    }
+    /// The reader opened this chat: show the question that started the last
+    /// turn, unless the whole turn fits above the bottom anyway.
+    private func resolveOpeningPlacement(_ snapshot: Snapshot, bottom: CGFloat) {
+        if let lastUser = snapshot.items.last(where: { if case .message(let m) = $0 { return m.role == "user" }; return false }), let frame = frames[lastUser.id] {
+            openingPlacementPending = false
+            if frame.minY < bottom - 1 {
+                followsBottom = false
+                pendingAnchor = TranscriptAnchor(id: lastUser.id, offset: 12, followsBottom: false)
+                openingReadingAnchor = pendingAnchor
+            }
+        } else if !frames.isEmpty { openingPlacementPending = false }
+    }
+    /// Where the page belongs, worked out in the layout pass that has just
+    /// placed its rows, for the placements only the page makes: its first,
+    /// after a chat is opened or its rows shown again, and the question a
+    /// chat opened at while the rows above it measure. Landed a run-loop turn
+    /// later instead, the frame between drew the new rows where the chat
+    /// before was scrolled to, and a question the rows above had moved by
+    /// their difference. Nil when the page has nothing to place here; the
+    /// reader's own position is the pane's reading correction's to keep.
+    func layoutPlacement(contentHeight: CGFloat, viewportHeight: CGFloat) -> CGFloat? {
+        guard initialized, !jumping, viewportHeight > 0, let snapshot, let last = snapshot.items.last, frames[last.id] != nil else { return nil }
+        let bottom = max(0, contentHeight - viewportHeight)
+        if openingPlacementPending { resolveOpeningPlacement(snapshot, bottom: bottom) }
+        if awaitingFirstPlacement, !openingPlacementPending {
+            // Where the page was put is remembered once it is there, as it
+            // was when the landing came a turn after the first frame.
+            if followsBottom { awaitingFirstPlacement = false; scheduleReport(); return bottom }
+            if let anchor = pendingAnchor, let frame = frames[rowIdentifier(for: anchor.id)] {
+                awaitingFirstPlacement = false; scheduleReport()
+                return min(max(0, frame.minY - anchor.offset), bottom)
+            }
+            return nil
+        }
+        // Held in the pass while the page places it: the question a chat
+        // opened at, and a destination still landing. Once one has landed,
+        // the pane's reading correction holds the row the reader is on.
+        if !followsBottom, pagePlacesItself, let anchor = pendingAnchor ?? openingReadingAnchor,
+           let frame = frames[rowIdentifier(for: anchor.id)] {
+            return min(max(0, frame.minY - anchor.offset), bottom)
+        }
+        return nil
     }
     private var documentSettled: Bool {
         guard let document = scrollView?.documentView else { return true }
@@ -1947,7 +1998,7 @@ struct NativeTranscriptView: View {
             // Not re-identified by the presentation generation: a new page of
             // the same chat (a revisit, a reload, an earlier version) keeps the
             // bar where it stands instead of replaying its entrance.
-            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion).equatable()
+            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion, session: ObjectIdentifier(session)).equatable()
         }
         // The run state is read where it is used, never from the value this
         // body happened to be built with: a task runs a turn of the run loop
@@ -2003,13 +2054,18 @@ private struct LiveTurnBarSlot: View, Equatable {
     let state: String
     let actions: TranscriptActions
     let reduceMotion: Bool
+    /// The session the actions were made for. The pane is kept across chats,
+    /// so the same slot shows the next chat's bar: compared without it, a
+    /// bar with the same turn (most often none) kept the actions of the chat
+    /// the reader left, and they held that chat's display in memory.
+    let session: ObjectIdentifier
     @State private var arrived = false
     /// The transcript is drawn again for every page of a streaming reply;
     /// the bar only when its own turn or run state changes. Its actions are
     /// the transcript's, made for the same session (see `NativeTranscriptView`).
     nonisolated static func == (lhs: LiveTurnBarSlot, rhs: LiveTurnBarSlot) -> Bool {
         MainActor.assumeIsolated {
-            lhs.turn == rhs.turn && lhs.state == rhs.state && lhs.reduceMotion == rhs.reduceMotion && lhs.actions.offered == rhs.actions.offered
+            lhs.session == rhs.session && lhs.turn == rhs.turn && lhs.state == rhs.state && lhs.reduceMotion == rhs.reduceMotion && lhs.actions.offered == rhs.actions.offered
         }
     }
     var body: some View {

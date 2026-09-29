@@ -279,11 +279,15 @@ final class NativeTranscriptDocumentTests: XCTestCase {
         defer { fixture.close() }
         try await fixture.settle { fixture.page.rowFrame(of: "m6") != nil && abs(fixture.offset - fixture.bottom) < 0.5 }
         try fixture.detach(at: "m6", clipped: 5)
-        let row = try XCTUnwrap(fixture.rows.first { $0.itemID == "m2" })
+        // The row just above the reader's, which the page keeps hosted. A row
+        // further up has a tree only if the page happened to draw it: opened
+        // at the newest rows in its first pass, the page never builds one for
+        // a row whose height another test already measured.
+        let row = try XCTUnwrap(fixture.rows.first { $0.itemID == "m5" })
         let host = try XCTUnwrap(row.subviews.first)
         let sequence = fixture.page.snapshot?.sequence
         let before = try XCTUnwrap(fixture.page.rowFrame(of: "m6"))
-        let source = fixture.session.messages[2]
+        let source = fixture.session.messages[5]
         var expanded = source
         expanded.text += String(repeating: "\n\nA local view expansion changes this row's native intrinsic size.", count: 10)
         row.update(item: .message(expanded), fresh: false, actions: TranscriptActions())
@@ -295,6 +299,6 @@ final class NativeTranscriptDocumentTests: XCTestCase {
             return frame.minY > before.minY + 40 && abs((frame.minY - fixture.offset) + 5) < 0.5
         }
         XCTAssertEqual(fixture.page.snapshot?.sequence, sequence)
-        XCTAssertEqual(fixture.session.messages[2], source, "Native intrinsic reflow must not need a new session message")
+        XCTAssertEqual(fixture.session.messages[5], source, "Native intrinsic reflow must not need a new session message")
     }
 }
