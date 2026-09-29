@@ -135,6 +135,23 @@ public actor NativeHostService {
     /// no resource, and drops itself once the host is gone (`weak self`);
     /// retaining one handle per event would cost more than the work it tracks.
     private func notification() -> @Sendable (String,Int)->Void { { [weak self] id, seq in Task { await self?.mark(id,seq) } } }
+    /// A chat's runtime, built off this actor, which every other chat's
+    /// commands go through: opening a chat or a fork parses and replays its
+    /// whole journal. (A side starts from its parent's context instead.)
+    private func makeSession(_ id: String, profile: Profile, apiKey: String, readOnly: Bool, resources: Resources, tools: any ToolExecuting, resumePath: String? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, titleTask: Bool = false, utilityPurpose: String = "title") async throws -> AgentSession {
+        guard let cwd, let directory else { throw AgentError("workspace_required", "Open a workspace first") }
+        let client=ProviderClient(traces:traces), traces=traces, gate=editingGate, outcomes=unknownToolOutcomes, changed=notification()
+        return try await Task.detached(priority:.userInitiated) {
+            try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,editingGate:gate,resumePath:resumePath,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
+        }.value
+    }
+    /// Runs `body` holding the runtime gate, which serializes opens, forks
+    /// and sides, and releases the gate however `body` ends.
+    private func withRuntimeGate<T>(_ body: () async throws -> T) async throws -> T {
+        try await runtimeGate.acquire()
+        do { let value=try await body(); await runtimeGate.release(); return value }
+        catch { await runtimeGate.release(); throw error }
+    }
     public func command(_ method:String, sessionID:String?, params:JSON, commandID:String=UUID().uuidString) async throws -> JSON {
         if method == "display.result.read" { return try displayTransfers.read(required(params["id"],"transfer id"),offset:boundedInt(params["offset"],maximum:DisplayResultTransfers.maximumBytes)) }
         guard !closing else { throw AgentError("closing","Host is shutting down") }
@@ -221,11 +238,11 @@ public actor NativeHostService {
             }
             // A journal being slimmed is opened once its copy has taken its place, or not.
             if let slim=slimming[id] { _=await slim.result }
-            try await runtimeGate.acquire()
-            do {
+            // The snapshot is taken once the gate is free again.
+            let session: AgentSession = try await withRuntimeGate {
                 if let existing=sessions[id] {
                     if let costLimit { await existing.setCostLimit(costLimit) }
-                    await runtimeGate.release(); return withMode(await existing.snapshot())
+                    return existing
                 }
                 let original=try Profile(params["profile"]), (profile,key)=try ProfileFiles.credentials(profile:original,supplied:params["apiKey"].text)
                 let mode=params["toolMode"].text ?? "editing"; guard ["editing","read-only"].contains(mode) else { throw AgentError("tool_mode", "Unknown tool mode") }
@@ -234,20 +251,15 @@ public actor NativeHostService {
                 let titleTask = ["session-title", "webhook"].contains(params["backgroundTask"].text ?? "")
                 guard params["backgroundTask"].isNull || titleTask else { throw AgentError("invalid_params", "Unknown background task") }
                 let sessionResources = titleTask ? Resources(cwd: cwd, titleTask: true, utility: utility) : resources
-                // Opening parses and replays the whole journal. Do it off this
-                // actor, which every other chat's commands go through; the
-                // runtime gate still serializes opens and closes.
                 let tools: any ToolExecuting = titleTask || params["connectionTest"].flag == true ? DisabledTools() : nativeTools
-                let client=ProviderClient(traces:traces), traces=traces, gate=editingGate, changed=notification(), resume=params["path"].text, readOnly=titleTask || mode == "read-only", outcomes=unknownToolOutcomes
-                let session=try await Task.detached(priority:.userInitiated) {
-                    try AgentSession(id:id,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:readOnly,resources:sessionResources,client:client,tools:tools,traces:traces,editingGate:gate,resumePath:resume,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utility,unknownToolOutcomes:outcomes,changed:changed)
-                }.value
+                let session=try await makeSession(id,profile:profile,apiKey:key,readOnly:titleTask || mode == "read-only",resources:sessionResources,tools:tools,resumePath:params["path"].text,titleTask:titleTask,utilityPurpose:utility)
                 sessions[id]=session; profiles[id]=(profile,key)
                 if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
                 if let costLimit { await session.setCostLimit(costLimit) }
                 if let costSeed { await session.adoptSpendSeed(costSeed) }
-                await runtimeGate.release(); return withMode(await session.snapshot())
-            } catch { await runtimeGate.release(); throw error }
+                return session
+            }
+            return withMode(await session.snapshot())
         }
         if method == "session.portable.preview" || method == "session.import.inspect" { return try portable(params) }
         if method == "session.recover" { return try recoverCopy(params) }
@@ -302,33 +314,31 @@ public actor NativeHostService {
             let forkID=try identity(params["forkSessionId"]), costLimit=try AgentSession.costLimit(params["costLimit"])
             // Fork at one assistant reply rather than at the end: the journal up to it.
             let point=params["atMessageId"].isNull ? nil : try identity(params["atMessageId"])
-            try await runtimeGate.acquire()
-            do {
+            return try await withRuntimeGate {
                 guard sessions[forkID] == nil, let (profile,key)=profiles[id] else { throw AgentError("session_conflict", "Fork identity is already in use") }
                 let result=try await session.fork(to:forkID,at:point)
-                let fork=try await AgentSession(id:forkID,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:session.readOnly,resources:resources,client:ProviderClient(traces:traces),tools:session.isConnectionTest ? DisabledTools() : nativeTools,traces:traces,editingGate:editingGate,resumePath:result["path"].text,unknownToolOutcomes:unknownToolOutcomes,changed:notification())
+                let fork=try await makeSession(forkID,profile:profile,apiKey:key,readOnly:session.readOnly,resources:resources,tools:session.isConnectionTest ? DisabledTools() : nativeTools,resumePath:result["path"].text)
                 sessions[forkID]=fork; profiles[forkID]=(profile,key)
                 // A fork is a chat of its own, with its own limit.
                 if let costLimit { await fork.setCostLimit(costLimit) }
                 _=try await traces.command("debug.mode",session:forkID,params:["mode":JSON(await traces.mode(id))])
-                await runtimeGate.release(); return result
-            } catch { await runtimeGate.release(); throw error }
+                return result
+            }
         }
         if method == "side.open" {
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
             let sideID=try identity(params["sideSessionId"]), costLimit=try AgentSession.costLimit(params["costLimit"])
-            try await runtimeGate.acquire()
-            do {
+            return try await withRuntimeGate {
                 guard sessions[sideID] == nil, let (profile,key)=profiles[id] else { throw AgentError("side_conflict", "Side identity is already in use") }
                 let seed=await session.sideSeed()
-                let side=try AgentSession(id:sideID,profile:profile,apiKey:key,cwd:cwd,directory:directory,readOnly:true,resources:resources,client:ProviderClient(traces:traces),tools:nativeTools,traces:traces,editingGate:editingGate,seed:seed.messages,parent:seed.info,unknownToolOutcomes:unknownToolOutcomes,changed:notification())
+                let side=try await makeSession(sideID,profile:profile,apiKey:key,readOnly:true,resources:resources,tools:nativeTools,seed:seed.messages,parent:seed.info)
                 // A side is a session of its own: its own spend and limit.
                 if let costLimit { await side.setCostLimit(costLimit) }
                 let saved=try await side.preserveSide()
                 sessions[sideID]=side; profiles[sideID]=(profile,key)
                 _=try await traces.command("debug.mode",session:sideID,params:["mode":JSON(await traces.mode(id))])
-                await runtimeGate.release(); return ["accepted":true,"sessionId":JSON(sideID),"side":seed.info,"ephemeral":false,"path":saved["path"]]
-            } catch { await runtimeGate.release(); throw error }
+                return ["accepted":true,"sessionId":JSON(sideID),"side":seed.info,"ephemeral":false,"path":saved["path"]]
+            }
         }
         if method == "side.keep" { return try await session.keep(whenFinished:params["whenFinished"].flag == true) }
         if method == "side.close" {
