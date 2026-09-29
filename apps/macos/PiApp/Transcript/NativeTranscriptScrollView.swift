@@ -182,20 +182,7 @@ final class TranscriptNativeScrollView: NSScrollView {
 /// rebuild a selected text field merely because another session refreshed.
 @MainActor final class TranscriptActionRelay {
     var current = TranscriptActions()
-    private(set) lazy var forwarded = TranscriptActions(
-        inspect: { [weak self] in self?.current.inspect($0) },
-        edit: { [weak self] in self?.current.edit($0) },
-        copyMessage: { [weak self] in self?.current.copyMessage($0) },
-        stop: { [weak self] in self?.current.stop() },
-        retry: { [weak self] in self?.current.retry() },
-        inspectTurn: { [weak self] in self?.current.inspectTurn?($0) },
-        skillPressed: { [weak self] in self?.current.skillPressed?($0, $1, $2) },
-        skillHovered: { [weak self] in self?.current.skillHovered?($0, $1, $2, $3) },
-        costLimit: { [weak self] in self?.current.costLimit?($0, $1) },
-        fork: { [weak self] in self?.current.fork?($0) },
-        switchVersion: { [weak self] in self?.current.switchVersion?($0, $1) },
-        latestVersion: { [weak self] in self?.current.latestVersion?() }
-    )
+    private(set) lazy var forwarded = TranscriptActions.forwarding { [weak self] in self?.current }
 }
 
 /// Exact row frames are retained independently of scroll offset. Row hosts

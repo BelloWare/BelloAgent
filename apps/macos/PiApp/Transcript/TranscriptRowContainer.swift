@@ -555,15 +555,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
     private func hostedRow() -> TranscriptHostedRow {
         // The relay reads the latest callbacks without replacing unchanged
         // SwiftUI text fields merely because their parent's closures changed.
-        let relay = TranscriptActions(inspect: { [weak self] in self?.actions.inspect($0) }, edit: { [weak self] in self?.actions.edit($0) },
-                                      copyMessage: { [weak self] in self?.actions.copyMessage($0) }, stop: { [weak self] in self?.actions.stop() }, retry: { [weak self] in self?.actions.retry() },
-                                      inspectTurn: { [weak self] in self?.actions.inspectTurn?($0) },
-                                      skillPressed: { [weak self] in self?.actions.skillPressed?($0, $1, $2) },
-                                      skillHovered: { [weak self] in self?.actions.skillHovered?($0, $1, $2, $3) },
-                                      costLimit: { [weak self] in self?.actions.costLimit?($0, $1) },
-                                      fork: { [weak self] in self?.actions.fork?($0) },
-                                      switchVersion: { [weak self] in self?.actions.switchVersion?($0, $1) },
-                                      latestVersion: { [weak self] in self?.actions.latestVersion?() })
+        let relay = TranscriptActions.forwarding { [weak self] in self?.actions }
         let key = workListKey
         let known = workList?.key == key ? workList?.height : nil
         if known != nil { workListReuses += 1 }
