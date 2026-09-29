@@ -12,7 +12,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Every sidebar row, unread badge and menu-bar row looks a chat up by id.
     /// A linear scan made those lookups O(chats) each and the sidebar O(chats²).
     /// The sidebar index rebuilds its id table at most once per mutation, lazily.
-    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); chatsRevision &+= 1; readBadgeCache = nil; noteActivityChanged() } }
+    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); chatsRevision &+= 1; readBadgeCache = nil; noteActivityChanged(); forgetKeptTranscriptRows() } }
     /// A duplicate id keeps the first entry, matching `chats.first`.
     func chatRecord(_ id: String) -> ChatRecord? { sidebarIndex.chat(id, in: chats) }
     @Published var unreadStates: [String: SessionReadState] = [:] { didSet { readBadgeCache = nil; noteActivityChanged() } }
@@ -252,7 +252,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         noteActivityChanged()
     }
     var displays: [String: SessionDisplay] = [:] {
-        didSet { syncActivityObservers(); SessionInspectorWindows.shared.displaysChanged() }
+        didSet { syncActivityObservers(); SessionInspectorWindows.shared.displaysChanged(); forgetKeptTranscriptRows() }
         willSet {
             // Rows switch between retained accounting and a live display only
             // when display identity changes. Stream/status refreshes keep that
@@ -260,6 +260,23 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
             if displays.count != newValue.count || displays.contains(where: { newValue[$0.key] !== $0.value }) {
                 objectWillChange.send()
             }
+        }
+    }
+    /// Whether a chat the reader leaves keeps its rows in the pane that
+    /// showed it (`TranscriptKeptRows`): only while it has a display that is
+    /// not running, loading, sending or holding queued messages, and it is
+    /// neither archived nor deleted. A chat left while it runs opens fresh
+    /// when the reader comes back, with its rows as the run left them.
+    func keepsTranscriptRows(_ id: String) -> Bool {
+        guard let view = displays[id], !view.hasWork, !view.loading, view.sendingRows.isEmpty else { return false }
+        return record(id).map { !$0.isArchived } ?? false
+    }
+    /// A chat whose display went or was made again, or that was archived or
+    /// deleted, keeps no rows in any pane.
+    private func forgetKeptTranscriptRows() {
+        guard !TranscriptKeptRows.keptSessionIDs.isEmpty else { return }
+        TranscriptKeptRows.forgetEverywhere { entry in
+            !keepsTranscriptRows(entry.sessionID) || displays[entry.sessionID].map { ObjectIdentifier($0.disclosure) } != entry.disclosure
         }
     }
     var hosts: [String: HostSupervisor] = [:]
@@ -346,6 +363,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         liveExporter = TraceArchive(root: FileManager.default.temporaryDirectory.appendingPathComponent("BelloAgent-Export-" + UUID().uuidString))
         store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         report.attach(self)
+        TranscriptKeptRows.admits = { [weak self] id in self?.keepsTranscriptRows(id) ?? true }
     }
     /// Opens the desktop database off the main actor and reports the one state
     /// the rest of the app checks synchronously: there is no storage at all.

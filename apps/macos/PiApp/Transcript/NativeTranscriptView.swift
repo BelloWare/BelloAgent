@@ -1345,6 +1345,19 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         revealFade.opacity = Float(min(1, max(0, fade)))
         CATransaction.commit()
     }
+    /// Ends any selection in this row's text, for a row kept out of sight
+    /// while the reader is in another chat (`TranscriptKeptRows`). A chat
+    /// they come back to has nothing selected, as it always had; a selection
+    /// left standing there would draw without the bar that acts on it.
+    func forgetTextSelection() {
+        func visit(_ view: NSView) {
+            if let text = view as? NSTextView, text.selectedRange().length > 0 {
+                text.setSelectedRange(NSRange(location: text.selectedRange().location, length: 0))
+            }
+            for child in view.subviews { visit(child) }
+        }
+        if let hosted { visit(hosted) }
+    }
     /// Lets go of the SwiftUI tree for a row the reader has scrolled well
     /// past. Everything that decides what the row is and how tall it is
     /// stays, so coming back to it is one native layout and no measuring.
