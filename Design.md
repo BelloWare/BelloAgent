@@ -625,7 +625,8 @@ Persist compact per-attempt records independent of payload retention. Request co
 Choose/document a reproducible percentile definition and test it on known data. Do not average percentiles, replace missing samples with zero, count incomplete runs as completed, or mix successes/failures without a visible selection. Use asynchronous bounded queries and parameterized filters; no raw arbitrary SQL or full Splunk language implementation is needed. Dashboard configuration belongs in the single vault.
 
 Implemented in `DashboardQuery.swift`, `ReportController.swift` and
-`ReportPage.swift`. Usage Report is a main-window page, not a dashboard sheet.
+`ReportPage.swift`, over the archive's report columns and reads in
+`Storage/CaptureArchive/PayloadArchive+Dashboard.swift`. Usage Report is a main-window page, not a dashboard sheet.
 The controller retains filter/selection state, refreshes newly retained requests
 on entry, and cancels pending work on exit. Applied labels stay tied to the
 displayed snapshot while pending filter changes are indicated. Sidebar, app menu

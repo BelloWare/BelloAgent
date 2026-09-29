@@ -69,7 +69,7 @@ final class SessionOrganizationTests: XCTestCase {
 
     @MainActor func testRenameTargetsRequestedRowAndValidatesWhitespaceWithoutChangingFocus() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         model.chats = [chat("selected"), chat("background")]; model.selectedID = "selected"; model.focusedSessionID = "selected"
         for chat in model.chats { try await model.store?.put(chat, kind: "chat", id: chat.id) }
@@ -89,7 +89,7 @@ final class SessionOrganizationTests: XCTestCase {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let journal = root.appendingPathComponent("saved.jsonl"), original = Data("retained history bytes\n".utf8)
         try original.write(to: journal)
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         var running = chat("running", order: 1); running.path = journal.path
         model.chats = [running, chat("selected", order: 2)]; model.selectedID = "selected"; model.selectedWorkspaceID = "w"
@@ -120,7 +120,7 @@ final class SessionOrganizationTests: XCTestCase {
 
     @MainActor func testSelectedArchiveAndReportNavigationExposeArchiveWithoutRestoringIt() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         let record = chat("target")
         model.chats = [record]; model.selectedID = record.id; model.selectedWorkspaceID = "w"
@@ -141,7 +141,7 @@ final class SessionOrganizationTests: XCTestCase {
     @MainActor func testSidebarScopingKeepsArchivedAndOtherWorkspaceOutOfActiveList() {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         var pinned = chat("pin", order: 1); pinned.pinnedAt = Date(timeIntervalSince1970: 2)
         var archived = chat("archive", order: 50); archived.archivedAt = Date(timeIntervalSince1970: 3)

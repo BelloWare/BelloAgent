@@ -84,14 +84,6 @@ extension NSWindow {
     }
 }
 
-struct ConversationHeaderLayoutMarker: NSViewRepresentable {
-    func makeNSView(context: Context) -> ConversationHeaderMarkerView { ConversationHeaderMarkerView() }
-    func updateNSView(_ view: ConversationHeaderMarkerView, context: Context) {}
-}
-final class ConversationHeaderMarkerView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
 @MainActor final class WindowChromeView: NSView {
     weak var controller: WindowPresentationController?
     var sidebarWidth: CGFloat = WindowChrome.sidebarWidth

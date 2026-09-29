@@ -155,29 +155,15 @@ extension ConversationPaneTests {
         let chat: ChatRecord
         let window: NSWindow
         let hosted: NSHostingView<ConversationPane>
-        private let gateway: Process
+        private let gateway: SyntheticGateway
         private let root: URL
 
         init() async throws {
-            var repository = URL(fileURLWithPath: #filePath)
-            for _ in 0..<4 { repository.deleteLastPathComponent() }
-            let script = repository.appendingPathComponent("fixtures/native/ui-gateway.py")
-            guard FileManager.default.isReadableFile(atPath: script.path) else { throw XCTSkip("The synthetic gateway fixture is unavailable") }
-            let scratch = scratchBase()
-            root = URL(fileURLWithPath: scratch).appendingPathComponent("pane-live-" + UUID().uuidString)
+            root = scratchRoot("pane-live")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             try Data("Synthetic fixture file.\n".utf8).write(to: root.appendingPathComponent("README.md"))
-            gateway = Process()
-            let pipe = Pipe()
-            gateway.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            gateway.arguments = ["-u", script.path]
-            gateway.currentDirectoryURL = root; gateway.standardOutput = pipe; gateway.standardError = FileHandle.nullDevice
-            gateway.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": root.path]
-            try gateway.run()
-            let handle = pipe.fileHandleForReading
-            let greeting = await Task.detached { handle.availableData }.value
-            let port = try XCTUnwrap(try JSONDecoder().decode([String: Int].self, from: greeting)["port"])
-            let base = "http://127.0.0.1:\(port)"
+            gateway = try await SyntheticGateway.start(in: root)
+            let base = gateway.base
             let workspace = WorkspaceRecord(id: "live-project", path: root.path, trusted: true)
             var profile = ProfileRecord()
             profile.api = "openai-responses"; profile.baseUrl = base; profile.modelId = "ui-fixture"; profile.catalogUrl = base + "/catalog"
@@ -260,7 +246,7 @@ extension ConversationPaneTests {
             for host in model.hosts.values { try? await host.shutdownAndWait() }
             try? await model.traces.close(); await model.store?.close()
             model.shutdown(); window.contentView = nil; window.close()
-            if gateway.isRunning { gateway.terminate(); gateway.waitUntilExit() }
+            gateway.stop()
             try? FileManager.default.removeItem(at: root)
         }
     }
@@ -463,27 +449,14 @@ extension ConversationPaneTests {
     /// bar leaves, the chat says what happened, the draft survives, and the
     /// next send starts a fresh helper.
     @MainActor func testAHelperKilledMidTurnLeavesThePaneUsableAndTheNextSendRecovers() async throws {
-        var repository = URL(fileURLWithPath: #filePath)
-        for _ in 0..<4 { repository.deleteLastPathComponent() }
-        let gatewayScript = repository.appendingPathComponent("fixtures/native/ui-gateway.py")
-        guard FileManager.default.isReadableFile(atPath: gatewayScript.path) else { throw XCTSkip("The synthetic gateway fixture is unavailable") }
-        let scratch = scratchBase()
-        let root = URL(fileURLWithPath: scratch).appendingPathComponent("pane-crash-" + UUID().uuidString)
+        let root = scratchRoot("pane-crash")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try Data("Synthetic fixture file.\n".utf8).write(to: root.appendingPathComponent("README.md"))
 
-        let fixture = Process(), pipe = Pipe()
-        fixture.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        fixture.arguments = ["-u", gatewayScript.path]
-        fixture.currentDirectoryURL = root; fixture.standardOutput = pipe; fixture.standardError = FileHandle.nullDevice
-        fixture.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": root.path]
-        try fixture.run()
-        defer { if fixture.isRunning { fixture.terminate(); fixture.waitUntilExit() } }
-        let handle = pipe.fileHandleForReading
-        let greeting = await Task.detached { handle.availableData }.value
-        let port = try XCTUnwrap(try JSONDecoder().decode([String: Int].self, from: greeting)["port"])
-        let base = "http://127.0.0.1:\(port)"
+        let fixture = try await SyntheticGateway.start(in: root)
+        defer { fixture.stop() }
+        let base = fixture.base
 
         let workspace = WorkspaceRecord(id: "crash-project", path: root.path, trusted: true)
         var profile = ProfileRecord()

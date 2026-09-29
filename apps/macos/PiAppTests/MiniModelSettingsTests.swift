@@ -14,22 +14,11 @@ final class MiniModelSettingsTests: XCTestCase {
     /// away and back, the request went out without the catalog's output
     /// limit, and the gateway refused fixture-fast's.
     @MainActor func testSuggestionsAfterSettingsSwitchesTheMiniModelAwayAndBackCarryItsCatalogOutputLimit() async throws {
-        var repository = URL(fileURLWithPath: #filePath)
-        for _ in 0..<4 { repository.deleteLastPathComponent() }
-        let script = repository.appendingPathComponent("fixtures/native/ui-gateway.py")
-        guard FileManager.default.isReadableFile(atPath: script.path) else { throw XCTSkip("The synthetic gateway fixture is unavailable") }
-        let folder = URL(fileURLWithPath: scratchBase()).appendingPathComponent("mini-settings-" + UUID().uuidString)
+        let folder = scratchRoot("mini-settings")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let gateway = Process(), pipe = Pipe()
-        gateway.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        gateway.arguments = ["-u", script.path]
-        gateway.currentDirectoryURL = folder; gateway.standardOutput = pipe; gateway.standardError = FileHandle.nullDevice
-        gateway.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": folder.path]
-        try gateway.run(); defer { gateway.terminate() }
-        let handle = pipe.fileHandleForReading
-        let greeting = await Task.detached { handle.availableData }.value
-        let port = try XCTUnwrap(try JSONDecoder().decode([String: Int].self, from: greeting)["port"]), base = "http://127.0.0.1:\(port)"
+        let gateway = try await SyntheticGateway.start(in: folder); defer { gateway.stop() }
+        let base = gateway.base
         // The gallery's two connections: both list the gateway's catalog and
         // use its mini model, fixture-fast, whose catalog output limit is
         // 16,000 tokens; each carries routing metadata.

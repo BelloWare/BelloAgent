@@ -14,30 +14,17 @@ final class LifecycleHelperTests: XCTestCase, SerialTestLane {
     /// One project folder, one gateway and a model over a fresh state root.
     @MainActor final class Bench {
         let root: URL, folder: URL, workspace: WorkspaceRecord, profile: ProfileRecord
-        let fixture: Process
+        let fixture: SyntheticGateway
         private(set) var model: WorkspaceModel
         private let configuration: VaultConfiguration
 
         init(_ name: String) async throws {
-            var repository = URL(fileURLWithPath: #filePath)
-            for _ in 0..<4 { repository.deleteLastPathComponent() }
-            let gatewayScript = repository.appendingPathComponent("fixtures/native/ui-gateway.py")
-            guard FileManager.default.isReadableFile(atPath: gatewayScript.path) else { throw XCTSkip("The synthetic gateway fixture is unavailable") }
-            root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("\(name)-" + UUID().uuidString)
+            root = scratchRoot(name)
             folder = root.appendingPathComponent("project")
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try Data("Synthetic fixture file.\n".utf8).write(to: folder.appendingPathComponent("README.md"))
-            let fixture = Process(), pipe = Pipe()
-            fixture.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            fixture.arguments = ["-u", gatewayScript.path]
-            fixture.currentDirectoryURL = root; fixture.standardOutput = pipe; fixture.standardError = FileHandle.nullDevice
-            fixture.environment = ["PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "TMPDIR": root.path]
-            try fixture.run()
-            self.fixture = fixture
-            let handle = pipe.fileHandleForReading
-            let greeting = await Task.detached { handle.availableData }.value
-            let port = try XCTUnwrap(try JSONDecoder().decode([String: Int].self, from: greeting)["port"])
-            let base = "http://127.0.0.1:\(port)"
+            fixture = try await SyntheticGateway.start(in: root)
+            let base = fixture.base
             workspace = WorkspaceRecord(id: "lifecycle-project", path: folder.path, trusted: true)
             var profile = ProfileRecord()
             profile.api = "openai-responses"; profile.baseUrl = base; profile.modelId = "ui-fixture"; profile.catalogUrl = base + "/catalog"
@@ -74,7 +61,7 @@ final class LifecycleHelperTests: XCTestCase, SerialTestLane {
         /// started is left running. Helpers exit on their own at end of input.
         func tearDown() {
             model.shutdown()
-            if fixture.isRunning { fixture.terminate(); fixture.waitUntilExit() }
+            fixture.stop()
             try? FileManager.default.removeItem(at: root)
         }
     }

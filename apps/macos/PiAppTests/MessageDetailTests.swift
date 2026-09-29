@@ -74,7 +74,7 @@ final class MessageDetailTests: XCTestCase {
     @MainActor func testEditModeLoadsUserTextAndCancelRestoresDraft() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("native-edit-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())), view = SessionDisplay(id: "chat")
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage())), view = SessionDisplay(id: "chat")
         model.chats = [ChatRecord(id: "chat", workspaceID: "w", title: "t", path: nil, profileID: "p")]
         model.displays["chat"] = view; model.selectedID = "chat"
         view.messages = [TranscriptMessage(id: "u1", role: "user", text: "first question"), TranscriptMessage(id: "a1", role: "assistant", text: "answer"),
@@ -132,7 +132,7 @@ final class MessageDetailTests: XCTestCase {
         let entry: [String: WireValue] = ["id": .string("u1"), "type": .string("message"), "message": .object(["role": .string("user"), "content": .string(text)])]
         var bytes = Data("{\"type\":\"session\",\"version\":3,\"id\":\"chat\"}\n".utf8)
         bytes.append(try JSONEncoder().encode(entry)); bytes.append(10); try bytes.write(to: path)
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         model.chats = [ChatRecord(id: "chat", workspaceID: "w", title: "t", path: path.path, profileID: "p")]
         let view = SessionDisplay(id: "chat"); view.draft = "unsent"; model.displays[view.id] = view

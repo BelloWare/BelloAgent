@@ -40,8 +40,8 @@ final class SidebarInteractionTests: XCTestCase {
     @MainActor private func fixture(chats: [ChatRecord], topics: [TopicRecord] = [], width: CGFloat = 280,
                                    height: CGFloat = 900) throws -> Fixture {
         let root = try scratch()
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"),
-                                   vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"),
+                                       vault: ConfigurationVault(storage: MemoryVaultStorage()))
         let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
         model.workspaces = [project]
         model.selectedWorkspaceID = project.id
@@ -384,8 +384,8 @@ final class SidebarListedOrderTests: XCTestCase {
         let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("sidebar-order-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"),
-                                   vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"),
+                                       vault: ConfigurationVault(storage: MemoryVaultStorage()))
         let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
         model.workspaces = [project]; model.selectedWorkspaceID = project.id
         model.topics = topics; model.chats = chats

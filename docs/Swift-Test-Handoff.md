@@ -28,10 +28,15 @@ test classes it inherits from, and the helper declarations in those files):
   `WindowChrome.adjustStoredSidebarWidth`), which every test host shares;
 - uses the general or the drag pasteboard, which every test host shares;
 - asserts on elapsed time in Debug: an elapsed-time expression
-  (`systemUptime`, `Date().timeIntervalSince`, …) inside an `XCTAssert…`, or a
-  class that declares `SerialTestLane` (TestSeams.swift). Declare it when a
-  wall-clock figure reaches an assertion through a variable, or when a count
-  the test asserts depends on how fast the machine is.
+  (`systemUptime`, `Date().timeIntervalSince`, …) inside an `XCTAssert…`; an
+  `XCTAssertLess…`/`XCTAssertGreater…` that compares a local whose nearest
+  assignment before it read such a clock (`let elapsed = … systemUptime - start`,
+  then `XCTAssertLessThan(elapsed, 0.6)`), unless the bound is a
+  `releaseBudget`; or a class that declares `SerialTestLane` (TestSeams.swift).
+  Declare it when a wall-clock figure reaches an assertion by a route the
+  script cannot follow (a helper's return value, a figure carried in a
+  struct), or when a count the test asserts depends on how fast the machine
+  is.
 
 Every other class runs in the parallel lane, including the budget classes:
 `releaseBudget` is infinite in Debug, so those budgets cannot fail on time

@@ -191,13 +191,13 @@ final class ReportPageTests: XCTestCase {
         let (model, _) = try makeModel()
         try await model.reloadConfiguration(); try await record(model)
         let report = model.report
-        await report.prepare(); report.advancedOpen = true; report.detailsOpen = true; report.chartMetric = "Cost"
+        await report.prepare(); report.advancedOpen = true; report.detailsOpen = true; report.chartMetric = .cost
         report.preferences.requestedAlias = "alias"; await report.refresh()
         report.suspend(); try await record(model)
         await report.prepare()
         XCTAssertEqual(report.snapshot?.selectedRequests, 2)
         XCTAssertEqual(report.preferences.requestedAlias, "alias")
-        XCTAssertTrue(report.advancedOpen); XCTAssertTrue(report.detailsOpen); XCTAssertEqual(report.chartMetric, "Cost")
+        XCTAssertTrue(report.advancedOpen); XCTAssertTrue(report.detailsOpen); XCTAssertEqual(report.chartMetric, .cost)
         report.suspend()
     }
 
@@ -804,7 +804,7 @@ extension ReportPageTests {
         XCTAssertTrue(model.chats.isEmpty)
 
         let report = model.report
-        XCTAssertEqual(report.grouping, "requests")
+        XCTAssertEqual(report.grouping, .requests)
         report.toggleSession("s1")
         XCTAssertTrue(report.expandedSessions.contains("s1"))
         report.toggleSession("s1")

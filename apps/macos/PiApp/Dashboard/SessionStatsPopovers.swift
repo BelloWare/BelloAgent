@@ -69,20 +69,6 @@ extension Color {
     }
 }
 
-/// A row of figures; the numbers the pill promised, larger.
-struct SessionStatsFigures: View {
-    let figures: [SessionStatsFigure]
-    var large = false
-    var body: some View {
-        HStack(alignment: .top, spacing: PiSpacing.md) {
-            ForEach(figures) { figure in
-                PiFigure(value: figure.value, title: figure.title, caption: figure.caption, partial: figure.partial, large: large)
-                    .accessibilityIdentifier("session-stats-figure-" + figure.id)
-            }
-        }
-    }
-}
-
 /// Before the history arrives: a quiet line where the charts will be.
 struct SessionStatsLoadingNote: View {
     let loading: Bool

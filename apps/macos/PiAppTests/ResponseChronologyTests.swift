@@ -544,7 +544,7 @@ final class ResponseChronologyTests: XCTestCase {
 
     @MainActor func testTheFoldCommandsDriveTheSameParts() {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let model = WorkspaceModel(stateRoot: root)
+        let model = makeWorkspaceModel(stateRoot: root)
         defer { try? FileManager.default.removeItem(at: root) }
         let session = SessionDisplay(id: "keys")
         session.messages = conversation()
