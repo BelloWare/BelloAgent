@@ -102,6 +102,43 @@ struct ContentGeometry: Equatable {
     /// The bound session's fetched tool-argument documents.
     private(set) var toolInputs: TranscriptToolInputs?
     private var viewportRequest: Int?
+
+    // MARK: Who places the reader
+    //
+    // Where the page puts the reader is decided by the flags below, and each
+    // is set and cleared only where this says:
+    //
+    // - `followsBottom`: the page keeps the newest row in view. True after
+    //   `reset` and `jumpToLatest`, and as a page opens it takes the chat's
+    //   saved anchor (`receive`). From then on the reader decides it through
+    //   the bottom band (`setPinned`, `pinIfAtLatest`), going up unpins it at
+    //   once (`readerWillNavigate`), and the opening placement unpins it to
+    //   hold the last question (`resolveOpeningPlacement`).
+    // - `atBottom`: the reader stands in the bottom band now: the geometry's
+    //   answer, which the Back to bottom pill shows. `detached` is the page's
+    //   own answer, which only the tests read.
+    // - `jumping`: a jump to the newest row is animating (`jumpToLatest`).
+    //   Nothing else moves the reader until it lands, or for 1.5 s at most.
+    // - `pendingAnchor`, with `explicitDestination` when the reader asked for
+    //   it: a row to land on — a saved position, the row a reflow must keep
+    //   the reader on, a destination. `settle` clears it once it has landed.
+    // - `openingPlacementPending`, then `openingReadingAnchor`: a chat opened
+    //   idle starts at the question of its last turn when that turn does not
+    //   fit. Pending until the rows are placed (`resolveOpeningPlacement`),
+    //   then the question is held while the rows above it measure.
+    // - `awaitingFirstPlacement`: from a new page until its first landing
+    //   (`layoutPlacement`, `settle`). Until then the document's geometry is
+    //   the chat shown before.
+    // - `viewportResizePending`: the viewport changed height, and AppKit may
+    //   still move the origin; those moves are layout's, not the reader's.
+    // - `joiningLatest`: the reader stands at the end of a window with rows
+    //   after it, which join below them until the window reaches the latest.
+    //
+    // A movement of the reader's (`readerOwnsPosition`) drops everything the
+    // page still meant to do: the anchor, the opening placement, a jump.
+    // Every writer keeps these true, and a change should too: `jumping` and
+    // `openingPlacementPending` each imply `followsBottom`, and an
+    // `openingReadingAnchor` implies it is false.
     private var initialized = false
     private(set) var followsBottom = true { didSet { syncReadingOwnership() } }
     /// The reader stood at the end of a window with rows after it, which the
