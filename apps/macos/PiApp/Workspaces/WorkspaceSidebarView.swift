@@ -31,6 +31,7 @@ struct WorkspaceSidebar: View {
     /// A project header drops its buttons when the reader has pulled the
     /// sidebar in far enough that they would eat the project's name.
     var width: CGFloat = WindowChrome.sidebarWidth
+    @Environment(\.piReduceMotion) private var reduceMotion
     @State private var filter = ""
     /// One highlight for the whole list: it slides to the chat that was chosen.
     @Namespace private var selectionGlide
@@ -93,6 +94,13 @@ struct WorkspaceSidebar: View {
                 PiIconButton(symbol: model.showBackgroundSessions ? "eye" : "eye.slash", label: model.showBackgroundSessions ? "Hide background tasks in the list" : "Show background tasks in the list", tone: model.showBackgroundSessions ? .accent : .neutral) {
                     model.showBackgroundSessions.toggle()
                 }.accessibilityIdentifier("backgroundSessionsToggle")
+                // One switch for every project: each lists its archived chats
+                // after its active ones while it is on.
+                let archive = model.sidebarShowsArchived
+                PiIconButton(symbol: "archivebox", label: archive ? "Hide archived chats" : "Show archived chats",
+                             tone: archive ? .accent : .neutral, filled: archive) {
+                    withAnimation(PiMotion.honouring(PiMotion.glide, reduceMotion: reduceMotion)) { model.toggleArchivedChats() }
+                }.accessibilityIdentifier("archivedChatsToggle")
                 Spacer()
                 PiIconButton(symbol: "gearshape", label: "Settings · connections, keys and preferences") { model.showProfiles = true }
                     .accessibilityIdentifier("openSettings")

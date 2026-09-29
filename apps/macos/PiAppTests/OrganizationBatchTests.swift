@@ -134,7 +134,7 @@ final class OrganizationBatchTests: XCTestCase {
         model.organizationWrite = nil
         _ = try await model.enqueueOrganization(["chat0", "chat1"], change: .archived(true)).value
         XCTAssertEqual(model.selectedID, "chat1"); XCTAssertEqual(model.focusedSessionID, "chat1")
-        XCTAssertFalse(model.showArchivedSessions); XCTAssertFalse(model.projectShowsArchive("p")); XCTAssertEqual(model.selectionRevision, 1)
+        XCTAssertFalse(model.showArchivedSessions); XCTAssertFalse(model.sidebarShowsArchived); XCTAssertEqual(model.selectionRevision, 1)
         await model.store?.close()
     }
 

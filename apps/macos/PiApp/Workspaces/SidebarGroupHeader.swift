@@ -12,7 +12,6 @@ struct ProjectHeaderState: Equatable {
     /// A project whose configuration is gone still lists its retained chats.
     var available = true
     var expanded = true
-    var archived = false
     /// The filter locks disclosure open, so the header's toggles are disabled.
     var filtering = false
     var chosen = false
@@ -103,9 +102,6 @@ enum ProjectSidebarActions {
         }
         PiMenuEntry.button(state.expanded ? "Collapse Project" : "Expand Project", enabled: !state.filtering) {
             withAnimation(reduceMotion ? nil : PiMotion.glide) { model.setProjectExpanded(state.projectID, expanded: !state.expanded) }
-        }
-        PiMenuEntry.button(state.archived ? "Show Active Chats" : "Show Archived Chats", systemImage: "archivebox") {
-            withAnimation(reduceMotion ? nil : PiMotion.glide) { model.setProjectArchiveFilter(state.projectID, archived: !state.archived) }
         }
         if !state.scratch {
             PiMenuEntry.divider
