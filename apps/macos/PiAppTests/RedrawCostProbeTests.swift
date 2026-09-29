@@ -16,6 +16,10 @@ import Combine
 final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
     override func setUp() async throws {
         guard testEnvironment("PI_REDRAW_PROBE") == "1" else { throw XCTSkip("Set PI_REDRAW_PROBE=1 to run the redraw cost probe") }
+        // PI_KEPT_CHATS=0 measures a pane that keeps no chat's rows.
+        let limit = await MainActor.run { TranscriptKeptRows.chatLimit }
+        if let kept = testEnvironment("PI_KEPT_CHATS").flatMap(Int.init) { await MainActor.run { TranscriptKeptRows.chatLimit = kept } }
+        addTeardownBlock { @MainActor in TranscriptKeptRows.chatLimit = limit }
     }
 
     @MainActor private struct Setup {
@@ -94,6 +98,21 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
             try? await Task.sleep(for: .milliseconds(10))
         }
         XCTFail(what, file: file, line: line)
+    }
+
+    /// Quits as the app does, so a launch after it reads what this one saved.
+    @MainActor private func quit(_ launched: Launched) async throws {
+        let model = launched.model
+        await waitFor("The model still had work in flight when the probe quit") { !model.hasActiveWork }
+        let lifecycle = ApplicationLifecycle()
+        lifecycle.model = model
+        var answers: [Bool] = []
+        lifecycle.answerTermination = { answers.append($0) }
+        XCTAssertEqual(lifecycle.applicationShouldTerminate(NSApp), .terminateLater)
+        await waitFor("Quitting never answered") { !answers.isEmpty }
+        model.report.suspend()
+        try await model.traces.close(); await model.store?.close()
+        launched.window.contentView = nil; launched.window.close()
     }
 
     @MainActor private func quiet(_ view: SessionDisplay?) -> Bool {
@@ -259,6 +278,8 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
         if let mark = testEnvironment("PI_PROBE_MARK") { FileManager.default.createFile(atPath: mark, contents: Data("start".utf8)) }
         let began = ProcessInfo.processInfo.systemUptime
         TranscriptLayoutClock.reset(); TranscriptLayoutClock.recording = true
+        let builtBefore = launched.document?.rowsBuiltCount ?? 0, takenBefore = launched.document?.rowsTakenBackCount ?? 0
+        var settled: [Double] = []
         var round = 0
         while round < 10 || ProcessInfo.processInfo.systemUptime - began < seconds {
             defer { round += 1 }
@@ -271,8 +292,18 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
             }
             launched.hosted.layoutSubtreeIfNeeded(); launched.window.displayIfNeeded()
             costs.append((Self.mainThreadCPU() - cpu) * 1000); walls.append((ProcessInfo.processInfo.systemUptime - wall) * 1000)
+            // What the switch still does once the chat is ready: validating
+            // the rows it placed, preparing the ones ahead of the reader.
             try await Task.sleep(for: .milliseconds(400))
+            settled.append((Self.mainThreadCPU() - cpu) * 1000)
         }
+        let s = settled.sorted()
+        print(String(format: "KEPT limit %d: per switch with its settling %.1f ms median (max %.1f); rows built %.1f, taken back %.1f per switch; footprint %.1f MB, %d rows kept (%d hosted)",
+                     TranscriptKeptRows.chatLimit, s[s.count / 2], s.last ?? 0,
+                     Double((launched.document?.rowsBuiltCount ?? 0) - builtBefore) / Double(s.count),
+                     Double((launched.document?.rowsTakenBackCount ?? 0) - takenBefore) / Double(s.count),
+                     Double(TranscriptFrameBudgetTests.footprintBytes()) / 1_048_576, launched.document?.keptRows.rowCount ?? 0,
+                     launched.document?.keptRows.entries.reduce(0) { $0 + $1.rows.filter(\.isHosted).count } ?? 0))
         TranscriptLayoutClock.recording = false
         withExtendedLifetime(subscriptions) {}
         typealias C = TranscriptLayoutClock
@@ -281,6 +312,14 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
                      C.updateSeconds * 1000 / n, C.layoutSeconds * 1000 / n, C.measureSeconds * 1000 / n, Double(C.measuredRows) / n, C.markdownUpdateSeconds * 1000 / n, C.markdownLayoutSeconds * 1000 / n,
                      C.rowSizingSeconds * 1000 / n, C.rootUpdateSeconds * 1000 / n, Double(C.rootUpdates) / n, C.hostBuildSeconds * 1000 / n, Double(C.hostBuilds) / n, C.viewportLayoutSeconds * 1000 / n,
                      C.mountSeconds * 1000 / n, C.rowLoopSeconds * 1000 / n, C.placementSeconds * 1000 / n))
+        // What the kept chat holds: the footprint with its rows, and after
+        // they are let go of.
+        if let document = launched.document, !document.keptRows.entries.isEmpty {
+            let holding = TranscriptFrameBudgetTests.footprintBytes()
+            document.keptRows.forget { _ in true }
+            for _ in 0..<20 { await Task.yield(); try await Task.sleep(for: .milliseconds(10)) }
+            print(String(format: "KEPT the kept chat held %.1f MB", (Double(holding) - Double(TranscriptFrameBudgetTests.footprintBytes())) / 1_048_576))
+        }
         let c = costs.sorted(), w = walls.sorted()
         print(String(format: "SWITCH %d switches: main thread per switch median %.1f ms (max %.1f), to ready median %.1f ms (max %.1f); model changes %d (%.1f per switch)",
                      c.count, c[c.count / 2], c.last ?? 0, w[w.count / 2], w.last ?? 0, modelChanges, Double(modelChanges) / Double(c.count)))
@@ -382,5 +421,53 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
         }
         launched.window.contentView = launched.hosted
         print("WHERE per model change: " + lines.joined(separator: ", "))
+    }
+
+    /// What opening a chat costs the first time this launch shows it, and
+    /// going back to it after: three chats with a read and a long answer,
+    /// opened in turn after a relaunch, then each again.
+    @MainActor func testWhatAFirstOpenCosts() async throws {
+        let setup = try await setup()
+        let first = await launch(setup)
+        await first.model.restore()
+        first.model.selectedWorkspaceID = setup.workspace.id; first.model.profileChoice = setup.profile.id
+        var ids: [String] = []
+        for title in ["First", "Second", "Third"] {
+            let chat = ChatRecord(id: "chat-" + UUID().uuidString, workspaceID: setup.workspace.id, title: title, path: nil, profileID: setup.profile.id)
+            first.model.chats.append(chat); try await first.model.store?.put(chat, kind: "chat", id: chat.id)
+            await first.model.select(chat.id)
+            for text in ["Please read fixture README.md", "A large answer, please"] {
+                first.model.displays[chat.id]?.draft = text; first.model.send(sessionID: chat.id)
+                await waitFor("“\(text)” never finished", seconds: 90) { quiet(first.model.displays[chat.id]) }
+            }
+            ids.append(chat.id)
+        }
+        try await quit(first)
+        let launched = await launch(setup)
+        let model = launched.model
+        model.automaticContextOperation = { _, _ in throw CancellationError() }
+        await model.restore()
+        await waitFor("The launch never finished") { !model.launching }
+        try await Task.sleep(for: .milliseconds(1500))
+        func open(_ id: String) async throws -> Double {
+            let cpu = Self.mainThreadCPU()
+            await model.select(id)
+            await waitFor("The chat never became ready") {
+                launched.hosted.layoutSubtreeIfNeeded(); launched.window.displayIfNeeded()
+                return model.displays[id]?.historyState == .ready
+            }
+            launched.hosted.layoutSubtreeIfNeeded(); launched.window.displayIfNeeded()
+            try await Task.sleep(for: .milliseconds(400))
+            return (Self.mainThreadCPU() - cpu) * 1000
+        }
+        var firsts: [Double] = [], backs: [Double] = []
+        // The chat the launch reopened is shown already: open the others first.
+        let order = ids.filter { $0 != model.selectedID } + ids.filter { $0 == model.selectedID }
+        for id in order where id != model.selectedID { firsts.append(try await open(id)) }
+        for id in order { backs.append(try await open(id)) }
+        print(String(format: "KEPT limit %d: first open %@ ms; back to a chat %@ ms; rows taken back %d; footprint %.1f MB with %d chats kept",
+                     TranscriptKeptRows.chatLimit, firsts.map { String(format: "%.1f", $0) }.joined(separator: ", "),
+                     backs.map { String(format: "%.1f", $0) }.joined(separator: ", "), launched.document?.rowsTakenBackCount ?? 0,
+                     Double(TranscriptFrameBudgetTests.footprintBytes()) / 1_048_576, launched.document?.keptRows.sessionIDs.count ?? 0))
     }
 }

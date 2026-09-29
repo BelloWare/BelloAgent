@@ -3,6 +3,9 @@ import AppKit
 /// Warm tab switches reuse immutable native row geometry, never hidden views,
 /// timers or a previous pane's local disclosure/selection state. AppKit still
 /// validates the rows entering the viewport before keeping their geometry.
+/// The last few chats a pane showed keep their rows whole instead
+/// (`TranscriptKeptRows`); this is what a chat has to fall back on when it
+/// was running as the reader left it, or is no longer among those kept.
 @MainActor final class TranscriptGeometryCache {
     static let shared = TranscriptGeometryCache()
     private struct Key: Hashable {
