@@ -218,6 +218,9 @@ public actor AgentSession {
     /// The newest edit marker among all shown rows, from the metadata file,
     /// when it is before the loaded rows: the timeline a page cursor names.
     var checkpointLineage: String?
+    /// Where the rows before the loaded ones are in the journal, once a read
+    /// has reached for them (`OlderRows`).
+    var olderIndex: OlderRows?
     /// The newest run state's record, and how far the journal has been read
     /// for rows' places, for the next metadata file written while the chat is
     /// open (`refreshCheckpoint`).

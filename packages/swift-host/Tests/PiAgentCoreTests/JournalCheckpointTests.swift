@@ -135,23 +135,31 @@ final class JournalCheckpointTests: XCTestCase {
     }
 
     /// The rows before the loaded ones come from the journal the first time
-    /// something reaches for them: a page, a message read, a search.
+    /// something reaches for them: a page, a message read, a search. They are
+    /// read where they are (`OlderRows`): the chat goes on holding only the
+    /// rows it loaded.
     func testOlderRowsLoadWhenSomethingReachesForThem() async throws {
         let chat = try await chat()
         let first = try session(chat); await first.close()
         let reference = try session(chat.copyWithoutMeta())
-        let allRows = await reference.visible.map(Self.row)
+        let allRows = await reference.visible.map(\.id)
 
         let paging = try session(chat)
         let latest = try await paging.historyWindow(["version": 2])
-        let older = latest["older"]
+        var older = latest["older"], seen = latest["messages"].list.compactMap { $0["id"].text }
         XCTAssertFalse(older.isNull, "The first page offers older rows though none are loaded")
-        let before = await paging.olderRows
+        let before = await paging.olderRows, loaded = await paging.visible.count
         XCTAssertGreaterThan(before, 0)
         let page = try await paging.historyWindow(["version": 2, "direction": "older", "cursor": older])
         XCTAssertTrue(page["messages"].list.contains { $0["id"].text == "t5" }, "The question before the loaded rows is on the page before them")
-        let after = await paging.olderRows, rows = await paging.visible.map(Self.row)
-        XCTAssertEqual(after, 0); XCTAssertEqual(rows, allRows, "Every row, as a full open has them")
+        seen = page["messages"].list.compactMap { $0["id"].text } + seen; older = page["older"]
+        while !older.isNull {
+            let earlier = try await paging.historyWindow(["version": 2, "direction": "older", "cursor": older])
+            seen = earlier["messages"].list.compactMap { $0["id"].text } + seen; older = earlier["older"]
+        }
+        XCTAssertEqual(seen, allRows, "Every row, in order, as a full open has them")
+        let after = await paging.olderRows, rows = await paging.visible.count
+        XCTAssertEqual(after, before); XCTAssertEqual(rows, loaded, "The chat still holds only the rows it loaded")
         await paging.close()
 
         let reading = try session(chat)
