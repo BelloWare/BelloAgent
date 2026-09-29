@@ -113,11 +113,13 @@ final class PiSheetWindowAnchorView: NSView {
     private weak var parent: NSWindow?
     private var presented: (identity: AnyHashable, sheet: PiSheetWindow)?
     private var scheduled = false
-    /// The window the last sheet was in, emptied, for the next one. AppKit
-    /// keeps every window that has been on screen, closed or not, a couple of
-    /// megabytes each: one window a sheet, filled again each time it opens,
-    /// instead of a new one for every opening.
-    private var spare: NSWindow?
+    /// The window and hosting view the last sheet was in, emptied, for the
+    /// next one. AppKit keeps every window that has been on screen, closed or
+    /// not, a couple of megabytes each, and SwiftUI can keep a hosting view it
+    /// last saw the pointer over (`PiSheetWindow.release`): one of each a
+    /// sheet, filled again each time it opens, instead of new ones for every
+    /// opening.
+    private var spare: PiSheetWindow.Reusable?
 
     func update(wanted: AnyHashable?, inherited: PiSheetWindowInherited, dismiss: @escaping (AnyHashable) -> Void, content: @escaping (AnyHashable) -> AnyView?) {
         self.wanted = wanted; self.dismiss = dismiss; self.content = content
@@ -162,9 +164,9 @@ final class PiSheetWindowAnchorView: NSView {
             return
         }
         guard let view = content(wanted) else { return }
-        let sheet = PiSheetWindow(window: spare, content: view, inherited: inherited, close: { [weak self] in self?.dismiss(wanted) })
+        let sheet = PiSheetWindow(reusing: spare, content: view, inherited: inherited, close: { [weak self] in self?.dismiss(wanted) })
         spare = nil
-        sheet.recycle = { [weak self] window in self?.spare = window }
+        sheet.recycle = { [weak self] reusable in self?.spare = reusable }
         presented = (wanted, sheet)
         sheet.onEnded = { [weak self, weak sheet] requested in
             guard let self, let sheet, self.presented?.sheet === sheet else { return }
@@ -183,8 +185,14 @@ final class PiSheetWindowAnchorView: NSView {
 }
 
 /// One presented sheet: the window, the hosting view in it, and what happens
-/// once it has closed. Nothing of it outlives the sheet.
+/// once it has closed. Nothing of its content outlives the sheet; the window
+/// and the hosting view, emptied, are the next sheet's of the same kind.
 @MainActor final class PiSheetWindow {
+    /// A closed sheet's window and hosting view, emptied, for the next sheet.
+    struct Reusable {
+        let window: NSWindow
+        let host: NSHostingView<PiSheetWindowRoot>
+    }
     private var window: NSWindow?
     private var host: NSHostingView<PiSheetWindowRoot>?
     private let settings: PiSheetWindowSettings
@@ -196,9 +204,9 @@ final class PiSheetWindowAnchorView: NSView {
     /// Called once, when the sheet has closed and let go of its window, with
     /// whether its owner asked for that.
     var onEnded: ((Bool) -> Void)?
-    /// Takes the window back, emptied, once the sheet has closed; without it
-    /// the window is closed.
-    var recycle: ((NSWindow) -> Void)?
+    /// Takes the window and hosting view back, emptied, once the sheet has
+    /// closed; without it the window is closed.
+    var recycle: ((Reusable) -> Void)?
 
     /// The sheet window of the sheet presented last, while it lives: for the
     /// tests that check nothing keeps it once it has closed.
@@ -209,10 +217,12 @@ final class PiSheetWindowAnchorView: NSView {
     /// lets go of it here, while its views can still be laid out once.
     static let willRelease = Notification.Name("PiSheetWindowWillRelease")
 
-    init(window reused: NSWindow? = nil, content: AnyView, inherited: PiSheetWindowInherited, close: @escaping @MainActor () -> Void) {
+    init(reusing reusable: Reusable? = nil, content: AnyView, inherited: PiSheetWindowInherited, close: @escaping @MainActor () -> Void) {
         settings = PiSheetWindowSettings(inherited)
-        let host = NSHostingView(rootView: PiSheetWindowRoot(content: content, settings: settings, close: close))
-        let window = reused ?? Self.makeWindow()
+        let root = PiSheetWindowRoot(content: content, settings: settings, close: close)
+        let host: NSHostingView<PiSheetWindowRoot>
+        if let reusable { host = reusable.host; host.rootView = root } else { host = NSHostingView(rootView: root) }
+        let window = reusable?.window ?? Self.makeWindow()
         window.contentView = host
         window.initialFirstResponder = host
         self.host = host; self.window = window
@@ -287,22 +297,43 @@ final class PiSheetWindowAnchorView: NSView {
         }
         release()
     }
+    /// The content lets go first, then, a turn later, the window.
+    private var emptying = false
     private func release() {
-        guard let window else { return }
+        guard !emptying, let window, let host else { return }
+        emptying = true
         // What the content holds that is large lets go first, while its views
         // can still be laid out once, emptied.
         NotificationCenter.default.post(name: Self.willRelease, object: window)
+        // Then the content itself. SwiftUI keeps a hosting view that saw the
+        // pointer over a hover region (every Pi button has one) in a key
+        // window, and everything the view shows with it, until it sees the
+        // pointer leave, which it never does for a view no longer on screen:
+        // a Changes sheet closed with its Done button, the app in front, kept
+        // its views and its controller for good. An empty root, laid out and
+        // drawn while the window still holds the view, and the view then taken
+        // out of the window, lets go of the content whatever SwiftUI keeps of
+        // the view; the view is this sheet's again next time.
+        host.rootView = PiSheetWindowRoot(content: AnyView(EmptyView()), settings: settings, close: {})
+        host.needsLayout = true
+        host.layoutSubtreeIfNeeded()
+        host.display()
+        DispatchQueue.main.async { [self] in MainActor.assumeIsolated { finishRelease() } }
+    }
+    private func finishRelease() {
+        guard let window, let host else { return }
         if let parentObserver { NotificationCenter.default.removeObserver(parentObserver) }
         parentObserver = nil
         window.orderOut(nil)
-        // The window holds nothing more. AppKit keeps it regardless, as it
-        // keeps any window that has been on screen: the next sheet of the
-        // same kind opens in it (`recycle`), or it is closed.
-        window.contentView = nil
+        // The window and the hosting view, emptied, hold nothing more. AppKit
+        // keeps the window regardless, as it keeps any window that has been on
+        // screen: the next sheet of the same kind opens in both (`recycle`),
+        // or the window is closed.
         window.initialFirstResponder = nil
-        host = nil
+        window.contentView = nil
+        self.host = nil
         self.window = nil
-        if let recycle, window.sheetParent == nil { recycle(window) } else { window.close() }
+        if let recycle, window.sheetParent == nil { recycle(Reusable(window: window, host: host)) } else { window.close() }
         recycle = nil
         let ended = onEnded
         onEnded = nil
