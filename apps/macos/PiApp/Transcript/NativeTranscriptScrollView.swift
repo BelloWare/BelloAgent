@@ -1143,6 +1143,36 @@ final class TranscriptNativeScrollView: NSScrollView {
         page?.pinSelectedRow(selected?.contentItem)
         let deferring = liveResizing
         let viewportHeight = enclosingScrollView?.contentView.bounds.height ?? 0
+        let pass = preparePass(width: width, rowWidth: nextWidth, deferring: deferring, viewportHeight: viewportHeight)
+        let placement = placeRows(pass, left: left, buffered: buffered, selected: selected, deferring: deferring)
+        finishPass(pass, placement, width: width, left: left, deferring: deferring)
+    }
+
+    /// Where a layout pass starts placing rows, and which it measures first.
+    private struct Pass {
+        /// The width the pass places rows at.
+        let rowWidth: CGFloat
+        /// The first row it places; every row above keeps its place.
+        let firstPlaced: Int
+        /// The rows it measures now, when it slices; nil when it measures
+        /// every row it places.
+        let band: Set<Int>?
+        /// It parks a long chat that opens at its newest row.
+        let parking: Bool
+        let backingScale: CGFloat?
+    }
+    /// What placing the rows left: where the last one ends, the rows left
+    /// standing at an old height or an estimate, and those never measured.
+    private struct Placement {
+        let bottom: CGFloat
+        let standing: Set<String>
+        let guesses: Set<String>
+    }
+
+    /// Works out where a pass starts placing rows, lends the rows it will
+    /// place any exact height another pane measured, and decides whether it
+    /// slices the page and parks it.
+    private func preparePass(width: CGFloat, rowWidth nextWidth: CGFloat, deferring: Bool, viewportHeight: CGFloat) -> Pass {
         // A row can borrow an exact height another pane already measured, and
         // what the page still has to measure is decided after it has. A pane
         // drag is the exception: most of its rows stand at the height they
@@ -1190,6 +1220,13 @@ final class TranscriptNativeScrollView: NSScrollView {
             && (enclosingScrollView?.contentView.bounds.minY ?? 0) <= 0.5
         let band = slicing ? exactBand(width: nextWidth, viewportHeight: viewportHeight, parking: parking) : nil
         lastBandCount = band?.count ?? rows.count
+        return Pass(rowWidth: nextWidth, firstPlaced: firstPlaced, band: band, parking: parking, backingScale: scale)
+    }
+
+    /// Places the rows from the pass's first: measures those it has to and
+    /// leaves the rest standing, out of the view tree.
+    private func placeRows(_ pass: Pass, left: CGFloat, buffered: CGRect?, selected: TranscriptRowContainer?, deferring: Bool) -> Placement {
+        let nextWidth = pass.rowWidth, firstPlaced = pass.firstPlaced, band = pass.band, scale = pass.backingScale
         // Where the reader's row sits now, so a slice that measures the rows
         // above it can put it back on the same line of the screen.
         let loopClock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
@@ -1254,6 +1291,14 @@ final class TranscriptNativeScrollView: NSScrollView {
             y += size.height
         }
         if TranscriptLayoutClock.recording { TranscriptLayoutClock.rowLoopSeconds += TranscriptLayoutClock.now - loopClock }
+        return Placement(bottom: y, standing: standing, guesses: guesses)
+    }
+
+    /// Records what the pass left, sizes the document to it, and lands the
+    /// page where it belongs before anything is drawn.
+    private func finishPass(_ pass: Pass, _ placement: Placement, width: CGFloat, left: CGFloat, deferring: Bool) {
+        let nextWidth = pass.rowWidth, parking = pass.parking, standing = placement.standing, guesses = placement.guesses
+        var y = placement.bottom
         dirtyFrom = rows.count
         placedWidth = nextWidth
         approximate = standing
