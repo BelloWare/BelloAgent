@@ -358,14 +358,10 @@ struct SessionGatewayAccounting: Sendable {
     var timing: SessionTimingHistory?
 }
 
+/// A cost in full, `$0.00042188 USD` (`MetricFormat.exactUSD`).
 func gatewayUSD(_ value: Double?) -> String {
     guard let value, value.isFinite, value >= 0 else { return "Cost unavailable" }
-    if value == 0 { return "$0 USD" }
-    if value < 0.00000001 { return String(format: "$%.3g USD", value) }
-    var text = String(format: "%.8f", value)
-    while text.last == "0" { text.removeLast() }
-    if text.last == "." { text.removeLast() }
-    return "$" + text + " USD"
+    return MetricFormat.exactUSD(value)
 }
 
 /// Turn/footer amount. Retain useful reported precision even in a small
