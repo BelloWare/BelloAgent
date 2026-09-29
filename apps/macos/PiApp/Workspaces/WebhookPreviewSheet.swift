@@ -14,7 +14,7 @@ struct WebhookPreviewSheet: View {
     @State private var tone: PiTone = .neutral
     /// A request asked for with Ask Again; it ends with the sheet.
     @State private var requested: Task<Void, Never>?
-    @Environment(\.dismiss) private var dismiss
+    @PiDismiss private var dismiss
     private var chat: ChatRecord? { model.chatRecord(chatID) }
     private var settings: WebhookSettings? { model.activeWebhook }
 

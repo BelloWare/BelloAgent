@@ -107,16 +107,17 @@ struct WorkspaceView: View {
         .toggleStyle(.switch)
         .background(Color.piWindow)
         .focusedSceneValue(\.workspaceCommandModel, model)
-        .sheet(isPresented: $model.showProfiles) { ProfileSettings(model: model).frame(width: 880, height: 780) }
-        .sheet(isPresented: $model.showConversationContent) { if let id = model.contentSessionID { ConversationContentView(model: model, sessionID: id) } }
-        .sheet(isPresented: $model.showResources) { ResourceInspector(model: model) }
-        .sheet(isPresented: $model.showWorkspaceManager) { WorkspaceManagerView(model: model) }
-        .sheet(item: $model.renameTarget) { target in RenameChatSheet(model: model, chatID: target.id) }
-        .sheet(item: $model.topicEditor) { target in TopicSheet(model: model, target: target) }
-        .sheet(item: $model.webhookPreviewTarget) { target in WebhookPreviewSheet(model: model, chatID: target.id) }
-        // In a sheet window of the app's own: SwiftUI keeps every sheet it has
-        // presented, and a closed Changes sheet over a big diff kept about
-        // 20 MB of views with it (`piSheetWindow`).
+        // Every sheet in a sheet window of the app's own, let go of whole once
+        // closed: SwiftUI keeps every sheet it has presented, with its views
+        // and state, and a closed Changes sheet over a big diff kept about
+        // 20 MB of them (`piSheetWindow`).
+        .piSheetWindow(isPresented: $model.showProfiles) { ProfileSettings(model: model).frame(width: 880, height: 780) }
+        .piSheetWindow(isPresented: $model.showConversationContent) { if let id = model.contentSessionID { ConversationContentView(model: model, sessionID: id) } }
+        .piSheetWindow(isPresented: $model.showResources) { ResourceInspector(model: model) }
+        .piSheetWindow(isPresented: $model.showWorkspaceManager) { WorkspaceManagerView(model: model) }
+        .piSheetWindow(item: $model.renameTarget) { target in RenameChatSheet(model: model, chatID: target.id) }
+        .piSheetWindow(item: $model.topicEditor) { target in TopicSheet(model: model, target: target) }
+        .piSheetWindow(item: $model.webhookPreviewTarget) { target in WebhookPreviewSheet(model: model, chatID: target.id) }
         .piSheetWindow(isPresented: $model.showGit) {
             if let project = model.workspaces.first(where: { $0.id == (model.gitWorkspaceID ?? model.selectedWorkspaceID) }) { GitPanelView(roots: project.roots) }
         }

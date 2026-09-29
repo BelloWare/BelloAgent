@@ -12,7 +12,7 @@ struct ProfileSettings: View {
     /// True in the Settings window, which replaces the system title bar; false in the sheet.
     var windowChrome = false
     @StateObject private var controller: ConnectionSettingsController
-    @Environment(\.dismiss) private var dismiss
+    @PiDismiss private var dismiss
 
     init(model: WorkspaceModel, windowChrome: Bool = false) {
         self.init(model: model, controller: ConnectionSettingsController(model: model), windowChrome: windowChrome)

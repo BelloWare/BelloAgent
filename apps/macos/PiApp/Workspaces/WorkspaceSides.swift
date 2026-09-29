@@ -506,7 +506,7 @@ struct SidePane: View {
         // divider now, drawn once by the workspace between the two panes.
         ConversationPane(model: model, session: session, chat: model.record(info.id) ?? info.chat, paneWidth: paneWidth, side: info,
                          sideActions: SideActions(bringBack: { handoff = true }, keep: { model.keepSide(info.id) }, close: { model.closeSide(info.id) }))
-        .sheet(isPresented: $handoff) { SideHandoff(model: model, session: session) }
+        .piSheetWindow(isPresented: $handoff) { SideHandoff(model: model, session: session) }
     }
 }
 struct SideHandoff: View {
@@ -514,7 +514,7 @@ struct SideHandoff: View {
     @ObservedObject var session: SessionDisplay
     @State private var text = ""
     @State private var error = ""
-    @Environment(\.dismiss) private var dismiss
+    @PiDismiss private var dismiss
     var body: some View {
         PiSheet("Bring back to parent draft", subtitle: "Edit this summary or selection. Bringing it back only changes the parent draft; review it before sending.", symbol: "arrow.uturn.backward", width: 720, height: 480) {
             VStack(alignment: .leading, spacing: PiSpacing.sm) {

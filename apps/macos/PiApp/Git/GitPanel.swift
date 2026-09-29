@@ -7,9 +7,7 @@ import AppKit
 /// and a unified or side-by-side diff of whatever is selected.
 struct GitPanelView: View {
     @StateObject private var controller: GitController
-    @Environment(\.dismiss) private var dismiss
-    /// The sheet window the workspace presents the panel in (`piSheetWindow`).
-    @Environment(\.piSheetClose) private var sheetClose
+    @PiDismiss private var dismiss
     @State private var newBranchName = ""
     @State private var showNewBranch = false
     @State private var stashMessage = ""
@@ -50,7 +48,7 @@ struct GitPanelView: View {
         } actions: {
             if controller.loading || controller.busy { ProgressView().controlSize(.small) }
             PiIconButton(symbol: "arrow.clockwise", label: "Refresh changes", size: 28) { Task { await controller.refresh() } }
-            Button("Done") { if let sheetClose { sheetClose() } else { dismiss() } }.buttonStyle(.piSecondary)
+            Button("Done") { dismiss() }.buttonStyle(.piSecondary)
         }
         .background(GitPanelWindowReader(found: { panelWindow = $0 }, closed: { [controller] in controller.letGo() }))
         .task { controller.opened(); await controller.refresh() }
@@ -510,10 +508,10 @@ struct GitPanelView: View {
 /// there, on every update of the panel, was a change made during a view update.
 ///
 /// `closed` runs once the sheet has left the screen, its closing animation
-/// over, just before its window lets go of the panel (`DismissedSheets`).
-/// SwiftUI keeps a closed sheet's views and state alive regardless, with the
-/// values they last drew: the panel is laid out once more, emptied, so
-/// neither its controller nor those views go on holding what it read.
+/// over, just before its window lets go of the panel (`PiSheetWindow`): the
+/// controller lets go of what it read and stops watching at once, rather than
+/// whenever the last task still holding it ends, and the panel is laid out
+/// once more, emptied.
 struct GitPanelWindowReader: NSViewRepresentable {
     let found: (NSWindow?) -> Void
     var closed: () -> Void = {}
@@ -529,13 +527,13 @@ struct GitPanelWindowReader: NSViewRepresentable {
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); report(); watch(window) }
         private func watch(_ window: NSWindow?) {
             guard let window, window !== watched else { return }
-            if let watched { NotificationCenter.default.removeObserver(self, name: DismissedSheets.willRelease, object: watched) }
+            if let watched { NotificationCenter.default.removeObserver(self, name: PiSheetWindow.willRelease, object: watched) }
             watched = window
-            NotificationCenter.default.addObserver(self, selector: #selector(sheetReleases(_:)), name: DismissedSheets.willRelease, object: window)
+            NotificationCenter.default.addObserver(self, selector: #selector(sheetReleases(_:)), name: PiSheetWindow.willRelease, object: window)
         }
         @objc private func sheetReleases(_ note: Notification) {
             guard let window = note.object as? NSWindow, window === watched else { return }
-            NotificationCenter.default.removeObserver(self, name: DismissedSheets.willRelease, object: window)
+            NotificationCenter.default.removeObserver(self, name: PiSheetWindow.willRelease, object: window)
             watched = nil
             closed?()
             // Laid out once more, off screen: SwiftUI drops the views that
