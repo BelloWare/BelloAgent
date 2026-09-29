@@ -232,7 +232,13 @@ final class FreshPresentationTests: XCTestCase {
             XCTAssertLessThanOrEqual(view.messages.reduce(0) { $0 + TranscriptPaging.size($1) }, caps.bytes)
         }
         XCTAssertEqual(firsts.last, "m0"); XCTAssertNotNil(view.newerPage.cursor)
-        while view.newerPage.cursor != nil { let loaded = await model.loadHistoryPage("a", newer: true); XCTAssertTrue(loaded) }
+        // Reading on, as reaching the window's end does, holds both caps too.
+        while view.newerPage.cursor != nil {
+            let loaded = await model.loadHistoryPage("a", newer: true); XCTAssertTrue(loaded)
+            XCTAssertEqual(native.snapshot?.messages.last?.id, view.messages.last?.id)
+            XCTAssertLessThanOrEqual(view.messages.count, caps.rows)
+            XCTAssertLessThanOrEqual(view.messages.reduce(0) { $0 + TranscriptPaging.size($1) }, caps.bytes)
+        }
         XCTAssertEqual(view.messages.last?.id, "m\(count - 1)")
     }
     @MainActor func testRapidABARejectsObsoleteSourceAndKeepsTypingWhileLoading() async throws {

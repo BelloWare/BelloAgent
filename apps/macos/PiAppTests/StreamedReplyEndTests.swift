@@ -193,11 +193,14 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
             model.displays[main.id]?.draft = prompt; model.send(sessionID: main.id)
             var actions: [String] = []
             var gestureOpen = false
-            // Whether the reader read earlier rows during the turn: only such a
-            // read may leave the chat reading back past its window's start.
-            var readEarlier = false
+            // Whether the reader read earlier rows during the turn, or came
+            // back to the chat at a place further back than its newest turns:
+            // only these may leave the chat reading back past its window's start.
+            var readEarlier = false, cameBack = false
             var watching: Set<AnyCancellable> = []
             model.displays[main.id]?.$olderPage.sink { if $0.loading { readEarlier = true } }.store(in: &watching)
+            // Come back to the newest rows, the chat takes its live rows again.
+            model.displays[main.id]?.$newerPage.sink { if $0.cursor == nil { cameBack = false } }.store(in: &watching)
             _ = await wait(15) { model.displays[main.id]?.busy == true }
             while model.displays[main.id]?.busy == true || model.displays[main.id]?.hasWork == true {
                 try await Task.sleep(for: .milliseconds(Int(40 + random.unit() * 400)))
@@ -237,6 +240,12 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
                     await model.select(other.id); actions.append("switch away")
                     try await Task.sleep(for: .milliseconds(Int(50 + random.unit() * 700)))
                     await model.select(main.id); actions.append("switch back")
+                    // A reader who left the chat further back than its newest
+                    // turns comes back where they were (`readInitialWindow`):
+                    // an older window, whose rows after it wait behind its end.
+                    if let view = model.displays[main.id], view.browsingHistory, view.newerPage.available, view.scrollAnchor?.followsBottom == false {
+                        cameBack = true; actions.append("back where they were")
+                    }
                 case 5:
                     launched.window.orderOut(nil); actions.append("window out")
                     try await Task.sleep(for: .milliseconds(Int(50 + random.unit() * 600)))
@@ -263,12 +272,13 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
             let view = model.displays[main.id]
             if firstRow == nil { firstRow = view?.messages.first?.id }
             if let view, view.browsingHistory {
-                // Only a reader who read back past the window's start leaves
-                // its live tail: the newest rows made room for the earlier
-                // ones, and wait behind the newer edge. A chat that stopped
-                // taking the helper's rows without that is the bug.
-                if readEarlier && view.newerPage.available { readBack += 1 }
-                else { wrong.append("live tail disconnected\(readEarlier ? " with no newer edge" : "")") }
+                // Only a reader who read back past the window's start, or came
+                // back to a place there, leaves its live tail: the newest rows
+                // made room for the earlier ones, and wait behind the newer
+                // edge. A chat that stopped taking the helper's rows without
+                // that is the bug.
+                if (readEarlier || cameBack) && view.newerPage.available { readBack += 1 }
+                else { wrong.append("live tail disconnected\(readEarlier || cameBack ? " with no newer edge" : "")") }
             } else {
                 if found.display != whole { wrong.append("display") }
                 if model.selectedID == main.id {
@@ -282,7 +292,7 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
                 filled += 1
                 if !view.olderPage.available { wrong.append("earlier rows unreachable") }
             }
-            let line = "turn \(turns) (\(prompt)): \(found), rows \(view?.messages.count ?? 0)\(view?.browsingHistory == true ? ", read back" : "")\(gestureOpen ? ", gesture left open" : "")"
+            let line = "turn \(turns) (\(prompt)): \(found), rows \(view?.messages.count ?? 0)\(view?.browsingHistory == true ? ", read back" : "")\(view?.browsingHistory == true && cameBack ? " (came back to it)" : "")\(gestureOpen ? ", gesture left open" : "")"
             print("STREAM " + line)
             if !wrong.isEmpty {
                 let summary = "turn \(turns): \(wrong.joined(separator: ", ")) short of the helper — \(found); last actions: \(actions.suffix(12).joined(separator: " · "))"

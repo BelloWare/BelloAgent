@@ -689,6 +689,9 @@ final class TranscriptScrollBudgetTests: XCTestCase {
         // PI_PERF_SCROLL_ROWS varies the source; production paging still applies.
         let rows = Int(testEnvironment("PI_PERF_SCROLL_ROWS") ?? "") ?? 400
         let session = TranscriptFrameBudgetTests.chat("scroll-budget", rows: rows)
+        // The display keeps the resident window of the source, as the app's
+        // does (`WorkspaceRefresh`), and the page draws what it holds.
+        session.messages = TranscriptPaging.window(session.messages, keepingEarlier: false)
         let pane = Pane(session); defer { pane.close() }
         let ready = await pane.waitForRow(TranscriptFrameBudgetTests.lastUserID(rows: rows), seconds: 120)
         XCTAssertTrue(ready)

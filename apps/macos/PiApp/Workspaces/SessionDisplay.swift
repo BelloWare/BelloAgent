@@ -444,7 +444,11 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var hostBefore: Double?
     var loadingEarlier = false
     @Published var loading = false { didSet { if loading != oldValue { activityChanges.send() } } }
-    var pinnedHistoryIDs: Set<String> = []
+    /// The rows holding the reader's cursor or selection, which the resident
+    /// window does not let go of. A change is announced (`heldChanges`), so a
+    /// window they stretched goes back to its budget once let go of.
+    var pinnedHistoryIDs: Set<String> = [] { didSet { if pinnedHistoryIDs != oldValue { heldChanges.send() } } }
+    let heldChanges = PassthroughSubject<Void, Never>()
     var scrollAnchor: TranscriptAnchor?
     @Published var viewportRequest = 0
     /// Whether the newest `viewportRequest` opens the chat — its first page

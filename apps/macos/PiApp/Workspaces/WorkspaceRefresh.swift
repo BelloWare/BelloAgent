@@ -263,9 +263,7 @@ extension WorkspaceModel {
             // Rows that do not join the window change nothing in it,
             // and a window with nothing new is not cut.
             var messages = overlaps ? TranscriptPaging.window(merged, keepingEarlier: false) : merged
-            var held = view.pinnedHistoryIDs
-            if let anchor = view.scrollAnchor, !anchor.followsBottom,
-               view.messages.contains(where: { $0.id == anchor.id }) { held.insert(anchor.id) }
+            let held = heldRows(view)
             // The window is the newest rows of what merged; a held
             // row before its first one would be let go of.
             if !held.isEmpty, let start = merged.firstIndex(where: { held.contains($0.id) }),
@@ -392,6 +390,34 @@ extension WorkspaceModel {
         if intents != view.recovered { view.recovered = intents }
         if view.recovered.isEmpty { view.uncertain = false }
         return true
+    }
+    /// The rows the reader holds, which a resident window does not let go
+    /// of: the one holding their cursor or selection, and the one they read
+    /// from when they are not following the newest row.
+    func heldRows(_ view: SessionDisplay) -> Set<String> {
+        var held = view.pinnedHistoryIDs
+        if let anchor = view.scrollAnchor, !anchor.followsBottom, view.messages.contains(where: { $0.id == anchor.id }) { held.insert(anchor.id) }
+        return held
+    }
+    /// A window a held row stretched past its budget goes back to it once
+    /// nothing holds it: a chat that has gone quiet has no next update to cut
+    /// it, and one that stopped taking updates (its branch changed elsewhere,
+    /// or the helper's window moved past it) has none coming. The rows that
+    /// leave its start are reached again through the earlier edge, as any
+    /// rows the window lets go of are. With nothing held, a display never
+    /// keeps more than its resident window.
+    func releaseHeldWindow(_ view: SessionDisplay) {
+        guard !view.historyState.loading, let identity = view.presentation.identity else { return }
+        let bounded = TranscriptPaging.window(view.messages, keepingEarlier: false)
+        guard bounded.count < view.messages.count, let first = bounded.first,
+              heldRows(view).isSubset(of: Set(bounded.map(\.id))) else { return }
+        let accountingChanged = Self.accountingTargetsChanged(from: view.messages, to: bounded)
+        view.messages = bounded
+        let edge = ConversationCursor(incarnation: identity.incarnation, lineage: identity.lineage, entry: first.id)
+        if !view.olderPage.loading { view.olderPage = .init(cursor: edge) } else { view.olderPage.cursor = edge }
+        if view.before != edge.entry { view.before = edge.entry }
+        // A read of the figures for the rows before is not for these.
+        if accountingChanged, let workspaceID = record(view.id)?.workspaceID { scheduleAccounting(view.id, workspaceID: workspaceID) }
     }
     /// Every write of a chat's pending submissions calls this, so the
     /// snapshot loop reads them again instead of trusting what it holds.
