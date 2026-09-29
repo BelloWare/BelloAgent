@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-enum WorkspacePage: String, Sendable { case chats, report }
+enum WorkspacePage: String, Sendable { case chats, report, background }
 
 @MainActor final class WorkspaceModel: ObservableObject {
     @Published var workspaces: [WorkspaceRecord] = [] { didSet { sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged() } }
@@ -84,7 +84,6 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// opened, for that launch only, to show the row of the chat it reopened.
     @Published var launchReveal = SidebarLaunchReveal() { didSet { sidebarIndex.invalidate() } }
     @Published var showArchivedSessions = false
-    @Published var showBackgroundSessions = false { didSet { sidebarIndex.invalidate(); if showBackgroundSessions != oldValue { noteSelectionChanged() } } }
     /// Answers the sidebar's own queries once per change: chat lookups, per
     /// group entry lists, the project groups and the keyboard order.
     let sidebarIndex = SidebarIndex()
@@ -150,6 +149,11 @@ enum WorkspacePage: String, Sendable { case chats, report }
     }
     /// Report page state survives navigation so filters, selection and results come back intact.
     let report = ReportController()
+    /// The Background requests page's state (`BackgroundRequests.swift`),
+    /// kept the same way.
+    let backgroundRequests = BackgroundRequestsController()
+    /// Background requests this launch has under way.
+    var backgroundRequestsRunning: Set<String> = []
     /// Legacy entry point kept for callers and tests: the report is a page, not a sheet.
     var showDashboard: Bool {
         get { page == .report }

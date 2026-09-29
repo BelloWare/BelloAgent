@@ -145,12 +145,17 @@ extension WorkspaceModel {
         let request = MiniModelRequest(model: route.model, contextWindow: route.contextWindow, maxOutputTokens: route.maxOutputTokens,
                                        modelOutputLimit: route.modelOutputLimit, thinkingLevel: route.thinkingLevel, prompt: prompt,
                                        task: "webhook", title: "Webhook notification", timeout: 60, name: "mini model's request")
-        let messages = try await askMiniModel(request, profile: profile, sourceID: item.id)
-        guard let answer = messages.last(where: { $0.role == "assistant" && $0.kind == nil }),
-              !answer.endedUnfinished else {
-            throw HostError.failure("The mini model did not answer.")
+        func answer(_ messages: [TranscriptMessage]) throws -> String {
+            guard let answer = messages.last(where: { $0.role == "assistant" && $0.kind == nil }), !answer.endedUnfinished else {
+                throw HostError.failure("The mini model did not answer.")
+            }
+            return answer.text
         }
-        return (prompt, answer.text, route.model)
+        // Kept as the notification it wrote: its parameters, in the webhook's order.
+        let messages = try await askMiniModel(request, profile: profile, sourceID: item.id) { messages in
+            try BackgroundRequests.webhookResult(reply: answer(messages), names: parameters.map(\.name)) ?? answer(messages)
+        }
+        return (prompt, try answer(messages), route.model)
     }
 
     /// Sends a request and returns the HTTP status; anything but 2xx fails.

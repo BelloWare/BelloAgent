@@ -306,12 +306,15 @@ final class LaunchSelectionTests: XCTestCase {
         let third = await launch(fixture)
         XCTAssertEqual(third.selectedID, fixture.a.id, "A chat that is gone falls back to the first chat, as every launch did before")
         XCTAssertEqual(third.selectedWorkspaceID, fixture.first.id)
+        // A background task opens on the Background requests page; the chat
+        // under it stays the one the reader had.
         await third.select(task.id)
-        XCTAssertEqual(third.selectedID, task.id)
+        XCTAssertEqual(third.page, .background); XCTAssertEqual(third.backgroundRequests.selectedID, task.id)
+        XCTAssertEqual(third.selectedID, fixture.a.id)
         try await quit(third)
 
         let fourth = await launch(fixture)
-        XCTAssertEqual(fourth.selectedID, fixture.a.id, "A background task falls back to the first chat")
+        XCTAssertEqual(fourth.selectedID, fixture.a.id, "A background task is never the chat a launch reopens")
         XCTAssertEqual(fourth.selectedWorkspaceID, fixture.first.id)
     }
 
@@ -749,25 +752,29 @@ private extension PayloadArchive {
 @MainActor private final class LaunchFlag { var value = false }
 
 extension LaunchSelectionTests {
-    /// "Show background tasks" and the report page were forgotten at every
-    /// launch: the toggle came back off and the window came back on Chats.
-    @MainActor func testTheReportPageAndShownBackgroundTasksComeBackAfterARelaunch() async throws {
+    /// The report page and the Background requests page were forgotten at
+    /// every launch: the window came back on Chats.
+    @MainActor func testTheReportAndBackgroundRequestsPagesComeBackAfterARelaunch() async throws {
         let fixture = try await fixture()
         let first = await launch(fixture)
         await first.select(fixture.b2.id)
-        first.showBackgroundSessions = true
         first.openReport()
         try await quit(first)
 
         let second = await launch(fixture)
-        XCTAssertTrue(second.showBackgroundSessions, "The sidebar still shows background tasks")
         XCTAssertEqual(second.page, .report, "The window comes back on the report")
         XCTAssertEqual(second.selectedID, fixture.b2.id, "with the chat the reader had open underneath")
-        second.closeReport(); second.showBackgroundSessions = false
+        second.openBackgroundRequests()
         try await quit(second)
 
         let third = await launch(fixture)
-        XCTAssertFalse(third.showBackgroundSessions); XCTAssertEqual(third.page, .chats, "Turning them off is remembered too")
-        third.report.suspend()
+        XCTAssertEqual(third.page, .background, "The window comes back on the Background requests page")
+        XCTAssertEqual(third.selectedID, fixture.b2.id)
+        third.closeReport()
+        try await quit(third)
+
+        let fourth = await launch(fixture)
+        XCTAssertEqual(fourth.page, .chats, "Going back to Chats is remembered too")
+        fourth.report.suspend()
     }
 }

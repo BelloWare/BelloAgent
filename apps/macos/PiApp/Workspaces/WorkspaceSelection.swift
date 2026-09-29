@@ -7,6 +7,9 @@ import Foundation
 extension WorkspaceModel {
     func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveFilter: Bool = false, reopensSide: Bool = true) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
+        // A background request is listed on its own page, not the sidebar:
+        // the menu bar's running requests and the report open it there.
+        if item.isBackgroundTask { openBackgroundRequests(selecting: id); return }
         // A chat whose load ended without a page (nothing is reading it any
         // more) is read again rather than left on "Preparing…" for good.
         if selectedID == id, let selected, selected.historyState != .dormant,

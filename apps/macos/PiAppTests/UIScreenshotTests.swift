@@ -179,6 +179,16 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // The webhook scenes, whose preview is one of the page's requests, then the page.
+        if testEnvironment("PI_APP_UI_GALLERY_BACKGROUND_ONLY") == "1" {
+            try await captureWebhookScenes(model: model, window: window, gallery: gallery, appearances: appearances, chatID: main.id)
+            try await captureBackgroundRequestScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                                     chatID: main.id, workspaceID: workspace.id, profileID: connections[0].profile.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         if testEnvironment("PI_APP_UI_GALLERY_COST_ONLY") == "1" {
             try await captureCostLimitScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                              workspaceID: workspace.id, profileID: connections[0].profile.id)
@@ -348,6 +358,8 @@ final class UIScreenshotTests: XCTestCase {
         try await captureLiteralTextScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                            workspaceID: workspace.id, profileID: connections[0].profile.id)
         try await captureWebhookScenes(model: model, window: window, gallery: gallery, appearances: appearances, chatID: main.id)
+        try await captureBackgroundRequestScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                                 chatID: main.id, workspaceID: workspace.id, profileID: connections[0].profile.id)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
         let fresh = WorkspaceModel(stateRoot: folder.appendingPathComponent("onboarding-state"), vault: freshVault)
@@ -779,7 +791,7 @@ final class UIScreenshotTests: XCTestCase {
         model.showProfiles = false; try await settle(0.8)
         // 19b · The chat's preview, once the mini model has written its parameters.
         model.previewWebhook(chatID)
-        func asking() -> Bool { model.chats.contains { $0.backgroundTask == "webhook" } }
+        func asking() -> Bool { model.chats.contains { $0.backgroundTask == "webhook" && $0.backgroundTaskOutcome == nil } }
         try await until("the preview to ask the mini model", seconds: 20) { asking() }
         try await until("the mini model's parameters", seconds: 60) { !asking() }
         for (name, appearance) in appearances {
@@ -788,6 +800,79 @@ final class UIScreenshotTests: XCTestCase {
         }
         model.webhookPreviewTarget = nil; try await settle(0.8)
         try await model.updateConfiguration { $0.webhook = nil }
+    }
+
+    /// 21 · The Background requests page, which the sidebar's footer and the
+    /// View menu open: a request the gateway refused, the rename sheet's
+    /// suggestions, a webhook's notification, a chat's title, one a quit cut
+    /// short (left as a quit leaves it, then settled as launch settles it) and
+    /// one still running; then the suggestions selected with their prompt and
+    /// reply; then a narrow window, its list filtered to title suggestions,
+    /// and the refused request's details taking the page.
+    @MainActor private func captureBackgroundRequestScenes(model: WorkspaceModel, window: NSWindow, gallery: URL, appearances: [(String, NSAppearance.Name)],
+                                                          chatID: String, workspaceID: String, profileID: String) async throws {
+        func useMiniModel(_ id: String) async throws {
+            try await model.updateConfiguration { for index in $0.profiles.indices where $0.profiles[index].profile.id == profileID { $0.profiles[index].profile.miniModelId = id } }
+            // The changed connection's catalog, read again before its next request.
+            if let profile = model.profiles.first(where: { $0.id == profileID }) { _ = await model.listModels(for: profile) }
+        }
+        // One the gateway refused: a mini model its catalog does not have.
+        try await useMiniModel("fixture-retired")
+        _ = try? await model.suggestTitles(for: chatID)
+        try await useMiniModel("fixture-fast")
+        // The rename sheet's suggestions, a webhook's notification as its
+        // preview asks for it, and a chat's title asked for from its first message.
+        _ = try await model.suggestTitles(for: chatID)
+        var settings = WebhookSettings()
+        settings.enabled = true; settings.url = "https://hooks.example.com/bello/{{chat_id}}"; settings.prompt = "Write for a phone notification."
+        _ = try await model.prepareWebhook(for: chatID, settings: settings)
+        let titled = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "New chat", path: nil, profileID: profileID)
+        model.chats.append(titled); try await model.store?.put(titled, kind: "chat", id: titled.id)
+        model.scheduleTitleGeneration(sourceID: titled.id, input: "Refactor the retry backoff in the payment client")
+        try await until("the chat's title", seconds: 30) { model.titleGenerationTasks.isEmpty }
+        // One a quit cut short, left as a quit leaves it and settled as launch settles it.
+        var leftover = ChatRecord(id: UUID().uuidString, workspaceID: WorkspaceRecord.scratchID, title: "Title suggestions", path: nil, profileID: profileID,
+                                  toolMode: "read-only", connectionTest: true, model: "fixture-fast", thinkingLevel: "default", contextWindow: 128_000, maxOutputTokens: 512)
+        leftover.backgroundTask = "title-suggestions"; leftover.sourceSessionID = chatID; leftover.backgroundTaskStartedAt = Date().addingTimeInterval(-7_200)
+        model.chats.append(leftover); try await model.store?.put(leftover, kind: "chat", id: leftover.id)
+        await model.settleBackgroundRequests()
+        // And one still running: the fixture answers "slow" a word at a time.
+        let slow = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "Answer slowly for the fixture", path: nil, profileID: profileID)
+        model.chats.append(slow); try await model.store?.put(slow, kind: "chat", id: slow.id)
+        let running = Task { _ = try? await model.suggestTitles(for: slow.id) }
+        try await until("the slow request to start", seconds: 20) { model.chats.contains { $0.sourceSessionID == slow.id && $0.backgroundTaskOutcome == nil } }
+        model.backgroundRequests.filter = .all; model.backgroundRequests.selectedID = nil
+        model.openBackgroundRequests()
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+            try capture(window, to: gallery.appendingPathComponent("21-background-requests-\(name).png"))
+        }
+        running.cancel(); await running.value
+        try await until("the slow request to stop", seconds: 20) { !model.chats.contains { $0.sourceSessionID == slow.id && $0.backgroundTaskOutcome == nil } }
+        let suggestions = try XCTUnwrap(model.chats.first { $0.backgroundTask == "title-suggestions" && $0.backgroundTaskOutcome == "completed" })
+        model.backgroundRequests.selectedID = suggestions.id
+        try await until("the request's prompt and reply", seconds: 20) { model.backgroundRequests.detail?.reply != nil }
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+            try capture(window, to: gallery.appendingPathComponent("21b-background-request-detail-\(name).png"))
+        }
+        // A narrow window: the list, filtered to title suggestions, then the
+        // refused request's details, which take the page.
+        model.backgroundRequests.filter = .suggestions; model.backgroundRequests.selectedID = nil
+        window.setContentSize(NSSize(width: 920, height: 740)); window.center()
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+            try capture(window, to: gallery.appendingPathComponent("21c-background-requests-compact-\(name).png"))
+        }
+        model.backgroundRequests.selectedID = model.chats.first { $0.backgroundTaskOutcome == "failed" }?.id
+        try await until("the refused request's details", seconds: 20) { model.backgroundRequests.detail != nil }
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+            try capture(window, to: gallery.appendingPathComponent("21d-background-request-compact-detail-\(name).png"))
+        }
+        window.setContentSize(NSSize(width: 1440, height: 900)); window.center()
+        model.backgroundRequests.filter = .all; model.backgroundRequests.selectedID = nil
+        model.closeReport(); try await settle(0.8)
     }
 
     /// 18 · A chat's cost limit: the notice where a run stopped at it, the

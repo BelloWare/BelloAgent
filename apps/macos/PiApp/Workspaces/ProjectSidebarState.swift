@@ -61,7 +61,7 @@ extension WorkspaceModel {
     var sidebarProjects: [SidebarProject] { sidebarIndex.projects { self.buildSidebarProjects() } }
     private func buildSidebarProjects() -> [SidebarProject] {
         var groups = workspaces.map { SidebarProject(record: $0, available: true, name: URL(fileURLWithPath: $0.path).lastPathComponent) }
-        if chats.contains(where: { $0.workspaceID == WorkspaceRecord.scratchID && (!$0.isBackgroundTask || showBackgroundSessions) }) {
+        if chats.contains(where: { $0.workspaceID == WorkspaceRecord.scratchID && !$0.isBackgroundTask }) {
             groups.append(SidebarProject(record: scratchWorkspace, available: true, name: "No project"))
         }
         let configured = Set(workspaces.map(\.id)).union([WorkspaceRecord.scratchID])
@@ -156,7 +156,8 @@ extension WorkspaceModel {
     /// Selection from reports or the status panel reveals exactly its project.
     /// Other projects keep their disclosure and archive state.
     func revealProjectChat(_ item: ChatRecord) {
-        if item.isBackgroundTask { showBackgroundSessions = true }
+        // Background requests are on their own page, never in the sidebar.
+        guard !item.isBackgroundTask else { return }
         showArchivedSessions = item.isArchived
         guard sidebarProjects.contains(where: { $0.id == item.workspaceID }) else { return }
         forgetLaunchReveal(project: item.workspaceID)
