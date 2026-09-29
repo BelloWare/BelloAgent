@@ -39,6 +39,7 @@ extension WorkspaceModel {
             await nameUnnamedJournals()
             try await restoreTopics()
             try await restoreReadStates()
+            await restoreContextReadings()
             await reconcileSideKeeps()
             try await restoreProjectSidebarStates()
             if selectedID == nil, selectionRevision == launchSelection {

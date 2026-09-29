@@ -18,6 +18,9 @@ import Combine
     var contextInputIdentity: ContextInputIdentity? { ContextInputIdentity(contextState) }
     @Published var preparedContext: PreparedContextMetrics?
     @Published var preparingContext = false
+    /// The reading this chat's pill showed when it was last counted, while it
+    /// still stands (`ContextReading`).
+    @Published var retainedContext: ContextReading?
     let activityChanges = PassthroughSubject<Void, Never>()
     @Published var metrics: [String: WireValue] = [:] { didSet { if metrics != oldValue { activityChanges.send() } } }
     @Published var turnTiming: [String: WireValue] = [:] { didSet { if turnTiming != oldValue { activityChanges.send() } } }

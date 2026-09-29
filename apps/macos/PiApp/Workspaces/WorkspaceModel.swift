@@ -71,6 +71,8 @@ enum WorkspacePage: String, Sendable { case chats, report }
     var savedSelectionRevision: Int64 = 0
     var selectionWrite: Task<Void, Never>?
     var remembersSelection = false
+    /// Owned by `ContextReading.swift`: each chat's saved context reading.
+    var contextReadings: [String: ContextReading] = [:]
     /// Set by `shutdown()`: a launch still reading when the app went does not
     /// start writing again when it finishes.
     var selectionMemoryStopped = false
