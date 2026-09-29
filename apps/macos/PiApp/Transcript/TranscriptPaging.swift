@@ -93,7 +93,9 @@ enum TranscriptPaging {
     static var mountedRows = 0
     static var markdownUpdateSeconds = 0.0
     static var markdownLayoutSeconds = 0.0
-    static var markdownBlocksMeasured = 0
+    /// How many times a reply's text was laid out to find its height at a
+    /// width it had no height for (`NativeMarkdownContainer.measure`).
+    static var markdownMeasures = 0
     static var workListCardsMeasured = 0
     /// How many times SwiftUI has been asked to size or lay a row's tree out,
     /// and what those passes cost. A row whose content changed should cost
@@ -140,7 +142,7 @@ enum TranscriptPaging {
     static var now: Double { ProcessInfo.processInfo.systemUptime }
     static func reset() {
         updateSeconds = 0; layoutSeconds = 0; measureSeconds = 0; measuredRows = 0; mountedRows = 0
-        markdownUpdateSeconds = 0; markdownLayoutSeconds = 0; markdownBlocksMeasured = 0; workListCardsMeasured = 0
+        markdownUpdateSeconds = 0; markdownLayoutSeconds = 0; markdownMeasures = 0; workListCardsMeasured = 0
         mountSeconds = 0; rowLoopSeconds = 0; rowSizingPasses = 0; rowSizingSeconds = 0
         rootUpdateSeconds = 0; rootUpdates = 0; hostBuildSeconds = 0; hostBuilds = 0
         hostReleaseSeconds = 0; viewportLayoutSeconds = 0

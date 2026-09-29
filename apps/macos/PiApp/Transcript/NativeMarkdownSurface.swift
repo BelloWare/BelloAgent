@@ -254,14 +254,10 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     }
     required init?(coder: NSCoder) { nil }
 
-    /// Whether the text has a height it might still correct: never, now that
-    /// the whole reply is laid out as one text.
-    var hasProvisionalGeometry: Bool { false }
     /// Whether what is on screen is drawn at its own measure.
     var visibleContentPrepared: Bool {
         isParked || textView.textContainer?.containerSize.width == bounds.width || bounds.width == 0
     }
-    var provisionalBlockCount: Int { 0 }
     /// Told each time the text is drawn: the reading position must already
     /// be where it belongs by then.
     var didDrawPreparedContent: (() -> Void)? {
@@ -724,6 +720,7 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         if container.containerSize.width != width { container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude) }
         manager.ensureLayout(for: container)
         layoutPasses += 1
+        if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownMeasures += 1 }
         let used = manager.usedRect(for: container)
         let height = ceil(textView.topInset + used.maxY + lastInset())
         let size = CGSize(width: width, height: max(1, height))

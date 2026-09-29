@@ -20,9 +20,6 @@ struct ContentGeometry: Equatable {
 /// reader is. The view reads its published state; the geometry callbacks, the
 /// scroll view's notifications and the session's transcript stream drive it.
 @MainActor final class TranscriptPage: ObservableObject {
-    /// The newest rows that fit: up to 500 messages and about 4 MB of text.
-    nonisolated static let rowLimit = 500
-    nonisolated static let byteLimit = 4_000_000
     /// The bottom band. The page follows the newest row only while the reader
     /// is standing inside it; leaving it unpins the page and coming back
     /// re-pins it. It is deliberately narrow — a reader a line and a half off
@@ -55,7 +52,7 @@ struct ContentGeometry: Equatable {
         // a task completion. A message just sent starts its turn in that same
         // phase, before the helper's first presentation of it arrives.
         guard snapshot?.lifecycle?.active == nil, snapshot?.lifecycle?.recent.isEmpty != false || snapshot?.sending == true else { return nil }
-        return Self.liveTurn(in: [], busy: busy)
+        return Self.liveTurn(busy: busy)
     }
     @Published private(set) var detached = false
     /// Whether the reader is standing in the bottom band right now. The Back
@@ -481,7 +478,7 @@ struct ContentGeometry: Equatable {
 
     /// Compatibility helper for callers without lifecycle evidence. Never
     /// borrows a historical row to claim it is the currently running task.
-    static func liveTurn(in items: [TranscriptItem], busy: Bool) -> TurnSummary? {
+    static func liveTurn(busy: Bool) -> TurnSummary? {
         guard busy else { return nil }
         var turn = TaskTranscriptPlan.summary([], task: nil)
         turn.live = true; turn.phase = "preparing"; return turn
@@ -1533,28 +1530,6 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         streamingSurface = found; streamingSurfaceID = messageID
         return found
     }
-    /// A native surface in this row measured blocks it had stood at an
-    /// estimate — the reader scrolled onto them, or a token opened one — and
-    /// its text is that much taller or shorter. The row is the rest of it plus
-    /// that text, so it changes by the same amount; neither a row that took
-    /// its height from the surface token by token nor one measured whole
-    /// hears its hosting tree resize, and the difference stood as a gap under
-    /// the reply, or its last lines cut off, until the next full measurement.
-    func surfaceResolved(_ delta: CGFloat) {
-        // Measuring right now: the height this pass arrives at includes it.
-        guard !measuring, let cached = measurements.last(where: { $0.width == width }) else { return }
-        measurements = [CGSize(width: cached.width, height: max(1, cached.height + delta))]
-        if let hosted, hosted.frame.height != measurements[0].height {
-            hosted.frame = CGRect(x: 0, y: 0, width: cached.width, height: measurements[0].height)
-        }
-        if let cache = geometryCache, let sessionID = geometrySessionID, let scale = measurementScale {
-            cache.invalidate(sessionID: sessionID, item: item, width: cached.width, backingScale: scale)
-        }
-        // The surface resolves as it is laid out, which can be inside the
-        // document's own pass; the page is placed again after it, as for any
-        // other row whose height changed.
-        DispatchQueue.main.async { [weak self] in self?.onHeightInvalidated?() }
-    }
     /// Returns whether anything that decides this row's height changed.
     @discardableResult
     func update(item: TranscriptItem, fresh: Bool, actions: TranscriptActions, environment: TranscriptRowEnvironment = TranscriptRowEnvironment()) -> Bool {
@@ -1874,14 +1849,6 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         }
         if let hosted, hosted.frame != bounds { hosted.frame = bounds }
     }
-    var hasProvisionalMarkdown: Bool {
-        func provisional(_ view: NSView) -> Bool {
-            if let markdown = view as? NativeMarkdownContainer, markdown.hasProvisionalGeometry { return true }
-            for child in view.subviews { if provisional(child) { return true } }
-            return false
-        }
-        guard let hosted else { return false }; return provisional(hosted)
-    }
     var visibleContentPrepared: Bool {
         func prepared(_ view: NSView) -> Bool {
             if let markdown = view as? NativeMarkdownContainer { return markdown.visibleContentPrepared }
@@ -1940,7 +1907,7 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
                 self.measuring = false
                 self.restoredMeasurementNeedsValidation = false
                 if height == cached.height {
-                    if !self.hasProvisionalMarkdown, let cache = self.geometryCache, let sessionID = self.geometrySessionID,
+                    if let cache = self.geometryCache, let sessionID = self.geometrySessionID,
                        let scale = self.window?.backingScaleFactor, self.measurementScale == scale {
                         cache.store(cached, sessionID: sessionID, item: self.item, fresh: self.fresh, environment: self.environment,
                                     disclosure: self.disclosure, backingScale: scale)

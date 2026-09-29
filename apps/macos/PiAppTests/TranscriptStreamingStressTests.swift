@@ -320,10 +320,10 @@ final class TranscriptStreamingStressTests: TranscriptStressTestCase {
         }
         await stage.settleUntilExact(seconds: 10)
         let elapsed = ProcessInfo.processInfo.systemUptime - started
-        print(String(format: "PERF paint-only environment: a Reports round trip and an appearance switch re-measured %d rows and %d markdown blocks in %.0f ms",
-                     TranscriptLayoutClock.measuredRows, TranscriptLayoutClock.markdownBlocksMeasured, elapsed * 1_000))
+        print(String(format: "PERF paint-only environment: a Reports round trip and an appearance switch re-measured %d rows and %d replies' text in %.0f ms",
+                     TranscriptLayoutClock.measuredRows, TranscriptLayoutClock.markdownMeasures, elapsed * 1_000))
         XCTAssertEqual(TranscriptLayoutClock.measuredRows, 0, "a change of colour or of the enabled state re-measured rows")
-        XCTAssertEqual(TranscriptLayoutClock.markdownBlocksMeasured, 0, "a change of colour or of the enabled state re-measured markdown")
+        XCTAssertEqual(TranscriptLayoutClock.markdownMeasures, 0, "a change of colour or of the enabled state re-measured markdown")
         XCTAssertEqual(stage.document.approximateRowCount, 0, "no row was left standing at an estimate")
         assertStacked(stage, "after the round trip")
     }
