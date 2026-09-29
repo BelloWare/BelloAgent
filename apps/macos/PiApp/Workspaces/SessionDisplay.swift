@@ -321,6 +321,11 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var runStatus = "idle" { didSet { if runStatus != oldValue { activityChanges.send() } } }
     /// Bumped when the pane should move keyboard focus into the composer.
     @Published var composerFocusRequest = 0
+    /// Requests up to this one are not for a composer made from now on, which
+    /// otherwise acts on the last one it finds, even an earlier visit's
+    /// (`NativeComposer.settledFocusToken`). Set as a chat opens for its side
+    /// to take the cursor, and as a side comes back beside its chat.
+    var composerFocusSettled = 0
     @Published var failureMessage: String? { didSet { if failureMessage != oldValue { publishTranscript() } } }
     /// The helper's code for the run failure shown; `cost_limit` draws the stop notice.
     @Published var failureCode: String? { didSet { if failureCode != oldValue { publishTranscript() } } }

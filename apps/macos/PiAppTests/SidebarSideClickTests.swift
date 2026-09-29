@@ -10,10 +10,23 @@ import AppKit
 /// archived chat turned the archive switch on, and a click into the side
 /// pane unfolded the side list the reader had folded. Opening a side from
 /// anywhere else (the menu bar, the Usage Report, search) still reveals it.
+/// The side takes the cursor, and the chat opened beside it never does.
 final class SidebarSideClickTests: XCTestCase {
     @MainActor private final class Fixture {
-        let model: WorkspaceModel, window: NSWindow, project: WorkspaceRecord
-        init(model: WorkspaceModel, window: NSWindow, project: WorkspaceRecord) { self.model = model; self.window = window; self.project = project }
+        let model: WorkspaceModel, window: RecordingWindow, project: WorkspaceRecord
+        init(model: WorkspaceModel, window: RecordingWindow, project: WorkspaceRecord) { self.model = model; self.window = window; self.project = project }
+    }
+
+    /// Records the chat of every composer it gives the keyboard to, however
+    /// briefly: a composer that held it for a moment is as wrong as one that
+    /// kept it, and a check of the window at one instant can miss either.
+    @MainActor final class RecordingWindow: NSWindow {
+        var composers: [String] = []
+        @discardableResult override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+            let made = super.makeFirstResponder(responder)
+            if made, let editor = responder as? ComposerTextView { composers.append(editor.sessionID) }
+            return made
+        }
     }
 
     @MainActor private func fixture(parentArchived: Bool = false) async throws -> Fixture {
@@ -39,7 +52,7 @@ final class SidebarSideClickTests: XCTestCase {
         let chats = [chat("P", 1, archived: parentArchived), chat("Q", 2), chat("S1", 3, parent: "P"), chat("S2", 4, parent: "P")]
         for item in chats { try await model.store?.put(item, kind: "chat", id: item.id) }
         model.chats = chats
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        let window = RecordingWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: WorkspaceView(model: model).transaction { $0.animation = nil; $0.disablesAnimations = true })
         window.makeKeyAndOrderFront(nil)
@@ -82,6 +95,33 @@ final class SidebarSideClickTests: XCTestCase {
         try XCTUnwrap(surface, "The row of \(id) is on screen", file: file, line: line).actions.click([])
     }
 
+    /// The composer that has the keyboard, by its chat.
+    @MainActor private func keyboard(_ fixture: Fixture) -> String? {
+        (fixture.window.firstResponder as? ComposerTextView)?.sessionID
+    }
+
+    /// The side is open beside its chat with its page read, and it has the
+    /// cursor: the model says so and its composer has the keyboard. It still
+    /// holds once the window has drawn what was pending. The chat opened on
+    /// the way used to take the cursor back a moment after the side had it,
+    /// and a check that caught that moment passed.
+    @MainActor private func sideHasTheCursor(_ id: String, beside parent: String, in fixture: Fixture,
+                                             file: StaticString = #filePath, line: UInt = #line) async throws {
+        let model = fixture.model
+        func holds() -> Bool {
+            model.selectedID == parent && model.sides[parent]?.id == id && model.displays[id].map { [.ready, .empty].contains($0.historyState) } == true
+                && model.focusedSessionID == id && keyboard(fixture) == id
+        }
+        func state() -> String {
+            "selected \(model.selectedID ?? "none"), side \(model.sides[parent]?.id ?? "none"), page \(String(describing: model.displays[id]?.historyState)), "
+                + "focus \(model.focusedSessionID ?? "none"), keyboard \(keyboard(fixture) ?? "none"), composers given it \(fixture.window.composers)"
+        }
+        do { try await waitUntil("The side opened beside its chat, with the cursor in its composer", { holds() }, file: file, line: line) }
+        catch { XCTFail(state(), file: file, line: line); throw error }
+        try await draw(fixture)
+        XCTAssertTrue(holds(), "The side keeps the cursor: \(state())", file: file, line: line)
+    }
+
     /// Everything the reader arranges in the sidebar.
     @MainActor private func arrangement(_ fixture: Fixture) -> String {
         let model = fixture.model
@@ -104,10 +144,12 @@ final class SidebarSideClickTests: XCTestCase {
         model.setSidebarSideFolded("P", folded: true)
         try await draw(fixture)
         let before = arrangement(fixture)
+        fixture.window.composers.removeAll()
 
         try await click("S1", in: fixture)
-        try await waitUntil("The side opened beside its chat") { model.selectedID == "P" && model.sides["P"]?.id == "S1" && model.focusedSessionID == "S1" }
-        try await draw(fixture)
+        try await sideHasTheCursor("S1", beside: "P", in: fixture)
+        XCTAssertEqual(fixture.window.composers, ["S1"], "Only the side's composer took the keyboard, never its chat's")
+        XCTAssertEqual(model.displays["P"]?.composerFocusRequest, 0, "Nothing asked the chat's composer for the cursor")
         XCTAssertEqual(arrangement(fixture), before, "Clicking the side changes nothing in the sidebar")
 
         // Opened from anywhere else, where its row may be hidden, it is revealed.
@@ -117,6 +159,35 @@ final class SidebarSideClickTests: XCTestCase {
         try await draw(fixture)
         XCTAssertTrue(model.topics.first { $0.id == first.id }?.expanded == true, "Opened from elsewhere, the chat's topic opens")
         XCTAssertFalse(model.collapsedSidebarSides.contains("P"), "Opened from elsewhere, the chat's side list unfolds")
+    }
+
+    /// The chat had the cursor on an earlier visit. Opened again for its
+    /// side, its composer, made anew for it, acted on that visit's request
+    /// and took the keyboard as the side opened.
+    @MainActor func testClickingASideOfAChatVisitedBeforeGivesTheCursorToTheSide() async throws {
+        let fixture = try await fixture()
+        let model = fixture.model
+        await model.select("P")
+        try await waitUntil("The chat's composer has the cursor") { keyboard(fixture) == "P" }
+        await model.select("Q")
+        try await waitUntil("The other chat's composer has the cursor") { keyboard(fixture) == "Q" }
+        try await draw(fixture)
+        fixture.window.composers.removeAll()
+
+        try await click("S1", in: fixture)
+        try await sideHasTheCursor("S1", beside: "P", in: fixture)
+        XCTAssertEqual(fixture.window.composers, ["S1"], "Only the side's composer took the keyboard, never its chat's")
+
+        // Opened on its own again, the chat's composer takes the cursor as
+        // before, and the side's, made anew beside it, does not.
+        await model.select("Q")
+        try await waitUntil("The other chat's composer has the cursor") { keyboard(fixture) == "Q" }
+        fixture.window.composers.removeAll()
+        await model.select("P")
+        try await waitUntil("The chat's composer has the cursor again") { keyboard(fixture) == "P" && model.focusedSessionID == "P" }
+        try await draw(fixture)
+        XCTAssertEqual(keyboard(fixture), "P")
+        XCTAssertFalse(fixture.window.composers.contains("S1"), "The side's composer never took the keyboard from its chat: \(fixture.window.composers)")
     }
 
     /// A side of an archived chat is listed on its own while the archive is
@@ -129,8 +200,7 @@ final class SidebarSideClickTests: XCTestCase {
         let before = arrangement(fixture)
 
         try await click("S1", in: fixture)
-        try await waitUntil("The side opened beside its chat") { model.selectedID == "P" && model.sides["P"]?.id == "S1" }
-        try await draw(fixture)
+        try await sideHasTheCursor("S1", beside: "P", in: fixture)
         XCTAssertEqual(arrangement(fixture), before, "Clicking the side leaves the archive switch off")
     }
 
@@ -140,8 +210,7 @@ final class SidebarSideClickTests: XCTestCase {
         let fixture = try await fixture()
         let model = fixture.model
         try await click("S1", in: fixture)
-        try await waitUntil("The side opened beside its chat") { model.sides["P"]?.id == "S1" && model.focusedSessionID == "S1" }
-        try await draw(fixture)
+        try await sideHasTheCursor("S1", beside: "P", in: fixture)
         let root = try XCTUnwrap(fixture.window.contentView)
         func composer(_ id: String) throws -> ComposerTextView {
             try XCTUnwrap(views(ComposerTextView.self, in: root).first { $0.sessionID == id }, "The composer of \(id) is on screen")

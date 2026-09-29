@@ -18,6 +18,9 @@ struct NativeComposer: NSViewRepresentable {
     var attachFiles: ([URL]) -> Void = { _ in }
     /// A changed token moves keyboard focus into the editor once the view is in a window.
     var focusToken = 0
+    /// The token a new editor starts from. A new editor acts on a token
+    /// past this one, which may be a request made before it existed.
+    var settledFocusToken = 0
     /// The selected skills, drawn as tokens that lead the text.
     var skills: [SkillChip] = []
     /// Whose selection the tokens are: Backspace and Remove edit it.
@@ -112,7 +115,7 @@ struct NativeComposer: NSViewRepresentable {
         /// document, so a 200 KB draft used to cost about 10 ms per keystroke.
         /// Comparing against this copy is a pointer check in the usual case.
         private var settled: String?
-        init(_ parent: NativeComposer) { self.parent = parent }
+        init(_ parent: NativeComposer) { self.parent = parent; appliedFocusToken = parent.settledFocusToken }
         func adopt(_ text: String) { if settled != text { draftRevision &+= 1 }; settled = text }
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let editor = notification.object as? ComposerTextView else { return }
