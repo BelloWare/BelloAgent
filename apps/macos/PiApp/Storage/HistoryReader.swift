@@ -284,7 +284,7 @@ actor HistoryReader {
         guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
         let record = try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:], message = record["message"]?.object ?? [:]
         let text = Self.projection(record, field: "text")
-        guard text.utf8.count <= 262_144, try stamp(file) == index.stamp else { throw HostError.failure("The original input is too large or changed during loading.") }
+        guard text.utf8.count <= SubmissionLimits.messageBytes, try stamp(file) == index.stamp else { throw HostError.failure("The original input is too large or changed during loading.") }
         let blocks = message["content"]?.array ?? []
         let expanded = message["content"]?.string ?? blocks.compactMap { $0.object?["type"]?.string == "text" ? $0.object?["text"]?.string : nil }.joined()
         return ["messageId": .string(id), "text": .string(text), "sourceTimeline": .string(EditReplayPlan.digest(try index.branch.timelineIDs())),

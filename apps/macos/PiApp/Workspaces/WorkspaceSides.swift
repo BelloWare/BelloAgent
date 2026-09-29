@@ -72,7 +72,7 @@ extension WorkspaceModel {
         let quoted = quote.text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
             .components(separatedBy: "\n").map { "> " + $0 }.joined(separator: "\n")
         let draft = existingDraft + (existingDraft.isEmpty ? "" : "\n\n") + quoted + "\n\n"
-        guard draft.utf8.count <= 262_144 else { error = "The quoted draft exceeds 256 KiB. Select a shorter passage."; return }
+        guard draft.utf8.count <= SubmissionLimits.messageBytes else { error = "The quoted draft exceeds 256 KiB. Select a shorter passage."; return }
         openSide(parentID: parentID)
         guard let info = sides[parentID], info.pending, let view = displays[info.id] else { return }
         view.draft = draft; view.directCommand = false; view.completionVisible = false; view.completionToken = nil
@@ -472,7 +472,7 @@ extension WorkspaceModel {
     func bringBack(_ text: String, from id: String, replace: Bool) throws {
         guard !text.isEmpty, let info = side(id), let parent = displays[info.parentID] else { throw HostError.failure("The parent draft is unavailable") }
         let draft = replace || parent.draft.isEmpty ? text : parent.draft + "\n\n" + text
-        guard draft.utf8.count <= 262_144 else { throw HostError.failure("The combined draft exceeds 256 KiB. Shorten the summary first.") }
+        guard draft.utf8.count <= SubmissionLimits.messageBytes else { throw HostError.failure("The combined draft exceeds 256 KiB. Shorten the summary first.") }
         parent.draft = draft; parent.directCommand = false; parent.completionVisible = false; draftChanged(parent)
     }
     func enableEditing(_ id: String) {

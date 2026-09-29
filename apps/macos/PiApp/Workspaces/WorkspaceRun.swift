@@ -39,7 +39,7 @@ extension WorkspaceModel {
         guard !item.isArchived else { view.notice = Self.archivedNotice; return }
         guard let store else { error = "Desktop storage is unavailable. Resolve the storage error before sending."; return }
         if resolveLeadingCommand(view, steer: steer) { return }
-        guard view.draft.utf8.count <= 262_144 else { error = "The draft exceeds the 256 KiB submission limit"; return }
+        guard view.draft.utf8.count <= SubmissionLimits.messageBytes else { error = "The draft exceeds the 256 KiB submission limit"; return }
         if view.uncertain {
             // Asked on the chat's own window: a modal run loop here would stop
             // every other chat's stream while the reader thinks about it.

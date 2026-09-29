@@ -17,7 +17,7 @@ extension WorkspaceModel {
         return try Self.queuedText(in: result)
     }
     private static func queuedText(in result: [String: WireValue]) throws -> String {
-        guard let text = result["text"]?.string, text.utf8.count <= 262_144 else {
+        guard let text = result["text"]?.string, text.utf8.count <= SubmissionLimits.messageBytes else {
             throw HostError.failure("The queued message could not be read in full.")
         }
         return text
