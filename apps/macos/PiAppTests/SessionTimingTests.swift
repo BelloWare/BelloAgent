@@ -500,10 +500,10 @@ final class SessionTimingTests: XCTestCase {
     /// counted; in a run, "Preparing request input…". Where the pill's figure
     /// fit at the end of a row, those words pushed it onto a row of its own.
     /// The footer grew a row and the conversation above it jumped, then
-    /// jumped back when the figure came (the hour-long soak, on its busiest
-    /// chats). The words now take the figure's room, in the chat's footer and
-    /// in a side's compact one, for a figure of one digit, two, or a nearly
-    /// full window's "99.96%".
+    /// jumped back when the figure came. The words now take the room the
+    /// pill keeps for the showing, in the chat's footer and in a side's
+    /// compact one, for a figure of one digit, two, or a nearly full
+    /// window's "99.96%".
     @MainActor func testTheContextPillsWordsNeverChangeTheFootersRows() throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
@@ -514,14 +514,13 @@ final class SessionTimingTests: XCTestCase {
             session.context = ["tokens": .number(tokens), "contextWindow": .number(200_000)]
             session.footer.preparingContext = words == "calculating"
             session.footer.pendingContextSubmission = words == "preparing" ? "turn" : nil
-            hosted.rootView = FooterWidthProbe(model: model, session: session, width: width, compact: compact)
-            hosted.layoutSubtreeIfNeeded()
-            return hosted.fittingSize.height
+            return footerHeight(hosted, model: model, session: session, width: width, compact: compact)
         }
         for compact in [false, true] {
             var heights: Set<CGFloat> = []
             for tokens in [9_000.0, 45_000, 199_920] {
                 for width in stride(from: CGFloat(compact ? 240 : 500), through: compact ? 800 : 1_400, by: 4) {
+                    session.presentationGeneration = UUID()
                     let counted = height(width, compact: compact, tokens: tokens, words: nil)
                     for words in ["calculating", "preparing"] {
                         XCTAssertEqual(height(width, compact: compact, tokens: tokens, words: words), counted,
@@ -534,9 +533,79 @@ final class SessionTimingTests: XCTestCase {
         }
     }
 
+    /// The hour-long soak's case. A chat whose helper has gone and whose
+    /// saved reading no longer stands has no figure when it is shown: the
+    /// pill reads "Inspect context", then "Calculating context…" while it is
+    /// counted, then the figure. None of the three changes the footer's rows
+    /// in that showing, nor does the figure shrinking afterwards.
+    @MainActor func testAShowingWithoutAFigureKeepsItsRowsUntilTheFigureComes() throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        let session = longChat("context-unknown")
+        let hosted = NSHostingView(rootView: FooterWidthProbe(model: model, session: session, width: 600))
+        func height(_ width: CGFloat, compact: Bool, tokens: Double?, calculating: Bool) -> CGFloat {
+            session.context = tokens.map { ["tokens": .number($0), "contextWindow": .number(200_000)] } ?? [:]
+            session.footer.preparingContext = calculating
+            return footerHeight(hosted, model: model, session: session, width: width, compact: compact)
+        }
+        for compact in [false, true] {
+            var heights: Set<CGFloat> = []
+            for width in stride(from: CGFloat(compact ? 240 : 500), through: compact ? 800 : 1_400, by: 4) {
+                session.presentationGeneration = UUID()
+                let first = height(width, compact: compact, tokens: nil, calculating: false)
+                let where_ = "\(compact ? "compact" : "full") footer at \(width) pt"
+                XCTAssertEqual(height(width, compact: compact, tokens: nil, calculating: true), first, "\(where_): “Calculating context…” changed its rows")
+                XCTAssertEqual(height(width, compact: compact, tokens: 199_920, calculating: false), first, "\(where_): the figure changed its rows")
+                XCTAssertEqual(height(width, compact: compact, tokens: 9_000, calculating: false), first, "\(where_): a shorter figure changed its rows")
+                heights.insert(first)
+            }
+            XCTAssertGreaterThan(heights.count, 1, "the sweep crosses the widths where the pills wrap")
+        }
+    }
+
+    /// The room lasts one showing. Shown again, the chat lays out from what
+    /// its pill shows first, as a chat shown for the first time does. And the
+    /// room lies after the pill: its press target is the size of what it says.
+    @MainActor func testTheContextPillsRoomLastsOneShowingAndLiesOutsideThePill() throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        let figure: [String: WireValue] = ["tokens": .number(45_000), "contextWindow": .number(200_000)]
+        let fresh = longChat("context-fresh"), shown = longChat("context-shown-before")
+        fresh.context = figure
+        let hosted = NSHostingView(rootView: FooterWidthProbe(model: model, session: fresh, width: 600))
+        func target() throws -> CGFloat {
+            func find(_ view: NSView) -> NSView? {
+                if view.accessibilityIdentifier() == "session-stats-context" { return view }
+                return view.subviews.lazy.compactMap(find).first
+            }
+            return try XCTUnwrap(find(hosted), "the context pill's press target").frame.width
+        }
+        var kept = 0
+        for width in stride(from: CGFloat(500), through: 1_400, by: 4) {
+            let first = footerHeight(hosted, model: model, session: fresh, width: width, compact: false)
+            let firstTarget = try target()
+            // A showing that began without a figure keeps that room once the
+            // figure has come; its press target does not.
+            shown.presentationGeneration = UUID()
+            shown.context = [:]
+            let unknown = footerHeight(hosted, model: model, session: shown, width: width, compact: false)
+            shown.context = figure
+            XCTAssertEqual(footerHeight(hosted, model: model, session: shown, width: width, compact: false), unknown, "at \(width) pt the figure changed the rows")
+            XCTAssertEqual(try target(), firstTarget, "at \(width) pt the press target grew with the room kept")
+            if unknown != first { kept += 1 }
+            // Shown again, it lays out from its figure, as a first showing does.
+            shown.presentationGeneration = UUID()
+            XCTAssertEqual(footerHeight(hosted, model: model, session: shown, width: width, compact: false), first, "at \(width) pt a new showing kept an old room")
+        }
+        XCTAssertGreaterThan(kept, 0, "the sweep crosses widths where the room kept a row")
+    }
+
     /// In a run, the chat's saved reading can be far behind the figure on
     /// screen. Words that replace the figure there ("Compacting context…")
-    /// take the room of the figure shown, never of the saved one.
+    /// take the room of the figure shown, never of the saved one; and a chat
+    /// that showed a smaller figure in an earlier showing keeps nothing of it.
     @MainActor func testTheContextPillsWordsTakeTheRoomOfTheFigureShown() throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
@@ -546,39 +615,35 @@ final class SessionTimingTests: XCTestCase {
         session.footer.retainedContext = ContextReading(chatID: chat.id, context: ["tokens": .number(46_000), "contextWindow": .number(200_000)],
                                                         binding: ContextPreviewBinding(chat), configurationRevision: 0, journal: nil)
         session.context = ["tokens": .number(199_920), "contextWindow": .number(200_000)]
+        let other = longChat("context-shown-other")
+        other.context = session.context
         let hosted = NSHostingView(rootView: FooterWidthProbe(model: model, session: session, width: 600))
-        func height(_ width: CGFloat, compacting: Bool) -> CGFloat {
-            session.runStatus = compacting ? "compacting" : "idle"
-            hosted.rootView = FooterWidthProbe(model: model, session: session, width: width)
-            hosted.layoutSubtreeIfNeeded()
-            return hosted.fittingSize.height
-        }
         var heights: Set<CGFloat> = []
         for width in stride(from: CGFloat(500), through: 1_400, by: 2) {
-            let shown = height(width, compacting: false)
-            XCTAssertEqual(height(width, compacting: true), shown, "at \(width) pt “Compacting context…” changed the footer's rows")
+            session.runStatus = "idle"
+            let shown = footerHeight(hosted, model: model, session: session, width: width, compact: false)
+            session.runStatus = "compacting"
+            XCTAssertEqual(footerHeight(hosted, model: model, session: session, width: width, compact: false), shown,
+                           "at \(width) pt “Compacting context…” changed the footer's rows")
             heights.insert(shown)
+            // The footer is kept across chats. Another chat whose earlier
+            // showing held a smaller figure's room, shown again with the same
+            // figure as this one, keeps this figure's room.
+            other.footer.contextSlot = ContextPillSlot.of(nil, showing: other.presentationGeneration).adding("23%", figure: true)
+            other.presentationGeneration = UUID(); other.runStatus = "idle"
+            XCTAssertEqual(footerHeight(hosted, model: model, session: other, width: width, compact: false), shown)
+            other.runStatus = "compacting"
+            XCTAssertEqual(footerHeight(hosted, model: model, session: other, width: width, compact: false), shown,
+                           "at \(width) pt, after a chat switch, “Compacting context…” changed the footer's rows")
         }
         XCTAssertGreaterThan(heights.count, 1, "the sweep crosses the widths where the pills wrap")
+    }
 
-        // The footer is kept across chats. Another chat that once showed 23%
-        // and shows the same 99.96% as this one now keeps 99.96%'s room too.
-        let other = longChat("context-shown-other")
-        other.footer.shownContextFigure = "23%"
-        other.context = session.context
-        session.runStatus = "idle"
-        for width in stride(from: CGFloat(500), through: 1_400, by: 2) {
-            hosted.rootView = FooterWidthProbe(model: model, session: session, width: width)
-            hosted.layoutSubtreeIfNeeded()
-            other.runStatus = "idle"
-            hosted.rootView = FooterWidthProbe(model: model, session: other, width: width)
-            hosted.layoutSubtreeIfNeeded()
-            let shown = hosted.fittingSize.height
-            other.runStatus = "compacting"
-            hosted.rootView = FooterWidthProbe(model: model, session: other, width: width)
-            hosted.layoutSubtreeIfNeeded()
-            XCTAssertEqual(hosted.fittingSize.height, shown, "at \(width) pt, after a chat switch, “Compacting context…” changed the footer's rows")
-        }
+    @MainActor private func footerHeight(_ hosted: NSHostingView<FooterWidthProbe>, model: WorkspaceModel, session: SessionDisplay,
+                                         width: CGFloat, compact: Bool) -> CGFloat {
+        hosted.rootView = FooterWidthProbe(model: model, session: session, width: width, compact: compact)
+        hosted.layoutSubtreeIfNeeded()
+        return hosted.fittingSize.height
     }
 
     /// A figure is never cut to make room: the pill that shortens its words

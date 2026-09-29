@@ -21,10 +21,9 @@ import Combine
     /// The reading this chat's pill showed when it was last counted, while it
     /// still stands (`ContextReading`).
     @Published var retainedContext: ContextReading?
-    /// The figure the context pill last showed ("23%"): words that stand in
-    /// for it take its room (`SessionStatsPills.contextPill`). Not published;
-    /// nothing is drawn again for it.
-    var shownContextFigure: String?
+    /// The room the context pill keeps for this showing of the chat
+    /// (`ContextPillSlot`). Not published; nothing is drawn again for it.
+    var contextSlot: ContextPillSlot?
     let activityChanges = PassthroughSubject<Void, Never>()
     @Published var metrics: [String: WireValue] = [:] { didSet { if metrics != oldValue { activityChanges.send() } } }
     @Published var turnTiming: [String: WireValue] = [:] { didSet { if turnTiming != oldValue { activityChanges.send() } } }
