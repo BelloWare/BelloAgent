@@ -65,4 +65,34 @@ final class SideForkTests: XCTestCase {
         let count = await forkClient.count; XCTAssertEqual(count, 0)
         await copy.close(); await parent.close()
     }
+
+    /// Opening a side keeps it at once, in a journal of its own that starts
+    /// with the parent's whole context. That journal takes the side's name
+    /// only once all of it is on disk, so its records are not forced there
+    /// one by one: a side opened from a long chat paid an fsync per message.
+    func testKeepingASideForcesItsJournalToDiskOnceNotOncePerMessage() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("state"), path = directory.appendingPathComponent("parent.jsonl")
+        let profile = try fixtureProfile(), resources = Resources(cwd: root, home: root), traces = TraceStore()
+        do {
+            let journal = try SessionJournal(url: path, id: "parent", cwd: root, binding: profile.binding, create: true)
+            for index in 0..<60 {
+                var message = ChatMessage(role: index.isMultiple(of: 2) ? "user" : "assistant", content: [textBlock("Message \(index)")])
+                message.id = "m-\(index)"
+                try journal.append(["type": "message", "message": message.pi], id: message.id, flush: false)
+            }
+            try journal.synchronize()
+        }
+        let parent = try AgentSession(id: "parent", profile: profile, apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: resources, client: ScriptClient([]), tools: RecordingTools(), traces: traces, resumePath: path.path)
+        let seed = await parent.sideSeed()
+        XCTAssertEqual(seed.messages.count, 60)
+        let side = try AgentSession(id: "side", profile: profile, apiKey: "fixture", cwd: root, directory: directory, readOnly: true, resources: resources, client: ScriptClient([]), tools: RecordingTools(), traces: traces, seed: seed.messages, parent: seed.info)
+        let kept = try await side.preserveSide()
+        let syncs = await side.journalSynchronizationCount
+        XCTAssertEqual(syncs, 2, "the new journal's first record when it is made, then all of it before it takes the side's name")
+        let records = try String(contentsOfFile: try XCTUnwrap(kept["path"].text), encoding: .utf8).split(separator: "\n").map { try JSON.parse(Data($0.utf8)) }
+        XCTAssertEqual(records.filter { $0["type"].text == "message" }.compactMap { $0["id"].text }, seed.messages.map(\.id), "the kept side holds its whole starting context")
+        XCTAssertEqual(records.last?["customType"].text, "pi-app.native.state.v1")
+        await side.close(); await parent.close()
+    }
 }

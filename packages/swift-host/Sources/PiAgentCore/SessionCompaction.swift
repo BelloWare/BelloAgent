@@ -175,7 +175,7 @@ extension AgentSession {
             if compactionState["phase"].text != "completed" {
                 if !Task.isCancelled, let fingerprint=compactionState["sourceFingerprint"].text {
                     failedCompactionFingerprint=fingerprint
-                    _ = try? journal?.append(["type":"custom","customType":"pi-app.compaction-failure.v1","data":["fingerprint":JSON(fingerprint)]],flush:true)
+                    _ = try? journal?.append(["type":"custom","customType":JSON(JournalRecordKind.compactionFailure),"data":["fingerprint":JSON(fingerprint)]],flush:true)
                 }
                 compactionState["phase"]=JSON(Task.isCancelled ? "cancelled" : "failed")
                 compactionState["errorCode"]=JSON((error as? AgentError)?.code ?? "cancelled")

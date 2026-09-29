@@ -47,7 +47,7 @@ final class ProtocolWriter: Sendable {
     /// On the writer queue only.
     private func write(_ value: JSON) {
         do {
-            var data=try value.data(); guard data.count<=1048576 else { throw AgentError("frame_limit","Protocol output exceeds frame limit") }
+            var data=try value.data(); guard data.count<=HostProtocol.frameBytes else { throw AgentError("frame_limit","Protocol output exceeds frame limit") }
             data.append(10)
             do { try FileHandle.standardOutput.write(contentsOf:data) }
             catch { guard reader.inputEnded else { throw error }; reader.set(\.gone); return }
@@ -92,7 +92,7 @@ final class ReaderState: @unchecked Sendable {
 @main struct Main {
     static func main() async {
         signal(SIGPIPE,SIG_IGN)
-        if CommandLine.arguments.contains("--version") { print("pi-native-host 1.0.0 (Pi behavior reference 0.85.1)"); return }
+        if CommandLine.arguments.contains("--version") { print("pi-native-host \(HostProtocol.engineVersion) (Pi behavior reference \(HostProtocol.piBehaviorReference))"); return }
         let writer=ProtocolWriter(), service=NativeHostService { writer.send($0) }
         signal(SIGTERM,SIG_IGN); signal(SIGINT,SIG_IGN)
         let term=DispatchSource.makeSignalSource(signal:SIGTERM,queue:.global()), interrupt=DispatchSource.makeSignalSource(signal:SIGINT,queue:.global())
