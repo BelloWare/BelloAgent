@@ -472,6 +472,32 @@ final class ModelSwitchTests: XCTestCase {
         XCTAssertEqual(replacing.entry(for: profile).models, ["model-2"])
     }
 
+    /// Saving a connection in Settings starts a catalog fetch from its model
+    /// pickers, and title suggestions join that fetch, then read the mini
+    /// model's limits from the entry. The joining caller resumed before the
+    /// picker that started the fetch had written the entry, found it still
+    /// loading, and the suggestions went out without the catalog's output limit.
+    @MainActor func testACallerThatJoinsARunningFetchReadsTheEntryItWrote() async throws {
+        let gate = CatalogBarrier()
+        var profile = profile(); profile.catalogUrl = profile.baseUrl + "/catalog"
+        let catalog = ModelCatalog(fetchCatalog: { _, _ in
+            await gate.suspend(); return [ModelDescriptor(id: "mini", name: "Mini", contextWindow: 128_000, maxOutputTokens: 16_000)]
+        })
+        let picker = Task { await catalog.load(profile: profile) { "key" } }
+        await gate.waitForEntry()
+        let suggestions = Task { () -> ModelCatalog.Entry in
+            _ = await catalog.load(profile: profile) { "key" }
+            return catalog.entry(for: profile)
+        }
+        for _ in 0..<5 { await Task.yield() }
+        await gate.release()
+        let seen = await suggestions.value
+        XCTAssertFalse(seen.loading, "The joining caller resumed before the fetch's list was written")
+        XCTAssertEqual(seen.descriptors.map(\.maxOutputTokens), [16_000])
+        let listed = await picker.value
+        XCTAssertEqual(listed, ["mini"]); XCTAssertEqual(catalog.entry(for: profile), seen)
+    }
+
     @MainActor func testCatalogSelectionPersistsLimitsAndSuppressesUnsupportedInheritedEffort() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let gateway = try ModelListGateway { _ in .json(#"[{"id":"small","contextWindow":128000,"maxOutputTokens":16000,"reasoning":[]}]"#) }
