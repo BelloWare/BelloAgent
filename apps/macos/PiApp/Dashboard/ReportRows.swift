@@ -24,7 +24,7 @@ enum ReportColumns {
 }
 
 /// Row cost without the currency suffix; the column header and help text carry the unit.
-private func reportUSD(_ value: Double?) -> String {
+func reportUSD(_ value: Double?) -> String {
     guard value != nil else { return "—" }
     return gatewayUSD(value).replacingOccurrences(of: " USD", with: "")
 }
