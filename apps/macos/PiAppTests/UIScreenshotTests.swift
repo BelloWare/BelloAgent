@@ -848,36 +848,44 @@ final class UIScreenshotTests: XCTestCase {
     /// and the refused request's details taking the page.
     @MainActor private func captureBackgroundRequestScenes(model: WorkspaceModel, window: NSWindow, gallery: URL, appearances: [(String, NSAppearance.Name)],
                                                           chatID: String, workspaceID: String, profileID: String) async throws {
-        func useMiniModel(_ id: String) async throws {
-            try await model.updateConfiguration { for index in $0.profiles.indices where $0.profiles[index].profile.id == profileID { $0.profiles[index].profile.miniModelId = id } }
-            // The changed connection's catalog, read again before its next request.
-            if let profile = model.profiles.first(where: { $0.id == profileID }) { _ = await model.listModels(for: profile) }
-        }
-        // One the gateway refused: a mini model its catalog does not have.
-        try await useMiniModel("fixture-retired")
-        _ = try? await model.suggestTitles(for: chatID)
-        try await useMiniModel("fixture-fast")
+        // Each step names itself on standard error, so a gallery that stops
+        // here says where.
+        func step(_ name: String) { FileHandle.standardError.write(Data("GALLERY-STEP background · \(name)\n".utf8)) }
+        // One the gateway refused: an alias its catalog does not have, asked
+        // as the rename sheet asks, without changing the connection.
+        step("refused request")
+        let connection = try XCTUnwrap(model.profiles.first { $0.id == profileID })
+        let refused = MiniModelRequest(model: "fixture-retired", contextWindow: 128_000, maxOutputTokens: 512, modelOutputLimit: 16_000, thinkingLevel: "default",
+                                       prompt: "Suggest 3 different concise session titles for the payment retry work.", task: "title-suggestions",
+                                       title: "Title suggestions", timeout: 45, name: "suggestion request")
+        _ = try? await model.askMiniModel(refused, profile: connection, sourceID: chatID) { $0.last?.text ?? "" }
         // The rename sheet's suggestions, a webhook's notification as its
         // preview asks for it, and a chat's title asked for from its first message.
+        step("suggestions")
         _ = try await model.suggestTitles(for: chatID)
+        step("webhook")
         var settings = WebhookSettings()
         settings.enabled = true; settings.url = "https://hooks.example.com/bello/{{chat_id}}"; settings.prompt = "Write for a phone notification."
         _ = try await model.prepareWebhook(for: chatID, settings: settings)
+        step("chat title")
         let titled = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "New chat", path: nil, profileID: profileID)
         model.chats.append(titled); try await model.store?.put(titled, kind: "chat", id: titled.id)
         model.scheduleTitleGeneration(sourceID: titled.id, input: "Refactor the retry backoff in the payment client")
         try await until("the chat's title", seconds: 30) { model.titleGenerationTasks.isEmpty }
         // One a quit cut short, left as a quit leaves it and settled as launch settles it.
+        step("interrupted request")
         var leftover = ChatRecord(id: UUID().uuidString, workspaceID: WorkspaceRecord.scratchID, title: "Title suggestions", path: nil, profileID: profileID,
                                   toolMode: "read-only", connectionTest: true, model: "fixture-fast", thinkingLevel: "default", contextWindow: 128_000, maxOutputTokens: 512)
         leftover.backgroundTask = "title-suggestions"; leftover.sourceSessionID = chatID; leftover.backgroundTaskStartedAt = Date().addingTimeInterval(-7_200)
         model.chats.append(leftover); try await model.store?.put(leftover, kind: "chat", id: leftover.id)
         await model.settleBackgroundRequests()
         // And one still running: the fixture answers "slow" a word at a time.
+        step("running request")
         let slow = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "Answer slowly for the fixture", path: nil, profileID: profileID)
         model.chats.append(slow); try await model.store?.put(slow, kind: "chat", id: slow.id)
         let running = Task { _ = try? await model.suggestTitles(for: slow.id) }
         try await until("the slow request to start", seconds: 20) { model.chats.contains { $0.sourceSessionID == slow.id && $0.backgroundTaskOutcome == nil } }
+        step("page")
         model.backgroundRequests.filter = .all; model.backgroundRequests.selectedID = nil
         model.openBackgroundRequests()
         for (name, appearance) in appearances {

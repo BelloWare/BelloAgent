@@ -170,7 +170,9 @@ struct BackgroundRequestRowView: View, Equatable {
             HStack(alignment: .top, spacing: PiSpacing.md) {
                 PiIconBadge(symbol: row.kind.symbol, tone: .accent, size: 26)
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: PiSpacing.sm) {
+                    // Centred, not on the text's baseline: the running badge's
+                    // spinner has none, and pulled the badge below the line.
+                    HStack(alignment: .center, spacing: PiSpacing.sm) {
                         Text(row.kind.label).font(PiFont.caption.weight(.semibold)).foregroundStyle(Color.piInkSecondary)
                             .lineLimit(1).fixedSize()
                         Text(headline.text).font(PiFont.body).foregroundStyle(headline.color)
