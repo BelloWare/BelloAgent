@@ -107,15 +107,22 @@ func inParallel<T>(_ count: Int, _ work: (Int) -> T?) -> [T?] {
     var results = [T?](repeating: nil, count: count)
     guard count > 0 else { return results }
     results.withUnsafeMutableBufferPointer { out in
-        let lanes = min(count, max(1, ProcessInfo.processInfo.activeProcessorCount))
+        let lanes = min(count, max(1, ProcessInfo.processInfo.activeProcessorCount)), slots = Slots(out)
         DispatchQueue.concurrentPerform(iterations: lanes) { lane in
             autoreleasepool {
                 var at = lane
-                while at < count { out[at] = work(at); at += lanes }
+                while at < count { slots.out[at] = work(at); at += lanes }
             }
         }
     }
     return results
+}
+
+/// The results' storage, shared by `inParallel`'s lanes. Each lane writes
+/// only the slots its own indices name, and the storage outlives them all.
+private struct Slots<T>: @unchecked Sendable {
+    let out: UnsafeMutableBufferPointer<T?>
+    init(_ out: UnsafeMutableBufferPointer<T?>) { self.out = out }
 }
 
 extension AgentSession {
