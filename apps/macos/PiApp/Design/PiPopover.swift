@@ -205,7 +205,7 @@ struct PiPopoverTrigger: NSViewRepresentable {
 
 /// A stat pill whose dialog is an app-owned popover: the pill's own face, an
 /// AppKit press target over it, and a panel sized to the screen around it.
-/// The face reads exactly as `PiStatPill`'s; only the popover is different.
+/// The face reads exactly as the composer's pills (`PiStatPillFace`); only the popover is different.
 struct PiStatPopoverPill<Content: View>: View {
     let symbol: String
     let label: String

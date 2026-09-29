@@ -685,23 +685,3 @@ extension PayloadArchive {
     }
 }
 
-/// The same cost, rounded for a headline. `gatewayUSD` keeps every reported
-/// digit because the inspector, the per-request rows and the exports are
-/// evidence; a stat tile is not. "$0.0101375 USD" as the biggest figure on the
-/// report reads as noise, and the digits that matter — the leading ones — are
-/// the hardest to find in it. The exact figure stays in the tile's caption.
-func headlineUSD(_ value: Double?) -> String {
-    guard let value, value.isFinite, value >= 0 else { return "Cost unavailable" }
-    if value == 0 { return "$0 USD" }
-    if value >= 1 { return String(format: "$%.2f USD", value) }
-    if value >= 0.0001 { return String(format: "$%.4f USD", value) }
-    return gatewayUSD(value)
-}
-/// True when the headline actually dropped something. A figure the headline
-/// can show in full — $0.005 — must not be captioned "exactly $0.005".
-func headlineUSDRounded(_ value: Double?) -> Bool {
-    guard let value, value.isFinite, value > 0 else { return false }
-    let shown = value >= 1 ? (value * 100).rounded() / 100
-        : value >= 0.0001 ? (value * 10_000).rounded() / 10_000 : value
-    return abs(shown - value) > value * 1e-9
-}
