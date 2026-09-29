@@ -1,6 +1,6 @@
 # Bello Agent 0.1.111 — only the changed command receipts in each run-state record
 
-Status: candidate; publication pending.
+Status: publicly released and verified at 2026-09-29 00:42:44 UTC.
 Starting main: `4be51d5f1fa880ddaec996fdd72e23f4a587d720` (0.1.110's verified record).
 
 ## Changes
@@ -64,9 +64,28 @@ file still takes about 5 ms.
   followed by the whole list; records written before this format open as
   before; run-state records stay small once the list is full. They fail if the
   rebuild ignores change records.
+- **Live compaction test, fixture mode, on the release helper:** 3 of 3
+  scenarios passed (mid-run recalled 10 of 10 markers); reported cost $0.82 of
+  the fixture's $5.00 cap (synthetic). Its seeded histories come from the
+  repository's own text, so they differ from 0.1.110's (for example 92 seeded
+  messages mid-run instead of 60, for the same 46% of the window); the
+  requests, the compaction point and the checks are as before.
 - Installation and updater rehearsals are excluded by the owner's standing
   instruction.
 
 ## Publication
 
-Pending.
+- Release source: `f668eb0c66a2f922f60ea29c54e1d19284bd4fd7`, pushed to GitHub `main`; annotated tag
+  `v0.1.111` is pushed and resolves to that commit.
+- Website publication: `85eaf150554eb82057659040d2dff7e946bbc9de`, pushed to `BelloWare/belloware.com` `main`.
+- Signed/notarized Bello Agent 0.1.111, build 115. App notarization
+  `bfc0feb4-7a9d-4415-97fb-6b38662f4118` and DMG notarization `fc78a68a-74fd-438b-9f47-219bf82acc3a` were accepted. Stapling,
+  signature, Gatekeeper and artifact validation passed.
+- `BelloAgent-0.1.111.dmg`: **11,144,051 bytes (10.63 MiB)**; SHA-256
+  `3dbf3918ac4fcda94680a846a985eb14d13a49d8d4b56532372c0b151f4de446`.
+- At 2026-09-29 00:42:44 UTC, the public product page linked to 0.1.111.
+  `scripts/verify-published.py` downloaded the public archive, verified its
+  SHA-256 and Ed25519 signature, and confirmed that both public update feeds
+  match the intended release and are byte-identical.
+- No install or updater rehearsal was performed, at the owner's standing
+  instruction.
