@@ -171,9 +171,12 @@ struct NativeComposer: NSViewRepresentable {
                 self.parent.focused()
             }
         }
+        /// The most a message may hold: 256 KiB of UTF-8, the helper's own
+        /// limit on what it is sent.
+        static let byteLimit = 262_144
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
             guard let replacementString else { return true }
-            guard replacementString.utf8.count <= 262_144, NSMaxRange(affectedCharRange) <= (textView.textStorage?.length ?? 0),
+            guard replacementString.utf8.count <= Self.byteLimit, NSMaxRange(affectedCharRange) <= (textView.textStorage?.length ?? 0),
                   Self.fits(textView, replacing: affectedCharRange, with: replacementString) else {
                 let message = "The composer accepts at most 256 KiB of text. Attach or reference larger files instead."
                 if applyingModelText { Task { @MainActor [weak self] in self?.parent.inputRejected(message) } }
@@ -188,9 +191,9 @@ struct NativeComposer: NSViewRepresentable {
         static func fits(_ textView: NSTextView, replacing range: NSRange, with replacement: String) -> Bool {
             let units = (textView.textStorage?.length ?? 0) - range.length
             let added = replacement.utf8.count
-            if units <= (262_144 - added) / 3 { return true }
+            if units <= (byteLimit - added) / 3 { return true }
             let text = textView.string
-            return text.utf8.count - (text as NSString).substring(with: range).utf8.count + added <= 262_144
+            return text.utf8.count - (text as NSString).substring(with: range).utf8.count + added <= byteLimit
         }
         func textDidChange(_ notification: Notification) {
             guard !applyingModelText, let editor = notification.object as? NSTextView else { return }
@@ -350,7 +353,7 @@ struct ComposerEditMeasurement {
     private var reportedHeight: CGFloat = 0
     /// The tallest the field ever becomes; past it the exact text height no
     /// longer changes the layout, so it is never measured.
-    var maximumContentHeight: CGFloat = 240
+    var maximumContentHeight: CGFloat = ComposerScrollView.maximumHeight
     /// Reports the laid-out text height so the shell can grow the field with
     /// its content. A long draft is laid out only as far as the ceiling:
     /// `ensureLayout(for:)` would lay out every line of a 200 KB draft on every
