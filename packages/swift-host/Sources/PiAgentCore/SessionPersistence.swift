@@ -121,8 +121,26 @@ extension AgentSession {
     /// the turn settles, so a tool result never waits on an fsync.
     var journalFlushesEachRecord: Bool { runTask == nil }
     func persistState(active: Bool? = nil) throws {
-        let value=try savedState(active:active)
-        try journal?.append(["type":"custom","customType":"pi-app.native.state.v1","data":value],flush:journalFlushesEachRecord)
+        var value=try savedState(active:active)
+        guard let journal else { return }
+        // Only the receipts that changed, when they rebuild the whole list
+        // exactly (`CommandReceipts`).
+        let receipts=value["commands"].list
+        let changes = wholeCommandsDue || commandChangeRecords >= CommandReceipts.wholeListEvery ? nil : CommandReceipts.changes(from: journaledCommands, to: receipts)
+        if let changes { value["commands"] = .array(changes); value[CommandReceipts.deltaKey] = true }
+        do { try journal.append(["type":"custom","customType":"pi-app.native.state.v1","data":value],flush:journalFlushesEachRecord) }
+        catch {
+            // Written or not, the next record starts the list again.
+            wholeCommandsDue=true; journaledCommandsUncertain=true
+            throw error
+        }
+        journaledCommands=receipts
+        if changes == nil { wholeCommandsDue=false; commandChangeRecords=0; journaledCommandsUncertain=false } else { commandChangeRecords += 1 }
+    }
+    /// A record with the whole list, the run state included, was written in
+    /// place of a run-state record: an edit's, or a kept side's new journal.
+    func journaledWholeCommands(_ state: JSON) {
+        journaledCommands=state["commands"].list; wholeCommandsDue=false; commandChangeRecords=0; journaledCommandsUncertain=false
     }
     public func addHandoff(_ text: String) throws {
         guard isIdle,history.isEmpty,text.utf8.count<=65536 else { throw AgentError("handoff_invalid","Handoff requires a new idle session and at most 64 KiB") }
@@ -169,8 +187,10 @@ extension AgentSession {
             try prepared.append(["type":"custom","customType":"pi-app.side-origin.v1","data":parentInfo])
             // What the side spent before it was kept goes with it.
             try prepared.append(carriedSpendRecord())
-            try prepared.append(["type":"custom","customType":"pi-app.native.state.v1","data":try savedState()])
+            let state=try savedState()
+            try prepared.append(["type":"custom","customType":"pi-app.native.state.v1","data":state])
             try prepared.publish(to:destination); journal=prepared; ephemeral=false; keepRequested=false
+            journaledWholeCommands(state)
         } catch { try? FileManager.default.removeItem(at:temporary); try? FileManager.default.removeItem(atPath:temporary.path+".lock"); throw error }
         event("side.kept")
         return ["accepted":true,"sessionId":JSON(id),"path":JSON(destination.path),"ephemeral":false]

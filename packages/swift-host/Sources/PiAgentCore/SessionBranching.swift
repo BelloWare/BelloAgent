@@ -44,8 +44,10 @@ extension AgentSession {
             // separate queue append may fail after hiding the previous tail.
             record["nativeState"] = try savedState(active:false)
             markerID=try journal.append(record)
+            journaledWholeCommands(record["nativeState"])
         } catch {
             queue.removeLast(); commands=oldCommands
+            wholeCommandsDue=true; journaledCommandsUncertain=true
             if journal.writeOutcomeUncertain { throw AgentError("journal_uncertain", "The edit may have been saved, but journal synchronization failed. Reopen or recover the preserved journal before sending again.") }
             throw error
         }

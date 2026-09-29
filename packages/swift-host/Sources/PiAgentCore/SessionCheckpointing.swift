@@ -76,6 +76,11 @@ extension AgentSession {
         if let check = checkpoint.state {
             guard let key = checkpoint.stateKey, let line = JournalCheckpoint.verified(check, in: file), let record = try? JSON.parse(line) else { return nil }
             state = record[key]; stateLine = line
+            // A record with changes only needs the whole list the file carries
+            // (`CommandReceipts`); a file written before those had none.
+            if state?[CommandReceipts.deltaKey].flag == true {
+                guard let carried = try? JSON.parse(Data(checkpoint.helper.utf8)), !carried["commands"].isNull else { return nil }
+            }
         }
         return (rows, context, state, stateLine)
     }
@@ -146,9 +151,12 @@ extension AgentSession {
             }
         } catch { return }
         spansScannedTo = reader.completeBytes
-        guard let last else { return }
+        // A run-state write that failed may or may not be in the journal: the
+        // receipts it stands for are not known until a whole list is written.
+        guard let last, !journaledCommandsUncertain else { return }
         let helper: JSON = ["spend": spend.record, "spendTracked": JSON(spendTracked), "failedCompactionFingerprint": failedCompactionFingerprint.map { JSON($0) } ?? .null,
-                            "contextRecovery": contextRecovery, "compactionState": compactionState, "parentInfo": parentInfo, "presentationOrdinal": JSON(presentationOrdinal)]
+                            "contextRecovery": contextRecovery, "compactionState": compactionState, "parentInfo": parentInfo, "presentationOrdinal": JSON(presentationOrdinal),
+                            "commands": .array(journaledCommands)]
         let state = liveStateSource.map { (line: $0.line, offset: $0.offset, key: $0.key) }
         guard var checkpoint = Self.checkpoint(sessionID: id, header: journal.headerCheck, marker: journal.markerCheck, last: last.line, at: last.offset, lastID: last.id,
                                                visible: visible, context: context, spans: rowSpans, state: state, assistantMessageCount: assistantMessageCount,
