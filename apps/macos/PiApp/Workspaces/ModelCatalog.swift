@@ -116,7 +116,7 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
     private let fetchCatalog: FetchCatalog
     private let now: @Sendable () -> Date
     private struct Listing: Sendable { var models: [String]; var descriptors: [ModelDescriptor]; var source: String }
-    private struct Fetch { var token: UUID; var task: Task<Listing, Error> }
+    private struct Fetch { var token: UUID; var task: Task<Void, Never> }
     private var inFlight: [String: Fetch] = [:]
     private var cachedProfiles: [String: ProfileRecord] = [:]
 
@@ -153,43 +153,63 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
         if !force, current.error == nil, current.fetchedAt != nil,
            !usesCatalog || current.isFresh(now: now(), ttl: catalogTTL) { return current.models }
         if !force, current.error != nil, current.isFresh(now: now(), ttl: Self.failureRetry) { return current.models }
+        // Every caller reads the entry the fetch wrote. A caller that joined
+        // the fetch used to take its list and return, and could run before the
+        // caller that started it had written the entry: title suggestions then
+        // read the mini model's limits from an entry still loading, and asked
+        // without the catalog's output limit.
         if let running = inFlight[id] {
-            let listing = try? await running.task.value
-            guard cachedProfiles[id] == profile, !running.task.isCancelled else { return entry(for: profile).models }
-            return listing?.models ?? entry(for: profile).models
+            await running.task.value
+            return entry(for: profile).models
         }
         current.source = usesCatalog ? "catalog" : "bundled"
         current.loading = true; current.error = nil; entries[id] = current
         let base = profile.baseUrl, api = profile.api, readBundled = readBundled, fetchCatalog = fetchCatalog
         let catalogURL = profile.catalogUrl.flatMap { try? ModelCatalogEndpoint.url($0) }
-        let task = Task<Listing, Error> {
-            if usesCatalog {
-                // The catalog replaces the gateway list entirely: falling back
-                // would reintroduce the models the catalog was set up to hide.
-                guard let catalogURL else { throw ModelCatalogEndpoint.Failure.url }
-                let key = ModelCatalogEndpoint.usesGatewayCredential(catalogURL, base: base, api: api) ? try await credential() : ""
-                try Task.checkCancellation()
-                let descriptors = try await fetchCatalog(catalogURL, key)
-                return Listing(models: descriptors.filter { !$0.deprecated }.map(\.id), descriptors: descriptors, source: "catalog")
-            }
-            try Task.checkCancellation()
-            // This task inherits the main actor, and reading and parsing the
-            // bundled catalog is a file read: it happens in the window between
-            // a chat's pane appearing and its controls settling.
-            let descriptors = try await Self.readingBundled(readBundled)
-            return Listing(models: descriptors.filter { !$0.deprecated }.map(\.id), descriptors: descriptors, source: "bundled")
-        }
         let token = UUID()
+        // The fetch writes its own result, so the entry is complete before
+        // anyone awaiting it resumes.
+        let task = Task {
+            let result: Result<Listing, Error>
+            do {
+                result = .success(try await Self.listing(usesCatalog: usesCatalog, catalogURL: catalogURL, base: base, api: api,
+                                                         credential: credential, fetchCatalog: fetchCatalog, readBundled: readBundled))
+            } catch { result = .failure(error) }
+            self.publish(result, id: id, token: token, profile: profile, usesCatalog: usesCatalog)
+        }
         inFlight[id] = Fetch(token: token, task: task)
-        let result = await task.result
-        guard inFlight[id]?.token == token, cachedProfiles[id] == profile else { return entry(for: profile).models }
+        await task.value
+        return entry(for: profile).models
+    }
+
+    private static func listing(usesCatalog: Bool, catalogURL: URL?, base: String, api: String, credential: @escaping @Sendable () async throws -> String,
+                                fetchCatalog: FetchCatalog, readBundled: @escaping ReadBundled) async throws -> Listing {
+        if usesCatalog {
+            // The catalog replaces the gateway list entirely: falling back
+            // would reintroduce the models the catalog was set up to hide.
+            guard let catalogURL else { throw ModelCatalogEndpoint.Failure.url }
+            let key = ModelCatalogEndpoint.usesGatewayCredential(catalogURL, base: base, api: api) ? try await credential() : ""
+            try Task.checkCancellation()
+            let descriptors = try await fetchCatalog(catalogURL, key)
+            return Listing(models: descriptors.filter { !$0.deprecated }.map(\.id), descriptors: descriptors, source: "catalog")
+        }
+        try Task.checkCancellation()
+        // The fetch inherits the main actor, and reading and parsing the
+        // bundled catalog is a file read: it happens in the window between
+        // a chat's pane appearing and its controls settling.
+        let descriptors = try await readingBundled(readBundled)
+        return Listing(models: descriptors.filter { !$0.deprecated }.map(\.id), descriptors: descriptors, source: "bundled")
+    }
+
+    private func publish(_ result: Result<Listing, Error>, id: String, token: UUID, profile: ProfileRecord, usesCatalog: Bool) {
+        guard inFlight[id]?.token == token, cachedProfiles[id] == profile else { return }
         inFlight[id] = nil
         var updated = entry(for: id); updated.loading = false
-        do {
-            let listing = try result.get()
+        switch result {
+        case .success(let listing):
             updated.models = listing.models; updated.descriptors = listing.descriptors; updated.source = listing.source
             updated.fetchedAt = now(); updated.error = nil
-        } catch {
+        case .failure(let error):
             // No "cancelled" case: the only canceller is `invalidate`, which
             // clears this entry and its in-flight token, so such a result is
             // already dropped by the guard above. A cancellation that somehow
@@ -200,7 +220,6 @@ struct ChatModelDefaults: Codable, Sendable, Equatable {
             updated.fetchedAt = now(); updated.error = Self.failureMessage(error)
         }
         entries[id] = updated
-        return updated.models
     }
 
     /// Off the main actor: the catalog is `Sendable`, so nothing else moves.
