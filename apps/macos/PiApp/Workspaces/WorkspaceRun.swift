@@ -194,8 +194,8 @@ extension WorkspaceModel {
                     try await store.put(chats[index], kind: "chat", id: item.id)
                     scheduleTitleGeneration(sourceID: item.id, input: text); titled = true
                 }
-            } else if chats[index].title == "New chat" || (chats[index].parentSessionID != nil && chats[index].title.hasSuffix(" — side")) {
-                if chats[index].title == "New chat" {
+            } else if chats[index].title == ChatRecord.defaultTitle || (chats[index].parentSessionID != nil && chats[index].title.hasSuffix(SideRecord.titleSuffix)) {
+                if chats[index].title == ChatRecord.defaultTitle {
                     chats[index].title = Self.firstMessageTitle(text, skills: skills); try await store.put(chats[index], kind: "chat", id: item.id)
                 }
                 scheduleTitleGeneration(sourceID: item.id, input: text); titled = true
@@ -219,7 +219,7 @@ extension WorkspaceModel {
         // The message leaves the transcript and goes back where it was typed.
         view.dropSending(turnID)
         if let named, let index = chats.firstIndex(where: { $0.id == item.id }), chats[index].title == named {
-            chats[index].title = "New chat"
+            chats[index].title = ChatRecord.defaultTitle
             let reverted = chats[index]
             if !pendingChatIDs.contains(item.id) { try? await store.put(reverted, kind: "chat", id: item.id) }
         }
@@ -257,7 +257,7 @@ extension WorkspaceModel {
     /// that message is sent, so its sidebar row says what it is at once.
     private func nameAfterFirstMessage(_ id: String, text: String, skills: [SkillChip]) -> String? {
         guard let index = chats.firstIndex(where: { $0.id == id }), chats[index].titleWasEdited != true,
-              chats[index].titleWasGenerated != true, chats[index].title == "New chat" else { return nil }
+              chats[index].titleWasGenerated != true, chats[index].title == ChatRecord.defaultTitle else { return nil }
         let title = Self.firstMessageTitle(text, skills: skills)
         chats[index].title = title
         return title

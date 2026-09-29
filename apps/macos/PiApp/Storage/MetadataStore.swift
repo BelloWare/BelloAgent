@@ -681,6 +681,8 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var webhookOff: Bool?
     var isPinned: Bool { pinnedAt != nil }
     var isArchived: Bool { archivedAt != nil }
+    /// What a new chat is called until its first message names it.
+    static let defaultTitle = "New chat"
     mutating func migrateOutputBudget(profile: ProfileRecord) {
         guard outputBudgetVersion == nil else { return }
         if !isBackgroundTask, let legacyCeiling = maxOutputTokens {

@@ -19,6 +19,9 @@ struct SideRecord: Identifiable {
     var topicID: String?
     /// The side's own cost limit; nil runs it under the Settings default.
     var costLimit: CostLimit? = nil
+    /// What follows its chat's title in a new side's, until its first
+    /// message names it.
+    static let titleSuffix = " — side"
     var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: "read-only", model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, topicID: topicID, parentSessionID: parentID, costLimit: costLimit) }
 }
 struct SideKeepIntent: Codable, Sendable { var chat: ChatRecord }
@@ -97,7 +100,7 @@ extension WorkspaceModel {
         }
         let id = UUID().uuidString, view = SessionDisplay(id: id)
         view.historyState = .empty; view.selectionMetadataLoaded = true
-        var info = SideRecord(id: id, parentID: parentID, workspaceID: parent.workspaceID, profileID: parent.profileID, title: parent.title + " — side", model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
+        var info = SideRecord(id: id, parentID: parentID, workspaceID: parent.workspaceID, profileID: parent.profileID, title: parent.title + SideRecord.titleSuffix, model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
         info.topicID = effectiveTopicID(for: parent)
         if question.isEmpty {
             // Nothing is created until the first message: no intent, journal or helper session.
