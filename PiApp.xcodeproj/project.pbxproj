@@ -166,6 +166,7 @@
 		555BA01794D58E16F58F5129 /* Attachments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6663D82E5EC8EAC4A690C9BA /* Attachments.swift */; };
 		5594D247E3A6130022ACC83C /* UIScreenshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 948E9262D16C801481EC5E92 /* UIScreenshotTests.swift */; };
 		5666093954CE696A999BD535 /* GitDiffTable.swift in Sources */ = {isa = PBXBuildFile; fileRef = B180F9A4E92F831E65C8B698 /* GitDiffTable.swift */; };
+		5785426E76D630E6F784C63C /* GitPanelRedrawTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B5719EC8C559EC0DF60F78A /* GitPanelRedrawTests.swift */; };
 		57A2C094CA45E6534F9AB808 /* ResponseTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7CC1F4407686A53957225D5 /* ResponseTimeline.swift */; };
 		57DE250C7E3AAA2DA66E3E8A /* SessionDisplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = D182E500F0F7BAF8407EACF0 /* SessionDisplay.swift */; };
 		5822A0AF0A0988BE038034BC /* ProfileSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBF84EE04447891F18EE359E /* ProfileSettings.swift */; };
@@ -786,6 +787,7 @@
 		8A30BA54AF35541FF5E06EF4 /* TranscriptMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptMessage.swift; sourceTree = "<group>"; };
 		8A30F8655EB0B72AD52BD6C8 /* ConversationPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPresentation.swift; sourceTree = "<group>"; };
 		8A8E137CC02C7E13BFD4CD65 /* PayloadArchiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PayloadArchiveTests.swift; sourceTree = "<group>"; };
+		8B5719EC8C559EC0DF60F78A /* GitPanelRedrawTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitPanelRedrawTests.swift; sourceTree = "<group>"; };
 		8B7F32ACC0E71052C6F43470 /* JournalCheckpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JournalCheckpoint.swift; sourceTree = "<group>"; };
 		8BF5F1265A90148AF8BFA94D /* TerminalPanelAuditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPanelAuditTests.swift; sourceTree = "<group>"; };
 		8CA217E38A3870E097429A26 /* TurnDurationClockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnDurationClockTests.swift; sourceTree = "<group>"; };
@@ -1459,6 +1461,7 @@
 				4C5DE44471B409F1EEA6225E /* GitPanelAuditTests.swift */,
 				A72F85E8A46CB44E5A0F3BC1 /* GitPanelDiffCaptureTests.swift */,
 				68EA3EE2DE495E889C907B47 /* GitPanelLayoutTests.swift */,
+				8B5719EC8C559EC0DF60F78A /* GitPanelRedrawTests.swift */,
 				E86247FE907C1D3BC28BDA20 /* GitPanelTimingTests.swift */,
 				A449AC1393CB92C1F6935E92 /* GitToolTests.swift */,
 				0E03982A5FA00EEB98E642B8 /* GitWorkingTreeWatcherTests.swift */,
@@ -2111,6 +2114,7 @@
 				F9DD166AC353C727E5A8ED9C /* GitPanelAuditTests.swift in Sources */,
 				170B22566C299F63B7CF4C6F /* GitPanelDiffCaptureTests.swift in Sources */,
 				9EA59F3D74B90D1739B2D869 /* GitPanelLayoutTests.swift in Sources */,
+				5785426E76D630E6F784C63C /* GitPanelRedrawTests.swift in Sources */,
 				FA22064523E353C75AFF8B9B /* GitPanelTimingTests.swift in Sources */,
 				B1FE1B4B2424379F4A9AD91E /* GitToolTests.swift in Sources */,
 				D72F0EFA0C1768B4EA3CB471 /* GitWorkingTreeWatcherTests.swift in Sources */,
@@ -2377,7 +2381,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 117;
+				CURRENT_PROJECT_VERSION = 118;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -2392,11 +2396,11 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.113;
+				MARKETING_VERSION = 0.1.114;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				RELEASE_MESSAGE = "Closed sheets no longer slow the app, the context meter shows each chat's last count at once, and older chat files are slimmed once.";
+				RELEASE_MESSAGE = "Faster redraws, chats drawn once where they stay, a native Changes diff, sheets that let go when closed, one Archive switch and a Background requests page.";
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
@@ -2458,7 +2462,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 117;
+				CURRENT_PROJECT_VERSION = 118;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -2479,12 +2483,12 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.113;
+				MARKETING_VERSION = 0.1.114;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				RELEASE_MESSAGE = "Closed sheets no longer slow the app, the context meter shows each chat's last count at once, and older chat files are slimmed once.";
+				RELEASE_MESSAGE = "Faster redraws, chats drawn once where they stay, a native Changes diff, sheets that let go when closed, one Archive switch and a Background requests page.";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";

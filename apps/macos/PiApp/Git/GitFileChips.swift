@@ -198,7 +198,7 @@ final class GitFileChipsView: NSView, NSViewToolTipOwner {
         context.addPath(capsule)
         context.setFillColor(chip.tone == .neutral ? GitDiffMetrics.fill(.piFill, opacity: 1) : GitDiffMetrics.fill(toneColor(chip.tone), opacity: 0.13))
         context.fillPath()
-        GitDiffText.draw(chip.text, font: Self.micro, color: toneColor(chip.tone), x: frame.minX + 8, baseline: frame.minY + 3.5 + GitDiffMetrics.microBaseline, in: context)
+        GitDiffText.drawKept(chip.text, font: Self.micro, color: toneColor(chip.tone), x: frame.minX + 8, baseline: frame.minY + 3.5 + GitDiffMetrics.microBaseline, in: context)
     }
 
     /// `PiChip`: an accent symbol and its text on the raised surface, in a
@@ -221,7 +221,7 @@ final class GitFileChipsView: NSView, NSViewToolTipOwner {
                        fraction: 1, respectFlipped: true, hints: nil)
             x += alignment.width + 5
         }
-        GitDiffText.draw(chip.text, font: Self.caption, color: .piInk, x: x, baseline: frame.minY + 5 + 11, in: context)
+        GitDiffText.drawKept(chip.text, font: Self.caption, color: .piInk, x: x, baseline: frame.minY + 5 + 11, in: context)
     }
 
     // MARK: Pointer, clicks, menus and tooltips

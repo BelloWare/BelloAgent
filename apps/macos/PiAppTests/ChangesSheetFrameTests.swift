@@ -186,8 +186,13 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
         print("PERF changes sheet: the whole long diff \(whole)")
         let deep = try await scroll(diffScroll, in: sheetWindow, from: 60_000, through: 3_000)
         print(String(format: "PERF changes sheet: scrolling deep in the whole diff %.2f ms a step, worst %.1f ms, %d cycles, %d rows built", deep.mean, deep.worst, deep.cycles, deep.rows))
+        // The tabs glide for some 300 ms after the switch, and every frame of
+        // it laid the sheet out: the toolbar's fetch, pull and push symbols,
+        // measured and not shown, were built afresh each time.
+        RedrawCounter.reset(); RedrawCounter.recording = true
         let split = try await step("split", sheet, { controller.splitDiff = true }) { true }
-        print("PERF changes sheet: side by side \(split)")
+        let glide = RedrawCounter.counts; RedrawCounter.recording = false; RedrawCounter.reset()
+        print("PERF changes sheet: side by side \(split), panel parts drawn \(glide)")
         controller.splitDiff = false
         let withWhole = footprint()
 
@@ -234,14 +239,20 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
         XCTAssertEqual(typing.rows, 0, "Typing a commit message builds no diff row")
         // Generous Debug bounds on the main thread's own clock, several times
         // what the table costs and under what SwiftUI's rows cost (above).
+        // The panel's parts draw only for what they show: the next file and
+        // a commit of four hundred files take some 10 to 20 ms, a keystroke
+        // 5, where the whole panel drawn again for each took 40 to 50.
         XCTAssertLessThan(split.longest, 100, String(format: "Side by side took a %.0f ms step", split.longest))
+        for part in ["GitPanelToolbar", "GitRemoteIconButtons", "GitChangesList", "GitCommitBox", "GitPanelDetail"] {
+            XCTAssertEqual(glide[part, default: 0], 0, "Side by side and its glide draw no \(part): \(glide)")
+        }
         XCTAssertLessThan(deep.worst, 50, String(format: "A jump deep into the whole diff took %.0f ms", deep.worst))
-        XCTAssertLessThan(other.longest, 110, String(format: "The next file after the whole diff took a %.0f ms step", other.longest))
-        XCTAssertLessThan(big.longest, 120, String(format: "A commit of four hundred files took a %.0f ms step", big.longest))
+        XCTAssertLessThan(other.longest, 50, String(format: "The next file after the whole diff took a %.0f ms step", other.longest))
+        XCTAssertLessThan(big.longest, 50, String(format: "A commit of four hundred files took a %.0f ms step", big.longest))
         XCTAssertLessThan(first.mean, 3, String(format: "A scroll step through the long diff costs %.1f ms", first.mean))
         XCTAssertLessThan(deep.mean, 3, String(format: "A scroll step deep in the whole diff costs %.1f ms", deep.mean))
         XCTAssertLessThan(embedded.mean, 6, String(format: "A scroll step through a commit's long file costs %.1f ms", embedded.mean))
-        XCTAssertLessThan(typing.longest, 400, String(format: "A keystroke beside the long diff costs up to %.0f ms", typing.longest))
+        XCTAssertLessThan(typing.longest, 30, String(format: "A keystroke beside the long diff costs up to %.0f ms", typing.longest))
     }
 
     /// The sheet as the reader opens it, from the workspace window, twice,
