@@ -61,15 +61,14 @@ import AppKit
         return rows.allSatisfy { !$0.isInDisclosureMotion && settled($0.contentItem) }
     }
     static func settled(_ item: TranscriptItem) -> Bool {
-        let running: Set<String> = ["running", "preparing", "prepared"]
         func quiet(_ message: TranscriptMessage) -> Bool {
-            !message.isStreaming && !message.isSending && !(message.tools ?? []).contains { running.contains($0.state) }
+            !message.isStreaming && !message.isSending && !(message.tools ?? []).contains { ToolState.inFlight.contains($0.state) }
         }
         switch item {
         case .message(let message): return quiet(message)
         case .block(let block):
             guard !block.live, block.turn?.live != true, block.taskSummary?.live != true, block.part?.state != "streaming" else { return false }
-            return block.replies.allSatisfy { quiet($0) } && !block.tools.contains { running.contains($0.state) }
+            return block.replies.allSatisfy { quiet($0) } && !block.tools.contains { ToolState.inFlight.contains($0.state) }
         }
     }
 

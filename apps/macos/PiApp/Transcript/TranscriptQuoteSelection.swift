@@ -78,12 +78,12 @@ final class TranscriptQuoteRegionView: NSView {
         switch event.type {
         case .leftMouseDown, .scrollWheel: dismiss()
         case .keyDown:
-            if event.keyCode == 53 { dismiss() }
-            else if bar != nil, [36, 76].contains(event.keyCode), event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+            if event.keyCode == KeyCode.escape { dismiss() }
+            else if bar != nil, KeyCode.isReturn(event.keyCode), event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
                 askInSideChat(); return true
             }
         case .leftMouseUp, .keyUp:
-            if event.type == .keyUp && [53, 36, 76].contains(event.keyCode) { return false }
+            if event.type == .keyUp && (event.keyCode == KeyCode.escape || KeyCode.isReturn(event.keyCode)) { return false }
             let expected = revision
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.revision == expected else { return }

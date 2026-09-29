@@ -5,21 +5,26 @@ import Foundation
 // focused, and the displays of chats nobody is reading let go of.
 
 extension WorkspaceModel {
-    func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveSwitch: Bool = false, reopensSide: Bool = true) async {
+    /// `focusesComposer` false: the chat opens for a side beside it, which
+    /// takes the cursor (`showSide`, `selectSide`).
+    func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveSwitch: Bool = false, reopensSide: Bool = true,
+                focusesComposer: Bool = true) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
         if revealInSidebar || preserveArchiveSwitch { quietSidebarReveal = [] }
         // A background request is listed on its own page, not the sidebar:
         // the menu bar's running requests and the report open it there.
         if item.isBackgroundTask { openBackgroundRequests(selecting: id); return }
         if reselectOpenChat(id, item: item, revealInSidebar: revealInSidebar) { return }
-        let (view, selection, heldRows) = prepareSelection(id, item: item, revealInSidebar: revealInSidebar, preserveArchiveSwitch: preserveArchiveSwitch)
+        let (view, selection, heldRows) = prepareSelection(id, item: item, revealInSidebar: revealInSidebar, preserveArchiveSwitch: preserveArchiveSwitch,
+                                                           focusesComposer: focusesComposer)
         restoreShownSide(of: id, selection: selection, reopensSide: reopensSide)
         releaseUnreadDisplays(keeping: id)
         let generation = view.presentationGeneration
         PerformanceProbe.shared.observe("selectionLoadingFeedbackMs", milliseconds: PerformanceProbe.now - view.presentation.startedAt)
         let task = Task { [weak self, weak view] in
             guard let self, let view else { return }
-            await self.loadSelectedChat(id, item: item, into: view, selection: selection, generation: generation, heldRows: heldRows)
+            await self.loadSelectedChat(id, item: item, into: view, selection: selection, generation: generation, heldRows: heldRows,
+                                        focusesComposer: focusesComposer)
         }
         navigationTask = task; view.presentation.navigation = task
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
@@ -48,8 +53,8 @@ extension WorkspaceModel {
     /// its reads, the sidebar shows the new one, and its display, kept or new,
     /// becomes the selection and starts loading. Returns that display, the
     /// selection's revision, and the rows it held.
-    private func prepareSelection(_ id: String, item: ChatRecord, revealInSidebar: Bool,
-                                  preserveArchiveSwitch: Bool) -> (view: SessionDisplay, selection: Int, heldRows: HeldRows) {
+    private func prepareSelection(_ id: String, item: ChatRecord, revealInSidebar: Bool, preserveArchiveSwitch: Bool,
+                                  focusesComposer: Bool) -> (view: SessionDisplay, selection: Int, heldRows: HeldRows) {
         navigationTask?.cancel()
         if let outgoing = selected {
             outgoing.presentation.cancel()
@@ -84,6 +89,12 @@ extension WorkspaceModel {
         view.draftReady = view.selectionMetadataLoaded
         view.used = Date(); displays[id] = view
         adoptContextReading(view, item: item)
+        // Opened for a side beside it, which takes the cursor, the chat's
+        // composer does not: no request is made for it below, and the
+        // composer made anew for the switch does not act on the last one an
+        // earlier visit made. Either, acted on once the side had the cursor,
+        // put it back in the chat, and the side never took it.
+        view.composerFocusSettled = focusesComposer ? 0 : view.composerFocusRequest
         selectedID = id; selected = view; profileChoice = item.profileID
         focusedSessionID = id; page = .chats
         // An empty New chat is dropped once the next chat is in its place, so
@@ -111,6 +122,10 @@ extension WorkspaceModel {
             shownSide = (child, mountSide(child, beside: id))
         }
         if case let (child, sideView)? = shownSide {
+            // Nor does the side's composer, made anew beside it, act on an
+            // earlier visit's request: the chat takes the cursor, or whoever
+            // opened the chat for this side gives it to the side.
+            sideView.composerFocusSettled = sideView.composerFocusRequest
             let sideGeneration = sideView.presentationGeneration
             Task { [weak self, weak sideView] in
                 guard let self, let sideView, self.selectedID == id, self.sides[id]?.id == child.id,
@@ -135,7 +150,7 @@ extension WorkspaceModel {
     /// it: the rows it held when they are still its newest, else the page read.
     /// It stops wherever the reader has moved on.
     private func loadSelectedChat(_ id: String, item: ChatRecord, into view: SessionDisplay, selection: Int,
-                                  generation: UUID, heldRows: HeldRows) async {
+                                  generation: UUID, heldRows: HeldRows, focusesComposer: Bool) async {
         // However this ends, nothing is reading the chat any more.
         defer { if view.presentationGeneration == generation { view.presentation.navigation = nil } }
         @MainActor func current() -> Bool {
@@ -156,7 +171,7 @@ extension WorkspaceModel {
             }
             view.draftReady = true
             view.recovered = metadata?.recovered ?? []; view.uncertain = !view.recovered.isEmpty
-            view.composerFocusRequest += 1
+            if focusesComposer { view.composerFocusRequest += 1 }
             // The chat's file can be named while its page is read: its
             // first message writes the journal, and the helper can report
             // a moved one. A page read under the old name is read again
@@ -235,7 +250,7 @@ extension WorkspaceModel {
             return
         }
         if revealInSidebar { quietSidebarReveal = [] }
-        if selectedID != info.parentID { await select(info.parentID, revealInSidebar: revealInSidebar) }
+        if selectedID != info.parentID { await select(info.parentID, revealInSidebar: revealInSidebar, focusesComposer: false) }
         guard selectedID == info.parentID, side(id) != nil else { return }
         page = .chats; focusedSessionID = id
         if revealInSidebar, let child = record(id) { revealProjectChat(child) }
