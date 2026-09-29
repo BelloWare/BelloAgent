@@ -290,7 +290,8 @@ extension TranscriptActivityTests {
         let live = try JSONDecoder().decode(TranscriptMessage.self, from: Data(#"{"id":"a1","role":"assistant","text":"partial","stopReason":"length"}"#.utf8))
         XCTAssertEqual(live.stopReason, "length"); XCTAssertNil(live.state)
         let projected = TranscriptMessage.project(id: "a2", message: ["role": .string("assistant"), "content": .string("partial"), "stopReason": .string("length")])
-        XCTAssertEqual(projected.stopReason, "length"); XCTAssertEqual(projected.state, "length")
+        XCTAssertEqual(projected.stopReason, "length")
+        XCTAssertEqual(projected.state, "complete", "A journal's row is finished, as the helper's row for it says; the reason is its stop reason")
         let plain = try JSONDecoder().decode(TranscriptMessage.self, from: Data(#"{"id":"a3","role":"assistant","text":"done"}"#.utf8))
         XCTAssertNil(plain.stopReason)
     }

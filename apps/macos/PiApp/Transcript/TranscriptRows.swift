@@ -471,7 +471,7 @@ struct MessageRowView: View {
         default: plain
         }
     }
-    private var failed: Bool { ["error", "aborted"].contains(message.state ?? "") }
+    private var failed: Bool { message.failedEnd != nil }
     /// The switch between this reply rendered and its source, where the row
     /// offers one: on a finished reply's text, in a row that reaches the
     /// conversation's disclosure. The pills and the row's accessibility
@@ -490,7 +490,7 @@ struct MessageRowView: View {
             if message.role == "system" || failed {
                 HStack(spacing: 8) {
                     if message.role == "system" { Text("Status").font(.system(size: 12, weight: .semibold)).foregroundStyle(TranscriptPalette.muted) }
-                    if failed { Text(message.state ?? "").font(.system(size: 12, weight: .medium)).foregroundStyle(TranscriptPalette.danger) }
+                    if failed { Text(message.failedEnd ?? "").font(.system(size: 12, weight: .medium)).foregroundStyle(TranscriptPalette.danger) }
                 }.frame(maxWidth: .infinity, alignment: message.role == "system" ? .center : .leading)
             }
             if message.role == "user" {

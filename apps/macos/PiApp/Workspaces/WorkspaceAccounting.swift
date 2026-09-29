@@ -11,6 +11,17 @@ import Combine
     }
 }
 
+/// Resumes a continuation with the first value given; later ones are dropped.
+final class FirstAnswer<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Never>?
+    init(_ continuation: CheckedContinuation<Value, Never>) { self.continuation = continuation }
+    func give(_ value: Value) {
+        lock.lock(); let pending = continuation; continuation = nil; lock.unlock()
+        pending?.resume(returning: value)
+    }
+}
+
 @MainActor final class SessionAccountingCache {
     /// One observable per chat the sidebar has drawn. A workspace can hold far
     /// more chats than a sidebar ever lists, so the observables are held
@@ -112,6 +123,43 @@ extension WorkspaceModel {
                     }
                 }
                 if dirtyAccounting.contains(id) { try? await Task.sleep(for: .milliseconds(100)) }
+            }
+        }
+    }
+
+    /// How long rows about to be shown wait for their cost and usage from the
+    /// request log. A read that takes longer, such as an archive still
+    /// sweeping at launch, is left to the refresh after they are shown.
+    static let accountingBeforeShowing: Duration = .milliseconds(150)
+
+    /// `rows` with each reply's retained cost and usage on it, so they are
+    /// drawn at their final height: the request log read for them, else the
+    /// figures this display already had. Shown without them, a reply grew by
+    /// its usage line a moment after it appeared and pushed every row on
+    /// screen. `adding` keeps the figures of the rows already shown (a page
+    /// read in beside them); otherwise the read replaces them.
+    func withAccounting(_ rows: [TranscriptMessage], view: SessionDisplay, workspaceID: String, adding: Bool = false) async -> [TranscriptMessage] {
+        let shown = TranscriptPage.displayPage(rows)
+        if !accountingStopped, shown.contains(where: { $0.role == "assistant" }),
+           let read = await accounting(of: shown, sessionID: view.id, workspaceID: workspaceID, within: Self.accountingBeforeShowing) {
+            if adding { view.messageAccounting.merge(read) { _, new in new } } else { view.messageAccounting = read }
+        }
+        return rows.map { row in
+            guard let figures = view.messageAccounting[row.id], row.accounting != figures else { return row }
+            var row = row; row.accounting = figures; return row
+        }
+    }
+
+    /// The request log's figures for `rows`, or nil when they are not back
+    /// within `budget`; the read then finishes on its own and is dropped.
+    private func accounting(of rows: [TranscriptMessage], sessionID: String, workspaceID: String, within budget: Duration) async -> [String: GatewayTotals]? {
+        let traces = self.traces
+        return await withCheckedContinuation { continuation in
+            let answer = FirstAnswer(continuation)
+            let timer = Task { try? await Task.sleep(for: budget); answer.give(nil) }
+            Task {
+                let value = try? await traces.gatewayAccounting(sessionID: sessionID, workspaceID: workspaceID, messages: rows)
+                timer.cancel(); answer.give(value?.messages)
             }
         }
     }

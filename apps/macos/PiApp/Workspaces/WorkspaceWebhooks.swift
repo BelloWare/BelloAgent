@@ -147,7 +147,7 @@ extension WorkspaceModel {
                                        task: "webhook", title: "Webhook notification", timeout: 60, name: "mini model's request")
         let messages = try await askMiniModel(request, profile: profile, sourceID: item.id)
         guard let answer = messages.last(where: { $0.role == "assistant" && $0.kind == nil }),
-              !["error", "aborted", "failed", "cancelled", "interrupted"].contains(answer.state ?? "") else {
+              !answer.endedUnfinished else {
             throw HostError.failure("The mini model did not answer.")
         }
         return (prompt, answer.text, route.model)

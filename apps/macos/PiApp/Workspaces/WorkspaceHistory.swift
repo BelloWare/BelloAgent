@@ -106,7 +106,9 @@ extension WorkspaceModel {
         view.presentation.navigation = Task { [weak self, weak view] in
             guard let self, let view else { return }
             do {
-                let page = try await self.readConversationWindow(item, cursor: nil, around: around)
+                var page = try await self.readConversationWindow(item, cursor: nil, around: around)
+                guard !Task.isCancelled, self.displays[id] === view, view.presentationGeneration == generation else { return }
+                page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
                 guard !Task.isCancelled, self.displays[id] === view, view.presentationGeneration == generation else { return }
                 self.adoptInitialHistory(page, into: view, around: around)
                 if self.opened.contains(id) { self.refresh(id) }
@@ -171,7 +173,9 @@ extension WorkspaceModel {
                 }
             }
             do {
-                let page = try await self.readConversationWindow(item, cursor: cursor, newer: newer)
+                var page = try await self.readConversationWindow(item, cursor: cursor, newer: newer)
+                guard current() else { return false }
+                page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID, adding: true)
                 guard current() else { return false }
                 // The window's edge row was let go of while this page was on
                 // its way, so the page no longer joins it. Nothing is wrong

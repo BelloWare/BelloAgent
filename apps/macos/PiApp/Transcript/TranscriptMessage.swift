@@ -75,20 +75,23 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         var result = TranscriptMessage(id: id, role: role == "toolResult" ? "tool" : ["user", "assistant", "system"].contains(role) ? role : "system", text: message["nativeDisplayText"]?.string ?? text, thinking: thinking,
                      tools: toolBlocks.compactMap { value in
             guard let block = value.object, block["type"]?.string == "toolCall", let toolID = block["id"]?.string else { return nil }
-            // Preserve the complete parseable document for expanded details.
-            let full = (block["arguments"] ?? .null).pretty
-            let arguments = (text:full, truncated:false, bytes:full.utf8.count)
+            // The complete document, encoded as the helper's cards carry it, so
+            // a chat read from its journal shows the card a live one does and
+            // the helper's rows find nothing to redraw.
+            let full = ToolInputDisplay.encoded(block["arguments"] ?? .null)
             return ToolView(id: String(toolID.prefix(256)), name: String((block["name"]?.string ?? "tool").prefix(256)), state: "recorded",
-                            input: arguments.text, output: "", durationMs: nil, truncated: arguments.truncated,
-                            inputTruncated: arguments.truncated ? true : nil, inputBytes: arguments.truncated ? arguments.bytes : nil)
-        }, state: stopReason, truncated: false, stopReason: stopReason,
+                            input: full, output: "", durationMs: nil, truncated: false,
+                            inputTruncated: false, inputBytes: full.utf8.count)
+        }, state: "complete", truncated: false, stopReason: stopReason,
                      at: message["timestamp"]?.number, turn: message["nativeTurn"]?.string, modelMs: message["nativeModelMs"]?.number, toolCallCount: role == "assistant" ? toolBlocks.count : nil,
                      taskRootID: message["nativeTaskRoot"]?.string, taskExecutionID: message["nativeTaskExecution"]?.string)
         result.presentationSourceID = message["nativePresentationSourceID"]?.string
         result.operationID = message["nativeOperationID"]?.string ?? message["nativeCompaction"]?.object?["operationId"]?.string
         result.kind = message["nativeKind"]?.string
         if role == "toolResult" {
-            result.kind="toolResult"; result.detail="Tool result · " + (message["toolName"]?.string ?? "tool")
+            // With how the call ended, as the helper describes the row.
+            let outcome = message["nativeToolStats"]?.object?["outcome"]?.string ?? (message["isError"]?.bool == true ? "failed" : "recorded")
+            result.kind="toolResult"; result.detail="Tool result · " + (message["toolName"]?.string ?? "tool") + " · " + outcome
             result.toolCallID = message["toolCallId"]?.string
         }
         result.detail = message["nativeDetail"]?.string ?? result.detail

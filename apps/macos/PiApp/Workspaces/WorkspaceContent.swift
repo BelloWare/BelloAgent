@@ -81,7 +81,9 @@ extension WorkspaceModel {
     func revealConversationHit(_ id: String, hit: ContentHit) async throws {
         guard let item = record(id), let view = displays[id] else { throw StoreError.invalidRecord }
         let generation = view.presentationGeneration
-        let page = try await readConversationWindow(item, cursor: nil, around: hit.id)
+        var page = try await readConversationWindow(item, cursor: nil, around: hit.id)
+        guard !Task.isCancelled, displays[id] === view, view.presentationGeneration == generation else { return }
+        page.messages = await withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
         guard !Task.isCancelled, displays[id] === view, view.presentationGeneration == generation else { return }
         adoptInitialHistory(page, into: view, around: hit.id)
         view.browsingHistory = true
@@ -125,12 +127,14 @@ extension WorkspaceModel {
         if historyLookup == nil {
             do {
                 let generation = view.presentationGeneration
-                let window = try await readConversationWindow(item, cursor: nil, around: messageID)
+                var window = try await readConversationWindow(item, cursor: nil, around: messageID)
                 guard current(), view.presentationGeneration == generation else { return false }
                 guard window.messages.contains(where: { $0.id == messageID }) else {
                     showMessageDetail(sessionID, messageID: messageID)
                     return true
                 }
+                window.messages = await withAccounting(window.messages, view: view, workspaceID: item.workspaceID)
+                guard current(), view.presentationGeneration == generation else { return false }
                 adoptInitialHistory(window, into: view, around: messageID)
                 view.browsingHistory = true; anchorChanged(view)
                 return true
