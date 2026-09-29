@@ -33,7 +33,11 @@ extension AgentSession {
         var end: Int?
         if let messageID {
             let cutoff=try forkPoint(messageID, in: journal.recordReader()); end=cutoff
-            // The same reducer every journal is replayed with, stopped at the reply.
+            // The read-only replay, stopped at the reply. Opening a chat replays
+            // with `AgentSession.replay` instead; the two give the same rows
+            // and the same context a request sends, but the open's context
+            // also keeps rows no request sends, such as an interrupted reply's
+            // partial, until a record resets it (ReplayParityTests).
             var state=try ConversationReplay()
             do {
                 let reader=try journal.recordReader(); var index=0
