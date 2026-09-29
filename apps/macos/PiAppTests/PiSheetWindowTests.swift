@@ -3,11 +3,13 @@ import SwiftUI
 import AppKit
 @testable import PiApp
 
-/// A sheet the app presents in a window of its own (`piSheetWindow`), as the
-/// Changes sheet now is: the same window as SwiftUI's sheet, sized the same,
-/// closed by Escape and Done as before, taken down with the window it is on,
-/// and given back what its presenter's environment says. What it lets go of
-/// once closed is `ChangesSheetFrameTests.testAClosedSheetLetsGoOfWhatItRead`.
+/// A sheet the app presents in a window of its own (`piSheetWindow`), as every
+/// sheet of the workspace window now is: the same window as SwiftUI's sheet,
+/// sized the same, closed by Escape and Done as before, taken down with the
+/// window it is on, and given back what its presenter's environment says; the
+/// `item:` form follows its item as `.sheet(item:)` did. What the Changes
+/// sheet lets go of once closed is
+/// `ChangesSheetFrameTests.testAClosedSheetLetsGoOfWhatItRead`.
 final class PiSheetWindowTests: XCTestCase {
     @MainActor final class Presenter: ObservableObject {
         @Published var showing = false
@@ -75,7 +77,7 @@ final class PiSheetWindowTests: XCTestCase {
     /// The window is the one SwiftUI made for its sheets: document modal,
     /// sized to the content and held at that size, not opaque, on the window
     /// background, with the content first in line for the keyboard. It is the app's own,
-    /// so `DismissedSheets` leaves it alone.
+    /// not one of SwiftUI's own sheet windows.
     @MainActor func testTheSheetIsTheWindowSwiftUIWouldHaveMade() async throws {
         let theirs = Presenter(), ours = Presenter()
         let swiftUIParent = parent(SwiftUIHost(presenter: theirs) { PiSheet("Probe", width: 420, height: 260) { Text("Probe") } })
@@ -88,7 +90,8 @@ final class PiSheetWindowTests: XCTestCase {
         try await eventually("the app's sheet") { appParent.attachedSheet != nil }
         let sheet = try XCTUnwrap(appParent.attachedSheet)
         XCTAssertTrue(sheet === PiSheetWindow.newest)
-        XCTAssertFalse(DismissedSheets.presentedBySwiftUI(sheet), "Not one of SwiftUI's sheet windows")
+        XCTAssertFalse(LayoutCycleTests.presentedBySwiftUI(sheet), "Not one of SwiftUI's sheet windows")
+        XCTAssertTrue(LayoutCycleTests.presentedBySwiftUI(reference), "The reference is SwiftUI's own")
         XCTAssertEqual(sheet.styleMask, reference.styleMask)
         XCTAssertEqual(sheet.frame.size, reference.frame.size)
         XCTAssertEqual(sheet.frame.size, CGSize(width: 420, height: 260))
@@ -173,12 +176,12 @@ final class PiSheetWindowTests: XCTestCase {
         let window = parent(AppHost(presenter: presenter) { PiSheet("Probe", width: 420, height: 260) { Text("Probe") } })
         presenter.showing = true
         try await eventually("the sheet") { window.attachedSheet != nil }
-        weak var first = window.attachedSheet
+        weak var first = window.attachedSheet?.contentView
         try await Task.sleep(for: .milliseconds(400))
         presenter.showing = false
         try await Task.sleep(for: .milliseconds(40))
         presenter.showing = true
-        try await eventually("a sheet again") { window.attachedSheet != nil && window.attachedSheet !== first }
+        try await eventually("a sheet again") { window.attachedSheet?.contentView != nil && window.attachedSheet?.contentView !== first }
         try await Task.sleep(for: .milliseconds(600))
         XCTAssertTrue(presenter.showing, "Still asked for")
         XCTAssertNotNil(window.attachedSheet, "and still up")
@@ -201,5 +204,140 @@ final class PiSheetWindowTests: XCTestCase {
         try await eventually("the change reaching the sheet") { seen.reduceMotion == false && seen.enabled == true }
         presenter.showing = false
         try await eventually("closed") { window.attachedSheet == nil }
+    }
+
+    struct Target: Identifiable, Equatable { let id: String }
+    @MainActor final class ItemPresenter: ObservableObject {
+        @Published var item: Target?
+        /// The item each sheet was made for, in order.
+        var made: [String] = []
+    }
+    private struct ItemHost: View {
+        @ObservedObject var presenter: ItemPresenter
+        var body: some View {
+            Color.clear.piSheetWindow(item: $presenter.item) { target in
+                let _ = presenter.made.append(target.id)
+                PiSheet("Item " + target.id, width: 420, height: 260) { Text(target.id) }
+            }
+        }
+    }
+
+    /// Up while its item is set, down when it is cleared, and the item
+    /// cleared when the sheet closes itself, as `.sheet(item:)`.
+    @MainActor func testAnItemSheetFollowsItsItem() async throws {
+        let presenter = ItemPresenter()
+        let window = parent(ItemHost(presenter: presenter))
+        presenter.item = Target(id: "a")
+        try await eventually("a's sheet") { window.attachedSheet != nil }
+        weak var first = window.attachedSheet?.contentView
+        try await Task.sleep(for: .milliseconds(400))
+        presenter.item = nil
+        try await eventually("closed") { window.attachedSheet == nil }
+        try await eventually("its content let go of") { first == nil }
+        presenter.item = Target(id: "b")
+        try await eventually("b's sheet") { window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertTrue(try XCTUnwrap(sheet.contentView).performKeyEquivalent(with: try escape()), "Escape leaves it")
+        try await eventually("the item cleared") { presenter.item == nil && window.attachedSheet == nil }
+        XCTAssertEqual(presenter.made, ["a", "b"])
+    }
+
+    /// Another item while one is up: that sheet closes and the new item's
+    /// opens. The one closing cannot clear the new item.
+    @MainActor func testAnotherItemReplacesTheSheet() async throws {
+        let presenter = ItemPresenter()
+        let window = parent(ItemHost(presenter: presenter))
+        presenter.item = Target(id: "a")
+        try await eventually("a's sheet") { window.attachedSheet != nil }
+        let first = try XCTUnwrap(window.attachedSheet?.contentView)
+        try await Task.sleep(for: .milliseconds(400))
+        presenter.item = Target(id: "b")
+        // a's own Escape, pressed as b is asked for, leaves b alone.
+        _ = first.performKeyEquivalent(with: try escape())
+        try await eventually("b's sheet in a's place") { window.attachedSheet?.contentView != nil && window.attachedSheet?.contentView !== first }
+        XCTAssertEqual(presenter.item?.id, "b")
+        XCTAssertEqual(presenter.made, ["a", "b"])
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertNotNil(window.attachedSheet, "b's sheet stays")
+        presenter.item = nil
+        try await eventually("closed") { window.attachedSheet == nil }
+    }
+
+    /// Every sheet of the workspace window opens as a window of the app's
+    /// own, at the size SwiftUI gave it, and Escape closes each, clears what
+    /// asked for it, and lets go of its views.
+    @MainActor func testEveryWorkspaceSheetIsAWindowOfTheAppsOwn() async throws {
+        let root = scratchRoot("workspace-sheets")
+        let project = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let workspace = WorkspaceRecord(id: "sheets-project", path: project.path, trusted: true)
+        var profile = ProfileRecord(); profile.id = "sheets-profile"; profile.name = "Sheets"; profile.baseUrl = "http://127.0.0.1:9/v1"; profile.modelId = "sheets-model"
+        let vault = ConfigurationVault(storage: MemoryVaultStorage())
+        let saved = profile
+        _ = try await vault.update(expectedRevision: 0) { $0.workspaces = [workspace]; $0.profiles = [VaultProfile(profile: saved, apiKey: "synthetic-sheets-key")]; $0.automaticUpdateChecks = false }
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault)
+        model.automaticContextOperation = { _, _ in throw CancellationError() }
+        await model.restore()
+        let chat = ChatRecord(id: "sheets-chat", workspaceID: workspace.id, title: "Sheets", path: nil, profileID: profile.id)
+        model.chats = [chat]; try await model.store?.put(chat, kind: "chat", id: chat.id)
+        await model.select(chat.id)
+        let window = parent(WorkspaceView(model: model))
+        window.setContentSize(NSSize(width: 1280, height: 860))
+        addTeardownBlock { @MainActor in model.report.suspend(); model.shutdown(); try? await model.traces.close(); await model.store?.close() }
+        try await Task.sleep(for: .milliseconds(600))
+        let sheets: [(String, CGSize, () -> Void, () -> Bool)] = [
+            ("Settings", CGSize(width: 880, height: 780), { model.showProfiles = true }, { model.showProfiles }),
+            ("Search", CGSize(width: 900, height: 700), { model.inspectConversation(chat.id) }, { model.showConversationContent }),
+            ("Resources", CGSize(width: 1100, height: 800), { model.inspectResources(chat.id) }, { model.showResources }),
+            ("Projects", CGSize(width: 780, height: 540), { model.showWorkspaceManager = true }, { model.showWorkspaceManager }),
+            ("Rename", CGSize(width: 520, height: 400), { model.presentRename(chat.id) }, { model.renameTarget != nil }),
+            ("Topic", CGSize(width: 480, height: 260), { model.topicEditor = TopicEditorTarget(projectID: workspace.id) }, { model.topicEditor != nil }),
+            ("Webhook preview", CGSize(width: 640, height: 660), { model.webhookPreviewTarget = RenameTarget(id: chat.id) }, { model.webhookPreviewTarget != nil }),
+            ("Changes", CGSize(width: 1180, height: 780), { model.showChanges(in: workspace.id) }, { model.showGit }),
+        ]
+        for (name, size, open, asked) in sheets {
+            open()
+            try await eventually("\(name) to open") { window.attachedSheet != nil }
+            let sheet = try XCTUnwrap(window.attachedSheet)
+            XCTAssertTrue(sheet === PiSheetWindow.newest, "\(name) is a window of the app's own")
+            XCTAssertFalse(LayoutCycleTests.presentedBySwiftUI(sheet), name)
+            XCTAssertEqual(sheet.frame.size, size, name)
+            weak var content = sheet.contentView
+            try await Task.sleep(for: .milliseconds(500))
+            XCTAssertTrue(try XCTUnwrap(sheet.contentView).performKeyEquivalent(with: try escape()), "Escape leaves \(name)")
+            try await eventually("\(name) to close") { !asked() && window.attachedSheet == nil }
+            try await eventually("\(name)'s views to be let go of") { content == nil }
+        }
+        XCTAssertEqual(NSApp.windows.filter(LayoutCycleTests.presentedBySwiftUI).count, 0, "SwiftUI presented no sheet of its own")
+    }
+
+    /// A sheet opened again opens in the same window, filled afresh: AppKit
+    /// keeps every window that has been on screen, a couple of megabytes each,
+    /// so one per sheet rather than one for every opening.
+    @MainActor func testASheetOpenedAgainReusesItsWindow() async throws {
+        final class Count { var made = 0 }
+        let presenter = Presenter(), count = Count()
+        let window = parent(AppHost(presenter: presenter) {
+            let _ = count.made += 1
+            PiSheet("Probe", width: 420, height: 260) { Text("Probe") }
+        })
+        let before = NSApp.windows.count
+        var sheets: [NSWindow] = []
+        for pass in 1...3 {
+            presenter.showing = true
+            try await eventually("the sheet") { window.attachedSheet?.contentView != nil }
+            let sheet = try XCTUnwrap(window.attachedSheet)
+            weak var content = sheet.contentView
+            sheets.append(sheet)
+            XCTAssertEqual(count.made, pass, "Opening \(pass): its content made afresh")
+            try await Task.sleep(for: .milliseconds(300))
+            presenter.showing = false
+            try await eventually("closed and emptied") { window.attachedSheet == nil && sheet.contentView == nil }
+            try await eventually("its content let go of") { content == nil }
+        }
+        XCTAssertTrue(sheets.allSatisfy { $0 === sheets[0] }, "One window for every opening")
+        XCTAssertLessThanOrEqual(NSApp.windows.count, before + 1, "and no window left behind for each")
     }
 }

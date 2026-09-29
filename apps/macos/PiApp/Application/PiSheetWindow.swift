@@ -11,25 +11,64 @@ extension EnvironmentValues {
     }
 }
 
+/// Closes the sheet a view is in, however it was presented: through the
+/// window's own close in a `piSheetWindow`, and through SwiftUI's `dismiss`
+/// in a `.sheet` or a window of its own (the ⌘, Settings window). A sheet
+/// declares `@PiDismiss private var dismiss` and calls `dismiss()` as before.
+@propertyWrapper struct PiDismiss: DynamicProperty {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.piSheetClose) private var sheetClose
+    init() {}
+    var wrappedValue: PiDismissAction { PiDismissAction(dismiss: dismiss, sheetClose: sheetClose) }
+}
+struct PiDismissAction {
+    fileprivate let dismiss: DismissAction
+    fileprivate let sheetClose: (@MainActor () -> Void)?
+    @MainActor func callAsFunction() { if let sheetClose { sheetClose() } else { dismiss() } }
+}
+
 extension View {
     /// `.sheet(isPresented:)`, in a sheet window the app makes and lets go of
     /// whole once the sheet has closed. SwiftUI keeps every sheet window it
-    /// has presented (macOS 14), hidden, and with it the sheet's view graph
-    /// and state: `DismissedSheets` empties those windows, but SwiftUI's own
-    /// references keep the graph alive, about 20 MB for each Changes sheet
-    /// closed over a big diff. The sheet looks and closes as SwiftUI's does:
-    /// the same window, sized to its content, on the same AppKit sheet.
+    /// has presented (macOS 14), hidden, and with it the sheet's views and
+    /// state, which went on observing the model: ten closed Settings sheets
+    /// made a model change cost five times what it did, and emptying those
+    /// windows (0.1.113) still left SwiftUI's own references keeping each
+    /// sheet's view graph, about 20 MB for a Changes sheet closed over a big
+    /// diff and 1 to 7 MB for the others. The sheet looks and closes as SwiftUI's does:
+    /// the same window, sized to its content, on the same AppKit sheet. Its
+    /// content is made as it opens; what it shows after that comes from what
+    /// the content itself observes.
     func piSheetWindow<Content: View>(isPresented: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) -> some View {
-        background(PiSheetWindowAnchor(isPresented: isPresented, content: content))
+        background(PiSheetWindowAnchor(wanted: isPresented.wrappedValue ? AnyHashable(true) : nil,
+                                       dismiss: { _ in isPresented.wrappedValue = false },
+                                       content: { _ in AnyView(content()) }))
+    }
+    /// `.sheet(item:)`, in a sheet window of the app's own (see above): up
+    /// while the item is set, closed and presented again for another item
+    /// when its identity changes, and the item set to nil when the sheet
+    /// closes itself.
+    func piSheetWindow<Item: Identifiable, Content: View>(item: Binding<Item?>, @ViewBuilder content: @escaping (Item) -> Content) -> some View {
+        background(PiSheetWindowAnchor(wanted: item.wrappedValue.map { AnyHashable($0.id) },
+                                       dismiss: { identity in
+                                           // Only the sheet still asked for: a closing one never clears its successor.
+                                           if let current = item.wrappedValue, AnyHashable(current.id) == identity { item.wrappedValue = nil }
+                                       },
+                                       content: { identity in
+                                           guard let current = item.wrappedValue, AnyHashable(current.id) == identity else { return nil }
+                                           return AnyView(content(current))
+                                       }))
     }
 }
 
 /// Where a `piSheetWindow` is presented from: the window it is in, and the
 /// environment the sheet inherits, as a SwiftUI sheet inherits it from the
 /// view that presents it.
-private struct PiSheetWindowAnchor<Content: View>: NSViewRepresentable {
-    @Binding var isPresented: Bool
-    let content: () -> Content
+private struct PiSheetWindowAnchor: NSViewRepresentable {
+    /// Which sheet is asked for: its identity, or nil for none.
+    let wanted: AnyHashable?
+    let dismiss: (AnyHashable) -> Void
+    let content: (AnyHashable) -> AnyView?
 
     func makeCoordinator() -> PiSheetWindowCoordinator { PiSheetWindowCoordinator() }
     func makeNSView(context: Context) -> PiSheetWindowAnchorView {
@@ -38,11 +77,9 @@ private struct PiSheetWindowAnchor<Content: View>: NSViewRepresentable {
         return view
     }
     func updateNSView(_ view: PiSheetWindowAnchorView, context: Context) {
-        let binding = $isPresented, make = content
-        context.coordinator.update(wanted: isPresented,
+        context.coordinator.update(wanted: wanted,
                                    inherited: PiSheetWindowInherited(reduceMotion: context.environment.piReduceMotion, enabled: context.environment.isEnabled),
-                                   close: { binding.wrappedValue = false },
-                                   content: { AnyView(make()) })
+                                   dismiss: dismiss, content: content)
     }
     static func dismantleNSView(_ view: PiSheetWindowAnchorView, coordinator: PiSheetWindowCoordinator) {
         coordinator.anchorGone()
@@ -69,17 +106,22 @@ final class PiSheetWindowAnchorView: NSView {
 /// run loop: SwiftUI calls `updateNSView` inside its own update, and a sheet
 /// window shown from there would lay out and draw within it.
 @MainActor final class PiSheetWindowCoordinator {
-    private var wanted = false
+    private var wanted: AnyHashable?
     private var inherited = PiSheetWindowInherited(reduceMotion: false, enabled: true)
-    private var close: () -> Void = {}
-    private var content: () -> AnyView = { AnyView(EmptyView()) }
+    private var dismiss: (AnyHashable) -> Void = { _ in }
+    private var content: (AnyHashable) -> AnyView? = { _ in nil }
     private weak var parent: NSWindow?
-    private var presented: PiSheetWindow?
+    private var presented: (identity: AnyHashable, sheet: PiSheetWindow)?
     private var scheduled = false
+    /// The window the last sheet was in, emptied, for the next one. AppKit
+    /// keeps every window that has been on screen, closed or not, a couple of
+    /// megabytes each: one window a sheet, filled again each time it opens,
+    /// instead of a new one for every opening.
+    private var spare: NSWindow?
 
-    func update(wanted: Bool, inherited: PiSheetWindowInherited, close: @escaping () -> Void, content: @escaping () -> AnyView) {
-        self.wanted = wanted; self.close = close; self.content = content
-        if self.inherited != inherited { self.inherited = inherited; presented?.inherit(inherited) }
+    func update(wanted: AnyHashable?, inherited: PiSheetWindowInherited, dismiss: @escaping (AnyHashable) -> Void, content: @escaping (AnyHashable) -> AnyView?) {
+        self.wanted = wanted; self.dismiss = dismiss; self.content = content
+        if self.inherited != inherited { self.inherited = inherited; presented?.sheet.inherit(inherited) }
         schedule()
     }
     func anchorMoved(to window: NSWindow?) {
@@ -88,9 +130,10 @@ final class PiSheetWindowAnchorView: NSView {
     }
     /// The presenting view has gone: its sheet goes with it, at once.
     func anchorGone() {
-        wanted = false
-        let sheet = presented
+        wanted = nil; spare = nil
+        let sheet = presented?.sheet
         presented = nil
+        sheet?.recycle = nil
         sheet?.end(animated: false, requested: true)
     }
     private func schedule() {
@@ -105,31 +148,37 @@ final class PiSheetWindowAnchorView: NSView {
         }
     }
     private func reconcile() {
-        if wanted, presented == nil, let parent {
-            // Another sheet on the window first: AppKit would queue this one
-            // behind it, so it waits for the window to be free instead.
-            guard parent.attachedSheet == nil else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in MainActor.assumeIsolated { self?.schedule() } }
-                return
-            }
-            let sheet = PiSheetWindow(content: content(), inherited: inherited, close: { [weak self] in self?.close() })
-            presented = sheet
-            sheet.onEnded = { [weak self, weak sheet] requested in
-                guard let self, let sheet, self.presented === sheet else { return }
-                self.presented = nil
-                if requested {
-                    // Asked for again while it was going: it comes back.
-                    self.schedule()
-                } else if self.wanted {
-                    // Closed by something other than its binding — the window
-                    // it was on closing — the binding follows.
-                    self.wanted = false; self.close()
-                }
-            }
-            sheet.present(on: parent)
-        } else if !wanted, let presented {
-            presented.end(animated: true, requested: true)
+        if let current = presented {
+            // Another sheet, or none, is asked for: this one goes first, and
+            // the next is presented once it has (`onEnded`).
+            if current.identity != wanted { current.sheet.end(animated: true, requested: true) }
+            return
         }
+        guard let wanted, let parent else { return }
+        // Another sheet on the window first: AppKit would queue this one
+        // behind it, so it waits for the window to be free instead.
+        guard parent.attachedSheet == nil else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in MainActor.assumeIsolated { self?.schedule() } }
+            return
+        }
+        guard let view = content(wanted) else { return }
+        let sheet = PiSheetWindow(window: spare, content: view, inherited: inherited, close: { [weak self] in self?.dismiss(wanted) })
+        spare = nil
+        sheet.recycle = { [weak self] window in self?.spare = window }
+        presented = (wanted, sheet)
+        sheet.onEnded = { [weak self, weak sheet] requested in
+            guard let self, let sheet, self.presented?.sheet === sheet else { return }
+            self.presented = nil
+            if !requested {
+                // Closed by the window it was on closing: what asked for it
+                // is told, as a SwiftUI sheet's binding would be.
+                if self.wanted == wanted { self.wanted = nil; self.dismiss(wanted) }
+            } else {
+                // Whatever is asked for now: another item, or this one again.
+                self.schedule()
+            }
+        }
+        sheet.present(on: parent)
     }
 }
 
@@ -147,27 +196,38 @@ final class PiSheetWindowAnchorView: NSView {
     /// Called once, when the sheet has closed and let go of its window, with
     /// whether its owner asked for that.
     var onEnded: ((Bool) -> Void)?
+    /// Takes the window back, emptied, once the sheet has closed; without it
+    /// the window is closed.
+    var recycle: ((NSWindow) -> Void)?
 
     /// The sheet window of the sheet presented last, while it lives: for the
     /// tests that check nothing keeps it once it has closed.
     static weak var newest: NSWindow?
 
-    init(content: AnyView, inherited: PiSheetWindowInherited, close: @escaping @MainActor () -> Void) {
+    /// Posted with a closed sheet's window, off screen, just before the window
+    /// lets go of its content. Content that holds much, or keeps work going,
+    /// lets go of it here, while its views can still be laid out once.
+    static let willRelease = Notification.Name("PiSheetWindowWillRelease")
+
+    init(window reused: NSWindow? = nil, content: AnyView, inherited: PiSheetWindowInherited, close: @escaping @MainActor () -> Void) {
         settings = PiSheetWindowSettings(inherited)
         let host = NSHostingView(rootView: PiSheetWindowRoot(content: content, settings: settings, close: close))
-        // SwiftUI's own sheet window: titled for the sheet's frame, document
-        // modal, resizable only between the content's own minimum and maximum,
-        // not opaque, on the window background.
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: host.fittingSize), styleMask: [.titled, .resizable, .docModalWindow],
-                              backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.isOpaque = false
-        window.backgroundColor = .windowBackgroundColor
+        let window = reused ?? Self.makeWindow()
         window.contentView = host
         window.initialFirstResponder = host
         self.host = host; self.window = window
         fitContent()
         Self.newest = window
+    }
+    /// SwiftUI's own sheet window: titled for the sheet's frame, document
+    /// modal, resizable only between the content's own minimum and maximum,
+    /// not opaque, on the window background.
+    private static func makeWindow() -> NSWindow {
+        let window = NSWindow(contentRect: .zero, styleMask: [.titled, .resizable, .docModalWindow], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.isOpaque = false
+        window.backgroundColor = .windowBackgroundColor
+        return window
     }
 
     /// The sheet takes its content's size, as SwiftUI sizes its sheets.
@@ -230,18 +290,20 @@ final class PiSheetWindowAnchorView: NSView {
     private func release() {
         guard let window else { return }
         // What the content holds that is large lets go first, while its views
-        // can still be laid out once, emptied (`DismissedSheets.willRelease`).
-        NotificationCenter.default.post(name: DismissedSheets.willRelease, object: window)
+        // can still be laid out once, emptied.
+        NotificationCenter.default.post(name: Self.willRelease, object: window)
         if let parentObserver { NotificationCenter.default.removeObserver(parentObserver) }
         parentObserver = nil
         window.orderOut(nil)
-        // The window holds nothing more: AppKit may keep the window object a
-        // while after it closes, as it keeps any window that has been on
-        // screen, but not the sheet's views or anything they hold.
+        // The window holds nothing more. AppKit keeps it regardless, as it
+        // keeps any window that has been on screen: the next sheet of the
+        // same kind opens in it (`recycle`), or it is closed.
         window.contentView = nil
-        window.close()
+        window.initialFirstResponder = nil
         host = nil
         self.window = nil
+        if let recycle, window.sheetParent == nil { recycle(window) } else { window.close() }
+        recycle = nil
         let ended = onEnded
         onEnded = nil
         ended?(requested)

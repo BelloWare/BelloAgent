@@ -23,10 +23,7 @@ struct PiSheet<Content: View, Actions: View, Footer: View>: View {
     @ViewBuilder var footer: Footer
     @State private var badgeShown = false
     @Environment(\.piReduceMotion) private var reduceMotion
-    @Environment(\.dismiss) private var dismiss
-    /// Set when the app presented this sheet in a window of its own
-    /// (`piSheetWindow`), where `dismiss` has no sheet to end.
-    @Environment(\.piSheetClose) private var sheetClose
+    @PiDismiss private var dismiss
     init(_ title: String, subtitle: String? = nil, symbol: String? = nil, width: CGFloat? = nil, height: CGFloat? = nil, minWidth: CGFloat? = nil, minHeight: CGFloat? = nil, windowChrome: Bool = false, cancelDisabled: Bool = false,
          @ViewBuilder content: () -> Content, @ViewBuilder actions: () -> Actions = { EmptyView() }, @ViewBuilder footer: () -> Footer = { EmptyView() }) {
         self.title = title; self.subtitle = subtitle; self.symbol = symbol; self.width = width; self.height = height
@@ -87,7 +84,7 @@ struct PiSheet<Content: View, Actions: View, Footer: View>: View {
     /// A window presenting this same chrome keeps the system's own behaviour.
     @ViewBuilder private var escapeKey: some View {
         if !windowChrome {
-            Button("Close") { if let sheetClose { sheetClose() } else { dismiss() } }
+            Button("Close") { dismiss() }
                 .keyboardShortcut(.cancelAction)
                 .disabled(cancelDisabled)
                 .frame(width: 0, height: 0).opacity(0)

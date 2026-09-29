@@ -23,7 +23,7 @@ struct ConversationContentView: View {
     @State private var last = 1
     @State private var busy = false
     @State private var notice = ""
-    @Environment(\.dismiss) private var dismiss
+    @PiDismiss private var dismiss
     private var selected: ContentHit? { result.hits.first { $0.id == selectedID } }
     var body: some View {
         PiSheet("Search and copy conversation", subtitle: "Completed retained messages, including exposed reasoning and tool results. Opaque provider state and image bytes are omitted. Search covers the full retained branch; the transcript stays paged.", symbol: "magnifyingglass", width: 900, height: 700) {

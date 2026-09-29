@@ -65,7 +65,7 @@ struct WorkspaceFolderList: View {
 /// "Projects" sheet: every workspace with its folders and chat count, plus creation and removal.
 struct WorkspaceManagerView: View {
     @ObservedObject var model: WorkspaceModel
-    @Environment(\.dismiss) private var dismiss
+    @PiDismiss private var dismiss
     @State private var selection: String?
     @State private var draft: NewWorkspaceDraft?
     @State private var message = ""

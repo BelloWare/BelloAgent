@@ -11,7 +11,6 @@ final class ApplicationLifecycle: NSObject, NSApplicationDelegate {
     var answerTermination: ((Bool) -> Void)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        DismissedSheets.shared.start()
         // History index files an earlier launch left behind, once nothing holds them.
         Task.detached(priority: .utility) { HistoryIndexFiles.removeStale() }
     }
