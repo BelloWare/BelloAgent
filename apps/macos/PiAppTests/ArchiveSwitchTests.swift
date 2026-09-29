@@ -16,7 +16,7 @@ final class ArchiveSwitchTests: XCTestCase {
     /// Two projects. The first has an active and an archived chat in a topic
     /// and at its root; every chat of the second is archived.
     @MainActor private func model(_ root: URL) -> WorkspaceModel {
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         model.workspaces = [WorkspaceRecord(id: "one", path: root.appendingPathComponent("one").path, trusted: true),
                             WorkspaceRecord(id: "two", path: root.appendingPathComponent("two").path, trusted: true)]
         model.topics = [TopicRecord(id: "topic", workspaceID: "one", title: "Billing")]

@@ -24,18 +24,25 @@ enum ReportColumns {
 }
 
 /// Row cost without the currency suffix; the column header and help text carry the unit.
-private func reportUSD(_ value: Double?) -> String {
-    guard value != nil else { return "—" }
-    return gatewayUSD(value).replacingOccurrences(of: " USD", with: "")
+func reportUSD(_ value: Double?) -> String {
+    guard let value else { return "—" }
+    guard value.isFinite, value >= 0 else { return "Cost unavailable" }
+    return MetricFormat.exactUSD(value, unit: false)
 }
 
-/// Short token counts for tiles and rows: 1.2k, 340k, 2.1M.
+/// Short token counts for tiles and rows: 1.2k, 340k, 2.1M. Rounded half-up,
+/// as the pills round the same count (`MetricFormat.tokens`), and a count
+/// whose rounding reaches the next step is written at it: 9,960 is `10k`,
+/// never `10.0k`, and 999,950 is `1.0M`, never `1000k`.
 func reportTokens(_ value: Double?) -> String {
     guard let value else { return "—" }
-    if value >= 1_000_000 { return String(format: "%.1fM", value / 1_000_000) }
-    if value >= 10_000 { return String(format: "%.0fk", value / 1000) }
-    if value >= 1_000 { return String(format: "%.1fk", value / 1000) }
-    return String(format: "%.0f", value)
+    if value.rounded() < 1_000 { return String(format: "%.0f", value.rounded()) }
+    let thousands = value / 1_000, tenths = (thousands * 10).rounded()
+    if tenths < 100 { return String(format: "%.1fk", tenths / 10) }
+    if thousands.rounded() < 1_000 { return String(format: "%.0fk", thousands.rounded()) }
+    let millions = (value / 1_000_000 * 10).rounded()
+    if millions < 10_000 { return String(format: "%.1fM", millions / 10) }
+    return String(format: "%.1fB", (value / 1_000_000_000 * 10).rounded() / 10)
 }
 
 /// Reasoning is a reported subset of output and cost, never a second charge.

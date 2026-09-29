@@ -294,8 +294,8 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
     @MainActor func testSwitchingProjectsMovesTheTerminalAndTheKeyboardWithIt() async throws {
         TerminalRegistry.shared.shutdown()
         let first = workspace("panel-one-" + UUID().uuidString), second = workspace("panel-two-" + UUID().uuidString)
-        let model = WorkspaceModel(stateRoot: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("panel-" + UUID().uuidString),
-                                   vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("panel-" + UUID().uuidString),
+                                       vault: ConfigurationVault(storage: MemoryVaultStorage()))
         let holder = WorkspaceHolder(workspace: first)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

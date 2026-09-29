@@ -130,12 +130,54 @@ enum MetricFormat {
         return String(format: "%dm %02ds", minutes, seconds)
     }
 
-    /// Keep small gateway observations useful without floating-point noise.
+    /// Keep small gateway observations useful without floating-point noise:
+    /// up to twelve places, rounded as every amount of money is (`halfUp`).
     /// Extremely small nonzero amounts use six significant digits.
     static func preciseDecimal(_ value: Double) -> String {
         guard value.isFinite, value >= 0 else { return "—" }
         if value > 0 && value < 0.000000000001 { return String(format: "%.6g", value) }
-        return trimmed(value, places: 12)
+        return halfUp(value, places: 12)
+    }
+
+    // MARK: Money
+
+    /// An amount of dollars as a request's or a total's cost reads in full:
+    /// `$0.00042188 USD`, eight places. Below a hundred-millionth, three
+    /// significant digits as JavaScript writes them: `$1.23e-9 USD`. `unit`
+    /// false leaves " USD" off, where a column names it. Every exact figure
+    /// the app shows comes from here, so a cost reads the same on the
+    /// transcript's request line, in the Inspector, in the report and in the
+    /// menu bar. `value` is a finite amount of zero or more; each caller says
+    /// what an unavailable cost reads as.
+    static func exactUSD(_ value: Double, unit: Bool = true) -> String {
+        let amount = value == 0 ? "0" : value < 0.000_000_01 ? scientific(value) : halfUp(value, places: 8)
+        return "$" + amount + (unit ? " USD" : "")
+    }
+
+    /// `value`'s shortest decimal form, rounded half-up at `places`, with no
+    /// trailing zeros. The gateway reports decimal prices, and a binary
+    /// double is only near them: 0.000421875 at eight places is 0.00042188,
+    /// never the …87 that rounding the binary value gives. The same rule
+    /// everywhere is what makes one cost read the same everywhere.
+    private static func halfUp(_ value: Double, places: Int) -> String {
+        var decimal = Decimal(string: "\(value)") ?? Decimal(value)
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &decimal, places, .plain)
+        return NSDecimalNumber(decimal: rounded).stringValue
+    }
+
+    /// Three significant digits and a decimal exponent, `1.23e-9`, the
+    /// mantissa rounded half-up in decimal: 9.999e-9 is `1.00e-8`, never
+    /// `10.00e-9`.
+    private static func scientific(_ value: Double) -> String {
+        var mantissa = Decimal(string: "\(value)") ?? Decimal(value)
+        var exponent = 0
+        while mantissa >= 10 { mantissa /= 10; exponent += 1 }
+        while mantissa < 1 { mantissa *= 10; exponent -= 1 }
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &mantissa, 2, .plain)
+        if rounded >= 10 { rounded /= 10; exponent += 1 }
+        return String(format: "%.2f", NSDecimalNumber(decimal: rounded).doubleValue) + "e\(exponent)"
     }
 
     /// `19s`, `1m 05s`, `1h 05m 03s` — the elapsed wall time of a turn or a

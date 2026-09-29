@@ -15,7 +15,7 @@ final class SidebarMultiSelectionTests: XCTestCase {
         ChatRecord(id: id, workspaceID: project, title: id.capitalized, path: nil, profileID: "p", sidebarOrder: 100 - order)
     }
     @MainActor private func model(_ root: URL, chats: [ChatRecord], projects: [String] = ["project"]) async throws -> WorkspaceModel {
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         model.workspaces = projects.map { WorkspaceRecord(id: $0, path: "/projects/" + $0, trusted: true) }
         model.chats = chats
         model.selectedWorkspaceID = projects.first
@@ -68,7 +68,7 @@ final class SidebarMultiSelectionTests: XCTestCase {
 
         model.archiveMarkedSessions(true)
         XCTAssertTrue(model.markedSessionIDs.isEmpty, "the marks are spent by the action")
-        try await eventually { model.sidebarChats(in: "project", archived: true).count == 3 }
+        try await eventually("Condition was never met") { model.sidebarChats(in: "project", archived: true).count == 3 }
         XCTAssertEqual(model.sidebarChats(in: "project", archived: false).map(\.id), ["chat4"])
         for id in ["chat1", "chat2", "chat3"] {
             let saved = try await model.store?.get(ChatRecord.self, kind: "chat", id: id)
@@ -79,7 +79,7 @@ final class SidebarMultiSelectionTests: XCTestCase {
         model.selectedID = nil
         model.markedSessionIDs = ["chat1", "chat2"]
         model.archiveMarkedSessions(false)
-        try await eventually { model.sidebarChats(in: "project", archived: false).count == 3 }
+        try await eventually("Condition was never met") { model.sidebarChats(in: "project", archived: false).count == 3 }
         XCTAssertEqual(model.sidebarChats(in: "project", archived: true).map(\.id), ["chat3"])
         await model.store?.close()
     }
@@ -101,7 +101,7 @@ final class SidebarMultiSelectionTests: XCTestCase {
         XCTAssertEqual(TopicSessionDrag.decode(data, in: "project")?.sessionIDs, ["chat1", "chat2"])
 
         model.moveMarkedSessions(toTopic: topic.id)
-        try await eventually { model.record("chat1")?.topicID == topic.id && model.record("chat2")?.topicID == topic.id }
+        try await eventually("Condition was never met") { model.record("chat1")?.topicID == topic.id && model.record("chat2")?.topicID == topic.id }
         XCTAssertNil(model.record("chat3")?.topicID)
         XCTAssertTrue(model.markedSessionIDs.isEmpty)
 
@@ -129,7 +129,7 @@ final class SidebarMultiSelectionTests: XCTestCase {
         model.archiveMarkedSessions(true)
         // The batch has not been admitted yet; deleting this target is a no-op.
         model.chats.removeAll { $0.id == "chat2" }
-        try await eventually { model.record("chat1")?.isArchived == true && model.record("chat3")?.isArchived == true }
+        try await eventually("Condition was never met") { model.record("chat1")?.isArchived == true && model.record("chat3")?.isArchived == true }
         XCTAssertNil(model.error, "A chat the reader deleted is nothing to report")
         XCTAssertNil(model.record("chat2"))
         XCTAssertEqual(model.sidebarChats(in: "project", archived: false).map(\.id), ["chat4"])
@@ -138,16 +138,9 @@ final class SidebarMultiSelectionTests: XCTestCase {
         model.markedSessionIDs = ["chat1", "chat4"]
         model.pinMarkedSessions(true)
         model.chats.removeAll { $0.id == "chat4" }
-        try await eventually { model.record("chat1")?.isPinned == true }
+        try await eventually("Condition was never met") { model.record("chat1")?.isPinned == true }
         XCTAssertNil(model.error)
         await model.store?.close()
     }
 
-    @MainActor private func eventually(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<200 {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("Condition was never met", file: file, line: line)
-    }
 }

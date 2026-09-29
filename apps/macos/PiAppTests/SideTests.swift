@@ -149,11 +149,7 @@ final class SideTests: XCTestCase {
             host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(epoch),
                 "commandId": try XCTUnwrap(frame["commandId"]), "ok": .bool(ok), "result": .object(result)]), connectionID: connection)
         }
-        func until(_ what: String, _ condition: () -> Bool) async throws {
-            for _ in 0..<1_000 where !condition() { try await Task.sleep(for: .milliseconds(5)) }
-            XCTAssertTrue(condition(), what)
-            if !condition() { throw HostError.failure(what) }
-        }
+        func until(_ what: String, _ condition: () -> Bool) async throws { try await eventually(what, condition) }
     }
 
     /// A parent chat that is open on a helper whose commands the test answers.

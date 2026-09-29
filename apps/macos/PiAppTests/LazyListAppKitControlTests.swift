@@ -129,7 +129,7 @@ final class LazyListAppKitControlTests: XCTestCase {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("lazy-list-panels-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent(".state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent(".state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
         let monitor = MenuBarMetricsController(load: { _, _, _ in throw CaptureFailure.unavailable }, period: .fifteenMinutes)
         let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 576), styleMask: [.borderless], backing: .buffered, defer: false)

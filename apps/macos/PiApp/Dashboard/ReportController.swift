@@ -10,6 +10,13 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
     var id: String { kind.rawValue }
 }
 
+/// What the report's chart plots.
+enum ReportChartMetric: Sendable { case outputRate, requests, cost, latency, cacheRatio }
+/// Which latency the latency chart plots.
+enum ReportLatencyMetric: Sendable { case firstToken, streaming, wholeRequest }
+/// How the report lists its requests: each attempt, per chat, or per route.
+enum ReportGrouping: Sendable { case requests, sessions, models }
+
 /// State and queries behind the usage report page. It outlives the page view
 /// so navigating back to chats and returning restores filters, the brushed
 /// selection and the last snapshot while refreshing newly retained requests.
@@ -61,10 +68,9 @@ struct ReportFilterChip: Identifiable, Equatable, Sendable {
     /// which is rebuilt on every return: the sessions expanded inside it came
     /// back hidden in a closed section.
     @Published var requestListOpen = false
-    @Published var chartMetric = "Output tok/s"
-    @Published var latencyMetric = "TTFT"
-    /// "requests" lists attempts; "sessions" groups them per chat.
-    @Published var grouping = "requests"
+    @Published var chartMetric = ReportChartMetric.outputRate
+    @Published var latencyMetric = ReportLatencyMetric.firstToken
+    @Published var grouping = ReportGrouping.requests
     @Published private(set) var sessions: DashboardSessionPage?
     /// The per-route split for the same filter as the session list; nil while it loads.
     @Published private(set) var modelSummaries: [DashboardModelSummary]?

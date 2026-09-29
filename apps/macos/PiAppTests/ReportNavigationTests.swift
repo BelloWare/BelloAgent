@@ -29,13 +29,6 @@ final class ReportNavigationTests: XCTestCase {
         (view as? T).map { [$0] } ?? view.subviews.flatMap { descendants(type, in: $0) }
     }
 
-    @MainActor private func waitFor(_ condition: () -> Bool) async throws {
-        for _ in 0..<100 {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        XCTFail("Native report navigation did not settle")
-    }
 
     @MainActor func testReportResignsNativeFocusAndPreservesMountedConversationSurfaces() async throws {
         let (model, _) = try await model()
@@ -47,7 +40,7 @@ final class ReportNavigationTests: XCTestCase {
             model.report.suspend(); window.contentView = nil; window.close()
         }
         hosted.layoutSubtreeIfNeeded()
-        try await waitFor { self.descendants(ComposerTextView.self, in: hosted).count == 2 && self.descendants(TranscriptSurfaceMarker.self, in: hosted).count == 2 }
+        try await eventually("Native report navigation did not settle") { self.descendants(ComposerTextView.self, in: hosted).count == 2 && self.descendants(TranscriptSurfaceMarker.self, in: hosted).count == 2 }
         let composers = descendants(ComposerTextView.self, in: hosted)
         let transcripts = descendants(TranscriptSurfaceMarker.self, in: hosted).compactMap(\.enclosingScrollView)
         XCTAssertEqual(transcripts.count, 2, "each conversation pane draws its own native transcript")
@@ -60,7 +53,7 @@ final class ReportNavigationTests: XCTestCase {
         main.state = "running"; main.queueCount = 1; side.state = "running"
 
         model.openReport()
-        try await waitFor { composers.allSatisfy(\.isHidden) && window.firstResponder is ConversationPageVisibilityView }
+        try await eventually("Native report navigation did not settle") { composers.allSatisfy(\.isHidden) && window.firstResponder is ConversationPageVisibilityView }
         XCTAssertTrue(transcripts.allSatisfy(\.isHidden), "Reports must also suspend native transcript preparation")
         XCTAssertFalse(model.conversationCommandsEnabled)
         XCTAssertEqual(editor.string, "main unsent draft"); XCTAssertEqual(editor.selectedRange(), selectedRange)
@@ -77,7 +70,7 @@ final class ReportNavigationTests: XCTestCase {
 
         let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
         window.firstResponder?.keyDown(with: escape)
-        try await waitFor { model.page == .chats && composers.allSatisfy { !$0.isHidden } }
+        try await eventually("Native report navigation did not settle") { model.page == .chats && composers.allSatisfy { !$0.isHidden } }
         XCTAssertTrue(transcripts.allSatisfy { !$0.isHidden })
         let current = descendants(ComposerTextView.self, in: hosted) as [NSView] + descendants(TranscriptSurfaceMarker.self, in: hosted).compactMap(\.enclosingScrollView) as [NSView]
         XCTAssertEqual(Set(current.map(ObjectIdentifier.init)), surfaceIDs, "Navigation must retain the actual NSTextView and transcript scroll view instances")
@@ -95,7 +88,7 @@ final class ReportNavigationTests: XCTestCase {
         model.toggleReport(); XCTAssertEqual(model.page, .chats)
         model.openReport(); model.newChat()
         XCTAssertEqual(model.page, .chats)
-        try await waitFor { model.chats.count == 2 && model.selectedID != "main" }
+        try await eventually("Native report navigation did not settle") { model.chats.count == 2 && model.selectedID != "main" }
         XCTAssertEqual(model.displays["main"]?.draft, "main unsent draft")
     }
 

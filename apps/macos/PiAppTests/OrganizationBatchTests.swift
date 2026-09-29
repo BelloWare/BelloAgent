@@ -13,7 +13,7 @@ final class OrganizationBatchTests: XCTestCase {
         ChatRecord(id: id, workspaceID: "p", title: id, path: nil, profileID: "gateway", sidebarOrder: -order)
     }
     @MainActor private func model(_ root: URL, count: Int) async throws -> WorkspaceModel {
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         model.workspaces = [WorkspaceRecord(id: "p", path: root.path, trusted: true)]
         model.chats = (0..<count).map { chat("chat\($0)", Int64($0)) }
         for row in model.chats { try await model.store?.put(row, kind: "chat", id: row.id) }

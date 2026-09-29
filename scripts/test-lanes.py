@@ -13,9 +13,12 @@ functions) in the files where those are written.
   defaults  writes the standard user defaults, which every host shares
   pasteboard  uses the general or the drag pasteboard, which every host shares
   timing    asserts on elapsed time in this configuration: an elapsed-time
-            expression inside an XCTAssert, or a class that declares
-            `SerialTestLane` (TestSeams.swift) for the timing assertions this
-            pattern cannot see
+            expression inside an XCTAssert, or compared there through a local
+            it was read into (`let elapsed = ...systemUptime - start`, then
+            `XCTAssertLessThan(elapsed, 0.5)`), or a class that declares
+            `SerialTestLane` (TestSeams.swift) for the timing assertions these
+            patterns cannot see. A bound written `releaseBudget(...)` binds only
+            in Release, and is the budget rule below
   budget    Release only: calls `releaseBudget`, whose budgets are infinite in
             Debug and only bind in a Release build
 
@@ -81,14 +84,52 @@ def blocks(text):
         i = end + 1
 
 
+TIMED_LOCAL = re.compile(r"\b(?:let|var)\s+([A-Za-z_]\w*)\s*(?::[^=\n]*)?=([^\n]*)")
+
+
+def compared_values(arguments):
+    """The two values an XCTAssertLess/Greater call compares: its first two
+    top-level arguments, never the message after them."""
+    parts, depth, start, quoted = [], 0, 0, False
+    for index, character in enumerate(arguments):
+        if character == '"' and arguments[index - 1:index] != "\\":
+            quoted = not quoted
+        elif not quoted:
+            if character in "([{":
+                depth += 1
+            elif character in ")]}":
+                depth -= 1
+            elif character == "," and depth == 0:
+                parts.append(arguments[start:index])
+                start = index + 1
+    parts.append(arguments[start:])
+    return parts[:2]
+
+
 def asserts_elapsed_time(text):
-    """An XCTAssert whose own arguments measure elapsed time."""
+    """An XCTAssert whose own arguments measure elapsed time, or an ordering
+    assertion that compares a local whose nearest assignment before it read a
+    clock. The nearest one, because tests reuse names: one test's `started`
+    is a byte count, another's the time a step began."""
+    assignments = [(match.start(), match.group(1), bool(ELAPSED.search(match.group(2)))) for match in TIMED_LOCAL.finditer(text)]
     for match in re.finditer(r"\bXCTAssert\w*\(", text):
         depth, j = 1, match.end()
         while j < len(text) and depth:
             depth += {"(": 1, ")": -1}.get(text[j], 0)
             j += 1
-        if ELAPSED.search(text[match.end():j]):
+        arguments = text[match.end():j - 1]
+        if ELAPSED.search(arguments):
+            return True
+        if not re.match(r"XCTAssert(?:Less|Greater)", match.group(0)):
+            continue
+        values = compared_values(arguments)
+        if any("releaseBudget" in value for value in values):
+            continue
+        latest = {}
+        for position, name, timed in assignments:
+            if position < match.start():
+                latest[name] = timed
+        if any(timed and re.search(r"\b%s\b" % re.escape(name), value) for name, timed in latest.items() for value in values):
             return True
     return False
 
