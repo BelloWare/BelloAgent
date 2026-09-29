@@ -64,18 +64,18 @@ extension AgentSession {
                 if let end, index > end { continue }
                 let kind=record["customType"].text ?? ""
                 // A fork is a chat of its own: it starts with no spend of its own.
-                if ["pi-app.native.v1", "pi-app.native.state.v1", "pi-app.side-origin.v1", "pi-app.fork-origin.v1", "pi-app.context-recovery.v1", SessionSpend.recordType].contains(kind) { continue }
+                if [JournalRecordKind.marker, JournalRecordKind.state, JournalRecordKind.sideOrigin, JournalRecordKind.forkOrigin, JournalRecordKind.contextRecovery, SessionSpend.recordType].contains(kind) { continue }
                 // Branch records can contain a queued edit. Preserve the branch
                 // and all message bytes, but never authorize its command twice.
                 try prepared.append(record.removing(["id","parentId","timestamp","nativeState"]),id:try identity(record["id"]),flush:false)
             }
             // As with the copied records, `publish` forces these to disk
             // before the fork takes its name.
-            try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(contextIDs.map { JSON($0) }),"visibleIDs":.array(timeline.map { JSON($0) })]],flush:false)
-            try prepared.append(["type":"custom","customType":"pi-app.fork-origin.v1","data":origin],flush:false)
+            try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.context),"data":["ids":.array(contextIDs.map { JSON($0) }),"visibleIDs":.array(timeline.map { JSON($0) })]],flush:false)
+            try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.forkOrigin),"data":origin],flush:false)
             var fresh = SessionSpend().record; fresh["source"] = "fork"
             try prepared.append(["type":"custom","customType":JSON(SessionSpend.recordType),"data":fresh],flush:false)
-            try prepared.append(["type":"custom","customType":"pi-app.native.state.v1","data":["active":false,"queue":[],"steering":[],"commands":[],"queuePaused":false,"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode)]],flush:false)
+            try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.state),"data":["active":false,"queue":[],"steering":[],"commands":[],"queuePaused":false,"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode)]],flush:false)
             try prepared.publish(to:destination)
         } catch { try? FileManager.default.removeItem(at:temporary); try? FileManager.default.removeItem(atPath:temporary.path+".lock"); throw error }
         return ["accepted":true,"sessionId":JSON(newID),"path":JSON(destination.path),"origin":origin]
@@ -134,7 +134,7 @@ extension AgentSession {
         let receipts=value["commands"].list
         let changes = wholeCommandsDue || commandChangeRecords >= CommandReceipts.wholeListEvery ? nil : CommandReceipts.changes(from: journaledCommands, to: receipts)
         if let changes { value["commands"] = .array(changes); value[CommandReceipts.deltaKey] = true }
-        do { try journal.append(["type":"custom","customType":"pi-app.native.state.v1","data":value],flush:journalFlushesEachRecord) }
+        do { try journal.append(["type":"custom","customType":JSON(JournalRecordKind.state),"data":value],flush:journalFlushesEachRecord) }
         catch {
             // Written or not, the next record starts the list again.
             wholeCommandsDue=true; journaledCommandsUncertain=true
@@ -192,12 +192,12 @@ extension AgentSession {
             // journal there before it takes the side's name. A side opened from
             // a long chat paid one fsync per message of its parent's context.
             for message in history { try prepared.append(["type":"message","message":message.pi],id:message.id,flush:false) }
-            try prepared.append(["type":"custom","customType":"pi-app.native.context.v1","data":["ids":.array(context.map { JSON($0.id) })]],flush:false)
-            try prepared.append(["type":"custom","customType":"pi-app.side-origin.v1","data":parentInfo],flush:false)
+            try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.context),"data":["ids":.array(context.map { JSON($0.id) })]],flush:false)
+            try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.sideOrigin),"data":parentInfo],flush:false)
             // What the side spent before it was kept goes with it.
             try prepared.append(carriedSpendRecord(),flush:false)
             let state=try savedState()
-            try prepared.append(["type":"custom","customType":"pi-app.native.state.v1","data":state],flush:false)
+            try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.state),"data":state],flush:false)
             try prepared.publish(to:destination); journal=prepared; ephemeral=false; keepRequested=false
             journaledWholeCommands(state)
         } catch { try? FileManager.default.removeItem(at:temporary); try? FileManager.default.removeItem(atPath:temporary.path+".lock"); throw error }

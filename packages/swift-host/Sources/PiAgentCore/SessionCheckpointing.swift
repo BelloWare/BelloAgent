@@ -82,7 +82,7 @@ extension AgentSession {
             guard record["type"].text == "message", record["id"].text == row.id else { return nil }
             return try? ChatMessage(id: row.id, pi: record["message"])
         case .update:
-            guard record["customType"].text == "pi-app.presentation.update.v1", record["data"]["id"].text == row.id,
+            guard record["customType"].text == JournalRecordKind.presentationUpdate, record["data"]["id"].text == row.id,
                   var message = try? ChatMessage(id: row.id, pi: record["message"]) else { return nil }
             message.replayEligible = false
             return message
@@ -157,11 +157,11 @@ extension AgentSession {
                 case ("branch", _):
                     rowSpans[id] = .init(id: id, kind: .branch, offset: start, length: line.count)
                     if !item["nativeState"].isNull { liveStateSource = StateSource(line: line, offset: start, key: "nativeState") }
-                case (_, "pi-app.presentation.update.v1"):
+                case (_, JournalRecordKind.presentationUpdate):
                     if let target = item["data"]["id"].text, history.contains(where: { $0.id == target && ["execution", "requestLedger"].contains($0.kind ?? "") }) {
                         rowSpans[target] = .init(id: target, kind: .update, offset: start, length: line.count)
                     }
-                case (_, "pi-app.native.state.v1"): liveStateSource = StateSource(line: line, offset: start, key: "data")
+                case (_, JournalRecordKind.state): liveStateSource = StateSource(line: line, offset: start, key: "data")
                 default: break
                 }
             }

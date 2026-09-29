@@ -187,7 +187,7 @@ extension AgentSession {
                             partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); modelActive=false
                             let failure=error.failure.flatMap { $0.contextRejection ? $0.rawValue : nil } ?? "contextOverflow"
                             let recovery: JSON=["logicalRequestId":JSON(operationID),"consumed":true,"failedAttemptId":error.attemptID.map { JSON($0) } ?? .null,"failedFingerprint":prepared.count.requestFingerprint.map { JSON($0) } ?? .null,"failure":JSON(failure)]
-                            try journal?.append(["type":"custom","customType":"pi-app.context-recovery.v1","data":recovery],flush:true)
+                            try journal?.append(["type":"custom","customType":JSON(JournalRecordKind.contextRecovery),"data":recovery],flush:true)
                             contextRecovery=recovery; recovered=true
                             // A recovery that cannot compact leaves the overflow as the run's failure, as in pi.
                             let overflow=error

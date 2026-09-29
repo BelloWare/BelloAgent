@@ -61,7 +61,7 @@ final class SessionJournal {
             handle=try FileHandle(forWritingTo:url); try handle.seekToEnd()
         } catch { _=flock(lockFD,LOCK_UN); _=close(lockFD); throw error }
         if create {
-            try append(["type":"custom","customType":"pi-app.native.v1","data":["binding":binding,"version":1]])
+            try append(["type":"custom","customType":JSON(JournalRecordKind.marker),"data":["binding":binding,"version":1]])
             if let span=lastAppend, let line=lastAppendLine { markerCheck=JournalCheckpoint.Check(offset:span.offset,length:span.length,sha256:JournalCheckpoint.digest(line)) }
         }
     }
@@ -93,7 +93,7 @@ final class SessionJournal {
             }
             let rid=try identity(item?["id"] ?? .string(fields.id ?? ""))
             guard seen.insert(rid).inserted, fields.parentID == last else { throw AgentError("session_damaged", "Native journal must be a valid single branch") }; last=rid
-            if marker == nil, fields.customType == "pi-app.native.v1" {
+            if marker == nil, fields.customType == JournalRecordKind.marker {
                 marker=try item ?? JSON.parse(line)
                 markerCheck=JournalCheckpoint.Check(offset:start,length:line.count,sha256:JournalCheckpoint.digest(line))
             }
@@ -113,7 +113,7 @@ final class SessionJournal {
         guard let headerLine=JournalCheckpoint.verified(checkpoint.header,in:file), let header=try? JSON.parse(headerLine),
               header["type"].text == "session", header["version"].int == 3, header["id"].text == id,
               let markerLine=JournalCheckpoint.verified(checkpoint.marker,in:file), let marker=try? JSON.parse(markerLine),
-              marker["customType"].text == "pi-app.native.v1", marker["data"]["binding"] == binding,
+              marker["customType"].text == JournalRecordKind.marker, marker["data"]["binding"] == binding,
               let lastLine=JournalCheckpoint.verified(checkpoint.last,in:file), let last=try? JSON.parse(lastLine),
               last["id"].text == checkpoint.lastID, let reader=try? JournalRecordReader(url,startingAt:checkpoint.start) else { return nil }
         var tail: String? = checkpoint.lastID, seen=Set<String>()
@@ -124,7 +124,7 @@ final class SessionJournal {
                 if let scanned=JournalLineScan.stateTail(line) ?? JournalLineScan.fields(line), scanned.id != nil { fields=scanned }
                 else { let parsed=try JSON.parse(line); fields = .init(id:parsed["id"].text,parentID:parsed["parentId"].text,customType:parsed["customType"].text,type:parsed["type"].text) }
                 let rid=try identity(.string(fields.id ?? ""))
-                guard seen.insert(rid).inserted, fields.parentID == tail, fields.type != "branch", fields.customType != "pi-app.native.context.v1" else { return nil }
+                guard seen.insert(rid).inserted, fields.parentID == tail, fields.type != "branch", fields.customType != JournalRecordKind.context else { return nil }
                 tail=rid
             }
         } catch { return nil }

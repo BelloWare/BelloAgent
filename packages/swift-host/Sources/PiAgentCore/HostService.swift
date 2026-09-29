@@ -471,7 +471,7 @@ public actor NativeHostService {
                 let item=try JSON.parse(line), rid=try identity(item["id"])
                 guard seen.insert(rid).inserted, item["parentId"].text == last else { throw AgentError("session_damaged","The journal is damaged before its last record; nothing was recovered") }
                 last=rid; count += 1
-                if item["customType"].text == "pi-app.native.v1" { native=true }
+                if item["customType"].text == JournalRecordKind.marker { native=true }
             }
             line.append(10); try file.write(contentsOf:line)
         }
@@ -487,7 +487,7 @@ public actor NativeHostService {
         var next=try reader.next()
         // Native journals are linear. Replay as a stream, discarding old
         // presentation/state snapshots instead of retaining the complete file.
-        if next?["customType"].text == "pi-app.native.v1" {
+        if next?["customType"].text == JournalRecordKind.marker {
             var replay=try ConversationReplay(), last:String?, seen=Set<String>()
             while let item=next {
                 let id=try identity(item["id"])
@@ -511,7 +511,7 @@ public actor NativeHostService {
         var chain:[JSON]=[],cursor=leaf
         while let id=cursor,let record=records[id] { chain.append(record);cursor=record["parentId"].text }
         chain.reverse()
-        if chain.contains(where: { $0["customType"].text == "pi-app.native.v1" }) {
+        if chain.contains(where: { $0["customType"].text == JournalRecordKind.marker }) {
             let replay = try ConversationReplay(chain)
             let messages = replay.context.map { "[\($0.role)]\n" + ($0.displayText ?? $0.text) }
             let text = messages.suffix(40).joined(separator: "\n\n"), retained = preview(text, bytes: 65536)
@@ -537,7 +537,7 @@ public actor NativeHostService {
                 active=[item]+kept
             } else if item["type"].text=="branch" {
                 let ids=Set(item["keptIds"].list.compactMap(\.text));active=active.filter{ids.contains($0["id"].text ?? "")}
-            } else if item["customType"].text=="pi-app.native.context.v1" {
+            } else if item["customType"].text==JournalRecordKind.context {
                 let ids=try CompactionCheckpoint.identities(item["data"]["ids"])
                 active=try ids.map { id in guard let record=records[id] else { throw AgentError("session_damaged","Missing context reference") }; return record }
             } else { active.append(item) }
