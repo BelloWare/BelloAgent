@@ -67,7 +67,7 @@ extension WorkspaceModel {
             }
             view.dirty = false
             @MainActor func current() -> Bool {
-                !Task.isCancelled && !accountingStopped && displays[id] === view &&
+                !Task.isCancelled && !isShutDown && displays[id] === view &&
                 hosts[item.workspaceID] === host && host.isReady && host.connectionID == connection &&
                 opened.contains(id) && record(id)?.workspaceID == item.workspaceID &&
                 record(id)?.profileID == item.profileID && record(id)?.toolMode == item.toolMode
@@ -164,7 +164,7 @@ extension WorkspaceModel {
                     let wasBusy = view.busy
                     view.observeRunState(result)
                     observeCost(result, view: view)
-                    if wasBusy, view.state == "error" { markRunFailed(sessionID: id) }
+                    if wasBusy, view.runState == .error { markRunFailed(sessionID: id) }
                     view.observeRetry(result)
                     let queued = result["queue"]?.array?.compactMap(\.object) ?? []
                     helperQueue = queued

@@ -25,7 +25,7 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         let chat=ChatRecord(id:"chat",workspaceID:"project",title:"Chat",path:nil,profileID:"profile")
         let view=SessionDisplay(id:chat.id)
         view.messages=[TranscriptMessage(id:"question",role:"user",text:"Question")]
-        view.projectionRevision="old-runtime:1"; view.pageStartEnsured=true
+        view.projectionRevision="old-runtime:1"
         model.chats=[chat]; model.displays[chat.id]=view; model.selectedID=chat.id; model.selected=view
         let commands=RefreshCommandLog(), host=HostSupervisor(commandSender:{ commands.frames.append($0) })
         try await host.connect(cwd:root,state:root.appendingPathComponent("host"))

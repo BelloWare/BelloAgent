@@ -36,7 +36,7 @@ final class LiveAccountingTests: XCTestCase {
         try await model.traces.configure(quota: 1_048_576, bodyRetention: 86400, metricRetention: 86400)
         let chat = ChatRecord(id: "streaming", workspaceID: "w", title: "Streaming", path: nil, profileID: "p")
         model.chats = [chat]; model.selectedID = chat.id
-        let view = SessionDisplay(id: chat.id); view.pageStartEnsured = true
+        let view = SessionDisplay(id: chat.id)
         model.displays[chat.id] = view; model.selected = view
         var sent: [[String: WireValue]] = []
         let host = HostSupervisor(commandSender: { sent.append($0) })
