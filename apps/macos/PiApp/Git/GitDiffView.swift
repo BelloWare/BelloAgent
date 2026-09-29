@@ -48,12 +48,18 @@ struct DiffView: View {
     var body: some View {
         GitDiffTable(files: files, split: split, wrap: wrap, showAll: showAll, identity: identity,
                      top: AnyView(top), topKey: TopKey(title: title, subtitle: subtitle, loading: loading, empty: files.isEmpty, embedded: embedded, lead: leadKey),
-                     more: more)
+                     topHeightKey: TopHeightKey(title: title != nil, subtitle: subtitle != nil, note: files.isEmpty && !loading, embedded: embedded, lead: leadKey),
+                     loading: loading, more: more)
             .background(Color.piContent)
     }
 
     private struct TopKey: Hashable {
         let title: String?, subtitle: String?, loading: Bool, empty: Bool, embedded: Bool, lead: AnyHashable
+    }
+    /// What the heading's height depends on: its title and subtitle are one
+    /// line each whatever they say, and the spinner is shorter than the tabs.
+    private struct TopHeightKey: Hashable {
+        let title: Bool, subtitle: Bool, note: Bool, embedded: Bool, lead: AnyHashable
     }
 
     /// Counted from what the parser already totalled, not by walking the lines again.
