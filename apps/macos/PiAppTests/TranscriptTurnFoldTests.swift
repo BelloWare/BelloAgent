@@ -313,7 +313,7 @@ final class TranscriptTurnFoldTests: XCTestCase {
     /// opens the finished turn's fold, Fold Every Turn closes it again.
     @MainActor func testTheFoldCommandsOpenAndCloseTheEndOfTurnFold() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let model = WorkspaceModel(stateRoot: root)
+        let model = makeWorkspaceModel(stateRoot: root)
         defer { try? FileManager.default.removeItem(at: root) }
         let session = SessionDisplay(id: "keys")
         session.messages = steered()
@@ -395,7 +395,7 @@ final class TranscriptTurnFoldTests: XCTestCase {
     /// by planning the whole page. The menu now reads the rows instead.
     @MainActor func testEvaluatingTheFoldMenuDoesNotPlanThePage() {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let model = WorkspaceModel(stateRoot: root)
+        let model = makeWorkspaceModel(stateRoot: root)
         defer { try? FileManager.default.removeItem(at: root) }
         let session = SessionDisplay(id: "menu")
         var rows: [TranscriptMessage] = []

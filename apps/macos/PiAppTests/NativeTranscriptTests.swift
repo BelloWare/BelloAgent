@@ -128,7 +128,7 @@ extension NativeTranscriptTests {
             bytes.append(try JSONSerialization.data(withJSONObject: value)); bytes.append(10)
         }
         try bytes.write(to: path)
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         model.chats = [ChatRecord(id: "fixture", workspaceID: "workspace", title: "fixture", path: path.path, profileID: "profile")]
         await model.select("fixture")
         let view = try XCTUnwrap(model.selected)

@@ -15,7 +15,7 @@ final class DeferredCreationTests: XCTestCase {
         let profile = draft, project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
         let vault = ConfigurationVault(storage: MemoryVaultStorage())
         _ = try await vault.update(expectedRevision: 0) { $0.workspaces = [project]; $0.profiles = [VaultProfile(profile: profile, apiKey: "synthetic")] }
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault)
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault)
         await model.restore()
         model.selectedWorkspaceID = "project"; model.profileChoice = profile.id
         return (model, profile)

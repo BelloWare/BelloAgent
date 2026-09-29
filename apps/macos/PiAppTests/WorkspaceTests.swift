@@ -49,7 +49,7 @@ final class WorkspaceTests: XCTestCase {
     }
     @MainActor func testConnectionTestChatIsSavedOutsideAnyProject() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let storage = MemoryVaultStorage(), model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: storage))
+        let storage = MemoryVaultStorage(), model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: storage))
         try await model.reloadConfiguration()
         var profile = ProfileRecord(); profile.id = "profile"; profile.name = "Router"; profile.api = LiteLLMConfiguration.supportedAPI
         profile.baseUrl = "https://gw.example.com"; profile.modelId = "auto"
@@ -242,7 +242,7 @@ final class WorkspaceTests: XCTestCase {
         let first = WorkspaceRecord(id: "first", path: firstFolder.path, trusted: true)
         var config = VaultConfiguration(); config.workspaces = [first]; config.automaticUpdateChecks = false
         let storage = MemoryVaultStorage(try JSONEncoder().encode(config))
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: storage))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: storage))
         defer { model.shutdown() }
         try await model.reloadConfiguration()
 
@@ -278,7 +278,7 @@ final class WorkspaceTests: XCTestCase {
         var config = VaultConfiguration(); config.automaticUpdateChecks = false
         config.workspaces = [WorkspaceRecord(id: "w", path: primary.path, trusted: true)]
         let storage = MemoryVaultStorage(try JSONEncoder().encode(config)), vault = ConfigurationVault(storage: storage)
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault)
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: vault)
         defer { model.shutdown() }
         try await model.reloadConfiguration()
         try await model.addFolders([second.path, third.path], to: "w")
@@ -321,7 +321,7 @@ final class WorkspaceTests: XCTestCase {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let primary = root.appendingPathComponent("primary"), extra = root.appendingPathComponent("extra")
         for folder in [primary, extra] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
-        let storage = MemoryVaultStorage(), model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: storage))
+        let storage = MemoryVaultStorage(), model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: storage))
         defer { model.shutdown() }
         let created = try await model.createWorkspace(primary: primary.path, extras: [extra.path, primary.path, extra.path])
         XCTAssertEqual(created.roots, [primary.path, extra.path]); XCTAssertTrue(created.trusted)
@@ -348,7 +348,7 @@ final class WorkspaceTests: XCTestCase {
         config.profiles = [VaultProfile(profile: profile, apiKey: "fixture-key", headers: [:])]
         let started = expectation(description: "Folder update entered the vault write"), gate = DispatchSemaphore(value: 0)
         let storage = DelayedWorkspaceVaultStorage(data: try JSONEncoder().encode(config), started: started, gate: gate)
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: storage))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: storage))
         defer { gate.signal(); model.shutdown() }
         try await model.reloadConfiguration()
         let chat = ChatRecord(id: "chat", workspaceID: "w", title: "t", path: nil, profileID: profile.id)

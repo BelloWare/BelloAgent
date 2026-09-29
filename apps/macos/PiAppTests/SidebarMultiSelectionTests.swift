@@ -15,7 +15,7 @@ final class SidebarMultiSelectionTests: XCTestCase {
         ChatRecord(id: id, workspaceID: project, title: id.capitalized, path: nil, profileID: "p", sidebarOrder: 100 - order)
     }
     @MainActor private func model(_ root: URL, chats: [ChatRecord], projects: [String] = ["project"]) async throws -> WorkspaceModel {
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         model.workspaces = projects.map { WorkspaceRecord(id: $0, path: "/projects/" + $0, trusted: true) }
         model.chats = chats
         model.selectedWorkspaceID = projects.first

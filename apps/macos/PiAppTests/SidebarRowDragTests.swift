@@ -19,7 +19,7 @@ final class SidebarRowDragTests: XCTestCase {
         ChatRecord(id: id, workspaceID: project, title: id.capitalized, path: nil, profileID: "fixture", sidebarOrder: 100 - order)
     }
     @MainActor private func makeModel(_ root: URL, chats: [ChatRecord]) async throws -> WorkspaceModel {
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         model.workspaces = [WorkspaceRecord(id: "project", path: root.path, trusted: true),
                             WorkspaceRecord(id: "other", path: root.appendingPathComponent("other").path, trusted: true)]
         model.chats = chats
@@ -192,7 +192,7 @@ final class SidebarDropZoneTests: XCTestCase {
         let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("sidebar-drop-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         let project = WorkspaceRecord(id: "project", path: root.path, trusted: true)
         model.workspaces = [project]; model.selectedWorkspaceID = project.id
         model.topics = [TopicRecord(id: "topic", workspaceID: project.id, title: "Destination")]

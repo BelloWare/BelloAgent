@@ -102,9 +102,9 @@ final class TraceArchiveTests: XCTestCase {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let storage = MemoryVaultStorage()
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: storage))
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: storage))
         try await model.setCaptureMode("off", sessionID: "chat")
-        let next = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: storage))
+        let next = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: storage))
         let preference = try await next.capturePreference(sessionID: "chat")
         XCTAssertEqual(preference.mode, "off"); XCTAssertFalse(next.hasActiveWork)
         try await model.setCaptureMode("persist", sessionID: "chat")

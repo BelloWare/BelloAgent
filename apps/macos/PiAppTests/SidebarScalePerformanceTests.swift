@@ -28,8 +28,8 @@ final class SidebarScalePerformanceTests: XCTestCase {
         let base = scratchBase()
         let root = URL(fileURLWithPath: base).appendingPathComponent("sidebar-scale-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"),
-                                   vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"),
+                                       vault: ConfigurationVault(storage: MemoryVaultStorage()))
         var workspaces: [WorkspaceRecord] = [], topics: [TopicRecord] = [], chats: [ChatRecord] = []
         for project in 0..<Self.projects {
             let id = "project\(project)"
