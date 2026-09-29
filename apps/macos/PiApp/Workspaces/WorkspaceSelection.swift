@@ -143,14 +143,21 @@ extension WorkspaceModel {
                     if self.opened.contains(id) { self.refresh(id) }
                     return
                 }
+                // The name can also change while the page's request figures
+                // are read, which takes up to `accountingBeforeShowing`: that
+                // page was dropped with nothing reading the chat any more, and
+                // it stayed on "Preparing…" until it was opened again.
                 var source = item, page = try await self.readInitialWindow(source, holding: held)
-                for _ in 0..<3 {
-                    guard current(), let now = self.record(id), now.path != source.path else { break }
-                    source = now; page = try await self.readInitialWindow(source, holding: held)
+                for reads in 1...4 {
+                    guard current(), let now = self.record(id) else { return }
+                    if now.path == source.path {
+                        page.messages = await self.withAccounting(page.messages, view: view, workspaceID: source.workspaceID)
+                        guard current() else { return }
+                        if self.record(id)?.path == source.path { break }
+                    }
+                    guard reads < 4, let renamed = self.record(id) else { return }
+                    source = renamed; page = try await self.readInitialWindow(source, holding: held)
                 }
-                guard current(), self.record(id)?.path == source.path else { return }
-                page.messages = await self.withAccounting(page.messages, view: view, workspaceID: source.workspaceID)
-                guard current(), self.record(id)?.path == source.path else { return }
                 self.adoptInitialHistory(page, into: view)
                 if let profile = self.profiles.first(where: { $0.id == item.profileID }), profile.api != LiteLLMConfiguration.supportedAPI {
                     view.notice = LiteLLMConfiguration.unsupportedAPIMessage
