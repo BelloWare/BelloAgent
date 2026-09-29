@@ -101,6 +101,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// of these are written into the project's sidebar record, so they come
     /// back with the disclosure they belong to on the next launch.
     @Published var collapsedSidebarSides: Set<String> = []
+    /// Chats the reader reached from the sidebar itself, or by putting the
+    /// cursor in a pane already on screen, with the chats above them: the
+    /// sidebar unfolds and expands nothing for these, since the reader could
+    /// already see what they clicked (`openFromSidebar`, `focusPane`). Opening
+    /// a chat from anywhere else (the menu bar, the Usage Report, search)
+    /// empties it and reveals as before.
+    var quietSidebarReveal: Set<String> = []
     /// How many root chats each sidebar group shows, keyed by topic id or, for
     /// the chats outside every topic, by the project's id.
     @Published var sidebarPageSizes: [String: Int] = [:]

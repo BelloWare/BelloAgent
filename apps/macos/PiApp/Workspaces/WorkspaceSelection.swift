@@ -7,6 +7,7 @@ import Foundation
 extension WorkspaceModel {
     func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveSwitch: Bool = false, reopensSide: Bool = true) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
+        if revealInSidebar || preserveArchiveSwitch { quietSidebarReveal = [] }
         // A background request is listed on its own page, not the sidebar:
         // the menu bar's running requests and the report open it there.
         if item.isBackgroundTask { openBackgroundRequests(selecting: id); return }
@@ -196,17 +197,47 @@ extension WorkspaceModel {
         guard let target = id ?? focusedSessionID ?? selectedID else { return }
         displays[target]?.composerFocusRequest += 1
     }
-    func selectSide(_ id: String) async {
+    func selectSide(_ id: String, revealInSidebar: Bool = true) async {
         guard let info = side(id), displays[id] != nil else {
             // A saved child chat that is not the shown side opens in the pane.
-            if chats.contains(where: { $0.id == id && $0.parentSessionID != nil }) { await showSide(id) }
+            if chats.contains(where: { $0.id == id && $0.parentSessionID != nil }) { await showSide(id, revealInSidebar: revealInSidebar) }
             return
         }
-        if selectedID != info.parentID { await select(info.parentID) }
+        if revealInSidebar { quietSidebarReveal = [] }
+        if selectedID != info.parentID { await select(info.parentID, revealInSidebar: revealInSidebar) }
         guard selectedID == info.parentID, side(id) != nil else { return }
         page = .chats; focusedSessionID = id
-        if let child = record(id) { revealProjectChat(child) }
+        if revealInSidebar, let child = record(id) { revealProjectChat(child) }
         focusComposer(id)
         scheduleAutomaticContext(id)
+    }
+
+    /// A row the reader clicked in the sidebar. The chat opens as it would
+    /// from anywhere else, a side beside its chat, but nothing in the sidebar
+    /// unfolds or expands for it: the row was on screen to be clicked. The
+    /// side list the reader folded, a collapsed topic of the chat a side
+    /// belongs to and the archive switch all stay as they were.
+    func openFromSidebar(_ id: String) async {
+        quietSidebarReveal = sidebarLineage(of: id)
+        if side(id) != nil { await selectSide(id, revealInSidebar: false); return }
+        guard let chat = record(id) else { return }
+        if chat.parentSessionID != nil, record(chat.parentSessionID ?? "") != nil, !chat.imported { await showSide(id, revealInSidebar: false) }
+        else { await select(id, revealInSidebar: false) }
+    }
+
+    /// The reader put the cursor in a pane already on screen: that chat is
+    /// focused, and the sidebar unfolds nothing for it.
+    func focusPane(_ id: String) {
+        quietSidebarReveal.formUnion(sidebarLineage(of: id))
+        if let selectedID { quietSidebarReveal.formUnion(sidebarLineage(of: selectedID)) }
+        if focusedSessionID != id { focusedSessionID = id }
+    }
+
+    /// A chat and every chat above it: its parent, a side's chat, and theirs.
+    func sidebarLineage(of id: String) -> Set<String> {
+        var lineage: Set<String> = [id]
+        var parent = record(id)?.parentSessionID ?? side(id)?.parentID
+        while let next = parent, lineage.insert(next).inserted { parent = record(next)?.parentSessionID }
+        return lineage
     }
 }
