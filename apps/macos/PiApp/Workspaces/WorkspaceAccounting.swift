@@ -95,7 +95,7 @@ extension WorkspaceModel {
     /// SQL attribution depends on row identity/order, role and the streaming
     /// fallback, never on each additional text/thinking/tool-output byte.
     static func accountingTargetsChanged(from previous: [TranscriptMessage], to messages: [TranscriptMessage]) -> Bool {
-        !TranscriptPage.displayPage(previous).elementsEqual(TranscriptPage.displayPage(messages)) {
+        !TranscriptPage.accountingPage(previous).elementsEqual(TranscriptPage.accountingPage(messages)) {
             $0.id == $1.id && $0.role == $1.role && ($0.kind == "compaction") == ($1.kind == "compaction")
                 && ($0.state == "streaming") == ($1.state == "streaming")
         }
@@ -147,7 +147,7 @@ extension WorkspaceModel {
     /// screen. `adding` keeps the figures of the rows already shown (a page
     /// read in beside them); otherwise the read replaces them.
     func withAccounting(_ rows: [TranscriptMessage], view: SessionDisplay, workspaceID: String, adding: Bool = false) async -> [TranscriptMessage] {
-        let shown = TranscriptPage.displayPage(rows)
+        let shown = TranscriptPage.accountingPage(rows)
         if !accountingStopped, shown.contains(where: { $0.role == "assistant" }) {
             // A refresh still reading an earlier page gives way to this one.
             view.accountingRevision += 1
@@ -243,7 +243,7 @@ extension WorkspaceModel {
         let totalsRevision = beginChatStatsQuery(view.id)
         // Match the native transcript's bounded visible page. Older prefetched
         // rows must neither fail this query's limit nor enlarge it indefinitely.
-        let page = includeMessages ? TranscriptPage.displayPage(view.messages) : []
+        let page = includeMessages ? TranscriptPage.accountingPage(view.messages) : []
         let requestedIDs = page.map(\.id)
         do {
             let value: SessionGatewayAccounting
@@ -262,10 +262,15 @@ extension WorkspaceModel {
             guard includeMessages else { return }
             // A streamed message/page change must not discard session billing.
             // Only per-message attribution depends on the requested projection.
-            guard TranscriptPage.displayPage(view.messages).map(\.id) == requestedIDs else { return }
-            view.messageAccounting = value.messages
+            guard TranscriptPage.accountingPage(view.messages).map(\.id) == requestedIDs else { return }
+            // Rows before the page read (a window a held row stretched) keep
+            // the figures they show: their requests are long settled.
+            var figures = value.messages
+            let asked = Set(requestedIDs)
+            for row in view.messages where !asked.contains(row.id) { figures[row.id] = view.messageAccounting[row.id] }
+            view.messageAccounting = figures
             var messages = view.messages
-            for index in messages.indices { messages[index].accounting = value.messages[messages[index].id] }
+            for index in messages.indices { messages[index].accounting = figures[messages[index].id] }
             // Accounting doesn't invalidate the helper's content revision.
             let revision = view.projectionRevision
             if view.messages != messages { view.messages = messages; view.projectionRevision = revision }

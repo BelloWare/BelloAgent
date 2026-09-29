@@ -214,17 +214,29 @@ extension WorkspaceModel {
                         view.historyRevision = nil
                         view.projectedRows = projected
                         // Rows the reader scrolled up to stay in front of the helper's window.
-                        var messages = TranscriptPaging.window(TranscriptPaging.merge(previous: view.messages, live: projected, follows: follows), keepingEarlier: false)
-                        var protected = view.pinnedHistoryIDs
+                        let merged = TranscriptPaging.merge(previous: view.messages, live: projected, follows: follows)
+                        // Rows that do not join the window change nothing in it,
+                        // and a window with nothing new is not cut.
+                        var messages = overlaps ? TranscriptPaging.window(merged, keepingEarlier: false) : merged
+                        var held = view.pinnedHistoryIDs
                         if let anchor = view.scrollAnchor, !anchor.followsBottom,
-                           view.messages.contains(where: { $0.id == anchor.id }) { protected.insert(anchor.id) }
-                        if !protected.isEmpty, !protected.isSubset(of: Set(messages.map(\.id))), let last = view.messages.last,
-                           let incarnation, let lineage {
-                            // Receiving output may fill the resident budget,
-                            // but must not evict text the reader is using.
-                            view.newerPage = .init(cursor: .init(incarnation: incarnation, lineage: lineage, entry: last.id))
-                            view.browsingHistory = true
-                            messages = view.messages
+                           view.messages.contains(where: { $0.id == anchor.id }) { held.insert(anchor.id) }
+                        // The window is the newest rows of what merged; a held
+                        // row before its first one would be let go of.
+                        if !held.isEmpty, let start = merged.firstIndex(where: { held.contains($0.id) }),
+                           start < merged.count - messages.count {
+                            // Arriving output may fill the resident budget, but
+                            // must neither evict text the reader is using — the
+                            // row they read from, or the one holding their
+                            // cursor or selection — nor stop arriving. The
+                            // window runs from the earliest of those rows to the
+                            // live tail until the reader lets go of it, and the
+                            // next update trims it again. Before, the chat kept
+                            // its rows and stopped taking the helper's: the reply
+                            // being written stopped mid-sentence and stayed that
+                            // way, behind "Load newer messages", until the chat
+                            // was left and opened again.
+                            messages = Array(merged[start...])
                         }
                         // Touch only the rows whose accounting actually moved:
                         // writing every row copies the whole page's storage and
@@ -248,8 +260,18 @@ extension WorkspaceModel {
                         if overlaps, let incarnation, let lineage, let first = messages.first {
                             view.presentation.identity = (incarnation, lineage)
                             let liveOlder = try ConversationHistoryPage.cursor(result["historyOlder"])
-                            let older: ConversationCursor?? = messages.first?.id == projected.first?.id ? .some(liveOlder)
-                                : view.olderPage.cursor != nil ? .some(.init(incarnation: incarnation, lineage: lineage, entry: first.id)) : .none
+                            // Rows the window let go of at its start are still
+                            // the chat's: the window then starts at an earlier
+                            // edge, as one read from the middle of the chat
+                            // does, and the reader scrolls back to them as to
+                            // any earlier rows. A chat whose every row was
+                            // loaded had no edge to keep, so rows that left its
+                            // start as it grew left none, and came back only
+                            // when the chat was opened again.
+                            let edge = ConversationCursor(incarnation: incarnation, lineage: lineage, entry: first.id)
+                            let trimmed = first.id != merged.first?.id
+                            let older: ConversationCursor?? = first.id == projected.first?.id ? .some(liveOlder ?? (trimmed ? edge : nil))
+                                : view.olderPage.cursor != nil || trimmed ? .some(edge) : .none
                             if let older, older != view.olderPage.cursor {
                                 if !view.olderPage.loading { view.olderPage = .init(cursor: older) }
                                 // An earlier page is being read from the
