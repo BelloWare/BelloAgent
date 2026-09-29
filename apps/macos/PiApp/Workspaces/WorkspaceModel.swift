@@ -63,23 +63,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     @Published var showProfiles = false
     @Published var profileChoice = ""
     @Published var selectedWorkspaceID: String? { didSet { if selectedWorkspaceID != oldValue { noteSelectionChanged() } } }
-    /// Owned by `WorkspaceLaunchSelection.swift`: what the next launch should
-    /// reopen, the newest revision of it known to be on disk, the one write
-    /// that carries a change there, and whether changes are written at all —
-    /// from the end of `restore()`, which applies the saved one, to `shutdown()`.
-    var rememberedSelection: RememberedSelection?
-    var savedSelectionRevision: Int64 = 0
-    var selectionWrite: Task<Void, Never>?
-    var remembersSelection = false
+    /// Owned by `WorkspaceLaunchSelection.swift`: what the next launch
+    /// reopens, the sides it puts back, and how that gets to disk.
+    var selectionMemory = SelectionMemory()
     /// Owned by `ContextReading.swift`: each chat's saved context reading.
     var contextReadings: [String: ContextReading] = [:]
-    /// Set by `shutdown()`: a launch still reading when the app went does not
-    /// start writing again when it finishes.
-    var selectionMemoryStopped = false
-    /// Owned by `WorkspaceLaunchSelection.swift`: the saved side each chat
-    /// last showed beside it, by chat id, which `select` reopens after a
-    /// relaunch. `sides` is the same thing for this launch, in memory.
-    var rememberedSides: [String: String] = [:]
     /// Owned by `WorkspaceLaunchSelection.swift`: sidebar groups a relaunch
     /// opened, for that launch only, to show the row of the chat it reopened.
     @Published var launchReveal = SidebarLaunchReveal() { didSet { sidebarIndex.invalidate() } }
