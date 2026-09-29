@@ -9,6 +9,13 @@ import AppKit
 /// Each step is timed on the main thread's own clock, its longest step is the
 /// hitch a reader would see, SwiftUI's layout cycles are counted, and so are
 /// the diff rows built. Serial: the figures are timed.
+///
+/// With the diff drawn by SwiftUI (Debug), switching the whole long diff to
+/// side by side held the main thread for 209 to 230 ms in one step, a jump
+/// 60,000 points into it 122 to 132 ms, the next file after it 125 to 145 ms,
+/// and a commit of four hundred files 192 to 204 ms. Drawn by a native table,
+/// with the commit's file chips drawn natively too, they take about 24, 6, 47
+/// and 52 ms; the last two are mostly the rest of the panel drawn again.
 final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
     static let changedFiles = 400
 
@@ -67,7 +74,7 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
         var sampler: Process?
         if let request = testEnvironment("PI_CHANGES_SAMPLE"), request.hasPrefix(name + "=") {
             let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/sample")
-            process.arguments = ["\(ProcessInfo.processInfo.processIdentifier)", "\(Int(settle) + 2)", "1", "-mayDie", "-file", String(request.dropFirst(name.count + 1))]
+            process.arguments = ["\(ProcessInfo.processInfo.processIdentifier)", "\(Int(settle) + 5)", "1", "-mayDie", "-file", String(request.dropFirst(name.count + 1))]
             process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
             try process.run(); sampler = process
             try await Task.sleep(for: .milliseconds(1_500))
@@ -225,9 +232,15 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
         XCTAssertLessThan(first.rows, 1_000, "Scrolling 3,000 points builds the rows it reaches")
         XCTAssertEqual(ticks.rows, 0, "Ticking a file builds no diff row")
         XCTAssertEqual(typing.rows, 0, "Typing a commit message builds no diff row")
-        // Generous Debug bounds on the main thread's own clock: a scroll step
-        // and a keystroke measured 6 and 40 ms (Debug, while other builds ran).
-        XCTAssertLessThan(first.mean, 50, String(format: "A scroll step through the long diff costs %.1f ms", first.mean))
+        // Generous Debug bounds on the main thread's own clock, several times
+        // what the table costs and under what SwiftUI's rows cost (above).
+        XCTAssertLessThan(split.longest, 100, String(format: "Side by side took a %.0f ms step", split.longest))
+        XCTAssertLessThan(deep.worst, 50, String(format: "A jump deep into the whole diff took %.0f ms", deep.worst))
+        XCTAssertLessThan(other.longest, 110, String(format: "The next file after the whole diff took a %.0f ms step", other.longest))
+        XCTAssertLessThan(big.longest, 120, String(format: "A commit of four hundred files took a %.0f ms step", big.longest))
+        XCTAssertLessThan(first.mean, 3, String(format: "A scroll step through the long diff costs %.1f ms", first.mean))
+        XCTAssertLessThan(deep.mean, 3, String(format: "A scroll step deep in the whole diff costs %.1f ms", deep.mean))
+        XCTAssertLessThan(embedded.mean, 6, String(format: "A scroll step through a commit's long file costs %.1f ms", embedded.mean))
         XCTAssertLessThan(typing.longest, 400, String(format: "A keystroke beside the long diff costs up to %.0f ms", typing.longest))
     }
 

@@ -64,11 +64,15 @@ import AppKit
     @Published var logFilter = GitLogFilter() { didSet { if logFilter != oldValue { startHistoryReload() } } }
     @Published var detailFile: String? { didSet { if detailFile != oldValue && !changingCommit { startCommitLoad() } } }
     @Published private(set) var detailFileDiff: [GitDiffFile] = []
-    @Published var splitDiff = false
+    /// How the diff is laid out and which diff is shown whole, held apart
+    /// from the state the panel observes: switching the layout, or opening
+    /// the whole diff, redraws the diff and not the whole panel.
+    let presentation = GitDiffPresentation()
+    var splitDiff: Bool { get { presentation.split } set { presentation.split = newValue } }
     /// Which diff the reader asked to see in full. It names the diff, so the
     /// row gate comes back for the next file or commit instead of quietly
     /// staying open and laying out a whole 20,000-line patch.
-    @Published var wholeDiffShown: String?
+    var wholeDiffShown: String? { get { presentation.whole } set { presentation.whole = newValue } }
     /// How many of a commit's file chips are on screen. Reset for each commit.
     @Published var commitFilesShown = GitCommitFileChips.step
     /// Names one diff: the selected file, or a commit and the file chosen in it.
