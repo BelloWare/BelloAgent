@@ -53,6 +53,15 @@ public actor AgentSession {
     /// revision a reader sends back to be spared receipts it already holds.
     var commands: [JSON]=[] { didSet { commandsGeneration &+= 1 } }
     var commandsGeneration: UInt64 = 0
+    /// The receipts, whole, as the journal's newest run-state record stands
+    /// for them; a record holds only what changed since (`CommandReceipts`).
+    var journaledCommands: [JSON]=[]
+    /// The next run-state record holds the whole list: the first one after
+    /// an open, one after a failed write, and one in every `wholeListEvery`.
+    var wholeCommandsDue=true, commandChangeRecords=0
+    /// A run-state write failed, and the journal may hold it or not: until a
+    /// whole list is written, no checkpoint names the receipts.
+    var journaledCommandsUncertain=false
     /// The task presentation last compared for its revision, without the
     /// sequence and display revision of the snapshot that carried it.
     var presentedTasks: TaskPresentationProjection?
@@ -260,7 +269,7 @@ public actor AgentSession {
             }
             queue=try JSONDecoder().decode([Submission].self,from:saved["queue"].data())
             steering=try JSONDecoder().decode([Submission].self,from:saved["steering"].data())
-            commands=saved["commands"].list; let hasQueued = !queue.isEmpty; let hasSteering = !steering.isEmpty; queuePaused = hasQueued || hasSteering || saved["active"].flag == true || saved["queuePaused"].flag == true
+            commands=saved["commands"].list; journaledCommands=commands; let hasQueued = !queue.isEmpty; let hasSteering = !steering.isEmpty; queuePaused = hasQueued || hasSteering || saved["active"].flag == true || saved["queuePaused"].flag == true
             steeringMode=saved["steeringMode"].text ?? "one-at-a-time"; followUpMode=saved["followUpMode"].text ?? "one-at-a-time"
             if !saved["timing"].isNull {
                 cumulativeModelMs=ObservedDuration.valid(saved["timing"]["modelMs"].double)

@@ -50,6 +50,11 @@ extension AgentSession {
         // parse it once, at the end; a superseded one is not read at all. A
         // line of another shape is read as before.
         var newestStateLine: Data?
+        // The receipts: the newest record with the whole list, and the
+        // records with changes only after it, read once at the end
+        // (`CommandReceipts`). A checkpoint carries them as they stood there.
+        var receiptsBase = CommandReceipts.Base.none, receiptChanges: [Data] = []
+        var capturedReceipts: (base: CommandReceipts.Base, changes: [Data])?
         let replay: JournalRecordReader
         if resume, let checkpoint=opened.resumedFrom, let loaded=Self.loadCheckpoint(checkpoint, url: url) {
             // Opened from the metadata file: the rows it names, then only the
@@ -70,6 +75,8 @@ extension AgentSession {
             ordinalMax=saved["presentationOrdinal"].int ?? 0
             r.stateRecord=loaded.state
             if let check=checkpoint.state, let key=checkpoint.stateKey, let line=loaded.stateLine { stateSource=(line, check.offset, key) }
+            // A record with changes only stands for the list the file carries.
+            if let state=loaded.state { receiptsBase = .list(state[CommandReceipts.deltaKey].flag == true ? saved["commands"].list : state["commands"].list) }
             replay=try opened.recordReader(from: checkpoint.start)
         } else {
             if resume, opened.resumedFrom != nil { try opened.checkWhole(id: id, binding: binding) }
@@ -79,7 +86,11 @@ extension AgentSession {
             let lineStart=replay.completeBytes
             guard let line=try replay.nextLine() else { break }
             if line.isEmpty { continue }
-            if line.starts(with: JournalLineScan.statePrefix) { newestStateLine=line; stateSource=(line, lineStart, "data"); continue }
+            if line.starts(with: JournalLineScan.statePrefix) {
+                newestStateLine=line; stateSource=(line, lineStart, "data")
+                if CommandReceipts.holdsChanges(line) { receiptChanges.append(line) } else { receiptsBase = .line(line); receiptChanges.removeAll(keepingCapacity: true) }
+                continue
+            }
             let item=try JSON.parse(line)
             if item["customType"].text == SessionSpend.recordType { r.spend.add(record: item["data"]); r.spendTracked = true; continue }
             if item["type"].text == "message" {
@@ -118,7 +129,10 @@ extension AgentSession {
                 // durable record. A crash before delivery restores it paused.
                 }
                 r.rowSpans[markerID] = .init(id:markerID,kind:.branch,offset:lineStart,length:line.count)
-                if !item["nativeState"].isNull { r.stateRecord=item["nativeState"]; newestStateLine=nil; stateSource=(line, lineStart, "nativeState") }
+                if !item["nativeState"].isNull {
+                    r.stateRecord=item["nativeState"]; newestStateLine=nil; stateSource=(line, lineStart, "nativeState")
+                    receiptsBase = .list(item["nativeState"]["commands"].list); receiptChanges.removeAll(keepingCapacity: true)
+                }
                 r.contextRecovery = .null; r.compactionState = .null
             } else if item["customType"].text == "pi-app.presentation.update.v1" {
                 let target = try identity(item["data"]["id"])
@@ -134,7 +148,11 @@ extension AgentSession {
                 guard task.valid, task.terminal else { throw AgentError("session_damaged", "Invalid task completion evidence") }
                 r.recentTaskPresentations.removeAll { $0.key == task.key }; r.recentTaskPresentations.append(task)
                 if r.recentTaskPresentations.count > 64 { r.recentTaskPresentations.removeFirst() }
-            } else if item["customType"].text == "pi-app.native.state.v1" { r.stateRecord=item["data"]; newestStateLine=nil; stateSource=(line, lineStart, "data") }
+            } else if item["customType"].text == "pi-app.native.state.v1" {
+                r.stateRecord=item["data"]; newestStateLine=nil; stateSource=(line, lineStart, "data")
+                if item["data"][CommandReceipts.deltaKey].flag == true { receiptChanges.append(line) }
+                else { receiptsBase = .list(item["data"]["commands"].list); receiptChanges.removeAll(keepingCapacity: true) }
+            }
             else if item["customType"].text == "pi-app.compaction-failure.v1" { r.failedCompactionFingerprint=item["data"]["fingerprint"].text }
             else if item["customType"].text == "pi-app.context-recovery.v1" { r.contextRecovery=item["data"] }
             else if item["customType"].text == "pi-app.native.context.v1" {
@@ -156,6 +174,7 @@ extension AgentSession {
                 r.captured=Self.checkpoint(sessionID:id,header:opened.headerCheck,marker:opened.markerCheck,last:line,at:lineStart,lastID:try identity(item["id"]),
                                          visible:r.visible,context:r.context,spans:r.rowSpans,state:stateSource,assistantMessageCount:r.assistantMessageCount,
                                          latestAssistantMessageID:r.latestAssistantMessageID,versions:r.versions.ledger,tasks:r.recentTaskPresentations,helper:helper)
+                capturedReceipts = (receiptsBase, receiptChanges)
             }
         }
         // A process restart cannot manufacture terminal evidence. Retained
@@ -174,6 +193,16 @@ extension AgentSession {
             let item=try JSON.parse(line)
             guard item["customType"].text == "pi-app.native.state.v1" else { throw AgentError("session_damaged", "Invalid session state record") }
             r.stateRecord=item["data"]
+        }
+        if let state=r.stateRecord {
+            var whole=state.removing([CommandReceipts.deltaKey])
+            whole["commands"] = .array(try CommandReceipts.rebuild(receiptsBase, receiptChanges))
+            r.stateRecord=whole
+        }
+        if var captured=r.captured, let receipts=capturedReceipts {
+            var helper=(try? JSON.parse(Data(captured.helper.utf8))) ?? [:]
+            helper["commands"] = .array(try CommandReceipts.rebuild(receipts.base, receipts.changes))
+            captured.helper=helper.encoded(); r.captured=captured
         }
         r.stateSource = stateSource.map { StateSource(line: $0.line, offset: $0.offset, key: $0.key) }
         return r

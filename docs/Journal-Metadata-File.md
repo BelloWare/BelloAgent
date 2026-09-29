@@ -19,7 +19,7 @@ the helper and the app.
 | `lineage` | The newest edit marker among all shown rows (the timeline page cursors name). |
 | `state`, `stateKey` | The newest run-state record before the checkpoint and the key holding it (`data`, or an edit's `nativeState`). |
 | `assistantMessageCount`, `latestAssistantMessageID`, `versions`, `tasks` | What the records before the checkpoint add up to, as a full replay counts them. |
-| `helper` | JSON text only the helper reads: spend, recovery and compaction state, fork or side origin, the presentation ordinal. |
+| `helper` | JSON text only the helper reads: spend, recovery and compaction state, fork or side origin, the presentation ordinal, and since 0.1.111 the chat's command receipts as they stood at the checkpoint (`commands`; see [Journal-Command-Receipts.md](Journal-Command-Receipts.md)). |
 
 ## Who writes it
 
@@ -59,6 +59,7 @@ valid.
 
 The journal is the only record; the file is only ever a shortcut. A file that
 is missing, unreadable or of another version, whose checked records differ,
-whose rows are not where it says, or that is followed by an edit or a fork
-boundary, is ignored: the journal is replayed in full and the file written
+whose rows are not where it says, whose run-state record holds only receipt
+changes while the file carries no list, or that is followed by an edit or a
+fork boundary, is ignored: the journal is replayed in full and the file written
 again from it.
