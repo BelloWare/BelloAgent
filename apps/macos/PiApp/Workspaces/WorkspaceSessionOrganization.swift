@@ -129,7 +129,7 @@ extension WorkspaceModel {
     /// Archive filters retained history; archive actions separately request a
     /// running chat to stop. Drafts, unread state and captures stay intact.
     func sidebarChats(in workspaceID: String?, archived: Bool, excluding ids: Set<String> = []) -> [ChatRecord] {
-        chats.filter { $0.workspaceID == workspaceID && $0.isArchived == archived && !ids.contains($0.id) && (!$0.isBackgroundTask || showBackgroundSessions) }
+        chats.filter { $0.workspaceID == workspaceID && $0.isArchived == archived && !ids.contains($0.id) && !$0.isBackgroundTask }
             .sorted(by: ChatRecord.sidebarPrecedes)
     }
 
@@ -160,7 +160,7 @@ extension WorkspaceModel {
         sidebarIndex.group(SidebarIndex.GroupKey(project: projectID, topic: topicID, archived: archived)) { project in
             let validTopics = Set(topics.filter { $0.workspaceID == project }.map(\.id))
             var buckets: [SidebarIndex.GroupKey: [ChatRecord]] = [:]
-            for chat in chats where chat.workspaceID == project && (!chat.isBackgroundTask || showBackgroundSessions) {
+            for chat in chats where chat.workspaceID == project && !chat.isBackgroundTask {
                 let group = !chat.isBackgroundTask && project != WorkspaceRecord.scratchID
                     ? chat.topicID.flatMap { validTopics.contains($0) ? $0 : nil } : nil
                 buckets[SidebarIndex.GroupKey(project: project, topic: group, archived: chat.isArchived), default: []].append(chat)

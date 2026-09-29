@@ -4,9 +4,9 @@ import Foundation
 /// panes. If every active chat is archived, the last destination stays open,
 /// still in the active sidebar filter. One sort and one forward cursor suffice.
 enum SessionOrganizationSelection {
-    static func afterArchive(selected: String, targets: [String], archived: Set<String>, records: [ChatRecord], includeBackground: Bool) -> String {
+    static func afterArchive(selected: String, targets: [String], archived: Set<String>, records: [ChatRecord]) -> String {
         guard archived.contains(selected), let project = records.first(where: { $0.id == selected })?.workspaceID else { return selected }
-        let candidates = records.filter { $0.workspaceID == project && (!$0.isArchived || archived.contains($0.id)) && (!$0.isBackgroundTask || includeBackground) }
+        let candidates = records.filter { $0.workspaceID == project && (!$0.isArchived || archived.contains($0.id)) && !$0.isBackgroundTask }
             .sorted(by: ChatRecord.sidebarPrecedes)
         var available = Set(candidates.map(\.id)), cursor = 0, destination = selected
         for id in targets where archived.contains(id) {
@@ -84,7 +84,7 @@ extension WorkspaceModel {
                 case .archived(true):
                     if let selected {
                         let destination = SessionOrganizationSelection.afterArchive(selected: selected, targets: targets,
-                            archived: patched, records: chats, includeBackground: showBackgroundSessions)
+                            archived: patched, records: chats)
                         if destination != selected, let item = record(destination) {
                             await select(destination, preserveArchiveSwitch: item.isArchived)
                         }

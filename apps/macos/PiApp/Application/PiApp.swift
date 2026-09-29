@@ -78,6 +78,7 @@ extension FocusedValues {
             }
             CommandGroup(after: .sidebar) {
                 Button(commandModel.page == .report ? "Back to Chats" : "Usage Report") { commandModel.toggleReport() }.keyboardShortcut("r", modifiers: [.command, .shift])
+                Button(commandModel.page == .background ? "Back to Chats" : "Background Requests") { commandModel.toggleBackgroundRequests() }.keyboardShortcut("b", modifiers: [.command, .shift])
                 Button(commandModel.sidebarShowsArchived ? "Hide Archived Chats" : "Show Archived Chats") { commandModel.toggleArchivedChats() }
                 Button("Session Inspector…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspect(id) } }.keyboardShortcut("i", modifiers: [.command, .option])
                     .disabled(commandModel.presentsSheet)

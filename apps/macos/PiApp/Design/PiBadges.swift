@@ -38,9 +38,12 @@ struct PiBadge: View {
     var tone: PiTone = .neutral
     var icon: String? = nil
     var dot = false
+    /// A turning spinner in the dot's place: something still under way.
+    var spinning = false
     var body: some View {
         HStack(spacing: 5) {
-            if dot { Circle().fill(tone.color).frame(width: 6, height: 6) }
+            if spinning { PiSpinner(size: 9, lineWidth: 1.4) }
+            else if dot { Circle().fill(tone.color).frame(width: 6, height: 6) }
             if let icon { Image(systemName: icon).font(.system(size: 10, weight: .semibold)) }
             if !text.isEmpty { Text(text).font(PiFont.micro).lineLimit(1) }
         }

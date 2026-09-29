@@ -29,8 +29,8 @@ struct RememberedSelection: Codable, Sendable, Equatable {
     var sideFocused: Bool?
     /// True when the window showed the usage report, not the chats.
     var reportOpen: Bool?
-    /// True when background tasks were shown in the sidebar.
-    var showBackgroundTasks: Bool?
+    /// True when the window showed the Background requests page.
+    var backgroundRequestsOpen: Bool?
     /// True when the sidebar's archive switch was on.
     var showArchivedChats: Bool?
     var revision: Int64 = 0
@@ -92,7 +92,7 @@ extension WorkspaceModel {
         }
         value.shownSides = rememberedSides.isEmpty ? nil : rememberedSides
         value.reportOpen = page == .report ? true : nil
-        value.showBackgroundTasks = showBackgroundSessions ? true : nil
+        value.backgroundRequestsOpen = page == .background ? true : nil
         value.showArchivedChats = showArchivedSessions ? true : nil
         return value
     }
@@ -201,7 +201,6 @@ extension WorkspaceModel {
     /// chat the reader opens from the first painted row brings its side back.
     func adoptRememberedSelection(_ remembered: RememberedSelection?) {
         rememberedSelection = remembered
-        if remembered?.showBackgroundTasks == true { showBackgroundSessions = true }
         if remembered?.showArchivedChats == true { showArchivedSessions = true }
         savedSelectionRevision = remembered?.revision ?? 0
         rememberedSides = (remembered?.shownSides ?? [:]).filter { parent, side in
@@ -242,9 +241,13 @@ extension WorkspaceModel {
         // Not after a quit that came first: the app is going.
         defer { if !selectionMemoryStopped { remembersSelection = true; noteSelectionChanged() } }
         guard selectedID == nil, selectionRevision == revision else { return false }
-        // The report comes back over the reopened chat, unless the reader
-        // opened something of their own while launch was reading.
-        func reopenReport() { if remembered?.reportOpen == true, page == .chats { page = .report } }
+        // The report, or the Background requests page, comes back over the
+        // reopened chat, unless the reader opened something of their own
+        // while launch was reading.
+        func reopenReport() {
+            guard page == .chats else { return }
+            if remembered?.reportOpen == true { page = .report } else if remembered?.backgroundRequestsOpen == true { page = .background }
+        }
         guard case let (target, isRemembered)? = launchTarget(remembered) else { reopenReport(); return false }
         let saved = isRemembered ? target : nil
         let side = saved.flatMap { rememberedSide(of: $0.id) }

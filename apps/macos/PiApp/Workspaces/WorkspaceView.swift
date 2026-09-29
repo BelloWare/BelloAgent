@@ -90,6 +90,10 @@ struct WorkspaceView: View {
                     ReportPage(model: model)
                         .transition(.identity)
                         .zIndex(1)
+                } else if model.page == .background {
+                    BackgroundRequestsPage(model: model)
+                        .transition(.identity)
+                        .zIndex(1)
                 }
               }
               .frame(width: region.size.width, height: region.size.height)
@@ -115,7 +119,7 @@ struct WorkspaceView: View {
         }
         .frame(minWidth: 920, minHeight: 600)
         .background(WindowActivityGuard(model: model))
-        .background(ConversationPageVisibility(reportVisible: model.page == .report, focusIdentity: model.focusedSessionID, closeReport: model.closeReport))
+        .background(ConversationPageVisibility(reportVisible: model.page != .chats, focusIdentity: model.focusedSessionID, closeReport: model.closeReport))
         .disabled(model.installPreparing)
         .overlay {
             if model.installPreparing {

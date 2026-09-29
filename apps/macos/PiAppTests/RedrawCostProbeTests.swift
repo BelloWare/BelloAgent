@@ -125,7 +125,6 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
         model.$selectedWorkspaceID.dropFirst().sink { _ in tally("selectedWorkspaceID") }.store(in: &subscriptions)
         model.$launchReveal.dropFirst().sink { _ in tally("launchReveal") }.store(in: &subscriptions)
         model.$showArchivedSessions.dropFirst().sink { _ in tally("showArchivedSessions") }.store(in: &subscriptions)
-        model.$showBackgroundSessions.dropFirst().sink { _ in tally("showBackgroundSessions") }.store(in: &subscriptions)
         model.$collapsedSidebarSides.dropFirst().sink { _ in tally("collapsedSidebarSides") }.store(in: &subscriptions)
         model.$sidebarPageSizes.dropFirst().sink { _ in tally("sidebarPageSizes") }.store(in: &subscriptions)
         model.$markedSessionIDs.dropFirst().sink { _ in tally("markedSessionIDs") }.store(in: &subscriptions)

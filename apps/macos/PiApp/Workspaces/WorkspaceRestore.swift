@@ -35,7 +35,7 @@ extension WorkspaceModel {
             // from then on is kept track of on top of what was read.
             chats = restored
             adoptRememberedSelection(remembered)
-            await dropLeftoverTitleSuggestions()
+            await settleBackgroundRequests()
             await nameUnnamedJournals()
             try await restoreTopics()
             try await restoreReadStates()

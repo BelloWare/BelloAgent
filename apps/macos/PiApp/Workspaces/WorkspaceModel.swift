@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-enum WorkspacePage: String, Sendable { case chats, report }
+enum WorkspacePage: String, Sendable { case chats, report, background }
 
 @MainActor final class WorkspaceModel: ObservableObject {
     @Published var workspaces: [WorkspaceRecord] = [] { didSet { sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged() } }
@@ -87,7 +87,6 @@ enum WorkspacePage: String, Sendable { case chats, report }
     /// archived chats after its active ones (`SidebarGroups.swift`). One
     /// switch for the whole sidebar, remembered with the selection.
     @Published var showArchivedSessions = false { didSet { if showArchivedSessions != oldValue { sidebarIndex.invalidate(); noteSelectionChanged() } } }
-    @Published var showBackgroundSessions = false { didSet { sidebarIndex.invalidate(); if showBackgroundSessions != oldValue { noteSelectionChanged() } } }
     /// Answers the sidebar's own queries once per change: chat lookups, per
     /// group entry lists, the project groups and the keyboard order.
     let sidebarIndex = SidebarIndex()
@@ -153,6 +152,11 @@ enum WorkspacePage: String, Sendable { case chats, report }
     }
     /// Report page state survives navigation so filters, selection and results come back intact.
     let report = ReportController()
+    /// The Background requests page's state (`BackgroundRequests.swift`),
+    /// kept the same way.
+    let backgroundRequests = BackgroundRequestsController()
+    /// Background requests this launch has under way.
+    var backgroundRequestsRunning: Set<String> = []
     /// Legacy entry point kept for callers and tests: the report is a page, not a sheet.
     var showDashboard: Bool {
         get { page == .report }

@@ -91,9 +91,8 @@ struct WorkspaceSidebar: View {
                     .accessibilityIdentifier("requestInspector")
                 PiIconButton(symbol: "book.closed", label: "Skills, instructions and MCP servers for this project") { model.inspectResources(model.selectedID) }.disabled(model.selectedWorkspaceID == nil)
                     .accessibilityIdentifier("projectResources")
-                PiIconButton(symbol: model.showBackgroundSessions ? "eye" : "eye.slash", label: model.showBackgroundSessions ? "Hide background tasks in the list" : "Show background tasks in the list", tone: model.showBackgroundSessions ? .accent : .neutral) {
-                    model.showBackgroundSessions.toggle()
-                }.accessibilityIdentifier("backgroundSessionsToggle")
+                PiIconButton(symbol: "sparkles.rectangle.stack", label: model.page == .background ? "Back to Chats" : "Background requests · chat titles, title suggestions and webhooks (⇧⌘B)", tone: model.page == .background ? .accent : .neutral, filled: model.page == .background) { model.toggleBackgroundRequests() }
+                    .accessibilityIdentifier("backgroundRequests")
                 // One switch for every project: each lists its archived chats
                 // after its active ones while it is on.
                 let archive = model.sidebarShowsArchived
