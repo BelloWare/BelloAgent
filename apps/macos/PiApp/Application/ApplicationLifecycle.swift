@@ -10,6 +10,7 @@ final class ApplicationLifecycle: NSObject, NSApplicationDelegate {
     /// Tests drive a quit without asking AppKit to end the test host.
     var answerTermination: ((Bool) -> Void)?
 
+    func applicationDidFinishLaunching(_ notification: Notification) { DismissedSheets.shared.start() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if terminating || asking { return .terminateLater }

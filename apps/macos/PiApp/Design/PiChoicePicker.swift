@@ -54,7 +54,9 @@ struct PiChoiceList<Tag: Hashable>: View {
                 .padding(.horizontal, 8).padding(.top, 4)
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 2) {
+                    // A plain stack: a few choices, and a lazy one in a popover
+                    // makes SwiftUI report a layout cycle whenever it opens.
+                    VStack(spacing: 2) {
                         if choices.isEmpty {
                             Text("No available choices").font(PiFont.body).foregroundStyle(Color.piInkTertiary)
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(8)

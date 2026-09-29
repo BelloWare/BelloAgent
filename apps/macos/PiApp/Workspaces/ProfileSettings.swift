@@ -15,8 +15,13 @@ struct ProfileSettings: View {
     @Environment(\.dismiss) private var dismiss
 
     init(model: WorkspaceModel, windowChrome: Bool = false) {
+        self.init(model: model, controller: ConnectionSettingsController(model: model), windowChrome: windowChrome)
+    }
+    /// With the edits a caller keeps: the Settings window takes its form down
+    /// while it is closed, and the edits wait for it (`SettingsWindowContent`).
+    init(model: WorkspaceModel, controller: @autoclosure @escaping () -> ConnectionSettingsController, windowChrome: Bool) {
         self.model = model; self.windowChrome = windowChrome
-        _controller = StateObject(wrappedValue: ConnectionSettingsController(model: model))
+        _controller = StateObject(wrappedValue: controller())
     }
     private var quotaMiB: Binding<Int64> {
         Binding(get: { controller.preferences.capture.quotaBytes / 1_048_576 }, set: { controller.preferences.capture.quotaBytes = $0 * 1_048_576 })

@@ -131,7 +131,9 @@ struct WorkspaceManagerView: View {
             Text(model.workspaces.isEmpty ? "Projects" : "Projects · \(model.workspaces.count)").font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textCase(.uppercase).tracking(0.5)
                 .padding(.horizontal, PiSpacing.lg).padding(.top, PiSpacing.md).padding(.bottom, 4)
             ScrollView {
-                LazyVStack(spacing: 1) {
+                // A plain stack: a handful of rows, and a lazy one in a sheet
+                // makes SwiftUI report a layout cycle whenever it is presented.
+                VStack(spacing: 1) {
                     ForEach(model.workspaces) { workspace in
                         let chats = model.chatCount(workspaceID: workspace.id)
                         PiSelectableRow(selected: selection == workspace.id && draft == nil, action: { withAnimation(.easeInOut(duration: 0.2)) { draft = nil; selection = workspace.id } }) {
@@ -150,7 +152,7 @@ struct WorkspaceManagerView: View {
                             }
                         }
                     }
-                }.padding(.horizontal, PiSpacing.sm)
+                }.frame(maxWidth: .infinity).padding(.horizontal, PiSpacing.sm)
             }
             .overlay {
                 if model.workspaces.isEmpty {
