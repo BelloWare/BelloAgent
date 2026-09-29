@@ -391,9 +391,9 @@ struct SidesPanelRow: View {
     /// last did anything.
     private var lead: (text: String, color: Color)? {
         if working { return (PiSessionState.label(stats.state, loading: stats.loading), Color.piWarning) }
-        if ["error", "interrupted", "paused"].contains(stats.state) {
+        if RunState(rawValue: stats.state).isStopped {
             return (PiSessionState.label(stats.state, costLimited: stats.costLimited),
-                    stats.state == "paused" ? Color.piInfo : stats.costLimited ? Color.piWarning : Color.piDanger)
+                    RunState(rawValue: stats.state) == .paused ? Color.piInfo : stats.costLimited ? Color.piWarning : Color.piDanger)
         }
         if failed { return ("Failed", Color.piDanger) }
         if unread { return ("New reply", Color.piAccent) }

@@ -195,7 +195,7 @@ final class InlineSkillTests: XCTestCase {
         XCTAssertEqual(hosted.fittingSize.height, closed, accuracy: 0.5, "Opening the slash list resized the composer")
         view.completionToken = SlashCompletionToken.local(in: "/review-1", at: ComposerLocation(sessionID: view.id, editorGeneration: UUID(), draftRevision: 2,
                                                                                                  selectedRangeUTF16: NSRange(location: 9, length: 0), markedRangeUTF16: nil), directInput: false)
-        view.completionIndex += 1
+        view.objectWillChange.send()
         try await settle()
         XCTAssertEqual(model.completions(view).count, 1)
         XCTAssertEqual(hosted.fittingSize.height, closed, accuracy: 0.5, "Filtering the slash list resized the composer")

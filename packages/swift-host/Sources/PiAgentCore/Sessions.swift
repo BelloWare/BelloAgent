@@ -173,8 +173,9 @@ public actor AgentSession {
     var latestAssistantMessageID: String?
     let autoCompaction: Bool
     /// A utility request with no tools and no project context: a chat title,
-    /// or the notification a webhook sends. `utilityPurpose` names it in the
-    /// request log ("title" or "webhook").
+    /// titles to choose from, or the notification a webhook sends.
+    /// `utilityPurpose` names it in the request log ("title",
+    /// "title-suggestions" or "webhook").
     let titleTask: Bool
     let utilityPurpose: String
     /// Whether tool cards report the recorded outcome (`unknown` for a call

@@ -23,7 +23,7 @@ struct ConversationReplay {
                 guard context.filter({ kept.contains($0.id) }).map(\.id) == ids else { throw CompactionCheckpoint.damaged("Invalid legacy branch") }
                 AgentSession.branch(history: &history, context: &context, visible: &visible, from: record["fromMessageId"].text ?? "", keptIDs: kept, markerID: try identity(record["id"]))
             }
-        } else if record["customType"].text == "pi-app.native.context.v1" {
+        } else if record["customType"].text == JournalRecordKind.context {
             let nodes = Dictionary(history.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             let ids = try CompactionCheckpoint.identities(record["data"]["ids"])
             context = try ids.map { guard let node = nodes[$0] else { throw CompactionCheckpoint.damaged("Missing context source") }; return node }

@@ -55,7 +55,7 @@ extension WorkspaceModel {
     /// Metadata updates, not body chunks, invalidate compact accounting. One
     /// task per session coalesces streaming metadata and late final billing.
     func captureDidPersist(_ packet: [String: WireValue], workspaceID: String) async {
-        guard !accountingStopped, let type = packet["type"]?.string, ["begin", "metadata", "finish", "links", "interrupted"].contains(type) else { return }
+        guard !isShutDown, let type = packet["type"]?.string, ["begin", "metadata", "finish", "links", "interrupted"].contains(type) else { return }
         let metadata = packet["metadata"]?.object ?? packet
         let visibleIDs = Set([selectedID, sides[selectedID ?? ""]?.id].compactMap { $0 })
         let visible = Dictionary(uniqueKeysWithValues: visibleIDs.compactMap { id -> (String, Set<String>)? in
@@ -79,7 +79,7 @@ extension WorkspaceModel {
                 sessions.insert(id)
             }
         }
-        guard !accountingStopped, !Task.isCancelled else { return }
+        guard !isShutDown, !Task.isCancelled else { return }
         // A side/fork can show an inherited assistant row from another
         // session. Its inline attribution still follows that output's owner;
         // unrelated background chats need no query. Matching visible outputs
@@ -102,7 +102,7 @@ extension WorkspaceModel {
     }
 
     func scheduleAccounting(_ id: String, workspaceID: String) {
-        guard !accountingStopped else { return }
+        guard !isShutDown else { return }
         dirtyAccounting.insert(id)
         guard accountingTasks[id] == nil else { return }
         accountingTasks[id] = Task { [weak self] in
@@ -148,7 +148,7 @@ extension WorkspaceModel {
     /// read in beside them); otherwise the read replaces them.
     func withAccounting(_ rows: [TranscriptMessage], view: SessionDisplay, workspaceID: String, adding: Bool = false) async -> [TranscriptMessage] {
         let shown = TranscriptPage.accountingPage(rows)
-        if !accountingStopped, shown.contains(where: { $0.role == "assistant" }) {
+        if !isShutDown, shown.contains(where: { $0.role == "assistant" }) {
             // A refresh still reading an earlier page gives way to this one.
             view.accountingRevision += 1
             let revision = view.accountingRevision, totals = beginChatStatsQuery(view.id), generation = view.presentationGeneration
@@ -200,7 +200,7 @@ extension WorkspaceModel {
             // One grouped read for every chat; chats with no retained attempts
             // publish empty totals so stale figures never linger.
             let revisions = Dictionary(uniqueKeysWithValues: records.map { ($0.id, beginChatStatsQuery($0.id)) })
-            guard let totals = try? await traces.allSessionTotals(), !Task.isCancelled, !accountingStopped, batch == chatStatsRevision else { return }
+            guard let totals = try? await traces.allSessionTotals(), !Task.isCancelled, !isShutDown, batch == chatStatsRevision else { return }
             for chat in records where record(chat.id)?.workspaceID == chat.workspaceID && displays[chat.id] == nil {
                 publishChatStats(totals[chat.workspaceID + "\u{0}" + chat.id] ?? GatewayTotals(), sessionID: chat.id, revision: revisions[chat.id])
             }
@@ -209,12 +209,12 @@ extension WorkspaceModel {
         // The `query == nil` branch above has already returned.
         guard let query else { return }
         for chat in records {
-            guard !Task.isCancelled, !accountingStopped, batch == chatStatsRevision else { return }
+            guard !Task.isCancelled, !isShutDown, batch == chatStatsRevision else { return }
             if displays[chat.id] != nil { continue }
             let revision = beginChatStatsQuery(chat.id)
             do {
                 let totals = try await query(chat)
-                guard !Task.isCancelled, !accountingStopped, batch == chatStatsRevision else { return }
+                guard !Task.isCancelled, !isShutDown, batch == chatStatsRevision else { return }
                 if record(chat.id)?.workspaceID == chat.workspaceID, displays[chat.id] == nil {
                     publishChatStats(totals, sessionID: chat.id, revision: revision)
                 }

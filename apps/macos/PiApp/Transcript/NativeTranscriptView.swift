@@ -86,6 +86,7 @@ struct ContentGeometry: Equatable {
     var onAnchorChanged: (TranscriptAnchor?) -> Void = { _ in }
     var onReadReply: (String, String) -> Void = { _, _ in }
     var onLoadEarlier: (String) -> Void = { _ in }
+    var onLoadNewer: (String) -> Void = { _ in }
     var onViewportReady: (String, UUID) -> Void = { _, _ in }
 
     private var subscription: AnyCancellable?
@@ -106,6 +107,10 @@ struct ContentGeometry: Equatable {
     private var viewportRequest: Int?
     private var initialized = false
     private(set) var followsBottom = true { didSet { syncReadingOwnership() } }
+    /// The reader stood at the end of a window with rows after it, which the
+    /// page does not follow: the rows read in join below them. Once the
+    /// window reaches the latest, the bottom band decides again.
+    private var joiningLatest = false
     private var readerNavigationStarted = false
     private var viewportResizePending = false
     private var upwardNavigation = false
@@ -231,6 +236,7 @@ struct ContentGeometry: Equatable {
     }
     private func reset() {
         initialized = false; followsBottom = true; atBottom = true; pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil
+        joiningLatest = false
         awaitingFirstPlacement = true
         viewportResizePending = false
         settleScheduled = false; readCheckScheduled = false
@@ -550,6 +556,12 @@ struct ContentGeometry: Equatable {
         if geometry.height != previous.height {
             scheduleSettle()
             requestEarlierIfNearTop(scrollY: followsBottom ? max(0, geometry.height - viewport.height) : scrollY)
+            // Rows joined below a reader at the end of a window with rows
+            // after it. Once the window reaches the latest, the band decides
+            // again whether the page follows; until then the next rows are
+            // read as the reader nears the end.
+            if joiningLatest, reachesLatest { joiningLatest = false; evaluateFollowing() }
+            requestNewerIfNearBottom()
         } else if geometry.top != previous.top {
             scheduleReport()
         }
@@ -837,7 +849,8 @@ struct ContentGeometry: Equatable {
         if delivery == .reader, initialized, !placing {
             scrollView.transcriptReading.readerMoved()
             readerOwnsPosition()
-            setPinned(inBand)
+            pinIfAtLatest(inBand)
+            requestNewerIfNearBottom()
         } else if followsBottom {
             // Nothing the reader did. A page that was following stays
             // following: letting the geometry decide here would unpin it for
@@ -891,11 +904,39 @@ struct ContentGeometry: Equatable {
         if ended { readerNavigationStarted = false; upwardNavigation = false }
         evaluateFollowing()
         requestEarlierIfNearTop(scrollY: position.offset)
+        requestNewerIfNearBottom()
         scheduleReport()
     }
     private func evaluateFollowing() {
         guard position.viewport > 0 else { return }
-        setPinned(isWithinBottomBand)
+        pinIfAtLatest(isWithinBottomBand)
+    }
+    /// Whether the page's last row is the conversation's newest: nothing
+    /// after it waits to be read.
+    private var reachesLatest: Bool {
+        guard let session = presentationSession else { return true }
+        return session.newerPage.cursor == nil && !session.browsingHistory
+    }
+    /// Standing in the bottom band pins the page to the newest row, where the
+    /// page's end is the conversation's. The end of a window with rows after
+    /// it is not: pinned there, the page jumped to the end of the rows read in
+    /// below, past the reader. They join under the reader instead, who stays
+    /// where they are.
+    private func pinIfAtLatest(_ inBand: Bool) {
+        let latest = reachesLatest
+        joiningLatest = inBand && !latest
+        setPinned(inBand && latest)
+    }
+    /// The reader has come near the end of a window with rows after it: they
+    /// are read in and join below, as rows before a window are read in when
+    /// the reader nears its top. Once the window reaches the last rows the
+    /// history holds, the chat takes its live rows again, and a reply still
+    /// being written goes on arriving where the reader is.
+    private func requestNewerIfNearBottom() {
+        guard position.viewport > 0, !jumping, liveDistanceToBottom < Self.earlierThreshold, let sessionID,
+              let session = presentationSession, session.newerPage.cursor != nil, !session.newerPage.loading,
+              session.newerPage.error == nil, !session.historyState.loading, session.presentation.readyAt != nil else { return }
+        onLoadNewer(sessionID)
     }
     private func requestEarlierIfNearTop(scrollY: CGFloat) {
         let short = content.height <= viewport.height + Self.earlierThreshold
@@ -1026,6 +1067,7 @@ struct ContentGeometry: Equatable {
             // cover. Request one destination draw after lifting that cover.
             self.scrollView?.documentView?.needsDisplay = true
             self.requestEarlierIfNearTop(scrollY: self.scrollY)
+            self.requestNewerIfNearBottom()
         }
     }
     func destinationDrawOpportunity() -> Bool {
@@ -1937,9 +1979,10 @@ struct NativeTranscriptView: View {
         .earlier(session.olderPage, slow: earlierSlow, waitsForReader: page.earlierWaitsForReader)
     }
     private var newerEdge: TranscriptEdge { .newer(session.newerPage, slow: newerSlow) }
-    /// What stands beside the Back to bottom circle: a word or a spinner.
+    /// What stands beside the Back to bottom circle: the spinner of a newer
+    /// read that is slow.
     private var newerBeside: TranscriptEdge {
-        switch newerEdge { case .loading, .waiting: return newerEdge; default: return .quiet }
+        switch newerEdge { case .loading: return newerEdge; default: return .quiet }
     }
     /// What is said above it: a read that failed, or a page that lost its place.
     private var newerAbove: TranscriptEdge {
@@ -2029,7 +2072,8 @@ struct NativeTranscriptView: View {
         // bar — under the one just opened, and they moved as its bar and its
         // figures came and went (`TranscriptSwitchFirstFrameTests`).
         .onChange(of: session.presentationGeneration, initial: true) {
-            page.onAnchorChanged = onAnchorChanged; page.onReadReply = onReadReply; page.onLoadEarlier = onLoadEarlier; page.onViewportReady = onViewportReady
+            page.onAnchorChanged = onAnchorChanged; page.onReadReply = onReadReply; page.onLoadEarlier = onLoadEarlier; page.onLoadNewer = onLoadNewer
+            page.onViewportReady = onViewportReady
             page.state = session.state
             page.bind(session)
         }
