@@ -77,11 +77,7 @@ struct SidebarChatRow: View, Equatable {
         let model = model, chat = chat
         return { flags in
             SidebarRowClick(modifiers: flags).apply(to: model, sessionID: chat.id) {
-                Task {
-                    if model.side(chat.id) != nil { await model.selectSide(chat.id) }
-                    else if chat.parentSessionID != nil, model.record(chat.parentSessionID ?? "") != nil, !chat.imported { await model.showSide(chat.id) }
-                    else { await model.select(chat.id) }
-                }
+                Task { await model.openFromSidebar(chat.id) }
             }
         }
     }
@@ -147,7 +143,7 @@ struct SidebarSideRow: View, Equatable {
 
     var body: some View {
         let _ = SidebarRowRenderCount.built()
-        PiSelectableRow(selected: state.selected, action: { [model, state] in Task { await model.selectSide(state.id) } }) {
+        PiSelectableRow(selected: state.selected, action: { [model, state] in Task { await model.openFromSidebar(state.id) } }) {
             SideRow(title: state.title, kept: state.kept, selected: state.selected, unreadCount: state.unreadCount,
                     display: state.liveIdentity == nil ? nil : model.displays[state.id], available: state.available)
         }

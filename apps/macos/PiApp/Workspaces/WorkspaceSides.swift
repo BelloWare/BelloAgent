@@ -78,6 +78,8 @@ extension WorkspaceModel {
     }
     func openSide(parentID: String? = nil, question: String = "") {
         guard !installPreparing, let parentID = parentID ?? selectedID, let parent = record(parentID), !parent.imported else { error = "Continue an imported original as a separate chat before opening a side."; return }
+        // A new side is listed under its chat, which unfolds to show it.
+        quietSidebarReveal = []
         guard canOpenSide(parentID) else { error = "Connection-test chats keep tools disabled and cannot open side chats."; return }
         guard side(parentID) == nil else { error = "Close this side panel before opening a side from its saved chat."; return }
         // Another side can open while one is shown: the shown side stays a
@@ -195,17 +197,18 @@ extension WorkspaceModel {
     /// Shows a saved child chat in the side pane of its parent, replacing the
     /// side shown there. The replaced side keeps its display and any running
     /// work; only the pane changes.
-    func showSide(_ id: String) async {
+    func showSide(_ id: String, revealInSidebar: Bool = true) async {
         guard !installPreparing, let child = chats.first(where: { $0.id == id }), let parentID = child.parentSessionID, record(parentID) != nil, !child.imported else { return }
-        if let shown = sides[parentID], shown.id == id { await selectSide(id); return }
+        if let shown = sides[parentID], shown.id == id { await selectSide(id, revealInSidebar: revealInSidebar); return }
         if let shown = sides[parentID], shown.pending { discardPendingSide(shown) }
         if let shown = sides[parentID], !shown.kept || shown.keeping { error = "Wait for the current side to finish opening before switching."; return }
+        if revealInSidebar { quietSidebarReveal = [] }
         // This side is the one asked for, not the one the parent last showed.
-        if selectedID != parentID { await select(parentID, reopensSide: false) }
+        if selectedID != parentID { await select(parentID, revealInSidebar: revealInSidebar, reopensSide: false) }
         guard selectedID == parentID else { return }
         let view = mountSide(child, beside: parentID)
         page = .chats; focusedSessionID = id
-        revealProjectChat(child)
+        if revealInSidebar { revealProjectChat(child) }
         await loadSideDisplay(child, view: view)
     }
     /// Puts a saved child chat in its parent's side pane, waiting to be read.

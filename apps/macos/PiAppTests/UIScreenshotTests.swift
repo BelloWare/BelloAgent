@@ -172,6 +172,16 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // Only the sides panel at the window's right edge (22*): its handle, the
+        // panel out over the conversation, and pinned.
+        if testEnvironment("PI_APP_UI_GALLERY_SIDES_PANEL_ONLY") == "1" {
+            try await captureSidesPanelScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                              parentID: main.id, profileID: connections[0].profile.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         // Only the sidebar with the archive switch on.
         if testEnvironment("PI_APP_UI_GALLERY_ARCHIVE_ONLY") == "1" {
             let topic = try await model.createTopic(in: workspace.id, title: "Payments")
@@ -371,6 +381,8 @@ final class UIScreenshotTests: XCTestCase {
         try await captureWebhookScenes(model: model, window: window, gallery: gallery, appearances: appearances, chatID: main.id)
         try await captureBackgroundRequestScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                                  chatID: main.id, workspaceID: workspace.id, profileID: connections[0].profile.id)
+        try await captureSidesPanelScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                          parentID: main.id, profileID: connections[0].profile.id)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
         let fresh = WorkspaceModel(stateRoot: folder.appendingPathComponent("onboarding-state"), vault: freshVault)
@@ -547,6 +559,50 @@ final class UIScreenshotTests: XCTestCase {
             try capture(window, to: gallery.appendingPathComponent("14c-sidebar-archive-\(name).png"))
         }
         model.setArchivedChatsShown(false); try await settle(0.8)
+    }
+
+    /// 22 · The sides panel at the window's right edge, over the chat with
+    /// three saved sides: the one beside it, one working and one with a new
+    /// reply. Its handle while it is hidden, carrying the working side's ring
+    /// (22); the panel out over the conversation (22a); and pinned, as a
+    /// column of the window (22b). The panel is unpinned again afterwards.
+    @MainActor private func captureSidesPanelScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                    appearances: [(String, NSAppearance.Name)], parentID: String,
+                                                    profileID: String) async throws {
+        let parent = try XCTUnwrap(model.record(parentID), "The gallery's main chat")
+        await model.select(parentID); try await settle(0.8)
+        if model.sides[parentID] == nil {
+            model.openSide(parentID: parentID, question: "Is the retry budget shared with queued follow-ups, or per turn?")
+            try await settle(1.0)
+        }
+        let sideID = try XCTUnwrap(model.sides[parentID]?.id, "side did not open: \(String(describing: model.error))")
+        let side = try XCTUnwrap(model.displays[sideID])
+        try await waitIdle(side, model: model, minimumMessages: 2)
+        model.markSessionRead(sideID)
+        let order = model.record(sideID)?.sidebarOrder ?? Int64(Date().timeIntervalSince1970 * 1_000_000)
+        var siblings: [String] = []
+        for (offset, title) in ["Jitter bounds and the retry cap", "Idempotency keys for refunds"].enumerated() {
+            var chat = ChatRecord(id: UUID().uuidString, workspaceID: parent.workspaceID, title: title, path: nil, profileID: profileID, toolMode: "read-only")
+            chat.parentSessionID = parentID; chat.titleWasEdited = true; chat.sidebarOrder = order - Int64(10 * (offset + 1))
+            model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+            siblings.append(chat.id)
+        }
+        // One side with a reply the reader has not seen, and one working.
+        model.unreadStates[siblings[0]] = SessionReadState(id: siblings[0], observedAssistantCount: 1, unreadOutputs: 1)
+        let working = SessionDisplay(id: siblings[1]); working.state = "running"; model.displays[siblings[1]] = working
+        try await settle(0.8)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+            try capture(window, to: gallery.appendingPathComponent("22-sides-handle-\(name).png"))
+            model.sidesPanelReveal.show(untilHidden: true); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("22a-sides-revealed-\(name).png"))
+            model.sidesPanelReveal.hide()
+            model.setSidesPanelPinned(true); try await settle(1.2)
+            try capture(window, to: gallery.appendingPathComponent("22b-sides-pinned-\(name).png"))
+            model.setSidesPanelPinned(false); model.sidesPanelReveal.hide(); try await settle(0.8)
+        }
+        working.state = "idle"
+        NSApp.appearance = nil
     }
 
     /// 17 · Skills rendered inline: two selected skills leading the

@@ -33,6 +33,8 @@ struct RememberedSelection: Codable, Sendable, Equatable {
     var backgroundRequestsOpen: Bool?
     /// True when the sidebar's archive switch was on.
     var showArchivedChats: Bool?
+    /// True when the sides panel was pinned open at the window's right edge.
+    var sidesPanelPinned: Bool?
     var revision: Int64 = 0
 
     /// The same chat, project, sides and focus, whenever each was written.
@@ -94,6 +96,7 @@ extension WorkspaceModel {
         value.reportOpen = page == .report ? true : nil
         value.backgroundRequestsOpen = page == .background ? true : nil
         value.showArchivedChats = showArchivedSessions ? true : nil
+        value.sidesPanelPinned = sidesPanelPinned ? true : nil
         return value
     }
 
@@ -202,6 +205,7 @@ extension WorkspaceModel {
     func adoptRememberedSelection(_ remembered: RememberedSelection?) {
         rememberedSelection = remembered
         if remembered?.showArchivedChats == true { showArchivedSessions = true }
+        if remembered?.sidesPanelPinned == true { sidesPanelPinned = true }
         savedSelectionRevision = remembered?.revision ?? 0
         rememberedSides = (remembered?.shownSides ?? [:]).filter { parent, side in
             chatRecord(parent) != nil && chatRecord(side).map { $0.parentSessionID == parent && !$0.imported } == true
