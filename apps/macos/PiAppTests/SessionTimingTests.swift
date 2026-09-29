@@ -578,7 +578,8 @@ final class SessionTimingTests: XCTestCase {
         func target() throws -> CGFloat {
             func find(_ view: NSView) -> NSView? {
                 if view.accessibilityIdentifier() == "session-stats-context" { return view }
-                return view.subviews.lazy.compactMap(find).first
+                for child in view.subviews { if let found = find(child) { return found } }
+                return nil
             }
             return try XCTUnwrap(find(hosted), "the context pill's press target").frame.width
         }

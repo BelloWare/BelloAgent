@@ -55,6 +55,30 @@ final class SoakTests: XCTestCase, SerialTestLane {
             cachedMarker = views(TranscriptSurfaceMarker.self).first
             return cachedMarker?.page
         }
+        /// The footer's press targets by identifier (the context pill, the
+        /// capture badge), found once each and kept while on screen.
+        /// One not found is looked for again a quarter of a second later at
+        /// the earliest: walking the window every sample would be the run's
+        /// own stall.
+        private var cachedTargets: [String: WeakTarget] = [:]
+        private struct WeakTarget { weak var view: NSView?; var lookedAt: Double }
+        func target(_ identifier: String) -> NSView? {
+            let now = ProcessInfo.processInfo.systemUptime
+            if let held = cachedTargets[identifier] {
+                if let view = held.view, view.window != nil { return view }
+                if held.view == nil, now - held.lookedAt < 0.25 { return nil }
+            }
+            // A plain loop: a lazy compactMap(...).first runs the search twice
+            // on the path it finds, which doubles with every level.
+            func find(_ view: NSView) -> NSView? {
+                if view.accessibilityIdentifier() == identifier { return view }
+                for child in view.subviews { if let found = find(child) { return found } }
+                return nil
+            }
+            let found = find(hosted)
+            cachedTargets[identifier] = WeakTarget(view: found, lookedAt: now)
+            return found
+        }
         private weak var cachedComposer: ComposerTextView?
         /// The open chat's composer, found once per chat for the same reason.
         func composer(for chat: String?) -> ComposerTextView? {
@@ -384,6 +408,16 @@ final class SoakTests: XCTestCase, SerialTestLane {
         if let composer = launched.composer(for: launched.model.selectedID) {
             let box = composer.convert(composer.bounds, to: nil)
             lastViewport += String(format: ", composer %.0f pt at y %.0f", box.height, box.minY)
+        }
+        // What the footer said: a label that changes there changes its rows.
+        for (name, identifier) in [("context", "session-stats-context"), ("capture", "capture-badge")] {
+            guard let target = launched.target(identifier) else { continue }
+            let box = target.convert(target.bounds, to: nil)
+            lastViewport += String(format: ", %@ “%@” at y %.0f", name, target.accessibilityLabel() ?? "", box.minY)
+        }
+        if let shown = launched.model.selectedID.flatMap({ launched.model.displays[$0] }) {
+            lastViewport += shown.captureAvailable ? ", capture on" : ", capture next"
+            if !shown.notice.isEmpty { lastViewport += ", notice “\(shown.notice)”" }
         }
         var shown: [String: Place] = [:]
         for row in document.retainedRows where row.superview === document && row.isHosted && !row.isHidden && row.frame.intersects(visible) {
