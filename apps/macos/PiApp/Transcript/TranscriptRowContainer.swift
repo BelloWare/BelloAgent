@@ -398,6 +398,45 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
         streamingSurface = found; streamingSurfaceID = messageID
         return found
     }
+    /// What a row is drawn with besides its item. Any of it can decide the
+    /// row's height: what the reader opened in it, the values it is drawn
+    /// with, and the accent a row wears as it arrives.
+    struct Look: Equatable {
+        var disclosure: TranscriptRowDisclosure
+        var environment: TranscriptRowEnvironment
+        var fresh: Bool
+    }
+    /// A closed timeline part or call card is one line, whatever its text
+    /// says, so it keeps its height while its text or arguments arrive: the
+    /// same part — for a card, the same call in the same state — with
+    /// nothing open in the row and nothing else about it changing.
+    nonisolated static func closedPartKeepsHeight(from old: TranscriptItem, _ was: Look, to new: TranscriptItem, _ now: Look) -> Bool {
+        guard case .block(let old) = old, case .block(let new) = new,
+              old.presentation == new.presentation, old.presentation == .timeline || old.presentation == .work,
+              let a = old.part, let b = new.part,
+              !was.disclosure.work, !now.disclosure.work,
+              was.disclosure.openTools.isEmpty, now.disclosure.openTools.isEmpty,
+              !["text", "refusal", "status"].contains(a.part.kind) else { return false }
+        // A call's card is one line while it is closed, whatever its
+        // arguments say, so it keeps its height while they arrive — as
+        // long as it is still the same call in the same state.
+        if old.presentation == .work {
+            guard let before = old.message?.tools?.first, let after = new.message?.tools?.first,
+                  before.id == after.id, before.name == after.name, before.state == after.state else { return false }
+        }
+        // Everything the reader has opened or closed must agree, not only
+        // this row's own work fold: a card whose whole response has just
+        // been folded changes height although its own text has not.
+        return was == now && a.part.kind == b.part.kind && a.part.name == b.part.name && a.state == b.state
+    }
+    /// A closed work list keeps its height while its calls change. Timeline
+    /// tool cards have their own disclosure and live summary; only an
+    /// unchanged, closed aggregate work list has fixed geometry.
+    nonisolated static func closedWorkKeepsHeight(from old: TranscriptItem, _ was: Look, to new: TranscriptItem, _ now: Look) -> Bool {
+        guard case .block(let old) = old, case .block(let new) = new else { return false }
+        return old.presentation == .work && new.presentation == .work && old.part == nil && new.part == nil &&
+            !was.disclosure.work && was == now
+    }
     /// Returns whether anything that decides this row's height changed.
     @discardableResult
     func update(item: TranscriptItem, fresh: Bool, actions: TranscriptActions, environment: TranscriptRowEnvironment = TranscriptRowEnvironment()) -> Bool {
@@ -470,34 +509,10 @@ private final class TranscriptRowHostingView: NSHostingView<TranscriptHostedRow>
             }
         }
         let oldItem = self.item
-        let fixedClosedPart: Bool = {
-            guard case .block(let old) = self.item, case .block(let new) = item,
-                  old.presentation == new.presentation, old.presentation == .timeline || old.presentation == .work,
-                  let a = old.part, let b = new.part,
-                  !self.disclosure.work, !disclosure.work,
-                  self.disclosure.openTools.isEmpty, disclosure.openTools.isEmpty,
-                  !["text", "refusal", "status"].contains(a.part.kind) else { return false }
-            // A call's card is one line while it is closed, whatever its
-            // arguments say, so it keeps its height while they arrive — as
-            // long as it is still the same call in the same state.
-            if old.presentation == .work {
-                guard let was = old.message?.tools?.first, let now = new.message?.tools?.first,
-                      was.id == now.id, was.name == now.name, was.state == now.state else { return false }
-            }
-            // Everything the reader has opened or closed must agree, not only
-            // this row's own work fold: a card whose whole response has just
-            // been folded changes height although its own text has not.
-            return self.disclosure == disclosure && self.environment == environment && self.fresh == fresh &&
-                a.part.kind == b.part.kind && a.part.name == b.part.name && a.state == b.state
-        }()
-        let fixedClosedWork: Bool = {
-            guard case .block(let old) = self.item, case .block(let new) = item else { return false }
-            // Timeline tool cards have their own disclosure and live summary.
-            // Only an unchanged, closed aggregate work list has fixed geometry.
-            return old.presentation == .work && new.presentation == .work && old.part == nil && new.part == nil &&
-                !self.disclosure.work && self.disclosure == disclosure &&
-                self.environment == environment && self.fresh == fresh
-        }()
+        let was = Look(disclosure: self.disclosure, environment: self.environment, fresh: self.fresh)
+        let now = Look(disclosure: disclosure, environment: environment, fresh: fresh)
+        let fixedClosedPart = Self.closedPartKeepsHeight(from: oldItem, was, to: item, now)
+        let fixedClosedWork = Self.closedWorkKeepsHeight(from: oldItem, was, to: item, now)
         self.item = item; self.fresh = fresh; self.environment = environment; self.disclosure = disclosure
         if fixedClosedPart {
             // The collapsed line keeps its height, but its latest reasoning

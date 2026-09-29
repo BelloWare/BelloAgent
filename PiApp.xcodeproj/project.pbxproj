@@ -101,6 +101,7 @@
 		30F1E3E84100FE456BA06A59 /* CompactionResponsivenessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1682E376C6DA5C71BC7C73D4 /* CompactionResponsivenessTests.swift */; };
 		3222F92A546DA93A4901BB52 /* GatewayModelDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF00504B0932C9B06B1C6462 /* GatewayModelDiscoveryTests.swift */; };
 		32B7DFCFB9DE8E04F79C0E20 /* TranscriptRowUpdates.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40598BE8C64BEFB4844FEA4C /* TranscriptRowUpdates.swift */; };
+		3452B025F33FDD22A6CCFAE3 /* TranscriptRowChangeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EA67FF9F5B55234D87BA5D1 /* TranscriptRowChangeTests.swift */; };
 		347D04053B131CA8FCE78C14 /* ReplySourceLiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80A58CD69D5FD0A5DE45F478 /* ReplySourceLiveTests.swift */; };
 		3515B3E8A2518C0E9DBE4EFD /* PiMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BC7B7D3841AD48CEF9F2535 /* PiMenu.swift */; };
 		35A08C43E6E1DBC1C4396D44 /* SessionUsageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09AEF2F013607B8BCA9B1746 /* SessionUsageTests.swift */; };
@@ -640,6 +641,7 @@
 		3D2A4676FA51CE3EBDD45D73 /* LayoutCycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayoutCycleTests.swift; sourceTree = "<group>"; };
 		3DD0D4364A3FD94E0FC868BB /* HostInboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostInboxTests.swift; sourceTree = "<group>"; };
 		3E281E095E5A3E1C162E8001 /* SideTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SideTests.swift; sourceTree = "<group>"; };
+		3EA67FF9F5B55234D87BA5D1 /* TranscriptRowChangeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptRowChangeTests.swift; sourceTree = "<group>"; };
 		3EBF50710F64ADCD26D629B8 /* WorkspaceDrafts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDrafts.swift; sourceTree = "<group>"; };
 		3F0FD0AA5AB8D008ED14C0FD /* PayloadArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PayloadArchive.swift; sourceTree = "<group>"; };
 		3FAE287244C70AC61D5F4EC2 /* bello-agent.models.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "bello-agent.models.json"; sourceTree = "<group>"; };
@@ -1645,6 +1647,7 @@
 				AF830B6D680F4BB9287800B2 /* TranscriptPerformanceRegressionTests.swift */,
 				E42045F50974E7C1BF605448 /* TranscriptQuoteSelectionTests.swift */,
 				4D2C713F35FEAFE0E5F62BA3 /* TranscriptRealAppStreamingTests.swift */,
+				3EA67FF9F5B55234D87BA5D1 /* TranscriptRowChangeTests.swift */,
 				E34D8070F878CAEDB4915E81 /* TranscriptRowGalleryTests.swift */,
 				7A52DC89A0A978EAAC2079B2 /* TranscriptRowUpdateTests.swift */,
 				2792B3E6D3BDF980BF8A79B5 /* TranscriptStreamingScrollTests.swift */,
@@ -2310,6 +2313,7 @@
 				780C7F2A4BC7189E3FBB0947 /* TranscriptPerformanceRegressionTests.swift in Sources */,
 				B90125E08B34D4B5F7CB7464 /* TranscriptQuoteSelectionTests.swift in Sources */,
 				EC8E874E81958353D2B9FC98 /* TranscriptRealAppStreamingTests.swift in Sources */,
+				3452B025F33FDD22A6CCFAE3 /* TranscriptRowChangeTests.swift in Sources */,
 				51C073AFBA83E7443AD79D02 /* TranscriptRowGalleryTests.swift in Sources */,
 				509AEF238BC0C6EF8C8B9D59 /* TranscriptRowUpdateTests.swift in Sources */,
 				9549A798E72BBACA5A5D640C /* TranscriptStreamingScrollTests.swift in Sources */,
