@@ -17,7 +17,12 @@ final class MiniModelSettingsTests: XCTestCase {
         let folder = scratchRoot("mini-settings")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let gateway = try await SyntheticGateway.start(in: folder); defer { gateway.stop() }
+        // Title suggestions are a utility request (0.1.115): the helper asks
+        // for a short reply, well under either model's catalog ceiling, so the
+        // gateway checks the limit as a ceiling, as it does a mini model's. A
+        // request with no limit at all, the failure this test is for, is still
+        // refused.
+        let gateway = try await SyntheticGateway.start(in: folder, environment: ["PI_APP_UI_FIXTURE_LENIENT_LIMIT": "1"]); defer { gateway.stop() }
         let base = gateway.base
         // The gallery's two connections: both list the gateway's catalog and
         // use its mini model, fixture-fast, whose catalog output limit is

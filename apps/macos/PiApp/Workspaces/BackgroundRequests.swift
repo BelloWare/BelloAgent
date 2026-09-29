@@ -13,12 +13,15 @@ enum BackgroundRequestKind: Hashable, Sendable {
     case title, suggestions, webhook
     /// A kind this build does not know, written by a newer one: still listed.
     case other(String)
-    init(_ raw: String) {
-        switch raw {
-        case "session-title": self = .title
-        case "title-suggestions": self = .suggestions
-        case "webhook": self = .webhook
-        default: self = .other(raw)
+    init(_ raw: String) { self = [Self.title, .suggestions, .webhook].first { $0.raw == raw } ?? .other(raw) }
+    /// The kind as a chat record's `backgroundTask` says it, and as the
+    /// helper names the utility request it opens (`WorkspaceHosts.open`).
+    var raw: String {
+        switch self {
+        case .title: return "session-title"
+        case .suggestions: return "title-suggestions"
+        case .webhook: return "webhook"
+        case .other(let raw): return raw
         }
     }
     var label: String {

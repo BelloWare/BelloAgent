@@ -771,7 +771,7 @@ extension HistoryEdgeTests {
         let chat = ChatRecord(id: "chat", workspaceID: "project", title: "Chat", path: nil, profileID: "profile")
         let view = SessionDisplay(id: chat.id)
         view.messages = ["q1", "a1", "q2", "a2", "q3", "a3"].map { TranscriptMessage(id: $0, role: $0.hasPrefix("q") ? "user" : "assistant", text: $0) }
-        view.projectionRevision = "runtime:1"; view.pageStartEnsured = true
+        view.projectionRevision = "runtime:1"
         view.presentation.identity = ("runtime", "root"); view.historyState = .ready
         model.chats = [chat]; model.displays[chat.id] = view; model.selectedID = chat.id; model.selected = view
         let sent = SentFrames(), host = HostSupervisor(commandSender: { sent.frames.append($0) })

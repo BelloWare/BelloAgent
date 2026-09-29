@@ -66,45 +66,18 @@ extension WorkspaceModel {
                 if refreshAgain { refresh(id) }
             }
             view.dirty = false
-            @MainActor func current() -> Bool {
-                !Task.isCancelled && !accountingStopped && displays[id] === view &&
-                hosts[item.workspaceID] === host && host.isReady && host.connectionID == connection &&
-                opened.contains(id) && record(id)?.workspaceID == item.workspaceID &&
-                record(id)?.profileID == item.profileID && record(id)?.toolMode == item.toolMode
-            }
+            @MainActor func current() -> Bool { snapshotApplies(id: id, view: view, item: item, host: host, connection: connection) }
             do {
                 guard current() else { return }
                 let visible = id == selectedID || sides[selectedID ?? ""]?.id == id
-                var params: [String: WireValue] = ["includeMessages": .bool(!view.browsingHistory)]
-                if let epoch = view.monitoringEpoch { params["monitoringEpoch"] = .string(epoch) }
-                if let cursor = view.monitoringCursor { params["monitoringCursor"] = .number(cursor) }
                 let generation = view.presentationGeneration
                 let requestedViewport = view.viewportRequest
                 let requestedRevision = view.projectionRevision
-                if let requestedRevision { params["displayRevision"] = .string(requestedRevision) }
-                // Ask for changes to the page this display holds rather than
-                // the page itself. The helper falls back to a whole page for
-                // any revision it did not just send, which is also the resync.
-                if let revision=view.footer.contextStateRevision { params["contextStateRevision"] = .string(revision) }
-                if let revision = view.footer.contextObservationRevision { params["contextObservationRevision"] = .string(revision) }
-                // The receipts and tasks held here, by revision: the helper
-                // leaves out whichever has not changed since (up to 128
-                // receipts and 64 finished tasks, once per streamed token).
-                if view.leavesOutHeldState {
-                    if let revision = view.commandsRevision { params["commandsRevision"] = .string(revision) }
-                    if let revision = view.taskPresentationRevision { params["taskPresentationRevision"] = .string(revision) }
-                }
-                if requestedRevision != nil, !view.projectedRows.isEmpty {
-                    params["messageDelta"] = .bool(true)
-                    // Tool arguments still streaming arrive as what was
-                    // appended to them, not as the whole row again.
-                    if view.takesToolInputAppends { params["toolInputAppends"] = .bool(true) }
-                }
                 // Human-readable footer accounting refreshes at 4 Hz. Decide
                 // here, so a poll that will not show those figures does not
                 // carry them: they are larger than the token that changed.
                 let wantsMetrics = !view.busy || ProcessInfo.processInfo.systemUptime - view.footerUpdatedAt >= 0.25
-                params["includeMetrics"] = .bool(wantsMetrics)
+                let params = snapshotParams(for: view, requestedRevision: requestedRevision, wantsMetrics: wantsMetrics)
                 let result = try await host.request(visible ? "session.snapshot" : "session.status", sessionID: id, params: params).object ?? [:]
                 guard current() else { return }
                 await applySideStatus(id: id, result: result)
@@ -158,133 +131,9 @@ extension WorkspaceModel {
                         view.taskPresentationRevision = nil
                     }
                     view.lastSequence = sequence
-                    observeAssistantOutputs(sessionID: id, snapshot: result)
-                    observeSessionCompletion(sessionID: id, snapshot: result)
-                    view.observeCompaction(result)
-                    let wasBusy = view.busy
-                    view.observeRunState(result)
-                    observeCost(result, view: view)
-                    if wasBusy, view.state == "error" { markRunFailed(sessionID: id) }
-                    view.observeRetry(result)
-                    let queued = result["queue"]?.array?.compactMap(\.object) ?? []
-                    helperQueue = queued
-                    let queue = view.panelQueue(queued); if view.queue != queue { view.queue = queue }
-                    view.queueCount = Int(result["queueCount"]?.number ?? 0)
-                    let now = ProcessInfo.processInfo.systemUptime
-                    // Phase changes cannot wait for the footer throttle: a
-                    // quiet tool may have no subsequent event until it ends.
-                    view.activity = result["activity"]?.object ?? [:]; view.activityObservedAt = now
-                    // Phase, queue depth and the last route are plain stored
-                    // values: nothing observes them. The status panel used to
-                    // find out by recounting every chat once a second.
-                    // The same decision that asked the helper for the figures.
-                    view.observeContext(result)
-                    if let monitoring = result["monitoring"]?.object {
-                        liveActivity.ingest(monitoring, workspace: item.workspaceID, session: id, connectionTest: item.connectionTest == true)
-                        view.monitoringEpoch = monitoring["epoch"]?.string; view.monitoringCursor = monitoring["cursor"]?.number
-                    }
-                    if wantsMetrics {
-                        view.footerUpdatedAt = now
-                        if let timing = result["turnMetrics"]?.object, timing != view.turnTiming { view.turnTiming = timing }
-                        if let metrics = result["latestAttempt"]?.object, metrics != view.metrics { view.metrics = metrics }
-                    } else if wasBusy && !view.busy {
-                        // This reply may be the last event of a fast run. Its
-                        // request opted out of metrics while the turn was
-                        // still live; fetch the final observations once now,
-                        // instead of waiting for another event or tab switch.
-                        view.dirty = true
-                    }
-                    if let mode = result["captureMode"]?.string, mode != view.captureMode { view.captureMode = mode }
-                    view.displayObservedAt = result["displayObservedAt"]?.number.map { $0 + host.clockOffset }
-                    if let start = view.displayObservedAt { PerformanceProbe.shared.observe("deltaToNativeSnapshotMs", milliseconds: PerformanceProbe.now - start) }
+                    helperQueue = applySnapshotState(result, to: view, id: id, item: item, wantsMetrics: wantsMetrics, clockOffset: host.clockOffset)
                     if let projected = incoming, !view.browsingHistory, view.presentationGeneration == generation {
-                        let incarnation = result["historyIncarnation"]?.string, lineage = result["historyLineage"]?.string
-                        if let held = view.presentation.identity, let lineage, held.lineage != lineage {
-                            view.newerPage.error = Self.branchChangedElsewhere
-                            view.browsingHistory = true
-                        } else {
-                        let follows = result["historyFollows"]?.string
-                        let overlaps = view.messages.isEmpty || TranscriptPaging.joins(view.messages, follows: follows)
-                            || projected.contains { row in view.messages.contains { $0.id == row.id } }
-                        if !overlaps, let last = view.messages.last, let incarnation, let lineage {
-                            view.newerPage = .init(cursor: .init(incarnation: incarnation, lineage: lineage, entry: last.id))
-                            view.browsingHistory = true
-                            if view.scrollAnchor?.followsBottom != false { fillLiveGap(id) }
-                        }
-                        view.historyRevision = nil
-                        view.projectedRows = projected
-                        // Rows the reader scrolled up to stay in front of the helper's window.
-                        let merged = TranscriptPaging.merge(previous: view.messages, live: projected, follows: follows)
-                        // Rows that do not join the window change nothing in it,
-                        // and a window with nothing new is not cut.
-                        var messages = overlaps ? TranscriptPaging.window(merged, keepingEarlier: false) : merged
-                        var held = view.pinnedHistoryIDs
-                        if let anchor = view.scrollAnchor, !anchor.followsBottom,
-                           view.messages.contains(where: { $0.id == anchor.id }) { held.insert(anchor.id) }
-                        // The window is the newest rows of what merged; a held
-                        // row before its first one would be let go of.
-                        if !held.isEmpty, let start = merged.firstIndex(where: { held.contains($0.id) }),
-                           start < merged.count - messages.count {
-                            // Arriving output may fill the resident budget, but
-                            // must neither evict text the reader is using — the
-                            // row they read from, or the one holding their
-                            // cursor or selection — nor stop arriving. The
-                            // window runs from the earliest of those rows to the
-                            // live tail until the reader lets go of it, and the
-                            // next update trims it again. Before, the chat kept
-                            // its rows and stopped taking the helper's: the reply
-                            // being written stopped mid-sentence and stayed that
-                            // way, behind "Load newer messages", until the chat
-                            // was left and opened again.
-                            messages = Array(merged[start...])
-                        }
-                        // Touch only the rows whose accounting actually moved:
-                        // writing every row copies the whole page's storage and
-                        // retains every string in it, once per streamed token.
-                        for index in messages.indices where messages[index].accounting != view.messageAccounting[messages[index].id] {
-                            messages[index].accounting = view.messageAccounting[messages[index].id]
-                        }
-                        if view.messages != messages {
-                            let accountingChanged = Self.accountingTargetsChanged(from: view.messages, to: messages)
-                            view.messages = messages
-                            // A newly visible answer can take ownership of
-                            // a request whose metadata arrived before it.
-                            if accountingChanged { scheduleAccounting(id, workspaceID: item.workspaceID) }
-                        }
-                        view.projectionRevision = result["displayRevision"]?.string
-                        // The page cursors below are published on the whole
-                        // display. Writing them unchanged, once per streamed
-                        // token, re-evaluated the conversation pane, its
-                        // composer and its footer for every token.
-                        if let before = result["before"], view.hostBefore != before.number { view.hostBefore = before.number }
-                        if overlaps, let incarnation, let lineage, let first = messages.first {
-                            view.presentation.identity = (incarnation, lineage)
-                            let liveOlder = try ConversationHistoryPage.cursor(result["historyOlder"])
-                            // Rows the window let go of at its start are still
-                            // the chat's: the window then starts at an earlier
-                            // edge, as one read from the middle of the chat
-                            // does, and the reader scrolls back to them as to
-                            // any earlier rows. A chat whose every row was
-                            // loaded had no edge to keep, so rows that left its
-                            // start as it grew left none, and came back only
-                            // when the chat was opened again.
-                            let edge = ConversationCursor(incarnation: incarnation, lineage: lineage, entry: first.id)
-                            let trimmed = first.id != merged.first?.id
-                            let older: ConversationCursor?? = first.id == projected.first?.id ? .some(liveOlder ?? (trimmed ? edge : nil))
-                                : view.olderPage.cursor != nil || trimmed ? .some(edge) : .none
-                            if let older, older != view.olderPage.cursor {
-                                if !view.olderPage.loading { view.olderPage = .init(cursor: older) }
-                                // An earlier page is being read from the
-                                // current boundary: a streamed token must not
-                                // end that read or start a second one. Only a
-                                // first row that really moved replaces the
-                                // cursor, and the read then drops what it got.
-                                else if older?.entry != view.olderPage.cursor?.entry { view.olderPage.cursor = older }
-                            }
-                            if view.before != view.olderPage.cursor?.entry { view.before = view.olderPage.cursor?.entry }
-                        }
-                        if view.historyState == .dormant || view.historyState == .empty { view.historyState = messages.isEmpty ? .empty : .preparing }
-                        }
+                        try applySnapshotRows(projected, from: result, to: view, id: id, item: item)
                     } else if resyncNeeded {
                         // The update does not fit the page held here. Forget
                         // the cursor so the next read is a whole page.
@@ -292,65 +141,257 @@ extension WorkspaceModel {
                     } else if !view.browsingHistory && view.projectionRevision != requestedRevision {
                         view.dirty = true // An intervening page change needs a fresh full projection.
                     }
-                    let notice = item.isBackgroundTask ? (record(id)?.backgroundTaskNotice ?? "Tools disabled · Title generation") : item.connectionTest == true || item.workspaceID == WorkspaceRecord.scratchID ? "Tools disabled · Connection test" : item.toolMode == "read-only" ? "Read-only tools" : ""
-                    // An interruption or preflight explanation stays until the
-                    // user has reviewed it; the static tool notice must not replace it.
-                    if view.notice != notice, !view.uncertain, view.failureMessage == nil { view.notice = notice }
-                    if let preflight = result["preflightError"]?.string { if view.failureMessage == nil { view.notice = preflight }; view.uncertain = true }
+                    applyToolNotice(result, to: view, id: id, item: item)
                 }
                 // Looked up by id; finding the index is only needed to write.
                 if let path = result["path"]?.string, let known = chatRecord(id), known.path != path, let index = chats.firstIndex(where: { $0.id == id }) {
                     chats[index].path = path; try await store?.put(chats[index], kind: "chat", id: id)
                     guard current() else { return }
                 }
-                // The chat's pending submissions come from the store only when
-                // they can have changed since the last read: the app wrote one
-                // (`pendingIntentsChanged`), or this snapshot's receipts settle
-                // one. Two reads per streamed token held up the next snapshot.
-                //
-                // A snapshot leaves the receipts out when none changed since the
-                // revision sent back; they are then the ones held. Settling runs
-                // against those too, so a settle cut short, or a record written
-                // after its receipt arrived, still settles without a new receipt.
-                if let carried = result["commands"]?.array {
-                    view.receipts = carried.compactMap(\.object); view.commandsRevision = result["commandsRevision"]?.string
-                }
-                let receipts = view.receipts
-                // A message sent from here that the helper took elsewhere —
-                // refused at delivery, removed, or held by a paused queue —
-                // leaves the transcript, and the panel shows it at once.
-                if view.settleSending(receipts: receipts, queued: Set((helperQueue ?? []).compactMap { $0["turnId"]?.string })), let helperQueue {
-                    let queue = view.panelQueue(helperQueue); if view.queue != queue { view.queue = queue }
-                }
-                let revision = view.pendingIntentRevision
-                var intents: [CommandIntent]
-                if let known = view.pendingIntents, known.revision == revision { intents = known.intents }
-                else {
-                    view.intentReads += 1
-                    intents = try await store?.list(CommandIntent.self, kind: "pending:\(id)") ?? []
-                    guard current() else { return }
-                }
-                var settled: Set<String> = []
-                for var intent in intents {
-                    guard let receipt = receipts.last(where: { $0["commandId"]?.string == intent.id }), let state = receipt["state"]?.string,
-                          state != "dispatched" else { continue }
-                    intent.state = state; intent.text = ""; intent.attachments = nil; intent.skills = nil
-                    try await store?.put(intent, kind: "receipt:\(id)", id: intent.id)
-                    guard current() else { return }
-                    try await store?.remove(kind: "pending:\(id)", id: intent.id)
-                    guard current() else { return }
-                    settled.insert(intent.id)
-                }
-                if !settled.isEmpty { intents.removeAll { settled.contains($0.id) } }
-                // Held against the revision read: a write during the awaits
-                // above moves the revision on, and the next snapshot reads again.
-                view.pendingIntents = (revision, intents)
-                if intents != view.recovered { view.recovered = intents }
-                if view.recovered.isEmpty { view.uncertain = false }
+                guard try await settleSnapshotIntents(result, view: view, id: id, item: item, host: host, connection: connection, helperQueue: helperQueue) else { return }
                 updateHostActivity(workspaceID: item.workspaceID)
                 scheduleIdle(workspaceID: item.workspaceID, host: host)
             } catch { if current() { view.notice = error.localizedDescription } }
         }
+    }
+    /// Whether a snapshot begun for a chat still applies to it: nothing
+    /// cancelled it or shut the model down, and the chat still has the same
+    /// display, on the same helper and connection, in the same project, with
+    /// the same connection and tool mode. Checked after every await.
+    private func snapshotApplies(id: String, view: SessionDisplay, item: ChatRecord, host: HostSupervisor, connection: UUID) -> Bool {
+        !Task.isCancelled && !isShutDown && displays[id] === view &&
+        hosts[item.workspaceID] === host && host.isReady && host.connectionID == connection &&
+        opened.contains(id) && record(id)?.workspaceID == item.workspaceID &&
+        record(id)?.profileID == item.profileID && record(id)?.toolMode == item.toolMode
+    }
+    /// What a snapshot asks the helper for. The page this display holds, the
+    /// context, receipts and tasks it holds are named by revision, and the
+    /// helper leaves out whatever has not changed since.
+    private func snapshotParams(for view: SessionDisplay, requestedRevision: String?, wantsMetrics: Bool) -> [String: WireValue] {
+        var params: [String: WireValue] = ["includeMessages": .bool(!view.browsingHistory)]
+        if let epoch = view.monitoringEpoch { params["monitoringEpoch"] = .string(epoch) }
+        if let cursor = view.monitoringCursor { params["monitoringCursor"] = .number(cursor) }
+        if let requestedRevision { params["displayRevision"] = .string(requestedRevision) }
+        // Ask for changes to the page this display holds rather than
+        // the page itself. The helper falls back to a whole page for
+        // any revision it did not just send, which is also the resync.
+        if let revision=view.footer.contextStateRevision { params["contextStateRevision"] = .string(revision) }
+        if let revision = view.footer.contextObservationRevision { params["contextObservationRevision"] = .string(revision) }
+        // The receipts and tasks held here, by revision: the helper
+        // leaves out whichever has not changed since (up to 128
+        // receipts and 64 finished tasks, once per streamed token).
+        if view.leavesOutHeldState {
+            if let revision = view.commandsRevision { params["commandsRevision"] = .string(revision) }
+            if let revision = view.taskPresentationRevision { params["taskPresentationRevision"] = .string(revision) }
+        }
+        if requestedRevision != nil, !view.projectedRows.isEmpty {
+            params["messageDelta"] = .bool(true)
+            // Tool arguments still streaming arrive as what was
+            // appended to them, not as the whole row again.
+            if view.takesToolInputAppends { params["toolInputAppends"] = .bool(true) }
+        }
+        params["includeMetrics"] = .bool(wantsMetrics)
+        return params
+    }
+    /// A snapshot's run state, cost, retry, queue, activity, context, figures
+    /// and capture mode, on the chat's display. Returns the helper's queue,
+    /// which the pending submissions are settled against.
+    private func applySnapshotState(_ result: [String: WireValue], to view: SessionDisplay, id: String, item: ChatRecord,
+                                    wantsMetrics: Bool, clockOffset: Double) -> [[String: WireValue]] {
+        observeAssistantOutputs(sessionID: id, snapshot: result)
+        observeSessionCompletion(sessionID: id, snapshot: result)
+        view.observeCompaction(result)
+        let wasBusy = view.busy
+        view.observeRunState(result)
+        observeCost(result, view: view)
+        if wasBusy, view.runState == .error { markRunFailed(sessionID: id) }
+        view.observeRetry(result)
+        let queued = result["queue"]?.array?.compactMap(\.object) ?? []
+        let queue = view.panelQueue(queued); if view.queue != queue { view.queue = queue }
+        view.queueCount = Int(result["queueCount"]?.number ?? 0)
+        let now = ProcessInfo.processInfo.systemUptime
+        // Phase changes cannot wait for the footer throttle: a
+        // quiet tool may have no subsequent event until it ends.
+        view.activity = result["activity"]?.object ?? [:]; view.activityObservedAt = now
+        // Phase, queue depth and the last route are plain stored
+        // values: nothing observes them. The status panel used to
+        // find out by recounting every chat once a second.
+        // The same decision that asked the helper for the figures.
+        view.observeContext(result)
+        if let monitoring = result["monitoring"]?.object {
+            liveActivity.ingest(monitoring, workspace: item.workspaceID, session: id, connectionTest: item.connectionTest == true)
+            view.monitoringEpoch = monitoring["epoch"]?.string; view.monitoringCursor = monitoring["cursor"]?.number
+        }
+        if wantsMetrics {
+            view.footerUpdatedAt = now
+            if let timing = result["turnMetrics"]?.object, timing != view.turnTiming { view.turnTiming = timing }
+            if let metrics = result["latestAttempt"]?.object, metrics != view.metrics { view.metrics = metrics }
+        } else if wasBusy && !view.busy {
+            // This reply may be the last event of a fast run. Its
+            // request opted out of metrics while the turn was
+            // still live; fetch the final observations once now,
+            // instead of waiting for another event or tab switch.
+            view.dirty = true
+        }
+        if let mode = result["captureMode"]?.string, mode != view.captureMode { view.captureMode = mode }
+        view.displayObservedAt = result["displayObservedAt"]?.number.map { $0 + clockOffset }
+        if let start = view.displayObservedAt { PerformanceProbe.shared.observe("deltaToNativeSnapshotMs", milliseconds: PerformanceProbe.now - start) }
+        return queued
+    }
+    /// A snapshot's rows, merged into the chat's window, and the window's
+    /// edges. A branch this display did not make leaves the rows as they are
+    /// and says the conversation changed elsewhere.
+    private func applySnapshotRows(_ projected: [TranscriptMessage], from result: [String: WireValue], to view: SessionDisplay,
+                                   id: String, item: ChatRecord) throws {
+        let incarnation = result["historyIncarnation"]?.string, lineage = result["historyLineage"]?.string
+        if let held = view.presentation.identity, let lineage, held.lineage != lineage {
+            view.newerPage.error = Self.branchChangedElsewhere
+            view.browsingHistory = true
+        } else {
+            let follows = result["historyFollows"]?.string
+            let overlaps = view.messages.isEmpty || TranscriptPaging.joins(view.messages, follows: follows)
+                || projected.contains { row in view.messages.contains { $0.id == row.id } }
+            if !overlaps, let last = view.messages.last, let incarnation, let lineage {
+                view.newerPage = .init(cursor: .init(incarnation: incarnation, lineage: lineage, entry: last.id))
+                view.browsingHistory = true
+                if view.scrollAnchor?.followsBottom != false { fillLiveGap(id) }
+            }
+            view.historyRevision = nil
+            view.projectedRows = projected
+            // Rows the reader scrolled up to stay in front of the helper's window.
+            let merged = TranscriptPaging.merge(previous: view.messages, live: projected, follows: follows)
+            // Rows that do not join the window change nothing in it,
+            // and a window with nothing new is not cut.
+            var messages = overlaps ? TranscriptPaging.window(merged, keepingEarlier: false) : merged
+            var held = view.pinnedHistoryIDs
+            if let anchor = view.scrollAnchor, !anchor.followsBottom,
+               view.messages.contains(where: { $0.id == anchor.id }) { held.insert(anchor.id) }
+            // The window is the newest rows of what merged; a held
+            // row before its first one would be let go of.
+            if !held.isEmpty, let start = merged.firstIndex(where: { held.contains($0.id) }),
+               start < merged.count - messages.count {
+                // Arriving output may fill the resident budget, but
+                // must neither evict text the reader is using — the
+                // row they read from, or the one holding their
+                // cursor or selection — nor stop arriving. The
+                // window runs from the earliest of those rows to the
+                // live tail until the reader lets go of it, and the
+                // next update trims it again. Before, the chat kept
+                // its rows and stopped taking the helper's: the reply
+                // being written stopped mid-sentence and stayed that
+                // way, behind "Load newer messages", until the chat
+                // was left and opened again.
+                messages = Array(merged[start...])
+            }
+            // Touch only the rows whose accounting actually moved:
+            // writing every row copies the whole page's storage and
+            // retains every string in it, once per streamed token.
+            for index in messages.indices where messages[index].accounting != view.messageAccounting[messages[index].id] {
+                messages[index].accounting = view.messageAccounting[messages[index].id]
+            }
+            if view.messages != messages {
+                let accountingChanged = Self.accountingTargetsChanged(from: view.messages, to: messages)
+                view.messages = messages
+                // A newly visible answer can take ownership of
+                // a request whose metadata arrived before it.
+                if accountingChanged { scheduleAccounting(id, workspaceID: item.workspaceID) }
+            }
+            view.projectionRevision = result["displayRevision"]?.string
+            // The page cursors below are published on the whole
+            // display. Writing them unchanged, once per streamed
+            // token, re-evaluated the conversation pane, its
+            // composer and its footer for every token.
+            if let before = result["before"], view.hostBefore != before.number { view.hostBefore = before.number }
+            if overlaps, let incarnation, let lineage, let first = messages.first {
+                view.presentation.identity = (incarnation, lineage)
+                let liveOlder = try ConversationHistoryPage.cursor(result["historyOlder"])
+                // Rows the window let go of at its start are still
+                // the chat's: the window then starts at an earlier
+                // edge, as one read from the middle of the chat
+                // does, and the reader scrolls back to them as to
+                // any earlier rows. A chat whose every row was
+                // loaded had no edge to keep, so rows that left its
+                // start as it grew left none, and came back only
+                // when the chat was opened again.
+                let edge = ConversationCursor(incarnation: incarnation, lineage: lineage, entry: first.id)
+                let trimmed = first.id != merged.first?.id
+                let older: ConversationCursor?? = first.id == projected.first?.id ? .some(liveOlder ?? (trimmed ? edge : nil))
+                    : view.olderPage.cursor != nil || trimmed ? .some(edge) : .none
+                if let older, older != view.olderPage.cursor {
+                    if !view.olderPage.loading { view.olderPage = .init(cursor: older) }
+                    // An earlier page is being read from the
+                    // current boundary: a streamed token must not
+                    // end that read or start a second one. Only a
+                    // first row that really moved replaces the
+                    // cursor, and the read then drops what it got.
+                    else if older?.entry != view.olderPage.cursor?.entry { view.olderPage.cursor = older }
+                }
+                if view.before != view.olderPage.cursor?.entry { view.before = view.olderPage.cursor?.entry }
+            }
+            if view.historyState == .dormant || view.historyState == .empty { view.historyState = messages.isEmpty ? .empty : .preparing }
+        }
+    }
+    /// The line under the composer that says what the chat's tools may do,
+    /// unless something the reader has to review is there instead.
+    private func applyToolNotice(_ result: [String: WireValue], to view: SessionDisplay, id: String, item: ChatRecord) {
+        let notice = item.isBackgroundTask ? (record(id)?.backgroundTaskNotice ?? "Tools disabled · Title generation") : item.connectionTest == true || item.workspaceID == WorkspaceRecord.scratchID ? "Tools disabled · Connection test" : item.toolMode == ChatRecord.readOnlyTools ? "Read-only tools" : ""
+        // An interruption or preflight explanation stays until the
+        // user has reviewed it; the static tool notice must not replace it.
+        if view.notice != notice, !view.uncertain, view.failureMessage == nil { view.notice = notice }
+        if let preflight = result["preflightError"]?.string { if view.failureMessage == nil { view.notice = preflight }; view.uncertain = true }
+    }
+    /// The chat's receipts, its messages still drawn as sending, and its
+    /// pending submissions, settled against what the snapshot says. Returns
+    /// false when the snapshot stopped applying during a store write
+    /// (`snapshotApplies`), and the snapshot stops there.
+    private func settleSnapshotIntents(_ result: [String: WireValue], view: SessionDisplay, id: String, item: ChatRecord,
+                                       host: HostSupervisor, connection: UUID, helperQueue: [[String: WireValue]]?) async throws -> Bool {
+        func current() -> Bool { snapshotApplies(id: id, view: view, item: item, host: host, connection: connection) }
+        // The chat's pending submissions come from the store only when
+        // they can have changed since the last read: the app wrote one
+        // (`pendingIntentsChanged`), or this snapshot's receipts settle
+        // one. Two reads per streamed token held up the next snapshot.
+        //
+        // A snapshot leaves the receipts out when none changed since the
+        // revision sent back; they are then the ones held. Settling runs
+        // against those too, so a settle cut short, or a record written
+        // after its receipt arrived, still settles without a new receipt.
+        if let carried = result["commands"]?.array {
+            view.receipts = carried.compactMap(\.object); view.commandsRevision = result["commandsRevision"]?.string
+        }
+        let receipts = view.receipts
+        // A message sent from here that the helper took elsewhere —
+        // refused at delivery, removed, or held by a paused queue —
+        // leaves the transcript, and the panel shows it at once.
+        if view.settleSending(receipts: receipts, queued: Set((helperQueue ?? []).compactMap { $0["turnId"]?.string })), let helperQueue {
+            let queue = view.panelQueue(helperQueue); if view.queue != queue { view.queue = queue }
+        }
+        let revision = view.pendingIntentRevision
+        var intents: [CommandIntent]
+        if let known = view.pendingIntents, known.revision == revision { intents = known.intents }
+        else {
+            view.intentReads += 1
+            intents = try await store?.list(CommandIntent.self, kind: "pending:\(id)") ?? []
+            guard current() else { return false }
+        }
+        var settled: Set<String> = []
+        for var intent in intents {
+            guard let receipt = receipts.last(where: { $0["commandId"]?.string == intent.id }), let state = receipt["state"]?.string,
+                  state != "dispatched" else { continue }
+            intent.state = state; intent.text = ""; intent.attachments = nil; intent.skills = nil
+            try await store?.put(intent, kind: "receipt:\(id)", id: intent.id)
+            guard current() else { return false }
+            try await store?.remove(kind: "pending:\(id)", id: intent.id)
+            guard current() else { return false }
+            settled.insert(intent.id)
+        }
+        if !settled.isEmpty { intents.removeAll { settled.contains($0.id) } }
+        // Held against the revision read: a write during the awaits
+        // above moves the revision on, and the next snapshot reads again.
+        view.pendingIntents = (revision, intents)
+        if intents != view.recovered { view.recovered = intents }
+        if view.recovered.isEmpty { view.uncertain = false }
+        return true
     }
     /// Every write of a chat's pending submissions calls this, so the
     /// snapshot loop reads them again instead of trusting what it holds.

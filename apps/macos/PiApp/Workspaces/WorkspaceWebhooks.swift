@@ -29,7 +29,7 @@ extension WorkspaceModel {
     /// imported history, archived chats or unsaved sides.
     func webhookEligible(_ id: String) -> Bool {
         guard let item = chatRecord(id), !isEphemeral(id) else { return false }
-        return !item.isBackgroundTask && item.connectionTest != true && !item.imported && !item.isArchived && item.workspaceID != WorkspaceRecord.scratchID
+        return !item.isUtilityChat && !item.imported && !item.isArchived && item.workspaceID != WorkspaceRecord.scratchID
     }
     /// Whether the chat sends the webhook when it finishes.
     func sendsWebhook(_ id: String) -> Bool { activeWebhook != nil && webhookEligible(id) && chatRecord(id)?.webhookOff != true }
@@ -144,7 +144,7 @@ extension WorkspaceModel {
         let prompt = WebhookPrompt.text(context: context, parameters: parameters, instructions: instructions, budget: budget)
         let request = MiniModelRequest(model: route.model, contextWindow: route.contextWindow, maxOutputTokens: route.maxOutputTokens,
                                        modelOutputLimit: route.modelOutputLimit, thinkingLevel: route.thinkingLevel, prompt: prompt,
-                                       task: "webhook", title: "Webhook notification", timeout: 60, name: "mini model's request")
+                                       task: BackgroundRequestKind.webhook.raw, title: "Webhook notification", timeout: 60, name: "mini model's request")
         func answer(_ messages: [TranscriptMessage]) throws -> String {
             guard let answer = messages.last(where: { $0.role == "assistant" && $0.kind == nil }), !answer.endedUnfinished else {
                 throw HostError.failure("The mini model did not answer.")

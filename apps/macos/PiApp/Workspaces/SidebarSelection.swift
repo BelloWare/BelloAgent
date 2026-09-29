@@ -79,7 +79,7 @@ extension WorkspaceModel {
     /// tests never travel, exactly as the menu refuses to move them.
     func dragSessionIDs(for id: String, in projectID: String) -> [String] {
         guard markedSessionIDs.contains(id) else { return [id] }
-        let ids = markedChats.filter { $0.workspaceID == projectID && !$0.isBackgroundTask && $0.connectionTest != true }.map(\.id)
+        let ids = markedChats.filter { $0.workspaceID == projectID && !$0.isUtilityChat }.map(\.id)
         return ids.contains(id) ? ids : [id]
     }
 
@@ -117,7 +117,7 @@ extension WorkspaceModel {
     /// Moves every marked chat of one project into a topic, as one transaction,
     /// the same way the single-chat menu and a drop do.
     func moveMarkedSessions(toTopic topicID: String?) {
-        let chats = markedChats.filter { !$0.isBackgroundTask && $0.connectionTest != true }
+        let chats = markedChats.filter { !$0.isUtilityChat }
         guard let projectID = markedProjectID, !chats.isEmpty else {
             error = "Move chats that are all in the same project."; return
         }

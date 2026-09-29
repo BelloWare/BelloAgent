@@ -212,7 +212,7 @@ extension WorkspaceModel {
     /// A row's second line while it has no figures to show: its state, and the
     /// connection it runs on when there is more than one to tell apart.
     func sidebarRowSubtitle(_ chat: ChatRecord, namesConnection: Bool) -> String {
-        let state = chat.isArchived ? "Archived" : chat.imported ? "Imported" : chat.toolMode == "read-only" ? "Read-only" : "Ready"
+        let state = chat.isArchived ? "Archived" : chat.imported ? "Imported" : chat.toolMode == ChatRecord.readOnlyTools ? "Read-only" : "Ready"
         guard namesConnection, !chat.imported, let connection = profiles.first(where: { $0.id == chat.profileID }) else { return state }
         return state + " \u{b7} " + connection.name
     }
@@ -253,7 +253,7 @@ extension WorkspaceModel {
                 liveIdentity: displays[chat.id].map(ObjectIdentifier.init),
                 hasSide: entry.hasChildren || side?.kept == false,
                 expanded: !folded.contains(chat.id),
-                draggable: projectDraggable && !chat.isBackgroundTask && chat.connectionTest != true,
+                draggable: projectDraggable && !chat.isUtilityChat,
                 subtitle: sidebarRowSubtitle(chat, namesConnection: namesConnection),
                 available: ChatRowMetrics.availableWidth(sidebar: sidebarWidth, indent: indent, depth: entry.depth),
                 indent: indent + CGFloat(min(entry.depth, 3) * 14)))

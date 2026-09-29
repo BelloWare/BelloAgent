@@ -443,8 +443,6 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var before: String?
     @Published var hostBefore: Double?
     var loadingEarlier = false
-    /// Set once the first page has been checked to begin at a user message.
-    var pageStartEnsured = false
     @Published var loading = false { didSet { if loading != oldValue { activityChanges.send() } } }
     var pinnedHistoryIDs: Set<String> = []
     var scrollAnchor: TranscriptAnchor?

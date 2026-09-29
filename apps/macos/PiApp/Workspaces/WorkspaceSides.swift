@@ -19,7 +19,10 @@ struct SideRecord: Identifiable {
     var topicID: String?
     /// The side's own cost limit; nil runs it under the Settings default.
     var costLimit: CostLimit? = nil
-    var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: "read-only", model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, topicID: topicID, parentSessionID: parentID, costLimit: costLimit) }
+    /// What follows its chat's title in a new side's, until its first
+    /// message names it.
+    static let titleSuffix = " — side"
+    var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: ChatRecord.readOnlyTools, model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, topicID: topicID, parentSessionID: parentID, costLimit: costLimit) }
 }
 struct SideKeepIntent: Codable, Sendable { var chat: ChatRecord }
 
@@ -69,7 +72,7 @@ extension WorkspaceModel {
         let quoted = quote.text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
             .components(separatedBy: "\n").map { "> " + $0 }.joined(separator: "\n")
         let draft = existingDraft + (existingDraft.isEmpty ? "" : "\n\n") + quoted + "\n\n"
-        guard draft.utf8.count <= 262_144 else { error = "The quoted draft exceeds 256 KiB. Select a shorter passage."; return }
+        guard draft.utf8.count <= SubmissionLimits.messageBytes else { error = "The quoted draft exceeds 256 KiB. Select a shorter passage."; return }
         openSide(parentID: parentID)
         guard let info = sides[parentID], info.pending, let view = displays[info.id] else { return }
         view.draft = draft; view.directCommand = false; view.completionVisible = false; view.completionToken = nil
@@ -97,7 +100,7 @@ extension WorkspaceModel {
         }
         let id = UUID().uuidString, view = SessionDisplay(id: id)
         view.historyState = .empty; view.selectionMetadataLoaded = true
-        var info = SideRecord(id: id, parentID: parentID, workspaceID: parent.workspaceID, profileID: parent.profileID, title: parent.title + " — side", model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
+        var info = SideRecord(id: id, parentID: parentID, workspaceID: parent.workspaceID, profileID: parent.profileID, title: parent.title + SideRecord.titleSuffix, model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
         info.topicID = effectiveTopicID(for: parent)
         if question.isEmpty {
             // Nothing is created until the first message: no intent, journal or helper session.
@@ -469,11 +472,11 @@ extension WorkspaceModel {
     func bringBack(_ text: String, from id: String, replace: Bool) throws {
         guard !text.isEmpty, let info = side(id), let parent = displays[info.parentID] else { throw HostError.failure("The parent draft is unavailable") }
         let draft = replace || parent.draft.isEmpty ? text : parent.draft + "\n\n" + text
-        guard draft.utf8.count <= 262_144 else { throw HostError.failure("The combined draft exceeds 256 KiB. Shorten the summary first.") }
+        guard draft.utf8.count <= SubmissionLimits.messageBytes else { throw HostError.failure("The combined draft exceeds 256 KiB. Shorten the summary first.") }
         parent.draft = draft; parent.directCommand = false; parent.completionVisible = false; draftChanged(parent)
     }
     func enableEditing(_ id: String) {
-        guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == "read-only", displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else { error = "Close the saved side panel and wait for idle before changing tools."; return }
+        guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else { error = "Close the saved side panel and wait for idle before changing tools."; return }
         guard store != nil else { error = StoreError.unavailable.localizedDescription; return }
         let question = ChatQuestion(title: "Enable editing tools for this saved chat?",
                                     detail: "Future turns may run shell commands and change files in this project with your account's permissions.",
@@ -485,7 +488,7 @@ extension WorkspaceModel {
     }
     func enableEditingAfterConfirmation(_ id: String) async throws {
         guard let store else { throw StoreError.unavailable }
-        guard var item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == "read-only", displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else {
+        guard var item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else {
             throw HostError.failure("Close the saved side panel and wait for idle before changing tools.")
         }
         let view = displays[id]
@@ -495,9 +498,9 @@ extension WorkspaceModel {
             guard let host = hosts[item.workspaceID], host.isReady else { throw HostError.failure("Wait for this project's host to recover before changing tools.") }
             _ = try await host.request("session.close", sessionID: id); opened.remove(id)
         }
-        item.toolMode = "editing"
+        item.toolMode = ChatRecord.editingTools
         try await store.put(item, kind: "chat", id: id)
-        if let index = chats.firstIndex(where: { $0.id == id }) { chats[index].toolMode = "editing" }
+        if let index = chats.firstIndex(where: { $0.id == id }) { chats[index].toolMode = ChatRecord.editingTools }
         displays[id]?.notice = "Editing tools apply to the next turn."
     }
 }

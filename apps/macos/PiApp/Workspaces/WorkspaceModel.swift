@@ -341,8 +341,6 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// again — no helper, read or write. Every task that resumes after an
     /// await checks it.
     var isShutDown = false
-    /// The old name of `isShutDown`, until `WorkspaceRefresh.swift` reads the new one.
-    var accountingStopped: Bool { isShutDown }
     /// Owned by `WorkspaceChatLifecycle.swift`: onboarding creates exactly one
     /// first chat however many times its button is pressed.
     var creatingOnboardingChat = false

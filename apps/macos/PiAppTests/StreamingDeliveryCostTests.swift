@@ -156,7 +156,6 @@ final class StreamingDeliveryCostTests: XCTestCase {
         try await model.reloadConfiguration()
         let chat = ChatRecord(id: "chat", workspaceID: "project", title: "Chat", path: nil, profileID: "profile")
         let view = SessionDisplay(id: chat.id)
-        view.pageStartEnsured = true
         model.chats = [chat]; model.displays[chat.id] = view; model.selectedID = chat.id; model.selected = view
         let commands = DeliveryCommandLog(), host = HostSupervisor(commandSender: { commands.frames.append($0) })
         try await host.connect(cwd: root, state: root.appendingPathComponent("host"))

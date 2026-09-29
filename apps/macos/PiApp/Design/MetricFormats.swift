@@ -1,8 +1,8 @@
 import Foundation
 
-/// How every figure on a pill, in a pill's dialog and in the per-request
-/// ledger is written. One place, so a token count reads the same under the
-/// composer, at the end of a turn and in Session info.
+/// How every figure on a pill, in a pill's dialog, in the per-request
+/// ledger and on a sidebar row is written. One place, so a token count reads
+/// the same under the composer, at the end of a turn and in Session info.
 ///
 /// Pure functions over validated numbers: an unobservable value is never
 /// invented, and a partial cache hit is never rounded up into a full one.
@@ -34,6 +34,21 @@ enum MetricFormat {
     /// `15.8K tok` for a pill, `15,800 tok` for a dialog.
     static func tokenCount(_ value: Double) -> String { tokens(value) + " tok" }
     static func exactTokenCount(_ value: Double) -> String { exactTokens(value) + " tok" }
+
+    /// `12.3k tok`, `1.0M tok`: a sidebar row's count, one decimal of its
+    /// unit always and the letter lowercase. Rounded as `tokens` rounds, and
+    /// written in the next unit once that reaches a thousand of one: 999,950
+    /// is `1.0M tok`, never `1000.0k tok`, and 999.5 is `1.0k tok`.
+    static func rowTokenCount(_ value: Double) -> String {
+        guard let value = observed(value) else { return "—" }
+        if value.rounded() < 1_000 { return whole(value) + " tok" }
+        let units: [(scale: Double, letter: String)] = [(1_000, "k"), (1_000_000, "M"), (1_000_000_000, "B")]
+        for (index, unit) in units.enumerated() {
+            let tenths = (value / unit.scale * 10).rounded()
+            if tenths < 10_000 || index == units.count - 1 { return String(format: "%.1f", tenths / 10) + unit.letter + " tok" }
+        }
+        return "—"
+    }
 
     // MARK: Cache hit
 
@@ -154,16 +169,40 @@ enum MetricFormat {
         return "$" + amount + (unit ? " USD" : "")
     }
 
+    /// Dollars as a small label writes them: cents, `$4.13`, and under a cent
+    /// up to `places` places, `$0.0042`. `padded` keeps every sub-cent figure
+    /// `places` wide (`$0.0050`, a sidebar row); otherwise its trailing zeros
+    /// go (`$0.005`, a cost limit). Rounded half-up as every amount is: an
+    /// amount whose rounding reaches a cent is written in cents, `$0.01`,
+    /// never `$0.0100`, and one too small for `places` reads `<$0.0001`,
+    /// never `$0.0000`. `value` is finite and above zero.
+    static func centsUSD(_ value: Double, places: Int, padded: Bool) -> String {
+        let small = roundedDecimal(value, places: places)
+        if small >= Decimal(sign: .plus, exponent: -2, significand: 1) { return "$" + fixed(roundedDecimal(value, places: 2), places: 2) }
+        if small == 0 { return "<$" + fixed(Decimal(sign: .plus, exponent: -places, significand: 1), places: places) }
+        return "$" + (padded ? fixed(small, places: places) : NSDecimalNumber(decimal: small).stringValue)
+    }
+
     /// `value`'s shortest decimal form, rounded half-up at `places`, with no
     /// trailing zeros. The gateway reports decimal prices, and a binary
     /// double is only near them: 0.000421875 at eight places is 0.00042188,
     /// never the …87 that rounding the binary value gives. The same rule
     /// everywhere is what makes one cost read the same everywhere.
     private static func halfUp(_ value: Double, places: Int) -> String {
+        NSDecimalNumber(decimal: roundedDecimal(value, places: places)).stringValue
+    }
+    /// `value` as the decimal it is written as, rounded half-up at `places`.
+    private static func roundedDecimal(_ value: Double, places: Int) -> Decimal {
         var decimal = Decimal(string: "\(value)") ?? Decimal(value)
         var rounded = Decimal()
         NSDecimalRound(&rounded, &decimal, places, .plain)
-        return NSDecimalNumber(decimal: rounded).stringValue
+        return rounded
+    }
+    /// A rounded amount with exactly `places` decimals: `4.10`, `0.0050`.
+    private static func fixed(_ value: Decimal, places: Int) -> String {
+        let parts = NSDecimalNumber(decimal: value).stringValue.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
+        let fraction = parts.count > 1 ? String(parts[1]) : ""
+        return String(parts[0]) + "." + fraction + String(repeating: "0", count: max(0, places - fraction.count))
     }
 
     /// Three significant digits and a decimal exponent, `1.23e-9`, the
