@@ -1,6 +1,6 @@
 # Bello Agent 0.1.114 — faster redraws, chats drawn once, a native Changes diff, sheets that let go
 
-Status: candidate; publication pending.
+Status: publicly released and verified at 2026-09-29 11:35:46 UTC.
 Starting main: `bbeec62ad4070f3cfd2bde1b5d6df8ab6047de80` (0.1.113's verified record).
 
 ## Scope
@@ -94,9 +94,31 @@ Timings are the developer's, from Release builds unless noted.
 - `ChangesSheetFrameTests.testAClosedSheetLetsGoOfWhatItRead` failed once in
   development, at load 12 with another agent's test app running, and passed 8
   of 8 otherwise; its agent is investigating it for the next release.
+- **Live compaction test, fixture mode, on the release helper:** 3 of 3
+  scenarios passed (mid-run recalled 10 of 10 markers); reported cost $0.82 of
+  the fixture's $5.00 cap (synthetic).
+- The helper's Release build printed two compiler warnings, for follow-up:
+  `SessionOlderRows.swift:114` (new in this release) captures a non-Sendable
+  `UnsafeMutableBufferPointer` in a `@Sendable` closure, which Swift 6 mode
+  would reject; each lane writes only its own indices (`at += lanes`), so the
+  writes do not overlap. `JournalSlimming.swift:83` (since 0.1.113) writes
+  `copyJournal` without reading it.
 - Installation and updater rehearsals are excluded by the owner's standing
   instruction.
 
 ## Publication
 
-Pending.
+- Release source: `0ef6ff75e348ac7eaf935b435c8b71cb9d0f4977`, pushed to GitHub `main`; annotated tag
+  `v0.1.114` is pushed and resolves to that commit.
+- Website publication: `dee17af66c5e7f44d61f8adf8d056884519f5aef`, pushed to `BelloWare/belloware.com` `main`.
+- Signed/notarized Bello Agent 0.1.114, build 118. App notarization
+  `44f503fc-ab5b-456d-a121-a095ba28a703` and DMG notarization `d19b2eec-cf03-480b-9d8c-0856faa47965` were accepted. Stapling,
+  signature, Gatekeeper and artifact validation passed.
+- `BelloAgent-0.1.114.dmg`: **11,442,935 bytes (10.91 MiB)**; SHA-256
+  `ef234e46c5e394f338bf2fb8366f3d983acc3b2645494f264b1f2292ff67c2be`.
+- At 2026-09-29 11:35:46 UTC, the public product page linked to 0.1.114.
+  `scripts/verify-published.py` downloaded the public archive, verified its
+  SHA-256 and Ed25519 signature, and confirmed that both public update feeds
+  match the intended release and are byte-identical.
+- No install or updater rehearsal was performed, at the owner's standing
+  instruction.
