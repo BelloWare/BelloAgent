@@ -42,6 +42,15 @@ struct GitCommitFileChips: View {
     }
 }
 
+/// How many diff rows have built their view tree. A test seam, not
+/// diagnostics: a long diff must build the rows that come into view and no
+/// others, and that is only checkable by counting.
+@MainActor enum GitDiffRenderCount {
+    private(set) static var rows = 0
+    static func reset() { rows = 0 }
+    static func built() { rows &+= 1 }
+}
+
 /// Unified or side-by-side diff rendered as file cards with hunk headers,
 /// old/new line numbers and tinted added/removed rows.
 struct DiffView: View {
@@ -143,6 +152,7 @@ struct DiffView: View {
     }
 
     private func diffRow(_ line: GitDiffLine) -> some View {
+        GitDiffRenderCount.built()
         let tint = tint(line.kind)
         let marker = switch line.kind { case .added: "+"; case .removed: "−"; case .context: " "; case .note: "\\" }
         return HStack(alignment: .top, spacing: 0) {
@@ -161,7 +171,8 @@ struct DiffView: View {
 
     /// Old text on the left, new text on the right; a blank half is a line that exists only on the other side.
     private func splitRow(_ row: GitSplitRow) -> some View {
-        HStack(alignment: .top, spacing: 0) {
+        GitDiffRenderCount.built()
+        return HStack(alignment: .top, spacing: 0) {
             splitHalf(row.left, number: row.left?.oldNumber, blank: row.left == nil)
             Rectangle().fill(Color.piHairline).frame(width: 1)
             splitHalf(row.right, number: row.right?.newNumber, blank: row.right == nil)

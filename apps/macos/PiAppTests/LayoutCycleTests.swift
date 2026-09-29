@@ -3,30 +3,32 @@ import SwiftUI
 import AppKit
 @testable import PiApp
 
+/// The layout cycles SwiftUI reported while `body` ran: standard error goes
+/// to a file meanwhile, and what AttributeGraph wrote there is counted.
+@MainActor func layoutCycles(_ body: () async throws -> Void) async throws -> Int {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("cycles-" + UUID().uuidString + ".log")
+    FileManager.default.createFile(atPath: file.path, contents: nil)
+    let handle = try FileHandle(forWritingTo: file)
+    fflush(stderr)
+    let saved = dup(STDERR_FILENO)
+    dup2(handle.fileDescriptor, STDERR_FILENO)
+    var failure: Error?
+    do { try await body() } catch { failure = error }
+    fflush(stderr)
+    dup2(saved, STDERR_FILENO); close(saved); try? handle.close()
+    let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+    try? FileManager.default.removeItem(at: file)
+    if let failure { throw failure }
+    return text.components(separatedBy: "AttributeGraph: cycle detected").count - 1
+}
+
 /// SwiftUI reports a dependency cycle in a view graph as
 /// "=== AttributeGraph: cycle detected through attribute … ===" on standard
 /// error: it broke the cycle with a stale value, and the view laid out again.
 /// These count them while the window, its sheets and its other windows are
 /// shown and the appearance changes, as the screenshot gallery does.
 final class LayoutCycleTests: XCTestCase, SerialTestLane {
-    /// The cycles reported while `body` ran: standard error goes to a file
-    /// meanwhile, and what AttributeGraph wrote there is counted.
-    @MainActor func cycles(_ body: () async throws -> Void) async throws -> Int {
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("cycles-" + UUID().uuidString + ".log")
-        FileManager.default.createFile(atPath: file.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: file)
-        fflush(stderr)
-        let saved = dup(STDERR_FILENO)
-        dup2(handle.fileDescriptor, STDERR_FILENO)
-        var failure: Error?
-        do { try await body() } catch { failure = error }
-        fflush(stderr)
-        dup2(saved, STDERR_FILENO); close(saved); try? handle.close()
-        let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
-        try? FileManager.default.removeItem(at: file)
-        if let failure { throw failure }
-        return text.components(separatedBy: "AttributeGraph: cycle detected").count - 1
-    }
+    @MainActor func cycles(_ body: () async throws -> Void) async throws -> Int { try await layoutCycles(body) }
 
     @MainActor private func settle(_ seconds: Double) async throws { try await Task.sleep(for: .milliseconds(Int(seconds * 1000))) }
 
