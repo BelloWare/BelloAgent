@@ -80,6 +80,11 @@ extension TranscriptActions {
 enum TranscriptMetrics {
     static let proseWidth: CGFloat = 640
     static let pageWidth: CGFloat = 840
+    /// The room above a page's first row and below its last.
+    static let pageTopInset: CGFloat = 12
+    static let pageBottomInset: CGFloat = 13
+    /// How much narrower than its pane a page's rows are, both sides together.
+    static let pageGutter: CGFloat = 48
 }
 
 /// The dots between figures on a work or turn line, as the stylesheet drew them.

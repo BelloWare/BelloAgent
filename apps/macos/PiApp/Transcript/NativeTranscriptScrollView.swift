@@ -235,6 +235,22 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// reached, so the pass does not recurse back into mounting.
     private var placingCorrection = false
     static let bufferCorrectionLimit = 8
+    /// The viewport and the band around it that the page keeps ready to
+    /// draw: half a screen above and below, and never less than 240 points.
+    static func buffered(_ viewport: CGRect) -> CGRect { viewport.insetBy(dx: 0, dy: -bufferMargin(viewport.height)) }
+    static func bufferMargin(_ viewportHeight: CGFloat) -> CGFloat { max(240, viewportHeight / 2) }
+    /// The rows a pass measures when its estimates put every place the
+    /// reader could be past the end of the page.
+    static let fallbackBandRows = 12
+    /// A page this long in all, or holding a reply this long, is measured
+    /// from its viewport outward even when few of its rows are unmeasured.
+    static let richPageBytes = 32_768
+    static let richReplyBytes = 8_192
+    /// Where "Ready for a conversation." stands on an empty page, and how
+    /// tall that page is above its bottom inset.
+    static let emptyLabelTop: CGFloat = 40
+    static let emptyLabelHeight: CGFloat = 22
+    static let emptyPageHeight: CGFloat = 74
     private var liveResizing = false
     /// What the last idle unit spent placing the page. The next one measures
     /// rows for at least that long before placing it again.
@@ -906,7 +922,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         guard placedWidth > 0 else { return }
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.mountSeconds += TranscriptLayoutClock.now - clock } }
-        var buffered = clip.bounds.insetBy(dx: 0, dy: -max(240, clip.bounds.height / 2))
+        var buffered = Self.buffered(clip.bounds)
         let selected = rowOwningFirstResponder()
         page?.pinSelectedRow(selected?.contentItem)
         // No estimate is ever drawn: a row standing at one that the reader has
@@ -925,7 +941,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             placingCorrection = true
             layoutNow()
             placingCorrection = false
-            buffered = clip.bounds.insetBy(dx: 0, dy: -max(240, clip.bounds.height / 2))
+            buffered = Self.buffered(clip.bounds)
         }
         var cold = false
         for row in rows {
@@ -1004,16 +1020,11 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// be, because every row it picks is then measured properly.
     private func exactBand(width: CGFloat, viewportHeight: CGFloat, parking: Bool) -> Set<Int> {
         guard !rows.isEmpty else { return [] }
-        var tops: [CGFloat] = []
-        tops.reserveCapacity(rows.count + 1)
-        var y: CGFloat = 12
-        for row in rows {
-            tops.append(y)
-            y += row.measuredHeight(width: width) ?? (row.neverMeasured ? row.estimatedHeight(width: width) : max(1, row.frame.height))
-        }
-        tops.append(y)
-        let total = y + 13
-        let buffer = max(240, viewportHeight / 2)
+        let tops = Self.rowTops(rows.map { row in
+            row.measuredHeight(width: width) ?? (row.neverMeasured ? row.estimatedHeight(width: width) : max(1, row.frame.height))
+        })
+        let total = tops[rows.count] + TranscriptMetrics.pageBottomInset
+        let buffer = Self.bufferMargin(viewportHeight)
         let bottom = max(0, total - viewportHeight)
         var wanted: [CGFloat] = []
         if let opening = page?.preferredOpeningRowID, let index = rows.firstIndex(where: { $0.itemID == opening }) { wanted.append(tops[index]) }
@@ -1039,8 +1050,23 @@ final class TranscriptNativeScrollView: NSScrollView {
         }
         // A page whose estimates put every window off the end still measures
         // something: the rows at the parked position.
-        if band.isEmpty { for index in 0..<min(rows.count, 12) { band.insert(index) } }
+        if band.isEmpty { for index in 0..<min(rows.count, Self.fallbackBandRows) { band.insert(index) } }
         return band
+    }
+
+    /// Where each row of these heights starts when they are placed in order
+    /// from the top of the page, as `layoutRows` places them, and where the
+    /// last one ends.
+    static func rowTops(_ heights: [CGFloat]) -> [CGFloat] {
+        var tops: [CGFloat] = []
+        tops.reserveCapacity(heights.count + 1)
+        var y = TranscriptMetrics.pageTopInset
+        for height in heights {
+            tops.append(y)
+            y += height
+        }
+        tops.append(y)
+        return tops
     }
 
     /// The row holding the reader's selection, found by walking up from the
@@ -1073,7 +1099,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.layoutSeconds += TranscriptLayoutClock.now - clock } }
         if let scroll = enclosingScrollView { page?.viewportChanged(scroll.contentView.bounds.size) }
         observeViewport()
-        let nextWidth = max(1, min(TranscriptMetrics.pageWidth, width - 48))
+        let nextWidth = max(1, min(TranscriptMetrics.pageWidth, width - TranscriptMetrics.pageGutter))
         guard dirty || rowWidth != nextWidth || frame.width != width else { mountVisibleRows(); return }
         if Self.reducesMotion { finishDisclosureMotion(settling: false) }
         let moving = motion
@@ -1110,10 +1136,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         let left = (width - nextWidth) / 2
         // Only the buffered viewport needs its native tree laid out now; a row
         // outside it lays out when the reader scrolls it back into the buffer.
-        let buffered: CGRect? = enclosingScrollView.map { scroll in
-            let bounds = scroll.contentView.bounds
-            return bounds.insetBy(dx: 0, dy: -max(240, bounds.height / 2))
-        }
+        let buffered: CGRect? = enclosingScrollView.map { Self.buffered($0.contentView.bounds) }
         // Anchor and viewport stay exact at every width; unseen rows are
         // reconciled later, including after mouse-up and interrupted drags.
         let selected = rowOwningFirstResponder()
@@ -1157,7 +1180,7 @@ final class TranscriptNativeScrollView: NSScrollView {
             let messages: [TranscriptMessage]
             switch row.contentItem { case .message(let m): messages = [m]; case .block(let b): messages = b.replies }
             plainBytes += messages.reduce(0) { $0 + $1.text.utf8.count }
-            return plainBytes > 32_768 || messages.contains { !$0.text.isEmpty && ($0.text.utf8.count > 8192 || $0.text.contains("```") || $0.text.contains("~~~") || $0.text.contains("\n#") || $0.text.contains("|")) || !($0.tools ?? []).isEmpty || !($0.thinking ?? "").isEmpty }
+            return plainBytes > Self.richPageBytes || messages.contains { !$0.text.isEmpty && ($0.text.utf8.count > Self.richReplyBytes || $0.text.contains("```") || $0.text.contains("~~~") || $0.text.contains("\n#") || $0.text.contains("|")) || !($0.tools ?? []).isEmpty || !($0.thinking ?? "").isEmpty }
         } }
         let slicing = firstPlaced == 0 && (unmeasured > Self.sliceThreshold || !unresolved.isEmpty || deferring || (unmeasured > 0 && rich()))
         // A long chat that opens at its newest row is parked there by this very
@@ -1172,7 +1195,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         let loopClock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         var standing: Set<String> = []
         var guesses: Set<String> = []
-        var y: CGFloat = firstPlaced > 0 ? rows[firstPlaced - 1].frame.maxY : 12
+        var y: CGFloat = firstPlaced > 0 ? rows[firstPlaced - 1].frame.maxY : TranscriptMetrics.pageTopInset
         partialPassCount += firstPlaced > 0 ? 1 : 0
         for index in firstPlaced..<rows.count {
             let row = rows[index]
@@ -1240,10 +1263,10 @@ final class TranscriptNativeScrollView: NSScrollView {
         if !standing.isEmpty { scheduleSlice() }
         emptyLabel.isHidden = !rows.isEmpty
         if rows.isEmpty {
-            emptyLabel.frame = CGRect(x: left, y: 40, width: nextWidth, height: 22)
-            y = 74
+            emptyLabel.frame = CGRect(x: left, y: Self.emptyLabelTop, width: nextWidth, height: Self.emptyLabelHeight)
+            y = Self.emptyPageHeight
         }
-        let size = CGSize(width: width, height: y + 13)
+        let size = CGSize(width: width, height: y + TranscriptMetrics.pageBottomInset)
         if frame.size != size { setFrameSize(size) }
         enclosingScrollView?.transcriptReading.geometryChanged()
         // A page that is placing itself lands in this pass, before anything

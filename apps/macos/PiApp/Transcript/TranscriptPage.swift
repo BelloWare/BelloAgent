@@ -700,7 +700,7 @@ struct ContentGeometry: Equatable {
             openingPlacementPending = false
             if frame.minY < bottom - 1 {
                 followsBottom = false
-                pendingAnchor = TranscriptAnchor(id: lastUser.id, offset: 12, followsBottom: false)
+                pendingAnchor = TranscriptAnchor(id: lastUser.id, offset: Double(TranscriptMetrics.pageTopInset), followsBottom: false)
                 openingReadingAnchor = pendingAnchor
             }
         } else if !frames.isEmpty { openingPlacementPending = false }
