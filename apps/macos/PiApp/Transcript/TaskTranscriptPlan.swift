@@ -74,7 +74,7 @@ enum TaskTranscriptPlan {
                 guard let call = segment.part.callID, let card = cards[call] else { continue }
                 let occurrence = ToolOccurrence.key(message.id, call)
                 cardCalls.insert(occurrence)
-                if !["preparing","prepared","running","recorded"].contains(card.state) { shownCalls.insert(occurrence) }
+                if !ToolState.withoutResult.contains(card.state) { shownCalls.insert(occurrence) }
             }
         }
         var issuers: [String: String] = [:]
@@ -278,14 +278,17 @@ enum TaskTranscriptPlan {
                   a.tools?.map(\.id) == b.tools?.map(\.id), a.tools?.map(\.state) == b.tools?.map(\.state) else { return false }
             // Edits and settled-source changes are semantic; only fragments
             // of an ongoing reply/tool may wait for the next presentation.
-            if !a.isStreaming && !(a.tools ?? []).contains(where: { ["preparing", "running"].contains($0.state) }), a != b { return false }
+            if !a.isStreaming && !(a.tools ?? []).contains(where: { ToolState.producing.contains($0.state) }), a != b { return false }
             guard a.responseTimeline?.segments.map(\.id) == b.responseTimeline?.segments.map(\.id),
                   a.responseTimeline?.segments.map(\.state) == b.responseTimeline?.segments.map(\.state),
                   a.responseTimeline?.terminal == b.responseTimeline?.terminal else { return false }
             a.responseTimeline = b.responseTimeline
             a.text = b.text; a.thinking = b.thinking
             if a.tools != nil { for index in a.tools!.indices { a.tools![index].input = b.tools![index].input; a.tools![index].output = b.tools![index].output; a.tools![index].inputBytes = b.tools![index].inputBytes } }
-            // Equivalence of all remaining fields includes warnings and usage.
+            // Every other field must match, warnings among them. Usage is the
+            // caller's to compare: `TranscriptActivity.patch` takes the full
+            // planner when it changes, and a presentation held back for the
+            // text may carry the usage that came with it.
             b.accounting = a.accounting
             guard a == b else { return false }
         }

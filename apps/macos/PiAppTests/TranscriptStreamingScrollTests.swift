@@ -103,10 +103,10 @@ final class TranscriptStreamingScrollTests: XCTestCase {
         var rebuiltForOtherReasons = 0
         /// How much of the frames went into the window's display pass.
         var displaySeconds = 0.0
-        /// Inside the frames: reading the message again, measuring the blocks
+        /// Inside the frames: reading the message again, measuring the text
         /// a token changed, the page's own row loop and mounting.
         var modelSeconds = 0.0
-        var readSeconds = 0.0, blockLayoutSeconds = 0.0, blocksMeasured = 0
+        var readSeconds = 0.0, textLayoutSeconds = 0.0, textMeasures = 0
         var rowLoopSeconds = 0.0, mountSeconds = 0.0, viewportLayoutSeconds = 0.0
         var rebuildFrames: [Double] = []
         /// Frames inside a wheel gesture that laid the arriving row out.
@@ -126,8 +126,8 @@ final class TranscriptStreamingScrollTests: XCTestCase {
         var estimateMean: Double { estimateFrames.isEmpty ? 0 : estimateFrames.reduce(0, +) / Double(estimateFrames.count) }
         var inside: String {
             let n = Double(max(1, frames.count))
-            return String(format: "per frame: the model %.2f ms, reading the message %.2f ms, measuring %.2f blocks %.2f ms, the page's row loop %.2f ms, mounting %.2f ms, laying rows out for the viewport %.2f ms",
-                          modelSeconds * 1000 / n, readSeconds * 1000 / n, Double(blocksMeasured) / n, blockLayoutSeconds * 1000 / n,
+            return String(format: "per frame: the model %.2f ms, reading the message %.2f ms, measuring text %.2f times in %.2f ms, the page's row loop %.2f ms, mounting %.2f ms, laying rows out for the viewport %.2f ms",
+                          modelSeconds * 1000 / n, readSeconds * 1000 / n, Double(textMeasures) / n, textLayoutSeconds * 1000 / n,
                           rowLoopSeconds * 1000 / n, mountSeconds * 1000 / n, viewportLayoutSeconds * 1000 / n)
         }
         var paths: String {
@@ -249,8 +249,8 @@ final class TranscriptStreamingScrollTests: XCTestCase {
             else if TranscriptLayoutClock.rootUpdates > 0 || TranscriptLayoutClock.rowSizingPasses > 0 { run.rebuildFrames.append(cost) }
             if gestureOpen, TranscriptLayoutClock.streamingAppends + TranscriptLayoutClock.rowSizingPasses > 0 { run.layoutsInsideGesture += 1 }
             run.readSeconds += TranscriptLayoutClock.markdownUpdateSeconds
-            run.blockLayoutSeconds += TranscriptLayoutClock.markdownLayoutSeconds
-            run.blocksMeasured += TranscriptLayoutClock.markdownBlocksMeasured
+            run.textLayoutSeconds += TranscriptLayoutClock.markdownLayoutSeconds
+            run.textMeasures += TranscriptLayoutClock.markdownMeasures
             run.rowLoopSeconds += TranscriptLayoutClock.rowLoopSeconds
             run.mountSeconds += TranscriptLayoutClock.mountSeconds
             run.viewportLayoutSeconds += TranscriptLayoutClock.viewportLayoutSeconds

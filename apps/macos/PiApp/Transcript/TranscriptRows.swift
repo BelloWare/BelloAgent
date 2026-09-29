@@ -6,46 +6,14 @@ import AppKit
 // host and app add. Every figure comes from TranscriptActivity; nothing here
 // computes usage or timing itself.
 
-/// What a row can ask the pane to do.
-struct TranscriptActions {
-    var inspect: (String) -> Void = { _ in }
-    var edit: (String) -> Void = { _ in }
-    var copyMessage: (String) -> Void = { _ in }
-    var stop: () -> Void = {}
-    /// Runs the failed turn again from where it stopped.
-    var retry: () -> Void = {}
-    /// Nil for panes that cannot create a child conversation.
-    var quoteReply: ((TranscriptQuote) -> Void)? = nil
-    /// The turn report's info button: the Session Inspector at that turn.
-    var inspectTurn: ((TurnSummary) -> Void)? = nil
-    /// A skill pill in a sent message (the message's id, the skill, the pill)
-    /// was pressed; nil where no popover can open.
-    var skillPressed: ((String, TranscriptSkillUse, NSView) -> Void)? = nil
-    /// The pointer entered or left a sent message's skill pill.
-    var skillHovered: ((String, TranscriptSkillUse, NSView, Bool) -> Void)? = nil
-    /// The cost-limit notice: raise the limit (the editor opens over the
-    /// button it passes), or continue a run stopped there.
-    var costLimit: ((CostLimitNoticeAction, NSView?) -> Void)? = nil
-    /// "Fork from here" on a reply: a new chat that ends at it. The rows
-    /// offer it where the pane's `transcriptForks` says the chat can fork.
-    var fork: ((String) -> Void)? = nil
-    /// An edited message's switcher: the version this many steps away (‹ −1, › +1).
-    var switchVersion: ((String, Int) -> Void)? = nil
-    /// The earlier-version banner's Back to latest.
-    var latestVersion: (() -> Void)? = nil
-    /// Which of the optional actions are offered. A pane makes its actions
-    /// afresh each time it is drawn, and every one of them reaches the chat
-    /// through the model and the session it was made for; what can differ
-    /// between two sets made for the same session is only which are offered.
-    var offered: [Bool] {
-        [quoteReply != nil, inspectTurn != nil, skillPressed != nil, skillHovered != nil, costLimit != nil,
-         fork != nil, switchVersion != nil, latestVersion != nil]
-    }
-}
-
 enum TranscriptMetrics {
     static let proseWidth: CGFloat = 640
     static let pageWidth: CGFloat = 840
+    /// The room above a page's first row and below its last.
+    static let pageTopInset: CGFloat = 12
+    static let pageBottomInset: CGFloat = 13
+    /// How much narrower than its pane a page's rows are, both sides together.
+    static let pageGutter: CGFloat = 48
 }
 
 /// The dots between figures on a work or turn line, as the stylesheet drew them.

@@ -18,7 +18,7 @@ import Foundation
 /// text alone would leave every such row looking changed, and no live reply
 /// would ever take the fast path.
 enum TranscriptStreamingTail {
-    struct Append {
+    struct Append: Equatable {
         /// The reply whose text grew.
         let messageID: String
         /// Its whole text now, not the suffix: the surface reads a prefix of

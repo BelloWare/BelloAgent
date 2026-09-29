@@ -192,6 +192,32 @@ final class TranscriptQuoteSelectionTests: XCTestCase {
         XCTAssertNotNil(model.record(pending.id)); XCTAssertTrue(model.hosts.isEmpty)
     }
 
+    /// Each selection shows a bar of its own, and a bar the reader is done
+    /// with goes: selecting text again and again leaves no window behind.
+    @MainActor func testEveryBarASelectionShowedGoesWhenItIsDismissed() async throws {
+        let model = try model(), parent = try XCTUnwrap(model.selected)
+        let stage = TranscriptStreamingStressTests.Stage(parent); defer { stage.close() }
+        stage.actions.quoteReply = { _ in }; stage.refresh(); await stage.settle()
+        let editor = try answer(in: stage)
+        let selection = stage.document.quoteSelection
+        final class Bars { var shown: [() -> QuoteActionPanel?] = [] }
+        let bars = Bars()
+        // XCTest keeps what AppKit autoreleases until the test returns; the
+        // app's own run loop drains it after every event.
+        autoreleasepool {
+            for length in 4..<14 {
+                editor.setSelectedRange(NSRange(location: 0, length: length)); selection.presentSelection()
+                weak var bar = selection.bar
+                XCTAssertTrue(bar?.isVisible == true)
+                bars.shown.append { bar }
+            }
+            selection.dismiss()
+        }
+        await stage.settle()
+        XCTAssertNil(selection.bar)
+        XCTAssertEqual(bars.shown.compactMap { $0() }.count, 0, "Every bar a selection showed was let go of once it was dismissed")
+    }
+
     @MainActor func testQuotedSideRejectsOversizePublishingAndUnsupportedOriginsWithoutLosingDrafts() throws {
         let model = try model(), quote = TranscriptQuote(messageID: "a", text: "Quoted text")
         model.openQuotedSide(parentID: "parent", quote: quote)

@@ -167,8 +167,8 @@ final class RedrawCostProbeTests: XCTestCase, SerialTestLane {
         let seconds = ProcessInfo.processInfo.systemUptime - wall, busy = Self.mainThreadCPU() - cpu
         let text = view.messages.last?.text.count ?? 0
         typealias C = TranscriptLayoutClock
-        print(String(format: "REDRAW transcript: update %.2f s, layout %.2f s, measure %.2f s (%d rows), markdown update %.2f s + layout %.2f s (%d blocks), row sizing %.2f s (%d passes), root updates %.2f s (%d), host builds %.2f s (%d), viewport layout %.2f s, mount %.2f s, row loop %.2f s, placement %.2f s, validation %.2f s; appends %d estimates %d rebuilds %d",
-                     C.updateSeconds, C.layoutSeconds, C.measureSeconds, C.measuredRows, C.markdownUpdateSeconds, C.markdownLayoutSeconds, C.markdownBlocksMeasured,
+        print(String(format: "REDRAW transcript: update %.2f s, layout %.2f s, measure %.2f s (%d rows), markdown update %.2f s + layout %.2f s (%d text measures), row sizing %.2f s (%d passes), root updates %.2f s (%d), host builds %.2f s (%d), viewport layout %.2f s, mount %.2f s, row loop %.2f s, placement %.2f s, validation %.2f s; appends %d estimates %d rebuilds %d",
+                     C.updateSeconds, C.layoutSeconds, C.measureSeconds, C.measuredRows, C.markdownUpdateSeconds, C.markdownLayoutSeconds, C.markdownMeasures,
                      C.rowSizingSeconds, C.rowSizingPasses, C.rootUpdateSeconds, C.rootUpdates, C.hostBuildSeconds, C.hostBuilds, C.viewportLayoutSeconds,
                      C.mountSeconds, C.rowLoopSeconds, C.placementSeconds, C.validationSeconds, C.streamingAppends, C.streamingEstimates, C.streamingRebuilds))
         withExtendedLifetime(subscriptions) {}

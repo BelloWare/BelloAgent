@@ -139,11 +139,11 @@ class SkillPillButton: NSButton {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control])
         if modifiers.isEmpty {
             switch event.keyCode {
-            case 36, 76, 49: performClick(nil); return
-            case 123: if onKey?(self, .left) == true { return }
-            case 124: if onKey?(self, .right) == true { return }
-            case 51, 117: if onKey?(self, .delete) == true { return }
-            case 53: if onKey?(self, .escape) == true { return }
+            case KeyCode.returnKey, KeyCode.keypadEnter, KeyCode.space: performClick(nil); return
+            case KeyCode.leftArrow: if onKey?(self, .left) == true { return }
+            case KeyCode.rightArrow: if onKey?(self, .right) == true { return }
+            case KeyCode.delete, KeyCode.forwardDelete: if onKey?(self, .delete) == true { return }
+            case KeyCode.escape: if onKey?(self, .escape) == true { return }
             default:
                 if Self.writes(event), onKey?(self, .type) == true, let responder = window?.firstResponder, responder !== self {
                     responder.keyDown(with: event); return

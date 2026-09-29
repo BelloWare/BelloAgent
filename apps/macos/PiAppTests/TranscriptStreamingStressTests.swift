@@ -320,10 +320,10 @@ final class TranscriptStreamingStressTests: TranscriptStressTestCase {
         }
         await stage.settleUntilExact(seconds: 10)
         let elapsed = ProcessInfo.processInfo.systemUptime - started
-        print(String(format: "PERF paint-only environment: a Reports round trip and an appearance switch re-measured %d rows and %d markdown blocks in %.0f ms",
-                     TranscriptLayoutClock.measuredRows, TranscriptLayoutClock.markdownBlocksMeasured, elapsed * 1_000))
+        print(String(format: "PERF paint-only environment: a Reports round trip and an appearance switch re-measured %d rows and %d replies' text in %.0f ms",
+                     TranscriptLayoutClock.measuredRows, TranscriptLayoutClock.markdownMeasures, elapsed * 1_000))
         XCTAssertEqual(TranscriptLayoutClock.measuredRows, 0, "a change of colour or of the enabled state re-measured rows")
-        XCTAssertEqual(TranscriptLayoutClock.markdownBlocksMeasured, 0, "a change of colour or of the enabled state re-measured markdown")
+        XCTAssertEqual(TranscriptLayoutClock.markdownMeasures, 0, "a change of colour or of the enabled state re-measured markdown")
         XCTAssertEqual(stage.document.approximateRowCount, 0, "no row was left standing at an estimate")
         assertStacked(stage, "after the round trip")
     }
@@ -1281,16 +1281,20 @@ final class TranscriptPageStressTests: TranscriptStressTestCase {
         // first turn, and it is long enough to reach the resident cap. The cap
         // counts source messages; a reply is more than one row of them, so the
         // rows it draws are derived rather than counted against the same bound.
+        // The display owns the resident window and cuts it as it takes the
+        // helper's rows (`WorkspaceRefresh`); the page draws what it holds.
         var grown = Array(messages.dropFirst(2))
         for index in 80..<(80 + HistoryWindowPolicy.residentRows) {
             grown.append(TranscriptMessage(id: "u\(index)", role: "user", text: "Question \(index).", at: Double(index * 10), turn: "u\(index)"))
             grown.append(TranscriptMessage(id: "a\(index)", role: "assistant", text: "Answer \(index).", at: Double(index * 10 + 1), turn: "u\(index)"))
         }
-        session.messages = grown
+        let window = TranscriptPaging.window(grown, keepingEarlier: false)
+        XCTAssertLessThanOrEqual(window.count, HistoryWindowPolicy.residentRows)
+        session.messages = window
         stage.refresh()
         await stage.settle()
-        XCTAssertLessThanOrEqual(stage.page.snapshot?.messages.count ?? 0, HistoryWindowPolicy.residentRows,
-                                 "the page keeps at most its resident window of source messages")
+        XCTAssertEqual(stage.page.snapshot?.messages.map(\.id), window.map(\.id),
+                       "the page draws the display's resident window of source messages")
         XCTAssertNil(stage.row("block:a0"), "the oldest turn left the page")
         XCTAssertEqual(session.disclosure.changedCount, 0, "a row that left the page must take its disclosure with it")
         assertStacked(stage, "after the cap dropped the oldest rows")

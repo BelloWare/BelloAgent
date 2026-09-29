@@ -293,7 +293,7 @@ private struct NativeHostedActionRow: View {
             // Keep its data and exact sizes, but no native cards mounted.
             viewport = .null
         }
-        let visible = viewport.isNull ? viewport : viewport.insetBy(dx: 0, dy: -max(240, viewport.height / 2))
+        let visible = viewport.isNull ? viewport : TranscriptNativeDocument.buffered(viewport)
         var corrected = false
         for row in rows {
             if (!visible.isNull && row.frame.intersects(visible)) || containsSelection(row) {
