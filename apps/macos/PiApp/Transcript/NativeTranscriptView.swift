@@ -1947,7 +1947,7 @@ struct NativeTranscriptView: View {
             // Not re-identified by the presentation generation: a new page of
             // the same chat (a revisit, a reload, an earlier version) keeps the
             // bar where it stands instead of replaying its entrance.
-            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion).equatable()
+            LiveTurnBarSlot(turn: page.liveTurn, state: page.state, actions: actions, reduceMotion: reduceMotion, session: ObjectIdentifier(session)).equatable()
         }
         // The run state is read where it is used, never from the value this
         // body happened to be built with: a task runs a turn of the run loop
@@ -2003,13 +2003,18 @@ private struct LiveTurnBarSlot: View, Equatable {
     let state: String
     let actions: TranscriptActions
     let reduceMotion: Bool
+    /// The session the actions were made for. The pane is kept across chats,
+    /// so the same slot shows the next chat's bar: compared without it, a
+    /// bar with the same turn (most often none) kept the actions of the chat
+    /// the reader left, and they held that chat's display in memory.
+    let session: ObjectIdentifier
     @State private var arrived = false
     /// The transcript is drawn again for every page of a streaming reply;
     /// the bar only when its own turn or run state changes. Its actions are
     /// the transcript's, made for the same session (see `NativeTranscriptView`).
     nonisolated static func == (lhs: LiveTurnBarSlot, rhs: LiveTurnBarSlot) -> Bool {
         MainActor.assumeIsolated {
-            lhs.turn == rhs.turn && lhs.state == rhs.state && lhs.reduceMotion == rhs.reduceMotion && lhs.actions.offered == rhs.actions.offered
+            lhs.session == rhs.session && lhs.turn == rhs.turn && lhs.state == rhs.state && lhs.reduceMotion == rhs.reduceMotion && lhs.actions.offered == rhs.actions.offered
         }
     }
     var body: some View {
