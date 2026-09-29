@@ -24,6 +24,9 @@ extension NSColor {
     static let piFill = pi(0x000000, 0.045, dark: 0xFFFFFF, 0.05)
     static let piFillStrong = pi(0x000000, 0.075, dark: 0xFFFFFF, 0.09)
     static let piHairline = pi(0x000000, 0.07, dark: 0xFFFFFF, 0.09)
+    static let piHairlineStrong = pi(0x000000, 0.12, dark: 0xFFFFFF, 0.16)
+    static let piSurface = pi(0xFFFFFF, dark: 0x2E2925)
+    static let piSurfaceSunken = pi(0xF7F2EC, dark: 0x211D1A)
     /// Selected text in the Inspector's whole texts: the brand orange, soft
     /// enough for the ink to read through.
     static let piTextSelection = pi(0xD67520, 0.26, dark: 0xF0A052, 0.32)

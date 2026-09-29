@@ -408,44 +408,36 @@ struct GitPanelView: View {
     @ViewBuilder private var detailPane: some View {
         if controller.panel == .changes {
             if let selection = controller.selection {
-                DiffView(files: controller.diff, title: selection.path, subtitle: selection.staged ? "Staged · index versus HEAD" : "Working tree versus index",
-                         identity: GitController.diffIdentity(path: selection.path, staged: selection.staged), loading: controller.diffLoading, split: $controller.splitDiff, expanded: $controller.wholeDiffShown)
+                GitDiffPane(presentation: controller.presentation) { split, expanded in
+                    DiffView(files: controller.diff, title: selection.path, subtitle: selection.staged ? "Staged · index versus HEAD" : "Working tree versus index",
+                             identity: GitController.diffIdentity(path: selection.path, staged: selection.staged), loading: controller.diffLoading, split: split, expanded: expanded)
+                }
             } else {
                 placeholder("Select a file to see its changes.")
             }
         } else if let detail = controller.detail {
-            ScrollView {
-                VStack(alignment: .leading, spacing: PiSpacing.md) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(detail.commit.subject).font(PiFont.title(17)).foregroundStyle(Color.piInk)
-                        Text("\(detail.commit.author) · \(detail.commit.date.formatted(date: .abbreviated, time: .shortened)) · \(detail.commit.hash)")
-                            .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textSelection(.enabled)
-                        if detail.message.contains("\n") {
-                            Text(detail.message.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
-                                .font(PiFont.body).foregroundStyle(Color.piInkSecondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                        }
-                        if !detail.files.isEmpty {
-                            HStack(spacing: 8) {
-                                Text(detail.summary).font(PiFont.micro.monospacedDigit()).foregroundStyle(Color.piInkSecondary)
-                                if detail.commit.parents.count > 1 { PiBadge(text: "Merge · first parent", tone: .info, icon: "arrow.triangle.merge") }
-                            }.accessibilityIdentifier("git-commit-summary")
-                            GitCommitFileChips(detail: detail, selected: $controller.detailFile, shown: $controller.commitFilesShown,
-                                               showHistory: { controller.showFileHistory($0) })
-                        }
-                    }.padding(.horizontal, PiSpacing.lg).padding(.top, PiSpacing.lg)
-                    if controller.detailDiffDeferred {
+            if controller.detailDiffDeferred {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: PiSpacing.md) {
+                        commitHeader(detail)
                         VStack(alignment: .leading, spacing: 6) {
                             Text("This commit changes \(detail.summary). Its files are listed above; open one to read its diff.")
                                 .font(PiFont.caption).foregroundStyle(Color.piInkSecondary).fixedSize(horizontal: false, vertical: true)
                             Button("Show the whole diff") { controller.loadDeferredCommitDiff() }
                                 .buttonStyle(.piSecondaryCompact).accessibilityIdentifier("git-commit-load-diff")
                         }.padding(.horizontal, PiSpacing.lg)
-                    } else {
-                        DiffView(files: controller.detailFile == nil ? controller.detailDiff : controller.detailFileDiff,
-                                 title: controller.detailFile, subtitle: controller.detailFile == nil ? nil : "In \(detail.commit.shortHash)",
-                                 identity: GitController.diffIdentity(commit: detail.commit.hash, file: controller.detailFile), loading: controller.commitLoading, embedded: true,
-                                 split: $controller.splitDiff, expanded: $controller.wholeDiffShown)
                     }
+                }
+            } else {
+                // The commit's header scrolls away above its diff, as it did
+                // when both were one SwiftUI stack.
+                GitDiffPane(presentation: controller.presentation) { split, expanded in
+                    DiffView(files: controller.detailFile == nil ? controller.detailDiff : controller.detailFileDiff,
+                             title: controller.detailFile, subtitle: controller.detailFile == nil ? nil : "In \(detail.commit.shortHash)",
+                             identity: GitController.diffIdentity(commit: detail.commit.hash, file: controller.detailFile), loading: controller.commitLoading, embedded: true,
+                             lead: AnyView(commitHeader(detail).foregroundStyle(Color.piInk).buttonStyle(.piSecondary).toggleStyle(.switch)),
+                             leadKey: CommitHeaderKey(commit: detail.commit.hash, files: detail.files.count, selected: controller.detailFile, shown: controller.commitFilesShown),
+                             split: split, expanded: expanded)
                 }
             }
         } else if controller.commitLoading {
@@ -454,6 +446,30 @@ struct GitPanelView: View {
             placeholder("Select a commit to see what it changed.")
         }
     }
+
+    /// A commit's subject, author, date and hash, the rest of its message,
+    /// what it changed, and its files as chips.
+    private func commitHeader(_ detail: GitCommitDetail) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(detail.commit.subject).font(PiFont.title(17)).foregroundStyle(Color.piInk)
+            Text("\(detail.commit.author) · \(detail.commit.date.formatted(date: .abbreviated, time: .shortened)) · \(detail.commit.hash)")
+                .font(PiFont.micro).foregroundStyle(Color.piInkTertiary).textSelection(.enabled)
+            if detail.message.contains("\n") {
+                Text(detail.message.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
+                    .font(PiFont.body).foregroundStyle(Color.piInkSecondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+            if !detail.files.isEmpty {
+                HStack(spacing: 8) {
+                    Text(detail.summary).font(PiFont.micro.monospacedDigit()).foregroundStyle(Color.piInkSecondary)
+                    if detail.commit.parents.count > 1 { PiBadge(text: "Merge · first parent", tone: .info, icon: "arrow.triangle.merge") }
+                }.accessibilityIdentifier("git-commit-summary")
+                GitCommitFileChips(detail: detail, selected: $controller.detailFile, shown: $controller.commitFilesShown,
+                                   showHistory: { controller.showFileHistory($0) })
+            }
+        }.padding(.horizontal, PiSpacing.lg).padding(.top, PiSpacing.lg)
+    }
+    /// What the commit header's height depends on, besides the width.
+    private struct CommitHeaderKey: Hashable { let commit: String, files: Int, selected: String?, shown: Int }
 
     private func placeholder(_ text: String) -> some View {
         Text(text).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).frame(maxWidth: .infinity, maxHeight: .infinity)
