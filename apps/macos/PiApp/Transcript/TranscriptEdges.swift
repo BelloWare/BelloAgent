@@ -3,13 +3,13 @@ import AppKit
 
 // The edges of the conversation: where the rows the page holds end and the
 // rest of the chat begins. The page reads what lies beyond an edge as the
-// reader reaches it, so an edge normally shows nothing at all. It speaks up
-// only when it has to: a read that is slow shows a small spinner, one that
-// failed says so with a way to try again, and rows the page will not read on
-// its own (an older window opened on purpose, a short page that has filled
-// itself as often as it may) wait behind one quiet control. Everything here
-// floats over the conversation: nothing that comes or goes at an edge
-// changes the transcript's frame, so no row ever moves for it.
+// reader reaches it, at either end, so an edge normally shows nothing at all.
+// It speaks up only when it has to: a read that is slow shows a small
+// spinner, one that failed says so with a way to try again, and earlier rows
+// the page will not read on its own (a short page that has filled itself as
+// often as it may) wait behind one quiet control. Everything here floats over
+// the conversation: nothing that comes or goes at an edge changes the
+// transcript's frame, so no row ever moves for it.
 
 /// What one edge of the conversation shows.
 enum TranscriptEdge: Equatable {
@@ -39,7 +39,9 @@ enum TranscriptEdge: Equatable {
         // reading it again helps.
         if let error = boundary.error { return boundary.cursor == nil ? .changed(error) : .failed(error) }
         if boundary.loading { return slow ? .loading : .quiet }
-        return boundary.cursor != nil ? .waiting : .quiet
+        // The rows after a window are read as the reader reaches its end, as
+        // the rows before it are at its top: nothing to press.
+        return .quiet
     }
     /// A short name for the marker checks read.
     var name: String {
@@ -119,18 +121,13 @@ struct TranscriptNewerEdge: View {
     var body: some View {
         ZStack {
             switch state {
-            case .quiet: EmptyView()
+            // The rows after the window are read as the reader reaches its
+            // end; there is no control to press for them.
+            case .quiet, .waiting: EmptyView()
             case .loading:
                 TranscriptEdgeSpinner(label: "Loading newer messages")
                     .background(TranscriptEdgeMarker(edge: "newer", kind: state.name, text: ""))
                     .transition(.opacity)
-            case .waiting:
-                TranscriptEdgeSurface {
-                    Button("Load newer messages", action: load).buttonStyle(TranscriptEdgeLinkStyle())
-                        .accessibilityIdentifier("loadNewerHistory")
-                }
-                .background(TranscriptEdgeMarker(edge: "newer", kind: state.name, text: "Load newer messages", action: load))
-                .transition(.opacity)
             case .failed(let error):
                 TranscriptEdgeProblem(title: "Couldn’t load newer messages", detail: error, action: "Retry", perform: load)
                     .background(TranscriptEdgeMarker(edge: "newer", kind: state.name, text: error, action: load))
