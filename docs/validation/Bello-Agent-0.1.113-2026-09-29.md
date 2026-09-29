@@ -1,6 +1,6 @@
 # Bello Agent 0.1.113 — closed sheets let go, saved context readings, old journals slimmed
 
-Status: candidate; publication pending.
+Status: publicly released and verified at 2026-09-29 03:44:50 UTC.
 Starting main: `950ad68740e84384bea19c1164659afd9de9ab63` (0.1.112's verified record).
 
 ## Changes
@@ -24,8 +24,10 @@ The owner approved a performance and consistency batch.
      their lazy stacks.
    - The gallery's "AttributeGraph: cycle detected" reports fell from 2,948 to
      122, most of them having come from closed sheets laid out again on each
-     appearance change. The gallery writes a `GALLERY-CAPTURE` line per
-     screenshot to standard error, so a report can be traced to its screen.
+     appearance change. The gallery writes a `GALLERY-CAPTURE` line to standard
+     error for each capture, so a report can be traced to its screen: 122 of the
+     128 screenshots in the gate; 17c, 17d and 18b, in both appearances, are
+     captured another way and write none.
 2. **A chat shows its saved context reading** (`466cbba`). Showing a chat
    started its project's helper about 0.2 s later only so the context pill
    could count the next request; until then the pill read "Calculating
@@ -120,9 +122,25 @@ The owner approved a performance and consistency batch.
   `JournalSlimmingTriggerTests`: the app asks about large closed native chats
   once and leaves the rest. `SessionOpenPerformanceTests.testSlimmingAKeptJournal`
   is opt-in.
+- **Live compaction test, fixture mode, on the release helper:** 3 of 3
+  scenarios passed (mid-run recalled 10 of 10 markers); reported cost $0.82 of
+  the fixture's $5.00 cap (synthetic).
 - Installation and updater rehearsals are excluded by the owner's standing
   instruction.
 
 ## Publication
 
-Pending.
+- Release source: `e280364c2242ac5f639fed539a92dfad367da13a`, pushed to GitHub `main`; annotated tag
+  `v0.1.113` is pushed and resolves to that commit.
+- Website publication: `5e23f895862652ba23207a187bb1c02c856c9345`, pushed to `BelloWare/belloware.com` `main`.
+- Signed/notarized Bello Agent 0.1.113, build 117. App notarization
+  `765d32e0-a167-4985-a51f-e7109494811e` and DMG notarization `21182111-0595-48c3-8364-f16f567fb462` were accepted. Stapling,
+  signature, Gatekeeper and artifact validation passed.
+- `BelloAgent-0.1.113.dmg`: **11,202,986 bytes (10.68 MiB)**; SHA-256
+  `7973613c9e7721f180f8a5ae005e39f9f50b0fe269393ca30405d251bf57b1b7`.
+- At 2026-09-29 03:44:50 UTC, the public product page linked to 0.1.113.
+  `scripts/verify-published.py` downloaded the public archive, verified its
+  SHA-256 and Ed25519 signature, and confirmed that both public update feeds
+  match the intended release and are byte-identical.
+- No install or updater rehearsal was performed, at the owner's standing
+  instruction.
