@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import AppKit
 @testable import PiApp
+@testable import GitView
 
 /// What the Git panel's test classes share: throwaway repositories, git
 /// itself, a wait for what the panel reads, and a window to put it in. It has

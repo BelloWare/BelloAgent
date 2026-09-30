@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import AppKit
 @testable import PiApp
+@testable import GitView
 
 /// The Changes sheet as the reader meets it: presented over a window, on a
 /// repository with four hundred changed files, a 5,000-line file rewritten

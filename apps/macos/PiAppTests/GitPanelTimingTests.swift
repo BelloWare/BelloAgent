@@ -3,6 +3,7 @@ import SwiftUI
 import AppKit
 import CoreServices
 @testable import PiApp
+@testable import GitView
 
 /// The Git panel's tests that hold a wall-clock figure in Debug: a long patch
 /// opens without stalling the panel, a hostile diff is read in bounded time, a

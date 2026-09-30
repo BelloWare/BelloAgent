@@ -3,6 +3,7 @@ import SwiftUI
 import AppKit
 import CoreServices
 @testable import PiApp
+@testable import GitView
 
 final class GitWorkingTreeWatcherTests: GitPanelTestCase {
     func testLargeGitPatchFailsExplicitlyAndLeavesOtherReadsWorking() async throws {
