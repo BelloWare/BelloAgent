@@ -2,10 +2,12 @@ import SwiftUI
 import AppKit
 import GitView
 
-/// The Changes sheet, laid out like IntelliJ's Git tool window: a branch
-/// menu with fetch, pull, push and stash controls; a changelist with
-/// checkboxes, amend and discard; the history with filters and ref badges;
-/// and a unified or side-by-side diff of whatever is selected.
+/// A project's changes and history, laid out like IntelliJ's Git tool
+/// window: a branch menu with fetch, pull, push and stash controls; a
+/// changelist with checkboxes, amend and discard; the history with filters
+/// and ref badges; and a unified or side-by-side diff of whatever is
+/// selected. Shown in a tab beside the chats or in a window of its own
+/// (`ChangesTab`), over a controller its tab keeps.
 ///
 /// The panel observes its controller, and every change to it runs this body.
 /// Each part below takes only the values it shows and compares on them, so a
@@ -13,64 +15,50 @@ import GitView
 /// it and lets the others pass: the whole panel drawn again for each took a
 /// fifth of a frame and more.
 struct GitPanelView: View {
-    @StateObject private var controller: GitController
-    @PiDismiss private var dismiss
-    /// Where the panel is, and the discard question it has up, if any.
-    @State private var place = GitPanelPlace()
+    @ObservedObject var controller: GitController
+    /// Where the panel is, and the discard question it has up, if any: its
+    /// tab's, so closing the tab takes the question down.
+    @State private var place: GitPanelPlace
     /// The panel's own asker, so a question about discarding is only ever
     /// refused by another question about discarding.
-    @StateObject private var questions = PiQuestion()
+    @StateObject private var questions: PiQuestion
+    /// The project the panel shows, named in its header.
+    let project: String?
 
-    init(roots: [String]) {
-        _controller = StateObject(wrappedValue: GitController(roots: roots))
-    }
-    /// A panel over a controller made elsewhere: the tests that time the
-    /// sheet drive its controller directly, and may keep its place.
-    init(controller: @autoclosure @escaping () -> GitController, place: GitPanelPlace = GitPanelPlace()) {
-        _controller = StateObject(wrappedValue: controller())
+    init(controller: GitController, place: GitPanelPlace = GitPanelPlace(), questions: PiQuestion = PiQuestion(), project: String? = nil) {
+        self.controller = controller; self.project = project
         _place = State(initialValue: place)
+        _questions = StateObject(wrappedValue: questions)
     }
 
     var body: some View {
-        PiSheet("Changes", subtitle: subtitle, symbol: "arrow.triangle.branch", width: 1180, height: 780) {
-            VStack(spacing: 0) {
-                GitPanelToolbar(controller: controller, inputs: GitPanelToolbar.Inputs(controller)).equatable()
-                Rectangle().fill(Color.piHairline).frame(height: 1)
-                // The layout the panel keeps is there from its first frame. A
-                // sheet whose first frame said "Not a git repository", in the
-                // moment before its first read, reported layout cycles on every
-                // update after the panel took its place, until it closed.
-                if controller.statusRead && controller.repositoryRoot == nil && !controller.loading {
-                    notARepository
-                } else {
-                    HStack(spacing: 0) {
-                        sidebar.frame(width: 340)
-                        Rectangle().fill(Color.piHairline).frame(width: 1)
-                        GitPanelDetail(controller: controller, inputs: GitPanelDetail.Inputs(controller)).equatable()
-                    }
+        VStack(spacing: 0) {
+            GitPanelHeader(controller: controller, inputs: GitPanelHeader.Inputs(controller), project: project).equatable()
+            GitPanelToolbar(controller: controller, inputs: GitPanelToolbar.Inputs(controller)).equatable()
+            Rectangle().fill(Color.piHairline).frame(height: 1)
+            // The layout the panel keeps is there from its first frame. A
+            // panel whose first frame said "Not a git repository", in the
+            // moment before its first read, reported layout cycles on every
+            // update after the panel took its place.
+            if controller.statusRead && controller.repositoryRoot == nil && !controller.loading {
+                notARepository
+            } else {
+                HStack(spacing: 0) {
+                    sidebar.frame(width: 340)
+                    Rectangle().fill(Color.piHairline).frame(width: 1)
+                    GitPanelDetail(controller: controller, inputs: GitPanelDetail.Inputs(controller)).equatable()
                 }
             }
-        } actions: {
-            GitPanelActions(controller: controller, working: controller.loading || controller.busy,
-                            close: { [dismiss] in dismiss() }).equatable()
         }
+        .background(Color.piContent)
         // On screen or not, as the panel's own view is: the controller reads
         // and watches only while it is, and a discard question the panel has
-        // up goes down, unanswered, when the panel does.
+        // up goes down, unanswered, when the panel goes or moves.
         .background(GitPanelPresence(place: place, shown: { [controller, place] shown in
             controller.setShown(shown)
             if !shown { place.cancelQuestion() }
-        }, moved: { [place] in place.cancelQuestion() }, closed: { [controller, place] in place.cancelQuestion(); controller.letGo() }))
+        }, moved: { [place] in place.cancelQuestion() }))
         .accessibilityIdentifier("git-panel")
-    }
-
-    private var subtitle: String {
-        guard controller.repositoryRoot != nil else { return "Working-tree changes and history of the project's folders." }
-        var parts = [controller.status.branch.isEmpty ? "detached HEAD" : controller.status.branch]
-        if let upstream = controller.status.upstream { parts.append("tracks \(upstream)") }
-        parts.append("\(controller.status.entries.count) changed")
-        if !controller.stashes.isEmpty { parts.append("\(controller.stashes.count) stashed") }
-        return parts.joined(separator: " · ")
     }
 
     private var notARepository: some View {
@@ -111,22 +99,49 @@ struct GitPanelView: View {
     a.0 === b.0 && a.1 == b.1
 }
 
-/// The spinner, Refresh and Done, at the sheet's top right. Compared as one
-/// view, they are one view in the header's row: in a row of their own, spaced
-/// as the header spaces its parts. Left loose, the header's row stood them
-/// one above the other.
-private struct GitPanelActions: View, Equatable {
-    let controller: GitController
-    let working: Bool
-    let close: @MainActor () -> Void
-    nonisolated static func == (a: Self, b: Self) -> Bool { MainActor.assumeIsolated { samePart((a.controller, a.working), (b.controller, b.working)) } }
-    var body: some View {
-        let _ = RedrawCounter.note("GitPanelActions")
-        HStack(spacing: PiSpacing.md) {
-            if working { PiSpinner(controlSize: .small) }
-            PiIconButton(symbol: "arrow.clockwise", label: "Refresh changes", size: 28) { Task { await controller.refresh() } }
-            Button("Done") { close() }.buttonStyle(.piSecondary)
+/// The panel's head, as a file tab's is: the project, and what the
+/// repository is at (its branch, what it tracks, how many files changed, what
+/// is stashed); the spinner while the reader's read runs, and Refresh.
+private struct GitPanelHeader: View, Equatable {
+    struct Inputs: Equatable {
+        var repository: Bool, branch: String, upstream: String?, changed: Int, stashes: Int, working: Bool
+        @MainActor init(_ controller: GitController) {
+            repository = controller.repositoryRoot != nil; branch = controller.status.branch; upstream = controller.status.upstream
+            changed = controller.status.entries.count; stashes = controller.stashes.count; working = controller.loading || controller.busy
         }
+    }
+    let controller: GitController
+    let inputs: Inputs
+    let project: String?
+    nonisolated static func == (a: Self, b: Self) -> Bool {
+        MainActor.assumeIsolated { samePart((a.controller, a.inputs), (b.controller, b.inputs)) && a.project == b.project }
+    }
+    var body: some View {
+        let _ = RedrawCounter.note("GitPanelHeader")
+        HStack(spacing: PiSpacing.sm) {
+            HStack(spacing: 4) {
+                if let project {
+                    Text(project).font(PiFont.caption.weight(.medium)).foregroundStyle(Color.piInkSecondary).lineLimit(1).fixedSize()
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(Color.piInkTertiary)
+                }
+                Text(subtitle).font(PiFont.caption).foregroundStyle(Color.piInkSecondary).lineLimit(1).truncationMode(.tail)
+            }
+            .help(subtitle)
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: PiSpacing.sm)
+            if inputs.working { PiSpinner(controlSize: .small) }
+            PiIconButton(symbol: "arrow.clockwise", label: "Refresh changes", size: 26) { Task { await controller.refresh() } }
+        }
+        .padding(.horizontal, PiSpacing.md).frame(height: 32)
+        .overlay(alignment: .bottom) { Rectangle().fill(Color.piHairline).frame(height: 1) }
+    }
+    private var subtitle: String {
+        guard inputs.repository else { return "Working-tree changes and history of the project's folders." }
+        var parts = [inputs.branch.isEmpty ? "detached HEAD" : inputs.branch]
+        if let upstream = inputs.upstream { parts.append("tracks \(upstream)") }
+        parts.append("\(inputs.changed) changed")
+        if inputs.stashes > 0 { parts.append("\(inputs.stashes) stashed") }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -750,26 +765,19 @@ struct GitDiffArray: Equatable {
 /// whatever moved in between, and only when it changes: a view moving into
 /// its window, and `updateNSView`, run inside SwiftUI's update, and a tab
 /// moving between windows leaves one and joins another in the same turn.
-///
-/// `closed` runs once a sheet the panel is in has left the screen, its
-/// closing animation over, just before its window lets go of the panel
-/// (`PiSheetWindow`): the controller lets go of what it read at once, rather
-/// than whenever the last task still holding it ends, and the panel is laid
-/// out once more, emptied.
 struct GitPanelPresence: NSViewRepresentable {
     let place: GitPanelPlace
     let shown: (Bool) -> Void
     /// On screen before and after, but in another window: a question the
     /// panel had up is on the window it left.
     var moved: () -> Void = {}
-    var closed: () -> Void = {}
     func makeNSView(context: Context) -> Probe {
-        let view = Probe(); view.shown = shown; view.moved = moved; view.closed = closed
+        let view = Probe(); view.shown = shown; view.moved = moved
         place.probe = view
         return view
     }
     func updateNSView(_ view: Probe, context: Context) {
-        view.shown = shown; view.moved = moved; view.closed = closed
+        view.shown = shown; view.moved = moved
         if place.probe !== view { place.probe = view }
         view.check()
     }
@@ -777,14 +785,12 @@ struct GitPanelPresence: NSViewRepresentable {
     @MainActor final class Probe: NSView {
         var shown: ((Bool) -> Void)?
         var moved: (() -> Void)?
-        var closed: (() -> Void)?
         private var told: Bool?
         /// The window it was on screen in, when last told.
         private weak var toldWindow: NSWindow?
         private var scheduled = false
         private var dismantled = false
-        private weak var watched: NSWindow?
-        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); check(); watch(window) }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); check() }
         override func viewDidHide() { super.viewDidHide(); check() }
         override func viewDidUnhide() { super.viewDidUnhide(); check() }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -814,23 +820,6 @@ struct GitPanelPresence: NSViewRepresentable {
             guard told == true, let shown else { return }
             told = false
             DispatchQueue.main.async { MainActor.assumeIsolated { shown(false) } }
-        }
-        private func watch(_ window: NSWindow?) {
-            guard let window, window !== watched else { return }
-            if let watched { NotificationCenter.default.removeObserver(self, name: PiSheetWindow.willRelease, object: watched) }
-            watched = window
-            NotificationCenter.default.addObserver(self, selector: #selector(sheetReleases(_:)), name: PiSheetWindow.willRelease, object: window)
-        }
-        @objc private func sheetReleases(_ note: Notification) {
-            guard let window = note.object as? NSWindow, window === watched else { return }
-            NotificationCenter.default.removeObserver(self, name: PiSheetWindow.willRelease, object: window)
-            watched = nil
-            closed?()
-            // Laid out once more, off screen: SwiftUI drops the views that
-            // showed what was read. Its layout pass does not come by itself
-            // for a window that has left the screen.
-            window.contentView?.needsLayout = true
-            window.contentView?.layoutSubtreeIfNeeded()
         }
     }
 }

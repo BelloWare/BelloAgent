@@ -10,8 +10,8 @@ import AppKit
 /// window it is on, and given back what its presenter's environment says; the
 /// `item:` form follows its item as `.sheet(item:)` did. Once closed, its
 /// content is let go of, and its window and hosting view, emptied, are the
-/// next sheet's. What the Changes sheet lets go of once closed is
-/// `ChangesSheetFrameTests.testAClosedSheetLetsGoOfWhatItRead`.
+/// next sheet's. Changes is a tab now, not a sheet; what a Changes tab lets
+/// go of once closed is `ChangesTabFrameTests.testAClosedTabLetsGoOfWhatItRead`.
 /// Every open and close below runs in its own autorelease pool. XCTest keeps
 /// whatever AppKit autoreleases in a test's own code until the test returns,
 /// so a close made outside a pool could leave the sheet's content alive for
@@ -143,30 +143,6 @@ final class PiSheetWindowTests: XCTestCase {
         XCTAssertTrue(try autoreleasepool { try XCTUnwrap(sheet.contentView).performKeyEquivalent(with: try escape()) }, "Escape leaves the sheet")
         try await eventually("closed by Escape") { !presenter.showing && window.attachedSheet == nil }
         try await eventually("its content let go of") { Marker.live == before }
-    }
-
-    /// The Changes panel itself closes from its window: Escape, which PiSheet
-    /// carries, and Done both call the close action the window hands down in
-    /// place of `dismiss`, which has no SwiftUI sheet to end there. (SwiftUI
-    /// builds no accessibility tree for a test to press Done through.)
-    @MainActor func testTheChangesPanelClosesFromItsWindow() async throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sheet-changes-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
-        final class Made { weak var controller: GitController? }
-        let presenter = Presenter(), made = Made()
-        let window = parent(AppHost(presenter: presenter) {
-            GitPanelView(controller: { let controller = GitController(roots: [folder.path]); made.controller = controller; return controller }())
-        })
-        window.setContentSize(NSSize(width: 1280, height: 860))
-        autoreleasepool { presenter.showing = true }
-        try await eventually("the Changes sheet") { window.attachedSheet != nil && made.controller != nil }
-        let sheet = try XCTUnwrap(window.attachedSheet)
-        XCTAssertEqual(sheet.frame.size, CGSize(width: 1180, height: 780), "The panel's own size, as SwiftUI's sheet had it")
-        try await Task.sleep(for: .milliseconds(800))
-        XCTAssertTrue(try autoreleasepool { try XCTUnwrap(sheet.contentView).performKeyEquivalent(with: try escape()) }, "Escape leaves the Changes sheet")
-        try await eventually("closed") { !presenter.showing && window.attachedSheet == nil }
-        try await eventually("its controller let go of") { made.controller == nil }
     }
 
     /// A window that closes takes its sheet down with it, and what presented
@@ -336,7 +312,6 @@ final class PiSheetWindowTests: XCTestCase {
             ("Rename", CGSize(width: 520, height: 400), { model.presentRename(chat.id) }, { model.renameTarget != nil }),
             ("Topic", CGSize(width: 480, height: 260), { model.topicEditor = TopicEditorTarget(projectID: workspace.id) }, { model.topicEditor != nil }),
             ("Webhook preview", CGSize(width: 640, height: 660), { model.webhookPreviewTarget = RenameTarget(id: chat.id) }, { model.webhookPreviewTarget != nil }),
-            ("Changes", CGSize(width: 1180, height: 780), { model.showChanges(in: workspace.id) }, { model.showGit }),
         ]
         // Eight sheets opened, closed and let go of in turn: none of these
         // waits is about promptness, and in the parallel lane's load the

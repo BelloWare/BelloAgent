@@ -140,6 +140,30 @@ final class GitPanelShownTests: GitPanelTestCase {
         XCTAssertNil(controller.selection, "The other folder's file is no longer chosen")
     }
 
+    /// A panel hidden from its first frame (a tab made under the report page)
+    /// reads nothing, not even a folder chosen meanwhile, until it is shown.
+    @MainActor func testAPanelHiddenFromTheStartReadsNothingUntilShown() async throws {
+        let first = try changedRepository(commits: 1), second = try changedRepository(commits: 1)
+        addTeardownBlock { try? FileManager.default.removeItem(at: first); try? FileManager.default.removeItem(at: second) }
+        let controller = GitController(roots: [first.path, second.path])
+        defer { controller.letGo() }
+        let panel = NSHostingView(rootView: GitPanelView(controller: controller))
+        let holder = NSView(frame: NSRect(x: 0, y: 0, width: 1180, height: 780))
+        panel.frame = holder.bounds; holder.addSubview(panel)
+        holder.isHidden = true
+        let window = host(Color.clear)
+        defer { window.close() }
+        window.contentView?.addSubview(holder)
+        try await eventually("told it is hidden") { controller.suspended }
+        controller.root = second.path
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(controller.statusRead, "Nothing read while hidden")
+        XCTAssertFalse(controller.isWatching, "and nothing watched")
+        holder.isHidden = false
+        try await eventually("read once shown") { controller.isShown && controller.statusRead && !controller.loading && controller.isWatching }
+        XCTAssertEqual(controller.root, second.path)
+    }
+
     /// The panel's own view says whether it is on screen: in a window, not
     /// hidden itself or under anything hidden; and a move between windows in
     /// one turn is no hiding at all.

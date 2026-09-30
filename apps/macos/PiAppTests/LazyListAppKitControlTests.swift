@@ -2,6 +2,7 @@ import XCTest
 import AppKit
 import SwiftUI
 @testable import PiApp
+@testable import GitView
 
 /// 0.1.89 froze for good while a chat compacted. The main thread never left
 /// one SwiftUI update: `GraphHost.flushTransactions` ran transaction after
@@ -149,7 +150,7 @@ final class LazyListAppKitControlTests: XCTestCase {
         }
         let changes = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
         changes.isReleasedWhenClosed = false
-        let panelView = NSHostingView(rootView: GitPanelView(roots: [repository.path]))
+        let panelView = NSHostingView(rootView: GitPanelView(controller: GitController(roots: [repository.path])))
         changes.contentView = panelView; changes.orderFront(nil)
         defer { changes.contentView = nil; changes.close() }
         for _ in 0..<40 {

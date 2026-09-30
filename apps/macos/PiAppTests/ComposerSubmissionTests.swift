@@ -106,11 +106,11 @@ final class ComposerSubmissionTests: XCTestCase {
         let chat = ChatRecord(id: "sheet-chat", workspaceID: "w", title: "Chat", path: nil, profileID: "p")
         model.chats = [chat]; model.selectedID = chat.id
         XCTAssertTrue(model.conversationCommandsEnabled)
-        for present in [{ model.showGit = true }, { model.showProfiles = true }, { model.showResources = true },
+        for present in [{ model.showProfiles = true }, { model.showResources = true },
                         { model.showWorkspaceManager = true }, { model.showConversationContent = true }] as [() -> Void] {
             present()
             XCTAssertTrue(model.presentsSheet); XCTAssertFalse(model.conversationCommandsEnabled)
-            model.showGit = false; model.showProfiles = false; model.showResources = false
+            model.showProfiles = false; model.showResources = false
             model.showWorkspaceManager = false; model.showConversationContent = false
             XCTAssertTrue(model.conversationCommandsEnabled)
         }

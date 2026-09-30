@@ -250,31 +250,35 @@ final class GitDiffTableTests: GitPanelTestCase {
         XCTAssertNotNil(pane.views(GitDiffTableView.self, in: pane.window.contentView!).first?.window)
     }
 
-    /// Escape still closes the Changes sheet when the diff has the keyboard.
-    @MainActor func testEscapeClosesTheSheetFromTheDiff() async throws {
-        let root = try repository("diff-escape")
+    /// ⌘W closes the Changes tab, in a window of its own, when the diff has
+    /// the keyboard: the diff takes the keys it scrolls with and no others.
+    @MainActor func testCommandWClosesTheChangesTabFromTheDiff() async throws {
+        let root = try repository("diff-close")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         try start(root)
         try "one\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
         try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
         try "two\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
-        let controller = GitController(roots: [root.path]), presenter = ChangesSheetPresenter()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ChangesSheetHost(presenter: presenter, controller: controller))
-        window.makeKeyAndOrderFront(nil)
-        defer { presenter.showing = false; window.contentView = nil; window.close() }
-        presenter.showing = true
-        try await eventually("the diff") { !controller.diff.isEmpty && window.attachedSheet != nil }
-        let sheet = try XCTUnwrap(window.attachedSheet)
-        sheet.contentView?.layoutSubtreeIfNeeded()
-        let table = try XCTUnwrap(Pane.views(in: sheet.contentView!).first)
-        XCTAssertTrue(sheet.makeFirstResponder(table))
-        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                                    windowNumber: sheet.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
-                                                    isARepeat: false, keyCode: 53))
-        sheet.sendEvent(escape)
-        try await eventually("the sheet to close") { !presenter.showing }
+        let host = TabHost(defaults: nil)
+        host.showsWindows = false
+        defer { host.tearDown() }
+        let tab = host.open(kind: ChangesTab.kind, key: "diff-close") { ChangesTab(projectID: "diff-close", name: "diff-close", roots: [root.path]) } as! ChangesTab
+        let popped = host.popOut(tab)
+        let window = try XCTUnwrap(host.window(of: popped))
+        window.setContentSize(NSSize(width: 1180, height: 780))
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await eventually("the diff") {
+            window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return tab.hasController && !tab.controller.diff.isEmpty && Pane.views(in: window.contentView!).first != nil
+        }
+        let table = try XCTUnwrap(Pane.views(in: window.contentView!).first)
+        XCTAssertTrue(window.makeFirstResponder(table))
+        let commandW = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
+                                                      windowNumber: window.windowNumber, context: nil, characters: "w", charactersIgnoringModifiers: "w",
+                                                      isARepeat: false, keyCode: 13))
+        XCTAssertTrue(window.performKeyEquivalent(with: commandW), "⌘W is taken")
+        XCTAssertTrue(host.allTabs.isEmpty, "The Changes tab closed, and its window with it")
+        XCTAssertTrue(host.windows.isEmpty)
     }
 
     /// A commit's chips: "All" and the files, the file chosen, the next step

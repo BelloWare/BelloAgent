@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 // Sending, steering, stopping, and reading earlier pages: everything that
 // asks the helper to do something to the conversation the reader is in.
@@ -24,10 +25,15 @@ extension WorkspaceModel {
     }
 
     /// The Conversation menu's ⌘↩: what ⌘↩ does in the focused chat's composer.
-    func submitFocusedComposer(intent: ComposerSubmissionIntent) {
-        guard let id = focusedSessionID ?? selectedID else { return }
+    /// ⌘↩ from the menu. With the keyboard in text a tab beside the chat
+    /// holds (a Changes tab's commit message, its filters), the key is that
+    /// text's: the chat's draft is not sent from behind it, as it was not
+    /// while Changes was a sheet.
+    func submitFocusedComposer(intent: ComposerSubmissionIntent, in window: NSWindow? = NSApp.keyWindow) {
+        guard !Self.typingInATab(in: window), let id = focusedSessionID ?? selectedID else { return }
         submitComposer(intent: intent, sessionID: id)
     }
+
     func send(steer: Bool = false, sessionID: String? = nil) {
         // Global commands target the visible conversation. Explicit session
         // submissions already accepted by an asynchronous side flow continue.

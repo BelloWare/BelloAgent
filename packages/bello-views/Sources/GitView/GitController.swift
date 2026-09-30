@@ -249,9 +249,10 @@ import AppKit
     /// the commit being read stay as they were, and a commit's read that
     /// hiding stopped is finished. Hidden, every read and the watch stop; a
     /// write already running finishes, and what it changed is read when the
-    /// panel is shown.
+    /// panel is shown. A panel hidden from the start (made under the report)
+    /// is hidden too: nothing reads, not even a folder chosen meanwhile.
     public func setShown(_ shown: Bool) {
-        guard shown != isShown || (shown && closed) else { return }
+        guard shown != isShown || (shown && closed) || (!shown && !suspended) else { return }
         isShown = shown
         shownChanges += 1
         if shown {
