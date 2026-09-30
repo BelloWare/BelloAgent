@@ -14,21 +14,59 @@ func lineDiffStats(_ old: String, _ new: String) -> (added: Int, removed: Int) {
     var suffix = 0; while suffix < a.count - prefix, suffix < b.count - prefix, a[a.count - 1 - suffix] == b[b.count - 1 - suffix] { suffix += 1 }
     return (b.count - prefix - suffix, a.count - prefix - suffix)
 }
-/// Where a write or an edit first changed a file, for the app to show it: the
-/// 1-based line holding the first byte that differs, lines ending at "\n",
-/// "\r\n" or "\r" as the app's file viewer ends them; nil when nothing
-/// changed. Only the app reads it: the model's result text is as before.
-func firstChangedLine(_ old: String, _ new: String) -> Int? {
-    let a = Array(old.utf8), b = Array(new.utf8)
-    var at = 0
-    while at < a.count, at < b.count, a[at] == b[at] { at += 1 }
-    guard at < a.count || at < b.count else { return nil }
-    var line = 1
-    for index in 0..<at {
-        // "\r\n" ends one line; a "\r" the common part ends with ends one too.
-        if a[index] == 0x0A || (a[index] == 0x0D && (index + 1 >= at || a[index + 1] != 0x0A)) { line += 1 }
+/// Lines as the app's file viewer counts them, for the app alone: "\n",
+/// "\r\n" and "\r" each end one, a line ending belongs to the line it ends,
+/// and a file's last line is the empty one after a final line ending. The
+/// model's text is as before: pi counts "\n" only.
+enum ViewerLines {
+    /// The 1-based lines positions `from` and `through` of `bytes` are on, in
+    /// one pass (`from <= through <= bytes.count`; the end is the last line).
+    static func lines(_ from: Int, _ through: Int, in bytes: UnsafeBufferPointer<UInt8>) -> ClosedRange<Int> {
+        var line = 1, first = 1, index = 0
+        while index < through {
+            if index == from { first = line }
+            let byte = bytes[index]
+            // A "\r" before a "\n" is one ending with it, whichever side of
+            // `through` the "\n" is on.
+            if byte == 0x0A || (byte == 0x0D && (index + 1 >= bytes.count || bytes[index + 1] != 0x0A)) { line += 1 }
+            index += 1
+        }
+        if from == through { first = line }
+        return first...line
     }
-    return line
+    /// The lines of `new` a write or an edit changed: from the one holding
+    /// the first byte that differs to the one holding the last new byte
+    /// before the part both end with; for a deletion, the line after the cut.
+    /// Nil when nothing changed.
+    static func changed(_ old: String, _ new: String) -> ClosedRange<Int>? {
+        let a = Array(old.utf8), b = Array(new.utf8)
+        var prefix = 0
+        while prefix < a.count, prefix < b.count, a[prefix] == b[prefix] { prefix += 1 }
+        guard prefix < a.count || prefix < b.count else { return nil }
+        var suffix = 0
+        while suffix < a.count - prefix, suffix < b.count - prefix, a[a.count - 1 - suffix] == b[b.count - 1 - suffix] { suffix += 1 }
+        let end = b.count - suffix
+        return b.withUnsafeBufferPointer { lines(prefix, end > prefix ? end - 1 : prefix, in: $0) }
+    }
+    /// The lines of a file a read returned: from LF line `offset` (1-based, as
+    /// pi counts), `count` of them, `bound` bytes at most. The last line is
+    /// the empty one after a final "\n" when the whole selection came back
+    /// ending with one; a cut ends on the line it cut. Nil when it returned
+    /// nothing.
+    static func read(_ text: String, lines split: [String], offset: Int, count: Int, bound: Int) -> ClosedRange<Int>? {
+        guard offset >= 1, count >= 1, offset <= split.count else { return nil }
+        let taken = split[(offset - 1)..<min(split.count, offset - 1 + count)]
+        let length = taken.reduce(0) { $0 + $1.utf8.count } + taken.count - 1
+        guard length > 0 else { return nil }
+        let start = split[..<(offset - 1)].reduce(0) { $0 + $1.utf8.count + 1 }, covered = min(length, bound)
+        var text = text
+        return text.withUTF8 { bytes -> ClosedRange<Int>? in
+            guard start + covered <= bytes.count else { return nil }
+            let end = start + covered
+            let whole = covered == length && bytes[end - 1] == 0x0A
+            return lines(start, whole ? end : end - 1, in: bytes)
+        }
+    }
 }
 func objectSchema(_ properties: JSON, required: [String]) -> JSON { ["type":"object", "properties": properties, "required": .array(required.map { JSON($0) }), "additionalProperties":false] }
 
@@ -266,7 +304,9 @@ public actor NativeTools: ToolExecuting {
             result["stats"]=["path":JSON(file.path),"added":JSON(stats.added),"removed":JSON(stats.removed)]
             // Where it changed, for a file that was there before: a new file
             // is shown from its start.
-            if attributes != nil, let line=firstChangedLine(previous,value) { result["stats"]["line"]=JSON(line) }
+            if attributes != nil, let lines=ViewerLines.changed(previous,value) {
+                result["stats"]["line"]=JSON(lines.lowerBound); result["stats"]["lastLine"]=JSON(lines.upperBound)
+            }
             return result
         default: throw AgentError("tool_unavailable", "Unsupported tool")
         }
@@ -311,9 +351,13 @@ private struct FileToolContext: Sendable {
             guard offset > 0, count > 0 else { throw AgentError("tool_arguments", "Line offset and limit must be positive") }
             let lines=text.components(separatedBy:"\n"), selected=lines.dropFirst(offset-1).prefix(count).joined(separator:"\n"), bounded=preview(selected,bytes:32768)
             var result=resultText(bounded + (offset-1+count < lines.count || bounded.utf8.count < selected.utf8.count ? "\n[Truncated. \(lines.count) total lines; read another range.]" : ""))
-            // The file read, resolved as it was read (another root's, say): for
-            // the app alone.
+            // The file read, resolved as it was read (another root's, say), and
+            // the lines it returned as the app's viewer counts them: for the
+            // app alone.
             result["stats"]=["path":JSON(file.path)]
+            if let shown=ViewerLines.read(text,lines:lines,offset:offset,count:count,bound:32768) {
+                result["stats"]["line"]=JSON(shown.lowerBound); result["stats"]["lastLine"]=JSON(shown.upperBound)
+            }
             return result
         case "ls":
             let directory=try path(p["path"],optional:true,existing:true), limit=try boundedInt(p["limit"],fallback:200,maximum:2000)

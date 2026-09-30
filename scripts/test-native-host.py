@@ -638,15 +638,16 @@ class NativeIntegration(unittest.TestCase):
         self.peer.command('session.close',session=session)
     def test_file_tool_cards_name_their_file_and_where_an_edit_changed_it(self):
         # The app opens a file from a tool's card: a read names the file it
-        # read, an edit also the line it first changed, live and from the
-        # journal; the model is sent the same text as ever.
+        # read and the lines it returned, an edit the lines it changed (as the
+        # app's viewer counts them), live and from the journal; the model is
+        # sent the same text as ever.
         (self.root/'notes.txt').write_text('one\ntwo\nthree\n')
         # As the helper resolves it (Foundation keeps /var, not /private/var).
         notes=str(self.root/'notes.txt')
         self.open(model='edit-tool',session='edits'); self.submit('edits'); value=self.settled('edits')
         self.assertEqual(value['state'],'idle')
         card=next(t for m in value['messages'] for t in (m.get('tools') or []) if t['name']=='edit')
-        self.assertEqual((card['path'],card['added'],card['removed'],card['line']),(notes,1,1,3))
+        self.assertEqual((card['path'],card['added'],card['removed'],card['line'],card['lastLine']),(notes,1,1,3,3))
         self.assertEqual((self.root/'notes.txt').read_text(),'one\ntwo\n3\n')
         sent=[json.loads(r['body']) for r in Fixture.requests if b'function_call_output' in r['body'] and b'notes.txt' in r['body']]
         outputs=[i['output'] for body in sent for i in body['input'] if i.get('type')=='function_call_output']
@@ -654,15 +655,17 @@ class NativeIntegration(unittest.TestCase):
         path=value['path']; self.peer.command('session.close',session='edits')
         journal=[json.loads(line) for line in pathlib.Path(path).read_bytes().split(b'\n') if line]
         stats=[r['message']['nativeToolStats'] for r in journal if r.get('type')=='message' and r['message']['role']=='toolResult']
-        self.assertEqual([(s['path'],s['line']) for s in stats],[(notes,3)])
+        self.assertEqual([(s['path'],s['line'],s['lastLine']) for s in stats],[(notes,3,3)])
         self.open(model='edit-tool',session='edits',path=path)
         card=next(t for m in self.peer.command('session.snapshot',session='edits')['messages'] for t in (m.get('tools') or []) if t['name']=='edit')
-        self.assertEqual(card['line'],3,'the card from the journal says it too')
+        self.assertEqual((card['line'],card['lastLine']),(3,3),'the card from the journal says it too')
         self.peer.command('session.close',session='edits')
         self.open(model='tool',session='reads'); self.submit('reads'); value=self.settled('reads')
         card=next(t for m in value['messages'] for t in (m.get('tools') or []) if t['name']=='read')
         self.assertEqual(card['path'],str(self.root/'README.md'))
-        self.assertNotIn('line',card,'a read changes no line')
+        readme=(self.root/'README.md').read_text()
+        self.assertNotIn('\r',readme)
+        self.assertEqual((card['line'],card['lastLine']),(1,readme.count('\n')+1),'the whole file, its last line the empty one after a final newline')
         self.peer.command('session.close',session='reads')
 
     def test_fork_at_a_reply_keeps_the_journal_up_to_it_and_its_tool_batch(self):

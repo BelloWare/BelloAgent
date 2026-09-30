@@ -150,8 +150,9 @@ extension AgentSession {
                           "output": JSON(keptOutput),
                           "durationMs": stats["durationMs"], "truncated": JSON(inputTruncated || keptOutput.utf8.count < output.utf8.count),
                           "path": stats["path"], "added": stats["added"], "removed": stats["removed"]]
-            // Where a write or an edit changed its file, when it was recorded.
-            if !stats["line"].isNull { card["line"] = stats["line"] }
+            // The lines a read returned or a write or an edit changed, when
+            // they were recorded.
+            for key in ["line", "lastLine"] where !stats[key].isNull { card[key] = stats[key] }
             states[id] = merging(.object(card), fields)
         }
         var row = message.view(toolStates: states)

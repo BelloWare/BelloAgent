@@ -24,14 +24,17 @@ final class ToolLineTests: XCTestCase {
         try await eventually { !(await session.isRunning) }
         let live = await session.snapshot()
         XCTAssertEqual(card(live)?["line"].int, 3, "live")
+        XCTAssertEqual(card(live)?["lastLine"].int, 3)
         let result = await session.history.first { $0.role == "toolResult" }
         XCTAssertEqual(result?.toolStats?["line"].int, 3, "recorded")
+        XCTAssertEqual(result?.toolStats?["lastLine"].int, 3)
         XCTAssertEqual(result?.text, "Edited \(notes) (+1 -1)", "the model's text is as it was")
         let path = await session.path
         await session.close()
         let reopened = try open(resume: path, client: ScriptClient([]))
         let restored = await reopened.snapshot()
         XCTAssertEqual(card(restored)?["line"].int, 3, "from the journal")
+        XCTAssertEqual(card(restored)?["lastLine"].int, 3)
         await reopened.close()
     }
 }
