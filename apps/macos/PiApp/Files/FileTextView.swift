@@ -80,10 +80,24 @@ import AppKit
     static func built() { pieces &+= 1 }
 }
 
-/// One line as CoreText sets it: its text in pieces, each read and set when
-/// it is first needed. A line up to `FileTextMetrics.gridLine` long is set
-/// piece after piece from its start, each piece where the last one ended; a
-/// longer one on the grid.
+/// One line as CoreText sets it, in pieces, each set when it is first needed.
+/// The colours a file's text is drawn in. The engine knows no app: the
+/// system's colours unless the host app gives its own.
+struct FileTextColors {
+    var text: NSColor = .textColor
+    var lineNumber: NSColor = .tertiaryLabelColor
+    /// The numbers of the lines selected, or set apart.
+    var strongLineNumber: NSColor = .secondaryLabelColor
+    /// The band behind lines set apart: those a file was opened at.
+    var emphasis: NSColor = NSColor.controlAccentColor.withAlphaComponent(0.12)
+    @MainActor static var standard = FileTextColors()
+}
+
+/// A line up to `FileTextMetrics.gridLine` long is read whole when it is laid
+/// out, and kept, then set piece after piece from its start, each piece where
+/// the last one ended. A longer line is on the grid: each piece is read when
+/// it is drawn, and a piece whose text has not come yet is not drawn until it
+/// has.
 @MainActor final class FileLineLayout {
     struct Piece {
         let range: Range<Int>
@@ -99,17 +113,26 @@ import AppKit
     let index: Int
     let length: Int
     let grid: Bool
+    /// The line's text, off the grid.
+    let text: NSString?
     /// From the line's start, the pieces set so far.
     private var ordered: [Piece] = []
     private var complete = false
-    /// On the grid, the pieces set, by number.
+    /// On the grid, the pieces set, by number, and where pieces start, as
+    /// found: a piece drawn again reads nothing.
     private var gridPieces: [Int: Piece] = [:]
+    private var gridStarts: [Int: Int] = [:]
 
-    init(source: FileTextSource, line index: Int) {
+    /// Nil for a line off the grid whose text has not come yet.
+    init?(source: FileTextSource, line index: Int) {
         self.source = source; self.index = index
         length = source.utf16Length(ofLine: index)
         grid = length > FileTextMetrics.gridLine
-        if !grid, length <= FileTextMetrics.piece { measureNext() }
+        if grid { text = nil } else {
+            guard let whole = source.text(ofLine: index, range: 0..<length) else { return nil }
+            text = whole as NSString
+            if length <= FileTextMetrics.piece { measureNext() }
+        }
     }
 
     /// The whole line's width: exact once every piece is set, and always on the grid.
@@ -126,13 +149,19 @@ import AppKit
     }
     private var measuredEnd: (index: Int, x: CGFloat) { ordered.last.map { ($0.range.upperBound, $0.x + $0.width) } ?? (0, 0) }
 
+    /// Part of the line's text: off the grid from what is kept, on it as read.
+    private func read(_ range: Range<Int>) -> String? {
+        let low = max(0, min(range.lowerBound, length)), high = max(low, min(range.upperBound, length))
+        if let text { return text.substring(with: NSRange(location: low, length: high - low)) }
+        return source.text(ofLine: index, range: low..<high)
+    }
     /// Where a piece that starts at `start` and should end near `target` ends:
     /// after a space or a tab within reach, else where a character ends, so no
     /// character is cut and words are set whole where they can be.
     private func end(ofPieceFrom start: Int, target: Int) -> Int {
         guard target < length else { return length }
         let base = max(start, target - 64)
-        let window = source.text(ofLine: index, range: base..<min(length, target + 16)) as NSString
+        guard let window = read(base..<min(length, target + 16)).map({ $0 as NSString }) else { return target }
         var cut = target - base
         let space = window.rangeOfCharacter(from: .whitespaces, options: .backwards, range: NSRange(location: 0, length: min(cut, window.length)))
         if space.location != NSNotFound, space.location > 0 { cut = space.location + 1 }
@@ -142,8 +171,8 @@ import AppKit
         }
         return max(start + 1, min(length, base + cut))
     }
-    private func set(_ range: Range<Int>, x: CGFloat) -> Piece {
-        let text = source.text(ofLine: index, range: range)
+    private func set(_ range: Range<Int>, x: CGFloat) -> Piece? {
+        guard let text = read(range) else { return nil }
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: FileTextMetrics.attributes(origin: x, tabs: text.contains("\t"), grid: grid)))
         FileTextRenderCount.built()
         let natural = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
@@ -155,37 +184,47 @@ import AppKit
         guard !complete, !grid else { return }
         let (start, x) = measuredEnd
         let end = length <= FileTextMetrics.piece ? length : end(ofPieceFrom: start, target: start + FileTextMetrics.piece)
-        ordered.append(set(start..<end, x: x))
+        // Off the grid the text is kept, so a piece is always set.
+        guard let piece = set(start..<end, x: x) else { complete = true; return }
+        ordered.append(piece)
         if end >= length { complete = true }
     }
     /// On the grid, where piece `number` starts: at a multiple of the piece
     /// length, moved back to where a character starts. Found from the text
-    /// around it alone, so no piece before it is read.
-    private func gridStart(_ number: Int) -> Int {
+    /// around it alone, so no piece before it is read; nil until that text
+    /// has come.
+    private func gridStart(_ number: Int) -> Int? {
         let target = number * FileTextMetrics.piece
         guard number > 0 else { return 0 }
         guard target < length else { return length }
+        if let start = gridStarts[number] { return start }
         let base = max(0, target - 32)
-        let window = source.text(ofLine: index, range: base..<min(length, target + 32)) as NSString
-        return base + window.rangeOfComposedCharacterSequence(at: target - base).location
+        guard let window = read(base..<min(length, target + 32)).map({ $0 as NSString }) else { return nil }
+        let start = base + window.rangeOfComposedCharacterSequence(at: target - base).location
+        if gridStarts.count > 256 { gridStarts = gridStarts.filter { abs($0.key - number) < 32 } }
+        gridStarts[number] = start
+        return start
     }
-    /// On the grid, the piece holding a column.
-    private func gridPiece(containing column: Int) -> Piece {
+    /// On the grid, the piece holding a column; nil until its text has come.
+    private func gridPiece(containing column: Int) -> Piece? {
         let column = max(0, min(column, length - 1))
         // Starts move back to where a character starts, so a column can
         // belong to the piece before its multiple, or (a character cut by
         // the multiple) to the next piece.
         var number = column / FileTextMetrics.piece
-        if number > 0, column < gridStart(number) { number -= 1 }
-        else if column >= gridStart(number + 1) { number += 1 }
+        guard let here = gridStart(number), let next = gridStart(number + 1) else { return nil }
+        if number > 0, column < here { number -= 1 }
+        else if column >= next { number += 1 }
         if let piece = gridPieces[number] { return piece }
         // Pieces well away from the one asked for are let go of first.
         if gridPieces.count > 64 { gridPieces = gridPieces.filter { abs($0.key - number) < 16 } }
-        let low = gridStart(number)
-        let piece = set(low..<max(low + 1, gridStart(number + 1)), x: CGFloat(low) * FileTextMetrics.advance)
+        guard let low = gridStart(number), let high = gridStart(number + 1),
+              let piece = set(low..<max(low + 1, high), x: CGFloat(low) * FileTextMetrics.advance) else { return nil }
         gridPieces[number] = piece
         return piece
     }
+    /// On the grid, where a column is: its cell, whether or not its piece is at hand.
+    private func gridColumnStart(_ column: Int) -> CGFloat { CGFloat(column) * FileTextMetrics.advance }
 
     /// The pieces that reach into `from..<to` along the line.
     func pieces(from: CGFloat, to: CGFloat) -> [Piece] {
@@ -196,7 +235,11 @@ import AppKit
             // A column's place is known before its piece is set: nothing past
             // the edge is set.
             while column < length, CGFloat(column) * FileTextMetrics.advance < to {
-                let piece = gridPiece(containing: column)
+                guard let piece = gridPiece(containing: column) else {
+                    // Not come yet: the next piece's columns, drawn when it has.
+                    column = (column / FileTextMetrics.piece + 1) * FileTextMetrics.piece
+                    continue
+                }
                 if piece.x + piece.width > from { result.append(piece) }
                 column = max(column + 1, piece.range.upperBound)
             }
@@ -213,10 +256,11 @@ import AppKit
         while !complete, measuredEnd.index <= column { measureNext() }
         return ordered.last(where: { $0.range.lowerBound <= column })
     }
-    /// Where an offset sits along the line.
+    /// Where an offset sits along the line. On the grid, a piece whose text
+    /// has not come yet puts it in its column.
     func x(at column: Int) -> CGFloat {
         let column = max(0, min(column, length))
-        guard let piece = piece(containing: column) else { return 0 }
+        guard let piece = piece(containing: column) else { return grid ? gridColumnStart(column) : 0 }
         let offset = CGFloat(CTLineGetOffsetForStringIndex(piece.line, min(column, piece.range.upperBound) - piece.range.lowerBound, nil))
         return piece.x + offset * piece.squeeze
     }
@@ -234,10 +278,20 @@ import AppKit
         // On the grid, the window's left edge falls in the piece whose columns
         // hold it; inside a piece glyphs sit where they are drawn (squeezed
         // by wide characters), so the piece is started from its beginning.
-        if grid, let window, let first = piece(containing: Int(max(0, window.lowerBound) / FileTextMetrics.advance)) {
-            column = max(from, first.range.lowerBound)
+        if grid, let window {
+            let edge = Int(max(0, window.lowerBound) / FileTextMetrics.advance)
+            column = max(from, piece(containing: edge)?.range.lowerBound ?? edge / FileTextMetrics.piece * FileTextMetrics.piece)
         }
-        while column < to, let piece = piece(containing: column) {
+        while column < to {
+            guard let piece = piece(containing: column) else {
+                // A piece whose text has not come yet: its columns.
+                guard grid else { break }
+                let next = min(to, (column / FileTextMetrics.piece + 1) * FileTextMetrics.piece)
+                if let window, gridColumnStart(column) > window.upperBound { break }
+                spans.append(gridColumnStart(column)...gridColumnStart(next))
+                column = next
+                continue
+            }
             if let window, piece.x > window.upperBound { break }
             defer { column = max(column + 1, piece.range.upperBound) }
             if let window, piece.x + piece.width < window.lowerBound { continue }
@@ -287,13 +341,15 @@ import AppKit
         return left <= right ? left...right : nil
     }
     /// The offset nearest a point along the line: where a click there puts
-    /// the insertion point.
-    func index(at x: CGFloat) -> Int {
+    /// the insertion point. On the grid, nil while the piece there has not
+    /// come: its column may be inside a character.
+    func index(at x: CGFloat) -> Int? {
         guard x > 0, length > 0 else { return 0 }
         let piece: Piece
         if grid {
             guard x < CGFloat(length) * FileTextMetrics.advance else { return length }
-            piece = gridPiece(containing: Int(x / FileTextMetrics.advance))
+            guard let found = gridPiece(containing: Int(x / FileTextMetrics.advance)) else { return nil }
+            piece = found
         } else {
             while !complete, measuredEnd.x <= x { measureNext() }
             guard let found = ordered.last(where: { $0.x <= x }) else { return 0 }
@@ -312,6 +368,8 @@ import AppKit
     private(set) var name = ""
     /// Lines to set apart, softly: the lines a file was opened at.
     var emphasized: ClosedRange<Int>? { didSet { if emphasized != oldValue { needsDisplay = true; ruler?.needsDisplay = true } } }
+    /// What the text is drawn in: the host app's colours, or the system's.
+    var colors = FileTextColors.standard { didSet { needsDisplay = true; ruler?.needsDisplay = true } }
     /// Where Copy puts text. The general pasteboard; a test's own otherwise.
     var pasteboard: NSPasteboard = .general
     weak var ruler: FileLineNumberRuler?
@@ -342,12 +400,16 @@ import AppKit
 
     /// Shows a text from its start, with nothing selected.
     func show(_ source: FileTextSource, name: String) {
+        self.source.arrival = nil
         self.source = source; self.name = name
-        layouts = [:]; layoutGeneration = source.generation; measuredWidth = 0; goalX = nil; emphasized = nil
+        pending = []
+        source.arrival = { [weak self] lines in self?.arrived(lines) }
+        layouts = [:]; layoutGeneration = source.generation; measuredWidth = 0; goalX = nil; emphasized = nil; readAhead = nil
+        showing &+= 1; answers = []; answering = []
         anchor = .start; focus = .start
         updateFrame()
         needsDisplay = true; ruler?.textChanged()
-        NSAccessibility.post(element: self, notification: .valueChanged)
+        announce(.valueChanged)
     }
 
     // MARK: Geometry
@@ -368,7 +430,8 @@ import AppKit
     /// The line under a point, clamped to the text.
     func line(at y: CGFloat) -> Int { max(0, min(source.lineCount - 1, Int(floor((y - FileTextMetrics.top) / lineHeight)))) }
 
-    func layout(_ index: Int) -> FileLineLayout {
+    /// A line as set, nil while its text has not come (it is then asked for).
+    func layout(_ index: Int) -> FileLineLayout? {
         if layoutGeneration != source.generation { layouts = [:]; layoutGeneration = source.generation }
         if let layout = layouts[index] { return layout }
         // Lines well away from the screen are let go of before more are set.
@@ -376,22 +439,28 @@ import AppKit
             let keep = visibleLines
             layouts = layouts.filter { keep.contains($0.key) }
         }
-        let layout = FileLineLayout(source: source, line: index)
+        guard let layout = FileLineLayout(source: source, line: index) else { return nil }
         layouts[index] = layout
         return layout
+    }
+    /// Where a column is along a line: where it is set, or while the line's
+    /// text has not come, in its column.
+    func x(of position: FileTextPosition) -> CGFloat {
+        layout(position.line)?.x(at: position.column) ?? CGFloat(max(0, position.column)) * FileTextMetrics.advance
     }
 
     /// Where a position is drawn, in this view.
     func point(of position: FileTextPosition) -> NSPoint {
-        NSPoint(x: FileTextMetrics.left + layout(position.line).x(at: position.column), y: top(ofLine: position.line))
+        NSPoint(x: FileTextMetrics.left + x(of: position), y: top(ofLine: position.line))
     }
     /// The position a point in this view puts the insertion point at: above
     /// the text is its start, below it its end.
     func position(at point: NSPoint) -> FileTextPosition {
         if point.y < FileTextMetrics.top { return .start }
         if point.y >= top(ofLine: source.lineCount) { return end }
-        let line = line(at: point.y)
-        return FileTextPosition(line: line, column: layout(line).index(at: point.x - FileTextMetrics.left))
+        let line = line(at: point.y), x = point.x - FileTextMetrics.left
+        let column = layout(line)?.index(at: x) ?? Int((max(0, x) / FileTextMetrics.advance).rounded())
+        return FileTextPosition(line: line, column: min(column, source.utf16Length(ofLine: line)))
     }
     /// The end of the text.
     var end: FileTextPosition { FileTextPosition(line: source.lineCount - 1, column: source.utf16Length(ofLine: source.lineCount - 1)) }
@@ -433,7 +502,7 @@ import AppKit
     @objc private func keyChanged(_ note: Notification) { if hasSelection { needsDisplay = true } }
     override func becomeFirstResponder() -> Bool {
         if hasSelection { needsDisplay = true }
-        NSAccessibility.post(element: self, notification: .focusedUIElementChanged)
+        announce(.focusedUIElementChanged)
         return true
     }
     override func resignFirstResponder() -> Bool { if hasSelection { needsDisplay = true }; return true }
@@ -441,10 +510,20 @@ import AppKit
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let rows = lines(in: dirtyRect)
+        source.beginDrawing()
+        defer { source.endDrawing() }
+        // The screen and a screen either side are read ahead of being drawn,
+        // once for each screen, up and down or sideways: drawing part of it
+        // again (a line that came) is not a new screen, and must not tell
+        // the source it is.
+        let screen = visibleLines, margin = max(8, screen.count)
+        let ahead = max(0, screen.lowerBound - margin)...min(source.lineCount - 1, screen.upperBound + margin)
+        let shown = Screen(lines: ahead, left: visibleRect.minX.rounded(), width: visibleRect.width.rounded())
+        if shown != readAhead { readAhead = shown; source.prefetch(lines: ahead) }
         let (start, end) = selectedRange
         let selectionColor = (selectionActive ? NSColor.selectedTextBackgroundColor : NSColor.unemphasizedSelectedTextBackgroundColor).cgColor
         if let emphasized, emphasized.overlaps(rows) {
-            context.setFillColor(NSColor.piAccentSoft.cgColor)
+            context.setFillColor(colors.emphasis.cgColor)
             let band = CGRect(x: dirtyRect.minX, y: top(ofLine: emphasized.lowerBound), width: dirtyRect.width,
                               height: CGFloat(emphasized.count) * lineHeight)
             context.fill(band.intersection(dirtyRect))
@@ -456,24 +535,30 @@ import AppKit
             let layout = layout(index)
             let top = top(ofLine: index)
             if start != end, index >= start.line, index <= end.line {
+                let length = source.utf16Length(ofLine: index)
                 let from = index == start.line ? start.column : 0
-                let to = index == end.line ? end.column : layout.length
+                let to = index == end.line ? end.column : length
                 context.setFillColor(selectionColor)
                 let window = (dirtyRect.minX - left)...(dirtyRect.maxX - left)
-                for span in layout.spans(from: from, to: to, within: window) where span.upperBound > span.lowerBound {
+                // A line whose text has not come is selected by its columns.
+                let spans = layout?.spans(from: from, to: to, within: window)
+                    ?? (to > from ? [CGFloat(from) * FileTextMetrics.advance...CGFloat(to) * FileTextMetrics.advance] : [])
+                for span in spans where span.upperBound > span.lowerBound {
                     context.fill(CGRect(x: left + span.lowerBound, y: top, width: span.upperBound - span.lowerBound, height: lineHeight))
                 }
                 // A line selected through its end fills on to the view's edge.
                 if index < end.line {
-                    let edge = layout.extent
+                    let edge = layout?.extent ?? CGFloat(length) * FileTextMetrics.advance
                     context.fill(CGRect(x: left + edge, y: top, width: max(0, max(bounds.width, dirtyRect.maxX) - left - edge), height: lineHeight))
                 }
             }
+            // Not come yet: drawn when it has (`arrived`).
+            guard let layout else { continue }
             let shown = layout.pieces(from: from, to: to)
             if layout.extent > measuredWidth { measuredWidth = layout.extent; scheduleWidth() }
             guard !shown.isEmpty else { continue }
             context.saveGState()
-            context.setFillColor(NSColor.piInk.cgColor)
+            context.setFillColor(colors.text.cgColor)
             context.translateBy(x: left, y: top + FileTextMetrics.baseline)
             context.scaleBy(x: 1, y: -1)
             for piece in shown {
@@ -493,6 +578,10 @@ import AppKit
             context.restoreGState()
         }
     }
+    /// The screen last read ahead for: its lines with those around them,
+    /// and where it is sideways.
+    private struct Screen: Equatable { let lines: ClosedRange<Int>; let left: CGFloat; let width: CGFloat }
+    private var readAhead: Screen?
     private var widthScheduled = false
     /// A line wider than the view was drawn: the view widens after this pass.
     private func scheduleWidth() {
@@ -512,7 +601,8 @@ import AppKit
 
     var hasSelection: Bool { anchor != focus }
     var selectedRange: (start: FileTextPosition, end: FileTextPosition) { (min(anchor, focus), max(anchor, focus)) }
-    var selectedText: String { hasSelection ? source.text(from: selectedRange.start, to: selectedRange.end) : "" }
+    /// The selection's text, if all of it is at hand.
+    var selectedText: String? { hasSelection ? source.text(from: selectedRange.start, to: selectedRange.end) : "" }
 
     /// Selects from `anchor` to `focus`, redrawing the lines either selection
     /// touched, and telling accessibility.
@@ -520,6 +610,7 @@ import AppKit
         let anchor = clamp(anchor), focus = clamp(focus)
         if !keepGoal { goalX = nil }
         guard anchor != self.anchor || focus != self.focus else { return }
+        selectionRevision &+= 1
         let before = min(self.anchor, self.focus).line...max(self.anchor, self.focus).line
         self.anchor = anchor; self.focus = focus
         let after = min(anchor, focus).line...max(anchor, focus).line
@@ -531,7 +622,7 @@ import AppKit
             if !dirty.isNull, !dirty.isEmpty { setNeedsDisplay(dirty) }
         }
         ruler?.needsDisplay = true
-        NSAccessibility.post(element: self, notification: .selectedTextChanged)
+        announce(.selectedTextChanged)
     }
     private func clamp(_ position: FileTextPosition) -> FileTextPosition {
         let line = max(0, min(position.line, source.lineCount - 1))
@@ -539,10 +630,10 @@ import AppKit
     }
     /// A few characters of a line around a column: enough to find a
     /// character's or a word's edges without reading the whole line.
-    private func surroundings(of position: FileTextPosition, radius: Int) -> (text: NSString, base: Int) {
+    private func surroundings(of position: FileTextPosition, radius: Int) -> (text: NSString, base: Int)? {
         let length = source.utf16Length(ofLine: position.line)
         let low = max(0, position.column - radius), high = min(length, position.column + radius)
-        return (source.text(ofLine: position.line, range: low..<high) as NSString, low)
+        return source.text(ofLine: position.line, range: low..<high).map { ($0 as NSString, low) }
     }
     /// A line whole, with its line ending: what a triple-click takes.
     func lineRange(_ index: Int) -> (FileTextPosition, FileTextPosition) {
@@ -552,12 +643,12 @@ import AppKit
     }
     /// The word or run a double-click at a position takes. The text around
     /// the position is read wider while the word reaches its edges, up to a
-    /// megabyte either way.
-    func wordRange(at position: FileTextPosition) -> (FileTextPosition, FileTextPosition) {
+    /// megabyte either way. Nil while that text has not come.
+    func wordRange(at position: FileTextPosition) -> (FileTextPosition, FileTextPosition)? {
         let length = source.utf16Length(ofLine: position.line)
         var radius = 256
         while true {
-            let (text, base) = surroundings(of: position, radius: radius)
+            guard let (text, base) = surroundings(of: position, radius: radius) else { return nil }
             guard text.length > 0 else { return (position, position) }
             let range = NSAttributedString(string: text as String).doubleClick(at: max(0, min(position.column - base, text.length - 1)))
             let cut = (range.location == 0 && base > 0) || (NSMaxRange(range) == text.length && base + text.length < length)
@@ -598,7 +689,8 @@ import AppKit
         var taken: (FileTextPosition, FileTextPosition)?
         switch clicks {
         case ...1: event.modifierFlags.contains(.shift) ? select(from: anchor, to: hit) : select(from: hit, to: hit)
-        case 2: taken = wordRange(at: hit)
+        // A word whose text has not come yet is a click.
+        case 2: taken = wordRange(at: hit); if taken == nil { select(from: hit, to: hit) }
         default: taken = lineRange(hit.line)
         }
         if let taken { select(from: taken.0, to: taken.1) }
@@ -620,28 +712,44 @@ import AppKit
             let moved = position(at: convert(last.locationInWindow, from: nil))
             if let taken {
                 if moved >= taken.0 && moved <= taken.1 { select(from: taken.0, to: taken.1) }
-                else if moved > taken.1 { select(from: taken.0, to: clicks == 2 ? max(wordRange(at: moved).1, moved) : lineRange(moved.line).1) }
-                else { select(from: taken.1, to: clicks == 2 ? min(wordRange(at: moved).0, moved) : lineRange(moved.line).0) }
+                else if moved > taken.1 { select(from: taken.0, to: clicks == 2 ? max(wordRange(at: moved)?.1 ?? moved, moved) : lineRange(moved.line).1) }
+                else { select(from: taken.1, to: clicks == 2 ? min(wordRange(at: moved)?.0 ?? moved, moved) : lineRange(moved.line).0) }
             } else {
                 select(from: anchor, to: moved)
             }
         }
     }
 
+    /// The menu a secondary click opens: the host app's own if it gives
+    /// one, else Copy and Select All.
+    var contextMenu: ((FileTextView) -> NSMenu?)?
     override func menu(for event: NSEvent) -> NSMenu? {
-        PiMenus.menu([
-            .button("Copy", enabled: hasSelection, identifier: "file-text-copy") { [weak self] in self?.copy(nil) },
-            .button("Select All", identifier: "file-text-select-all") { [weak self] in self?.selectAll(nil) },
-        ])
+        if let contextMenu { return contextMenu(self) }
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let copy = NSMenuItem(title: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+        copy.target = self; copy.isEnabled = hasSelection
+        let all = NSMenuItem(title: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
+        all.target = self
+        menu.addItem(copy); menu.addItem(all)
+        return menu
     }
 
     // MARK: Copy
 
+    /// Copies the selection: at once when its text is at hand, else when it
+    /// has been read (a later Copy of another selection supersedes it).
     @objc func copy(_ sender: Any?) {
-        let text = selectedText
-        guard !text.isEmpty else { return }
-        pasteboard.clearContents(); pasteboard.setString(text, forType: .string)
+        guard hasSelection else { return }
+        let (start, end) = selectedRange
+        copies += 1
+        let ticket = copies
+        source.fetch(from: start, to: end) { [weak self] text in
+            guard let self, ticket == self.copies, let text, !text.isEmpty else { return }
+            self.pasteboard.clearContents(); self.pasteboard.setString(text, forType: .string)
+        }
     }
+    private var copies = 0
     override func selectAll(_ sender: Any?) { select(from: .start, to: end) }
 
     // MARK: Keys
@@ -670,22 +778,96 @@ import AppKit
     override func insertTab(_ sender: Any?) { window?.selectNextKeyView(self) }
     override func insertBacktab(_ sender: Any?) { window?.selectPreviousKeyView(self) }
 
-    /// Moves the insertion point, or with `extend` the selection's focus, and
-    /// shows where it went.
-    private func move(_ extend: Bool, keepGoal: Bool = false, _ to: (FileTextPosition) -> FileTextPosition) {
-        let target = to(focus)
-        select(from: extend ? anchor : target, to: target, keepGoal: keepGoal)
-        scrollToVisible(focus)
+    /// A movement waiting for text to come.
+    private struct Pending {
+        let extend: Bool, keepGoal: Bool
+        let to: @MainActor (FileTextView, FileTextPosition) -> FileTextPosition?
     }
-    /// Left and Right without Shift first collapse a selection to that side.
-    private func collapse(toStart: Bool) -> Bool {
-        guard hasSelection else { return false }
-        let side = toStart ? selectedRange.start : selectedRange.end
-        select(from: side, to: side); scrollToVisible(side)
-        return true
+    /// Movements waiting for text to come, in the order the keys were
+    /// pressed, and the selection they wait at: done when the text has come,
+    /// unless the selection has been changed by anything else since, even if
+    /// it came back (every change counts, `selectionRevision`), or the text
+    /// can no longer come.
+    private var pending: [Pending] = []
+    private var pendingRevision = 0
+    private var selectionRevision = 0
+
+    /// Moves the insertion point, or with `extend` the selection's focus, and
+    /// shows where it went. A movement that needs text not come yet waits
+    /// for it, the selection left as it was; so do the movements after it,
+    /// each from where the one before it ends.
+    /// `to` is handed the view, and holds nothing of its own, so a movement
+    /// left waiting keeps no view alive.
+    private func move(_ extend: Bool, keepGoal: Bool = false, _ to: @escaping @MainActor (FileTextView, FileTextPosition) -> FileTextPosition?) {
+        if !pending.isEmpty, pendingRevision == selectionRevision, source.isReading {
+            pending.append(Pending(extend: extend, keepGoal: keepGoal, to: to))
+            return
+        }
+        pending = [Pending(extend: extend, keepGoal: keepGoal, to: to)]
+        pendingRevision = selectionRevision
+        runPending()
+    }
+    /// Does the waiting movements in turn, as far as the text at hand goes.
+    /// A movement whose text will not come (the file stopped being read) is
+    /// dropped with those after it.
+    private func runPending() {
+        var moved = false
+        while let next = pending.first {
+            guard let target = next.to(self, focus) else {
+                if !source.isReading { pending = [] }
+                break
+            }
+            pending.removeFirst()
+            select(from: next.extend ? anchor : target, to: target, keepGoal: next.keepGoal)
+            pendingRevision = selectionRevision
+            moved = true
+        }
+        if moved { scrollToVisible(focus) }
+    }
+    /// Text asked for has come, or lines changed: those lines are drawn again
+    /// (and set again, if they were), the view fits the text, and a movement
+    /// waiting for them is done.
+    func arrived(_ lines: ClosedRange<Int>) {
+        layouts = layouts.filter { !lines.contains($0.key) }
+        updateFrame()
+        let clamped = (clamp(anchor), clamp(focus))
+        if clamped.0 != anchor || clamped.1 != focus { select(from: clamped.0, to: clamped.1) }
+        let drawn = visibleRect.union(preparedContentRect)
+        let rect = NSRect(x: drawn.minX, y: top(ofLine: lines.lowerBound), width: drawn.width, height: CGFloat(lines.count) * lineHeight).intersection(drawn)
+        if !rect.isNull, !rect.isEmpty { setNeedsDisplay(rect) }
+        ruler?.textChanged()
+        if !pending.isEmpty {
+            if pendingRevision == selectionRevision { runPending() } else { pending = [] }
+        }
+        // What was read comes to accessibility too: once for all that comes
+        // in one turn of the run loop.
+        if lines.overlaps(visibleLines) || lines.overlaps(selectedRange.start.line...selectedRange.end.line) { announceArrival() }
+    }
+    private var arrivalAnnounced = false
+    private func announceArrival() {
+        guard !arrivalAnnounced else { return }
+        arrivalAnnounced = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.arrivalAnnounced = false
+                self.announce(.valueChanged)
+                if self.hasSelection { self.announce(.selectedTextChanged) }
+            }
+        }
+    }
+    /// Tells accessibility; a test listens in its place.
+    lazy var announce: (NSAccessibility.Notification) -> Void = { [weak self] notification in
+        if let self { NSAccessibility.post(element: self, notification: notification) }
+    }
+    /// Left and Right without Shift first collapse a selection to that side:
+    /// decided when the movement is done, after any waiting before it.
+    private func stepOrCollapse(from position: FileTextPosition, forward: Bool) -> FileTextPosition? {
+        if hasSelection { return forward ? selectedRange.end : selectedRange.start }
+        return character(from: position, forward: forward)
     }
 
-    private func character(from position: FileTextPosition, forward: Bool) -> FileTextPosition {
+    private func character(from position: FileTextPosition, forward: Bool) -> FileTextPosition? {
         let length = source.utf16Length(ofLine: position.line)
         if forward, position.column >= length {
             return position.line + 1 < source.lineCount ? FileTextPosition(line: position.line + 1, column: 0) : position
@@ -693,17 +875,17 @@ import AppKit
         if !forward, position.column <= 0 {
             return position.line > 0 ? FileTextPosition(line: position.line - 1, column: source.utf16Length(ofLine: position.line - 1)) : position
         }
-        let (text, base) = surroundings(of: position, radius: 64)
+        guard let (text, base) = surroundings(of: position, radius: 64) else { return nil }
         if forward { return FileTextPosition(line: position.line, column: base + NSMaxRange(text.rangeOfComposedCharacterSequence(at: position.column - base))) }
         return FileTextPosition(line: position.line, column: base + text.rangeOfComposedCharacterSequence(at: position.column - base - 1).location)
     }
-    private func word(from position: FileTextPosition, forward: Bool) -> FileTextPosition {
+    private func word(from position: FileTextPosition, forward: Bool) -> FileTextPosition? {
         let length = source.utf16Length(ofLine: position.line)
         if forward, position.column >= length { return character(from: position, forward: true) }
         if !forward, position.column <= 0 { return character(from: position, forward: false) }
         var radius = 256
         while true {
-            let (text, base) = surroundings(of: position, radius: radius)
+            guard let (text, base) = surroundings(of: position, radius: radius) else { return nil }
             let next = NSAttributedString(string: text as String).nextWord(from: position.column - base, forward: forward)
             // A word that runs to the edge of what was read may go on past it.
             let atEdge = forward ? (next >= text.length && base + text.length < length) : (next <= 0 && base > 0)
@@ -711,42 +893,44 @@ import AppKit
             radius *= 4
         }
     }
-    private func vertical(from position: FileTextPosition, lines: Int) -> FileTextPosition {
-        let x = goalX ?? layout(position.line).x(at: position.column)
-        goalX = x
+    private func vertical(from position: FileTextPosition, lines: Int) -> FileTextPosition? {
         let target = position.line + lines
         if target < 0 { return .start }
         if target >= source.lineCount { return end }
-        return FileTextPosition(line: target, column: layout(target).index(at: x))
+        guard let layout = layout(target) else { return nil }
+        let x = goalX ?? self.x(of: position)
+        goalX = x
+        guard let column = layout.index(at: x) else { return nil }
+        return FileTextPosition(line: target, column: column)
     }
     private var pageLines: Int { max(1, Int((enclosingScrollView?.contentView.bounds.height ?? visibleRect.height) / lineHeight) - 1) }
 
-    override func moveLeft(_ sender: Any?) { if !collapse(toStart: true) { move(false) { character(from: $0, forward: false) } } }
-    override func moveRight(_ sender: Any?) { if !collapse(toStart: false) { move(false) { character(from: $0, forward: true) } } }
+    override func moveLeft(_ sender: Any?) { move(false) { $0.stepOrCollapse(from: $1, forward: false) } }
+    override func moveRight(_ sender: Any?) { move(false) { $0.stepOrCollapse(from: $1, forward: true) } }
     override func moveBackward(_ sender: Any?) { moveLeft(sender) }
     override func moveForward(_ sender: Any?) { moveRight(sender) }
-    override func moveLeftAndModifySelection(_ sender: Any?) { move(true) { character(from: $0, forward: false) } }
-    override func moveRightAndModifySelection(_ sender: Any?) { move(true) { character(from: $0, forward: true) } }
+    override func moveLeftAndModifySelection(_ sender: Any?) { move(true) { $0.character(from: $1, forward: false) } }
+    override func moveRightAndModifySelection(_ sender: Any?) { move(true) { $0.character(from: $1, forward: true) } }
     override func moveBackwardAndModifySelection(_ sender: Any?) { moveLeftAndModifySelection(sender) }
     override func moveForwardAndModifySelection(_ sender: Any?) { moveRightAndModifySelection(sender) }
-    override func moveUp(_ sender: Any?) { move(false, keepGoal: true) { vertical(from: $0, lines: -1) } }
-    override func moveDown(_ sender: Any?) { move(false, keepGoal: true) { vertical(from: $0, lines: 1) } }
-    override func moveUpAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { vertical(from: $0, lines: -1) } }
-    override func moveDownAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { vertical(from: $0, lines: 1) } }
-    override func moveWordLeft(_ sender: Any?) { move(false) { word(from: $0, forward: false) } }
-    override func moveWordRight(_ sender: Any?) { move(false) { word(from: $0, forward: true) } }
+    override func moveUp(_ sender: Any?) { move(false, keepGoal: true) { $0.vertical(from: $1, lines: -1) } }
+    override func moveDown(_ sender: Any?) { move(false, keepGoal: true) { $0.vertical(from: $1, lines: 1) } }
+    override func moveUpAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { $0.vertical(from: $1, lines: -1) } }
+    override func moveDownAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { $0.vertical(from: $1, lines: 1) } }
+    override func moveWordLeft(_ sender: Any?) { move(false) { $0.word(from: $1, forward: false) } }
+    override func moveWordRight(_ sender: Any?) { move(false) { $0.word(from: $1, forward: true) } }
     override func moveWordBackward(_ sender: Any?) { moveWordLeft(sender) }
     override func moveWordForward(_ sender: Any?) { moveWordRight(sender) }
-    override func moveWordLeftAndModifySelection(_ sender: Any?) { move(true) { word(from: $0, forward: false) } }
-    override func moveWordRightAndModifySelection(_ sender: Any?) { move(true) { word(from: $0, forward: true) } }
+    override func moveWordLeftAndModifySelection(_ sender: Any?) { move(true) { $0.word(from: $1, forward: false) } }
+    override func moveWordRightAndModifySelection(_ sender: Any?) { move(true) { $0.word(from: $1, forward: true) } }
     override func moveWordBackwardAndModifySelection(_ sender: Any?) { moveWordLeftAndModifySelection(sender) }
     override func moveWordForwardAndModifySelection(_ sender: Any?) { moveWordRightAndModifySelection(sender) }
-    override func moveToBeginningOfLine(_ sender: Any?) { move(false) { FileTextPosition(line: $0.line, column: 0) } }
-    override func moveToEndOfLine(_ sender: Any?) { move(false) { FileTextPosition(line: $0.line, column: source.utf16Length(ofLine: $0.line)) } }
+    override func moveToBeginningOfLine(_ sender: Any?) { move(false) { FileTextPosition(line: $1.line, column: 0) } }
+    override func moveToEndOfLine(_ sender: Any?) { move(false) { FileTextPosition(line: $1.line, column: $0.source.utf16Length(ofLine: $1.line)) } }
     override func moveToLeftEndOfLine(_ sender: Any?) { moveToBeginningOfLine(sender) }
     override func moveToRightEndOfLine(_ sender: Any?) { moveToEndOfLine(sender) }
-    override func moveToBeginningOfLineAndModifySelection(_ sender: Any?) { move(true) { FileTextPosition(line: $0.line, column: 0) } }
-    override func moveToEndOfLineAndModifySelection(_ sender: Any?) { move(true) { FileTextPosition(line: $0.line, column: source.utf16Length(ofLine: $0.line)) } }
+    override func moveToBeginningOfLineAndModifySelection(_ sender: Any?) { move(true) { FileTextPosition(line: $1.line, column: 0) } }
+    override func moveToEndOfLineAndModifySelection(_ sender: Any?) { move(true) { FileTextPosition(line: $1.line, column: $0.source.utf16Length(ofLine: $1.line)) } }
     override func moveToLeftEndOfLineAndModifySelection(_ sender: Any?) { moveToBeginningOfLineAndModifySelection(sender) }
     override func moveToRightEndOfLineAndModifySelection(_ sender: Any?) { moveToEndOfLineAndModifySelection(sender) }
     // A file's line is its paragraph.
@@ -755,27 +939,27 @@ import AppKit
     override func moveToBeginningOfParagraphAndModifySelection(_ sender: Any?) { moveToBeginningOfLineAndModifySelection(sender) }
     override func moveToEndOfParagraphAndModifySelection(_ sender: Any?) { moveToEndOfLineAndModifySelection(sender) }
     override func moveParagraphBackwardAndModifySelection(_ sender: Any?) {
-        move(true) { $0.column > 0 ? FileTextPosition(line: $0.line, column: 0) : FileTextPosition(line: max(0, $0.line - 1), column: 0) }
+        move(true) { $1.column > 0 ? FileTextPosition(line: $1.line, column: 0) : FileTextPosition(line: max(0, $1.line - 1), column: 0) }
     }
     override func moveParagraphForwardAndModifySelection(_ sender: Any?) {
-        move(true) { position in
-            let length = source.utf16Length(ofLine: position.line)
+        move(true) { view, position in
+            let length = view.source.utf16Length(ofLine: position.line)
             if position.column < length { return FileTextPosition(line: position.line, column: length) }
-            let next = min(source.lineCount - 1, position.line + 1)
-            return FileTextPosition(line: next, column: source.utf16Length(ofLine: next))
+            let next = min(view.source.lineCount - 1, position.line + 1)
+            return FileTextPosition(line: next, column: view.source.utf16Length(ofLine: next))
         }
     }
-    override func moveToBeginningOfDocument(_ sender: Any?) { move(false) { _ in .start } }
-    override func moveToEndOfDocument(_ sender: Any?) { move(false) { _ in end } }
-    override func moveToBeginningOfDocumentAndModifySelection(_ sender: Any?) { move(true) { _ in .start } }
-    override func moveToEndOfDocumentAndModifySelection(_ sender: Any?) { move(true) { _ in end } }
-    override func pageUp(_ sender: Any?) { move(false, keepGoal: true) { vertical(from: $0, lines: -pageLines) } }
-    override func pageDown(_ sender: Any?) { move(false, keepGoal: true) { vertical(from: $0, lines: pageLines) } }
-    override func pageUpAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { vertical(from: $0, lines: -pageLines) } }
-    override func pageDownAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { vertical(from: $0, lines: pageLines) } }
+    override func moveToBeginningOfDocument(_ sender: Any?) { move(false) { _, _ in .start } }
+    override func moveToEndOfDocument(_ sender: Any?) { move(false) { view, _ in view.end } }
+    override func moveToBeginningOfDocumentAndModifySelection(_ sender: Any?) { move(true) { _, _ in .start } }
+    override func moveToEndOfDocumentAndModifySelection(_ sender: Any?) { move(true) { view, _ in view.end } }
+    override func pageUp(_ sender: Any?) { move(false, keepGoal: true) { $0.vertical(from: $1, lines: -$0.pageLines) } }
+    override func pageDown(_ sender: Any?) { move(false, keepGoal: true) { $0.vertical(from: $1, lines: $0.pageLines) } }
+    override func pageUpAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { $0.vertical(from: $1, lines: -$0.pageLines) } }
+    override func pageDownAndModifySelection(_ sender: Any?) { move(true, keepGoal: true) { $0.vertical(from: $1, lines: $0.pageLines) } }
     override func selectLine(_ sender: Any?) { let range = lineRange(focus.line); select(from: range.0, to: range.1) }
     override func selectParagraph(_ sender: Any?) { selectLine(sender) }
-    override func selectWord(_ sender: Any?) { let range = wordRange(at: focus); select(from: range.0, to: range.1) }
+    override func selectWord(_ sender: Any?) { if let range = wordRange(at: focus) { select(from: range.0, to: range.1) } }
     override func centerSelectionInVisibleArea(_ sender: Any?) {
         guard let clip = enclosingScrollView?.contentView else { return }
         let y = max(0, min(top(ofLine: focus.line) - (clip.bounds.height - lineHeight) / 2, frame.height - clip.bounds.height))
@@ -806,8 +990,44 @@ import AppKit
     static let accessibleTextLimit = 1_000_000
 
     override func accessibilityLabel() -> String? { name.isEmpty ? "File contents" : "Contents of \(name)" }
+    /// Only text at hand: what has not been read yet is not handed over, but
+    /// read, in one go and away from the screen's own, and kept here for when
+    /// accessibility asks again, which it is told to (`announce`).
     override func accessibilityValue() -> Any? {
-        source.utf16Length <= Self.accessibleTextLimit ? source.text(from: .start, to: end) : nil
+        guard source.utf16Length <= Self.accessibleTextLimit else { return nil }
+        return accessibleText(from: .start, to: end)
+    }
+    private struct Span: Hashable { let start: FileTextPosition; let end: FileTextPosition }
+    /// The latest texts read for accessibility, newest last, for the text
+    /// shown now and its generation; and the reads for it under way.
+    private var answers: [(span: Span, text: String)] = []
+    private var answering: Set<Span> = []
+    private var answersFor = (showing: 0, generation: 0)
+    /// Bumped by `show`: what was read for the text shown before is not used.
+    private var showing = 0
+    private var answeringNow = 0
+    /// At most this many reads for accessibility at once; it asks again.
+    static let answeringLimit = 4
+    /// Text for accessibility: at hand, or read for it and kept a while.
+    private func accessibleText(from start: FileTextPosition, to end: FileTextPosition) -> String? {
+        let span = Span(start: start, end: end), current = (showing: showing, generation: source.generation)
+        if answersFor != current { answers = []; answering = []; answersFor = current }
+        if let answer = answers.last(where: { $0.span == span }) { return answer.text }
+        if let text = source.textAtHand(from: start, to: end) { return text }
+        guard !answering.contains(span), answering.count < Self.answeringLimit else { return nil }
+        answering.insert(span)
+        answeringNow += 1
+        source.fetch(from: start, to: end) { [weak self] text in
+            guard let self, self.answersFor == current, self.showing == current.showing, self.source.generation == current.generation else { return }
+            self.answering.remove(span)
+            guard let text else { return }
+            self.answers.append((span, text))
+            if self.answers.count > 4 { self.answers.removeFirst() }
+            // Come later, not at once: accessibility is told to ask again.
+            if self.answeringNow == 0 { self.announceArrival() }
+        }
+        answeringNow -= 1
+        return answers.last { $0.span == span }?.text
     }
     /// The text is read only: its selection can be set, the text itself not.
     override func isAccessibilitySelectorAllowed(_ selector: Selector) -> Bool {
@@ -820,7 +1040,8 @@ import AppKit
     override func setAccessibilityFocused(_ focused: Bool) { if focused { window?.makeFirstResponder(self) } }
     override func accessibilityNumberOfCharacters() -> Int { source.utf16Length }
     override func accessibilitySelectedText() -> String? {
-        accessibilitySelectedTextRange().length <= Self.accessibleTextLimit ? selectedText : nil
+        guard accessibilitySelectedTextRange().length <= Self.accessibleTextLimit else { return nil }
+        return hasSelection ? accessibleText(from: selectedRange.start, to: selectedRange.end) : ""
     }
     override func accessibilitySelectedTextRange() -> NSRange {
         let start = source.utf16Offset(of: selectedRange.start), end = source.utf16Offset(of: selectedRange.end)
@@ -845,7 +1066,8 @@ import AppKit
     override func accessibilityString(for range: NSRange) -> String? {
         let clamped = clamped(range)
         guard clamped.length <= Self.accessibleTextLimit else { return nil }
-        return source.text(from: source.position(atUTF16: clamped.location), to: source.position(atUTF16: NSMaxRange(clamped)))
+        let start = source.position(atUTF16: clamped.location), end = source.position(atUTF16: NSMaxRange(clamped))
+        return accessibleText(from: start, to: end)
     }
     override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
         guard let text = accessibilityString(for: range) else { return nil }
@@ -856,7 +1078,7 @@ import AppKit
             NSAccessibility.FontAttributeKey.visibleName.rawValue: font.displayName ?? font.fontName,
             NSAccessibility.FontAttributeKey.fontSize.rawValue: font.pointSize,
         ]
-        return NSAttributedString(string: text, attributes: [.accessibilityFont: described, .accessibilityForegroundColor: NSColor.piInk.cgColor])
+        return NSAttributedString(string: text, attributes: [.accessibilityFont: described, .accessibilityForegroundColor: colors.text.cgColor])
     }
     override func accessibilityLine(for index: Int) -> Int { source.line(atUTF16: max(0, min(index, source.utf16Length))) }
     /// A line with its "\n", as a text view counts it.
@@ -873,7 +1095,8 @@ import AppKit
             // The "\n" at a line's end, or the text's end.
             return NSRange(location: source.utf16Offset(of: position), length: position.line + 1 < source.lineCount ? 1 : 0)
         }
-        let (text, base) = surroundings(of: position, radius: 64)
+        // Not come yet: not known, which asking has read for next time.
+        guard let (text, base) = surroundings(of: position, radius: 64) else { return NSRange(location: NSNotFound, length: 0) }
         let character = text.rangeOfComposedCharacterSequence(at: position.column - base)
         return NSRange(location: source.utf16Start(ofLine: position.line) + base + character.location, length: character.length)
     }
@@ -888,8 +1111,9 @@ import AppKit
         let local = convert(window.convertPoint(fromScreen: point), from: nil)
         let caret = position(at: local)
         let x = local.x - FileTextMetrics.left
-        let layout = layout(caret.line)
-        let (text, base) = surroundings(of: caret, radius: 64)
+        guard let layout = layout(caret.line), let (text, base) = surroundings(of: caret, radius: 64) else {
+            return accessibilityRange(for: source.utf16Offset(of: caret))
+        }
         var candidates: [NSRange] = []
         if caret.column < layout.length { candidates.append(text.rangeOfComposedCharacterSequence(at: caret.column - base)) }
         if caret.column > 0 { candidates.append(text.rangeOfComposedCharacterSequence(at: caret.column - base - 1)) }
@@ -909,16 +1133,16 @@ import AppKit
         let clamped = clamped(range)
         let start = source.position(atUTF16: clamped.location), end = source.position(atUTF16: NSMaxRange(clamped))
         let rect: NSRect
-        if start.line == end.line {
-            let layout = layout(start.line)
+        if start.line == end.line, let layout = layout(start.line) {
             let from: CGFloat, to: CGFloat
-            if layout.grid, end.column - start.column > 4 * FileTextMetrics.piece,
-               let head = layout.pieceRange(containing: start.column), let tail = layout.pieceRange(containing: end.column - 1) {
+            if layout.grid, end.column - start.column > 4 * FileTextMetrics.piece {
                 // A long range on the grid: its end pieces are measured, and
                 // every piece between keeps its glyphs inside its columns,
-                // which lie between them. Nothing else is set.
-                let first = layout.spans(from: start.column, to: min(end.column, head.upperBound))
-                let last = layout.spans(from: max(start.column, tail.lowerBound), to: end.column)
+                // which lie between them. Nothing else is set, or read: an
+                // end whose piece has not come is where its column is.
+                let head = layout.pieceRange(containing: start.column), tail = layout.pieceRange(containing: end.column - 1)
+                let first = head.map { layout.spans(from: start.column, to: min(end.column, $0.upperBound)) } ?? []
+                let last = tail.map { layout.spans(from: max(start.column, $0.lowerBound), to: end.column) } ?? []
                 from = first.map(\.lowerBound).min() ?? CGFloat(start.column) * FileTextMetrics.advance
                 to = last.map(\.upperBound).max() ?? CGFloat(end.column) * FileTextMetrics.advance
             } else {
@@ -926,6 +1150,10 @@ import AppKit
                 from = spans.map(\.lowerBound).min() ?? layout.x(at: start.column)
                 to = spans.map(\.upperBound).max() ?? from
             }
+            rect = NSRect(x: FileTextMetrics.left + from, y: top(ofLine: start.line), width: max(1, to - from), height: lineHeight)
+        } else if start.line == end.line {
+            // Not come yet: its columns.
+            let from = CGFloat(start.column) * FileTextMetrics.advance, to = CGFloat(end.column) * FileTextMetrics.advance
             rect = NSRect(x: FileTextMetrics.left + from, y: top(ofLine: start.line), width: max(1, to - from), height: lineHeight)
         } else {
             rect = NSRect(x: FileTextMetrics.left, y: top(ofLine: start.line), width: max(1, bounds.width - FileTextMetrics.left - FileTextMetrics.right),
@@ -1004,7 +1232,7 @@ extension FileTextView: NSMenuItemValidation {
             ]))
             let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
             context.saveGState()
-            context.setFillColor((emphasized ? NSColor.piInkSecondary : NSColor.piInkTertiary).cgColor)
+            context.setFillColor((emphasized ? textView.colors.strongLineNumber : textView.colors.lineNumber).cgColor)
             context.translateBy(x: bounds.width - 12 - width, y: y + FileTextMetrics.baseline)
             context.scaleBy(x: 1, y: -1)
             context.textPosition = .zero

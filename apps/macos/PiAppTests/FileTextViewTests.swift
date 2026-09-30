@@ -25,8 +25,11 @@ final class FileTextViewTests: XCTestCase {
             let text = "Line " + String(repeating: "0", count: max(0, 8 - number.count)) + number + " · the quick brown fox jumps over"
             return text.padding(toLength: width, withPad: ".", startingAt: 0)
         }
+        var arrival: ((ClosedRange<Int>) -> Void)?
+        func prefetch(lines: ClosedRange<Int>) {}
+        func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) { completion(text(from: start, to: end)) }
         func utf16Length(ofLine index: Int) -> Int { Self.width }
-        func text(ofLine index: Int, range: Range<Int>) -> String {
+        func text(ofLine index: Int, range: Range<Int>) -> String? {
             let line = Self.line(index) as NSString
             let low = max(0, min(range.lowerBound, line.length)), high = max(low, min(range.upperBound, line.length))
             read += high - low
@@ -50,8 +53,11 @@ final class FileTextViewTests: XCTestCase {
         let wide: Range<Int>
         private(set) var read = 0
         init(_ length: Int, emojiAt emoji: Int? = nil, wide: Range<Int> = 0..<0) { self.length = length; self.emoji = emoji; self.wide = wide }
+        var arrival: ((ClosedRange<Int>) -> Void)?
+        func prefetch(lines: ClosedRange<Int>) {}
+        func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) { completion(text(from: start, to: end)) }
         func utf16Length(ofLine index: Int) -> Int { length }
-        func text(ofLine index: Int, range: Range<Int>) -> String {
+        func text(ofLine index: Int, range: Range<Int>) -> String? {
             let low = max(0, range.lowerBound), high = min(length, range.upperBound)
             guard high > low else { return "" }
             read += high - low
@@ -68,6 +74,44 @@ final class FileTextViewTests: XCTestCase {
         func line(atUTF16 offset: Int) -> Int { 0 }
         var utf16Length: Int { length }
         var longestLine: Int { length }
+    }
+
+    /// A text whose lines come only when the test lets them: what a file on
+    /// a slow disk looks like to the view. Lines asked for are remembered.
+    @MainActor final class DelayedLines: FileTextSource {
+        let whole: FileTextLines
+        private(set) var ready: Set<Int> = []
+        private(set) var asked: Set<Int> = []
+        var arrival: ((ClosedRange<Int>) -> Void)?
+        init(_ text: String) { whole = FileTextLines(text) }
+        /// Whether what has not come may still come.
+        var isReading = true
+        /// Lets lines come, and tells the view.
+        func release(_ lines: ClosedRange<Int>) {
+            ready.formUnion(lines)
+            arrival?(lines)
+        }
+        var lineCount: Int { whole.lineCount }
+        let generation = 0
+        func utf16Length(ofLine index: Int) -> Int { whole.utf16Length(ofLine: index) }
+        func text(ofLine index: Int, range: Range<Int>) -> String? {
+            guard ready.contains(index) else { asked.insert(index); return nil }
+            return whole.text(ofLine: index, range: range)
+        }
+        func utf16Start(ofLine index: Int) -> Int { whole.utf16Start(ofLine: index) }
+        func line(atUTF16 offset: Int) -> Int { whole.line(atUTF16: offset) }
+        var utf16Length: Int { whole.utf16Length }
+        var longestLine: Int { whole.longestLine }
+        func prefetch(lines: ClosedRange<Int>) { asked.formUnion(lines) }
+        private var fetches: [(FileTextPosition, FileTextPosition, @MainActor (String?) -> Void)] = []
+        func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) {
+            if let text = text(from: start, to: end) { completion(text) } else { fetches.append((start, end, completion)) }
+        }
+        /// Finishes the fetches whose lines have all come.
+        func finishFetches() {
+            let waiting = fetches; fetches = []
+            for (start, end, completion) in waiting { fetch(from: start, to: end, completion: completion) }
+        }
     }
 
     // MARK: Fixture
@@ -335,8 +379,10 @@ final class FileTextViewTests: XCTestCase {
             let fixture = fixture(source)
             let text = fixture.text
             XCTAssertLessThanOrEqual(FileTextRenderCount.pieces, 2, "\(length): only the line's start is set")
-            XCTAssertLessThanOrEqual(source.read, 3 * FileTextMetrics.piece)
-            XCTAssertEqual(text.layout(0).grid, grid)
+            // Off the grid a line is read whole (at most 65,536 units) and
+            // kept; on it, only the pieces drawn are read.
+            XCTAssertLessThanOrEqual(source.read, grid ? 3 * FileTextMetrics.piece : length)
+            XCTAssertEqual(text.layout(0)?.grid, grid)
             // The far end.
             let clip = fixture.scroll.contentView
             clip.scroll(to: NSPoint(x: text.frame.width - clip.bounds.width, y: 0)); fixture.scroll.reflectScrolledClipView(clip)
@@ -363,6 +409,18 @@ final class FileTextViewTests: XCTestCase {
         }
     }
 
+    /// A long line drawn again reads nothing more: the pieces set, and where
+    /// they start, are kept.
+    @MainActor func testALongLineDrawnAgainReadsNothingMore() throws {
+        let source = LongLine(3_000_000)
+        let fixture = fixture(source)
+        fixture.draw()
+        let read = source.read
+        XCTAssertGreaterThan(read, 0)
+        fixture.draw(); fixture.draw()
+        XCTAssertEqual(source.read, read)
+    }
+
     /// A tab keeps to the line's tab stops, every four columns from its start,
     /// in a piece set apart from the line's start.
     @MainActor func testTabsKeepTheLinesStopsAcrossPieces() throws {
@@ -372,11 +430,12 @@ final class FileTextViewTests: XCTestCase {
         let fixture = fixture(FileTextLines(words))
         let text = fixture.text
         let tab = words.utf16.count - 6
-        let after = text.layout(0).x(at: tab + 1)
+        let line = try XCTUnwrap(text.layout(0))
+        let after = line.x(at: tab + 1)
         let interval = FileTextMetrics.tabInterval
         XCTAssertEqual(after.truncatingRemainder(dividingBy: interval), 0, accuracy: 0.01, "the text after a tab starts on a stop")
-        XCTAssertGreaterThan(after, text.layout(0).x(at: tab), "and past where the tab began")
-        XCTAssertLessThanOrEqual(after - text.layout(0).x(at: tab), interval + 0.01)
+        XCTAssertGreaterThan(after, line.x(at: tab), "and past where the tab began")
+        XCTAssertLessThanOrEqual(after - line.x(at: tab), interval + 0.01)
     }
 
     /// On the grid, a character cut by a piece's multiple belongs to the next
@@ -386,7 +445,7 @@ final class FileTextViewTests: XCTestCase {
         let source = LongLine(200_000, emojiAt: FileTextMetrics.piece - 1)
         let fixture = fixture(source)
         let text = fixture.text
-        let layout = text.layout(0)
+        let layout = try XCTUnwrap(text.layout(0))
         XCTAssertTrue(layout.grid)
         let around = layout.pieces(from: CGFloat(1_000) * FileTextMetrics.advance, to: CGFloat(1_100) * FileTextMetrics.advance)
         XCTAssertEqual(around.map(\.range), [0..<1_023, 1_023..<2_048], "the emoji starts the second piece; the first ends before it")
@@ -419,14 +478,14 @@ final class FileTextViewTests: XCTestCase {
         let arabic = "مرحبا بالعالم"
         let fixture = fixture(FileTextLines(arabic + "\nabc " + arabic + " def"))
         let text = fixture.text
-        let whole = text.layout(0).spans(from: 0, to: (arabic as NSString).length)
+        let whole = try XCTUnwrap(text.layout(0)).spans(from: 0, to: (arabic as NSString).length)
         let covered = whole.reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
         XCTAssertGreaterThan(covered, 40, "the whole Arabic line is covered")
         XCTAssertEqual(text.accessibilityFrame(for: NSRange(location: 0, length: (arabic as NSString).length)).width, covered, accuracy: 1,
                        "and so is its outline for VoiceOver")
         // In a line that runs left to right, the Arabic words sit between
         // "abc " and " def".
-        let mixed = text.layout(1)
+        let mixed = try XCTUnwrap(text.layout(1))
         let start = 4, end = 4 + (arabic as NSString).length
         let spans = mixed.spans(from: start, to: end)
         let left = spans.map(\.lowerBound).min() ?? 0, right = spans.map(\.upperBound).max() ?? 0
@@ -459,7 +518,7 @@ final class FileTextViewTests: XCTestCase {
     /// would put further left: a selection there is still highlighted.
     @MainActor func testASelectionAmongSqueezedWideCharactersIsDrawnWhereTheyAre() throws {
         let fixture = fixture(LongLine(200_000, wide: 0..<100))
-        let layout = fixture.text.layout(0)
+        let layout = try XCTUnwrap(fixture.text.layout(0))
         XCTAssertTrue(layout.grid)
         let drawn = layout.spans(from: 60, to: 70)
         XCTAssertFalse(drawn.isEmpty)
@@ -477,7 +536,7 @@ final class FileTextViewTests: XCTestCase {
     @MainActor func testTheOutlineOfALongGridRangeReachesItsLastGlyph() throws {
         let fixture = fixture(LongLine(210_000, wide: 4_096..<4_196))
         let text = fixture.text
-        let layout = text.layout(0)
+        let layout = try XCTUnwrap(text.layout(0))
         let lastGlyph = try XCTUnwrap(layout.spans(from: 4_165, to: 4_166).map(\.upperBound).max())
         XCTAssertGreaterThan(lastGlyph, 4_166 * FileTextMetrics.advance + 50, "the wide glyphs sit right of their columns")
         let outline = text.accessibilityFrame(for: NSRange(location: 0, length: 4_166))
@@ -489,7 +548,7 @@ final class FileTextViewTests: XCTestCase {
     /// a lam-alef, drawn as one glyph, is selected on its own.
     @MainActor func testPartOfALigatureIsSelectedAsPartOfItsGlyph() throws {
         let fixture = fixture(FileTextLines("لا"))
-        let layout = fixture.text.layout(0)
+        let layout = try XCTUnwrap(fixture.text.layout(0))
         let whole = layout.spans(from: 0, to: 2).reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
         let alef = layout.spans(from: 1, to: 2).reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
         XCTAssertGreaterThan(alef, 0, "the alef alone is highlighted")
@@ -503,10 +562,196 @@ final class FileTextViewTests: XCTestCase {
         let word = String(repeating: "a", count: 800)
         let fixture = fixture(FileTextLines(word + " end"))
         let text = fixture.text
-        XCTAssertTrue(text.wordRange(at: at(0, 400)) == (at(0, 0), at(0, 800)), "the whole 800-character word")
+        let range = try XCTUnwrap(text.wordRange(at: at(0, 400)))
+        XCTAssertTrue(range == (at(0, 0), at(0, 800)), "the whole 800-character word")
         text.select(from: at(0, 400), to: at(0, 400))
         try key(fixture, right.0, right.1, .option)
         XCTAssertEqual(text.focus, at(0, 800), "Option-Right goes to the word's end, past what was read first")
+    }
+
+    // MARK: Text not come yet
+
+    /// A line whose text has not come is drawn empty, asked for, and drawn
+    /// when it comes; nothing waits for it.
+    @MainActor func testALineNotComeYetIsDrawnWhenItComes() throws {
+        let source = DelayedLines("one\ntwo\nthree")
+        FileTextRenderCount.reset()
+        let fixture = fixture(source)
+        XCTAssertEqual(FileTextRenderCount.pieces, 0, "nothing is set before its text has come")
+        XCTAssertTrue(source.asked.isSuperset(of: [0, 1, 2]), "the lines on screen were asked for")
+        source.release(0...1)
+        fixture.draw()
+        XCTAssertEqual(FileTextRenderCount.pieces, 2, "the lines that came are set and drawn")
+        source.release(2...2)
+        fixture.draw()
+        XCTAssertEqual(FileTextRenderCount.pieces, 3)
+    }
+
+    /// A key that needs text not come yet waits for it, the selection left
+    /// as it was, and moves when it comes; if the reader moves on meanwhile,
+    /// it is dropped.
+    @MainActor func testAKeyThatNeedsTextNotComeYetWaitsForIt() throws {
+        let source = DelayedLines("first line\nsecond line\nthird line")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        text.select(from: at(0, 3), to: at(0, 3))
+        try key(fixture, down.0, down.1, .shift)
+        XCTAssertEqual(text.focus, at(0, 3), "Shift-Down into a line not come yet waits")
+        source.release(1...1)
+        XCTAssertEqual(text.focus, at(1, 3), "and moves when it comes")
+        XCTAssertEqual(text.anchor, at(0, 3))
+        try key(fixture, down.0, down.1)
+        XCTAssertEqual(text.focus, at(1, 3), "Down waits again")
+        text.select(from: at(0, 0), to: at(0, 0))
+        source.release(2...2)
+        XCTAssertEqual(text.focus, at(0, 0), "a movement the reader moved on from is dropped")
+    }
+
+    /// Keys pressed while the text they need has not come are all done when
+    /// it comes, in order, each from where the one before ended.
+    @MainActor func testKeysPressedWhileTextIsComingAreAllDone() throws {
+        let source = DelayedLines("first line\nsecond line")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        text.select(from: at(1, 0), to: at(1, 0))
+        try key(fixture, right.0, right.1)
+        try key(fixture, right.0, right.1)
+        try key(fixture, right.0, right.1, .shift)
+        XCTAssertEqual(text.focus, at(1, 0), "waiting for the line")
+        source.release(1...1)
+        XCTAssertEqual(text.anchor, at(1, 2))
+        XCTAssertEqual(text.focus, at(1, 3), "two moves and an extend, in order")
+    }
+
+    /// Right after Shift-Right, both waiting, collapses the selection the
+    /// first made, as Right does: the collapse is decided when it is done.
+    @MainActor func testAWaitingRightCollapsesTheSelectionAWaitingShiftRightMade() throws {
+        let source = DelayedLines("first line\nsecond line")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        text.select(from: at(1, 0), to: at(1, 0))
+        try key(fixture, right.0, right.1, .shift)
+        try key(fixture, right.0, right.1)
+        source.release(1...1)
+        XCTAssertEqual(selection(fixture).0, at(1, 1))
+        XCTAssertEqual(selection(fixture).1, at(1, 1), "Right collapsed the one-character selection at its end")
+    }
+
+    /// A movement waiting for text that will not come (the file changed and
+    /// is no longer read) is dropped, and keys after it are done at once.
+    @MainActor func testAMovementWhoseTextWillNotComeIsDropped() throws {
+        let source = DelayedLines("first line\nsecond line\nthird")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        text.select(from: at(1, 3), to: at(1, 3))
+        try key(fixture, right.0, right.1)
+        XCTAssertEqual(text.focus, at(1, 3), "waiting")
+        source.isReading = false
+        source.arrival?(0...2)
+        // Were it still waiting, the line coming now would move it.
+        source.isReading = true; source.release(1...1)
+        XCTAssertEqual(text.focus, at(1, 3), "dropped when the text stopped coming")
+        try key(fixture, up.0, up.1, .command)
+        XCTAssertEqual(text.focus, .start, "Command-Up is done, not queued behind the dropped movement")
+    }
+
+    /// A waiting movement is dropped when the selection is changed by
+    /// anything else, even back to where it was.
+    @MainActor func testAWaitingMovementIsDroppedWhenTheSelectionChangesAndComesBack() throws {
+        let source = DelayedLines("first line\nsecond line")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        text.select(from: at(1, 0), to: at(1, 0))
+        try key(fixture, right.0, right.1)
+        text.select(from: at(0, 2), to: at(0, 2))
+        text.select(from: at(1, 0), to: at(1, 0))
+        source.release(1...1)
+        XCTAssertEqual(text.focus, at(1, 0), "the movement from before the change is not done")
+    }
+
+    /// Text that comes after accessibility found it missing is announced:
+    /// the value once for all that comes in a turn of the run loop, and the
+    /// selection's text when it was among it.
+    @MainActor func testTextThatComesIsAnnouncedToAccessibility() async throws {
+        let source = DelayedLines("one\ntwo\nthree")
+        let fixture = fixture(source)
+        let text = fixture.text
+        var heard: [NSAccessibility.Notification] = []
+        text.announce = { heard.append($0) }
+        text.select(from: at(1, 0), to: at(1, 3))
+        heard.removeAll()
+        source.release(0...0); source.release(1...1); source.release(2...2)
+        XCTAssertTrue(heard.isEmpty, "not at each arrival")
+        try await eventually("announced") { !heard.isEmpty }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(heard.filter { $0 == .valueChanged }.count, 1, "the value once for the three lines")
+        XCTAssertEqual(heard.filter { $0 == .selectedTextChanged }.count, 1, "and the selection's text")
+    }
+
+    /// Copy of text not come yet copies it when it comes; a later Copy of
+    /// another selection supersedes it.
+    @MainActor func testCopyOfTextNotComeYetCopiesItWhenItComes() throws {
+        let source = DelayedLines("alpha\nbeta\ngamma")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        text.select(from: at(0, 2), to: at(1, 2))
+        text.copy(nil)
+        XCTAssertNil(text.pasteboard.string(forType: .string), "nothing is copied before the text has come")
+        source.release(1...1); source.finishFetches()
+        XCTAssertEqual(text.pasteboard.string(forType: .string), "pha\nbe", "it is copied when it comes")
+        text.select(from: at(1, 0), to: at(2, 3))
+        text.copy(nil)
+        text.select(from: at(0, 0), to: at(0, 2))
+        text.copy(nil)
+        source.release(2...2); source.finishFetches()
+        XCTAssertEqual(text.pasteboard.string(forType: .string), "al", "the last Copy is what is copied")
+    }
+
+    /// Accessibility is handed only text that has come: nothing for text
+    /// not come yet, which is then asked for, and the text once it has.
+    @MainActor func testAccessibilityGetsTextOnceItHasCome() throws {
+        let source = DelayedLines("one\ntwo")
+        let fixture = fixture(source)
+        let text = fixture.text
+        XCTAssertNil(text.accessibilityString(for: NSRange(location: 4, length: 3)), "nothing before it has come")
+        XCTAssertTrue(source.asked.contains(1), "it is asked for")
+        XCTAssertNil(text.accessibilityValue())
+        source.release(0...1)
+        XCTAssertEqual(text.accessibilityString(for: NSRange(location: 4, length: 3)), "two", "and read once it has")
+        XCTAssertEqual(text.accessibilityValue() as? String, "one\ntwo")
+    }
+
+    /// Down into a long line whose text has not come waits for it, and then
+    /// lands where a character starts, never inside one.
+    @MainActor func testDownIntoALongLineNotComeYetLandsBetweenCharacters() throws {
+        let source = DelayedLines("ab\n😀" + String(repeating: "0123456789", count: 7_000))
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        XCTAssertEqual(text.layout(1)?.grid, true, "the long line is on the grid")
+        text.select(from: at(0, 1), to: at(0, 1))
+        try key(fixture, down.0, down.1)
+        XCTAssertEqual(text.focus, at(0, 1), "Down waits for the line")
+        source.release(1...1)
+        XCTAssertEqual(text.focus.line, 1, "and moves when it comes")
+        XCTAssertTrue([0, 2].contains(text.focus.column), "to either side of the 😀, not between its halves: \(text.focus.column)")
+    }
+
+    /// Accessibility asking for the character at an offset not read yet is
+    /// told it is not known, and told once it has come.
+    @MainActor func testAccessibilityIsToldNoCharacterBeforeItHasCome() throws {
+        let source = DelayedLines("a👍🏽b\nsecond")
+        let fixture = fixture(source)
+        let text = fixture.text
+        XCTAssertEqual(text.accessibilityRange(for: 2).location, NSNotFound, "not known before it has come")
+        source.release(0...1)
+        XCTAssertEqual(text.accessibilityRange(for: 2), NSRange(location: 1, length: 4), "then the 👍🏽 whole")
     }
 
     // MARK: Gutter

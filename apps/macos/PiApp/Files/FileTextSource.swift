@@ -11,13 +11,19 @@ import Foundation
 
 /// The text of a file, a line at a time, and a part of a line at a time: a
 /// line of a hundred megabytes is read only where it is on screen.
+///
+/// Where lines are and how long they are is always at hand. Their text may
+/// not be: a file is read away from the main thread, so a line's text is
+/// nil until it has come, and asking for it is what reads it. `arrival` says
+/// when asked-for text has come, or lines have changed.
 @MainActor protocol FileTextSource: AnyObject {
     /// At least 1: an empty file is one empty line.
     var lineCount: Int { get }
     /// A line's length in UTF-16 units, without its line ending.
     func utf16Length(ofLine index: Int) -> Int
-    /// Part of a line, `range` in UTF-16 units clamped to the line.
-    func text(ofLine index: Int, range: Range<Int>) -> String
+    /// Part of a line, `range` in UTF-16 units clamped to the line, if its
+    /// text is at hand; nil while it is being read.
+    func text(ofLine index: Int, range: Range<Int>) -> String?
     /// Where a line starts in the whole text: the lines before it, each with
     /// its "\n".
     func utf16Start(ofLine index: Int) -> Int
@@ -32,21 +38,46 @@ import Foundation
     /// Changes whenever the text does: what was set or measured of the text
     /// before is not used after.
     var generation: Int { get }
+    /// Reads lines before they are asked for: what is on screen and around
+    /// it, once for each new screen. What the screen uses is kept from then.
+    func prefetch(lines: ClosedRange<Int>)
+    /// The text between two positions if all of it is at hand now, reading
+    /// nothing; nil when some of it is not, or it is too much to build here.
+    func textAtHand(from start: FileTextPosition, to end: FileTextPosition) -> String?
+    /// Brackets the screen's drawing of itself: what it asks for meanwhile
+    /// is what the screen uses, and kept while the screen is shown.
+    func beginDrawing()
+    func endDrawing()
+    /// The text from one position to another, lines joined by "\n", however
+    /// much has to be read first; nil if it cannot be read. On the main
+    /// thread, when it is ready.
+    func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void)
+    /// Told when text asked for has come, and when lines change or are added.
+    var arrival: ((ClosedRange<Int>) -> Void)? { get set }
+    /// Whether text not at hand may still come: false once the file has
+    /// changed, failed or been closed, when what is missing stays missing.
+    var isReading: Bool { get }
 }
 
 extension FileTextSource {
-    /// A whole line. For a line of any length, read a part (`text(ofLine:range:)`).
-    func line(_ index: Int) -> String { text(ofLine: index, range: 0..<utf16Length(ofLine: index)) }
-    /// The text from one position to another, the lines between joined by
-    /// "\n": what a selection copies and what accessibility reads.
-    func text(from start: FileTextPosition, to end: FileTextPosition) -> String {
+    var isReading: Bool { true }
+    func textAtHand(from start: FileTextPosition, to end: FileTextPosition) -> String? { text(from: start, to: end) }
+    func beginDrawing() {}
+    func endDrawing() {}
+    /// A whole line, if at hand.
+    func line(_ index: Int) -> String? { text(ofLine: index, range: 0..<utf16Length(ofLine: index)) }
+    /// The text from one position to another, lines joined by "\n", if all
+    /// of it is at hand: what a small selection copies and what accessibility
+    /// reads.
+    func text(from start: FileTextPosition, to end: FileTextPosition) -> String? {
         guard start < end else { return "" }
         var parts: [String] = []
         for index in start.line...min(end.line, lineCount - 1) {
             let length = utf16Length(ofLine: index)
             let from = index == start.line ? min(start.column, length) : 0
             let to = index == end.line ? min(end.column, length) : length
-            parts.append(text(ofLine: index, range: from..<max(from, to)))
+            guard let part = text(ofLine: index, range: from..<max(from, to)) else { return nil }
+            parts.append(part)
         }
         return parts.joined(separator: "\n")
     }
@@ -71,9 +102,15 @@ struct FileTextPosition: Comparable, Hashable, Sendable {
     static let start = FileTextPosition(line: 0, column: 0)
 }
 
-/// A text held whole, split into its lines: a small file, or a test's.
+/// A text held whole, split into its lines: a small file, or a test's. All
+/// of it is always at hand.
 @MainActor final class FileTextLines: FileTextSource {
     private let lines: [String]
+    var arrival: ((ClosedRange<Int>) -> Void)?
+    func prefetch(lines: ClosedRange<Int>) {}
+    func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) {
+        completion(text(from: start, to: end))
+    }
     /// Where each line starts in the whole text, and the text's end.
     private let starts: [Int]
     let longestLine: Int
@@ -114,7 +151,7 @@ struct FileTextPosition: Comparable, Hashable, Sendable {
         guard lines.indices.contains(index) else { return 0 }
         return starts[index + 1] - starts[index] - (index + 1 < lines.count ? 1 : 0)
     }
-    func text(ofLine index: Int, range: Range<Int>) -> String {
+    func text(ofLine index: Int, range: Range<Int>) -> String? {
         guard lines.indices.contains(index) else { return "" }
         let line = lines[index] as NSString
         let low = max(0, min(range.lowerBound, line.length)), high = max(low, min(range.upperBound, line.length))
