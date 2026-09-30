@@ -223,7 +223,7 @@ public actor NativeHostService {
         if let result=try await workspaceCommand(method,sessionID:sessionID,params:params,in:workspace) { return result }
         let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
         if let result=try await namedSessionCommand(method,id:id,params:params) { return result }
-        guard let session=sessions[id] else { throw AgentError("session_missing", "Session runtime is not loaded") }
+        guard let session=sessions[id] else { throw AgentError(AgentErrorCode.sessionMissing, "Session runtime is not loaded") }
         if let result=try await sessionCommand(method,id:id,session:session,params:params,in:workspace) { return result }
         guard !quiesced, !closing else { throw AgentError("closing", "Host is closing or quiesced") }
         if let result=try await changeCommand(method,id:id,session:session,params:params,commandID:commandID,in:workspace) { return result }

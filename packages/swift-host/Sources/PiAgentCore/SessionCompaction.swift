@@ -34,7 +34,7 @@ extension AgentSession {
                               maxOutputTokens:selected.maxOutputTokens,modelOutputLimit:selected.modelOutputLimit,input:selected.input)
         _ = try profile.overriding(intent)
         compactionFocus=focus?.isEmpty == false ? focus : nil
-        if releaseQueue, state != "error" { queuePaused=false }
+        if releaseQueue, state != .error { queuePaused=false }
         activeSubmission=intent; currentTurnID=intent.turnID; commandState(intent,"queued"); try persistState(); launch(compactOnly:true)
     }
     /// Pi's prepareCompaction finds something to summarize.
@@ -87,8 +87,8 @@ extension AgentSession {
         operation.detail="Compaction · preparing"; operation.responseTimeline=ResponseTimeline()
         try appendPresentation(operation)
         operationStatus("Preparing · " + reason)
-        runStatus="compacting"; event("compaction_start")
-        defer { modelActive=false; runStatus="running"; event("compaction_end") }
+        runStatus = .compacting; event("compaction_start")
+        defer { modelActive=false; runStatus = .running; event("compaction_end") }
         do {
             let snapshot=try await resources.resolve(), definitions=await sessionDefinitions()
             try validateCompaction(revision,profile:originalProfile)

@@ -66,7 +66,7 @@ public actor AgentSession {
     /// sequence and display revision of the snapshot that carried it.
     var presentedTasks: TaskPresentationProjection?
     var presentedTasksGeneration: UInt64 = 0
-    var runTask: Task<Void,Never>?, state="idle", runStatus="idle", errorMessage: String?, queuePaused=false, stopCount=0
+    var runTask: Task<Void,Never>?, state: SessionState = .idle, runStatus: RunStatus = .idle, errorMessage: String?, queuePaused=false, stopCount=0
     /// The code of the error that ended the last run, when it failed: the app
     /// draws a `cost_limit` stop as a notice with a way to raise the limit.
     var errorCode: String?
@@ -280,8 +280,8 @@ public actor AgentSession {
                 cumulativeToolMs=ObservedDuration.valid(saved["timing"]["toolMs"].double)
             }
             if saved["active"].flag == true { errorMessage="The previous run was interrupted. No model or tool request was replayed. Inspect tool effects before continuing." }
-            else if saved["runStatus"].text == "failed" {
-                runStatus="failed"; errorMessage=saved["errorMessage"].text ?? "Run failed."; errorCode=saved["errorCode"].text
+            else if saved["runStatus"].text == RunStatus.failed.rawValue {
+                runStatus = .failed; errorMessage=saved["errorMessage"].text ?? "Run failed."; errorCode=saved["errorCode"].text
             }
         }
         // Never repeat a tool after a crash. Pair unresolved calls with explicit
@@ -308,7 +308,7 @@ public actor AgentSession {
         queue.removeAll { deliveredIDs.contains($0.turnID) }; steering.removeAll { deliveredIDs.contains($0.turnID) }
         toolHistory=ToolHistoryIndex(history)
         taskRootID=context.last(where: { $0.role == "user" })?.taskRootID
-        boundary=context; state=runStatus == "failed" ? "error" : queuePaused ? "paused" : "idle"
+        boundary=context; state=runStatus == .failed ? .error : queuePaused ? .paused : .idle
         spansScannedTo=opened.size
         // The metadata file follows the journal; it is only ever a shortcut.
         if let captured=replayed.captured { try? captured.write(for: url) }
@@ -356,7 +356,7 @@ public actor AgentSession {
     var retrySubmission: Submission?
     /// Stops the run and pauses the queue. `stopCount` lets work that awaited
     /// a run winding down tell that the chat was stopped again meanwhile.
-    public func stop() { stopCount &+= 1; queuePaused=true; runTask?.cancel(); if runTask != nil { state="stopping" } else if state != "error" { state="paused" }; event("state") }
+    public func stop() { stopCount &+= 1; queuePaused=true; runTask?.cancel(); if runTask != nil { state = .stopping } else if state != .error { state = .paused }; event("state") }
     public func unloadIfIdle() -> Bool { guard isIdle, !ephemeral else { return false }; closed=true; journal=nil; return true }
     public func close() async { closed=true; stop(); await runTask?.value; journal=nil }
 }

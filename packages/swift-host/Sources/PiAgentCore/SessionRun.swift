@@ -11,7 +11,7 @@ extension AgentSession {
             activeTaskPresentation?.activeInputID = currentTurnID.isEmpty ? root : currentTurnID
             activeTaskPresentation?.anchorSourceID = visible.last?.id ?? root
         }
-        state="running"; runStatus=state; errorMessage=nil; errorCode=nil; begin=nowMS(); end=nil; turnModelMs=0; turnToolMs=0
+        state = .running; runStatus = .running; errorMessage=nil; errorCode=nil; begin=nowMS(); end=nil; turnModelMs=0; turnToolMs=0
         runTask=Task { await run(compactOnly:compactOnly) }; event("state")
     }
     func flushRequestLinks() async {
@@ -69,9 +69,9 @@ extension AgentSession {
                 }
                 try reset()
                 retryInfo = ["attempt": JSON(attempt + 1), "of": JSON(attempts), "reason": JSON(error.message)]
-                runStatus = "retrying"; event("retry", retryInfo)
+                runStatus = .retrying; event("retry", retryInfo)
                 try await Task.sleep(nanoseconds: UInt64(retrySettings.delayMs(attempt: attempt) * 1_000_000))
-                runStatus = "running"; event("state")
+                runStatus = .running; event("state")
                 if let next = try await refresh() { (profile, messages, instructions, tools) = next }
             }
         }
@@ -113,7 +113,7 @@ extension AgentSession {
     }
     func run(compactOnly: Bool) async {
         do {
-            try Task.checkCancellation(); state="running"; runStatus="running"; try persistState(active:true); event("state")
+            try Task.checkCancellation(); state = .running; runStatus = .running; try persistState(active:true); event("state")
             if compactOnly { try await compactContext();if let activeSubmission { commandState(activeSubmission,"completed") } }
             else {
                 // Deliver the next eligible input before sizing the pending request.
@@ -161,7 +161,7 @@ extension AgentSession {
                         try Task.checkCancellation()
                         let dispatchProfile=try turnProfile.dispatching(prepared.count)
                         partialID=UUID().uuidString; partialStartedAt=Date().timeIntervalSince1970 * 1000; activeTaskPresentation?.operationID=operationID
-                        partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus="running"; modelActive=true; event("message_start")
+                        partialText=""; partialThinking=""; resetPartialRow(); invalidateDisplay(); runStatus = .running; modelActive=true; event("message_start")
                         do {
                             completed=try await completeWithRetries(profile:dispatchProfile,messages:requestContext,instructions:prepared.instructions,tools:prepared.definitions,turnID:currentTurnID,purpose:titleTask ? utilityPurpose : "turn",operation:["logicalRequestId":JSON(operationID),"recovered":JSON(recovered),"recovery":recovered ? contextRecovery : .null],onDelta:{ [weak self] delta in await self?.delta(delta) },reset:{
                                 if let partial=interruptedPartial(attemptIDs:requestObservation.map { [$0.attemptID] }) { try append(partial) }
@@ -234,17 +234,17 @@ extension AgentSession {
                     if let stoppedEarly {
                         for call in reply.calls {
                             let reason = outputLimited ? "Tool call \"\(call.name)\" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments." : "Not executed: the provider ended the reply early (\(stoppedEarly)), so its arguments may be incomplete. Re-issue a complete tool call if it is still needed."
-                            try recordTool(call,result:resultText(reason,error:true),started:nil,state:"failed")
+                            try recordTool(call,result:resultText(reason,error:true),started:nil,state:.failed)
                         }
                     } else if !reply.calls.isEmpty {
                         if Task.isCancelled {
-                            for pending in reply.calls { try recordTool(pending,result:resultText("Not executed: cancelled before invocation",error:true),started:nil,state:"cancelled") }
+                            for pending in reply.calls { try recordTool(pending,result:resultText("Not executed: cancelled before invocation",error:true),started:nil,state:.cancelled) }
                             throw CancellationError()
                         }
                         try await runToolBatch(reply.calls)
                     }
                     await flushRequestLinks()
-                    boundary=context; runStatus="running"; try persistState(active:true); event("turn_end")
+                    boundary=context; runStatus = .running; try persistState(active:true); event("turn_end")
                     // Pi 0.85.1: steering is consumed after a COMPLETE tool batch.
                     // Follow-ups are consulted only when the agent would stop.
                     if !steering.isEmpty { continue }
@@ -263,28 +263,28 @@ extension AgentSession {
                     break
                 }
             }
-            state="idle"; runStatus="idle"; errorMessage=nil; errorCode=nil
+            state = .idle; runStatus = .idle; errorMessage=nil; errorCode=nil
         } catch {
-            queuePaused=true; runStatus=Task.isCancelled || error is CancellationError ? "cancelled" : "failed"; state=runStatus == "cancelled" ? "paused" : "error"
-            errorMessage=(error as? AgentError)?.message ?? (runStatus == "cancelled" ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
-            errorCode=runStatus == "failed" ? (error as? AgentError)?.code : nil
-            if let activeSubmission { commandState(activeSubmission,runStatus) }
+            queuePaused=true; runStatus=Task.isCancelled || error is CancellationError ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
+            errorMessage=(error as? AgentError)?.message ?? (runStatus == .cancelled ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
+            errorCode=runStatus == .failed ? (error as? AgentError)?.code : nil
+            if let activeSubmission { commandState(activeSubmission,runStatus.rawValue) }
             if let partial=interruptedPartial(attemptIDs:partialTimeline.segments.first.map { [$0.part.attemptID] } ?? requestObservation.map { [$0.attemptID] }) {
                 // Publishing links can suspend below. Once the durable row
                 // exists, its former streaming placeholder must not duplicate
                 // the same row ID in snapshots taken during that suspension.
                 do { try append(partial); partialID=nil } catch { }
             }
-            do { try finishPresentedTask(runStatus == "cancelled" ? "cancelled" : "failed", detail:errorMessage, code:errorCode) }
+            do { try finishPresentedTask(runStatus == .cancelled ? "cancelled" : "failed", detail:errorMessage, code:errorCode) }
             catch { activeTaskPresentation=nil; errorMessage="Task outcome could not be saved. Inspect the retained conversation and tool effects before retrying." }
             event("error",["message":JSON(errorMessage ?? "Interrupted")])
         }
         await flushRequestLinks()
         if partialID != nil { invalidateDisplay() }
         modelActive=false; partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); end=nowMS(); runTask=nil
-        retrySubmission = runStatus == "idle" ? nil : activeSubmission; activeSubmission=nil
+        retrySubmission = runStatus == .idle ? nil : activeSubmission; activeSubmission=nil
         if let pending=pendingConfiguration { apply(profile:pending.profile, apiKey:pending.apiKey) }
-        do { try persistState(active:false) } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; errorCode=nil; state="error"; runStatus="failed"; queuePaused=true }
+        do { try persistState(active:false) } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; errorCode=nil; state = .error; runStatus = .failed; queuePaused=true }
         event("agent_settled")
         // submit() may accept another message while the last request links
         // are being flushed above. It sees a runTask and queues instead of
@@ -292,7 +292,7 @@ extension AgentSession {
         // Recheck after the final await and hand off atomically, or those
         // accepted messages can sit idle forever. Failed/stopped work stays
         // paused and still requires an explicit Resume.
-        if !closed, !queuePaused, state == "idle", !queue.isEmpty || !steering.isEmpty { launch() }
+        if !closed, !queuePaused, state == .idle, !queue.isEmpty || !steering.isEmpty { launch() }
         if keepRequested && ephemeral && isIdle { do { _ = try keepNow() } catch { errorMessage="Could not keep side; in-memory content is intact"; event("side.keep-failed") } }
     }
 }
