@@ -34,10 +34,10 @@ import AppKit
     static let monoBaseline: CGFloat = 12
     static let microLine: CGFloat = 13
     static let microBaseline: CGFloat = 10.5
-    static let cardInset = PiSpacing.lg
-    static let cardGap = PiSpacing.md
-    static let cardRadius = PiRadius.md
-    static let bottom = PiSpacing.lg
+    static let cardInset: CGFloat = 16
+    static let cardGap: CGFloat = 12
+    static let cardRadius: CGFloat = 12
+    static let bottom: CGFloat = 16
     static let fileHeader: CGFloat = 29
     static let hunkHeader: CGFloat = 21
     static let note: CGFloat = 21
@@ -61,6 +61,56 @@ import AppKit
     static func halfWidth(_ cardWidth: CGFloat) -> CGFloat { (cardWidth - 1) / 2 }
     static func textWidth(split cardWidth: CGFloat) -> CGFloat { max(0, halfWidth(cardWidth) - splitText - 8) }
 }
+
+/// The colours a diff is drawn in, by what they mark. `system` is AppKit's
+/// own; a host passes its own (Bello Agent: `GitDiffColors.pi`). Drawn as
+/// given, at draw time, so dynamic colours follow the appearance; a table's
+/// text and symbol caches key on the colour objects, so a host keeps one
+/// value rather than making one per update.
+struct GitDiffColors: Equatable {
+    /// A line's text and a file's path.
+    var text: NSColor
+    /// A file header's symbol.
+    var secondaryText: NSColor
+    /// Line numbers, notes, a context line's marker.
+    var tertiaryText: NSColor
+    /// Added lines and counts; removed lines and counts.
+    var added: NSColor
+    var removed: NSColor
+    /// A hunk's header and its band.
+    var hunk: NSColor
+    /// The card's edge and the side-by-side divider.
+    var separator: NSColor
+    /// A file header's band.
+    var fileHeader: NSColor
+    /// The missing half of a side-by-side row.
+    var emptySide: NSColor
+
+    @MainActor static let system = GitDiffColors(text: .labelColor, secondaryText: .secondaryLabelColor, tertiaryText: .tertiaryLabelColor,
+                                                 added: .systemGreen, removed: .systemRed, hunk: .systemBlue, separator: .separatorColor,
+                                                 fileHeader: .controlBackgroundColor, emptySide: .quaternaryLabelColor)
+
+    /// The same colour objects: a host's value, kept, is equal to itself.
+    static func == (a: Self, b: Self) -> Bool {
+        a.text === b.text && a.secondaryText === b.secondaryText && a.tertiaryText === b.tertiaryText && a.added === b.added
+            && a.removed === b.removed && a.hunk === b.hunk && a.separator === b.separator && a.fileHeader === b.fileHeader
+            && a.emptySide === b.emptySide
+    }
+}
+
+/// What the diff's context menu is for: whether text is selected, the path of
+/// the file whose header the pointer is on, and the table's own actions.
+struct GitDiffMenuRequest {
+    let hasSelection: Bool
+    /// Set only over a file's header row.
+    let filePath: String?
+    let copy: @MainActor () -> Void
+    let selectAll: @MainActor () -> Void
+}
+
+/// Builds the diff's context menu. A table given none shows the default
+/// (`GitDiffTableView.defaultMenu`); a builder that returns nil shows none.
+typealias GitDiffMenuBuilder = @MainActor (GitDiffMenuRequest) -> NSMenu?
 
 /// One row of the table.
 struct GitDiffTableRow {
@@ -100,6 +150,10 @@ struct GitDiffTable: NSViewRepresentable {
     var loading = false
     /// "Show the whole diff", hosted, after the cards; nil when there is no more.
     let more: AnyView?
+    /// What the cards are drawn in; a host passes its own.
+    var colors: GitDiffColors = .system
+    /// The context menu; nil for the default one.
+    var menu: GitDiffMenuBuilder? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -144,7 +198,7 @@ struct GitDiffTable: NSViewRepresentable {
 
     private var state: Coordinator.State {
         Coordinator.State(files: files, split: split, wrap: wrap, showAll: showAll, identity: identity, top: top, topKey: topKey,
-                          topHeightKey: topHeightKey ?? topKey, loading: loading, more: more)
+                          topHeightKey: topHeightKey ?? topKey, loading: loading, more: more, colors: colors, menu: menu)
     }
 
     // MARK: - Coordinator
@@ -161,6 +215,8 @@ struct GitDiffTable: NSViewRepresentable {
             var topHeightKey: AnyHashable
             var loading: Bool
             var more: AnyView?
+            var colors: GitDiffColors
+            var menu: GitDiffMenuBuilder?
         }
         weak var table: GitDiffTableView?
         private(set) var files: [GitDiffFile] = []
@@ -170,6 +226,9 @@ struct GitDiffTable: NSViewRepresentable {
         private var showAll = false
         private var hasMore = false
         private(set) var rows: [GitDiffTableRow] = []
+        /// What the rows are drawn in, and the context menu's builder.
+        private(set) var colors: GitDiffColors = .system
+        private(set) var menu: GitDiffMenuBuilder?
         private var splits: [GitSplitRow] = []
         /// Each layout's rows for the diff on screen, kept while it is: the
         /// reader switching back and forth builds each once.
@@ -251,7 +310,9 @@ struct GitDiffTable: NSViewRepresentable {
             if !sameFiles, anchor != nil { anchor = nil; focus = nil; redrawVisible() }
             let moreChanged = newDiff || (next.more != nil) != hasMore
             files = next.files; identity = next.identity; split = next.split; showAll = next.showAll
-            wrap = next.wrap; hasMore = next.more != nil
+            wrap = next.wrap; hasMore = next.more != nil; menu = next.menu
+            // Other colours: the same rows, drawn again.
+            if next.colors != colors { colors = next.colors; if !rebuild { redrawVisible() } }
             // The heading is drawn again only when what it shows changed: the
             // panel's every other update left it as it was.
             let topShown = AnyHashable([next.topKey, AnyHashable(split), AnyHashable(wrap)])
@@ -754,18 +815,28 @@ final class GitDiffTableView: NSTableView {
         guard let coordinator else { return nil }
         let location = convert(event.locationInWindow, from: nil)
         let row = self.row(at: location)
-        var entries: [PiMenuEntry] = [
-            .button("Copy", enabled: !coordinator.selectedText.isEmpty, identifier: "git-diff-copy") { [weak coordinator] in coordinator?.copySelection() },
-            .button("Select All", identifier: "git-diff-select-all") { [weak coordinator] in coordinator?.selectAll() },
-        ]
-        if row >= 0, row < coordinator.rows.count, coordinator.rows[row].kind == .file {
-            let path = coordinator.file(coordinator.rows[row]).path
-            entries.append(.divider)
-            entries.append(.button("Copy Path", identifier: "git-diff-copy-path") {
+        let path = row >= 0 && row < coordinator.rows.count && coordinator.rows[row].kind == .file ? coordinator.file(coordinator.rows[row]).path : nil
+        let request = GitDiffMenuRequest(hasSelection: !coordinator.selectedText.isEmpty, filePath: path,
+                                         copy: { [weak coordinator] in coordinator?.copySelection() },
+                                         selectAll: { [weak coordinator] in coordinator?.selectAll() })
+        guard let builder = coordinator.menu else { return Self.defaultMenu(request) }
+        return builder(request)
+    }
+
+    /// Copy, Select All and, over a file's header, Copy Path: plain AppKit
+    /// items, each enabled as the table's own commands are.
+    static func defaultMenu(_ request: GitDiffMenuRequest) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(GitDiffMenuItem("Copy", identifier: "git-diff-copy", enabled: request.hasSelection, action: request.copy))
+        menu.addItem(GitDiffMenuItem("Select All", identifier: "git-diff-select-all", action: request.selectAll))
+        if let path = request.filePath {
+            menu.addItem(.separator())
+            menu.addItem(GitDiffMenuItem("Copy Path", identifier: "git-diff-copy-path") {
                 NSPasteboard.general.clearContents(); NSPasteboard.general.setString(path, forType: .string)
             })
         }
-        return PiMenus.menu(entries)
+        return menu
     }
 
     @objc func copy(_ sender: Any?) { coordinator?.copySelection() }
@@ -815,6 +886,23 @@ final class GitDiffTableView: NSTableView {
 }
 
 /// A row's background draws nothing: the cells draw their own.
+/// A menu item that runs a closure. The item keeps its target: an item's
+/// `target` is weak, so the item holds it as its represented object too.
+final class GitDiffMenuItem: NSMenuItem {
+    private final class Target: NSObject {
+        let action: @MainActor () -> Void
+        init(_ action: @escaping @MainActor () -> Void) { self.action = action }
+        @MainActor @objc func run(_ sender: Any?) { action() }
+    }
+    init(_ title: String, identifier: String, enabled: Bool = true, action: @escaping @MainActor () -> Void) {
+        let target = Target(action)
+        super.init(title: title, action: #selector(Target.run(_:)), keyEquivalent: "")
+        self.target = target; representedObject = target
+        self.identifier = NSUserInterfaceItemIdentifier(identifier); isEnabled = enabled
+    }
+    required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
+}
+
 final class GitDiffRowView: NSTableRowView {
     override var isOpaque: Bool { false }
     override func drawBackground(in dirtyRect: NSRect) {}
@@ -888,7 +976,7 @@ final class GitDiffRowCell: NSView {
         default: break
         }
         context.addPath(shape)
-        context.setStrokeColor(GitDiffMetrics.fill(.piHairline, opacity: 1)); context.setLineWidth(1)
+        context.setStrokeColor(GitDiffMetrics.fill(coordinator.colors.separator, opacity: 1)); context.setLineWidth(1)
         context.strokePath()
         context.restoreGState()
     }
@@ -920,14 +1008,14 @@ final class GitDiffRowCell: NSView {
 
     private func drawFile(_ model: GitDiffTableRow, card: CGFloat, context: CGContext, coordinator: GitDiffTable.Coordinator) {
         let file = coordinator.file(model), left = GitDiffMetrics.cardInset
-        context.setFillColor(GitDiffMetrics.fill(.piSurfaceSunken, opacity: 1))
+        context.setFillColor(GitDiffMetrics.fill(coordinator.colors.fileHeader, opacity: 1))
         context.fill(CGRect(x: left, y: 0, width: card, height: bounds.height))
-        GitDiffSymbol.draw("doc.text", pointSize: 11, weight: .regular, color: .piInkSecondary, in: CGRect(x: left + 12, y: 7.5, width: 12, height: 14))
+        GitDiffSymbol.draw("doc.text", pointSize: 11, weight: .regular, color: coordinator.colors.secondaryText, in: CGRect(x: left + 12, y: 7.5, width: 12, height: 14))
         // The counts at the right, then the path in what is left.
         var right = left + card - 12
         var counts: [(String, NSColor)] = []
-        if file.added > 0 { counts.append(("+\(file.added)", .piSuccess)) }
-        if file.removed > 0 { counts.append(("−\(file.removed)", .piDanger)) }
+        if file.added > 0 { counts.append(("+\(file.added)", coordinator.colors.added)) }
+        if file.removed > 0 { counts.append(("−\(file.removed)", coordinator.colors.removed)) }
         for (text, color) in counts.reversed() {
             let width = GitDiffText.frameWidth(text, font: GitDiffMetrics.microDigits, scale: scale)
             GitDiffText.drawKept(text, font: GitDiffMetrics.microDigits, color: color, x: right - width, baseline: 8 + GitDiffMetrics.microBaseline, in: context)
@@ -936,9 +1024,9 @@ final class GitDiffRowCell: NSView {
         let text = file.renamed ? "\(file.oldPath) → \(file.newPath)" : file.path
         let x = left + 32
         let width = max(0, right - 8 - x)
-        let line = GitDiffText.fitted(GitDiffText.line(text, font: GitDiffMetrics.mono, color: .piInk), text: text, font: GitDiffMetrics.mono, color: .piInk, width: width, truncation: .middle)
+        let line = GitDiffText.fitted(GitDiffText.line(text, font: GitDiffMetrics.mono, color: coordinator.colors.text), text: text, font: GitDiffMetrics.mono, color: coordinator.colors.text, width: width, truncation: .middle)
         drawSelection(coordinator.selected(in: row, side: coordinator.side), text: text, line: line, x: x, top: 7, width: width, context: context)
-        GitDiffText.draw(text, font: GitDiffMetrics.mono, color: .piInk, x: x, baseline: 7 + GitDiffMetrics.monoBaseline, width: width, truncation: .middle, in: context)
+        GitDiffText.draw(text, font: GitDiffMetrics.mono, color: coordinator.colors.text, x: x, baseline: 7 + GitDiffMetrics.monoBaseline, width: width, truncation: .middle, in: context)
     }
 
     private func drawNote(_ model: GitDiffTableRow, card: CGFloat, context: CGContext, coordinator: GitDiffTable.Coordinator) {
@@ -947,25 +1035,25 @@ final class GitDiffRowCell: NSView {
         let utf16 = Array(text.utf16)
         for (index, range) in lines.enumerated() {
             let part = String(utf16CodeUnits: Array(utf16[range]), count: range.count)
-            GitDiffText.draw(part, font: GitDiffMetrics.micro, color: .piInkTertiary, x: left + 12,
+            GitDiffText.draw(part, font: GitDiffMetrics.micro, color: coordinator.colors.tertiaryText, x: left + 12,
                              baseline: 4 + CGFloat(index) * GitDiffMetrics.microLine + GitDiffMetrics.microBaseline, in: context)
         }
     }
 
     private func drawHunk(_ model: GitDiffTableRow, card: CGFloat, context: CGContext, coordinator: GitDiffTable.Coordinator) {
         let hunk = coordinator.file(model).hunks[Int(model.hunk)], left = GitDiffMetrics.cardInset
-        context.setFillColor(GitDiffMetrics.fill(.piInfo, opacity: 0.06))
+        context.setFillColor(GitDiffMetrics.fill(coordinator.colors.hunk, opacity: 0.06))
         context.fill(CGRect(x: left, y: 0, width: card, height: bounds.height))
-        GitDiffText.draw(hunk.header, font: GitDiffMetrics.mono, color: .piInfo, x: left + 12, baseline: 3 + GitDiffMetrics.monoBaseline, width: card - 24, in: context)
+        GitDiffText.draw(hunk.header, font: GitDiffMetrics.mono, color: coordinator.colors.hunk, x: left + 12, baseline: 3 + GitDiffMetrics.monoBaseline, width: card - 24, in: context)
     }
 
-    private static func tint(_ kind: GitDiffLine.Kind) -> NSColor? {
-        switch kind { case .added: .piSuccess; case .removed: .piDanger; case .context, .note: nil }
+    private static func tint(_ kind: GitDiffLine.Kind, _ colors: GitDiffColors) -> NSColor? {
+        switch kind { case .added: colors.added; case .removed: colors.removed; case .context, .note: nil }
     }
 
     private func drawLine(_ model: GitDiffTableRow, card: CGFloat, context: CGContext, coordinator: GitDiffTable.Coordinator) {
         let line = coordinator.line(model), left = GitDiffMetrics.cardInset
-        let tint = Self.tint(line.kind)
+        let tint = Self.tint(line.kind, coordinator.colors)
         if let tint {
             context.setFillColor(GitDiffMetrics.fill(tint, opacity: 0.10))
             context.fill(CGRect(x: left, y: 0, width: card, height: bounds.height))
@@ -973,16 +1061,16 @@ final class GitDiffRowCell: NSView {
         let x0 = left + 8, baseline = 1 + GitDiffMetrics.monoBaseline
         if let old = line.oldNumber {
             let text = String(old)
-            GitDiffText.drawKept(text, font: GitDiffMetrics.mono, color: .piInkTertiary, x: x0 + 44 - GitDiffText.frameWidth(text, font: GitDiffMetrics.mono, scale: scale), baseline: baseline, in: context)
+            GitDiffText.drawKept(text, font: GitDiffMetrics.mono, color: coordinator.colors.tertiaryText, x: x0 + 44 - GitDiffText.frameWidth(text, font: GitDiffMetrics.mono, scale: scale), baseline: baseline, in: context)
         }
         if let new = line.newNumber {
             let text = String(new)
-            GitDiffText.drawKept(text, font: GitDiffMetrics.mono, color: .piInkTertiary, x: x0 + 88 - GitDiffText.frameWidth(text, font: GitDiffMetrics.mono, scale: scale), baseline: baseline, in: context)
+            GitDiffText.drawKept(text, font: GitDiffMetrics.mono, color: coordinator.colors.tertiaryText, x: x0 + 88 - GitDiffText.frameWidth(text, font: GitDiffMetrics.mono, scale: scale), baseline: baseline, in: context)
         }
         let marker = switch line.kind { case .added: "+"; case .removed: "−"; case .context: " "; case .note: "\\" }
-        GitDiffText.drawKept(marker, font: GitDiffMetrics.mono, color: tint ?? .piInkTertiary, x: x0 + 96 + (12 - GitDiffText.keptWidth(marker, font: GitDiffMetrics.mono)) / 2, baseline: baseline, in: context)
+        GitDiffText.drawKept(marker, font: GitDiffMetrics.mono, color: tint ?? coordinator.colors.tertiaryText, x: x0 + 96 + (12 - GitDiffText.keptWidth(marker, font: GitDiffMetrics.mono)) / 2, baseline: baseline, in: context)
         let geometry = Self.textFrame(.line, side: .whole, card: card, rowWidth: bounds.width)
-        drawText(GitDiffTable.Coordinator.shown(line.text), selectable: line.text, color: line.kind == .note ? .piInkTertiary : .piInk,
+        drawText(GitDiffTable.Coordinator.shown(line.text), selectable: line.text, color: line.kind == .note ? coordinator.colors.tertiaryText : coordinator.colors.text,
                  x: geometry.x, width: geometry.width, selection: coordinator.selected(in: row, side: .whole), wrap: coordinator.wrap, context: context)
     }
 
@@ -993,21 +1081,21 @@ final class GitDiffRowCell: NSView {
             let start = side == .left ? left : left + half + 1
             let kind = line?.kind ?? .context
             // The halves' fills stop a point short of the row's top and bottom.
-            let fill: CGColor? = line == nil ? GitDiffMetrics.fill(.piFill, opacity: 0.5) : Self.tint(kind).map { GitDiffMetrics.fill($0, opacity: 0.10) }
+            let fill: CGColor? = line == nil ? GitDiffMetrics.fill(coordinator.colors.emptySide, opacity: 0.5) : Self.tint(kind, coordinator.colors).map { GitDiffMetrics.fill($0, opacity: 0.10) }
             if let fill {
                 context.setFillColor(fill)
                 context.fill(CGRect(x: start, y: 1, width: half, height: bounds.height - 2))
             }
             if let number {
                 let text = String(number)
-                GitDiffText.drawKept(text, font: GitDiffMetrics.mono, color: .piInkTertiary, x: start + 48 - GitDiffText.frameWidth(text, font: GitDiffMetrics.mono, scale: scale),
+                GitDiffText.drawKept(text, font: GitDiffMetrics.mono, color: coordinator.colors.tertiaryText, x: start + 48 - GitDiffText.frameWidth(text, font: GitDiffMetrics.mono, scale: scale),
                                      baseline: 1 + GitDiffMetrics.monoBaseline, in: context)
             }
             let geometry = Self.textFrame(.split, side: side, card: card, rowWidth: bounds.width)
-            drawText(GitDiffTable.Coordinator.shown(line?.text ?? ""), selectable: line?.text ?? "", color: kind == .note ? .piInkTertiary : .piInk,
+            drawText(GitDiffTable.Coordinator.shown(line?.text ?? ""), selectable: line?.text ?? "", color: kind == .note ? coordinator.colors.tertiaryText : coordinator.colors.text,
                      x: geometry.x, width: geometry.width, selection: coordinator.selected(in: row, side: side), wrap: coordinator.wrap, context: context)
         }
-        context.setFillColor(GitDiffMetrics.fill(.piHairline, opacity: 1))
+        context.setFillColor(GitDiffMetrics.fill(coordinator.colors.separator, opacity: 1))
         context.fill(CGRect(x: left + half, y: 1, width: 1, height: bounds.height - 2))
     }
 

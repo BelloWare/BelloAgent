@@ -22,7 +22,7 @@ import CoreServices
     private let handle: GitWatchStream
     private(set) var bridge: GitWatchBridge?
     private var generation = UUID()
-    private let queue = DispatchQueue(label: "com.belloware.PiApp.git.watch", qos: .utility)
+    private let queue = DispatchQueue(label: "BelloViews.git.watch", qos: .utility)
     private var lastCall = -Double.greatestFiniteMagnitude
     private var trailing: DispatchWorkItem?
     deinit { handle.stop() }

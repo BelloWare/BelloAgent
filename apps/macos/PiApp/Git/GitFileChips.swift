@@ -11,7 +11,7 @@ struct GitCommitFileChips: NSViewRepresentable {
     @Binding var selected: String?
     @Binding var shown: Int
     var showHistory: (String) -> Void
-    static let step = 200
+    static var step: Int { GitController.commitFilesStep }
 
     func makeNSView(context: Context) -> GitFileChipsView {
         let view = GitFileChipsView()

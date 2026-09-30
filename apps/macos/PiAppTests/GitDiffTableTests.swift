@@ -141,6 +141,57 @@ final class GitDiffTableTests: GitPanelTestCase {
         XCTAssertEqual(NSPasteboard.general.string(forType: .string), "Sources/Engine/Router.swift")
     }
 
+    /// The app draws the diff in its own colours and gives it its own menu:
+    /// the table's defaults are for other hosts.
+    @MainActor func testTheAppGivesTheTableItsOwnColoursAndMenu() throws {
+        let pane = Pane(files: GitDiffParser.parse(Self.patch)); defer { pane.close() }
+        let coordinator = try XCTUnwrap(pane.table.coordinator)
+        XCTAssertEqual(coordinator.colors, GitDiffColors.pi)
+        XCTAssertNotEqual(coordinator.colors, GitDiffColors.system)
+        XCTAssertNotNil(coordinator.menu, "The app's menu, not the plain one")
+    }
+
+    /// A host that gives the table no menu of its own gets the plain one:
+    /// Copy (only with text selected), Select All and, over a file's header,
+    /// Copy Path. A builder that answers nil shows none. The app gives its own
+    /// (`GitDiffPiMenu`, tested above through `DiffView`).
+    @MainActor func testATableGivenNoMenuOffersThePlainOne() throws {
+        let files = GitDiffParser.parse(Self.patch)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        func host(menu: GitDiffMenuBuilder?) throws -> GitDiffTableView {
+            window.contentView = NSHostingView(rootView: GitDiffTable(files: files, split: false, wrap: false, showAll: false, identity: "menu",
+                                                                      top: AnyView(Text("Heading")), topKey: 0, more: nil, menu: menu))
+            window.makeKeyAndOrderFront(nil)
+            window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return try XCTUnwrap(Pane.views(in: window.contentView!).first)
+        }
+        func menu(_ table: GitDiffTableView, row: Int) -> NSMenu? {
+            let rect = table.rect(ofRow: row)
+            let point = table.convert(NSPoint(x: rect.midX, y: rect.minY + 8), to: nil)
+            return table.menu(for: NSEvent.mouseEvent(with: .rightMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                      windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!)
+        }
+        let table = try host(menu: nil)
+        let line = try XCTUnwrap(lineRows(table).first), file = try XCTUnwrap(table.coordinator!.rows.firstIndex { $0.kind == .file })
+        let plain = try XCTUnwrap(menu(table, row: line))
+        XCTAssertEqual(plain.items.map(\.title), ["Copy", "Select All"])
+        XCTAssertEqual(plain.items.map { $0.identifier?.rawValue }, ["git-diff-copy", "git-diff-select-all"])
+        XCTAssertFalse(plain.autoenablesItems)
+        XCTAssertEqual(plain.items.map(\.isEnabled), [false, true], "Nothing selected: nothing to copy")
+        plain.performActionForItem(at: 1)
+        XCTAssertEqual(try XCTUnwrap(menu(table, row: line)).items.first?.isEnabled, true, "Select All ran; Copy has text now")
+        let header = try XCTUnwrap(menu(table, row: file))
+        XCTAssertEqual(header.items.map(\.title), ["Copy", "Select All", "", "Copy Path"])
+        XCTAssertTrue(header.items[2].isSeparatorItem)
+        NSPasteboard.general.clearContents()
+        header.performActionForItem(at: 3)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "Sources/Engine/Router.swift")
+
+        XCTAssertNil(menu(try host(menu: { _ in nil }), row: line), "A builder that answers nil shows no menu")
+    }
+
     @MainActor func testTheKeysScrollTheDiff() throws {
         let body = (0..<400).map { "+line \($0)" }.joined(separator: "\n")
         let files = GitDiffParser.parse("diff --git a/long.txt b/long.txt\n--- /dev/null\n+++ b/long.txt\n@@ -0,0 +1,400 @@\n" + body + "\n")

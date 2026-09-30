@@ -4,6 +4,14 @@ import AppKit
 /// State for the Changes sheet: which folder, its status, the selected file's
 /// diff, the commit history and the selected commit. Reads run on GitService;
 /// stage, unstage and commit are the only writes.
+/// The diff's layout and its whole-diff gate. Only the diff observes them.
+@MainActor final class GitDiffPresentation: ObservableObject {
+    @Published var split = false
+    /// Which diff the reader asked to see in full. It names the diff, so the
+    /// row gate comes back for the next file or commit.
+    @Published var whole: String?
+}
+
 @MainActor final class GitController: ObservableObject {
     enum Panel: String, CaseIterable, Hashable { case changes, history
         var title: String { self == .changes ? "Changes" : "History" }
@@ -67,6 +75,9 @@ import AppKit
     /// How the diff is laid out and which diff is shown whole, held apart
     /// from the state the panel observes: switching the layout, or opening
     /// the whole diff, redraws the diff and not the whole panel.
+    /// How many of a commit's files are listed at first, and how many more
+    /// each time more are asked for.
+    static let commitFilesStep = 200
     let presentation = GitDiffPresentation()
     var splitDiff: Bool { get { presentation.split } set { presentation.split = newValue } }
     /// Which diff the reader asked to see in full. It names the diff, so the
@@ -74,7 +85,7 @@ import AppKit
     /// staying open and laying out a whole 20,000-line patch.
     var wholeDiffShown: String? { get { presentation.whole } set { presentation.whole = newValue } }
     /// How many of a commit's file chips are on screen. Reset for each commit.
-    @Published var commitFilesShown = GitCommitFileChips.step
+    @Published var commitFilesShown = GitController.commitFilesStep
     /// Names one diff: the selected file, or a commit and the file chosen in it.
     static func diffIdentity(path: String, staged: Bool) -> String { "changes\u{1}\(path)\u{1}\(staged)" }
     static func diffIdentity(commit: String, file: String?) -> String { "commit\u{1}\(commit)\u{1}\(file ?? "")" }
@@ -180,7 +191,7 @@ import AppKit
         applyChecked([]); checkedByReader = false
         commitMessage = ""; amend = false; lastCommit = nil; notice = ""
         selectedDiffStale = false; panel = .changes
-        splitDiff = false; wholeDiffShown = nil; commitFilesShown = GitCommitFileChips.step
+        splitDiff = false; wholeDiffShown = nil; commitFilesShown = GitController.commitFilesStep
         logFilter = GitLogFilter()
         // Last: the resets above may have started reads of their own. A write
         // still running, whose refresh would read everything again, reads
@@ -422,7 +433,7 @@ import AppKit
         guard let repositoryRoot, let commit = selectedCommit else {
             detail = nil; detailDiff = []; detailFileDiff = []; detailDiffDeferred = false; commitLoading = false; return
         }
-        if detail?.commit.hash != commit.hash { commitFilesShown = GitCommitFileChips.step }
+        if detail?.commit.hash != commit.hash { commitFilesShown = GitController.commitFilesStep }
         let file = detailFile, cached = commitCache[commit.hash]
         if let cached { detail = cached.detail } else if detail?.commit.hash != commit.hash { detail = nil }
         detailDiff = cached?.diff ?? []

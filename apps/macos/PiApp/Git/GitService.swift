@@ -219,7 +219,7 @@ actor GitService {
     /// out of circulation: a handful of concurrent reads would stall every
     /// other task in the app, the gateway and the transcript included. These
     /// waits happen on a queue of their own, where blocking is expected.
-    private static let processQueue = DispatchQueue(label: "com.belloware.PiApp.git", qos: .userInitiated, attributes: .concurrent)
+    private static let processQueue = DispatchQueue(label: "BelloViews.git", qos: .userInitiated, attributes: .concurrent)
 
     /// How many git processes may run at once. Reads are cancelled when they
     /// are superseded, but a panel in a bad state — a repository that answers
