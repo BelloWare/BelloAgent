@@ -1,12 +1,90 @@
 import XCTest
 import AppKit
 import FileView
+import PDFKit
 @testable import PiApp
 
 /// A file as a tab (`FileTab`): read only in a trusted project or outside
 /// any, missing with the reason otherwise, or when the file is gone; one tab
 /// a file whichever path reached it; and nothing read before it is shown.
 final class FileTabTests: XCTestCase {
+    @MainActor func testLiveFollowKeepsTheViewScrollAndSelectionAcrossAnAtomicSaveAndRecreation() async throws {
+        let source = (0..<200).map { "Line \($0)" }.joined(separator: "\n")
+        let url = try file("follow.txt", Data(source.utf8))
+        let tab = FileTab(url: url, projectID: nil)
+        tab.didShow()
+        defer { tab.willClose() }
+        let scroll = try XCTUnwrap(tab.scroll)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = scroll
+        defer { window.contentView = nil; window.close() }
+        let old = try XCTUnwrap(tab.document)
+        try await eventually("read and watching") { old.status == .ready && tab.isWatching }
+        let view = scroll.textView
+        view.select(from: FileTextPosition(line: 10, column: 1), to: FileTextPosition(line: 12, column: 2))
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 600)); scroll.reflectScrolledClipView(scroll.contentView)
+        let origin = scroll.contentView.bounds.origin
+        let selection = view.selectedRange
+        try (source + "\nAn appended line").write(to: url, atomically: true, encoding: .utf8)
+        try await eventually("the replacement is read") { tab.document !== old && tab.status == .ready }
+        XCTAssertTrue(tab.scroll === scroll)
+        XCTAssertTrue(scroll.textView === view)
+        XCTAssertEqual(view.selectedRange.start, selection.start); XCTAssertEqual(view.selectedRange.end, selection.end)
+        XCTAssertEqual(scroll.contentView.bounds.origin.y, origin.y, accuracy: 1)
+        try FileManager.default.removeItem(at: url)
+        try await eventually("deletion is shown") { tab.missingReason != nil }
+        try source.write(to: url, atomically: true, encoding: .utf8)
+        try await eventually("the recreated file is followed") { tab.missingReason == nil && tab.status == .ready }
+        XCTAssertTrue(tab.scroll === scroll)
+        tab.didHide()
+        XCTAssertFalse(tab.isWatching)
+        let hidden = tab.document
+        try (source + "\nSaved while hidden").write(to: url, atomically: true, encoding: .utf8)
+        tab.didShow()
+        try await eventually("showing again follows the hidden save") { tab.document !== hidden && tab.status == .ready }
+    }
+
+    @MainActor func testImagePreviewDownsamplesAndTrustRevocationDropsIt() async throws {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 6_000, pixelsHigh: 40,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let url = try file("wide.png", try XCTUnwrap(bitmap.representation(using: .png, properties: [:])))
+        var trusted = true
+        FileTab.resolveProject = { _ in trusted ? .trusted(name: "images", root: url.deletingLastPathComponent().path) : .untrusted(name: "images") }
+        let tab = FileTab(url: url, projectID: "images")
+        defer { tab.willClose() }
+        let preview = tab.preview
+        preview.load()
+        try await eventually("the image preview") { preview.image != nil }
+        let representation = try XCTUnwrap(preview.image?.representations.first)
+        XCTAssertLessThanOrEqual(representation.pixelsWide, 2_048)
+        XCTAssertNil(tab.document, "an image is not read as text")
+        trusted = false; tab.projectsChanged()
+        XCTAssertNil(preview.image)
+        XCTAssertFalse(tab.isWatching)
+    }
+
+    @MainActor func testPDFPreviewUsesPDFKitAndKeepsItsViewAcrossReloads() async throws {
+        let image = NSImage(size: NSSize(width: 200, height: 300))
+        image.lockFocus(); NSColor.white.setFill(); NSRect(x: 0, y: 0, width: 200, height: 300).fill(); image.unlockFocus()
+        let document = PDFDocument()
+        document.insert(try XCTUnwrap(PDFPage(image: image)), at: 0)
+        let url = try file("document.pdf", try XCTUnwrap(document.dataRepresentation()))
+        let preview = FilePreview(url: url)
+        defer { preview.close() }
+        preview.load()
+        try await eventually("the PDF preview") { preview.pdf != nil }
+        let view = preview.pdfView
+        view.document = preview.pdf
+        XCTAssertEqual(preview.pdf?.pageCount, 1)
+        let first = preview.pdf
+        document.insert(try XCTUnwrap(PDFPage(image: image)), at: 1)
+        try XCTUnwrap(document.dataRepresentation()).write(to: url, options: .atomic)
+        preview.load()
+        try await eventually("the changed PDF is read") { preview.pdf !== first && preview.pdf?.pageCount == 2 }
+        XCTAssertTrue(preview.pdfView === view)
+        XCTAssertTrue(view.document === preview.pdf)
+    }
+
     private var folder: URL!
     @MainActor override func setUp() async throws {
         folder = scratchRoot("file-tab")

@@ -32,6 +32,79 @@ enum FileProjectState: Equatable {
     private var madeDocument: FileView.FileDocument?
     private var madeScroll: FileTextScrollView?
     private var syntax: FileSyntax?
+    private var watcher: FileWatch?
+    private var shown = false
+    private var followTask: Task<Void, Never>?
+    private var following: FileDocument?
+    private var madePreview: FilePreview?
+    var previewKind: String? { FilePreview.kind(for: url) }
+    var preview: FilePreview {
+        if let madePreview { return madePreview }
+        let preview = FilePreview(url: url)
+        preview.changed = { [weak self, weak preview] in
+            guard let self, let preview, self.madePreview === preview else { return }
+            self.status = .ready; self.updateSymbol()
+        }
+        madePreview = preview
+        return preview
+    }
+    private var followToken = 0
+    var isWatching: Bool { watcher?.isWatching == true && watcher?.isArmed == true }
+
+    override func didShow() {
+        shown = true
+        startWatching()
+        followChange()
+    }
+    override func didHide() { shown = false; stopWatching() }
+    private func startWatching() {
+        guard shown, readable else { return }
+        if watcher == nil { watcher = FileWatch(url: url) { [weak self] in self?.followChange() } }
+        watcher?.start()
+    }
+    private func stopWatching() {
+        watcher?.stop(); followToken &+= 1
+        followTask?.cancel(); followTask = nil
+        following?.close(); following = nil
+        madePreview?.suspend()
+    }
+    private func followChange() {
+        guard shown, readable else { return }
+        if previewKind != nil { madePreview?.load(); return }
+        guard let old = madeDocument else { return }
+        followToken &+= 1
+        let token = followToken
+        followTask?.cancel()
+        followTask = Task { [weak self] in
+            guard await old.hasChanged(), let self, !Task.isCancelled, self.shown, self.readable, self.followToken == token else { return }
+            self.following?.close()
+            let fresh = FileDocument(url: self.url)
+            self.following = fresh
+            fresh.onStatusChange = { [weak self, weak fresh] status in
+                guard let self, let fresh, self.following === fresh, self.followToken == token else { return }
+                switch status {
+                case .ready, .truncated, .binary:
+                    self.following = nil
+                    self.madeDocument = fresh
+                    self.finder?.close(); self.finder = nil; self.bar = .none
+                    if let scroll = self.madeScroll {
+                        scroll.textView.show(fresh, name: self.title, preservingPosition: true)
+                        self.syntax = FileSyntax(source: fresh, view: scroll.textView, extension: self.url.pathExtension)
+                        scroll.textView.syntax = { [weak syntax = self.syntax] line, range, text in syntax?.colors(line: line, piece: range, text: text) ?? [] }
+                    }
+                    fresh.onStatusChange = { [weak self, weak fresh] status in
+                        guard let self, let fresh, self.madeDocument === fresh else { return }
+                        self.status = status; self.fellBack = fresh.fellBack; self.updateSymbol()
+                    }
+                    self.status = status; self.fellBack = fresh.fellBack; self.updateSymbol()
+                    old.close()
+                case .failed:
+                    self.following = nil; fresh.close(); self.status = status; self.updateSymbol()
+                default: break
+                }
+            }
+        }
+    }
     private var target: ClosedRange<Int>?
 
     /// The key a file's tab is found by: one tab a file, whichever path
@@ -70,7 +143,7 @@ enum FileProjectState: Equatable {
     /// view is being drawn): its status is `.indexing`, as the tab's is
     /// until the document says otherwise.
     var document: FileView.FileDocument? {
-        guard readable else { return nil }
+        guard readable, previewKind == nil else { return nil }
         if let madeDocument { return madeDocument }
         let document = FileView.FileDocument(url: url)
         document.onStatusChange = { [weak self, weak document] status in
@@ -119,20 +192,25 @@ enum FileProjectState: Equatable {
         guard now != project else { return }
         project = now
         if !readable {
+            stopWatching()
             // Not to be read: what was read goes, and the view with it, and
             // what was known of the file: read again from the start if it
             // may be read again.
             finder?.close(); finder = nil; bar = .none
             madeDocument?.close(); madeDocument = nil
             madeScroll = nil; syntax = nil
+            madePreview?.close(); madePreview = nil
             status = .indexing; fellBack = false
         }
+        if readable { startWatching(); followChange() }
         updateHelp(); updateSymbol()
     }
     override func willClose() {
+        shown = false; stopWatching(); watcher = nil
         finder?.close(); finder = nil
         madeDocument?.close()
         madeDocument = nil; madeScroll = nil; syntax = nil
+        madePreview?.close(); madePreview = nil
     }
 
     // MARK: Find and go to line
@@ -272,6 +350,8 @@ struct FileTabContent: View {
             FileTabHeader(tab: tab)
             if let reason = tab.missingReason {
                 FileTabNotice(symbol: "questionmark.folder", title: "Missing", detail: reason, url: tab.url)
+            } else if tab.previewKind != nil {
+                FilePreviewContent(preview: tab.preview)
             } else if tab.status == .binary {
                 FileTabNotice(symbol: "doc", title: "Not text", detail: FileTabNotice.describe(tab.url), url: tab.url)
             } else if let scroll = tab.scroll {

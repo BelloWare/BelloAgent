@@ -458,7 +458,9 @@ public struct FileTextStyle {
     public override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); if syntax != nil { layouts = [:] }; needsDisplay = true }
 
     /// Shows a text from its start, with nothing selected.
-    public func show(_ source: FileTextSource, name: String) {
+    public func show(_ source: FileTextSource, name: String, preservingPosition: Bool = false) {
+        let savedAnchor = anchor, savedFocus = focus, savedEmphasis = emphasized
+        let savedOrigin = enclosingScrollView?.contentView.bounds.origin
         self.source.arrival = nil
         self.source = source; self.name = name
         pending = []
@@ -468,6 +470,13 @@ public struct FileTextStyle {
         showing &+= 1; answers = []; answering = []
         anchor = .start; focus = .start
         updateFrame()
+        if preservingPosition {
+            anchor = clamp(savedAnchor); focus = clamp(savedFocus); emphasized = savedEmphasis
+            if let savedOrigin, let scroll = enclosingScrollView {
+                scroll.contentView.scroll(to: savedOrigin)
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+        }
         needsDisplay = true; ruler?.textChanged()
         announce(.valueChanged)
     }

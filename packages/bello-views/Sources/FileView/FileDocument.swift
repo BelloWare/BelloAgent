@@ -222,6 +222,13 @@ struct FileLengths: Sendable {
         wakeSearches()
     }
 
+    /// Check both the open inode and its path away from the UI actor, so a
+    /// host can follow atomic replacements as well as in-place edits.
+    public func hasChanged() async -> Bool {
+        guard let bytes, let identity else { return true }
+        return await Task.detached(priority: .utility) { !bytes.unchanged(since: identity) }.value
+    }
+
     // MARK: Opening
 
     private func open() {
