@@ -364,6 +364,172 @@ final class ForkCloneTests: XCTestCase {
         XCTAssertGreaterThan(stored.rowsBefore, 0, "opened from it, rows before the context are not loaded")
     }
 
+    /// The replay of a fork's journal, and what a fork from the same reply
+    /// that was copied replays to, compared: every row, the rows shown, the
+    /// context, versions, counts, spend and origin (but for when it was made).
+    private func assertLikeTheCopy(_ chat: Chat, clone: (id: String, path: String), copy: (id: String, path: String), _ what: String,
+                                   file: StaticString = #filePath, line: UInt = #line) throws {
+        let cloned = try fullReplay(chat, id: clone.id, path: clone.path), copied = try fullReplay(chat, id: copy.id, path: copy.path)
+        XCTAssertTrue(try lines(clone.path).contains { $0.range(of: Data(#""reset":true"#.utf8)) != nil }, "\(what): cloned", file: file, line: line)
+        XCTAssertEqual(cloned.history.map(\.id), copied.history.map(\.id), "\(what): rows", file: file, line: line)
+        XCTAssertEqual(cloned.visible.map(\.id), copied.visible.map(\.id), "\(what): rows shown", file: file, line: line)
+        XCTAssertEqual(cloned.context.map(\.id), copied.context.map(\.id), "\(what): context", file: file, line: line)
+        XCTAssertEqual(cloned.versions.ledger, copied.versions.ledger, "\(what): versions", file: file, line: line)
+        XCTAssertEqual(cloned.assistantMessageCount, copied.assistantMessageCount, "\(what): replies", file: file, line: line)
+        XCTAssertEqual(cloned.latestAssistantMessageID, copied.latestAssistantMessageID, "\(what): latest reply", file: file, line: line)
+        XCTAssertEqual(cloned.spend, copied.spend, "\(what): spend", file: file, line: line)
+        XCTAssertEqual(cloned.parentInfo.removing(["capturedAt"]), copied.parentInfo.removing(["capturedAt"]), "\(what): origin", file: file, line: line)
+    }
+
+    /// From a chat opened from its metadata file: a reply after the file's
+    /// checkpoint forks from it; one before it (loaded, or reached by paging
+    /// back) from the start; one whose place the chat does not know is
+    /// copied. Each clone is what a copied fork from that reply
+    /// is, and the chat stays as it was. Each fork is made from a chat opened
+    /// afresh: a copied fork loads every row of the chat it is made from.
+    func testForksFromRepliesOfAChatOpenedFromItsFileAreWhatCopiesAre() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat)
+        let whole = try fullReplay(chat, id: chatID, path: path)
+        func reply(_ text: String) throws -> String { try XCTUnwrap(whole.history.first { $0.role == "assistant" && $0.text.hasPrefix(text) }?.id) }
+        var rebuilt: [String: Bool] = [:]
+        func fork(_ name: String, at reply: String, paging: Bool = false) async throws -> String {
+            let parent = try chat.session(chatID, resume: path)
+            if paging { try await parent.loadOlderRows() }
+            let before = await held(parent)
+            XCTAssertTrue(before.partial)
+            let (result, replay) = try await parent.forked(to: name, at: reply)
+            rebuilt[name] = replay.r.resumed
+            let forkPath = try XCTUnwrap(result["path"].text)
+            // A clone leaves the chat as it was; a copy loads its every row, as before.
+            if try isClone(forkPath) { let after = await held(parent); XCTAssertEqual(after, before, "\(name): the chat is left as it was") }
+            await parent.close()
+            return forkPath
+        }
+        func isClone(_ path: String) throws -> Bool { try lines(path).contains { $0.range(of: Data(#""reset":true"#.utf8)) != nil } }
+        // The chat's metadata file follows its compaction's finished progress,
+        // written after the compaction record, as a live chat's does.
+        let stored = try XCTUnwrap(JournalCheckpoint.read(for: URL(fileURLWithPath: path)))
+        let follows = try JSON.parse(Data(try Data(contentsOf: URL(fileURLWithPath: path))[Int(stored.last.offset)..<Int(stored.last.offset) + stored.last.length]))
+        XCTAssertNotEqual(follows["type"].text, "compaction", "the file follows a record after the compaction")
+        for (text, label) in [("answer four", "after the checkpoint"), ("answer three", "loaded, before the checkpoint")] {
+            let id = try reply(text), copyID = "a-copied-fork-" + String(label.count) + "-with-a-longer-identity"
+            let clonePath = try await fork("fork-\(label.count)", at: id), copyPath = try await fork(copyID, at: id)
+            try assertLikeTheCopy(chat, clone: ("fork-\(label.count)", clonePath), copy: (copyID, copyPath), label)
+        }
+        XCTAssertEqual(rebuilt["fork-20"], true, "after the checkpoint: rebuilt from it, not from the start")
+        XCTAssertEqual(rebuilt["fork-29"], false, "before the checkpoint: rebuilt from the start")
+        // A reply the chat never loaded, in an edited timeline: copied until
+        // paging back learns where it is.
+        let early = try reply("the edited answer")
+        let unknownPath = try await fork("fork-x", at: early)
+        XCTAssertFalse(try isClone(unknownPath), "copied: its place is not known")
+        let clonePath = try await fork("fork-y", at: early, paging: true), copyPath = try await fork("a-copied-fork-from-an-unloaded-reply", at: early)
+        try assertLikeTheCopy(chat, clone: ("fork-y", clonePath), copy: ("a-copied-fork-from-an-unloaded-reply", copyPath), "never loaded, then indexed")
+    }
+
+    /// A request ledger row with no eligibility flag after the checkpoint is
+    /// in a fork's context, as the replay a copy uses has it; and a reply
+    /// whose tool batch lost a result forks at the result it has.
+    func testALedgerRowAfterTheCheckpointAndABatchMissingAResultForkAsCopiesDo() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat)
+        do {
+            let journal = try SessionJournal(url: URL(fileURLWithPath: path), id: chatID, cwd: chat.root, binding: chat.profile.binding, create: false)
+            try journal.append(["type": "message", "message": ["role": "user", "content": "one more"]], id: "q9")
+            try journal.append(["type": "message", "message": ["role": "system", "content": "Request", "nativeKind": "requestLedger"]], id: "ledger-9")
+            try journal.append(["type": "message", "message": ["role": "system", "content": "Request", "nativeKind": "requestLedger", "nativeReplayEligible": false]], id: "ledger-10")
+            try journal.append(["type": "message", "message": ["role": "assistant", "content": [["type": "toolCall", "id": "c1", "name": "first", "arguments": [:]], ["type": "toolCall", "id": "c2", "name": "second", "arguments": [:]]]]], id: "calls-9")
+            try journal.append(["type": "message", "message": ["role": "toolResult", "toolCallId": "c1", "toolName": "first", "content": [["type": "text", "text": "done"]]]], id: "result-9")
+            try journal.append(["type": "message", "message": ["role": "user", "content": "and after"]], id: "q10")
+            try journal.append(["type": "message", "message": ["role": "assistant", "content": [["type": "text", "text": "the answer after"]]]], id: "a10")
+        }
+        for (label, opened) in [("whole", false), ("from its file", true)] {
+            if !opened { JournalCheckpoint.remove(for: URL(fileURLWithPath: path)) }
+            let parent = try chat.session(chatID, resume: path)
+            for (reply, name) in [("calls-9", "b"), ("a10", "c")] {
+                let clone = try await parent.fork(to: "fork-\(name)\(opened ? 1 : 0)", at: reply)
+                let copyID = "a-copied-fork-\(name)-\(opened)-with-a-longer-identity"
+                let copy = try await parent.fork(to: copyID, at: reply)
+                try assertLikeTheCopy(chat, clone: ("fork-\(name)\(opened ? 1 : 0)", try XCTUnwrap(clone["path"].text)), copy: (copyID, try XCTUnwrap(copy["path"].text)), "\(label), \(reply)")
+                let forked = try fullReplay(chat, id: "fork-\(name)\(opened ? 1 : 0)", path: try XCTUnwrap(clone["path"].text))
+                if reply == "calls-9" { XCTAssertEqual(forked.history.last?.id, "result-9", "\(label): at the result it has") }
+                else {
+                    XCTAssertTrue(forked.context.map(\.id).contains("ledger-9"), "\(label): the ledger row with no flag, as the copy's replay has it")
+                    XCTAssertFalse(forked.context.map(\.id).contains("ledger-10"), "\(label): not one no request sends")
+                }
+            }
+            await parent.close()
+        }
+    }
+
+    /// A message that carries a fork's context kind is a message to one replay
+    /// and a context record to the other, which takes a checkpoint there: a
+    /// fork from a reply after it is rebuilt from the start, and has the
+    /// copy's context. And a chat opened whole gives, from a reply, a fork
+    /// the host opens whole, as a copy's.
+    func testForksFromRepliesAfterAMessageCarryingTheContextKindAndOfAWholeChat() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = chat.state.appendingPathComponent(chatID + ".jsonl")
+        do {
+            let journal = try SessionJournal(url: path, id: chatID, cwd: chat.root, binding: chat.profile.binding, create: true)
+            try journal.append(["type": "message", "message": ["role": "user", "content": "a question"]], id: "u")
+            try journal.append(["type": "message", "customType": JSON(JournalRecordKind.context),
+                                "message": ["role": "assistant", "content": [["type": "text", "text": "cut off"]], "nativeReplayEligible": false]], id: "p")
+            try journal.append(["type": "message", "message": ["role": "assistant", "content": [["type": "text", "text": "the answer"]]]], id: "a")
+        }
+        for opened in [false, true] {
+            if opened {
+                // Opened whole once, it has the checkpoint its open took at "p".
+                let first = try chat.session(chatID, resume: path.path); await first.close()
+                XCTAssertEqual(JournalCheckpoint.read(for: path)?.lastID, "p")
+            }
+            let parent = try chat.session(chatID, resume: path.path)
+            let partial = await parent.partialHistory
+            XCTAssertEqual(partial, opened)
+            let (clone, replay) = try await parent.forked(to: "fork-\(opened ? 1 : 0)", at: "a")
+            await parent.close()
+            let copyParent = try chat.session(chatID, resume: path.path)
+            let copy = try await copyParent.fork(to: "a-copied-fork-\(opened)-with-a-longer-identity", at: "a")
+            await copyParent.close()
+            try assertLikeTheCopy(chat, clone: ("fork-\(opened ? 1 : 0)", try XCTUnwrap(clone["path"].text)),
+                                  copy: ("a-copied-fork-\(opened)-with-a-longer-identity", try XCTUnwrap(copy["path"].text)), opened ? "opened from its file" : "opened whole")
+            XCTAssertEqual(try fullReplay(chat, id: "fork-\(opened ? 1 : 0)", path: try XCTUnwrap(clone["path"].text)).context.map(\.id), ["u", "a"])
+            // The host opens the fork with its replay: whole, as its chat was opened whole.
+            let fork = try chat.session("fork-\(opened ? 1 : 0)", resume: try XCTUnwrap(clone["path"].text), prepared: replay)
+            let forkPartial = await fork.partialHistory
+            XCTAssertFalse(forkPartial, "rebuilt from the start, the fork is whole")
+            await fork.close()
+        }
+    }
+
+    /// A chat opened whole, with a compaction before the reply: the fork from
+    /// the reply is rebuilt from the start and opens whole, as a copy's does.
+    func testAForkFromAReplyOfAChatOpenedWholeOpensWhole() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat)
+        JournalCheckpoint.remove(for: URL(fileURLWithPath: path))
+        let parent = try chat.session(chatID, resume: path)
+        let partial = await parent.partialHistory
+        XCTAssertFalse(partial)
+        let found = await parent.history.first { $0.role == "assistant" && $0.text.hasPrefix("answer four") }?.id
+        let latest = try XCTUnwrap(found)
+        let (clone, replay) = try await parent.forked(to: "fork-w", at: latest)
+        let copy = try await parent.fork(to: "a-copied-fork-of-a-whole-chat", at: latest)
+        await parent.close()
+        let clonePath = try XCTUnwrap(clone["path"].text)
+        try assertLikeTheCopy(chat, clone: ("fork-w", clonePath), copy: ("a-copied-fork-of-a-whole-chat", try XCTUnwrap(copy["path"].text)), "opened whole")
+        XCTAssertFalse(replay.r.resumed)
+        let fork = try chat.session("fork-w", resume: clonePath, prepared: replay)
+        let forkPartial = await fork.partialHistory
+        XCTAssertFalse(forkPartial, "the host opens it whole")
+        let read = try fullReplay(chat, id: "fork-w", path: clonePath)
+        XCTAssertEqual(JournalCheckpoint.read(for: URL(fileURLWithPath: clonePath)), read.captured, "its metadata file is its replay's")
+        let rows = await fork.visible.map(\.id)
+        XCTAssertEqual(rows, read.visible.map(\.id))
+        await fork.close()
+    }
+
     /// A chat whose run is going is copied, as before: its boundary is not
     /// its journal's end.
     func testARunningChatsForkIsCopied() async throws {

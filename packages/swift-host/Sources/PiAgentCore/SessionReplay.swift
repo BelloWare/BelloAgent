@@ -20,8 +20,10 @@ struct JournalReplay: Sendable {
     var stateRecord: JSON?
     /// The latest point the next open can resume from, if any.
     var captured: JournalCheckpoint?
-    /// Whether this replay resumed from the metadata file's checkpoint.
+    /// Whether this replay resumed from the metadata file's checkpoint, and
+    /// the checkpoint it resumed from.
     var resumed = false
+    var resumedFrom: JournalCheckpoint?
     /// The newest run state's record: its bytes, where it is, and its key.
     var stateSource: StateSource?
     /// How much of the journal the records replayed so far take up, from its
@@ -75,7 +77,7 @@ struct JournalReplayConsumer {
     /// Starts from the metadata file's checkpoint: the rows it names, then
     /// only the records after it. Rows shown before them load when asked for.
     mutating func resume(from checkpoint: JournalCheckpoint, loaded: (rows: [ChatMessage], context: [ChatMessage], state: JSON?, stateLine: Data?)) {
-        r.resumed=true; r.coveredBytes=checkpoint.start
+        r.resumed=true; r.resumedFrom=checkpoint; r.coveredBytes=checkpoint.start
         // The checkpoint's lineage is the newest marker among all its shown
         // rows. One not among the rows it names is among those not loaded, and
         // the newest there; one among them leaves the newest before it unknown.

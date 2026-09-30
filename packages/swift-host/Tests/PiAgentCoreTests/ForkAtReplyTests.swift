@@ -61,8 +61,10 @@ final class ForkAtReplyTests: XCTestCase {
         let ids = Set(saved.compactMap { $0["id"].text })
         XCTAssertFalse(ids.contains("u3")); XCTAssertFalse(ids.contains(three))
         XCTAssertFalse(saved.contains { $0.encoded().contains("question three") || $0.encoded().contains("answer three") })
+        // Cloned (the fork's identity fits the chat's header): the fork's
+        // origin, a spend that starts again, its run state, then its context.
         let tail = saved.suffix(4).map { $0["customType"].text }
-        XCTAssertEqual(tail, ["pi-app.native.context.v1", "pi-app.fork-origin.v1", SessionSpend.recordType, "pi-app.native.state.v1"])
+        XCTAssertEqual(tail, ["pi-app.fork-origin.v1", SessionSpend.recordType, "pi-app.native.state.v1", "pi-app.native.context.v1"])
         XCTAssertEqual(saved.last { $0["type"].text == "message" }?["id"].text, two)
 
         // Opened, it is the chat as it stood after that reply, and it answers from there.

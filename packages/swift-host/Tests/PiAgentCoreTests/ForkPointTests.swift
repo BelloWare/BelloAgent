@@ -85,27 +85,45 @@ final class ForkPointTests: XCTestCase {
             do { found = try await source.forkPointForTesting(id, path: URL(fileURLWithPath: path)) }
             catch let error as AgentError { XCTAssertEqual(error.code, "fork_target", id); found = nil }
             XCTAssertEqual(found, expected, "\(id): where the fork ends")
-            guard let end = expected else { continue }
+            guard let end = expected else {
+                // Not a reply: refused, whether it would be cloned or copied.
+                for name in ["n\(number)", "a-refused-fork-\(number)-with-a-longer-identity"] {
+                    do { _ = try await source.fork(to: name, at: id); XCTFail("\(id): not a reply") }
+                    catch let error as AgentError { XCTAssertEqual(error.code, "fork_target", id) }
+                }
+                continue
+            }
             // The conversation up to there, replayed from every record built.
             let replay = try ConversationReplay(Array(all[...end]))
             let context = replay.context.map(\.id), timeline = EditReplayPlan.forkTimeline(visible: replay.visible.map(\.id), boundary: context)
-            let result: JSON
-            do { result = try await source.fork(to: "fork-\(number)", at: id) }
-            catch let error as AgentError {
-                XCTAssertFalse(context.contains(id) && timeline.contains(id), "\(id): \(error.message)")
-                XCTAssertEqual(error.code, "fork_target", id); refused.append(id + ": " + error.message); continue
+            // Cloned (an identity that fits the chat's header) and copied.
+            for name in ["c\(number)", "a-copied-fork-\(number)-with-a-longer-identity"] {
+                let result: JSON
+                do { result = try await source.fork(to: name, at: id) }
+                catch let error as AgentError {
+                    XCTAssertFalse(context.contains(id) && timeline.contains(id), "\(id): \(error.message)")
+                    XCTAssertEqual(error.code, "fork_target", id); refused.append(id + ": " + error.message); continue
+                }
+                forked += 1
+                let path = try XCTUnwrap(result["path"].text), saved = try records(path), cloned = name.count <= "source".count
+                XCTAssertEqual(saved.filter { built.contains($0["type"].text ?? "") }.compactMap { $0["id"].text },
+                               all[...end].filter { built.contains($0["type"].text ?? "") }.compactMap { $0["id"].text }, "\(id): the records up to there")
+                XCTAssertEqual(saved.contains { $0["data"][SessionSpend.resetKey].flag == true }, cloned, "\(name): cloned or copied")
+                let data = saved.last { $0["customType"].text == JournalRecordKind.context }?["data"]
+                XCTAssertEqual(data?["ids"], .array(context.map { JSON($0) }), "\(id): context")
+                // A copy names the shown rows; a clone leaves them to its reader.
+                XCTAssertEqual(data?["visibleIDs"], cloned ? .null : .array(timeline.map { JSON($0) }), "\(id): timeline")
+                XCTAssertEqual(result["origin"]["cutoffEntryId"].text, context.last, id)
+                XCTAssertEqual(result["origin"]["contextRevision"].text, sha256(Data(context.joined(separator: "\n").utf8)), id)
+                // Replayed, the fork shows the timeline and holds the context.
+                let journal = try SessionJournal(url: URL(fileURLWithPath: path), id: name, cwd: chat.root, binding: chat.profile.binding, create: false)
+                let replayed = try AgentSession.replay(journal, url: URL(fileURLWithPath: path), id: name, binding: chat.profile.binding, spendTracked: false, resume: false)
+                XCTAssertEqual(replayed.visible.map(\.id), timeline, "\(name): the rows shown")
+                XCTAssertEqual(replayed.context.map(\.id), context, "\(name): the context")
+                if cloned { XCTAssertEqual(JournalCheckpoint.read(for: URL(fileURLWithPath: path)), replayed.captured, "\(name): its metadata file is its replay's") }
             }
-            forked += 1
-            let saved = try records(try XCTUnwrap(result["path"].text))
-            XCTAssertEqual(saved.filter { built.contains($0["type"].text ?? "") }.compactMap { $0["id"].text },
-                           all[...end].filter { built.contains($0["type"].text ?? "") }.compactMap { $0["id"].text }, "\(id): the records up to there")
-            let data = saved.last { $0["customType"].text == JournalRecordKind.context }?["data"]
-            XCTAssertEqual(data?["ids"], .array(context.map { JSON($0) }), "\(id): context")
-            XCTAssertEqual(data?["visibleIDs"], .array(timeline.map { JSON($0) }), "\(id): timeline")
-            XCTAssertEqual(result["origin"]["cutoffEntryId"].text, context.last, id)
-            XCTAssertEqual(result["origin"]["contextRevision"].text, sha256(Data(context.joined(separator: "\n").utf8)), id)
         }
-        XCTAssertEqual(forked, 7, "every reply forks, the earlier version's too: \(refused)")
+        XCTAssertEqual(forked, 14, "every reply forks, the earlier version's too, cloned and copied: \(refused)")
         await source.close()
     }
 
@@ -173,9 +191,11 @@ final class ForkPointTests: XCTestCase {
         XCTAssertThrowsError(try ConversationReplay(upTo: 0, in: reader)) { XCTAssertEqual(($0 as? AgentError)?.code, "session_damaged") }
     }
 
-    /// A record the parser refuses, before the reply or after it, fails a
-    /// fork from the reply with the parser's own error, and leaves no fork. It
-    /// is a superseded run state, which the chat's open never reads.
+    /// A record the parser refuses before the reply fails a fork from the
+    /// reply with the parser's own error, and leaves no fork; one after it
+    /// fails a copied fork, which reads the journal to its end, and not a
+    /// cloned one, which reads nothing past the reply. It is a superseded run
+    /// state, which the chat's open never reads.
     func testARecordTheParserRefusesStillFailsAForkFromAReply() async throws {
         let damaged = #"{"customType":"pi-app.native.state.v1","data":{"active":fals},"id":"s1","parentId":"PARENT","timestamp":"t","type":"custom"}"#
         let refused: String
@@ -209,9 +229,19 @@ final class ForkPointTests: XCTestCase {
             }
             let chat = try AgentSession(id: "damaged", profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: Resources(cwd: root, home: root),
                                         client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), resumePath: path.path, autoCompaction: false)
-            do { _ = try await chat.fork(to: "fork", at: "a"); XCTFail("\(place): the damaged record fails the fork") }
+            let copied = "a-copied-fork-with-a-longer-identity"
+            do { _ = try await chat.fork(to: copied, at: "a"); XCTFail("\(place): the damaged record fails the copied fork") }
             catch { XCTAssertEqual(error.localizedDescription, refused, "\(place): the parser's error") }
-            XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent("fork_fork.jsonl").path), "\(place): no fork")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent("fork_\(copied).jsonl").path), "\(place): no fork")
+            if place == "before" {
+                do { _ = try await chat.fork(to: "fork", at: "a"); XCTFail("before: the damaged record fails the fork") }
+                catch { XCTAssertEqual(error.localizedDescription, refused, "before: the parser's error") }
+                XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent("fork_fork.jsonl").path), "before: no fork")
+            } else {
+                let cloned = try await chat.fork(to: "fork", at: "a")
+                let text = try String(contentsOfFile: try XCTUnwrap(cloned["path"].text), encoding: .utf8)
+                XCTAssertFalse(text.contains("a second question") || text.contains(#""active":fals}"#), "after: nothing past the reply")
+            }
             await chat.close()
         }
     }
