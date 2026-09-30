@@ -160,20 +160,21 @@ struct QuickOpenPanel: View {
     /// What the list is, or why it is empty, and what the keys do.
     var footerText: String {
         let name = quickOpen.project?.name ?? "the project"
+        let coverage = quickOpen.truncated ? " Only the first \(quickOpen.searchedFileCount.formatted()) files are searched." : ""
         switch quickOpen.status {
         case .untrusted: return "\(name) is not trusted, so its files are not listed."
         case .failed(let reason):
-            return quickOpen.hasListing ? "List as last read. Refresh failed: \(reason)" : "The files in \(name) could not be listed: \(reason)"
-        case .listing where quickOpen.rows.isEmpty: return "Finding the files in \(name)…"
+            return (quickOpen.hasListing ? "List as last read. Refresh failed: \(reason)" : "The files in \(name) could not be listed: \(reason)") + coverage
+        case .listing where quickOpen.rows.isEmpty: return "Finding the files in \(name)…" + coverage
         default: break
         }
         let typed = quickOpen.query.trimmingCharacters(in: .whitespaces)
         if quickOpen.rows.isEmpty {
-            if typed.isEmpty { return "Type part of a file's name to find it in \(name). End with :N to open at line N." }
-            return quickOpen.searched ? "No file in \(name) matches “\(typed)”." : "Finding…"
+            if typed.isEmpty { return "Type part of a file's name to find it in \(name). End with :N to open at line N." + coverage }
+            return (quickOpen.searched ? "No file in \(name) matches “\(typed)”." : "Finding…") + coverage
         }
         var parts = ["↑↓ to choose", "↩ to open" + (quickOpen.line.map { " at line \($0)" } ?? ""), "esc to close"]
-        if quickOpen.truncated { parts.append("only the first \(QuickOpen.fileLimit.formatted()) files are searched") }
+        if quickOpen.truncated { parts.append("only the first \(quickOpen.searchedFileCount.formatted()) files are searched") }
         return parts.joined(separator: " · ")
     }
 }

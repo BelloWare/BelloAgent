@@ -73,6 +73,8 @@ import FileFinder
     private static let finderLimit = 2
     private var index: FileFinderIndex?
     var hasListing: Bool { index != nil }
+    /// Actual coverage, including listings stopped by the path-byte limit.
+    var searchedFileCount: Int { index?.count ?? 0 }
     private let listingLimits: FileListingLimits
     private let refreshListing: @Sendable (FileFinder) async -> (FileFinderIndex?, String?)
     private var generation = 0

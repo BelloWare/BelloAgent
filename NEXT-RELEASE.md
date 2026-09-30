@@ -23,7 +23,7 @@
 - The build and test target compile at this commit; the unfinished items' tests are not yet all passing.
 
 ## Left for 0.1.117
-- [ ] **Quick Open app side** — fix Codex's 8 findings, each with a test (Files/QuickOpen.swift, QuickOpenPanel.swift, Workspaces/WorkspaceQuickOpen.swift, Application/PiApp.swift, WindowPresentation.swift):
+- [x] **Quick Open app side** — fix Codex's 8 findings, each with a test (Files/QuickOpen.swift, QuickOpenPanel.swift, Workspaces/WorkspaceQuickOpen.swift, Application/PiApp.swift, WindowPresentation.swift). Implementation complete; Mac build, QuickOpenTests, WindowPresentationTests, TabHostTests and gallery validation pending:
   1. [x] a symlink in a trusted project pointing into an untrusted one opens as trusted: open without `project:` so the resolved path decides;
   2. [x] Return before the new query's results opens the previous choice: keep a pending open until results for the current query arrive;
   3. [x] a file and its symlink alias share a row id: dedupe by id;
@@ -31,7 +31,7 @@
   5. [x] opening from a text field saves the field editor, not the field: save the delegate control and its selection;
   6. [x] the delayed focus task can steal focus later: tie it to a token bumped by each show/open;
   7. [x] a failed refresh still reads as ready: surface `finder.failure` and say the list is as last read;
-  8. a truncated listing says only "no match": say how many files were searched.
+  8. [x] a truncated listing says only "no match": say how many files were searched.
 - [ ] **Changes narrow-pane layout** — GitPanelWidthTests: the list offset check is too strict (moves 12.5 pt as rows re-measure; compare the first visible row), and the Commit button isn't found in the accessibility tree (assert with the commit field instead). Then run ChangesTabFrameTests at 1280×820, 580×800 and 820×640, add a gallery scene for a narrow window, and review.
 - [ ] **Diff line → file**: a diff line opens its file in a tab at that line (GitView/GitDiffTable.swift gains the line under the pointer; Git/GitDiffTable+Pi.swift, GitDiffView.swift, GitPanel.swift, ChangesTab.swift, Workspaces/WorkspaceChanges.swift).
 - [ ] **Tab speed fix**: `TabContentHost.sizeThatFits` returns `proposal.replacingUnspecifiedDimensions()` (Tabs/TabWindows.swift). Tabs spend 35–60% more main-thread time without it. Needs a test and a gallery check.
