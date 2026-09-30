@@ -57,6 +57,7 @@
 		1672CEA1A86F2D3143735FDA /* TranscriptToolInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = D455296546CA3469F754BADC /* TranscriptToolInput.swift */; };
 		16921D3C958B9FD0D7914DB5 /* GitFileChips.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F3797607E5CDBB377F62BE2 /* GitFileChips.swift */; };
 		170B22566C299F63B7CF4C6F /* GitPanelDiffCaptureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A72F85E8A46CB44E5A0F3BC1 /* GitPanelDiffCaptureTests.swift */; };
+		17D1DC7156E9C31A0C5C4428 /* FileTextViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABCF39B6330FA37816D695C3 /* FileTextViewTests.swift */; };
 		186B35613FA194A2C7735682 /* PiSheetWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B56CB37CD2AF00EC67420910 /* PiSheetWindow.swift */; };
 		18815B8E71F23D6E37577D60 /* InspectorRequestModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 445CDF50DF000046DF303E44 /* InspectorRequestModel.swift */; };
 		196012F2697042871091B3CF /* SettingsSaveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 764160B5221CF53A26D54012 /* SettingsSaveTests.swift */; };
@@ -372,6 +373,7 @@
 		B1A3DEC7942E445034586A3F /* StableReadingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 595681980B09C2639FB5E9D0 /* StableReadingTests.swift */; };
 		B1FE1B4B2424379F4A9AD91E /* GitToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A449AC1393CB92C1F6935E92 /* GitToolTests.swift */; };
 		B21359D24029DBFA80C5FF00 /* HostFrameTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 727A897EED6A0ECE2A24AAF9 /* HostFrameTests.swift */; };
+		B215B7F05158310EF1392C34 /* FileTextColors+Pi.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C44FE8A08B8F1C20575C49B /* FileTextColors+Pi.swift */; };
 		B2D274554583BDA81C92D1F2 /* EditReplayPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB266734D75FA20E14DE71D2 /* EditReplayPlan.swift */; };
 		B2F2C7019F7220734458F884 /* WorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAE5260CEB3BE54933B76BBE /* WorkspaceView.swift */; };
 		B3A1CCA1C552AEFBFB26FCF0 /* DeferredCreationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD0EFD58A42CFED11C6EB3DF /* DeferredCreationTests.swift */; };
@@ -406,6 +408,7 @@
 		C3593C9AB38E79D75E9C6979 /* ProjectSidebarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07BFFE87568383784B73AD10 /* ProjectSidebarTests.swift */; };
 		C371D8BD3B3BECEB8ACEB8EC /* TurnInfoPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2180C84AC00A0CF2634F4EC /* TurnInfoPresentation.swift */; };
 		C3B1262B078F4794300FF19C /* SkillPills.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0B0D6B7D879D9F032BC3F16 /* SkillPills.swift */; };
+		C45097769BD72FBE8593FA2D /* BelloFileView in Frameworks */ = {isa = PBXBuildFile; productRef = CA517A1737D6768446E19CF9 /* BelloFileView */; };
 		C64030B917974911DB04D868 /* WindowPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57E11A79CA743AD7BD50CB10 /* WindowPresentationTests.swift */; };
 		C64B2DF0184B93B3C1C03700 /* NativeMarkdownSizingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B74A3097492A15D3817A77F3 /* NativeMarkdownSizingTests.swift */; };
 		C6E03CCC7C22EAE43C7AF2F7 /* TranscriptActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = C587D588560B4BE67D413C98 /* TranscriptActivity.swift */; };
@@ -792,6 +795,7 @@
 		7B5AD8CE65CF1E547E8EC42F /* DashboardReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardReader.swift; sourceTree = "<group>"; };
 		7BE0A1DA539E09BB68382ACA /* DashboardQuery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardQuery.swift; sourceTree = "<group>"; };
 		7C3376639F9D077F6D2DEC48 /* PiToggles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiToggles.swift; sourceTree = "<group>"; };
+		7C44FE8A08B8F1C20575C49B /* FileTextColors+Pi.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FileTextColors+Pi.swift"; sourceTree = "<group>"; };
 		7C6BC000729839911B6DBA18 /* ReportMessageNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportMessageNavigationTests.swift; sourceTree = "<group>"; };
 		7CED4FC0B8CF56E965F7FA5F /* InspectorComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorComponents.swift; sourceTree = "<group>"; };
 		7D032F1A3FFEA8A35451E518 /* GatewayAccounting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayAccounting.swift; sourceTree = "<group>"; };
@@ -834,6 +838,7 @@
 		8B5719EC8C559EC0DF60F78A /* GitPanelRedrawTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitPanelRedrawTests.swift; sourceTree = "<group>"; };
 		8B7F32ACC0E71052C6F43470 /* JournalCheckpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JournalCheckpoint.swift; sourceTree = "<group>"; };
 		8BF5F1265A90148AF8BFA94D /* TerminalPanelAuditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPanelAuditTests.swift; sourceTree = "<group>"; };
+		8C3000F8B5567BF00980ACC9 /* bello-views */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "bello-views"; path = "packages/bello-views"; sourceTree = SOURCE_ROOT; };
 		8CA217E38A3870E097429A26 /* TurnDurationClockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnDurationClockTests.swift; sourceTree = "<group>"; };
 		8CCEFD57A8E44A93C447F12A /* SendImmediacyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendImmediacyTests.swift; sourceTree = "<group>"; };
 		8D671C064BB1788DC44E60C4 /* LiveMonitorData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMonitorData.swift; sourceTree = "<group>"; };
@@ -885,6 +890,7 @@
 		AAC5A834A65EF0FA85ADBBE7 /* SidebarMetricsLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarMetricsLayout.swift; sourceTree = "<group>"; };
 		AB3A17A1BD1BCEB739C4F3F3 /* PiBadges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiBadges.swift; sourceTree = "<group>"; };
 		AB8E9E081943F4B3E704EAB5 /* GatewayModelDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayModelDiscovery.swift; sourceTree = "<group>"; };
+		ABCF39B6330FA37816D695C3 /* FileTextViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileTextViewTests.swift; sourceTree = "<group>"; };
 		ABE2CEB5F75EC41AEDC697A9 /* WorkspaceConcurrencyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceConcurrencyTests.swift; sourceTree = "<group>"; };
 		AC36AB17531D1774FC809475 /* ConfigurationVaultTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationVaultTests.swift; sourceTree = "<group>"; };
 		ACE6F752F7F39227A57A1DAA /* PagedTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PagedTextView.swift; sourceTree = "<group>"; };
@@ -1079,6 +1085,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				3FCCBCB2ACBD996DAB6FEB96 /* Sparkle in Frameworks */,
+				C45097769BD72FBE8593FA2D /* BelloFileView in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1291,6 +1298,14 @@
 			path = Workspaces;
 			sourceTree = "<group>";
 		};
+		536B0A86C4CD5472DF8D0A80 /* Files */ = {
+			isa = PBXGroup;
+			children = (
+				7C44FE8A08B8F1C20575C49B /* FileTextColors+Pi.swift */,
+			);
+			path = Files;
+			sourceTree = "<group>";
+		};
 		5C76A8540BAFC8A5C65B2977 /* Terminal */ = {
 			isa = PBXGroup;
 			children = (
@@ -1410,6 +1425,14 @@
 			path = Dashboard;
 			sourceTree = "<group>";
 		};
+		AC08CBBDC6E0F4318FEF1866 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				8C3000F8B5567BF00980ACC9 /* bello-views */,
+			);
+			path = Packages;
+			sourceTree = "<group>";
+		};
 		B1285A287FDE9D7301D50F76 /* PiAgentCore */ = {
 			isa = PBXGroup;
 			children = (
@@ -1448,6 +1471,7 @@
 			isa = PBXGroup;
 			children = (
 				7B145CE9F56848B85323EAFE /* catalogs */,
+				AC08CBBDC6E0F4318FEF1866 /* Packages */,
 				B1285A287FDE9D7301D50F76 /* PiAgentCore */,
 				EDD4427225404761ECFF6BBD /* PiApp */,
 				F7145B0BF9D975D99F7B60AF /* PiAppTests */,
@@ -1475,6 +1499,7 @@
 				249110588D9A73397193A0C3 /* Composer */,
 				9C03735CDC3A6C63417C0A6E /* Dashboard */,
 				125082BD4E732EDB38D5BD04 /* Design */,
+				536B0A86C4CD5472DF8D0A80 /* Files */,
 				2D3F02FD763E8673C5A5370A /* Git */,
 				83184906483A108241EE229D /* Host */,
 				121DC1B22B677B919FD2D76D /* Inspector */,
@@ -1530,6 +1555,7 @@
 				E7C369E760DC8413BBF4680D /* DashboardTests.swift */,
 				CD0EFD58A42CFED11C6EB3DF /* DeferredCreationTests.swift */,
 				A8647B3FE9F0358A7828C18B /* DesignContrastTests.swift */,
+				ABCF39B6330FA37816D695C3 /* FileTextViewTests.swift */,
 				1BF427C296FBCF51243F2DDD /* FiveSessionWorkspacePerformanceTests.swift */,
 				2D43B519AC6F5C6AED73D19F /* FreshPresentationTests.swift */,
 				EE9E83B9C79BC9AE68298D4F /* FullDisplayTests.swift */,
@@ -1802,6 +1828,7 @@
 			name = PiApp;
 			packageProductDependencies = (
 				12BC8D421DC9A6DCD18ED92B /* Sparkle */,
+				CA517A1737D6768446E19CF9 /* BelloFileView */,
 			);
 			productName = PiApp;
 			productReference = BD5DE94CA889FDA1BE7B5891 /* Bello Agent.app */;
@@ -1836,6 +1863,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				F29B7D2726D10E517702175F /* XCRemoteSwiftPackageReference "Sparkle" */,
+				1724D114C31B0121DC2132B2 /* XCLocalSwiftPackageReference "packages/bello-views" */,
 			);
 			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
@@ -1924,6 +1952,7 @@
 				D1AAE5B613C88860EE7F50A6 /* DesignSystem.swift in Sources */,
 				931E3CA844BA415433A42AA7 /* DisplayResultReader.swift in Sources */,
 				B2D274554583BDA81C92D1F2 /* EditReplayPlan.swift in Sources */,
+				B215B7F05158310EF1392C34 /* FileTextColors+Pi.swift in Sources */,
 				411CAA0DAD99C6BDCB21A996 /* GatewayAccounting.swift in Sources */,
 				002B1A96B1145216A334D74C /* GatewayModelDiscovery.swift in Sources */,
 				B16B41D426F7F2BBB8DA3EE6 /* GitController.swift in Sources */,
@@ -2212,6 +2241,7 @@
 				A6DB6B982F6F13B83E83EEE3 /* DashboardTests.swift in Sources */,
 				B3A1CCA1C552AEFBFB26FCF0 /* DeferredCreationTests.swift in Sources */,
 				A709EFBAEBB7410036F8A504 /* DesignContrastTests.swift in Sources */,
+				17D1DC7156E9C31A0C5C4428 /* FileTextViewTests.swift in Sources */,
 				0E410EB4C96E23787F27B04B /* FiveSessionWorkspacePerformanceTests.swift in Sources */,
 				064EFA7825F1F9710CE38F8B /* FreshPresentationTests.swift in Sources */,
 				101367E13C74EC9B8DB70571 /* FullDisplayTests.swift in Sources */,
@@ -2667,6 +2697,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		1724D114C31B0121DC2132B2 /* XCLocalSwiftPackageReference "packages/bello-views" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "packages/bello-views";
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		F29B7D2726D10E517702175F /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -2683,6 +2720,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = F29B7D2726D10E517702175F /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		CA517A1737D6768446E19CF9 /* BelloFileView */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = BelloFileView;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -1151,6 +1151,7 @@ git switch master
 git log -1 --oneline
 swift --version
 swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests"
+swift test --package-path packages/bello-views --scratch-path "$PI_BUILD_ROOT/views-tests"
 swift build --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-host" \
   -c release --arch arm64 -Xswiftc -Osize
 python3 scripts/test-native-host.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"

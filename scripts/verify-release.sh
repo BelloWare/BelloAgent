@@ -20,6 +20,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 DD="$PI_BUILD_ROOT/native-verify"
 SWIFT_TESTS="$PI_BUILD_ROOT/swift-verify"
+VIEWS_TESTS="$PI_BUILD_ROOT/views-verify"
 HOST="$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"
 LOGS="$PI_BUILD_ROOT/verify-logs"
 # The host rejects sessions under /private/tmp, so the gallery takes the
@@ -64,6 +65,8 @@ if ! check build xcodebuild build-for-testing "${XCODE[@]}" COMPILER_INDEX_STORE
 fi
 stamp build "helper tests"
 check helper-build swift build --package-path packages/swift-host --scratch-path "$SWIFT_TESTS" --build-tests
+stamp build "views package tests"
+check views-build swift build --package-path packages/bello-views --scratch-path "$VIEWS_TESTS" --build-tests
 
 # The lanes come from the test sources; an empty answer would run every class
 # serially, so a failure here stops the gate.
@@ -91,6 +94,10 @@ gallery=$!
 case " $failed " in
   *" helper-build "*) ;;
   *) check helper swift test --package-path packages/swift-host --scratch-path "$SWIFT_TESTS" --skip-build ;;
+esac
+case " $failed " in
+  *" views-build "*) ;;
+  *) check views swift test --package-path packages/bello-views --scratch-path "$VIEWS_TESTS" --skip-build ;;
 esac
 check wire python3 scripts/test-native-host.py "$HOST"
 check concurrent python3 scripts/test-concurrent-native-host.py "$HOST"
