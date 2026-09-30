@@ -1,0 +1,37 @@
+<h2>Bello Agent 0.1.116</h2>
+<h3>Changed</h3>
+<ul>
+<li><b>Thousands read “K” everywhere.</b> The Usage Report wrote “12.3k” where the rest of the app wrote “12.3K”. Six other places wrote “k” too:
+<ul>
+<li>the sidebar's counts;</li>
+<li>the context meter;</li>
+<li>the menu bar;</li>
+<li>tokens per second;</li>
+<li>the transcript's compact counts;</li>
+<li>the model catalog's context sizes.</li>
+</ul>
+Each keeps its own decimals.</li>
+<li><b>Money reads with two decimals everywhere:</b> “$1.50”, never “$1.5”; “$0.00”, never “$0”. Tiny amounts keep the digits they need. The cost charts in the menu bar and the Usage Report now label their axes in dollars.</li>
+<li><b>The app's own controls throughout.</b> The remaining stock macOS controls now use the app's look, at the same sizes, with the same keyboard access:
+<ul>
+<li>spinners;</li>
+<li>the loading bar of a captured response;</li>
+<li>switches;</li>
+<li>checkboxes;</li>
+<li>the Usage Report's date fields.</li>
+</ul></li>
+<li><b>The large-table window has the app's look.</b> It has the app's window bar and Copy button, a rounded grid with a sunken header and a highlighted selected row, and the app's detail area.</li>
+<li><b>The footer under the composer stays still while you read.</b>
+<ul>
+<li>The capture badge keeps the room it had when the chat was shown, so “Next: ” coming and going when the helper opens or leaves no longer moves the conversation.</li>
+<li>A notice (“Saved history · Host runtime unloaded”) takes only the room the footer has free, and is shortened there, with its whole text in the tooltip.</li>
+<li>During a run, a notice now sits left of the clock.</li>
+</ul></li>
+<li><b>A side whose chat was deleted opens no side of its own.</b> It stays in the sidebar as a chat. Open Side and /side say why: “The chat this side was opened from was deleted, so it can't open sides of its own.”</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><b>The sidebar's chevron folds the sides of any chat.</b> You could fold or unfold a chat's sides only while that chat was open; for any other chat the chevron did nothing (since 0.1.100).</li>
+<li><b>Sheets no longer update inside SwiftUI's own update.</b> When the window behind an open sheet changed its reduce-motion or enabled state, the sheet was told inside SwiftUI's update, which SwiftUI reports as undefined behaviour. It is now told just after.</li>
+<li><b>The helper encodes each reply once.</b> It encoded every reply twice: once to check its size and once to write it. Reading 4,000 snapshot and history pages (32 MB of replies) now takes 32% less of the helper's CPU (median 8.95 s → 6.13 s over five runs of a Release build). What the app receives is byte for byte the same.</li>
+</ul>

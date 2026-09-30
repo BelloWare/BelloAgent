@@ -46,6 +46,7 @@ Current owner instruction (2026-10-01): keep new development commits local until
 - [x] Remove what's left of the old Changes sheet from current code and tests: panel/tab comments and frame-test names now describe tabs; opening checks assert that the workspace has no attached sheet. `showGit`, `gitWorkspaceID`, and `ChangesSheet` are absent from current code. Historical release validation records keep their original test names. Mac validation pending: ChangesTabTests, ChangesTabFrameTests; helper and gallery not needed for this cleanup.
 
 ## Before release
+- [x] Bring the published 0.1.116 release metadata and validation record into `dev/next`; its build is 120. Prepare 0.1.117's version/build and regenerate the Xcode project before packaging.
 - [ ] `scripts/check-next.sh gate` passes; an hour-long soak of a Release build passes.
 - [ ] A Release build-for-testing with testability compiles `@testable import FileView` and `GitView`.
 - [ ] Forks made by 0.1.116 and earlier open exactly as before.
