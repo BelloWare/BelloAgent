@@ -15,6 +15,15 @@ public enum HostProtocol {
     public static let piBehaviorReference = "0.85.1"
 }
 
+/// What the service hands its writer: a frame the writer encodes (every event,
+/// and a refusal before a command is accepted), or a command's reply already
+/// encoded, once, when its size was checked against the frame limit. Encoded
+/// bytes carry no newline; the writer adds it.
+public enum HostOutput: Sendable {
+    case frame(JSON)
+    case encoded(Data)
+}
+
 public struct NDJSONDecoder {
     private var buffer=Data()
     public init() {}
@@ -35,7 +44,7 @@ public struct NDJSONDecoder {
 /// A command ID is content-bound for this host epoch and replay never repeats it.
 public actor NativeHostService {
     public let epoch=UUID().uuidString
-    private let emit: @Sendable (JSON)->Void
+    private let output: @Sendable (HostOutput)->Void
     private var hello=false, closing=false, quiesced=false, opening=false
     private var displayTransfers = DisplayResultTransfers()
     private var allowsDisplayTransfers = false
@@ -47,14 +56,27 @@ public actor NativeHostService {
     private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:]
     /// Journals being slimmed (`JournalSlimming`), by session: an open of one waits for it.
     private var slimming:[String:Task<JournalSlimming.Outcome,Error>]=[:]
-    private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:JSON]=[:], replyOrder:[String]=[]
+    private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:HostOutput]=[:], replyOrder:[String]=[]
     private var mutationLedger = MutationLedger()
     private var dirty:[String:Int]=[:], flushTask:Task<Void,Never>?
-    public init(emit: @escaping @Sendable (JSON)->Void) {
-        self.emit=emit
-        let delivery = CaptureDelivery(epoch: epoch, emit: emit)
+    public init(output: @escaping @Sendable (HostOutput)->Void) {
+        self.output=output
+        let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
         capture=delivery; traces=TraceStore(sink: { await delivery.send($0) })
     }
+    /// A reader of whole frames, as the tests are: an encoded reply is handed
+    /// over as the value it encodes.
+    public init(emit: @escaping @Sendable (JSON)->Void) {
+        self.init(output: { output in
+            switch output {
+            case .frame(let frame): emit(frame)
+            case .encoded(let bytes):
+                guard let frame = try? JSON.parse(bytes) else { preconditionFailure("An encoded reply does not parse back") }
+                emit(frame)
+            }
+        })
+    }
+    private func emit(_ frame: JSON) { output(.frame(frame)) }
     public func receive(_ frame: JSON) {
         guard !closing else { return }
         if frame["kind"].text == "capture.ack" {
@@ -84,7 +106,7 @@ public actor NativeHostService {
         }
         if let previous=fingerprints[id] {
             guard previous == fingerprint else { reply(id,.failure(AgentError("command_conflict", "Command identity reused with different arguments"))); return }
-            if let cached=replies[id] { emit(cached) }; return
+            if let cached=replies[id] { output(cached) }; return
         }
         guard tasks.count<32 || method == "turn.stop" else { reply(id,.failure(AgentError("host_busy", "Too many concurrent commands"))); return }
         if !readOnly {
@@ -99,11 +121,26 @@ public actor NativeHostService {
     }
     /// The reply frame for one command. `error` and `result` carry the same
     /// value on a failure: readers written against either field see the error.
-    private func replyFrame(_ id: String, _ result: Result<JSON,AgentError>) -> JSON {
+    static func replyFrame(epoch: String, _ id: String, _ result: Result<JSON,AgentError>) -> JSON {
         var message: JSON=["v":1,"kind":"reply","hostEpoch":JSON(epoch),"commandId":JSON(id)]
         switch result { case .success(let value): message["ok"]=true; message["result"]=value
         case .failure(let error): message["ok"]=false; message["error"]=error.json;message["result"]=error.json }
         return message
+    }
+    private func replyFrame(_ id: String, _ result: Result<JSON,AgentError>) -> JSON { Self.replyFrame(epoch: epoch, id, result) }
+    /// A command's reply as it is written, encoded once: its bytes, when they
+    /// fit the frame limit. A reply that does not fit, or does not encode (a
+    /// number JSON cannot hold), becomes a display transfer (`transfer`, when
+    /// the reader takes them) or an error, as before. Only a replacement that
+    /// cannot be encoded either is left for the writer, which stops the helper.
+    static func boundedReply(epoch: String, _ id: String, _ result: Result<JSON,AgentError>, transfer: ((Data) throws -> JSON)?) -> HostOutput {
+        if let bytes = try? replyFrame(epoch: epoch, id, result).data(), bytes.count <= HostProtocol.frameBytes { return .encoded(bytes) }
+        let message: JSON
+        if let transfer, case .success(let value) = result {
+            do { message = replyFrame(epoch: epoch, id, .success(try transfer(value.data()))) }
+            catch { message = replyFrame(epoch: epoch, id, .failure(error as? AgentError ?? AgentError("display_failed", "Could not prepare the complete display result"))) }
+        } else { message = replyFrame(epoch: epoch, id, .failure(AgentError("reply_limit", "Result exceeds the IPC frame limit; request a smaller range"))) }
+        return (try? message.data()).map(HostOutput.encoded) ?? .frame(message)
     }
     /// Refuses a command before it starts: nothing is cached, because the
     /// command identity was never accepted.
@@ -113,23 +150,27 @@ public actor NativeHostService {
     /// of the same identity, which must never run it twice. A read keeps
     /// nothing: a retried read simply runs again, so a snapshot page or a
     /// display-transfer chunk (up to 1 MiB each) is not held for 512 replies.
+    ///
+    /// The reply is encoded once (`boundedReply`): the bytes whose size is
+    /// checked are the bytes written, and a retry writes them again.
     private func finish(_ id:String,_ result:Result<JSON,AgentError>,retain:Bool) {
-        var message=replyFrame(id,result)
-        if ((try? message.data().count) ?? HostProtocol.frameBytes+1)>HostProtocol.frameBytes {
-            if allowsDisplayTransfers, case .success(let value) = result {
-                do { message = replyFrame(id, .success(try displayTransfers.insert(value.data()))) }
-                catch { message = replyFrame(id, .failure(error as? AgentError ?? AgentError("display_failed", "Could not prepare the complete display result"))) }
-            } else { message = replyFrame(id, .failure(AgentError("reply_limit", "Result exceeds the IPC frame limit; request a smaller range"))) }
-        }
+        let frame = Self.boundedReply(epoch: epoch, id, result, transfer: allowsDisplayTransfers ? { try self.displayTransfers.insert($0) } : nil)
         tasks.removeValue(forKey:id)
         if retain {
-            replies[id]=message; replyOrder.append(id)
+            replies[id]=frame; replyOrder.append(id)
             while replyOrder.count > 512 { let old=replyOrder.removeFirst(); replies.removeValue(forKey:old); fingerprints.removeValue(forKey:old) }
         } else { fingerprints.removeValue(forKey:id) }
-        emit(message)
+        output(frame)
     }
     /// Test seam: the replies kept for an identical retry, and their size.
-    var cachedReplies: (count: Int, bytes: Int) { (replies.count, replies.values.reduce(0) { $0 + ((try? $1.data().count) ?? 0) }) }
+    var cachedReplies: (count: Int, bytes: Int) {
+        (replies.count, replies.values.reduce(0) { total, reply in
+            switch reply {
+            case .encoded(let bytes): return total + bytes.count
+            case .frame(let frame): return total + ((try? frame.data().count) ?? 0)
+            }
+        })
+    }
     /// Test seam: a loaded session.
     func loadedSession(_ id: String) -> AgentSession? { sessions[id] }
     private func mark(_ id:String,_ seq:Int) {

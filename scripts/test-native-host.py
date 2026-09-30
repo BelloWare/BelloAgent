@@ -366,7 +366,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             record['cancelled'] = True
 
 class Peer:
-    def __init__(self, cwd):
+    def __init__(self, cwd, hello=None):
         self.process = subprocess.Popen([str(BINARY)], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.frames = queue.Queue(); self.events = []; self.captures = []; self.reject_capture = False
         self.write_lock = threading.Lock(); self.capture_lock = threading.Lock()
@@ -378,7 +378,7 @@ class Peer:
                     self.send({'v': 1, 'kind': 'capture.ack', 'hostEpoch': frame['hostEpoch'], 'transferId': frame['transferId'], 'accepted': not self.reject_capture})
                 else: self.frames.put(frame)
         self.reader = threading.Thread(target=read, daemon=True); self.reader.start()
-        self.send({'v':1,'kind':'hello','major':1,'minor':1})
+        self.send({'v':1,'kind':'hello','major':1,'minor':1,**(hello or {})})
         hello = self.frames.get(timeout=10)
         assert hello['kind'] == 'ready' and hello['engine'] == 'swift', hello
         assert 'responses' in hello['capabilities'] and 'messages' not in hello['capabilities'], hello
@@ -587,6 +587,32 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(reopened['messages'][2]['id'],ledger['id'])
         self.peer.command('session.message.read',{'messageId':first},session)
         self.peer.command('session.close',session=session)
+    def test_a_result_beyond_the_frame_limit_is_read_back_whole_through_a_display_transfer(self):
+        # A reply over the 1 MiB frame limit, to a reader that takes display
+        # transfers, comes as a transfer and is read back in chunks, whole.
+        value=self.open(session='large')
+        path=pathlib.Path(value['path']); self.peer.command('session.close',session='large')
+        records=[json.loads(line) for line in path.read_bytes().split(b'\n') if line]
+        text=('Complete saved response \U0001F642 "quoted" \\ slash/ \u0001\n'*30000)+'TAIL'
+        record={'type':'message','id':'huge','parentId':records[-1]['id'],'timestamp':'2026-09-14T00:00:00.000Z',
+                'message':{'role':'user','timestamp':1,'content':[{'type':'text','text':text}]}}
+        with path.open('ab') as out: out.write(encoded(record)+b'\n')
+        peer=Peer(self.root,hello={'displayTransfers':True})
+        try:
+            peer.command('workspace.open',{'cwd':str(self.root),'directory':str(self.root/'sessions'),'captureProtocol':1,'resources':{'codexHome':str(self.root/'codex')}})
+            profile={'id':'p','revision':'1','providerId':'litellm','modelId':'text','api':'openai-responses','baseUrl':self.base+'/v1','contextWindow':100000,'maxOutputTokens':4096,'modelOutputLimit':4096,'reasoning':True,'thinkingLevel':'default','routing':{'replayPolicy':'portable'}}
+            peer.command('session.open',{'profile':profile,'apiKey':'fixture-secret','toolMode':'editing','path':str(path)},'large')
+            marker=peer.command('session.history',{'version':2},'large')
+            self.assertEqual(marker.get('_displayTransfer'),1,'a page over the frame limit comes as a transfer')
+            data=b''
+            while True:
+                page=peer.command('display.result.read',{'id':marker['id'],'offset':len(data)})
+                self.assertEqual(page['offset'],len(data)); data+=base64.b64decode(page['data'])
+                if page['next'] is None: break
+            self.assertEqual(len(data),marker['bytes'])
+            self.assertEqual(json.loads(data)['messages'][-1]['text'],text)
+        finally:
+            peer.close()
     def test_message_versions_list_and_page_an_earlier_version_over_the_wire(self):
         # Additive since 0.1.93: an edited message's row says which version it
         # is, session.versions lists them and session.version.page reads the
