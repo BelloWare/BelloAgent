@@ -156,6 +156,14 @@ final class ForkPerformanceTests: XCTestCase {
             if let fraction { return try XCTUnwrap(replies.isEmpty ? nil : replies[min(replies.count - 1, Int(Double(replies.count) * fraction))].id) }
             return try XCTUnwrap(replies.dropLast(50).last?.id)
         }()
+        // The oldest reply: what scrolling to the top of a chat reaches.
+        let oldest: String = try {
+            let reader = try JournalRecordReader(journal); _ = try reader.next()
+            while let record = try reader.next() { if record["type"].text == "message", record["message"]["role"].text == "assistant" { return try XCTUnwrap(record["id"].text) } }
+            throw XCTSkip("no reply")
+        }()
+        // Fork identities no longer than the chat's, as the app's are.
+        XCTAssertLessThanOrEqual("ha\(99)".count, "long".count)
         let repeats = environment["PI_PERF_REPEAT"].flatMap(Int.init) ?? 2
         for attempt in 1...repeats {
             // The same work in every build, as a control: reading the file,
@@ -173,31 +181,46 @@ final class ForkPerformanceTests: XCTestCase {
             let parent = try await measure("open", attempt: attempt) { try session("long", root: root, directory: directory, resume: path) }
             try await measure("full-history", attempt: attempt) { try await parent.ensureFullHistory() }
             let expectedContext = await parent.context.map(\.id)
-            let whole = try await measure("fork-whole", attempt: attempt) { try await parent.fork(to: "fork-\(attempt)") }
+            let whole = try await measure("fork-whole", attempt: attempt) { try await parent.fork(to: "fw\(attempt)") }
             let forkPath = try XCTUnwrap(whole["path"].text)
-            let fork = try await measure("fork-whole-open", attempt: attempt) { try session("fork-\(attempt)", root: root, directory: directory, resume: forkPath) }
+            let fork = try await measure("fork-whole-open", attempt: attempt) { try session("fw\(attempt)", root: root, directory: directory, resume: forkPath) }
             let forkContext = await fork.context.map(\.id)
             XCTAssertEqual(forkContext, expectedContext, "The fork's context is the chat's")
             await fork.close()
             _ = try await measure("fork-point", attempt: attempt) { try await parent.forkPointForTesting(target, path: journal) }
-            let atReply = try await measure("fork-at", attempt: attempt) { try await parent.fork(to: "at-\(attempt)", at: target) }
+            let atReply = try await measure("fork-at", attempt: attempt) { try await parent.fork(to: "fa\(attempt)", at: target) }
             let atPath = try XCTUnwrap(atReply["path"].text)
-            let atFork = try await measure("fork-at-open", attempt: attempt) { try session("at-\(attempt)", root: root, directory: directory, resume: atPath) }
+            let atFork = try await measure("fork-at-open", attempt: attempt) { try session("fa\(attempt)", root: root, directory: directory, resume: atPath) }
             let atContext = await atFork.context.map(\.id)
             XCTAssertEqual(atContext.last, target, "The fork from a reply ends at it")
             await atFork.close(); await parent.close()
             for file in [forkPath, atPath] { for suffix in ["", ".lock", ".meta"] { try? FileManager.default.removeItem(atPath: file + suffix) } }
             // End to end, as the app asks: the chat just opened from its
             // metadata file, then `session.fork`, which also opens the fork.
+            // Before a fork from a reply, the chat scrolls to it, as the one
+            // choosing it did; after each fork, the chat's first scroll to its
+            // oldest reply, and the fork's, and the disk the fork took.
             for (label, point) in [("host-whole", nil), ("host-at", target)] as [(String, String?)] {
                 let profile = try fixtureProfile()
                 let host = NativeHostService(emit: { _ in })
                 _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(directory.path)])
                 _ = try await host.command("session.open", sessionID: "long", params: ["profile": profile.raw, "apiKey": "fixture", "path": JSON(path)])
-                var params: JSON = ["forkSessionId": JSON("\(label)-\(attempt)")]
-                if let point { params["atMessageId"] = JSON(point) }
+                let forkID = (point == nil ? "hw" : "ha") + "\(attempt)"
+                var params: JSON = ["forkSessionId": JSON(forkID)]
+                if let point {
+                    params["atMessageId"] = JSON(point)
+                    _ = try await measure("\(label)-scroll", attempt: attempt) { try await host.command("session.history", sessionID: "long", params: ["version": 2, "around": JSON(point)]) }
+                }
+                let free = Self.freeKB()
                 let result = try await measure(label, attempt: attempt) { try await host.command("session.fork", sessionID: "long", params: params) }
+                print(String(format: "PERFDISK run=%d phase=%@ kb=%lld", attempt, label, free - Self.freeKB()))
                 XCTAssertEqual(result["accepted"].flag, true)
+                _ = try await measure("\(label)-parent-older", attempt: attempt) { try await host.command("session.history", sessionID: "long", params: ["version": 2, "around": JSON(oldest)]) }
+                if point == nil || oldest != point {
+                    _ = try await measure("\(label)-fork-older", attempt: attempt) {
+                        try? await host.command("session.history", sessionID: JSON(forkID).text!, params: ["version": 2, "around": JSON(oldest)])
+                    }
+                }
                 await host.shutdown()
                 if let file = result["path"].text { for suffix in ["", ".lock", ".meta"] { try? FileManager.default.removeItem(atPath: file + suffix) } }
             }
@@ -208,6 +231,15 @@ final class ForkPerformanceTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: keep + ".meta")
             try? FileManager.default.moveItem(atPath: path + ".meta", toPath: keep + ".meta")
         }
+    }
+}
+
+extension ForkPerformanceTests {
+    /// The volume's free space, in KiB, for the disk a fork takes.
+    static func freeKB() -> Int64 {
+        var info = statfs()
+        guard statfs(NSTemporaryDirectory(), &info) == 0 else { return 0 }
+        return Int64(info.f_bavail) * Int64(info.f_bsize) / 1024
     }
 }
 
