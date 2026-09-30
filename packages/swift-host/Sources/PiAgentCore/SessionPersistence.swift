@@ -26,6 +26,8 @@ extension AgentSession {
     /// the metadata file, as a first open does.
     func forked(to newID: String, at messageID: String? = nil) throws -> (result: JSON, replay: JournalReplayConsumer) {
         guard !closed, let journal, !ephemeral else { throw AgentError("session_unavailable", "Save this session before forking its context") }
+        SessionJournal.removeForkLeftovers(in: directory)
+        if messageID == nil, let cloned = clonedFork(to: newID, journal: journal) { return cloned }
         // A chat opened from its metadata file has only its latest rows. A
         // fork of the whole chat replays everything it copies, which is the
         // chat's whole history, and the chat takes its rows from that; a
@@ -42,6 +44,54 @@ extension AgentSession {
             // read in full fails with that, as it did.
             if hydrating, partialHistory { try ensureFullHistory() }
             throw error
+        }
+    }
+    /// A fork of the whole chat made by cloning its journal instead of copying
+    /// it (`SessionJournal.clone`): the chat's records as they were written,
+    /// then the fork's origin, a spend that starts again from nothing, its run
+    /// state and its context, in that order, so the checkpoint the fork
+    /// opens from is taken after all of them. The fork's replay is the
+    /// chat's (`durableReplay`) taken on through those records, and its
+    /// metadata file that replay's checkpoint: a chat opened with every row
+    /// gives a fork opened so, one opened from its metadata file a fork
+    /// opened from its own. The chat itself is left as it was.
+    ///
+    /// Nil, with nothing left behind, when the fork cannot be cloned or its
+    /// checkpoint known: a run going, receipts not known, a volume that does
+    /// not clone, an identity longer than the chat's, a write that fails.
+    /// The fork is then copied, as before.
+    private func clonedFork(to newID: String, journal: SessionJournal) -> (result: JSON, replay: JournalReplayConsumer)? {
+        guard runTask == nil, !journaledCommandsUncertain, (try? identity(JSON(newID))) != nil, newID != id,
+              var replay = try? durableReplay() else { return nil }
+        let temporary=directory.appendingPathComponent(".fork-\(UUID().uuidString).jsonl")
+        let destination=directory.appendingPathComponent("fork_"+newID+".jsonl")
+        guard let clone=journal.clone(to: temporary, id: newID, cwd: cwd) else { return nil }
+        var origin=sideSeed().info.removing(["parentToolMode","cacheSessionId"]); origin["relationship"]="fork"
+        origin["omittedIncompleteEntries"]=JSON(max(0,context.count-boundary.count))
+        do {
+            replay.retarget(id: newID, header: clone.headerCheck)
+            func write(_ value: JSON) throws {
+                try clone.append(value, flush: false)
+                guard let span=clone.lastAppend, let line=clone.lastAppendLine else { throw AgentError("session_damaged", "The fork's journal was not written as expected") }
+                try replay.consume(line, at: span.offset)
+            }
+            try write(["type":"custom","customType":JSON(JournalRecordKind.forkOrigin),"data":origin])
+            var fresh = SessionSpend().record; fresh["source"] = "fork"; fresh[SessionSpend.resetKey] = true
+            try write(["type":"custom","customType":JSON(SessionSpend.recordType),"data":fresh])
+            try write(["type":"custom","customType":JSON(JournalRecordKind.state),"data":["active":false,"queue":[],"steering":[],"commands":[],"queuePaused":false,"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode)]])
+            // The rows shown are the chat's up to its last complete one; every
+            // reader works them out from these ids.
+            try write(["type":"custom","customType":JSON(JournalRecordKind.context),"data":["ids":.array(boundary.map { JSON($0.id) })]])
+            guard let checkpoint=try replay.finished().captured, checkpoint.last.offset == clone.lastAppend?.offset else {
+                throw AgentError("session_damaged", "The fork's checkpoint cannot be known")
+            }
+            try clone.publish(to: destination)
+            // Without it, the fork's first open reads its whole journal.
+            try? checkpoint.write(for: destination)
+            return (["accepted":true,"sessionId":JSON(newID),"path":JSON(destination.path),"origin":origin], replay)
+        } catch {
+            try? FileManager.default.removeItem(at: temporary); try? FileManager.default.removeItem(atPath: temporary.path+".lock")
+            return nil
         }
     }
     /// The chat's rows from what a fork of the whole chat copied, their places

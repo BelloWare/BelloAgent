@@ -76,9 +76,11 @@ final class JournalEnvelopeTests: XCTestCase {
         }
     }
 
-    /// A run-state record a fork leaves out is still checked: a malformed one,
-    /// which the chat's own open never reads once a later one supersedes it,
-    /// fails the fork, as it did when the fork parsed every record.
+    /// A run-state record a copied fork leaves out is still checked: a
+    /// malformed one, which the chat's own open never reads once a later one
+    /// supersedes it, fails the copy, as it did when the fork parsed every
+    /// record. A cloned fork reads none of the chat's records: it keeps that
+    /// one as it is, as the chat does, and opens as the chat opens.
     func testAMalformedRecordTheForkLeavesOutStillFailsIt() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let profile = try fixtureProfile(), state = root.appendingPathComponent("state"), path = state.appendingPathComponent("damaged.jsonl")
@@ -97,9 +99,19 @@ final class JournalEnvelopeTests: XCTestCase {
         }
         let chat = try AgentSession(id: "damaged", profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: Resources(cwd: root, home: root),
                                     client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), resumePath: path.path, autoCompaction: false)
-        do { _ = try await chat.fork(to: "fork"); XCTFail("A malformed record fails the fork") } catch { }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent("fork_fork.jsonl").path), "and leaves no fork")
+        // An identity longer than the chat's does not fit its header: copied.
+        let copied = "a-copied-fork-with-a-longer-identity"
+        do { _ = try await chat.fork(to: copied); XCTFail("A malformed record fails the copy") } catch { }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent("fork_\(copied).jsonl").path), "and leaves no fork")
+        let cloned = try await chat.fork(to: "fork")
+        let clonedPath = try XCTUnwrap(cloned["path"].text)
+        XCTAssertTrue(try String(contentsOfFile: clonedPath, encoding: .utf8).contains(#""active":fals}"#), "kept as the chat has it")
         await chat.close()
+        let fork = try AgentSession(id: "fork", profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: Resources(cwd: root, home: root),
+                                    client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), resumePath: clonedPath, autoCompaction: false)
+        let rows = await fork.history.map(\.id)
+        XCTAssertEqual(rows, ["q", "a"], "and it opens, as the chat does")
+        await fork.close()
     }
 
     // MARK: What a fork's journal holds
@@ -122,10 +134,11 @@ final class JournalEnvelopeTests: XCTestCase {
         try await eventually { !(await session.isRunning) }
     }
 
-    /// The source's records, each as a fork holds it, and in order: those a
-    /// fork leaves out are gone, each other one is the same record with a new
-    /// parent (the one before it in the fork) and a new time, and a queued
-    /// edit's run state is left out of its branch record.
+    /// The source's records, each as a copied fork holds it, and in order:
+    /// those a fork leaves out are gone, each other one is the same record
+    /// with a new parent (the one before it in the fork) and a new time, and
+    /// a queued edit's run state is left out of its branch record. A cloned
+    /// fork holds every record of the source byte for byte.
     func testAForkHoldsTheSourcesRecordsAsTheyWere() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let chat = Chat(root: root, state: root.appendingPathComponent("state"), profile: try fixtureProfile(), resources: Resources(cwd: root, home: root), traces: TraceStore())
@@ -154,9 +167,23 @@ final class JournalEnvelopeTests: XCTestCase {
             try file.close()
         }
         let reopened = try chat.session("source", resume: sourcePath)
-        let result = try await reopened.fork(to: "fork")
+        // An identity longer than the chat's does not fit its header: copied.
+        let result = try await reopened.fork(to: "a-copied-fork-with-a-longer-identity")
         let forkPath = try XCTUnwrap(result["path"].text)
+        let clonedResult = try await reopened.fork(to: "fork")
+        let clonedPath = try XCTUnwrap(clonedResult["path"].text)
         await reopened.close()
+        // Cloned: the source's lines as they are, then the fork's origin, a
+        // spend that starts again, its run state and its context, chained on.
+        let sourceLines = try Data(contentsOf: URL(fileURLWithPath: sourcePath)).split(separator: 10).map { Data($0) }
+        let cloneLines = try Data(contentsOf: URL(fileURLWithPath: clonedPath)).split(separator: 10).map { Data($0) }
+        XCTAssertEqual(Array(cloneLines.dropFirst().prefix(sourceLines.count - 1)), Array(sourceLines.dropFirst()), "every record byte for byte")
+        XCTAssertEqual(try JSON.parse(cloneLines[0])["id"].text, "fork")
+        let own = try cloneLines.dropFirst(sourceLines.count).map { try JSON.parse($0) }
+        XCTAssertEqual(own.map { $0["customType"].text ?? "" }, [JournalRecordKind.forkOrigin, SessionSpend.recordType, JournalRecordKind.state, JournalRecordKind.context])
+        XCTAssertEqual(own.first?["parentId"].text, "note-1", "chained on from the source's last record")
+        XCTAssertEqual(own[1]["data"][SessionSpend.resetKey].flag, true); XCTAssertEqual(own[1]["data"]["usd"].double, 0)
+        XCTAssertTrue(own[3]["data"]["visibleIDs"].isNull, "each reader works the shown rows out")
 
         let left: Set<String> = [JournalRecordKind.marker, JournalRecordKind.state, JournalRecordKind.sideOrigin, JournalRecordKind.forkOrigin, JournalRecordKind.contextRecovery, SessionSpend.recordType]
         let expected = try records(sourcePath).filter { !left.contains($0["customType"].text ?? "") }

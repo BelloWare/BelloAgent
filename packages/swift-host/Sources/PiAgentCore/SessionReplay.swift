@@ -41,8 +41,9 @@ struct StateSource: Sendable {
 /// state is the one its journal replays to without reading it again.
 struct JournalReplayConsumer {
     private(set) var r = JournalReplay()
-    private let id: String
-    private let header: JournalCheckpoint.Check?, marker: JournalCheckpoint.Check?
+    private var id: String
+    private var header: JournalCheckpoint.Check?
+    private let marker: JournalCheckpoint.Check?
     // The newest run state's record, for a checkpoint: its bytes, where it
     // is, and the key it holds the state under.
     private var stateSource: (line: Data, offset: UInt64, key: String)?
@@ -107,7 +108,10 @@ struct JournalReplayConsumer {
             return
         }
         let item=try JSON.parse(line)
-        if item["customType"].text == SessionSpend.recordType { r.spend.add(record: item["data"]); r.spendTracked = true; return }
+        if item["customType"].text == SessionSpend.recordType {
+            if item["data"][SessionSpend.resetKey].flag == true { r.spend = SessionSpend() }
+            r.spend.add(record: item["data"]); r.spendTracked = true; return
+        }
         if item["type"].text == "message" {
             let message=try ChatMessage(id:required(item["id"],"message id"),pi:item["message"]); r.history.append(message); if !["execution","requestLedger"].contains(message.kind ?? "") { r.context.append(message) }; r.visible.append(message)
             r.rowSpans[message.id] = .init(id:message.id,kind:.message,offset:lineStart,length:line.count); ordinalMax=max(ordinalMax,AgentSession.maxOrdinal(message))
@@ -206,6 +210,11 @@ struct JournalReplayConsumer {
             }
         }
     }
+
+    /// This replay as a clone's (`SessionJournal.clone`): the same records, at
+    /// the same places, in the journal of session `id`, whose header is
+    /// `header`. The checkpoints it takes from here on are the clone's.
+    mutating func retarget(id: String, header: JournalCheckpoint.Check?) { self.id = id; self.header = header }
 
     /// Starts past the bytes the reader has already read (the session header),
     /// for a replay that has consumed nothing yet.

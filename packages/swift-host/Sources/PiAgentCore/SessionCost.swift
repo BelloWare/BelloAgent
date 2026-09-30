@@ -15,6 +15,10 @@ struct SessionSpend: Sendable, Equatable {
     /// one for spend a chat brings with it (the app's figure for a chat
     /// written before these records existed, or a kept side's spend so far).
     static let recordType = JournalRecordKind.cost
+    /// A record whose data has this true starts the spend again from its own
+    /// figures: a fork's first, after the records of the chat it was cloned
+    /// from (`clonedFork`).
+    static let resetKey = "reset"
     var usd = 0.0
     var reported = 0
     var unreported = 0

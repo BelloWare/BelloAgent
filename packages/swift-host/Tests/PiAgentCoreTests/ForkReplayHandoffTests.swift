@@ -115,10 +115,14 @@ final class ForkReplayHandoffTests: XCTestCase {
             // Made as it was written: what a replay of the file gives.
             assertSame(made, try fullReplay(chat, id: id, path: path), id)
             XCTAssertNotNil(made.captured, "\(id): a checkpoint at the fork's context")
-            // No metadata file yet: the fork's first open writes it, and it
-            // holds the checkpoint made with the replay.
+            // A cloned fork (the whole chat) comes with its metadata file; a
+            // copied one's first open writes it. Either holds the checkpoint
+            // made with the replay.
             let url = URL(fileURLWithPath: path)
-            XCTAssertNil(JournalCheckpoint.read(for: url), "\(id): the first open writes the metadata file")
+            if point == nil { XCTAssertEqual(JournalCheckpoint.read(for: url), made.captured, "\(id): written with the fork") }
+            else { XCTAssertNil(JournalCheckpoint.read(for: url), "\(id): the first open writes the metadata file") }
+            // Opened from the file alone, whole, as a first open is.
+            JournalCheckpoint.remove(for: url)
             let opened = try chat.session(id, resume: path)
             XCTAssertEqual(JournalCheckpoint.read(for: url), made.captured, "\(id): metadata file")
             JournalCheckpoint.remove(for: url)
@@ -138,11 +142,11 @@ final class ForkReplayHandoffTests: XCTestCase {
         await source.close()
     }
 
-    /// A fork of the whole chat, from a chat opened from its metadata file
-    /// with only its latest rows, gives the chat its whole history from what
-    /// it copied, instead of reading the journal once more first: the same
-    /// rows, versions, links, places and tasks the full read gave, and a fork
-    /// whose timeline is the one it gave.
+    /// A copied fork of the whole chat (one that cannot be cloned), from a
+    /// chat opened from its metadata file with only its latest rows, gives the
+    /// chat its whole history from what it copied, instead of reading the
+    /// journal once more first: the same rows, versions, links, places and
+    /// tasks the full read gave, and a fork whose timeline is the one it gave.
     func testAForkOfTheWholeChatGivesTheChatItsWholeHistory() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let source = try await source(chat)
@@ -162,13 +166,14 @@ final class ForkReplayHandoffTests: XCTestCase {
         XCTAssertTrue(readPartial, "opened with its latest rows only")
         try await read.ensureFullHistory()
         let readWhole = await whole(read)
-        let readFork = try await read.fork(to: "after-read")
+        // Identities longer than the chat's do not fit its header: copied.
+        let readFork = try await read.fork(to: "a-copied-fork-after-the-full-read")
         await read.close()
         // Given its history by the fork of the whole chat.
         let forked = try chat.session("source", resume: path)
         let forkedPartial = await forked.partialHistory
         XCTAssertTrue(forkedPartial, "opened with its latest rows only")
-        let forkedResult = try await forked.fork(to: "whole")
+        let forkedResult = try await forked.fork(to: "a-copied-fork-of-the-whole-chat")
         let forkedWhole = await whole(forked)
         await forked.close()
         XCTAssertEqual(forkedWhole.history, readWhole.history, "history")
