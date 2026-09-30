@@ -255,9 +255,9 @@ final class SessionReferenceTests: XCTestCase {
         let parts = text.components(separatedBy: "\n\n---\n\n")
         XCTAssertEqual(parts.count, 2)
         XCTAssertTrue(parts[0].contains("App session ID: first")); XCTAssertTrue(parts[0].contains("Total tokens (input + output): 120"))
-        XCTAssertTrue(parts[0].contains("Reported cost: $1.5 USD")); XCTAssertTrue(parts[0].contains("one.jsonl"))
+        XCTAssertTrue(parts[0].contains("Reported cost: $1.50 USD")); XCTAssertTrue(parts[0].contains("one.jsonl"))
         XCTAssertTrue(parts[1].contains("App session ID: second")); XCTAssertTrue(parts[1].contains("Total tokens (input + output): 13"))
-        XCTAssertTrue(parts[1].contains("Reported cost: $0 USD (1/1 requests reported)")); XCTAssertTrue(parts[1].contains("two.jsonl"))
+        XCTAssertTrue(parts[1].contains("Reported cost: $0.00 USD (1/1 requests reported)")); XCTAssertTrue(parts[1].contains("two.jsonl"))
         XCTAssertFalse(text.contains("$999"))
         XCTAssertEqual(model.markedSessionIDs, ["first", "second"]); XCTAssertEqual(model.selectedID, first.id)
         XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.displays.isEmpty)
@@ -269,7 +269,7 @@ final class SessionReferenceTests: XCTestCase {
         let reference = SessionReference(chat: chat("partial"), usage: totals).text
         XCTAssertTrue(reference.contains("Total tokens (input + output): 12000 (1/3 requests reported)"))
         XCTAssertTrue(reference.contains("Cached input tokens: 8000 (1/3 requests reported)"))
-        XCTAssertTrue(reference.contains("Reported cost: $0 USD (1/3 requests reported)"))
+        XCTAssertTrue(reference.contains("Reported cost: $0.00 USD (1/3 requests reported)"))
         XCTAssertTrue(reference.contains("Expired request records excluded: 2"))
         XCTAssertTrue(reference.contains("Reasoning cost (part of reported cost): not reported"))
         let missing = SessionReference(chat: chat("missing")).text
