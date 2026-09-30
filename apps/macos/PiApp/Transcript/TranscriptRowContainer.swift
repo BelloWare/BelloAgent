@@ -12,10 +12,12 @@ struct TranscriptRowEnvironment: Equatable {
     var isEnabled: Bool
     /// Whether the chat's replies offer "Fork from here" (`transcriptForks`).
     var forks: Bool
+    /// Whether file tools' paths open their files (`transcriptOpensFiles`).
+    var opensFiles: Bool
     init(_ values: EnvironmentValues = EnvironmentValues()) {
         colorScheme = values.colorScheme; contrast = values.colorSchemeContrast
         dynamicTypeSize = values.dynamicTypeSize; layoutDirection = values.layoutDirection; locale = values.locale
-        isEnabled = values.isEnabled; forks = values.transcriptForks
+        isEnabled = values.isEnabled; forks = values.transcriptForks; opensFiles = values.transcriptOpensFiles
     }
     /// Whether a row measured under these values is as tall under those.
     /// The type size, the writing direction and the locale decide how text
@@ -75,6 +77,7 @@ private struct TranscriptHostedRow: View {
         .environment(\.layoutDirection, environment.layoutDirection)
         .environment(\.locale, environment.locale)
         .environment(\.transcriptForks, environment.forks)
+        .environment(\.transcriptOpensFiles, environment.opensFiles)
         .disabled(!environment.isEnabled)
         // No control in a row draws the system's focus ring; the ones that
         // take focus on purpose draw their own (`TranscriptFocusRing`).

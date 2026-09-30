@@ -116,6 +116,14 @@ import AppKit
     /// The reader moved the selection: what was asked before is dropped.
     func selectionChanged() {
         guard !showing, let view, view.selectionRevision != selectionSeen else { return }
+        readerMoved()
+    }
+    /// The reader went somewhere of their own accord, whether or not the
+    /// selection moved (sent to the file's start where the insertion point
+    /// already was): what was asked before is dropped, and finding goes on
+    /// from there.
+    func readerMoved() {
+        guard !showing, let view else { return }
         selectionSeen = view.selectionRevision
         anchor = view.selectedRange.start
         current = nil

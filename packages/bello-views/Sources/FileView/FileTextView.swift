@@ -884,6 +884,22 @@ public struct FileTextStyle {
         revealing = lines; revealShown = false; revealGeneration = source.generation
         revealIfReady()
     }
+    /// Shows the file from its start with nothing set apart: the insertion
+    /// point before its first character, and the view scrolled to its top
+    /// left, whatever was shown or waiting to be before it (lines being
+    /// revealed, keys waiting for their text).
+    public func showTop() {
+        revealing = nil; revealShown = false; emphasized = nil
+        dropPending(); deferredWord = nil
+        let revision = selectionRevision
+        select(from: .start, to: .start)
+        // Already there: a find still going to a match would take the view
+        // away again, and is dropped all the same.
+        if selectionRevision == revision { find?.readerMoved() }
+        guard let clip = enclosingScrollView?.contentView else { return }
+        clip.scroll(to: .zero)
+        enclosingScrollView?.reflectScrolledClipView(clip)
+    }
     /// The reading of the text the lines were shown in: read again (as
     /// Latin-1, say), they are shown again once found again.
     private var revealGeneration = 0

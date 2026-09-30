@@ -96,6 +96,12 @@ enum FileProjectState: Equatable {
     func reveal(lines: ClosedRange<Int>) {
         if let madeScroll { madeScroll.textView.reveal(lines: lines) } else { target = lines }
     }
+    /// Shows the file from its start, nothing set apart, whatever was shown
+    /// or asked for before.
+    func showTop() {
+        target = nil
+        madeScroll?.textView.showTop()
+    }
 
     override func makeContent() -> AnyView { AnyView(FileTabContent(tab: self)) }
     override var focusView: NSView? { madeScroll?.textView }

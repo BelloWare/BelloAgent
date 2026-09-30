@@ -689,6 +689,34 @@ final class UIScreenshotTests: XCTestCase {
         for tab in model.tabs.allTabs { model.tabs.close(tab) }
         try await settle(0.6)
         XCTAssertTrue(model.tabs.windows.isEmpty)
+        // 24e · A chat whose read is on screen: the path is a link, underlined
+        // under the pointer, and a click opens the file in a tab beside it.
+        let parent = try XCTUnwrap(model.record(parentID))
+        let reader = ChatRecord(id: UUID().uuidString, workspaceID: parent.workspaceID, title: "Read the retry notes", path: nil,
+                                profileID: parent.profileID, toolMode: "editing")
+        model.chats.append(reader); try await model.store?.put(reader, kind: "chat", id: reader.id)
+        await model.select(reader.id); try await settle(0.8)
+        let reading = try XCTUnwrap(model.displays[reader.id])
+        reading.draft = "Please read fixture README.md, then summarise the retry budget it describes."
+        model.send(sessionID: reader.id)
+        try await waitIdle(reading, model: model, minimumMessages: 4)
+        try await settle(1.0)
+        var link: PiPopoverTriggerButton?
+        try await until("the read's path to be a link") {
+            link = window.contentView.flatMap { self.descendants(PiPopoverTriggerButton.self, in: $0).first { $0.accessibilityIdentifier() == "transcript-open-file" } }
+            return link != nil
+        }
+        link?.onHover?(true)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("24e-chat-file-link-\(name).png"))
+        }
+        link?.onHover?(false)
+        link?.performClick(nil)
+        let readme = FileTab.key(for: projectRoot.appendingPathComponent("README.md"))
+        try await until("README.md to open in a tab") { (model.tabs.pane.activeTab as? FileTab)?.key == readme }
+        for tab in model.tabs.allTabs { model.tabs.close(tab) }
+        try await settle(0.6)
         NSApp.appearance = nil
     }
     private static let retrySource = """

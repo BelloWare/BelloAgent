@@ -116,6 +116,16 @@ final class VersionBannerMarkerView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
+/// Whether a file tool's path opens its file here (a chat's own pane). The
+/// pane sets it; the transcript's rows carry it to each row.
+private struct TranscriptOpensFilesKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    var transcriptOpensFiles: Bool {
+        get { self[TranscriptOpensFilesKey.self] }
+        set { self[TranscriptOpensFilesKey.self] = newValue }
+    }
+}
+
 /// Whether the chat on screen can fork from its replies (a saved chat of the
 /// app's own). The pane sets it; the transcript's rows carry it to each row.
 private struct TranscriptForksKey: EnvironmentKey { static let defaultValue = false }

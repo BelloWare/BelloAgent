@@ -18,6 +18,22 @@ extension WorkspaceModel {
         }
         return FileTab(url: url, projectID: project)
     }
+    /// A file a chat's tool read or changed, from its card: the path as the
+    /// host resolved it, else as the call gave it (from home, or from the
+    /// chat's project), at the lines (from 1) read or changed. It opens as a
+    /// file of the project whose root holds it, whichever chat named it.
+    @discardableResult func openFile(fromChat sessionID: String, path: String, lines: ClosedRange<Int>?) -> FileTab? {
+        var resolved = (path as NSString).expandingTildeInPath
+        if !resolved.hasPrefix("/") {
+            guard let workspaceID = record(sessionID)?.workspaceID, let root = workspaces.first(where: { $0.id == workspaceID })?.path else { return nil }
+            resolved = (root as NSString).appendingPathComponent(resolved)
+        }
+        let file = openFile(URL(fileURLWithPath: resolved), lines: lines.map { ($0.lowerBound - 1)...($0.upperBound - 1) })
+        // A link to the whole file shows its start, whatever an earlier link
+        // to it left shown or set apart.
+        if lines == nil { file.showTop() }
+        return file
+    }
     /// The project a path is in: the one whose root holds it most closely.
     func projectID(holding path: String) -> String? {
         var best: (id: String, length: Int)?

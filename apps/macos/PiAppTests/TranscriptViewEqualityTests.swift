@@ -44,9 +44,12 @@ final class TranscriptViewEqualityTests: XCTestCase {
                        ["language", "code", "size", "_hovering", "_section", "streaming", "_usesNativeText"],
                        changed("CodeBlockView", "TranscriptRows.swift"))
         let tool = ToolView(id: "t1", name: "bash", state: "done", input: "{}", output: "", durationMs: nil, truncated: false)
-        XCTAssertEqual(properties(ActionRowView(tool: tool)), ["tool", "open", "fetched", "toggle"],
+        // `openFile`, like `toggle`, is an action forwarded to the pane's; whether
+        // a path is a link is the environment's `_opensFiles`, which SwiftUI
+        // follows apart from `==`.
+        XCTAssertEqual(properties(ActionRowView(tool: tool)), ["tool", "open", "fetched", "toggle", "openFile", "_opensFiles"],
                        changed("ActionRowView", "TranscriptRows.swift"))
-        XCTAssertEqual(properties(ActivityGroupView(tools: [tool])), ["tools", "openTools", "fetched", "toggle"],
+        XCTAssertEqual(properties(ActivityGroupView(tools: [tool])), ["tools", "openTools", "fetched", "toggle", "openFile"],
                        changed("ActivityGroupView", "TranscriptRows.swift"))
     }
 }

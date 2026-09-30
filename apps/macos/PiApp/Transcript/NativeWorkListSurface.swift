@@ -22,6 +22,7 @@ struct NativeWorkListSurface: NSViewRepresentable {
     let openTools: Set<String>
     let fetched: [String: ToolInputDocument]
     let toggle: (String) -> Void
+    var openFile: ((String, ClosedRange<Int>?) -> Void)? = nil
 
     func makeNSView(context: Context) -> NativeWorkListContainer {
         let view = NativeWorkListContainer()
@@ -29,7 +30,7 @@ struct NativeWorkListSurface: NSViewRepresentable {
         return view
     }
     func updateNSView(_ view: NativeWorkListContainer, context: Context) {
-        view.update(tools: tools, openTools: openTools, fetched: fetched, toggle: toggle,
+        view.update(tools: tools, openTools: openTools, fetched: fetched, toggle: toggle, openFile: openFile,
                     environment: TranscriptRowEnvironment(context.environment))
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeWorkListContainer, context: Context) -> CGSize? {
@@ -49,14 +50,16 @@ private struct NativeWorkListItem: Equatable {
 /// replaces a card's hosting view.
 @MainActor private final class WorkListToggleRelay {
     var current: (String) -> Void = { _ in }
+    var openFile: ((String, ClosedRange<Int>?) -> Void)?
 }
 
 private struct NativeHostedActionRow: View {
     let item: NativeWorkListItem
     let width: CGFloat
     let toggle: (String) -> Void
+    let openFile: (String, ClosedRange<Int>?) -> Void
     var body: some View {
-        ActionRowView(tool: item.tool, open: item.open, fetched: item.fetched, toggle: { toggle(item.tool.id) })
+        ActionRowView(tool: item.tool, open: item.open, fetched: item.fetched, toggle: { toggle(item.tool.id) }, openFile: openFile)
             .equatable()
             .frame(width: width, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
@@ -64,6 +67,7 @@ private struct NativeHostedActionRow: View {
             .environment(\.dynamicTypeSize, item.environment.dynamicTypeSize)
             .environment(\.layoutDirection, item.environment.layoutDirection)
             .environment(\.locale, item.environment.locale)
+            .environment(\.transcriptOpensFiles, item.environment.opensFiles)
             .disabled(!item.environment.isEnabled)
             .focusEffectDisabled()
             .piStableLayout()
@@ -87,7 +91,8 @@ private struct NativeHostedActionRow: View {
         self.item = item
         self.relay = relay
         view = NSHostingView(rootView: NativeHostedActionRow(item: item, width: TranscriptMetrics.pageWidth,
-                                                             toggle: { [weak relay] id in relay?.current(id) }))
+                                                             toggle: { [weak relay] id in relay?.current(id) },
+                                                             openFile: { [weak relay] path, lines in relay?.openFile?(path, lines) }))
         view.safeAreaRegions = []
         view.sizingOptions = [.intrinsicContentSize]
         // A card never paints outside the space the list gave it, so a height
@@ -106,7 +111,8 @@ private struct NativeHostedActionRow: View {
         return true
     }
     private func rebuildRoot() {
-        view.rootView = NativeHostedActionRow(item: item, width: width, toggle: { [weak relay] id in relay?.current(id) })
+        view.rootView = NativeHostedActionRow(item: item, width: width, toggle: { [weak relay] id in relay?.current(id) },
+                                              openFile: { [weak relay] path, lines in relay?.openFile?(path, lines) })
     }
     private func applyAppearance() {
         // colorSchemeContrast is read-only in SwiftUI's public environment.
@@ -178,8 +184,9 @@ private struct NativeHostedActionRow: View {
     deinit { if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
 
     func update(tools: [ToolView], openTools: Set<String>, fetched: [String: ToolInputDocument],
-                toggle: @escaping (String) -> Void, environment: TranscriptRowEnvironment) {
+                toggle: @escaping (String) -> Void, openFile: ((String, ClosedRange<Int>?) -> Void)? = nil, environment: TranscriptRowEnvironment) {
         relay.current = toggle
+        relay.openFile = openFile
         // A changed environment changes every card, including the closed ones
         // that share one measurement. Read it before the cards take the new one.
         let environmentChanged = rows.first.map { $0.item.environment != environment } ?? false

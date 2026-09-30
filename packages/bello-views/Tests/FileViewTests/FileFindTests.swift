@@ -115,6 +115,32 @@ final class FileFindTests: XCTestCase {
         XCTAssertEqual(find.current?.line, 1_507)
     }
 
+    /// Sent to the file's start (a link to the whole file) while a find is
+    /// on its way to a match: the find is dropped, though the insertion point
+    /// was already at the start and did not move.
+    @MainActor func testShowingTheTopDropsAFindOnItsWay() async throws {
+        let text = lines(2_000) { $0 % 100 == 7 ? "match \($0)" : "line \($0)" }
+        let gate = Gate()
+        var options = FileDocument.Options()
+        options.beforeFind = { await gate.wait() }
+        let document = try await opened(try file(text), options)
+        let scroll = shown(document)
+        let view = scroll.textView
+        XCTAssertEqual(view.selectedRange.start, .start)
+        let find = FileFind(view: view)
+        find.set(query: "match", matchCase: true)
+        find.next(); find.next()
+        view.showTop()
+        await gate.open()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(view.selectedRange.start, .start, "still at the start")
+        XCTAssertEqual(scroll.contentView.bounds.origin, .zero, "still at the top")
+        XCTAssertNil(find.current)
+        find.next()
+        try await eventually("on from there") { find.current != nil && !find.isFinding }
+        XCTAssertEqual(find.current?.line, 7)
+    }
+
     @MainActor func testMatchesAreDrawnOnlyOnTheLinesDrawn() async throws {
         let text = lines(20_000) { "line \($0) with a word" }
         let document = try await opened(try file(text))
