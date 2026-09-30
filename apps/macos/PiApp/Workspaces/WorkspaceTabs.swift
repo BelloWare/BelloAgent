@@ -11,6 +11,8 @@ extension WorkspaceModel {
     @discardableResult func openFile(_ url: URL, lines: ClosedRange<Int>? = nil, project: String? = nil) -> FileTab {
         let key = FileTab.key(for: url)
         let tab = tabs.open(kind: FileTab.kind, key: key) { FileTab(url: url, projectID: project ?? projectID(holding: key), lines: lines) }
+        // ⌘P's list offers it again with nothing typed.
+        quickOpen.noteOpened(URL(fileURLWithPath: key), projectID: (tab as? FileTab)?.projectID ?? project ?? projectID(holding: key))
         if let file = tab as? FileTab {
             // Kept for when it is first shown, if it has not been yet.
             if let lines { file.reveal(lines: lines) }

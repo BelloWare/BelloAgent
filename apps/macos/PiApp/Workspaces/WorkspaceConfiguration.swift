@@ -65,6 +65,8 @@ extension WorkspaceModel {
         profiles = saved.profiles.map(\.profile); workspaces = saved.workspaces
         // The tabs come back once the projects they were opened in are known.
         tabs.restore()
+        // ⌘P forgets a project gone or no longer trusted.
+        quickOpenProjectsChanged()
         if saved.defaultChatCostLimit != costLimit { defaultCostLimitChanged() }
     }
     /// Hands the planner the reader's transcript choice and republishes every

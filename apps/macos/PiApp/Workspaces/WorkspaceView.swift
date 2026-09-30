@@ -22,7 +22,8 @@ struct WorkspaceView: View {
             VStack(spacing: 0) {
                 WindowChrome(sidebarWidth: sidebarWidth, focusedSessionID: model.focusedSessionID ?? model.selectedID,
                              stepVersion: { [weak model] session, step in model?.stepVersion(sessionID: session, step: step) ?? false },
-                             closeTab: { [weak model] in model?.closeShownPaneTab() ?? false })
+                             closeTab: { [weak model] in model?.closeShownPaneTab() ?? false },
+                             quickOpenKey: { [weak model] event in model?.quickOpenKey(event) ?? false })
                     .frame(height: WindowChrome.height)
                 WorkspaceSidebar(model: model, width: sidebarWidth)
             }.frame(width: sidebarWidth)
@@ -140,6 +141,9 @@ struct WorkspaceView: View {
         .background(ConversationPageVisibility(reportVisible: model.page != .chats, focusIdentity: model.focusedSessionID, closeReport: model.closeReport,
                                                covered: coveredSides, contentFocus: { [weak pane] in pane?.shownTab(sideAvailable: true)?.focusView }))
         .disabled(model.installPreparing)
+        // ⌘P's list, over the whole window; it goes when a sheet comes.
+        .overlay { QuickOpenLayer(quickOpen: model.quickOpen) { [weak model] id in model?.openQuickOpenChoice(id) } }
+        .onChange(of: model.presentsSheet) { _, sheet in if sheet { model.quickOpen.close(restoringFocus: false) } }
         .overlay {
             if model.installPreparing {
                 HStack(spacing: PiSpacing.md) {

@@ -743,6 +743,22 @@ final class UIScreenshotTests: XCTestCase {
         try await until("README.md to open in a tab") { (model.tabs.pane.activeTab as? FileTab)?.key == readme }
         for tab in model.tabs.allTabs { model.tabs.close(tab) }
         try await settle(0.6)
+        // 25 · ⌘P: with nothing typed, the files opened lately; then the
+        // project's files found by part of their name.
+        model.showQuickOpen(in: window)
+        try await until("the project's files listed") { model.quickOpen.status == .ready }
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("25a-quick-open-recent-\(name).png"))
+        }
+        model.quickOpen.query = "retry"
+        try await until("files found") { model.quickOpen.answered == "retry" && !model.quickOpen.rows.isEmpty }
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("25-quick-open-\(name).png"))
+        }
+        model.quickOpen.close(restoringFocus: false)
+        try await settle(0.6)
         NSApp.appearance = nil
     }
     private static let retrySource = """
