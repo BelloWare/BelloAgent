@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import AppKit
 @testable import PiApp
+@testable import GitView
 
 // Opt-in screenshot gallery for the native shell. It reuses the synthetic
 // loopback gateway from the interactive acceptance harness, sends real
@@ -364,9 +365,14 @@ final class UIScreenshotTests: XCTestCase {
             try await sheet(window, name: "06-resources-\(name)", into: gallery, open: { model.inspectResources(main.id) }, close: { model.showResources = false })
             try await sheet(window, name: "07-search-\(name)", into: gallery, open: { model.inspectConversation(main.id) }, close: { model.showConversationContent = false })
             try await sheet(window, name: "08-workspaces-\(name)", into: gallery, open: { model.showWorkspaceManager = true }, close: { model.showWorkspaceManager = false })
-            // The Changes sheet against a small repository inside the project folder.
-            try await sheet(window, name: "10-changes-\(name)", into: gallery, open: { model.showChanges(in: workspace.id) }, close: { model.showGit = false })
+            // 10 · Changes, in a tab beside the chat, against a small
+            // repository inside the project folder.
+            model.showChanges(in: workspace.id); try await settle(2.2)
+            try capture(window, to: gallery.appendingPathComponent("10-changes-\(name).png"))
+            if let changes = model.tabs.tab(kind: ChangesTab.kind, key: workspace.id) { model.tabs.close(changes) }
+            try await settle(0.8)
         }
+        try await captureChangesWindowScene(model: model, gallery: gallery, appearances: appearances, workspaceID: workspace.id)
         // The Session Inspector of the main chat, with both routes it used.
         try await captureInspectorScenes(model: model, session: session, window: window, gallery: gallery, appearances: appearances)
         try await renderReviewScenes(model: model, window: window, gallery: gallery, appearances: appearances,
@@ -634,6 +640,26 @@ final class UIScreenshotTests: XCTestCase {
             model.setSidesPanelPinned(false); model.sidesPanelReveal.hide(); try await settle(0.8)
         }
         working.state = "idle"
+        NSApp.appearance = nil
+    }
+
+    /// 10b · Changes popped out into a window of its own, the size the sheet
+    /// it replaced had. Closed afterwards, so the scenes after it are as before.
+    @MainActor private func captureChangesWindowScene(model: WorkspaceModel, gallery: URL, appearances: [(String, NSAppearance.Name)],
+                                                      workspaceID: String) async throws {
+        model.showChanges(in: workspaceID)
+        let changes = try XCTUnwrap(model.tabs.tab(kind: ChangesTab.kind, key: workspaceID))
+        let popped = model.tabs.popOut(changes)
+        let tabWindow = try XCTUnwrap(model.tabs.window(of: popped))
+        tabWindow.setFrame(NSRect(x: 120, y: 120, width: 1180, height: 780), display: true)
+        try await settle(2.2)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(tabWindow, to: gallery.appendingPathComponent("10b-changes-window-\(name).png"))
+        }
+        model.tabs.close(changes)
+        try await settle(0.6)
+        XCTAssertTrue(model.tabs.windows.isEmpty)
         NSApp.appearance = nil
     }
 

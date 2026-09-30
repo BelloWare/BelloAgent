@@ -7,6 +7,7 @@ import AppKit
 extension TabHost {
     static let registeredKinds: [HostedTab.Type] = [
         FileTab.self,
+        ChangesTab.self,
     ]
 
     /// ⌘W, and nothing else.

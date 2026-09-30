@@ -4,7 +4,7 @@ import AppKit
 @testable import PiApp
 @testable import GitView
 
-/// The Changes sheet as the reader meets it: presented over a window, on a
+/// The Changes tab as the reader meets it: opened in a pane of tabs, on a
 /// repository with four hundred changed files, a 5,000-line file rewritten
 /// from end to end, and thirty commits, the first of which added all of it.
 /// Each step is timed on the main thread's own clock, its longest step is the
@@ -17,7 +17,7 @@ import AppKit
 /// and a commit of four hundred files 192 to 204 ms. Drawn by a native table,
 /// with the commit's file chips drawn natively too, they take about 24, 6, 47
 /// and 52 ms; the last two are mostly the rest of the panel drawn again.
-final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
+final class ChangesTabFrameTests: GitPanelTestCase, SerialTestLane {
     static let changedFiles = 400
 
     /// `a-first.swift`, a one-line change the sheet opens on; `b-long.swift`,
@@ -133,36 +133,34 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
         return result == 0 ? Double(usage.ri_phys_footprint) / 1_048_576 : 0
     }
 
-    @MainActor func testTheChangesSheetOverABigRepository() async throws {
+    @MainActor func testTheChangesTabOverABigRepository() async throws {
         let root = try bigRepository()
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        let controller = GitController(roots: [root.path])
-        let presenter = ChangesSheetPresenter()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ChangesSheetHost(presenter: presenter, controller: controller))
-        window.makeKeyAndOrderFront(nil)
-        addTeardownBlock { @MainActor in presenter.showing = false; window.contentView = nil; window.close() }
+        let harness = ChangesTabHarness()
+        addTeardownBlock { @MainActor in harness.tearDown() }
         try await Task.sleep(for: .milliseconds(500))
-        let sheet = { window.attachedSheet }
+        let window = harness.window
+        let sheet: () -> NSWindow? = { window }
         let before = footprint()
 
         // Opened: the list of changes, and the first file's diff.
-        let open = try await step("open", sheet, settle: 1.5, { presenter.showing = true }) {
-            controller.status.entries.count == Self.changedFiles + 2 && !controller.diff.isEmpty && !controller.diffLoading && window.attachedSheet != nil
+        var tab: ChangesTab?
+        let open = try await step("open", sheet, settle: 1.5, { tab = harness.open(root.path) }) {
+            guard let tab, tab.hasController else { return false }
+            return tab.controller.status.entries.count == Self.changedFiles + 2 && !tab.controller.diff.isEmpty && !tab.controller.diffLoading
         }
-        print("PERF changes sheet: open \(open)")
+        let controller = try XCTUnwrap(tab).controller
+        print("PERF changes tab: open \(open)")
 
         // The long file: 1,500 of its 10,000 rows until the whole diff is asked for.
         let long = try await step("long", sheet, { controller.selection = GitController.Selection(path: "b-long.swift", staged: false) }) {
             controller.diff.first?.path == "b-long.swift" && !controller.diffLoading
         }
-        print("PERF changes sheet: choose the long file \(long)")
-        let scrolls = try XCTUnwrap(sheet().map { descendants(NSScrollView.self, in: $0.contentView ?? NSView()) })
-        let diffScroll = try XCTUnwrap(scrolls.max { $0.frame.width < $1.frame.width }, "The diff scrolls")
-        let sheetWindow = try XCTUnwrap(sheet())
+        print("PERF changes tab: choose the long file \(long)")
+        let diffScroll = try XCTUnwrap(diff(in: window), "The diff scrolls")
+        let sheetWindow = window
         let first = try await scroll(diffScroll, in: sheetWindow, from: 0, through: 3_000)
-        print(String(format: "PERF changes sheet: scrolling the long diff %.2f ms a step, worst %.1f ms, %d cycles, %d rows built", first.mean, first.worst, first.cycles, first.rows))
+        print(String(format: "PERF changes tab: scrolling the long diff %.2f ms a step, worst %.1f ms, %d cycles, %d rows built", first.mean, first.worst, first.cycles, first.rows))
 
         // A file ticked and unticked twenty times.
         let ticks = try await step("ticks", sheet, settle: 0.3, {
@@ -171,7 +169,7 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
                 sheetWindow.contentView?.layoutSubtreeIfNeeded(); sheetWindow.displayIfNeeded()
             }
         }) { true }
-        print("PERF changes sheet: 20 ticks \(ticks)")
+        print("PERF changes tab: 20 ticks \(ticks)")
 
         // Typing a commit message.
         let typing = try await step("typing", sheet, settle: 0.3, {
@@ -180,20 +178,20 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
                 sheetWindow.contentView?.layoutSubtreeIfNeeded(); sheetWindow.displayIfNeeded()
             }
         }) { true }
-        print("PERF changes sheet: typing 21 characters \(typing)")
+        print("PERF changes tab: typing 21 characters \(typing)")
 
         // The whole diff.
         let whole = try await step("whole", sheet, { controller.wholeDiffShown = GitController.diffIdentity(path: "b-long.swift", staged: false) }) { true }
-        print("PERF changes sheet: the whole long diff \(whole)")
+        print("PERF changes tab: the whole long diff \(whole)")
         let deep = try await scroll(diffScroll, in: sheetWindow, from: 60_000, through: 3_000)
-        print(String(format: "PERF changes sheet: scrolling deep in the whole diff %.2f ms a step, worst %.1f ms, %d cycles, %d rows built", deep.mean, deep.worst, deep.cycles, deep.rows))
+        print(String(format: "PERF changes tab: scrolling deep in the whole diff %.2f ms a step, worst %.1f ms, %d cycles, %d rows built", deep.mean, deep.worst, deep.cycles, deep.rows))
         // The tabs glide for some 300 ms after the switch, and every frame of
         // it laid the sheet out: the toolbar's fetch, pull and push symbols,
         // measured and not shown, were built afresh each time.
         RedrawCounter.reset(); RedrawCounter.recording = true
         let split = try await step("split", sheet, { controller.splitDiff = true }) { true }
         let glide = RedrawCounter.counts; RedrawCounter.recording = false; RedrawCounter.reset()
-        print("PERF changes sheet: side by side \(split), panel parts drawn \(glide)")
+        print("PERF changes tab: side by side \(split), panel parts drawn \(glide)")
         controller.splitDiff = false
         let withWhole = footprint()
 
@@ -201,30 +199,31 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
         let other = try await step("other", sheet, { controller.selection = GitController.Selection(path: "Sources/Module0/File1.swift", staged: false) }) {
             controller.diff.first?.path == "Sources/Module0/File1.swift" && !controller.diffLoading
         }
-        print("PERF changes sheet: choose a short file \(other)")
+        print("PERF changes tab: choose a short file \(other)")
         let history = try await step("history", sheet, { controller.panel = .history }) { controller.commits.count == 30 }
-        print("PERF changes sheet: the history \(history)")
+        print("PERF changes tab: the history \(history)")
         let revised = try XCTUnwrap(controller.commits.first)
         let medium = try await step("medium", sheet, { controller.selectedCommit = revised }) {
             controller.detail?.commit == revised && !controller.commitLoading && !controller.detailDiff.isEmpty
         }
-        print("PERF changes sheet: a commit of 25 files \(medium)")
+        print("PERF changes tab: a commit of 25 files \(medium)")
         let seed = try XCTUnwrap(controller.commits.last)
         let big = try await step("big", sheet, { controller.selectedCommit = seed }) { controller.detail?.commit == seed && !controller.commitLoading }
-        print("PERF changes sheet: the seed commit's chips \(big) deferred \(controller.detailDiffDeferred) files \(controller.detail?.files.count ?? 0)")
+        print("PERF changes tab: the seed commit's chips \(big) deferred \(controller.detailDiffDeferred) files \(controller.detail?.files.count ?? 0)")
         let chip = try await step("chip", sheet, { controller.detailFile = "b-long.swift" }) { !controller.detailFileDiff.isEmpty && !controller.commitLoading }
-        print("PERF changes sheet: the long file in the seed commit \(chip)")
-        let historyScroll = try XCTUnwrap(descendants(NSScrollView.self, in: sheetWindow.contentView ?? NSView()).max { $0.frame.width < $1.frame.width })
+        print("PERF changes tab: the long file in the seed commit \(chip)")
+        let historyScroll = try XCTUnwrap(diff(in: window), "The commit's diff scrolls")
         let embedded = try await scroll(historyScroll, in: sheetWindow, from: 0, through: 3_000)
-        print(String(format: "PERF changes sheet: scrolling the commit's long file %.2f ms a step, worst %.1f ms, %d cycles, %d rows built", embedded.mean, embedded.worst, embedded.cycles, embedded.rows))
+        print(String(format: "PERF changes tab: scrolling the commit's long file %.2f ms a step, worst %.1f ms, %d cycles, %d rows built", embedded.mean, embedded.worst, embedded.cycles, embedded.rows))
         let atHistory = footprint()
 
-        let close = try await step("close", { window }, settle: 1.0, { presenter.showing = false }) { window.attachedSheet == nil }
-        print("PERF changes sheet: close \(close)")
+        let shown = try XCTUnwrap(tab)
+        let close = try await step("close", { window }, settle: 1.0, { harness.host.close(shown) }) { harness.host.pane.tabs.isEmpty }
+        print("PERF changes tab: close \(close)")
         try await Task.sleep(for: .milliseconds(500))
-        print(String(format: "PERF changes sheet memory: before %.1f MB, whole long diff %.1f MB, history %.1f MB, closed %.1f MB", before, withWhole, atHistory, footprint()))
+        print(String(format: "PERF changes tab memory: before %.1f MB, whole long diff %.1f MB, history %.1f MB, closed %.1f MB", before, withWhole, atHistory, footprint()))
 
-        // One layout-cycle report as a sheet with a lazy list opens, and none after.
+        // One layout-cycle report at most as a panel with a lazy list opens, and none after.
         XCTAssertLessThanOrEqual(open.cycles, 1, "Opening")
         let steps = [("the long file", long.cycles), ("ticks", ticks.cycles), ("typing", typing.cycles), ("the whole diff", whole.cycles),
                      ("side by side", split.cycles), ("another file", other.cycles), ("the history", history.cycles),
@@ -256,14 +255,13 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
         XCTAssertLessThan(typing.longest, 30, String(format: "A keystroke beside the long diff costs up to %.0f ms", typing.longest))
     }
 
-    /// The sheet as the reader opens it, from the workspace window, twice,
-    /// on the project's own folder, where the app keeps its state as it runs.
-    /// Its first frame said "Not a git repository", in the moment before its
-    /// first read; once the panel took that message's place, every update of
-    /// the sheet reported layout cycles until it closed: 44 for each opening
-    /// and 8 for each closing. What is left is the one report SwiftUI makes as
-    /// a sheet with a lazy list opens.
-    @MainActor func testTheSheetFromTheWorkspaceWindowLaysOutWithoutCycles() async throws {
+    /// The tab as the reader opens it, from the workspace window, twice, on
+    /// the project's own folder, where the app keeps its state as it runs.
+    /// The sheet it replaced said "Not a git repository" in its first frame,
+    /// in the moment before its first read; once the panel took that
+    /// message's place, every update reported layout cycles until it closed:
+    /// 44 for each opening and 8 for each closing.
+    @MainActor func testTheTabFromTheWorkspaceWindowLaysOutWithoutCycles() async throws {
         let folder = try repository("changes-cycles")
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         try start(folder)
@@ -282,6 +280,7 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
         }
         let model = WorkspaceModel(stateRoot: folder.appendingPathComponent("app-state"), vault: vault)
         model.automaticContextOperation = { _, _ in throw CancellationError() }
+        model.tabs.showsWindows = false
         await model.restore()
         let chat = ChatRecord(id: "changes-chat", workspaceID: workspace.id, title: "Changes", path: nil, profileID: profile.id)
         model.chats = [chat]; try await model.store?.put(chat, kind: "chat", id: chat.id)
@@ -291,6 +290,7 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
         window.contentView = NSHostingView(rootView: WorkspaceView(model: model))
         window.makeKeyAndOrderFront(nil)
         addTeardownBlock { @MainActor in
+            model.tabs.tearDown()
             window.contentView = nil; window.close()
             model.report.suspend(); model.shutdown()
             try? await model.traces.close(); await model.store?.close()
@@ -300,11 +300,12 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
             var shown = false
             let open = try await layoutCycles {
                 model.showChanges(in: workspace.id); try await Task.sleep(for: .milliseconds(2_200))
-                shown = window.attachedSheet != nil
+                shown = (model.tabs.tab(kind: ChangesTab.kind, key: workspace.id) as? ChangesTab)?.controller.statusRead == true
             }
-            let close = try await layoutCycles { model.showGit = false; try await Task.sleep(for: .milliseconds(800)) }
-            print("PERF changes sheet from the workspace window, pass \(pass): \(open) cycles opening, \(close) closing")
-            XCTAssertTrue(shown, "The Changes sheet opened")
+            let tab = try XCTUnwrap(model.tabs.tab(kind: ChangesTab.kind, key: workspace.id))
+            let close = try await layoutCycles { model.tabs.close(tab); try await Task.sleep(for: .milliseconds(800)) }
+            print("PERF changes tab from the workspace window, pass \(pass): \(open) cycles opening, \(close) closing")
+            XCTAssertTrue(shown, "The Changes tab opened and read")
             XCTAssertLessThanOrEqual(open, 1, "Opening \(pass): the lazy list's one report at most")
             XCTAssertEqual(close, 0, "Closing \(pass)")
         }
@@ -326,86 +327,76 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
         XCTAssertNil(notOne.repositoryRoot, "A plain folder is no repository")
     }
 
-    /// A closed Changes sheet lets go of everything it had, before the test
-    /// returns. XCTest keeps whatever AppKit autoreleases until a test
-    /// returns, and here SwiftUI's own sheets kept each closed Changes sheet's
-    /// window, views and controller, with the diff, the history and the
-    /// commits it had read: three closes took the process from 38 to 187 MB.
-    /// Emptying the controller brought that to 137 MB; about 20 MB of views a
-    /// close stayed. The workspace now presents the sheet in a window of its
-    /// own (`piSheetWindow`): opened as the workspace window opens it, a new
-    /// controller each time, and closed three times over the whole long diff
-    /// and two commits, nothing of any of the three sheets is left: not its
-    /// views, not its controller. The window and its hosting view are the next
-    /// sheet's, and show none of it. The footprint is printed, not held:
-    /// nothing separates it reliably enough to assert.
-    @MainActor func testAClosedSheetLetsGoOfWhatItRead() async throws {
+    /// A closed Changes tab lets go of everything it had, before the test
+    /// returns: its controller, with the diff, the history and the commits it
+    /// had read, and every view of its panel. Opened three times, each over
+    /// the whole long diff and two commits, and closed, nothing of any of the
+    /// three is left. The footprint is printed, not held: nothing separates
+    /// it reliably enough to assert.
+    @MainActor func testAClosedTabLetsGoOfWhatItRead() async throws {
         let root = try bigRepository()
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
-        let made = MadeControllers(), presenter = ChangesSheetPresenter()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: FreshChangesSheetHost(presenter: presenter, root: root.path, made: made.add))
-        window.makeKeyAndOrderFront(nil)
-        addTeardownBlock { @MainActor in presenter.showing = false; window.contentView = nil; window.close() }
+        let harness = ChangesTabHarness()
+        addTeardownBlock { @MainActor in harness.tearDown() }
         try await Task.sleep(for: .milliseconds(500))
         let before = footprint()
         var closed: [Double] = []
-        var everything: [() -> NSView?] = []
+        var everything: [() -> NSView?] = [], controllers: [() -> GitController?] = []
         for pass in 1...3 {
-            presenter.showing = true
-            try await eventually("opening \(pass)") { made.newest?.status.entries.count == Self.changedFiles + 2 && window.attachedSheet != nil }
-            // Held weakly, as nothing but the sheet should hold them.
-            weak var sheet = window.attachedSheet, controller = made.newest
-            let host = try XCTUnwrap(window.attachedSheet?.contentView)
-            XCTAssertTrue(sheet === PiSheetWindow.newest, "Opening \(pass): the sheet is a window of the app's own")
-            controller?.selection = GitController.Selection(path: "b-long.swift", staged: false)
+            // Held weakly, as nothing but the tab should hold them.
+            weak var tab = autoreleasepool { harness.open(root.path) }
+            try await eventually("opening \(pass)") { tab?.hasController == true && tab?.controller.status.entries.count == Self.changedFiles + 2 }
+            weak var controller = tab?.controller
+            controllers.append { [weak controller] in controller }
+            autoreleasepool { controller?.selection = GitController.Selection(path: "b-long.swift", staged: false) }
             try await eventually("the long diff") { controller?.diff.first?.path == "b-long.swift" && controller?.diffLoading == false }
-            controller?.wholeDiffShown = GitController.diffIdentity(path: "b-long.swift", staged: false)
-            sheet?.contentView?.layoutSubtreeIfNeeded(); sheet?.displayIfNeeded()
-            controller?.panel = .history
+            autoreleasepool {
+                controller?.wholeDiffShown = GitController.diffIdentity(path: "b-long.swift", staged: false)
+                harness.draw()
+                controller?.panel = .history
+            }
             try await eventually("the history") { controller?.commits.count == 30 }
             let revised = try XCTUnwrap(controller?.commits.first), seed = try XCTUnwrap(controller?.commits.last)
-            controller?.selectedCommit = revised
+            autoreleasepool { controller?.selectedCommit = revised }
             try await eventually("a commit's diff") { controller?.detail?.commit == revised && controller?.detailDiff.isEmpty == false && controller?.commitLoading == false }
-            controller?.selectedCommit = seed
+            autoreleasepool { controller?.selectedCommit = seed }
             try await eventually("the seed commit") { controller?.detail?.commit == seed && controller?.commitLoading == false }
-            controller?.detailFile = "b-long.swift"
+            autoreleasepool { controller?.detailFile = "b-long.swift" }
             try await eventually("its long file") { controller?.detailFileDiff.isEmpty == false && controller?.commitLoading == false }
-            sheet?.contentView?.layoutSubtreeIfNeeded(); sheet?.displayIfNeeded()
             // Every view the panel shows, held weakly.
-            let shown = descendants(NSView.self, in: host).filter { $0 !== host }.map { view in { [weak view] in view } }
-            XCTAssertGreaterThan(shown.count, 50, "Opening \(pass): the panel's views are in the sheet")
-            presenter.showing = false
-            try await eventually("closing \(pass)") { window.attachedSheet == nil }
-            // Once off screen, nothing of the sheet is left: its controller
-            // goes, and none of its views is in a window or in the hosting
-            // view, which with the window opens the next sheet, empty.
-            try await eventually("the closed sheet \(pass)'s controller to be let go of") { controller == nil }
-            try await eventually("the closed sheet \(pass)'s views to be out of every window") {
-                shown.allSatisfy { $0().map { $0.window == nil && !$0.isDescendant(of: host) } ?? true }
+            let shown = autoreleasepool { () -> [() -> NSView?] in
+                harness.draw()
+                let content = harness.window.contentView ?? NSView()
+                return descendants(NSView.self, in: content).filter { $0 !== content }.map { view in { [weak view] in view } }
             }
-            XCTAssertTrue(descendants(NSScrollView.self, in: host).isEmpty, "Closed sheet \(pass): its hosting view shows nothing")
+            XCTAssertGreaterThan(shown.count, 50, "Opening \(pass): the panel's views are in the window")
+            autoreleasepool { if let tab { harness.host.close(tab) } }
+            try await eventually("closing \(pass)") { harness.host.pane.tabs.isEmpty }
+            try await eventually("the closed tab \(pass) to be let go of") { autoreleasepool { tab == nil } }
+            try await eventually("the closed tab \(pass)'s controller to be let go of") { autoreleasepool { controller == nil } }
+            try await eventually("the closed tab \(pass)'s panel to be out of every window") {
+                autoreleasepool { descendants(GitDiffTableView.self, in: harness.window.contentView ?? NSView()).isEmpty }
+            }
             everything += shown
             try await Task.sleep(for: .milliseconds(800))
             closed.append(footprint())
         }
-        let alive = made.all.compactMap { $0() }
-        print(String(format: "PERF closed Changes sheets: footprint %.1f MB before, %@ MB after each of three closes; %d of %d controllers alive",
-                     before, closed.map { String(format: "%.1f", $0) }.joined(separator: ", "), alive.count, made.all.count))
-        XCTAssertEqual(made.all.count, 3, "A controller for each opening, as the workspace window makes them")
-        XCTAssertEqual(alive.count, 0, "No closed sheet's controller is left")
-        // The window and hosting view kept for the next sheet go with what
-        // presents them, and no view of any of the three sheets is left.
-        window.contentView = NSView()
-        try await eventually("every closed sheet's views to be let go of") { everything.allSatisfy { $0() == nil } }
+        print(String(format: "PERF closed Changes tabs: footprint %.1f MB before, %@ MB after each of three closes",
+                     before, closed.map { String(format: "%.1f", $0) }.joined(separator: ", ")))
+        XCTAssertEqual(controllers.compactMap { $0() }.count, 0, "No closed tab's controller is left")
+        // The window's own views go with it: nothing of any closed tab is left
+        // but the few views AppKit keeps of a text view after it has gone.
+        autoreleasepool { harness.window.contentView = NSView() }
+        try await eventually("every closed tab's views to be let go of") {
+            autoreleasepool { everything.allSatisfy { view in view().map { String(describing: type(of: $0)).hasPrefix("_NS") } ?? true } }
+        }
     }
 
-    /// A panel opened again over the controller of a sheet that closed reads
-    /// everything afresh, as a first open does: the first file chosen, every
-    /// file ticked, no message, the Changes tab, and what changed meanwhile.
-    /// While closed it reads nothing.
-    @MainActor func testASheetOpenedAgainReadsAfresh() async throws {
+    /// A tab hidden under another reads nothing; shown again it reads what
+    /// changed, and keeps the reader's place. Closed and opened again, it is
+    /// a new tab and reads everything afresh, as a first open does: the first
+    /// file chosen, every file ticked, no message, the Changes tab.
+    @MainActor func testATabHiddenReadsNothingAndATabOpenedAgainReadsAfresh() async throws {
         let folder = try repository("changes-reopen")
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         try start(folder)
@@ -414,37 +405,42 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
         try git(["add", "."], in: folder); try git(["commit", "-q", "-m", "Seed"], in: folder)
         try "one!\n".write(to: folder.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
         try "two!\n".write(to: folder.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
-        let controller = GitController(roots: [folder.path]), presenter = ChangesSheetPresenter()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ChangesSheetHost(presenter: presenter, controller: controller))
-        window.makeKeyAndOrderFront(nil)
-        addTeardownBlock { @MainActor in presenter.showing = false; window.contentView = nil; window.close() }
-        try await Task.sleep(for: .milliseconds(500))
-
-        presenter.showing = true
-        try await eventually("the first read") { controller.status.entries.count == 2 && !controller.diff.isEmpty && !controller.diffLoading }
+        let harness = ChangesTabHarness()
+        addTeardownBlock { @MainActor in harness.tearDown() }
+        let tab = harness.open(folder.path)
+        try await eventually("the first read") { tab.hasController && tab.controller.status.entries.count == 2 && !tab.controller.diff.isEmpty && !tab.controller.diffLoading }
+        let controller = tab.controller
         controller.selection = GitController.Selection(path: "b.txt", staged: false)
         controller.checked.remove("a.txt"); controller.commitMessage = "Draft"
         try await eventually("b.txt's diff") { controller.diff.first?.path == "b.txt" && !controller.diffLoading }
-        controller.panel = .history
-        try await eventually("the history") { controller.commits.count == 1 }
-        presenter.showing = false
-        try await eventually("the closed sheet to let go") { window.attachedSheet == nil && controller.status.entries.isEmpty && controller.diff.isEmpty }
-        XCTAssertFalse(controller.statusRead); XCTAssertNil(controller.repositoryRoot); XCTAssertTrue(controller.commits.isEmpty)
-        XCTAssertFalse(controller.isWatching)
 
+        // Another tab over it: hidden, it reads nothing.
+        let other = harness.host.open(kind: FileTab.kind, key: FileTab.key(for: folder.appendingPathComponent("a.txt"))) {
+            FileTab(url: folder.appendingPathComponent("a.txt"), projectID: nil)
+        }
+        try await eventually("hidden") { controller.suspended && !controller.isWatching }
         try "three\n".write(to: folder.appendingPathComponent("c.txt"), atomically: true, encoding: .utf8)
-        await controller.refresh()
-        XCTAssertTrue(controller.status.entries.isEmpty, "A closed sheet's controller reads nothing")
+        try await Task.sleep(for: .milliseconds(1_500))
+        XCTAssertEqual(controller.status.entries.count, 2, "A hidden tab reads nothing")
+        harness.host.activate(tab)
+        try await eventually("shown again, what changed read") { controller.status.entries.count == 3 && controller.isWatching }
+        XCTAssertEqual(controller.selection?.path, "b.txt"); XCTAssertEqual(controller.commitMessage, "Draft")
+        XCTAssertEqual(controller.checkedCount, 1, "b.txt ticked, a.txt unticked, c.txt not ticked for the reader")
 
-        presenter.showing = true
-        try await eventually("the second read") { controller.status.entries.count == 3 && !controller.diff.isEmpty && !controller.diffLoading }
-        XCTAssertEqual(controller.selection?.path, "a.txt", "The first file, as a first open chooses it")
-        XCTAssertEqual(controller.checkedCount, 3, "Every file ticked")
-        XCTAssertEqual(controller.commitMessage, "")
-        XCTAssertEqual(controller.panel, .changes)
-        XCTAssertTrue(controller.isWatching, "Watching again")
+        harness.host.close(tab); harness.host.close(other)
+        let again = harness.open(folder.path)
+        XCTAssertFalse(again === tab, "A new tab")
+        try await eventually("the new tab's read") { again.hasController && again.controller.status.entries.count == 3 && !again.controller.diff.isEmpty && !again.controller.diffLoading }
+        XCTAssertEqual(again.controller.selection?.path, "a.txt", "The first file, as a first open chooses it")
+        XCTAssertEqual(again.controller.checkedCount, 3, "Every file ticked")
+        XCTAssertEqual(again.controller.commitMessage, "")
+        XCTAssertEqual(again.controller.panel, .changes)
+        XCTAssertTrue(again.controller.isWatching)
+    }
+
+    /// The diff table's scroll view, whichever panel shows it.
+    @MainActor private func diff(in window: NSWindow) -> NSScrollView? {
+        descendants(GitDiffTableView.self, in: window.contentView ?? NSView()).first?.enclosingScrollView
     }
 
     @MainActor private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
@@ -452,43 +448,28 @@ final class ChangesSheetFrameTests: GitPanelTestCase, SerialTestLane {
     }
 }
 
-/// Presents the Changes sheet as the workspace window does, over a
-/// controller the test drives.
-@MainActor final class ChangesSheetPresenter: ObservableObject {
-    @Published var showing = false
-}
-
-/// Presents the Changes sheet as the workspace window does, in a sheet
-/// window of the app's own, a new controller for each opening, and hands
-/// each to `made`.
-struct FreshChangesSheetHost: View {
-    @ObservedObject var presenter: ChangesSheetPresenter
-    let root: String
-    let made: @MainActor (GitController) -> Void
-    var body: some View {
-        Color.piWindow
-            .buttonStyle(.piSecondary)
-            .toggleStyle(.switch)
-            .piSheetWindow(isPresented: $presenter.showing) {
-                GitPanelView(controller: { let controller = GitController(roots: [root]); made(controller); return controller }())
-            }
+/// A Changes tab as the app shows one, in a window of the test's own: a tab
+/// host that keeps nothing across launches and shows no windows of its own,
+/// its pane's tabs drawn as a window of tabs draws them (`TabWindowRoot`).
+@MainActor final class ChangesTabHarness {
+    let host = TabHost(defaults: nil)
+    let window: NSWindow
+    init(width: CGFloat = 1280, height: CGFloat = 820) {
+        host.showsWindows = false
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: TabWindowRoot(host: host, container: host.pane).piTabRoot())
+        window.makeKeyAndOrderFront(nil)
     }
-}
-
-/// The controllers a `FreshChangesSheetHost` made, held weakly.
-@MainActor final class MadeControllers {
-    private(set) var all: [() -> GitController?] = []
-    var newest: GitController? { all.last?() }
-    func add(_ controller: GitController) { all.append { [weak controller] in controller } }
-}
-
-struct ChangesSheetHost: View {
-    @ObservedObject var presenter: ChangesSheetPresenter
-    let controller: GitController
-    var body: some View {
-        Color.piWindow
-            .buttonStyle(.piSecondary)
-            .toggleStyle(.switch)
-            .piSheetWindow(isPresented: $presenter.showing) { GitPanelView(controller: controller) }
+    /// Opens a project's Changes tab over one folder, or shows it.
+    @discardableResult func open(_ root: String, project: String = "changes-project") -> ChangesTab {
+        let tab = host.open(kind: ChangesTab.kind, key: project) { ChangesTab(projectID: project, name: "project", roots: [root]) }
+        draw()
+        return tab as! ChangesTab
+    }
+    func draw() { window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
+    func tearDown() {
+        host.tearDown()
+        window.contentView = nil; window.close()
     }
 }

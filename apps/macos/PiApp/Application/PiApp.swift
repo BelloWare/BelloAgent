@@ -83,7 +83,10 @@ extension FocusedValues {
                 Button("Session Inspector…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspect(id) } }.keyboardShortcut("i", modifiers: [.command, .option])
                     .disabled(commandModel.presentsSheet)
                     .disabled((commandModel.focusedSessionID ?? commandModel.selectedID).flatMap(commandModel.record) == nil)
-                Button("Changes and History…") { commandModel.showChanges() }.keyboardShortcut("g", modifiers: [.command, .shift]).disabled(commandModel.workspaces.isEmpty || commandModel.presentsSheet)
+                // Asked from a window of tabs (or Settings), the pane it opens
+                // in is the workspace window's: that window comes forward.
+                Button("Changes and History…") { if commandModel.showChanges()?.container?.isPane == true { openWindow(id: "main") } }
+                    .keyboardShortcut("g", modifiers: [.command, .shift]).disabled(commandModel.workspaces.isEmpty || commandModel.presentsSheet)
                 Button(commandModel.terminalVisible ? "Hide Terminal" : "Show Terminal") { commandModel.toggleTerminal() }.keyboardShortcut("`", modifiers: .control).disabled(commandModel.selectedID == nil)
                 Divider()
                 Button("Next Chat") { commandModel.selectAdjacentChat(1) }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
@@ -106,7 +109,8 @@ extension FocusedValues {
                 Button("Send / Steer Current Run") { commandModel.submitFocusedComposer(intent: .steer) }
                     .keyboardShortcut(.return, modifiers: .command).disabled(!conversationCommands)
                 // ⌘. is also a dialog's cancel key: never a stop from a sheet or another window.
-                Button("Stop") { commandModel.stop(sessionID: commandModel.focusedSessionID) }.keyboardShortcut(".").disabled(!conversationCommands)
+                // Nor, from text a tab holds, a stop of the chat behind it.
+                Button("Stop") { commandModel.stopFocused() }.keyboardShortcut(".").disabled(!conversationCommands)
                 Button("Resume Follow-ups") { commandModel.action("queue.resume", sessionID: commandModel.focusedSessionID) }.disabled(!conversationCommands)
                 Button("Compact Now") { commandModel.action("context.compact", sessionID: commandModel.focusedSessionID) }.disabled(!conversationCommands)
                 Button("Latest Messages") { commandModel.latest(sessionID: commandModel.focusedSessionID) }.disabled(!conversationCommands)
@@ -126,7 +130,7 @@ extension FocusedValues {
                 Button("Show This Response") { commandModel.setFocusedResponseCollapsed(false) }
                     .disabled(!foldsResponses)
                 Divider()
-                Button("Search and Copy Conversation…") { if let id = commandModel.focusedSessionID ?? commandModel.selectedID { commandModel.inspectConversation(id) } }.keyboardShortcut("f").disabled(!conversationCommands)
+                Button("Search and Copy Conversation…") { commandModel.searchFocusedConversation() }.keyboardShortcut("f").disabled(!conversationCommands)
             }
         }
         Settings { SettingsWindowContent(model: model) }

@@ -123,13 +123,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var webhookRetryDelay: Duration = .seconds(4)
     /// Connections already told, this launch, that titles need a mini model.
     var titleMiniModelNotified: Set<String> = []
-    @Published var showGit = false
     /// The integrated terminal panel under the transcript (⌃` toggles it).
     @Published var terminalVisible = false
     /// The chat whose rename sheet is open.
     @Published var renameTarget: RenameTarget?
-    /// The project whose repositories the Changes sheet shows.
-    var gitWorkspaceID: String?
     @Published var projectSidebarStates: [String: ProjectSidebarState] = [:] { didSet { sidebarIndex.invalidate() } }
     @Published var topics: [TopicRecord] = [] { didSet { sidebarIndex.invalidate() } }
     @Published var topicEditor: TopicEditorTarget?
@@ -182,7 +179,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// the conversation's shortcuts (⌘↩, ⌘., ⌘F) must not act on the chat
     /// behind it, nor present a second sheet over it.
     var presentsSheet: Bool {
-        showProfiles || showConversationContent || showResources || showWorkspaceManager || showGit || renameTarget != nil || topicEditor != nil || webhookPreviewTarget != nil
+        showProfiles || showConversationContent || showResources || showWorkspaceManager || renameTarget != nil || topicEditor != nil || webhookPreviewTarget != nil
     }
     @Published var showResources = false
     @Published var showWorkspaceManager = false
@@ -372,6 +369,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         report.attach(self)
         TranscriptKeptRows.policy = self
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
+        ChangesTab.resolveProject = { [weak self] id in self?.changesProject(id) }
     }
     /// Opens the desktop database off the main actor and reports the one state
     /// the rest of the app checks synchronously: there is no storage at all.

@@ -41,11 +41,6 @@ extension WorkspaceModel {
         terminalVisible.toggle()
         if !terminalVisible, let id = focusedSessionID ?? selectedID { displays[id]?.composerFocusRequest += 1 }
     }
-    /// Opens the Changes sheet for a project's folders.
-    func showChanges(in workspaceID: String? = nil) {
-        guard let workspaceID = workspaceID ?? chat?.workspaceID ?? selectedWorkspaceID, workspaces.contains(where: { $0.id == workspaceID }) else { error = "Choose a project to see its changes."; return }
-        gitWorkspaceID = workspaceID; showGit = true
-    }
     func inspectResources(_ id: String?) { resourceTargetSessionID = id; showResources = true }
     func updateHostActivity(workspaceID: String) {
         hosts[workspaceID]?.isBusy = sides.values.contains { $0.workspaceID == workspaceID && !$0.kept && !$0.pending } || displays.values.contains { ($0.hasWork || $0.loading) && record($0.id)?.workspaceID == workspaceID }

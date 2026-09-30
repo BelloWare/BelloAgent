@@ -135,9 +135,6 @@ struct WorkspaceView: View {
         .piSheetWindow(item: $model.renameTarget) { target in RenameChatSheet(model: model, chatID: target.id) }
         .piSheetWindow(item: $model.topicEditor) { target in TopicSheet(model: model, target: target) }
         .piSheetWindow(item: $model.webhookPreviewTarget) { target in WebhookPreviewSheet(model: model, chatID: target.id) }
-        .piSheetWindow(isPresented: $model.showGit) {
-            if let project = model.workspaces.first(where: { $0.id == (model.gitWorkspaceID ?? model.selectedWorkspaceID) }) { GitPanelView(roots: project.roots) }
-        }
         .frame(minWidth: 920, minHeight: 600)
         .background(WindowActivityGuard(model: model))
         .background(ConversationPageVisibility(reportVisible: model.page != .chats, focusIdentity: model.focusedSessionID, closeReport: model.closeReport,

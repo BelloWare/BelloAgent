@@ -58,7 +58,7 @@ final class GitPanelRedrawTests: GitPanelTestCase {
             for character in "Tidy" { controller.commitMessage.append(character); try await draw(window) }
         }
         XCTAssertGreaterThanOrEqual(typing["GitCommitBox", default: 0], 4, "Typing draws the commit box: \(typing)")
-        for part in ["GitPanelToolbar", "GitChangesList", "GitFileRow", "GitPanelDetail", "GitPanelActions"] {
+        for part in ["GitPanelToolbar", "GitChangesList", "GitFileRow", "GitPanelDetail", "GitPanelHeader"] {
             XCTAssertEqual(typing[part, default: 0], 0, "Typing draws no \(part): \(typing)")
         }
 
@@ -69,14 +69,14 @@ final class GitPanelRedrawTests: GitPanelTestCase {
         }
         XCTAssertGreaterThanOrEqual(next["GitPanelDetail", default: 0], 1, "Another file draws the diff: \(next)")
         XCTAssertLessThanOrEqual(next["GitFileRow", default: 0], 4, "and the row left and the row chosen, of twelve: \(next)")
-        for part in ["GitPanelToolbar", "GitCommitBox", "GitPanelActions"] {
+        for part in ["GitPanelToolbar", "GitCommitBox", "GitPanelHeader"] {
             XCTAssertEqual(next[part, default: 0], 0, "Another file draws no \(part): \(next)")
         }
 
         let tick = try await drawn { controller.checked.remove(path) }
         XCTAssertEqual(tick["GitFileRow", default: 0], 1, "A tick draws its row: \(tick)")
         XCTAssertGreaterThanOrEqual(tick["GitCommitBox", default: 0], 1, "and the commit box's count: \(tick)")
-        for part in ["GitPanelToolbar", "GitPanelDetail", "GitPanelActions"] {
+        for part in ["GitPanelToolbar", "GitPanelDetail", "GitPanelHeader"] {
             XCTAssertEqual(tick[part, default: 0], 0, "A tick draws no \(part): \(tick)")
         }
 
@@ -86,7 +86,7 @@ final class GitPanelRedrawTests: GitPanelTestCase {
             controller.splitDiff = true
             for _ in 0..<25 { try await draw(window) }
         }
-        for part in ["GitPanelToolbar", "GitRemoteIconButtons", "GitChangesList", "GitFileRow", "GitCommitBox", "GitPanelDetail", "GitPanelActions"] {
+        for part in ["GitPanelToolbar", "GitRemoteIconButtons", "GitChangesList", "GitFileRow", "GitCommitBox", "GitPanelDetail", "GitPanelHeader"] {
             XCTAssertEqual(split[part, default: 0], 0, "Side by side draws no \(part): \(split)")
         }
 

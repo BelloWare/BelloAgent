@@ -44,18 +44,6 @@ final class SheetHoverReleaseTests: GitPanelTestCase, SerialTestLane {
         var body: some View { Color.clear.piSheetWindow(isPresented: $presenter.showing) { Hovered() } }
     }
 
-    /// The Changes sheet as the workspace presents it, a new controller each opening.
-    private struct ChangesHost: View {
-        @ObservedObject var presenter: Presenter
-        let root: String
-        let made: @MainActor (GitController) -> Void
-        var body: some View {
-            Color.clear.piSheetWindow(isPresented: $presenter.showing) {
-                GitPanelView(controller: { let controller = GitController(roots: [root]); made(controller); return controller }())
-            }
-        }
-    }
-
     /// A window presenting `view`, with the app in front, as it is when it is
     /// used (a hidden app shown again is), and the pointer put back where it
     /// was once the test is over; the screen's coordinates run down.
@@ -99,31 +87,31 @@ final class SheetHoverReleaseTests: GitPanelTestCase, SerialTestLane {
         }
     }
 
-    /// The Changes sheet, closed as the reader closes it, the pointer over it:
-    /// its controller goes, with everything it read.
-    @MainActor func testAChangesSheetClosedUnderThePointerLetsGoOfItsController() async throws {
+    /// A Changes tab, closed as the reader closes it, the pointer over its
+    /// panel: its controller goes, with everything it read.
+    @MainActor func testAChangesTabClosedUnderThePointerLetsGoOfItsController() async throws {
         let folder = try repository("changes-under-pointer")
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         try start(folder)
         try "one\n".write(to: folder.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
         try git(["add", "."], in: folder); try git(["commit", "-q", "-m", "Seed"], in: folder)
         try "one!\n".write(to: folder.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
-        let presenter = Presenter(), made = MadeControllers()
-        let (window, screen) = try await inFront(ChangesHost(presenter: presenter, root: folder.path, made: made.add), size: NSSize(width: 1280, height: 860))
-        addTeardownBlock { @MainActor in presenter.showing = false }
+        let host = TabHost(defaults: nil)
+        host.showsWindows = false
+        addTeardownBlock { @MainActor in host.tearDown() }
+        let (window, screen) = try await inFront(TabWindowRoot(host: host, container: host.pane).piTabRoot(), size: NSSize(width: 1280, height: 860))
+        var controllers: [() -> GitController?] = []
         for pass in 1...2 {
-            presenter.showing = true
-            try await eventually("the Changes sheet") { window.attachedSheet != nil && made.newest?.statusRead == true }
-            let sheet = try XCTUnwrap(window.attachedSheet)
-            weak var controller = made.newest
-            CGWarpMouseCursorPosition(CGPoint(x: sheet.frame.midX, y: screen.frame.height - sheet.frame.midY))
+            weak var tab = autoreleasepool { host.open(kind: ChangesTab.kind, key: "under-pointer") { ChangesTab(projectID: "under-pointer", name: "project", roots: [folder.path]) } as? ChangesTab }
+            try await eventually("the Changes tab") { tab?.hasController == true && tab?.controller.statusRead == true }
+            weak var controller = tab?.controller
+            controllers.append { [weak controller] in controller }
+            CGWarpMouseCursorPosition(CGPoint(x: window.frame.midX, y: screen.frame.height - window.frame.midY))
             try await Task.sleep(for: .milliseconds(700))
-            XCTAssertTrue(sheet.isKeyWindow, "Pass \(pass): the sheet is key")
-            XCTAssertTrue(sheet.frame.contains(NSEvent.mouseLocation), "Pass \(pass): the pointer is over it")
-            presenter.showing = false
-            try await eventually("closed") { window.attachedSheet == nil }
-            try await eventually("pass \(pass): its controller let go of, the pointer still over where it was") { controller == nil }
+            XCTAssertTrue(window.frame.contains(NSEvent.mouseLocation), "Pass \(pass): the pointer is over the panel")
+            autoreleasepool { if let tab { host.close(tab) } }
+            try await eventually("pass \(pass): its controller let go of, the pointer still over where it was") { autoreleasepool { controller == nil } }
         }
-        XCTAssertEqual(made.all.compactMap { $0() }.count, 0, "No closed Changes sheet's controller is left")
+        XCTAssertEqual(controllers.compactMap { $0() }.count, 0, "No closed Changes tab's controller is left")
     }
 }
