@@ -656,6 +656,10 @@ final class UIScreenshotTests: XCTestCase {
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
             try capture(tabWindow, to: gallery.appendingPathComponent("10b-changes-window-\(name).png"))
+            tabWindow.setContentSize(TabWindowController.defaultSize)
+            try await settle(1.0)
+            try capture(tabWindow, to: gallery.appendingPathComponent("10c-changes-window-narrow-\(name).png"))
+            tabWindow.setFrame(NSRect(x: 120, y: 120, width: 1180, height: 780), display: true)
         }
         model.tabs.close(changes)
         try await settle(0.6)

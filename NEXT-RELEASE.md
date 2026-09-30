@@ -3,6 +3,8 @@
 **All work for the next release goes on one branch: `dev/next`.** Other `dev/*` and `wip/*` branches are history; everything from them that belongs to 0.1.117 is merged here. `main` holds released versions only and is updated by the release process (docs/Release.md).
 
 ## How work flows
+Current owner instruction (2026-10-01): keep new development commits local until release. The earlier Quick Open findings 1–4 were already pushed; preserve them. Code execution remains on the owner's Mac.
+
 1. A coding agent works directly on `dev/next`: small commits, pushed as it goes. It may not be able to run code, so it says in each commit message what should be checked.
 2. The owner then asks the agent on their Mac to pull and check. It runs `scripts/check-next.sh` (build), `scripts/check-next.sh test <Class> …` (named test classes), `scripts/check-next.sh helper` (helper and package suites, wire scripts) or `scripts/check-next.sh gate` (the full release gate), and reports or fixes what fails.
 3. When everything below is done and the gate and an hour-long soak pass, `dev/next` is released.
@@ -33,6 +35,8 @@
   7. [x] a failed refresh still reads as ready: surface `finder.failure` and say the list is as last read;
   8. [x] a truncated listing says only "no match": say how many files were searched.
 - [ ] **Changes narrow-pane layout** — GitPanelWidthTests: the list offset check is too strict (moves 12.5 pt as rows re-measure; compare the first visible row), and the Commit button isn't found in the accessibility tree (assert with the commit field instead). Then run ChangesTabFrameTests at 1280×820, 580×800 and 820×640, add a gallery scene for a narrow window, and review.
+  - [x] Compare the first visible file row and assert the full commit field; add `10c-changes-window-narrow` in both gallery themes.
+  - [ ] Mac validation: GitPanelWidthTests, ChangesTabFrameTests at all three sizes, and review the narrow-window gallery scene.
 - [ ] **Diff line → file**: a diff line opens its file in a tab at that line (GitView/GitDiffTable.swift gains the line under the pointer; Git/GitDiffTable+Pi.swift, GitDiffView.swift, GitPanel.swift, ChangesTab.swift, Workspaces/WorkspaceChanges.swift).
 - [ ] **Tab speed fix**: `TabContentHost.sizeThatFits` returns `proposal.replacingUnspecifiedDimensions()` (Tabs/TabWindows.swift). Tabs spend 35–60% more main-thread time without it. Needs a test and a gallery check.
 - [ ] **Links in reply text**: code-formatted paths that exist in a trusted project open the file (at `:N`); resolved lazily, cached, off the main thread; plain prose is never linked.
