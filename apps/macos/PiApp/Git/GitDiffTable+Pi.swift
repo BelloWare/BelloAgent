@@ -13,7 +13,7 @@ extension GitDiffColors {
 
 enum GitDiffPiMenu {
     /// Copy, Select All and, over a file's header, Copy Path.
-    @MainActor static let builder: GitDiffMenuBuilder = { request in
+    @MainActor static func builder(openFile: ((String, Int) -> Void)? = nil) -> GitDiffMenuBuilder { { request in
         var entries: [PiMenuEntry] = [
             .button("Copy", enabled: request.hasSelection, identifier: "git-diff-copy", action: request.copy),
             .button("Select All", identifier: "git-diff-select-all", action: request.selectAll),
@@ -24,6 +24,12 @@ enum GitDiffPiMenu {
                 NSPasteboard.general.clearContents(); NSPasteboard.general.setString(path, forType: .string)
             })
         }
+        if let location = request.fileLine, let openFile {
+            entries.append(.divider)
+            entries.append(.button("Open File at Line \(location.line)", identifier: "git-diff-open-file") {
+                openFile(location.path, location.line)
+            })
+        }
         return PiMenus.menu(entries)
-    }
+    } }
 }

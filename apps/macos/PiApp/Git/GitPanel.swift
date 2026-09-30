@@ -24,14 +24,16 @@ struct GitPanelView: View {
     @StateObject private var questions: PiQuestion
     /// The project the panel shows, named in its header.
     let project: String?
+    let openFile: ((String, Int) -> Void)?
     /// Wide enough for the list beside the diff; below this the list goes
     /// above it (`GitPanelSplit`). Set only when the panel's width crosses
     /// it, so resizing within one layout draws no part again.
     @State private var wide = true
     nonisolated static let wideWidth: CGFloat = 900
 
-    init(controller: GitController, place: GitPanelPlace = GitPanelPlace(), questions: PiQuestion = PiQuestion(), project: String? = nil) {
-        self.controller = controller; self.project = project
+    init(controller: GitController, place: GitPanelPlace = GitPanelPlace(), questions: PiQuestion = PiQuestion(), project: String? = nil,
+         openFile: ((String, Int) -> Void)? = nil) {
+        self.controller = controller; self.project = project; self.openFile = openFile
         _place = State(initialValue: place)
         _questions = StateObject(wrappedValue: questions)
     }
@@ -51,7 +53,7 @@ struct GitPanelView: View {
                 GitPanelSplit(wide: wide) {
                     sidebar
                     Rectangle().fill(Color.piHairline)
-                    GitPanelDetail(controller: controller, inputs: GitPanelDetail.Inputs(controller)).equatable()
+                    GitPanelDetail(controller: controller, inputs: GitPanelDetail.Inputs(controller), openFile: openFile).equatable()
                 }
             }
         }
@@ -677,6 +679,7 @@ private struct GitPanelDetail: View, Equatable {
     }
     let controller: GitController
     let inputs: Inputs
+    let openFile: ((String, Int) -> Void)?
     nonisolated static func == (a: Self, b: Self) -> Bool { MainActor.assumeIsolated { samePart((a.controller, a.inputs), (b.controller, b.inputs)) } }
 
     /// The diff pane's content is a closure it runs later: everything it
@@ -686,13 +689,13 @@ private struct GitPanelDetail: View, Equatable {
     /// after the file was chosen was never drawn.
     var body: some View {
         let _ = RedrawCounter.note("GitPanelDetail")
-        let controller = controller
+        let controller = controller, openFile = openFile
         if inputs.panel == .changes {
             if let selection = inputs.selection {
                 let files = inputs.diff.files, loading = inputs.diffLoading
                 GitDiffPane(presentation: controller.presentation) { split, expanded in
                     DiffView(files: files, title: selection.path, subtitle: selection.staged ? "Staged · index versus HEAD" : "Working tree versus index",
-                             identity: GitController.diffIdentity(path: selection.path, staged: selection.staged), loading: loading, split: split, expanded: expanded)
+                             identity: GitController.diffIdentity(path: selection.path, staged: selection.staged), loading: loading, split: split, expanded: expanded, openFile: openFile)
                 }
             } else {
                 placeholder("Select a file to see its changes.")
@@ -720,7 +723,7 @@ private struct GitPanelDetail: View, Equatable {
                 GitDiffPane(presentation: controller.presentation) { split, expanded in
                     DiffView(files: files, title: file, subtitle: file == nil ? nil : "In \(detail.commit.shortHash)",
                              identity: GitController.diffIdentity(commit: detail.commit.hash, file: file), loading: loading, embedded: true,
-                             lead: lead, leadKey: leadKey, split: split, expanded: expanded)
+                             lead: lead, leadKey: leadKey, split: split, expanded: expanded, openFile: openFile)
                 }
             }
         } else if inputs.commitLoading {

@@ -110,8 +110,16 @@ public struct GitDiffMenuRequest {
     public let hasSelection: Bool
     /// Set only over a file's header row.
     public let filePath: String?
+    /// A numbered line under the pointer, in the side the reader clicked.
+    public let fileLine: GitDiffFileLine?
     public let copy: @MainActor () -> Void
     public let selectAll: @MainActor () -> Void
+}
+
+public struct GitDiffFileLine: Equatable, Sendable {
+    public let path: String
+    /// One-based; old numbers on the removed side, new numbers otherwise.
+    public let line: Int
 }
 
 /// Builds the diff's context menu. A table given none shows the default
@@ -552,6 +560,21 @@ public struct GitDiffTable: NSViewRepresentable {
         func pair(_ row: GitDiffTableRow) -> GitSplitRow { splits[Int(row.item)] }
         func file(_ row: GitDiffTableRow) -> GitDiffFile { files[Int(row.file)] }
 
+        func fileLine(at index: Int, side: GitDiffSide) -> GitDiffFileLine? {
+            guard rows.indices.contains(index) else { return nil }
+            let row = rows[index]
+            let number: Int?
+            switch row.kind {
+            case .line: number = line(row).newNumber ?? line(row).oldNumber
+            case .split:
+                let pair = pair(row)
+                number = side == .left ? pair.left?.oldNumber : pair.right?.newNumber
+            default: return nil
+            }
+            guard let number, number > 0 else { return nil }
+            return GitDiffFileLine(path: file(row).path, line: number)
+        }
+
         // MARK: Selection
 
         /// The text a row selects on a side: a line's text, a file's path.
@@ -829,7 +852,8 @@ final class GitDiffTableView: NSTableView {
         let location = convert(event.locationInWindow, from: nil)
         let row = self.row(at: location)
         let path = row >= 0 && row < coordinator.rows.count && coordinator.rows[row].kind == .file ? coordinator.file(coordinator.rows[row]).path : nil
-        let request = GitDiffMenuRequest(hasSelection: !coordinator.selectedText.isEmpty, filePath: path,
+        let side: GitDiffSide = coordinator.split ? (location.x >= GitDiffMetrics.cardInset + GitDiffMetrics.halfWidth(coordinator.cardWidth(bounds.width)) ? .right : .left) : .whole
+        let request = GitDiffMenuRequest(hasSelection: !coordinator.selectedText.isEmpty, filePath: path, fileLine: coordinator.fileLine(at: row, side: side),
                                          copy: { [weak coordinator] in coordinator?.copySelection() },
                                          selectAll: { [weak coordinator] in coordinator?.selectAll() })
         guard let builder = coordinator.menu else { return Self.defaultMenu(request) }

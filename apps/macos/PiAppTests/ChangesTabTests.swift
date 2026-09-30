@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import AppKit
+import FileView
 @testable import PiApp
 @testable import GitView
 
@@ -99,6 +100,25 @@ final class ChangesTabTests: GitPanelTestCase {
         window.contentView?.layoutSubtreeIfNeeded()
         try await eventually("back in the pane") { controller.isShown && tab.container === model.tabs.pane }
         XCTAssertEqual(controller.selection?.path, "b.txt")
+    }
+
+    @MainActor func testADiffLocationOpensTheCurrentFileInATabAtItsLine() async throws {
+        let (model, window, project) = try await workspace()
+        let url = URL(fileURLWithPath: project.path).appendingPathComponent("a.txt")
+        try "one!\ntwo\nthree\n".write(to: url, atomically: true, encoding: .utf8)
+        let changes = try XCTUnwrap(model.showChanges(in: project.id))
+        try await eventually("the repository root") { changes.controller.repositoryRoot != nil }
+        changes.openFile(path: "a.txt", line: 2)
+        let file = try XCTUnwrap(model.tabs.pane.activeTab as? FileTab)
+        XCTAssertEqual(file.key, FileTab.key(for: url))
+        XCTAssertEqual(file.projectID, project.id)
+        try await eventually("the diff's line is shown") {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return (file.focusView as? FileTextView)?.emphasized == 1...1
+        }
+        changes.openFile(path: "a.txt", line: 3)
+        XCTAssertTrue(model.tabs.pane.activeTab === file, "a second location reuses the file tab")
+        try await eventually("the second line is shown") { (file.focusView as? FileTextView)?.emphasized == 2...2 }
     }
 
     /// Brought back after a relaunch, a Changes tab reads nothing until it is

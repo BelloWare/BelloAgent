@@ -4,6 +4,14 @@ import AppKit
 // opened from ⇧⌘G, the composer, a project's header and the sidebar.
 
 extension WorkspaceModel {
+    /// A line in a working-tree, staged or history diff opens the current
+    /// file, with trust determined by its resolved path.
+    func openChangesFile(_ url: URL, at line: Int) {
+        guard line > 0 else { return }
+        if page != .chats { page = .chats }
+        let tab = openFile(url, lines: (line - 1)...(line - 1))
+        quickOpen.focusAfterOpening(tab)
+    }
     /// Opens a project's changes and history in a tab of the pane beside the
     /// chats, or shows the tab they are open in, wherever it is. The chats
     /// are brought back first: the report and the background requests cover

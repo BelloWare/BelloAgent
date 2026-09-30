@@ -24,6 +24,12 @@ import GitView
     /// What the app knows of a project: its folder name and folders, or nil
     /// once it was removed. Set once by the app.
     static var resolveProject: (String) -> (name: String, roots: [String])? = { _ in nil }
+    static var openLocation: (URL, Int) -> Void = { _, _ in }
+
+    func openFile(path: String, line: Int) {
+        guard !removed, line > 0, let root = controller.repositoryRoot else { return }
+        Self.openLocation(URL(fileURLWithPath: root).appendingPathComponent(path), line)
+    }
 
     init(projectID: String, name: String, roots: [String]) {
         self.projectID = projectID; self.name = name; self.roots = roots
@@ -97,7 +103,8 @@ struct ChangesTabContent: View {
             .background(Color.piContent)
             .accessibilityElement(children: .combine)
         } else {
-            GitPanelView(controller: tab.controller, place: tab.place, questions: tab.questions, project: tab.name)
+            GitPanelView(controller: tab.controller, place: tab.place, questions: tab.questions, project: tab.name,
+                         openFile: { [weak tab] path, line in tab?.openFile(path: path, line: line) })
         }
     }
 }

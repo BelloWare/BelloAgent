@@ -35,13 +35,13 @@ final class GitDiffTableTests: GitPanelTestCase {
         let window: NSWindow
         let holder = DiffHolder()
         var split = false
-        init(files: [GitDiffFile], split: Bool = false, width: CGFloat = 820, height: CGFloat = 420) {
+        init(files: [GitDiffFile], split: Bool = false, width: CGFloat = 820, height: CGFloat = 420, openFile: ((String, Int) -> Void)? = nil) {
             self.split = split
             window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             let holder = holder
             window.contentView = NSHostingView(rootView: DiffView(files: files, title: "Sources/Engine/Router.swift", subtitle: "Working tree versus index", identity: "tests",
-                                                                   split: Binding(get: { split }, set: { _ in }), expanded: Binding(get: { holder.expanded }, set: { holder.expanded = $0 })))
+                                                                   split: Binding(get: { split }, set: { _ in }), expanded: Binding(get: { holder.expanded }, set: { holder.expanded = $0 }), openFile: openFile))
             window.makeKeyAndOrderFront(nil)
             draw()
         }
@@ -140,6 +140,32 @@ final class GitDiffTableTests: GitPanelTestCase {
         NSPasteboard.general.clearContents()
         menu.performActionForItem(at: menu.index(of: copyPath))
         XCTAssertEqual(NSPasteboard.general.string(forType: .string), "Sources/Engine/Router.swift")
+    }
+
+    @MainActor func testAUnifiedDiffLineOffersOpeningItsFileAtThatLine() throws {
+        let files = GitDiffParser.parse(Self.patch)
+        var opened: (String, Int)?
+        let pane = Pane(files: files, openFile: { opened = ($0, $1) }); defer { pane.close() }
+        for (row, line) in zip(lineRows(pane.table), files[0].hunks[0].lines) {
+            let menu = try XCTUnwrap(pane.table.menu(for: pane.event(.rightMouseDown, at: pane.point(row: row, x: 4))))
+            let item = try XCTUnwrap(menu.items.first { $0.identifier?.rawValue == "git-diff-open-file" })
+            menu.performActionForItem(at: menu.index(of: item))
+            XCTAssertEqual(opened?.0, files[0].path)
+            XCTAssertEqual(opened?.1, line.newNumber ?? line.oldNumber)
+        }
+        let hunk = try XCTUnwrap(pane.table.coordinator?.rows.firstIndex { $0.kind == .hunk })
+        XCTAssertNil(pane.table.coordinator?.fileLine(at: hunk, side: .whole), "a header has no numbered line")
+    }
+
+    @MainActor func testASplitDiffUsesTheLineNumberUnderThePointerAndLeavesEmptySidesWithoutAnAction() throws {
+        let files = GitDiffParser.parse(Self.patch)
+        let pane = Pane(files: files, split: true); defer { pane.close() }
+        let pairs = files[0].hunks[0].splitRows()
+        for (row, pair) in zip(lineRows(pane.table), pairs) {
+            XCTAssertEqual(pane.table.coordinator?.fileLine(at: row, side: .left)?.line, pair.left?.oldNumber)
+            XCTAssertEqual(pane.table.coordinator?.fileLine(at: row, side: .right)?.line, pair.right?.newNumber)
+        }
+        XCTAssertTrue(pairs.contains { $0.left == nil || $0.right == nil }, "the fixture covers an empty side")
     }
 
     /// The app draws the diff in its own colours and gives it its own menu:
