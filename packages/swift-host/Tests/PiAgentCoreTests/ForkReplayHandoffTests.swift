@@ -74,6 +74,18 @@ final class ForkReplayHandoffTests: XCTestCase {
         XCTAssertEqual(made.coveredBytes, read.coveredBytes, "\(what): bytes", file: file, line: line)
     }
 
+    /// What a chat holds of its history, and how much of it.
+    private struct Whole: Equatable {
+        var history: [ChatMessage], visible: [ChatMessage], ledger: MessageVersionLedger, timelines: [[Int]]
+        var links: [String: [String]], spans: [String: JournalCheckpoint.Row], tasks: [TaskPresentationRecord]
+        var partial: Bool, older: Int, scanned: UInt64
+    }
+    private func whole(_ session: AgentSession) async -> Whole {
+        Whole(history: await session.history, visible: await session.visible, ledger: await session.versions.ledger, timelines: await session.versions.timelines,
+              links: await session.pendingRequestLinks, spans: await session.rowSpans, tasks: await session.recentTaskPresentations,
+              partial: await session.partialHistory, older: await session.olderRows, scanned: await session.spansScannedTo)
+    }
+
     /// The fork's journal replayed in full, from the file, as an open without
     /// a metadata file does.
     private func fullReplay(_ chat: Chat, id: String, path: String) throws -> JournalReplay {
@@ -114,6 +126,86 @@ final class ForkReplayHandoffTests: XCTestCase {
             await handed.close()
         }
         await source.close()
+    }
+
+    /// A fork of the whole chat, from a chat opened from its metadata file
+    /// with only its latest rows, gives the chat its whole history from what
+    /// it copied, instead of reading the journal once more first: the same
+    /// rows, versions, links, places and tasks the full read gave, and a fork
+    /// whose timeline is the one it gave.
+    func testAForkOfTheWholeChatGivesTheChatItsWholeHistory() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let source = try await source(chat)
+        let snapshot = await source.snapshot()
+        let path = try XCTUnwrap(snapshot["path"].text)
+        await source.close()
+        XCTAssertNotNil(JournalCheckpoint.read(for: URL(fileURLWithPath: path)), "the chat has its metadata file")
+        func contextData(_ result: JSON) throws -> JSON {
+            let reader = try JournalRecordReader(URL(fileURLWithPath: try XCTUnwrap(result["path"].text))); _ = try reader.next()
+            var found: JSON = .null
+            while let record = try reader.next() { if record["customType"].text == JournalRecordKind.context { found = record["data"] } }
+            return found
+        }
+        // Read in full first, as every fork did.
+        let read = try chat.session("source", resume: path)
+        let readPartial = await read.partialHistory
+        XCTAssertTrue(readPartial, "opened with its latest rows only")
+        try await read.ensureFullHistory()
+        let readWhole = await whole(read)
+        let readFork = try await read.fork(to: "after-read")
+        await read.close()
+        // Given its history by the fork of the whole chat.
+        let forked = try chat.session("source", resume: path)
+        let forkedPartial = await forked.partialHistory
+        XCTAssertTrue(forkedPartial, "opened with its latest rows only")
+        let forkedResult = try await forked.fork(to: "whole")
+        let forkedWhole = await whole(forked)
+        await forked.close()
+        XCTAssertEqual(forkedWhole.history, readWhole.history, "history")
+        XCTAssertEqual(forkedWhole.visible, readWhole.visible, "shown rows")
+        XCTAssertEqual(forkedWhole.ledger, readWhole.ledger, "versions")
+        XCTAssertEqual(forkedWhole.timelines, readWhole.timelines, "version timelines")
+        XCTAssertEqual(forkedWhole.links, readWhole.links, "request links")
+        XCTAssertEqual(forkedWhole.spans, readWhole.spans, "the rows' places in the chat's own journal")
+        XCTAssertEqual(forkedWhole.tasks, readWhole.tasks, "tasks")
+        XCTAssertEqual(forkedWhole, readWhole, "everything the full read gives")
+        XCTAssertFalse(forkedWhole.partial)
+        XCTAssertEqual(try contextData(forkedResult), try contextData(readFork), "the fork's context and timeline")
+    }
+
+    /// A fork of the whole chat that fails leaves the chat with its whole
+    /// history, as reading it before the fork did, and leaves no fork behind:
+    /// when the fork's name is taken, so it cannot be published, and when it
+    /// would have the chat's own.
+    func testAForkThatFailsStillGivesTheChatItsWholeHistory() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let source = try await source(chat)
+        let snapshot = await source.snapshot()
+        let path = try XCTUnwrap(snapshot["path"].text)
+        await source.close()
+        let read = try chat.session("source", resume: path)
+        try await read.ensureFullHistory()
+        let readWhole = await whole(read), readSnapshot = await read.snapshot()
+        await read.close()
+        let taken = chat.state.appendingPathComponent("fork_taken.jsonl")
+        try Data("not a fork\n".utf8).write(to: taken)
+        for (newID, code) in [("taken", nil), ("source", "session_conflict")] as [(String, String?)] {
+            let session = try chat.session("source", resume: path)
+            let partial = await session.partialHistory
+            XCTAssertTrue(partial, "\(newID): opened with its latest rows only")
+            do { _ = try await session.fork(to: newID); XCTFail("\(newID): the fork fails") }
+            catch { if let code { XCTAssertEqual((error as? AgentError)?.code, code, newID) } }
+            let failedWhole = await whole(session), failedSnapshot = await session.snapshot()
+            await session.close()
+            XCTAssertEqual(failedWhole, readWhole, "\(newID): the whole history, as the full read gave")
+            for key in ["messages", "total"] { XCTAssertEqual(failedSnapshot[key], readSnapshot[key], "\(newID): \(key)") }
+            // The revision is the session's own, then how often its rows changed.
+            let changes = { (snapshot: JSON) in snapshot["displayRevision"].text?.split(separator: ":").last }
+            XCTAssertEqual(changes(failedSnapshot), changes(readSnapshot), "\(newID): the rows changed once, as the full read changed them")
+        }
+        XCTAssertEqual(try Data(contentsOf: taken), Data("not a fork\n".utf8), "the file where the fork would go is kept")
+        let left = try FileManager.default.contentsOfDirectory(atPath: chat.state.path).filter { $0.hasPrefix(".fork-") }
+        XCTAssertEqual(left, [], "no fork journal left behind")
     }
 
     /// A replay that is not the whole journal as it is now is not used: the
