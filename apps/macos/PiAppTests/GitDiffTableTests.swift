@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import AppKit
 @testable import PiApp
+@testable import GitView
 
 /// The diff as a native table does what the SwiftUI rows did, and a little
 /// more: text is selected and copied across lines as well as within one, a

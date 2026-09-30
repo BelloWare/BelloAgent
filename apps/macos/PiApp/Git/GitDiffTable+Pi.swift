@@ -1,4 +1,5 @@
 import AppKit
+import GitView
 
 // The diff drawn in the app's own look: its colours, and its context menu as
 // the app's menus are drawn (`PiMenus`). The table itself knows neither.

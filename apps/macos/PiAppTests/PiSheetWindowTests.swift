@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import AppKit
 @testable import PiApp
+@testable import GitView
 
 /// A sheet the app presents in a window of its own (`piSheetWindow`), as every
 /// sheet of the workspace window now is: the same window as SwiftUI's sheet,

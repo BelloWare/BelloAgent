@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import AppKit
 @testable import PiApp
+@testable import GitView
 
 final class GitChangelistReadTests: GitPanelTestCase {
     // MARK: Reads the panel leaves behind

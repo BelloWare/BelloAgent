@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import GitView
 
 /// The commit's files as chips; one narrows the diff to that file, "All"
 /// widens it again. The chips are drawn by one native view: two hundred

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import GitView
 
 // Drawing a diff: its heading, and the unified or side-by-side cards the
 // hunks become (`GitDiffTable`). A commit's file chips are `GitFileChips`.

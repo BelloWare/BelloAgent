@@ -2,33 +2,33 @@ import Foundation
 
 /// A unified diff parsed for rendering: files, hunks and lines with old/new
 /// line numbers. Binary and mode-only changes keep a note instead of hunks.
-struct GitDiffLine: Identifiable, Equatable, Sendable {
-    enum Kind: Equatable, Sendable { case context, added, removed, note }
-    let id: Int
-    let kind: Kind
-    let oldNumber: Int?
-    let newNumber: Int?
-    let text: String
+public struct GitDiffLine: Identifiable, Equatable, Sendable {
+    public enum Kind: Equatable, Sendable { case context, added, removed, note }
+    public let id: Int
+    public let kind: Kind
+    public let oldNumber: Int?
+    public let newNumber: Int?
+    public let text: String
 }
 
-struct GitDiffHunk: Identifiable, Equatable, Sendable {
-    let id: Int
-    let header: String
-    let lines: [GitDiffLine]
+public struct GitDiffHunk: Identifiable, Equatable, Sendable {
+    public let id: Int
+    public let header: String
+    public let lines: [GitDiffLine]
 }
 
-struct GitDiffFile: Identifiable, Equatable, Sendable {
-    let oldPath: String
-    let newPath: String
-    let binary: Bool
-    let hunks: [GitDiffHunk]
-    let notes: [String]
+public struct GitDiffFile: Identifiable, Equatable, Sendable {
+    public let oldPath: String
+    public let newPath: String
+    public let binary: Bool
+    public let hunks: [GitDiffHunk]
+    public let notes: [String]
     /// Counted once while parsing: a file card must not re-scan every line each
     /// time the diff is drawn.
-    let added: Int
-    let removed: Int
-    let lineCount: Int
-    init(oldPath: String, newPath: String, binary: Bool, hunks: [GitDiffHunk], notes: [String]) {
+    public let added: Int
+    public let removed: Int
+    public let lineCount: Int
+    public init(oldPath: String, newPath: String, binary: Bool, hunks: [GitDiffHunk], notes: [String]) {
         self.oldPath = oldPath; self.newPath = newPath; self.binary = binary; self.hunks = hunks; self.notes = notes
         var added = 0, removed = 0, lines = 0
         for hunk in hunks {
@@ -39,15 +39,15 @@ struct GitDiffFile: Identifiable, Equatable, Sendable {
         }
         self.added = added; self.removed = removed; self.lineCount = lines
     }
-    var id: String { newPath.isEmpty ? oldPath : newPath }
-    var path: String { newPath == "/dev/null" || newPath.isEmpty ? oldPath : newPath }
-    var renamed: Bool { !oldPath.isEmpty && !newPath.isEmpty && oldPath != newPath && oldPath != "/dev/null" && newPath != "/dev/null" }
+    public var id: String { newPath.isEmpty ? oldPath : newPath }
+    public var path: String { newPath == "/dev/null" || newPath.isEmpty ? oldPath : newPath }
+    public var renamed: Bool { !oldPath.isEmpty && !newPath.isEmpty && oldPath != newPath && oldPath != "/dev/null" && newPath != "/dev/null" }
 }
 
-enum GitDiffParser {
-    static let maximumLines = 20_000
+public enum GitDiffParser {
+    public static let maximumLines = 20_000
 
-    static func parse(_ text: String) -> [GitDiffFile] {
+    public static func parse(_ text: String) -> [GitDiffFile] {
         var files: [GitDiffFile] = []
         var oldPath = "", newPath = "", binary = false, notes: [String] = []
         var hunks: [GitDiffHunk] = []
@@ -137,13 +137,13 @@ enum GitDiffParser {
 /// One row of a side-by-side diff: the old line on the left, the new on the
 /// right. Context appears on both sides; a removed/added block is paired
 /// line by line and the shorter side is padded with blanks.
-struct GitSplitRow: Identifiable, Equatable, Sendable {
-    let id: Int
-    let left: GitDiffLine?
-    let right: GitDiffLine?
+public struct GitSplitRow: Identifiable, Equatable, Sendable {
+    public let id: Int
+    public let left: GitDiffLine?
+    public let right: GitDiffLine?
 }
 
-extension GitDiffHunk {
+public extension GitDiffHunk {
     /// Pairs the hunk's lines, stopping once `limit` rows exist. The limit is
     /// what the card is about to draw: pairing every line of a 20,000-line
     /// patch on every pass over the view's body is work nobody sees.

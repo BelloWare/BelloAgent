@@ -26,40 +26,40 @@ import AppKit
 /// same pixels: a monospaced line is 15 points with its baseline at 12, a row
 /// 17, a hunk header 21, a file header 29, a note 21; cards are inset 16 and
 /// 12 apart, with a 12-point continuous corner and a hairline inside it.
-@MainActor enum GitDiffMetrics {
-    static let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    static let micro = NSFont.systemFont(ofSize: 10.5, weight: .medium)
-    static let microDigits = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
-    static let monoLine: CGFloat = 15
-    static let monoBaseline: CGFloat = 12
-    static let microLine: CGFloat = 13
-    static let microBaseline: CGFloat = 10.5
-    static let cardInset: CGFloat = 16
-    static let cardGap: CGFloat = 12
-    static let cardRadius: CGFloat = 12
-    static let bottom: CGFloat = 16
-    static let fileHeader: CGFloat = 29
-    static let hunkHeader: CGFloat = 21
-    static let note: CGFloat = 21
+@MainActor public enum GitDiffMetrics {
+    public static let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    public static let micro = NSFont.systemFont(ofSize: 10.5, weight: .medium)
+    public static let microDigits = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
+    public static let monoLine: CGFloat = 15
+    public static let monoBaseline: CGFloat = 12
+    public static let microLine: CGFloat = 13
+    public static let microBaseline: CGFloat = 10.5
+    public static let cardInset: CGFloat = 16
+    public static let cardGap: CGFloat = 12
+    public static let cardRadius: CGFloat = 12
+    public static let bottom: CGFloat = 16
+    public static let fileHeader: CGFloat = 29
+    public static let hunkHeader: CGFloat = 21
+    public static let note: CGFloat = 21
     /// A unified row: two 44-point line numbers, 8 points, a 12-point marker,
     /// inside 8 points of padding on either side.
-    static let unifiedText: CGFloat = 8 + 44 + 44 + 8 + 12
+    public static let unifiedText: CGFloat = 8 + 44 + 44 + 8 + 12
     /// Half of a side-by-side row: a 40-point number and 8 points, inside 8
     /// points of padding on either side.
-    static let splitText: CGFloat = 8 + 40 + 8
+    public static let splitText: CGFloat = 8 + 40 + 8
     /// Rows of one file drawn before "Show the whole diff" is pressed.
-    static let rowLimit = 1_500
+    public static let rowLimit = 1_500
 
     /// A colour as SwiftUI's `.opacity` made it: its own alpha scaled, in the
     /// appearance being drawn.
-    static func fill(_ color: NSColor, opacity: CGFloat) -> CGColor {
+    public static func fill(_ color: NSColor, opacity: CGFloat) -> CGColor {
         let resolved = color.usingColorSpace(.sRGB) ?? color
         return resolved.withAlphaComponent(resolved.alphaComponent * opacity).cgColor
     }
 
-    static func textWidth(unified cardWidth: CGFloat) -> CGFloat { max(0, cardWidth - unifiedText - 8) }
-    static func halfWidth(_ cardWidth: CGFloat) -> CGFloat { (cardWidth - 1) / 2 }
-    static func textWidth(split cardWidth: CGFloat) -> CGFloat { max(0, halfWidth(cardWidth) - splitText - 8) }
+    public static func textWidth(unified cardWidth: CGFloat) -> CGFloat { max(0, cardWidth - unifiedText - 8) }
+    public static func halfWidth(_ cardWidth: CGFloat) -> CGFloat { (cardWidth - 1) / 2 }
+    public static func textWidth(split cardWidth: CGFloat) -> CGFloat { max(0, halfWidth(cardWidth) - splitText - 8) }
 }
 
 /// The colours a diff is drawn in, by what they mark. `system` is AppKit's
@@ -67,31 +67,37 @@ import AppKit
 /// given, at draw time, so dynamic colours follow the appearance; a table's
 /// text and symbol caches key on the colour objects, so a host keeps one
 /// value rather than making one per update.
-struct GitDiffColors: Equatable {
+public struct GitDiffColors: Equatable {
     /// A line's text and a file's path.
-    var text: NSColor
+    public var text: NSColor
     /// A file header's symbol.
-    var secondaryText: NSColor
+    public var secondaryText: NSColor
     /// Line numbers, notes, a context line's marker.
-    var tertiaryText: NSColor
+    public var tertiaryText: NSColor
     /// Added lines and counts; removed lines and counts.
-    var added: NSColor
-    var removed: NSColor
+    public var added: NSColor
+    public var removed: NSColor
     /// A hunk's header and its band.
-    var hunk: NSColor
+    public var hunk: NSColor
     /// The card's edge and the side-by-side divider.
-    var separator: NSColor
+    public var separator: NSColor
     /// A file header's band.
-    var fileHeader: NSColor
+    public var fileHeader: NSColor
     /// The missing half of a side-by-side row.
-    var emptySide: NSColor
+    public var emptySide: NSColor
 
-    @MainActor static let system = GitDiffColors(text: .labelColor, secondaryText: .secondaryLabelColor, tertiaryText: .tertiaryLabelColor,
+    public init(text: NSColor, secondaryText: NSColor, tertiaryText: NSColor, added: NSColor, removed: NSColor, hunk: NSColor,
+                separator: NSColor, fileHeader: NSColor, emptySide: NSColor) {
+        self.text = text; self.secondaryText = secondaryText; self.tertiaryText = tertiaryText; self.added = added; self.removed = removed
+        self.hunk = hunk; self.separator = separator; self.fileHeader = fileHeader; self.emptySide = emptySide
+    }
+
+    @MainActor public static let system = GitDiffColors(text: .labelColor, secondaryText: .secondaryLabelColor, tertiaryText: .tertiaryLabelColor,
                                                  added: .systemGreen, removed: .systemRed, hunk: .systemBlue, separator: .separatorColor,
                                                  fileHeader: .controlBackgroundColor, emptySide: .quaternaryLabelColor)
 
     /// The same colour objects: a host's value, kept, is equal to itself.
-    static func == (a: Self, b: Self) -> Bool {
+    public static func == (a: Self, b: Self) -> Bool {
         a.text === b.text && a.secondaryText === b.secondaryText && a.tertiaryText === b.tertiaryText && a.added === b.added
             && a.removed === b.removed && a.hunk === b.hunk && a.separator === b.separator && a.fileHeader === b.fileHeader
             && a.emptySide === b.emptySide
@@ -100,17 +106,17 @@ struct GitDiffColors: Equatable {
 
 /// What the diff's context menu is for: whether text is selected, the path of
 /// the file whose header the pointer is on, and the table's own actions.
-struct GitDiffMenuRequest {
-    let hasSelection: Bool
+public struct GitDiffMenuRequest {
+    public let hasSelection: Bool
     /// Set only over a file's header row.
-    let filePath: String?
-    let copy: @MainActor () -> Void
-    let selectAll: @MainActor () -> Void
+    public let filePath: String?
+    public let copy: @MainActor () -> Void
+    public let selectAll: @MainActor () -> Void
 }
 
 /// Builds the diff's context menu. A table given none shows the default
 /// (`GitDiffTableView.defaultMenu`); a builder that returns nil shows none.
-typealias GitDiffMenuBuilder = @MainActor (GitDiffMenuRequest) -> NSMenu?
+public typealias GitDiffMenuBuilder = @MainActor (GitDiffMenuRequest) -> NSMenu?
 
 /// One row of the table.
 struct GitDiffTableRow {
@@ -133,7 +139,7 @@ struct GitDiffTextPoint: Comparable {
     static func < (a: Self, b: Self) -> Bool { a.row != b.row ? a.row < b.row : a.index < b.index }
 }
 
-struct GitDiffTable: NSViewRepresentable {
+public struct GitDiffTable: NSViewRepresentable {
     let files: [GitDiffFile]
     let split: Bool
     let wrap: Bool
@@ -155,9 +161,16 @@ struct GitDiffTable: NSViewRepresentable {
     /// The context menu; nil for the default one.
     var menu: GitDiffMenuBuilder? = nil
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    public init(files: [GitDiffFile], split: Bool, wrap: Bool, showAll: Bool, identity: String, top: AnyView, topKey: AnyHashable,
+                topHeightKey: AnyHashable? = nil, loading: Bool = false, more: AnyView?, colors: GitDiffColors = .system, menu: GitDiffMenuBuilder? = nil) {
+        self.files = files; self.split = split; self.wrap = wrap; self.showAll = showAll; self.identity = identity
+        self.top = top; self.topKey = topKey; self.topHeightKey = topHeightKey; self.loading = loading; self.more = more
+        self.colors = colors; self.menu = menu
+    }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    public func makeCoordinator() -> Coordinator { Coordinator() }
+
+    public func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true; scroll.drawsBackground = false; scroll.borderType = .noBorder
@@ -188,9 +201,9 @@ struct GitDiffTable: NSViewRepresentable {
 
     /// A change is shown in the table's next layout pass: after SwiftUI's
     /// update, never inside it, and in the same frame.
-    func updateNSView(_ scroll: NSScrollView, context: Context) { context.coordinator.schedule(state) }
+    public func updateNSView(_ scroll: NSScrollView, context: Context) { context.coordinator.schedule(state) }
 
-    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+    public static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
         coordinator.close()
         guard let table = scroll.documentView as? NSTableView else { return }
         table.delegate = nil; table.dataSource = nil
@@ -203,7 +216,7 @@ struct GitDiffTable: NSViewRepresentable {
 
     // MARK: - Coordinator
 
-    @MainActor final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    @MainActor public final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         struct State {
             var files: [GitDiffFile]
             var split: Bool
@@ -463,8 +476,8 @@ struct GitDiffTable: NSViewRepresentable {
 
         // MARK: Rows
 
-        func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
-        func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        public func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+        public func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
             guard row < rows.count else { return 1 }
             switch rows[row].kind {
             case .top: return max(1, topHeight)
@@ -482,13 +495,13 @@ struct GitDiffTable: NSViewRepresentable {
             case .note: return height(of: row, card: cardWidth(heightWidth))
             }
         }
-        func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        public func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
             let identifier = NSUserInterfaceItemIdentifier("git-diff-row")
             let view = tableView.makeView(withIdentifier: identifier, owner: self) as? GitDiffRowView ?? GitDiffRowView()
             view.identifier = identifier
             return view
         }
-        func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        public func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard row < rows.count else { return nil }
             switch rows[row].kind {
             case .top: return topHost.view
@@ -622,18 +635,18 @@ enum GitDiffSide { case whole, left, right }
 /// Core Text for the diff's rows: a line drawn as SwiftUI drew a one-line
 /// `Text` (tab stops every 28 points, "…" where it is cut), and wrapped lines
 /// broken as SwiftUI broke them.
-@MainActor enum GitDiffText {
-    static func attributed(_ text: String, font: NSFont, color: NSColor) -> NSAttributedString {
+@MainActor public enum GitDiffText {
+    public static func attributed(_ text: String, font: NSFont, color: NSColor) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [.font: font, NSAttributedString.Key(kCTForegroundColorAttributeName as String): color.cgColor])
     }
-    static func line(_ text: String, font: NSFont, color: NSColor = .black) -> CTLine {
+    public static func line(_ text: String, font: NSFont, color: NSColor = .black) -> CTLine {
         CTLineCreateWithAttributedString(attributed(text, font: font, color: color))
     }
     /// A short line that recurs: a line number, a marker, a chip's words.
     /// Made once and kept, in the colour of the context it is drawn into, so
     /// the same line serves light and dark. A redrawn row, or the next file's
     /// rows, draw their numbers without laying them out again.
-    static func kept(_ text: String, font: NSFont) -> CTLine {
+    public static func kept(_ text: String, font: NSFont) -> CTLine {
         let key = KeptKey(text: text, font: ObjectIdentifier(font))
         if let line = keptLines[key] { return line }
         if keptLines.count >= 8_192 { keptLines.removeAll(keepingCapacity: true) }
@@ -645,7 +658,7 @@ enum GitDiffSide { case whole, left, right }
     private struct KeptKey: Hashable { let text: String, font: ObjectIdentifier }
     private static var keptLines: [KeptKey: CTLine] = [:]
     /// A kept line drawn in `color`, its baseline at `baseline`.
-    static func drawKept(_ text: String, font: NSFont, color: NSColor, x: CGFloat, baseline: CGFloat, in context: CGContext) {
+    public static func drawKept(_ text: String, font: NSFont, color: NSColor, x: CGFloat, baseline: CGFloat, in context: CGContext) {
         let line = kept(text, font: font)
         context.saveGState()
         context.setFillColor(color.usingColorSpace(.sRGB)?.cgColor ?? color.cgColor)
@@ -655,18 +668,18 @@ enum GitDiffSide { case whole, left, right }
         context.restoreGState()
     }
     /// A kept line's width.
-    static func keptWidth(_ text: String, font: NSFont) -> CGFloat { CGFloat(CTLineGetTypographicBounds(kept(text, font: font), nil, nil, nil)) }
-    static func width(_ text: String, font: NSFont) -> CGFloat {
+    public static func keptWidth(_ text: String, font: NSFont) -> CGFloat { CGFloat(CTLineGetTypographicBounds(kept(text, font: font), nil, nil, nil)) }
+    public static func width(_ text: String, font: NSFont) -> CGFloat {
         CGFloat(CTLineGetTypographicBounds(line(text, font: font), nil, nil, nil))
     }
     /// A one-line text's width as SwiftUI sized it: up to the next pixel.
-    static func frameWidth(_ text: String, font: NSFont, scale: CGFloat) -> CGFloat { ceil(keptWidth(text, font: font) * scale) / scale }
+    public static func frameWidth(_ text: String, font: NSFont, scale: CGFloat) -> CGFloat { ceil(keptWidth(text, font: font) * scale) / scale }
 
     /// Draws `text` on one line with its baseline at `baseline`, cut to
     /// `width` with an ellipsis at the end (or the middle). Returns the line
     /// drawn, for hit-testing.
     @discardableResult
-    static func draw(_ text: String, font: NSFont, color: NSColor, x: CGFloat, baseline: CGFloat, width: CGFloat = .greatestFiniteMagnitude,
+    public static func draw(_ text: String, font: NSFont, color: NSColor, x: CGFloat, baseline: CGFloat, width: CGFloat = .greatestFiniteMagnitude,
                      truncation: CTLineTruncationType = .end, in context: CGContext) -> CTLine {
         let full = line(text, font: font, color: color)
         let drawn = fitted(full, text: text, font: font, color: color, width: width, truncation: truncation)
@@ -677,7 +690,7 @@ enum GitDiffSide { case whole, left, right }
         context.restoreGState()
         return drawn
     }
-    static func fitted(_ full: CTLine, text: String, font: NSFont, color: NSColor, width: CGFloat, truncation: CTLineTruncationType = .end) -> CTLine {
+    public static func fitted(_ full: CTLine, text: String, font: NSFont, color: NSColor, width: CGFloat, truncation: CTLineTruncationType = .end) -> CTLine {
         guard width.isFinite, CGFloat(CTLineGetTypographicBounds(full, nil, nil, nil)) > width + 0.01,
               let cut = CTLineCreateTruncatedLine(full, Double(width), truncation, line("…", font: font, color: color)) else { return full }
         return cut
@@ -685,7 +698,7 @@ enum GitDiffSide { case whole, left, right }
 
     /// Where a text breaks into lines `width` wide: at words, or inside a word
     /// longer than a line.
-    static func breaks(_ text: String, font: NSFont, width: CGFloat) -> [Range<Int>] {
+    public static func breaks(_ text: String, font: NSFont, width: CGFloat) -> [Range<Int>] {
         let attributed = self.attributed(text, font: font, color: .black)
         let length = attributed.length
         guard width > 1, length > 0 else { return [0..<length] }
@@ -699,7 +712,7 @@ enum GitDiffSide { case whole, left, right }
         }
         return ranges
     }
-    static func lineCount(_ text: String, font: NSFont, width: CGFloat) -> Int { breaks(text, font: font, width: width).count }
+    public static func lineCount(_ text: String, font: NSFont, width: CGFloat) -> Int { breaks(text, font: font, width: width).count }
 }
 
 // MARK: - Views

@@ -46,6 +46,8 @@ targets:
       - package: Sparkle
       - package: BelloViews
         product: BelloFileView
+      - package: BelloViews
+        product: BelloGitView
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.belloware.PiApp
