@@ -175,6 +175,15 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // Only the tabs beside the chat and in a window of their own (24*).
+        if testEnvironment("PI_APP_UI_GALLERY_TABS_ONLY") == "1" {
+            try await captureTabScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                       parentID: main.id, projectRoot: folder)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         // Only the sidebar with the archive switch on.
         if testEnvironment("PI_APP_UI_GALLERY_ARCHIVE_ONLY") == "1" {
             let topic = try await model.createTopic(in: workspace.id, title: "Payments")
@@ -376,6 +385,8 @@ final class UIScreenshotTests: XCTestCase {
                                                  chatID: main.id, workspaceID: workspace.id, profileID: connections[0].profile.id)
         try await captureSidesPanelScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                           parentID: main.id, profileID: connections[0].profile.id)
+        try await captureTabScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                   parentID: main.id, projectRoot: folder)
         try await captureTableWindowScene(gallery: gallery, appearances: appearances)
         // First-launch onboarding, rendered from an empty vault in its own window.
         let freshVault = ConfigurationVault(storage: MemoryVaultStorage())
@@ -625,6 +636,74 @@ final class UIScreenshotTests: XCTestCase {
         working.state = "idle"
         NSApp.appearance = nil
     }
+
+    /// 24 · Files beside the chat: the chat's side and two files as tabs in
+    /// the pane, a file shown at the lines it was opened at; the side shown
+    /// in their place; and a file popped out into a window of its own. The
+    /// tabs are closed afterwards, so the scenes after these are as before.
+    @MainActor private func captureTabScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                             appearances: [(String, NSAppearance.Name)], parentID: String, projectRoot: URL) async throws {
+        await model.select(parentID); try await settle(0.8)
+        if model.sides[parentID] == nil {
+            model.openSide(parentID: parentID, question: "Is the retry budget shared with queued follow-ups, or per turn?")
+            try await settle(1.0)
+        }
+        let sources = projectRoot.appendingPathComponent("Sources/Retry", isDirectory: true)
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        let swift = sources.appendingPathComponent("RetryBudget.swift"), notes = projectRoot.appendingPathComponent("NOTES.md")
+        try Data(Self.retrySource.utf8).write(to: swift)
+        try Data("# Retry budget\n\nOne budget per turn, shared by queued follow-ups.\n\n- Jitter stays within 0.5–1.5× the base delay.\n- The cap is 30 s.\n".utf8).write(to: notes)
+        _ = model.openFile(notes)
+        let file = model.openFile(swift, lines: 14...18)
+        try await settle(1.2)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(window, to: gallery.appendingPathComponent("24-tabs-file-\(name).png"))
+            model.tabs.showSide(); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("24a-tabs-side-\(name).png"))
+            model.tabs.activate(file); try await settle(0.6)
+        }
+        let popped = model.tabs.popOut(file)
+        let tabWindow = try XCTUnwrap(model.tabs.window(of: popped))
+        tabWindow.setFrame(NSRect(x: 120, y: 120, width: 820, height: 560), display: true)
+        try await settle(1.0)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+            try capture(tabWindow, to: gallery.appendingPathComponent("24b-tabs-window-\(name).png"))
+        }
+        for tab in model.tabs.allTabs { model.tabs.close(tab) }
+        try await settle(0.6)
+        XCTAssertTrue(model.tabs.windows.isEmpty)
+        NSApp.appearance = nil
+    }
+    private static let retrySource = """
+    import Foundation
+
+    /// How long to wait before the next attempt, and whether to try again at
+    /// all: one budget per turn, shared by the follow-ups queued behind it.
+    struct RetryBudget {
+        var attempts = 0
+        let limit: Int
+        let base: TimeInterval
+        let cap: TimeInterval
+
+        /// The delay before attempt `attempts + 1`, with jitter kept within
+        /// half and one and a half times the exponential step.
+        mutating func nextDelay(random: () -> Double = { Double.random(in: 0...1) }) -> TimeInterval? {
+            guard attempts < limit else { return nil }
+            attempts += 1
+            let step = min(cap, base * pow(2, Double(attempts - 1)))
+            let jitter = 0.5 + random()
+            return min(cap, step * jitter)
+        }
+
+        /// A follow-up queued behind the turn spends from the same budget.
+        mutating func share(with other: inout RetryBudget) {
+            let spent = max(attempts, other.attempts)
+            attempts = spent; other.attempts = spent
+        }
+    }
+    """
 
     /// 17 · Skills rendered inline: two selected skills leading the
     /// composer's text as tokens, the sent message's bubble leading with its

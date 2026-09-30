@@ -2,6 +2,9 @@ import SwiftUI
 
 struct WorkspaceView: View {
     @ObservedObject var model: WorkspaceModel
+    /// The pane's tabs beside the chat: the window's, whatever chat is shown.
+    @ObservedObject var pane: TabContainer
+    init(model: WorkspaceModel) { self.model = model; pane = model.tabs.pane }
     @Environment(\.piReduceMotion) private var reduceMotion
     /// The sidebar keeps the width the user last dragged it to.
     @AppStorage("sidebarWidth") private var storedSidebarWidth: Double = Double(WindowChrome.sidebarWidth)
@@ -18,7 +21,8 @@ struct WorkspaceView: View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 WindowChrome(sidebarWidth: sidebarWidth, focusedSessionID: model.focusedSessionID ?? model.selectedID,
-                             stepVersion: { [weak model] session, step in model?.stepVersion(sessionID: session, step: step) ?? false })
+                             stepVersion: { [weak model] session, step in model?.stepVersion(sessionID: session, step: step) ?? false },
+                             closeTab: { [weak model] in model?.closeShownPaneTab() ?? false })
                     .frame(height: WindowChrome.height)
                 WorkspaceSidebar(model: model, width: sidebarWidth)
             }.frame(width: sidebarWidth)
@@ -34,15 +38,16 @@ struct WorkspaceView: View {
               errorStrip
               GeometryReader { region in
               ZStack {
-                Group {
-                    if let session = model.selected, let chat = model.chat {
-                        // A shown side takes the share of the column the
-                        // reader last dragged the divider to.
-                        let shownSide = model.sides[chat.id].flatMap { side in model.displays[side.id].map { (side, $0) } }
-                        let mainWidth = shownSide == nil ? region.size.width : SplitPane.mainWidth(total: region.size.width, fraction: sideFraction)
-                        HStack(spacing: 0) {
+                // The chat, or what shows in its place, and beside it the pane:
+                // the chat's side and the window's tabs. The pane is outside
+                // the chat's branch, so its tabs stay with no chat on screen.
+                let shownSide = self.shownSide
+                let showsPane = shownSide != nil || !pane.tabs.isEmpty
+                let mainWidth = showsPane ? SplitPane.mainWidth(total: region.size.width, fraction: sideFraction) : region.size.width
+                HStack(spacing: 0) {
+                    Group {
+                        if let session = model.selected, let chat = model.chat {
                             ConversationPane(model: model, session: session, chat: chat, paneWidth: mainWidth)
-                                .frame(width: mainWidth)
                                 // The pane itself is kept across chats: giving it the
                                 // chat's identity threw away the transcript's document
                                 // and every row host on every click in the sidebar,
@@ -55,26 +60,29 @@ struct WorkspaceView: View {
                                 // rows took 34 drawn frames and a second to appear
                                 // instead of one frame.
                                 .transition(.identity)
-                            if let shown = shownSide {
-                                splitDivider(total: region.size.width)
-                                let sideWidth = SplitPane.sideWidth(total: region.size.width, fraction: sideFraction)
-                                SidePane(model: model, session: shown.1, info: shown.0, paneWidth: sideWidth).id(shown.0.id)
-                                    .frame(width: sideWidth)
-                                    .transition(.identity)
-                            }
+                                // Width changes reflow native text and restore scroll
+                                // anchors. Apply the final geometry once instead of
+                                // once per spring frame.
+                                .piStableLayout()
+                        } else if model.launching {
+                            // Launch is still reading the chat it reopens. Nothing,
+                            // rather than a welcome — with setup buttons, before
+                            // the vault answers — that the chat is about to cover.
+                            Color.clear
+                        } else if model.presentsSetup {
+                            OnboardingView(model: model)
+                        } else {
+                            WorkspaceWelcome(model: model)
                         }
-                        // Width changes reflow native text and restore scroll anchors.
-                        // Apply the final geometry once instead of once per spring frame.
-                        .piStableLayout()
-                    } else if model.launching {
-                        // Launch is still reading the chat it reopens. Nothing,
-                        // rather than a welcome — with setup buttons, before
-                        // the vault answers — that the chat is about to cover.
-                        Color.clear
-                    } else if model.presentsSetup {
-                        OnboardingView(model: model)
-                    } else {
-                        WorkspaceWelcome(model: model)
+                    }
+                    .frame(width: mainWidth)
+                    if showsPane {
+                        splitDivider(total: region.size.width)
+                        let sideWidth = SplitPane.sideWidth(total: region.size.width, fraction: sideFraction)
+                        RightPane(model: model, host: model.tabs, pane: pane, side: shownSide, width: sideWidth)
+                            .frame(width: sideWidth)
+                            .transition(.identity)
+                            .piStableLayout()
                     }
                 }
                 // A hidden split pane must not contribute its combined column
@@ -132,7 +140,8 @@ struct WorkspaceView: View {
         }
         .frame(minWidth: 920, minHeight: 600)
         .background(WindowActivityGuard(model: model))
-        .background(ConversationPageVisibility(reportVisible: model.page != .chats, focusIdentity: model.focusedSessionID, closeReport: model.closeReport))
+        .background(ConversationPageVisibility(reportVisible: model.page != .chats, focusIdentity: model.focusedSessionID, closeReport: model.closeReport,
+                                               covered: coveredSides, contentFocus: { [weak pane] in pane?.shownTab(sideAvailable: true)?.focusView }))
         .disabled(model.installPreparing)
         .overlay {
             if model.installPreparing {
@@ -143,6 +152,17 @@ struct WorkspaceView: View {
             }
         }
         .transaction { if reduceMotion { $0.animation = nil; $0.disablesAnimations = true } }
+    }
+
+    /// The chat's side shown beside it, if it has one.
+    private var shownSide: (info: SideRecord, session: SessionDisplay)? {
+        guard model.selected != nil, let chat = model.chat else { return nil }
+        return model.sides[chat.id].flatMap { side in model.displays[side.id].map { (side, $0) } }
+    }
+    /// The sides a tab shown in the pane covers: its chat's.
+    private var coveredSides: Set<String> {
+        guard let side = shownSide, pane.shownTab(sideAvailable: true) != nil else { return [] }
+        return [side.info.id]
     }
 
     /// The sides panel while it is not pinned: only beside a chat on screen

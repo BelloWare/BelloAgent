@@ -25,10 +25,11 @@ final class SideForkTests: XCTestCase {
         let client = ScriptClient([]), tools = RecordingTools()
         let parent = try AgentSession(id: "parent", profile: profile, apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: resources, client: client, tools: tools, traces: traces, resumePath: sourcePath.path)
         let originalBytes = try Data(contentsOf: sourcePath), sourceContext = await parent.sideSeed(), sourceView = await parent.snapshot()
-        let resultFork = try await parent.fork(to: "fork")
+        let (resultFork, replay) = try await parent.forked(to: "fork")
         XCTAssertEqual(try Data(contentsOf: sourcePath), originalBytes, "Forking never rewrites the source")
         let copyPath = try XCTUnwrap(resultFork["path"].text)
-        let copy = try AgentSession(id: "fork", profile: profile, apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: resources, client: client, tools: tools, traces: traces, resumePath: copyPath)
+        // Opened as the host opens a fork: with its replay, whole as the chat is.
+        let copy = try AgentSession(id: "fork", profile: profile, apiKey: "fixture", cwd: root, directory: directory, readOnly: false, resources: resources, client: client, tools: tools, traces: traces, resumePath: copyPath, prepared: replay)
         let copiedContext = await copy.sideSeed(), copiedView = await copy.snapshot()
         XCTAssertEqual(copiedContext.messages.map(\.id), sourceContext.messages.map(\.id))
         XCTAssertEqual(copiedContext.messages.map { $0.content }, sourceContext.messages.map { $0.content })

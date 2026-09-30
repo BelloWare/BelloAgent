@@ -20,6 +20,9 @@ struct WindowChrome: NSViewRepresentable {
     /// ⌥← and ⌥→ outside text: a step through an edited message's versions
     /// in that chat. True when the chat had one to step through.
     var stepVersion: (@MainActor (String?, Int) -> Bool)? = nil
+    /// ⌘W: closes the tab the window's pane shows, if it shows one. True
+    /// when it closed one.
+    var closeTab: (@MainActor () -> Bool)? = nil
     func makeCoordinator() -> WindowPresentationController { WindowPresentationController(defaults: .standard) }
     func makeNSView(context: Context) -> WindowChromeView {
         let view = WindowChromeView()
@@ -31,6 +34,7 @@ struct WindowChrome: NSViewRepresentable {
         if view.sidebarWidth != sidebarWidth { view.sidebarWidth = sidebarWidth; view.needsDisplay = true }
         context.coordinator.focusedSessionID = focusedSessionID
         context.coordinator.stepVersion = stepVersion
+        context.coordinator.closeTab = closeTab
         context.coordinator.attach(view.window, chrome: view)
     }
     static func dismantleNSView(_ view: WindowChromeView, coordinator: WindowPresentationController) { coordinator.detach() }
@@ -177,6 +181,8 @@ extension NSWindow {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             // ⌥← and ⌥→ outside text switch versions; that event is taken.
             if MainActor.assumeIsolated({ self?.switchVersion(event) == true }) { return nil }
+            // ⌘W closes the tab the pane shows, before the menu closes the window.
+            if MainActor.assumeIsolated({ self?.closeShownTab(event) == true }) { return nil }
             // Any other event is never swallowed: at most the first responder moves before it is delivered.
             _ = MainActor.assumeIsolated { self?.redirectTyping(event) != nil }
             return event
@@ -197,9 +203,26 @@ extension NSWindow {
     func switchVersion(_ event: NSEvent) -> Bool {
         guard let window, event.window === window, window.attachedSheet == nil,
               let step = Self.versionStep(keyCode: event.keyCode, modifiers: event.modifierFlags),
-              !Self.takesText(window.firstResponder), let stepVersion else { return false }
+              !Self.takesText(window.firstResponder), !Self.inTabContent(window.firstResponder), let stepVersion else { return false }
         return stepVersion(focusedSessionID, step)
     }
+    /// A tab's content takes its own keys: a file's text moves by words
+    /// with ⌥← and ⌥→.
+    static func inTabContent(_ responder: NSResponder?) -> Bool {
+        var view = responder as? NSView
+        while let current = view {
+            if current is TabContentContainer { return true }
+            view = current.superview
+        }
+        return false
+    }
+    /// ⌘W in this window: the tab its pane shows closes, when it shows one
+    /// and no sheet is over the window.
+    func closeShownTab(_ event: NSEvent) -> Bool {
+        guard let window, event.window === window, window.attachedSheet == nil, TabHost.isCloseTabKey(event), let closeTab else { return false }
+        return closeTab()
+    }
+    var closeTab: (@MainActor () -> Bool)?
     /// −1 for ⌥←, +1 for ⌥→, nil for any other key or modifier.
     static func versionStep(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Int? {
         guard modifiers.intersection([.command, .control, .shift, .option]) == .option else { return nil }

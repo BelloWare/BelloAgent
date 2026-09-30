@@ -31,6 +31,12 @@ struct OlderRows {
     var historyRows = 0
     /// A row is not where the replay found it: the journal is not the one read.
     struct Unreadable: Error {}
+    /// Where the row `id` is in the journal, if it is one of these and its
+    /// record gives it back as the replay left it.
+    func span(of id: String) -> JournalCheckpoint.Row? {
+        guard kept[id] == nil, let position = positions[id] else { return nil }
+        return rows[position].span
+    }
 }
 
 /// The shown rows by position, as a chat holding every row has them: the

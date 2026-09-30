@@ -4,6 +4,9 @@ import ApplicationServices
 @testable import PiApp
 @testable import FileView
 
+/// The measures of the standard style, which every view here is drawn in.
+@MainActor private var standardMetrics: FileTextMetrics { FileTextMetrics(FileTextStyle()) }
+
 /// The file viewer's text (`FileTextView`): lines set only as they come into
 /// view, whatever the file's size; selection by mouse and keyboard as in any
 /// Mac text view; copy; and the text VoiceOver reads, asked for through the
@@ -27,7 +30,6 @@ final class FileTextViewTests: XCTestCase {
             return text.padding(toLength: width, withPad: ".", startingAt: 0)
         }
         var arrival: ((ClosedRange<Int>) -> Void)?
-        func prefetch(lines: ClosedRange<Int>) {}
         func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) { completion(text(from: start, to: end)) }
         func utf16Length(ofLine index: Int) -> Int { Self.width }
         func text(ofLine index: Int, range: Range<Int>) -> String? {
@@ -55,7 +57,6 @@ final class FileTextViewTests: XCTestCase {
         private(set) var read = 0
         init(_ length: Int, emojiAt emoji: Int? = nil, wide: Range<Int> = 0..<0) { self.length = length; self.emoji = emoji; self.wide = wide }
         var arrival: ((ClosedRange<Int>) -> Void)?
-        func prefetch(lines: ClosedRange<Int>) {}
         func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) { completion(text(from: start, to: end)) }
         func utf16Length(ofLine index: Int) -> Int { length }
         func text(ofLine index: Int, range: Range<Int>) -> String? {
@@ -87,6 +88,8 @@ final class FileTextViewTests: XCTestCase {
         init(_ text: String) { whole = FileTextLines(text) }
         /// Whether what has not come may still come.
         var isReading = true
+        /// Lets lines go again, as a full cache does.
+        func evict(_ lines: ClosedRange<Int>) { ready.subtract(lines) }
         /// Lets lines come, and tells the view.
         func release(_ lines: ClosedRange<Int>) {
             ready.formUnion(lines)
@@ -95,15 +98,26 @@ final class FileTextViewTests: XCTestCase {
         var lineCount: Int { whole.lineCount }
         let generation = 0
         func utf16Length(ofLine index: Int) -> Int { whole.utf16Length(ofLine: index) }
+        /// A line that comes by itself once it is asked for, on the next turn
+        /// of the run loop: while a press is held, say; and what happens next.
+        var comesWhenAsked: Int?
+        var afterComing: (() -> Void)?
         func text(ofLine index: Int, range: Range<Int>) -> String? {
-            guard ready.contains(index) else { asked.insert(index); return nil }
+            guard ready.contains(index) else {
+                asked.insert(index)
+                if comesWhenAsked == index {
+                    comesWhenAsked = nil
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self.release(index...index); self.afterComing?() } }
+                }
+                return nil
+            }
             return whole.text(ofLine: index, range: range)
         }
         func utf16Start(ofLine index: Int) -> Int { whole.utf16Start(ofLine: index) }
         func line(atUTF16 offset: Int) -> Int { whole.line(atUTF16: offset) }
         var utf16Length: Int { whole.utf16Length }
         var longestLine: Int { whole.longestLine }
-        func prefetch(lines: ClosedRange<Int>) { asked.formUnion(lines) }
+        func showScreen(lines: ClosedRange<Int>, columns: Range<Int>) { asked.formUnion(lines) }
         private var fetches: [(FileTextPosition, FileTextPosition, @MainActor (String?) -> Void)] = []
         func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) {
             if let text = text(from: start, to: end) { completion(text) } else { fetches.append((start, end, completion)) }
@@ -219,7 +233,7 @@ final class FileTextViewTests: XCTestCase {
         let text = fixture.text
         // How many lines the view shows, from its height alone, not from the
         // view's own reckoning.
-        let visible = Int(ceil(fixture.scroll.contentView.bounds.height / FileTextMetrics.lineHeight)) + 1
+        let visible = Int(ceil(fixture.scroll.contentView.bounds.height / standardMetrics.lineHeight)) + 1
         XCTAssertEqual(text.frame.height, text.top(ofLine: 3_000_000) + FileTextMetrics.bottom, "the document is as tall as the file")
         XCTAssertGreaterThan(FileTextRenderCount.pieces, 0, "the first screen is drawn")
         XCTAssertLessThanOrEqual(FileTextRenderCount.pieces, visible + 4, "only the lines on screen are set")
@@ -241,7 +255,7 @@ final class FileTextViewTests: XCTestCase {
         let text = fixture.text
         for column in 0...15 {
             let point = text.point(of: at(0, column))
-            XCTAssertEqual(point.x, FileTextMetrics.left + CGFloat(column) * FileTextMetrics.advance, accuracy: 0.01, "column \(column)")
+            XCTAssertEqual(point.x, FileTextMetrics.left + CGFloat(column) * standardMetrics.advance, accuracy: 0.01, "column \(column)")
             XCTAssertEqual(text.position(at: NSPoint(x: point.x + 1, y: point.y + 8)), at(0, column), "a click just after column \(column)'s start")
         }
         XCTAssertEqual(text.position(at: NSPoint(x: 5_000, y: text.top(ofLine: 1) + 8)), at(1, 13), "past a line's end is its end")
@@ -391,7 +405,7 @@ final class FileTextViewTests: XCTestCase {
             let read = source.read
             fixture.draw()
             let end = text.point(of: at(0, length))
-            XCTAssertEqual(end.x, FileTextMetrics.left + CGFloat(length) * FileTextMetrics.advance, accuracy: CGFloat(length) * 0.0001 + 0.5,
+            XCTAssertEqual(end.x, FileTextMetrics.left + CGFloat(length) * standardMetrics.advance, accuracy: CGFloat(length) * 0.0001 + 0.5,
                            "\(length): the line's end is where its columns put it")
             let near = length - 37
             XCTAssertEqual(text.position(at: NSPoint(x: text.point(of: at(0, near)).x + 1, y: 12)), at(0, near), "\(length): a click near the far end lands there")
@@ -433,7 +447,7 @@ final class FileTextViewTests: XCTestCase {
         let tab = words.utf16.count - 6
         let line = try XCTUnwrap(text.layout(0))
         let after = line.x(at: tab + 1)
-        let interval = FileTextMetrics.tabInterval
+        let interval = standardMetrics.tabInterval
         XCTAssertEqual(after.truncatingRemainder(dividingBy: interval), 0, accuracy: 0.01, "the text after a tab starts on a stop")
         XCTAssertGreaterThan(after, line.x(at: tab), "and past where the tab began")
         XCTAssertLessThanOrEqual(after - line.x(at: tab), interval + 0.01)
@@ -448,10 +462,10 @@ final class FileTextViewTests: XCTestCase {
         let text = fixture.text
         let layout = try XCTUnwrap(text.layout(0))
         XCTAssertTrue(layout.grid)
-        let around = layout.pieces(from: CGFloat(1_000) * FileTextMetrics.advance, to: CGFloat(1_100) * FileTextMetrics.advance)
+        let around = layout.pieces(from: CGFloat(1_000) * standardMetrics.advance, to: CGFloat(1_100) * standardMetrics.advance)
         XCTAssertEqual(around.map(\.range), [0..<1_023, 1_023..<2_048], "the emoji starts the second piece; the first ends before it")
         let clip = fixture.scroll.contentView
-        clip.scroll(to: NSPoint(x: CGFloat(1_000) * FileTextMetrics.advance, y: 0)); fixture.scroll.reflectScrolledClipView(clip)
+        clip.scroll(to: NSPoint(x: CGFloat(1_000) * standardMetrics.advance, y: 0)); fixture.scroll.reflectScrolledClipView(clip)
         fixture.draw()
         XCTAssertEqual(text.position(at: NSPoint(x: text.point(of: at(0, 1_025)).x + 1, y: 12)), at(0, 1_025), "a click just past the emoji lands after it")
     }
@@ -468,7 +482,7 @@ final class FileTextViewTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         let end = text.point(of: at(0, 2_003))
-        XCTAssertGreaterThanOrEqual(end.x, FileTextMetrics.left + 2_000 * FileTextMetrics.tabInterval - 1, "two thousand tabs reach two thousand stops")
+        XCTAssertGreaterThanOrEqual(end.x, FileTextMetrics.left + 2_000 * standardMetrics.tabInterval - 1, "two thousand tabs reach two thousand stops")
         XCTAssertLessThanOrEqual(end.x, text.frame.width, "and the view is wide enough to show where the line ends")
         XCTAssertTrue(text.visibleRect.contains(NSPoint(x: text.point(of: at(0, 2_000)).x + 2, y: 10)), "scrolled right, END is on screen")
     }
@@ -511,7 +525,7 @@ final class FileTextViewTests: XCTestCase {
         let frame = text.accessibilityFrame(for: NSRange(location: 0, length: 50_000_000))
         XCTAssertLessThanOrEqual(FileTextRenderCount.pieces, 8, "the selection is drawn where the screen is, not along the whole line")
         XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 1)
-        XCTAssertEqual(frame.width, 50_000_000 * FileTextMetrics.advance, accuracy: 1, "its outline is the whole line's")
+        XCTAssertEqual(frame.width, 50_000_000 * standardMetrics.advance, accuracy: 1, "its outline is the whole line's")
     }
 
     /// On the grid, wide characters are drawn squeezed into their piece, so
@@ -524,11 +538,11 @@ final class FileTextViewTests: XCTestCase {
         let drawn = layout.spans(from: 60, to: 70)
         XCTAssertFalse(drawn.isEmpty)
         let left = drawn.map(\.lowerBound).min() ?? 0
-        XCTAssertGreaterThan(left, 60 * FileTextMetrics.advance + 20, "squeezed wide glyphs sit right of their columns")
+        XCTAssertGreaterThan(left, 60 * standardMetrics.advance + 20, "squeezed wide glyphs sit right of their columns")
         // A window whose left edge is past the selection's columns but not
         // past its glyphs.
         let window = (left + 5)...(left + 600)
-        XCTAssertGreaterThan(window.lowerBound / FileTextMetrics.advance, 70)
+        XCTAssertGreaterThan(window.lowerBound / standardMetrics.advance, 70)
         XCTAssertFalse(layout.spans(from: 60, to: 70, within: window).isEmpty, "the selection is still drawn in that window")
     }
 
@@ -539,7 +553,7 @@ final class FileTextViewTests: XCTestCase {
         let text = fixture.text
         let layout = try XCTUnwrap(text.layout(0))
         let lastGlyph = try XCTUnwrap(layout.spans(from: 4_165, to: 4_166).map(\.upperBound).max())
-        XCTAssertGreaterThan(lastGlyph, 4_166 * FileTextMetrics.advance + 50, "the wide glyphs sit right of their columns")
+        XCTAssertGreaterThan(lastGlyph, 4_166 * standardMetrics.advance + 50, "the wide glyphs sit right of their columns")
         let outline = text.accessibilityFrame(for: NSRange(location: 0, length: 4_166))
         let origin = fixture.window.convertToScreen(text.convert(NSRect(x: FileTextMetrics.left, y: 0, width: 1, height: 1), to: nil)).minX
         XCTAssertGreaterThanOrEqual(outline.maxX - origin, lastGlyph - 0.5, "the outline encloses the last selected glyph")
@@ -673,6 +687,99 @@ final class FileTextViewTests: XCTestCase {
         text.select(from: at(1, 0), to: at(1, 0))
         source.release(1...1)
         XCTAssertEqual(text.focus, at(1, 0), "the movement from before the change is not done")
+    }
+
+    /// A double-click on a word whose text has not come takes the word when
+    /// it comes; a drag or click meanwhile drops it.
+    @MainActor func testADoubleClickOnAWordNotComeYetTakesItWhenItComes() throws {
+        let source = DelayedLines("first line\nlet greeting = hello")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        try press(at: point(fixture, line: 1, column: 6, inset: 2), in: text, clicks: 2)
+        XCTAssertFalse(text.hasSelection, "a click while the word has not come")
+        source.release(1...1)
+        XCTAssertEqual(text.selectedText, "greeting", "the word, once it came")
+        let other = DelayedLines("first line\nlet greeting = hello")
+        text.show(other, name: "again.txt")
+        other.release(0...0)
+        try press(at: point(fixture, line: 1, column: 6, inset: 2), in: text, clicks: 2)
+        text.select(from: at(0, 1), to: at(0, 1))
+        other.release(1...1)
+        XCTAssertEqual(text.focus, at(0, 1), "a word the reader moved on from is not taken")
+    }
+
+    /// A word wider than the screen, double-clicked before its text came,
+    /// is taken when it comes without the view moving to its end: the click
+    /// was where the reader was looking.
+    @MainActor func testAWordTakenLaterDoesNotScrollTheView() throws {
+        let source = DelayedLines("first line\n" + String(repeating: "a", count: 1_000) + " end")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        try press(at: point(fixture, line: 1, column: 3, inset: 2), in: text, clicks: 2)
+        source.release(1...1)
+        XCTAssertEqual(text.selectedRange.start, at(1, 0))
+        XCTAssertEqual(text.selectedRange.end, at(1, 1_000), "the whole word")
+        XCTAssertEqual(fixture.scroll.contentView.bounds.minX, 0, "the view did not move to its end")
+    }
+
+    /// A press drops keys still waiting for text: Right waiting at the caret,
+    /// then a double-click there on a word not come yet, takes the word when
+    /// it comes, without the Right and without scrolling for it.
+    @MainActor func testAPressDropsKeysStillWaiting() throws {
+        let source = DelayedLines("first line\n" + String(repeating: "a", count: 1_000) + " end")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        text.select(from: at(1, 3), to: at(1, 3))
+        try key(fixture, right.0, right.1)
+        try press(at: point(fixture, line: 1, column: 3, inset: 2), in: text, clicks: 2)
+        source.release(1...1)
+        XCTAssertEqual(text.selectedRange.start, at(1, 0))
+        XCTAssertEqual(text.selectedRange.end, at(1, 1_000), "the word")
+        XCTAssertEqual(fixture.scroll.contentView.bounds.minX, 0, "and no scrolling for the dropped key")
+    }
+
+    /// A word whose text comes while the double-click's press is still held
+    /// is taken as the press goes on: held still, the selection is the word.
+    @MainActor func testAWordComingWhileThePressIsHeldIsTaken() throws {
+        let source = DelayedLines("first line\nlet greeting = hello")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        let at = point(fixture, line: 1, column: 6, inset: 2)
+        let still = try mouse(.leftMouseDragged, at: at, in: text, clicks: 2), up = try mouse(.leftMouseUp, at: at, in: text, clicks: 2)
+        // The line comes while the press waits for the pointer, which then
+        // stays where it was until the release.
+        source.comesWhenAsked = 1
+        source.afterComing = { NSApp.postEvent(still, atStart: false); NSApp.postEvent(up, atStart: false) }
+        while NSApp.nextEvent(matching: .any, until: .now, inMode: .default, dequeue: true) != nil {}
+        text.mouseDown(with: try mouse(.leftMouseDown, at: at, in: text, clicks: 2))
+        XCTAssertEqual(text.selectedText, "greeting")
+    }
+
+    /// A double-clicked word that came while the press is held stays taken
+    /// for the rest of the press even if its text goes again at once (a
+    /// word of many windows, let go of by a full cache once taken): the
+    /// press keeps the word found when it came, and never shrinks it to the
+    /// click.
+    @MainActor func testAWordTakenDuringAPressStaysTakenThoughItsTextGoes() throws {
+        let source = DelayedLines("first line\nlet greeting = hello")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        let spot = point(fixture, line: 1, column: 6, inset: 2)
+        let still = try mouse(.leftMouseDragged, at: spot, in: text, clicks: 2), up = try mouse(.leftMouseUp, at: spot, in: text, clicks: 2)
+        source.comesWhenAsked = 1
+        source.afterComing = {
+            source.evict(1...1)
+            NSApp.postEvent(still, atStart: false); NSApp.postEvent(up, atStart: false)
+        }
+        while NSApp.nextEvent(matching: .any, until: .now, inMode: .default, dequeue: true) != nil {}
+        text.mouseDown(with: try mouse(.leftMouseDown, at: spot, in: text, clicks: 2))
+        XCTAssertEqual(text.selectedRange.start, at(1, 4))
+        XCTAssertEqual(text.selectedRange.end, at(1, 12), "the word, not shrunk to the click")
     }
 
     /// Text that comes after accessibility found it missing is announced:
@@ -824,7 +931,7 @@ final class FileTextViewTests: XCTestCase {
         let height = NSScreen.screens.first?.frame.height ?? 0
         XCTAssertEqual(read.bounds.minX, expected.minX, accuracy: 0.5)
         XCTAssertEqual(read.bounds.minY, height - expected.maxY, accuracy: 0.5, "the bounds VoiceOver outlines are the text's")
-        XCTAssertEqual(read.bounds.width, 5 * FileTextMetrics.advance, accuracy: 0.5)
+        XCTAssertEqual(read.bounds.width, 5 * standardMetrics.advance, accuracy: 0.5)
 
         // Selecting through accessibility selects in the view.
         try AXProbe.select(pid: pid, label: label, range: NSRange(location: 19, length: 5))
