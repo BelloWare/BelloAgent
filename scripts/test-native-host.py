@@ -12,8 +12,6 @@ import http.client
 import importlib.util
 import json
 import pathlib
-import queue
-import subprocess
 import sys
 import tempfile
 import threading
@@ -23,6 +21,11 @@ import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BINARY = pathlib.Path(sys.argv.pop(1) if len(sys.argv) > 1 and not sys.argv[1].startswith('-') else ROOT / 'packages/swift-host/.build/debug/pi-native-host').resolve()
+# The wire client every wire script shares, loaded by path: scripts/ is not
+# on the import path of every runner.
+_CLIENT_SPEC = importlib.util.spec_from_file_location('native_host_client', pathlib.Path(__file__).resolve().with_name('native_host_client.py'))
+native_host_client = importlib.util.module_from_spec(_CLIENT_SPEC)
+_CLIENT_SPEC.loader.exec_module(native_host_client)
 CONTRACT_SPEC = importlib.util.spec_from_file_location('litellm_contract', ROOT / 'fixtures/native/litellm_contract.py')
 CONTRACT = importlib.util.module_from_spec(CONTRACT_SPEC)
 CONTRACT_SPEC.loader.exec_module(CONTRACT)
@@ -365,34 +368,25 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             record['cancelled'] = True
 
-class Peer:
+class Peer(native_host_client.HostPeer):
+    """The helper for one test: replies in order, other frames kept as events."""
     def __init__(self, cwd, hello=None):
-        self.process = subprocess.Popen([str(BINARY)], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.frames = queue.Queue(); self.events = []; self.captures = []; self.reject_capture = False
-        self.write_lock = threading.Lock(); self.capture_lock = threading.Lock()
-        def read():
-            for line in self.process.stdout:
-                frame = json.loads(line)
-                if frame.get('kind') == 'capture':
-                    with self.capture_lock: self.captures.append(frame['packet'])
-                    self.send({'v': 1, 'kind': 'capture.ack', 'hostEpoch': frame['hostEpoch'], 'transferId': frame['transferId'], 'accepted': not self.reject_capture})
-                else: self.frames.put(frame)
-        self.reader = threading.Thread(target=read, daemon=True); self.reader.start()
-        self.send({'v':1,'kind':'hello','major':1,'minor':1,**(hello or {})})
-        hello = self.frames.get(timeout=10)
-        assert hello['kind'] == 'ready' and hello['engine'] == 'swift', hello
-        assert 'responses' in hello['capabilities'] and 'messages' not in hello['capabilities'], hello
-        self.ready = hello
-        self.epoch = hello['hostEpoch']
-    def send(self, value):
-        with self.write_lock:
-            self.process.stdin.write(encoded(value)+b'\n'); self.process.stdin.flush()
+        self.events = []; self.captures = []; self.reject_capture = False
+        self.capture_lock = threading.Lock()
+        super().__init__(BINARY, cwd, capture=self.record_capture)
+        ready = self.hello(10, **(hello or {}))
+        assert ready['kind'] == 'ready' and ready['engine'] == 'swift', ready
+        assert 'responses' in ready['capabilities'] and 'messages' not in ready['capabilities'], ready
+        self.ready = ready
+        self.epoch = ready['hostEpoch']
+    def record_capture(self, frame):
+        with self.capture_lock: self.captures.append(frame['packet'])
+        return not self.reject_capture
     def request(self, method, params=None, session=None, command_id=None):
-        command_id = command_id or str(uuid.uuid4())
-        self.send({'v':1,'kind':'command','hostEpoch':self.epoch,'commandId':command_id,'sessionId':session,'method':method,'params':params or {}})
+        command_id = self.post(method, params, session, command_id)
         deadline = time.monotonic()+15
         while True:
-            frame = self.frames.get(timeout=max(.01,deadline-time.monotonic()))
+            frame = self.next_frame(timeout=max(.01,deadline-time.monotonic()))
             if frame.get('commandId') == command_id: return frame
             self.events.append(frame)
     def command(self, method, params=None, session=None, command_id=None, fail=False):
@@ -403,14 +397,7 @@ class Peer:
             assert frame['ok'], frame
         return frame.get('result')
     def close(self):
-        if self.process.poll() is None:
-            self.process.stdin.close()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill(); self.process.wait()
-        self.reader.join(timeout=2)
-        self.process.stdout.close(); self.process.stderr.close()
+        super().close(wait=5, join=2)
 
 class NativeIntegration(unittest.TestCase):
     @classmethod

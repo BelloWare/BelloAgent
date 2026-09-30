@@ -13,18 +13,20 @@ import importlib.util
 import json
 import os
 import pathlib
-import queue
-import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
-import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BINARY = pathlib.Path(sys.argv.pop(1) if len(sys.argv) > 1 and not sys.argv[1].startswith('-')
                       else ROOT / 'packages/swift-host/.build/debug/pi-native-host').resolve()
+# The wire client every wire script shares, loaded by path: scripts/ is not
+# on the import path of every runner.
+_CLIENT_SPEC = importlib.util.spec_from_file_location('native_host_client', pathlib.Path(__file__).resolve().with_name('native_host_client.py'))
+native_host_client = importlib.util.module_from_spec(_CLIENT_SPEC)
+_CLIENT_SPEC.loader.exec_module(native_host_client)
 SPEC = importlib.util.spec_from_file_location('litellm_contract', ROOT / 'fixtures/native/litellm_contract.py')
 CONTRACT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTRACT)
@@ -34,62 +36,33 @@ def encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode()
 
 
-class ConcurrentPeer:
+class ConcurrentPeer(native_host_client.HostPeer):
     """Multiplexes command replies while independently acknowledging captures."""
     def __init__(self, cwd, capture_delay=0, stall=0):
-        self.process = subprocess.Popen([str(BINARY)], cwd=cwd, stdin=subprocess.PIPE,
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.frames = queue.Queue()
         self.captures = []
         self.events = []
-        self.write_lock = threading.Lock()
         self.capture_delay = capture_delay
-        self.errors = []
         self.stderr = bytearray()
-
-        def read():
-            try:
-                count = 0
-                for line in self.process.stdout:
-                    count += 1
-                    if stall and count % 40 == 0:
-                        time.sleep(stall)  # a reader that is busy now and then
-                    frame = json.loads(line)
-                    if frame.get('kind') == 'capture':
-                        self.captures.append(frame['packet'])
-                        if self.capture_delay:
-                            time.sleep(self.capture_delay)
-                        self.send({'v': 1, 'kind': 'capture.ack', 'hostEpoch': frame['hostEpoch'],
-                                   'transferId': frame['transferId'], 'accepted': True})
-                    else:
-                        self.frames.put(frame)
-            except Exception as error:
-                self.errors.append(str(error))
+        super().__init__(BINARY, cwd, capture=self.record_capture, stall=stall)
 
         def read_errors():
             for line in self.process.stderr:
                 self.stderr.extend(line)
 
-        self.reader = threading.Thread(target=read, daemon=True)
         self.error_reader = threading.Thread(target=read_errors, daemon=True)
-        self.reader.start()
         self.error_reader.start()
-        self.send({'v': 1, 'kind': 'hello', 'major': 1, 'minor': 1})
-        hello = self.frames.get(timeout=10)
+        hello = self.hello(10)
         assert hello['kind'] == 'ready' and hello['engine'] == 'swift', hello
         self.epoch = hello['hostEpoch']
 
-    def send(self, value):
-        with self.write_lock:
-            self.process.stdin.write(encoded(value) + b'\n')
-            self.process.stdin.flush()
+    def record_capture(self, frame):
+        self.captures.append(frame['packet'])
+        if self.capture_delay:
+            time.sleep(self.capture_delay)
+        return True
 
     def batch(self, commands, timeout=25):
-        ids = [str(uuid.uuid4()) for _ in commands]
-        for identifier, (method, session, params) in zip(ids, commands):
-            self.send({'v': 1, 'kind': 'command', 'hostEpoch': self.epoch,
-                       'commandId': identifier, 'sessionId': session,
-                       'method': method, 'params': params})
+        ids = [self.post(method, params, session) for method, session, params in commands]
         pending = set(ids)
         replies = {}
         deadline = time.monotonic() + timeout
@@ -97,7 +70,7 @@ class ConcurrentPeer:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError('Helper command replies did not arrive: ' + repr(sorted(pending)))
-            frame = self.frames.get(timeout=remaining)
+            frame = self.next_frame(timeout=remaining)
             identifier = frame.get('commandId')
             if identifier in pending:
                 pending.remove(identifier)
@@ -111,16 +84,8 @@ class ConcurrentPeer:
         return self.batch([(method, session, params or {})])[0]
 
     def close(self):
-        if self.process.poll() is None:
-            self.process.stdin.close()
-            try:
-                self.process.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
-        self.reader.join(timeout=2)
+        super().close(wait=8, join=2, close_stderr=False)
         self.error_reader.join(timeout=2)
-        self.process.stdout.close()
         self.process.stderr.close()
 
 

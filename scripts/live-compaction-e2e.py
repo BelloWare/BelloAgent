@@ -64,6 +64,7 @@ import argparse
 import base64
 import datetime
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -72,15 +73,19 @@ import queue
 import random
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
-import threading
 import time
 import traceback
 import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+# The wire client every wire script shares, loaded by path: scripts/ is not
+# on the import path of every runner.
+_CLIENT_SPEC = importlib.util.spec_from_file_location("native_host_client", pathlib.Path(__file__).resolve().with_name("native_host_client.py"))
+native_host_client = importlib.util.module_from_spec(_CLIENT_SPEC)
+_CLIENT_SPEC.loader.exec_module(native_host_client)
 sys.path.insert(0, str(ROOT / "fixtures/native"))
 import reasoning_gateway  # noqa: E402 (the fixture gateway, and pi's summary prompt parser)
 
@@ -246,21 +251,17 @@ class HelperError(Exception):
         super().__init__(f"{method}: {self.code}: {self.message}")
 
 
-class Helper:
-    """The release helper, driven as the app drives it (scripts/test-native-host.py's Peer)."""
+class Helper(native_host_client.HostPeer):
+    """The release helper, driven as the app drives it (scripts/native_host_client.py)."""
 
     def __init__(self, binary, cwd, stderr_path):
         # The helper takes the key over its wire protocol only.
         environment = {name: value for name, value in os.environ.items() if not name.startswith("PI_LIVE_")}
         self.stderr = open(stderr_path, "wb")
-        self.process = subprocess.Popen([str(binary)], cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr, env=environment)
-        self.frames, self.write_lock = queue.Queue(), threading.Lock()
-        self.reader = threading.Thread(target=self.read, daemon=True)
-        self.reader.start()
+        super().__init__(binary, cwd, env=environment, stderr=self.stderr, ensure_ascii=True, skip_bad_lines=True, drop_events=True)
         try:
-            self.send({"v": 1, "kind": "hello", "major": 1, "minor": 1})
             try:
-                ready = self.frames.get(timeout=20)
+                ready = self.hello(20)
             except queue.Empty:
                 raise Failure("The helper did not answer its handshake")
             if ready.get("kind") != "ready" or "responses" not in ready.get("capabilities", []):
@@ -272,32 +273,15 @@ class Helper:
             self.close()
             raise
 
-    def read(self):
-        for line in self.process.stdout:
-            try:
-                frame = json.loads(line)
-            except ValueError:
-                continue
-            if frame.get("kind") == "capture":
-                self.send({"v": 1, "kind": "capture.ack", "hostEpoch": frame["hostEpoch"], "transferId": frame["transferId"], "accepted": True})
-            elif frame.get("kind") != "event":
-                self.frames.put(frame)
-
-    def send(self, value):
-        with self.write_lock:
-            self.process.stdin.write(json.dumps(value, separators=(",", ":")).encode() + b"\n")
-            self.process.stdin.flush()
-
     def command(self, method, params=None, session=None, timeout=120):
-        ident = str(uuid.uuid4())
-        self.send({"v": 1, "kind": "command", "hostEpoch": self.epoch, "commandId": ident, "sessionId": session, "method": method, "params": params or {}})
+        ident = self.post(method, params, session)
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or self.process.poll() is not None:
                 raise Failure(f"The helper did not answer {method}" + (" (it exited)" if self.process.poll() is not None else ""))
             try:
-                frame = self.frames.get(timeout=min(remaining, 1))
+                frame = self.next_frame(timeout=min(remaining, 1))
             except queue.Empty:
                 continue
             if frame.get("commandId") == ident:
@@ -316,18 +300,7 @@ class Helper:
             offset = page["next"]
 
     def close(self):
-        if self.process.poll() is None:
-            try:
-                self.process.stdin.close()
-            except OSError:
-                pass
-            try:
-                self.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
-        self.reader.join(timeout=5)
-        self.process.stdout.close()
+        super().close(wait=10, join=5, close_stderr=False)
         self.stderr.close()
 
 
