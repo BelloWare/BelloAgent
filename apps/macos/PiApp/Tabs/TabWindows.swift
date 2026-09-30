@@ -115,6 +115,9 @@ struct TabContentHost: NSViewRepresentable {
         return container
     }
     func updateNSView(_ container: TabContentContainer, context: Context) { container.show(tab, for: owner) }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: TabContentContainer, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions()
+    }
     static func dismantleNSView(_ container: TabContentContainer, coordinator: ()) { container.letGo() }
 }
 

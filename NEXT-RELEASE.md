@@ -38,7 +38,7 @@ Current owner instruction (2026-10-01): keep new development commits local until
   - [x] Compare the first visible file row and assert the full commit field; add `10c-changes-window-narrow` in both gallery themes.
   - [ ] Mac validation: GitPanelWidthTests, ChangesTabFrameTests at all three sizes, and review the narrow-window gallery scene.
 - [x] **Diff line → file**: a diff line's Pi context menu opens its current file in a tab at that line; split rows use the side under the pointer and empty sides have no action. Mac validation pending: GitDiffTableTests, ChangesTabTests and Changes gallery.
-- [ ] **Tab speed fix**: `TabContentHost.sizeThatFits` returns `proposal.replacingUnspecifiedDimensions()` (Tabs/TabWindows.swift). Tabs spend 35–60% more main-thread time without it. Needs a test and a gallery check.
+- [x] **Tab speed fix**: `TabContentHost.sizeThatFits` returns `proposal.replacingUnspecifiedDimensions()` (Tabs/TabWindows.swift); a SwiftUI layout probe covers full and partial proposals. Mac validation pending: TabHostTests, ChangesTabFrameTests and tab gallery.
 - [ ] **Links in reply text**: code-formatted paths that exist in a trusted project open the file (at `:N`); resolved lazily, cached, off the main thread; plain prose is never linked.
 - [ ] **Syntax colours** in the viewer: resumable lexer states from SyntaxHighlighter, colouring only visible lines.
 - [ ] **Live follow and previews**: watch the file and its folder, keep the view; PDFKit for PDFs, downsampled images.

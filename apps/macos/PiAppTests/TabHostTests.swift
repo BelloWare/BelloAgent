@@ -9,6 +9,40 @@ import SwiftUI
 /// without closing; and brought back after a relaunch, windows where they
 /// were, kinds unknown left out.
 final class TabHostTests: XCTestCase {
+    /// Ask the actual representable through SwiftUI, including partial
+    /// proposals, without measuring its nested hosting view's content.
+    private struct TabSizeProbe: Layout {
+        let proposed: ProposedViewSize
+        let measured: (CGSize) -> Void
+        func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+            measured(subviews[0].sizeThatFits(proposed))
+            return proposal.replacingUnspecifiedDimensions()
+        }
+        func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+            subviews[0].place(at: bounds.origin, anchor: .topLeading, proposal: proposed)
+        }
+    }
+
+    @MainActor func testTabContentAcceptsThePaneProposalWithoutItsContentsIntrinsicSize() throws {
+        let host = host()
+        let tab = open(host, "sizing")
+        let cases: [(ProposedViewSize, CGSize)] = [
+            (ProposedViewSize(width: 580, height: 800), CGSize(width: 580, height: 800)),
+            (ProposedViewSize(width: nil, height: 240), CGSize(width: 10, height: 240)),
+            (ProposedViewSize(width: 420, height: nil), CGSize(width: 420, height: 10)),
+            (.zero, .zero), (.unspecified, CGSize(width: 10, height: 10)),
+        ]
+        for (proposal, expected) in cases {
+            var measured: CGSize?
+            let view = NSHostingView(rootView: TabSizeProbe(proposed: proposal, measured: { measured = $0 }) {
+                TabContentHost(tab: tab, owner: host.pane, placement: tab.placement)
+            }.frame(width: 600, height: 820))
+            view.frame = NSRect(x: 0, y: 0, width: 600, height: 820)
+            view.layoutSubtreeIfNeeded()
+            XCTAssertEqual(try XCTUnwrap(measured), expected)
+        }
+    }
+
     /// A kind of tab for the tests: counts what the host tells it.
     @MainActor final class Probe: HostedTab {
         override class var kind: String { "probe" }
