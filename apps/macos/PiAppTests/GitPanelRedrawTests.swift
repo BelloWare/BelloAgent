@@ -103,6 +103,41 @@ final class GitPanelRedrawTests: GitPanelTestCase {
         XCTAssertEqual(chosen["GitPanelToolbar", default: 0], 0, "A commit draws no toolbar: \(chosen)")
     }
 
+    /// Resizing the panel draws none of its parts while the list stays where
+    /// it is; crossing from beside the diff to above it draws the toolbar,
+    /// which takes a second row, and nothing else.
+    @MainActor func testResizingDrawsOnlyTheToolbarAndOnlyWhenTheLayoutChanges() async throws {
+        let root = try fixture("git-redraw-resize")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let controller = GitController(roots: [root.path])
+        let window = host(GitPanelView(controller: controller), width: 1280, height: 820)
+        defer { window.contentView = nil; window.close() }
+        try await eventually("the first read") { controller.status.entries.count == 12 && !controller.diff.isEmpty && !controller.diffLoading }
+        for _ in 0..<4 { try await draw(window) }
+        RedrawCounter.recording = true
+        defer { RedrawCounter.recording = false; RedrawCounter.reset() }
+        func drawn(widths: [CGFloat]) async throws -> [String: Int] {
+            RedrawCounter.reset()
+            for width in widths {
+                window.setContentSize(NSSize(width: width, height: 820))
+                for _ in 0..<3 { try await draw(window) }
+            }
+            return RedrawCounter.counts
+        }
+        let parts = ["GitPanelToolbar", "GitPanelHeader", "GitChangesList", "GitCommitBox", "GitPanelDetail", "GitRemoteIconButtons"]
+        let wide = try await drawn(widths: [1200, 1100, 1000, 950])
+        for part in parts { XCTAssertEqual(wide[part, default: 0], 0, "Resizing a wide panel draws no \(part): \(wide)") }
+        let crossing = try await drawn(widths: [800])
+        XCTAssertGreaterThanOrEqual(crossing["GitPanelToolbar", default: 0], 1, "Crossing draws the toolbar: \(crossing)")
+        for part in parts.dropFirst() where part != "GitRemoteIconButtons" {
+            XCTAssertEqual(crossing[part, default: 0], 0, "Crossing draws no \(part): \(crossing)")
+        }
+        let narrow = try await drawn(widths: [760, 700, 640])
+        for part in parts where part != "GitRemoteIconButtons" {
+            XCTAssertEqual(narrow[part, default: 0], 0, "Resizing a narrow panel draws no \(part): \(narrow)")
+        }
+    }
+
     /// Fetch, pull and push say their names where the toolbar has room for
     /// them, and are three symbols where it has not. The symbols are built
     /// only when they are what shows: measured in the toolbar's every layout,
