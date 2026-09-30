@@ -107,6 +107,13 @@ final class JournalRecordReader {
         }
     }
 
+    /// Throws if the file is no longer the size it was opened at, as the
+    /// end of a read checks; for a read that stops before the end.
+    func checkUnchanged() throws {
+        var info = stat()
+        guard fstat(file.fileDescriptor, &info) == 0, info.st_size >= 0, UInt64(info.st_size) == size else { throw Self.changed() }
+    }
+
     private static func changed() -> AgentError {
         AgentError("session_damaged", "The source journal changed while it was being read")
     }

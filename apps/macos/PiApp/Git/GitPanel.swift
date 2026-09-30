@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import GitView
 
 /// The Changes sheet, laid out like IntelliJ's Git tool window: a branch
 /// menu with fetch, pull, push and stash controls; a changelist with

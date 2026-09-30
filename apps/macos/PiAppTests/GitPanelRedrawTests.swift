@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import AppKit
 @testable import PiApp
+@testable import GitView
 
 /// A change to the Changes panel draws the parts that show it. The panel
 /// observes its controller, and every change to it used to draw the whole

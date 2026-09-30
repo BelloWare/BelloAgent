@@ -1,16 +1,9 @@
 import SwiftUI
 import AppKit
+import GitView
 
 // Drawing a diff: its heading, and the unified or side-by-side cards the
 // hunks become (`GitDiffTable`). A commit's file chips are `GitFileChips`.
-
-/// The diff's layout and its whole-diff gate. Only the diff observes them.
-@MainActor final class GitDiffPresentation: ObservableObject {
-    @Published var split = false
-    /// Which diff the reader asked to see in full. It names the diff, so the
-    /// row gate comes back for the next file or commit.
-    @Published var whole: String?
-}
 
 /// A diff that follows its presentation: the layout and the gate change it,
 /// and nothing else around it is drawn again.
@@ -49,7 +42,7 @@ struct DiffView: View {
         GitDiffTable(files: files, split: split, wrap: wrap, showAll: showAll, identity: identity,
                      top: AnyView(top), topKey: TopKey(title: title, subtitle: subtitle, loading: loading, empty: files.isEmpty, embedded: embedded, lead: leadKey),
                      topHeightKey: TopHeightKey(title: title != nil, subtitle: subtitle != nil, note: files.isEmpty && !loading, embedded: embedded, lead: leadKey),
-                     loading: loading, more: more)
+                     loading: loading, more: more, colors: .pi, menu: GitDiffPiMenu.builder)
             .background(Color.piContent)
     }
 

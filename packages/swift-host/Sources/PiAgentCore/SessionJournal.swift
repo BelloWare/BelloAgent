@@ -162,6 +162,20 @@ final class SessionJournal {
         if flush { try synchronize() }
         return id
     }
+    /// A record already written as this journal writes them, whose `id` is
+    /// `id` and whose `parentId` is this journal's tail (`JournalEnvelope`):
+    /// a fork's copy of a record, appended without parsing and encoding it
+    /// again. It does not pass through `beforeAppend`, which sees the records
+    /// a session writes, not a fork's copies.
+    func appendLine(_ line: Data, id: String, flush: Bool = true) throws {
+        guard !poisoned else { throw AgentError("session_damaged", "A journal write failed; recover a copy before continuing") }
+        guard line.count <= JournalRecordReader.maximumRecordBytes else { throw AgentError("session_record_limit", "This individual journal record exceeds 32 MiB; the existing conversation is preserved") }
+        var data=line; data.append(10)
+        do { try handle.write(contentsOf:data) } catch { poisoned=true; throw error }
+        lastAppend=(bytes, line.count); lastAppendLine=line
+        tail=id; bytes += UInt64(data.count); unsynced=true; appends += 1
+        if flush { try synchronize() }
+    }
     /// Forces everything appended so far to stable storage.
     func synchronize() throws {
         guard !poisoned else { throw AgentError("session_damaged","A journal synchronization failed; recover a copy before continuing") }

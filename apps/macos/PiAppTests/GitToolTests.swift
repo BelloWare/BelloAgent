@@ -1,5 +1,6 @@
 import XCTest
 @testable import PiApp
+@testable import GitView
 
 /// Exercises the system git against a throwaway repository: status, diffs,
 /// history, commit details, staging and committing.

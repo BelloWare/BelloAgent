@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 @testable import PiApp
+@testable import GitView
 
 final class CrashAuditRegressionTests: XCTestCase {
     func testTerminalBuffersHaveExplicitByteAndFrameBudgets() {

@@ -1,5 +1,6 @@
 import XCTest
 @testable import PiApp
+@testable import GitView
 
 /// Moving through history against a real repository: a commit's files appear
 /// before any patch is read, a commit that was already read comes back without

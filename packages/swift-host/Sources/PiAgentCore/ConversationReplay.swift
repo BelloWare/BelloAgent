@@ -7,6 +7,15 @@ struct ConversationReplay {
     init(_ records: [JSON] = []) throws {
         for record in records { try consume(record) }
     }
+    /// The conversation up to and including the record at `cutoff`, counted
+    /// from the reader's next one, from a journal a fork has read to its end
+    /// (`forkPoint`). Nothing past `cutoff` is read, and the file is checked
+    /// to be the size it was, as a read to its end checks.
+    init(upTo cutoff: Int, in reader: JournalRecordReader) throws {
+        var index = 0
+        while index <= cutoff, let record = try reader.next() { try consume(record); index += 1 }
+        try reader.checkUnchanged()
+    }
     mutating func consume(_ record: JSON) throws {
         if record["type"].text == "message" {
             let message = try ChatMessage(id: identity(record["id"]), pi: record["message"])

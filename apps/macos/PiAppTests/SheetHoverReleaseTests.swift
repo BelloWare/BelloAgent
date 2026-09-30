@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import AppKit
 @testable import PiApp
+@testable import GitView
 
 /// A sheet closed with the pointer over it, the app in front, lets go of what
 /// it showed before the test returns. XCTest keeps whatever AppKit

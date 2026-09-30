@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import GitView
 
 /// The commit's files as chips; one narrows the diff to that file, "All"
 /// widens it again. The chips are drawn by one native view: two hundred
@@ -11,7 +12,7 @@ struct GitCommitFileChips: NSViewRepresentable {
     @Binding var selected: String?
     @Binding var shown: Int
     var showHistory: (String) -> Void
-    static let step = 200
+    static var step: Int { GitController.commitFilesStep }
 
     func makeNSView(context: Context) -> GitFileChipsView {
         let view = GitFileChipsView()

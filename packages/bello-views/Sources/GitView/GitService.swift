@@ -3,28 +3,28 @@ import Darwin
 
 /// One line of `git status --porcelain=v2`: a tracked change, rename or
 /// untracked file. Index and worktree states are git's single-letter codes.
-struct GitStatusEntry: Identifiable, Equatable, Sendable {
-    let path: String
-    let originalPath: String?
-    let indexState: Character
-    let worktreeState: Character
-    let untracked: Bool
-    var id: String { path }
-    var staged: Bool { !untracked && indexState != "." }
-    var unstaged: Bool { untracked || worktreeState != "." }
-    var renamed: Bool { originalPath != nil }
+public struct GitStatusEntry: Identifiable, Equatable, Sendable {
+    public let path: String
+    public let originalPath: String?
+    public let indexState: Character
+    public let worktreeState: Character
+    public let untracked: Bool
+    public var id: String { path }
+    public var staged: Bool { !untracked && indexState != "." }
+    public var unstaged: Bool { untracked || worktreeState != "." }
+    public var renamed: Bool { originalPath != nil }
     /// A rename in the index or in the working tree. Git shows it as one row
     /// with both names, and to git it is still two paths: the old name's
     /// removal and the new name's addition. A copy is not one: its source is
     /// still there, changed, in a row of its own.
-    var isRename: Bool { originalPath != nil && (indexState == "R" || worktreeState == "R") }
+    public var isRename: Bool { originalPath != nil && (indexState == "R" || worktreeState == "R") }
     /// One letter for the row badge: the worktree change, else the index change.
-    var badge: String {
+    public var badge: String {
         if untracked { return "U" }
         let state = worktreeState != "." ? worktreeState : indexState
         return String(state)
     }
-    var summary: String {
+    public var summary: String {
         switch badge {
         case "U": "Untracked"
         case "M": "Modified"
@@ -38,76 +38,79 @@ struct GitStatusEntry: Identifiable, Equatable, Sendable {
     }
 }
 
-struct GitRepositoryStatus: Equatable, Sendable {
-    var branch = ""
-    var upstream: String?
-    var ahead = 0
-    var behind = 0
-    var head: String?
-    var entries: [GitStatusEntry] = []
-    var stagedCount: Int { entries.filter(\.staged).count }
+public struct GitRepositoryStatus: Equatable, Sendable {
+    public var branch = ""
+    public var upstream: String?
+    public var ahead = 0
+    public var behind = 0
+    public var head: String?
+    public var entries: [GitStatusEntry] = []
+    public var stagedCount: Int { entries.filter(\.staged).count }
 }
 
-struct GitCommit: Identifiable, Equatable, Sendable {
-    let hash: String
-    let shortHash: String
-    let author: String
-    let date: Date
-    let subject: String
-    let parents: [String]
+public struct GitCommit: Identifiable, Equatable, Sendable {
+    public let hash: String
+    public let shortHash: String
+    public let author: String
+    public let date: Date
+    public let subject: String
+    public let parents: [String]
     /// Branch and tag names pointing at this commit ("HEAD -> main", "origin/main", "tag: v1").
-    var refs: [String] = []
-    var id: String { hash }
+    public var refs: [String] = []
+    public var id: String { hash }
 }
 
-struct GitStashEntry: Identifiable, Equatable, Sendable {
-    let name: String
-    let subject: String
-    var id: String { name }
+public struct GitStashEntry: Identifiable, Equatable, Sendable {
+    public let name: String
+    public let subject: String
+    public var id: String { name }
 }
 
-struct GitLogFilter: Equatable, Sendable {
-    var allBranches = false
-    var text = ""
-    var author = ""
+public struct GitLogFilter: Equatable, Sendable {
+    public var allBranches = false
+    public var text = ""
+    public var author = ""
     /// History of one path only ("file history"), cleared from the chip above the list.
-    var path: String?
+    public var path: String?
+    public init(allBranches: Bool = false, text: String = "", author: String = "", path: String? = nil) {
+        self.allBranches = allBranches; self.text = text; self.author = author; self.path = path
+    }
 }
 
 /// Line counts for one changed path, from `--numstat`. A binary file reports no counts.
-struct GitDiffStat: Equatable, Sendable {
-    let added: Int
-    let removed: Int
-    let binary: Bool
+public struct GitDiffStat: Equatable, Sendable {
+    public let added: Int
+    public let removed: Int
+    public let binary: Bool
 }
 
 /// What a commit changed, without its patch: the message, the changed paths and
 /// their line counts. The patch is read separately and only when it is shown,
 /// so selecting a commit never waits for megabytes of diff text.
-struct GitCommitDetail: Equatable, Sendable {
-    let commit: GitCommit
-    let message: String
-    let files: [GitStatusEntry]
-    var stats: [String: GitDiffStat] = [:]
-    var insertions: Int { stats.values.reduce(0) { $0 + $1.added } }
-    var deletions: Int { stats.values.reduce(0) { $0 + $1.removed } }
+public struct GitCommitDetail: Equatable, Sendable {
+    public let commit: GitCommit
+    public let message: String
+    public let files: [GitStatusEntry]
+    public var stats: [String: GitDiffStat] = [:]
+    public var insertions: Int { stats.values.reduce(0) { $0 + $1.added } }
+    public var deletions: Int { stats.values.reduce(0) { $0 + $1.removed } }
     /// Big commits keep their patch off screen until it is asked for.
-    var isLarge: Bool { files.count > 30 || insertions + deletions > 3_000 }
-    var summary: String {
+    public var isLarge: Bool { files.count > 30 || insertions + deletions > 3_000 }
+    public var summary: String {
         let files = files.count == 1 ? "1 file" : "\(files.count) files"
         return "\(files) · +\(insertions) −\(deletions)"
     }
 }
 
-struct GitFailure: LocalizedError, Equatable {
-    let message: String
-    var errorDescription: String? { message }
+public struct GitFailure: LocalizedError, Equatable {
+    public let message: String
+    public var errorDescription: String? { message }
 }
 
 /// Runs the system git for a project folder. Reads never touch the index;
 /// stage, unstage and commit are the only writes, each an explicit action.
-actor GitService {
-    static let shared = GitService()
+public actor GitService {
+    public static let shared = GitService()
     private let executable = URL(fileURLWithPath: "/usr/bin/git")
 
     struct Output: Sendable { let stdout: Data; let stderr: String; let status: Int32
@@ -219,7 +222,7 @@ actor GitService {
     /// out of circulation: a handful of concurrent reads would stall every
     /// other task in the app, the gateway and the transcript included. These
     /// waits happen on a queue of their own, where blocking is expected.
-    private static let processQueue = DispatchQueue(label: "com.belloware.PiApp.git", qos: .userInitiated, attributes: .concurrent)
+    private static let processQueue = DispatchQueue(label: "BelloViews.git", qos: .userInitiated, attributes: .concurrent)
 
     /// How many git processes may run at once. Reads are cancelled when they
     /// are superseded, but a panel in a bad state — a repository that answers

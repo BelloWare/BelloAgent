@@ -19,9 +19,47 @@ extension AgentSession {
     /// and its context is what replaying those records gives, so the edits and
     /// compactions in effect then are the ones it has. A reply a later
     /// compaction summarized comes back with its whole context.
-    public func fork(to newID: String, at messageID: String? = nil) throws -> JSON {
+    public func fork(to newID: String, at messageID: String? = nil) throws -> JSON { try forked(to: newID, at: messageID).result }
+    /// The fork, and what its journal replays to, made as the journal is
+    /// written: the state the fork's session opens with
+    /// (`AgentSession(prepared:)`), which then does not read the journal
+    /// again. That open writes the metadata file, as a first open does.
+    func forked(to newID: String, at messageID: String? = nil) throws -> (result: JSON, replay: JournalReplay) {
         guard !closed, let journal, !ephemeral else { throw AgentError("session_unavailable", "Save this session before forking its context") }
-        try ensureFullHistory()
+        // A chat opened from its metadata file has only its latest rows. A
+        // fork of the whole chat replays everything it copies, which is the
+        // chat's whole history, and the chat takes its rows from that; a
+        // fork from a reply reads the whole journal first, as before.
+        let hydrating = messageID == nil && partialHistory
+        if !hydrating { try ensureFullHistory() }
+        do {
+            let made = try forkCopy(to: newID, at: messageID, journal: journal, hydrating: hydrating)
+            if let copied=made.copied { try adoptCopiedHistory(copied.history, places: copied.places) }
+            return (made.result, made.replay)
+        } catch {
+            // A fork that fails leaves the chat with its whole history, as
+            // reading it before the attempt did; a journal that cannot be
+            // read in full fails with that, as it did.
+            if hydrating, partialHistory { try ensureFullHistory() }
+            throw error
+        }
+    }
+    /// The chat's rows from what a fork of the whole chat copied, their places
+    /// mapped back to this chat's journal; a place not found is read again.
+    private func adoptCopiedHistory(_ copied: JournalReplay, places: [UInt64: (offset: UInt64, length: Int)]) throws {
+        var whole = copied, spans: [String: JournalCheckpoint.Row] = [:]
+        for (row, span) in whole.rowSpans {
+            guard let place=places[span.offset] else { try ensureFullHistory(); return }
+            spans[row]=JournalCheckpoint.Row(id:span.id,kind:span.kind,offset:place.offset,length:place.length)
+        }
+        whole.rowSpans=spans
+        adoptFullHistory(whole)
+    }
+    /// The fork's journal written, and what it replays to; with `hydrating`,
+    /// also what the copied records replay to, the chat's whole history, and
+    /// where each record is in this chat's journal, by its offset in the fork's.
+    private func forkCopy(to newID: String, at messageID: String?, journal: SessionJournal, hydrating: Bool)
+        throws -> (result: JSON, replay: JournalReplay, copied: (history: JournalReplay, places: [UInt64: (offset: UInt64, length: Int)])?) {
         _ = try identity(JSON(newID))
         guard newID != id else { throw AgentError("session_conflict", "A fork needs a new session identity") }
         let temporary=directory.appendingPathComponent(".fork-\(UUID().uuidString).jsonl")
@@ -38,13 +76,8 @@ extension AgentSession {
             // and the same context a request sends, but the open's context
             // also keeps rows no request sends, such as an interrupted reply's
             // partial, until a record resets it (ReplayParityTests).
-            var state=try ConversationReplay()
-            do {
-                let reader=try journal.recordReader(); var index=0
-                while let record=try reader.next() {
-                    if index <= cutoff { try state.consume(record) }; index += 1
-                }
-            }
+            let state: ConversationReplay
+            do { state=try ConversationReplay(upTo: cutoff, in: journal.recordReader()) }
             catch { throw AgentError("fork_target", "The conversation up to that reply cannot be rebuilt: \(error.localizedDescription)") }
             contextIDs=state.context.map(\.id)
             timeline=EditReplayPlan.forkTimeline(visible:state.visible.map(\.id),boundary:contextIDs)
@@ -56,35 +89,87 @@ extension AgentSession {
             origin["contextRevision"]=JSON(sha256(Data(contextIDs.joined(separator:"\n").utf8)))
             origin["omittedIncompleteEntries"]=0
         }
+        let replay: JournalReplay
+        var copiedHistory: JournalReplay?, sourcePlaces: [UInt64: (offset: UInt64, length: Int)] = [:]
         do {
             let prepared=try SessionJournal(url:temporary,id:newID,cwd:cwd,binding:profile.binding,create:true)
+            // Each record the fork's journal gets, from its marker on, is
+            // replayed as it is written, as the fork's first open would.
+            var consumer=JournalReplayConsumer(id:newID,header:prepared.headerCheck,marker:prepared.markerCheck,spendTracked:false)
+            func replayWritten() throws { if let span=prepared.lastAppend, let line=prepared.lastAppendLine { try consumer.consume(line,at:span.offset) } }
+            try replayWritten()
+            // A fork is a chat of its own: it starts with no spend of its own.
+            let left: Set<String> = [JournalRecordKind.marker, JournalRecordKind.state, JournalRecordKind.sideOrigin, JournalRecordKind.forkOrigin, JournalRecordKind.contextRecovery, SessionSpend.recordType]
             let reader=try journal.recordReader(); var index=0
-            while let record=try reader.next() {
+            func copied(from lineStart: UInt64, length: Int) { if hydrating, let span=prepared.lastAppend { sourcePlaces[span.offset]=(lineStart, length) } }
+            while true {
+                // The records past the reply a fork ends at are neither
+                // copied nor read again: forkPoint has read them.
+                if let end, index > end { break }
+                let lineStart=reader.completeBytes
+                guard let line=try reader.nextLine() else { break }
+                if line.isEmpty { continue }
                 defer { index += 1 }
-                if let end, index > end { continue }
-                let kind=record["customType"].text ?? ""
-                // A fork is a chat of its own: it starts with no spend of its own.
-                if [JournalRecordKind.marker, JournalRecordKind.state, JournalRecordKind.sideOrigin, JournalRecordKind.forkOrigin, JournalRecordKind.contextRecovery, SessionSpend.recordType].contains(kind) { continue }
+                // The record's kind and id, read without building it; a line
+                // the scan cannot read plainly is parsed. The thousands of
+                // run-state records a long chat has are left out, each still
+                // checked to be JSON the parser takes, as parsing it checked.
+                if let fields=JournalLineScan.stateTail(line) ?? JournalLineScan.fields(line), let recordID=fields.id {
+                    if left.contains(fields.customType ?? "") {
+                        if !JSONSyntax.plainlyValid(line) { _ = try JSON.parse(line) }
+                        continue
+                    }
+                    let id=try identity(JSON(recordID))
+                    // Its bytes as they were, but for its envelope; the replay
+                    // below parses what is written, as the fork's open would.
+                    if let copy=JournalEnvelope.rewritten(line,id:id,parentID:prepared.head,timestamp:isoNow()), copy.count <= JournalRecordReader.maximumRecordBytes {
+                        try prepared.appendLine(copy,id:id,flush:false)
+                        copied(from:lineStart,length:line.count)
+                        try replayWritten()
+                        continue
+                    }
+                }
+                let record=try JSON.parse(line)
+                if left.contains(record["customType"].text ?? "") { continue }
                 // Branch records can contain a queued edit. Preserve the branch
                 // and all message bytes, but never authorize its command twice.
                 try prepared.append(record.removing(["id","parentId","timestamp","nativeState"]),id:try identity(record["id"]),flush:false)
+                copied(from:lineStart,length:line.count)
+                try replayWritten()
+            }
+            try reader.checkUnchanged()
+            if hydrating {
+                // Every record copied: the chat's whole history, whose shown
+                // rows the fork's timeline is cut from.
+                let whole=try consumer.finished()
+                timeline=EditReplayPlan.forkTimeline(visible:whole.visible.map(\.id),boundary:contextIDs)
+                copiedHistory=whole
             }
             // As with the copied records, `publish` forces these to disk
             // before the fork takes its name.
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.context),"data":["ids":.array(contextIDs.map { JSON($0) }),"visibleIDs":.array(timeline.map { JSON($0) })]],flush:false)
+            try replayWritten()
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.forkOrigin),"data":origin],flush:false)
+            try replayWritten()
             var fresh = SessionSpend().record; fresh["source"] = "fork"
             try prepared.append(["type":"custom","customType":JSON(SessionSpend.recordType),"data":fresh],flush:false)
+            try replayWritten()
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.state),"data":["active":false,"queue":[],"steering":[],"commands":[],"queuePaused":false,"steeringMode":JSON(steeringMode),"followUpMode":JSON(followUpMode)]],flush:false)
+            try replayWritten()
+            replay=try consumer.finished()
             try prepared.publish(to:destination)
         } catch { try? FileManager.default.removeItem(at:temporary); try? FileManager.default.removeItem(atPath:temporary.path+".lock"); throw error }
-        return ["accepted":true,"sessionId":JSON(newID),"path":JSON(destination.path),"origin":origin]
+        return (["accepted":true,"sessionId":JSON(newID),"path":JSON(destination.path),"origin":origin], replay, copiedHistory.map { ($0, sourcePlaces) })
     }
     /// The last journal record a fork at `messageID` keeps: the reply itself,
     /// or the last result of the tools it called, so the fork starts after
     /// its whole tool batch. A batch still running is refused; one a crash
     /// left without results is kept, and the fork records their outcome as
     /// unknown when it opens, as any reopened chat does.
+    ///
+    /// It reads every record to the journal's end, so one the parser refuses
+    /// fails the fork with its error; the fork's replay and copy then stop at
+    /// the point.
     func forkPoint(_ messageID: String, in reader: JournalRecordReader) throws -> Int {
         var index=0, start: Int?, end=0, pending=Set<String>(), batchFinished=false
         while let record=try reader.next() {

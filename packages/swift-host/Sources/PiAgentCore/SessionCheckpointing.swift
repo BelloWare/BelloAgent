@@ -121,7 +121,14 @@ extension AgentSession {
     /// (`loadOlderRows`).
     func ensureFullHistory() throws {
         guard partialHistory, let journal else { return }
-        let replayed = try Self.replay(journal, url: journal.url, id: id, binding: profile.binding, spendTracked: spendTracked, resume: false)
+        adoptFullHistory(try Self.replay(journal, url: journal.url, id: id, binding: profile.binding, spendTracked: spendTracked, resume: false))
+    }
+    /// The whole of the chat's rows, as a replay of its whole journal made
+    /// them (`ensureFullHistory`, or the replay a fork of the whole chat makes
+    /// of what it copies), in place of the part an open from the metadata
+    /// file loaded. The rows' places are in this chat's own journal.
+    func adoptFullHistory(_ replayed: JournalReplay) {
+        guard let journal else { return }
         let live = Dictionary(history.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
         history = replayed.history.map { live[$0.id] ?? $0 }
         visible = replayed.visible.map { live[$0.id] ?? $0 }

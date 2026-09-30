@@ -1,84 +1,99 @@
 import SwiftUI
 import AppKit
 
+/// The diff's layout and its whole-diff gate. Only the diff observes them.
+@MainActor public final class GitDiffPresentation: ObservableObject {
+    @Published public var split = false
+    /// Which diff the reader asked to see in full. It names the diff, so the
+    /// row gate comes back for the next file or commit.
+    @Published public var whole: String?
+    public init() {}
+}
+
 /// State for the Changes sheet: which folder, its status, the selected file's
 /// diff, the commit history and the selected commit. Reads run on GitService;
 /// stage, unstage and commit are the only writes.
-@MainActor final class GitController: ObservableObject {
-    enum Panel: String, CaseIterable, Hashable { case changes, history
-        var title: String { self == .changes ? "Changes" : "History" }
+@MainActor public final class GitController: ObservableObject {
+    public enum Panel: String, CaseIterable, Hashable { case changes, history
+        public var title: String { self == .changes ? "Changes" : "History" }
     }
-    struct Selection: Equatable { let path: String; let staged: Bool }
+    public struct Selection: Equatable {
+        public let path: String; public let staged: Bool
+        public init(path: String, staged: Bool) { self.path = path; self.staged = staged }
+    }
 
-    @Published var roots: [String] = []
-    @Published var root: String? { didSet { if root != oldValue { startRefresh() } } }
-    @Published var repositoryRoot: String?
+    @Published public var roots: [String] = []
+    @Published public var root: String? { didSet { if root != oldValue { startRefresh() } } }
+    @Published public var repositoryRoot: String?
     /// Coming back to Changes brings up to date a diff that a refresh nobody
     /// asked for left unread while it was hidden.
-    @Published var panel = Panel.changes { didSet { if panel == .changes, oldValue != .changes, selectedDiffStale { startSelectedDiffLoad(silently: true) } } }
-    @Published private(set) var status = GitRepositoryStatus() { didSet { splitStatus() } }
-    @Published private(set) var loading = false
+    @Published public var panel = Panel.changes { didSet { if panel == .changes, oldValue != .changes, selectedDiffStale { startSelectedDiffLoad(silently: true) } } }
+    @Published public private(set) var status = GitRepositoryStatus() { didSet { splitStatus() } }
+    @Published public private(set) var loading = false
     /// A read has said whether the folder is a repository and, when it is,
     /// what changed in it. Until then the panel keeps its own layout, empty,
     /// and says neither "Not a git repository" nor "No changes".
-    @Published private(set) var statusRead = false
-    @Published private(set) var notice = ""
-    @Published var selection: Selection? { didSet { if selection != oldValue { startSelectedDiffLoad() } } }
-    @Published private(set) var diff: [GitDiffFile] = []
+    @Published public private(set) var statusRead = false
+    @Published public private(set) var notice = ""
+    @Published public var selection: Selection? { didSet { if selection != oldValue { startSelectedDiffLoad() } } }
+    @Published public private(set) var diff: [GitDiffFile] = []
     /// The Changes diff is being read for the reader. A read nobody asked for
     /// never sets it, and the History tab's commit reads have a flag of their
     /// own: one flag for both panes flashed a spinner on the pane not reading.
-    @Published private(set) var diffLoading = false
-    @Published private(set) var commitLoading = false
+    @Published public private(set) var diffLoading = false
+    @Published public private(set) var commitLoading = false
     /// A refresh nobody asked for skipped the selected diff while History was showing.
     private var selectedDiffStale = false
-    @Published private(set) var commits: [GitCommit] = []
-    @Published private(set) var historyExhausted = false
-    @Published var selectedCommit: GitCommit? {
+    @Published public private(set) var commits: [GitCommit] = []
+    @Published public private(set) var historyExhausted = false
+    @Published public var selectedCommit: GitCommit? {
         didSet {
             guard selectedCommit != oldValue else { return }
             changingCommit = true; detailFile = nil; changingCommit = false
             startCommitLoad()
         }
     }
-    @Published private(set) var detail: GitCommitDetail?
+    @Published public private(set) var detail: GitCommitDetail?
     /// The selected commit's patch, parsed off the main thread and kept per
     /// commit, so moving through history never re-reads or re-parses one twice.
-    @Published private(set) var detailDiff: [GitDiffFile] = []
+    @Published public private(set) var detailDiff: [GitDiffFile] = []
     /// A big commit keeps its patch off screen until it is asked for.
-    @Published private(set) var detailDiffDeferred = false
-    @Published var commitMessage = ""
-    @Published private(set) var lastCommit: String?
+    @Published public private(set) var detailDiffDeferred = false
+    @Published public var commitMessage = ""
+    @Published public private(set) var lastCommit: String?
     /// Files ticked for the next commit (IntelliJ's changelist checkboxes).
     /// Everything is ticked the first time a repository is read; after that the
     /// set is the reader's, and unticking every file stays unticked across a
     /// refresh rather than silently re-arming the commit.
-    @Published var checked: Set<String> = [] { didSet { if !applyingChecked { checkedByReader = true }; recountChecked() } }
+    @Published public var checked: Set<String> = [] { didSet { if !applyingChecked { checkedByReader = true }; recountChecked() } }
     /// True once the reader has ticked or unticked anything themselves.
     private var checkedByReader = false
     private var applyingChecked = false
     private func applyChecked(_ value: Set<String>) { guard value != checked else { return }; applyingChecked = true; checked = value; applyingChecked = false }
-    @Published var amend = false { didSet { if amend, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Task { await prefillHeadMessage() } } } }
-    @Published private(set) var branches: [String] = []
-    @Published private(set) var stashes: [GitStashEntry] = []
-    @Published var logFilter = GitLogFilter() { didSet { if logFilter != oldValue { startHistoryReload() } } }
-    @Published var detailFile: String? { didSet { if detailFile != oldValue && !changingCommit { startCommitLoad() } } }
-    @Published private(set) var detailFileDiff: [GitDiffFile] = []
+    @Published public var amend = false { didSet { if amend, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Task { await prefillHeadMessage() } } } }
+    @Published public private(set) var branches: [String] = []
+    @Published public private(set) var stashes: [GitStashEntry] = []
+    @Published public var logFilter = GitLogFilter() { didSet { if logFilter != oldValue { startHistoryReload() } } }
+    @Published public var detailFile: String? { didSet { if detailFile != oldValue && !changingCommit { startCommitLoad() } } }
+    @Published public private(set) var detailFileDiff: [GitDiffFile] = []
     /// How the diff is laid out and which diff is shown whole, held apart
     /// from the state the panel observes: switching the layout, or opening
     /// the whole diff, redraws the diff and not the whole panel.
-    let presentation = GitDiffPresentation()
-    var splitDiff: Bool { get { presentation.split } set { presentation.split = newValue } }
+    /// How many of a commit's files are listed at first, and how many more
+    /// each time more are asked for.
+    public static let commitFilesStep = 200
+    public let presentation = GitDiffPresentation()
+    public var splitDiff: Bool { get { presentation.split } set { presentation.split = newValue } }
     /// Which diff the reader asked to see in full. It names the diff, so the
     /// row gate comes back for the next file or commit instead of quietly
     /// staying open and laying out a whole 20,000-line patch.
-    var wholeDiffShown: String? { get { presentation.whole } set { presentation.whole = newValue } }
+    public var wholeDiffShown: String? { get { presentation.whole } set { presentation.whole = newValue } }
     /// How many of a commit's file chips are on screen. Reset for each commit.
-    @Published var commitFilesShown = GitCommitFileChips.step
+    @Published public var commitFilesShown = GitController.commitFilesStep
     /// Names one diff: the selected file, or a commit and the file chosen in it.
-    static func diffIdentity(path: String, staged: Bool) -> String { "changes\u{1}\(path)\u{1}\(staged)" }
-    static func diffIdentity(commit: String, file: String?) -> String { "commit\u{1}\(commit)\u{1}\(file ?? "")" }
-    @Published private(set) var busy = false
+    public static func diffIdentity(path: String, staged: Bool) -> String { "changes\u{1}\(path)\u{1}\(staged)" }
+    public static func diffIdentity(commit: String, file: String?) -> String { "commit\u{1}\(commit)\u{1}\(file ?? "")" }
+    @Published public private(set) var busy = false
     private let service: GitService
     private var generation = 0
     private var changingCommit = false
@@ -107,7 +122,7 @@ import AppKit
     private var commitCacheOrder: [String] = []
     private static let commitCacheLimit = 24
 
-    init(roots: [String], service: GitService = .shared) {
+    public init(roots: [String], service: GitService = .shared) {
         self.service = service; self.roots = roots; self.root = roots.first
     }
     /// A panel that went away without saying so still leaves nothing running:
@@ -118,15 +133,15 @@ import AppKit
         detailTask?.cancel(); selectedDiffTask?.cancel()
     }
 
-    var displayRoot: String { (root as NSString?)?.lastPathComponent ?? "" }
+    public var displayRoot: String { (root as NSString?)?.lastPathComponent ?? "" }
     /// Split once when the status is read. A repository with thousands of
     /// changed files must not be filtered again for every pass over the body.
-    @Published private(set) var staged: [GitStatusEntry] = []
-    @Published private(set) var unstaged: [GitStatusEntry] = []
-    @Published private(set) var stagedPaths: Set<String> = []
-    @Published private(set) var unstagedPaths: Set<String> = []
+    @Published public private(set) var staged: [GitStatusEntry] = []
+    @Published public private(set) var unstaged: [GitStatusEntry] = []
+    @Published public private(set) var stagedPaths: Set<String> = []
+    @Published public private(set) var unstagedPaths: Set<String> = []
     /// How many of the changed files are ticked, counted when either side changes.
-    @Published private(set) var checkedCount = 0
+    @Published public private(set) var checkedCount = 0
     private var allPaths: Set<String> = []
     private func splitStatus() {
         staged = status.entries.filter(\.staged)
@@ -150,11 +165,11 @@ import AppKit
 
     /// Refreshes without waiting, replacing any refresh already in flight so
     /// its git processes stop instead of racing the new one.
-    func startRefresh() { automaticRefresh = nil; automaticChangePending = false; refreshTask?.cancel(); refreshTask = Task { await refresh() } }
+    public func startRefresh() { automaticRefresh = nil; automaticChangePending = false; refreshTask?.cancel(); refreshTask = Task { await refresh() } }
     private func startHistoryReload() { historyTask?.cancel(); historyTask = Task { await reloadHistory() } }
     /// Stops every read this panel started. The sheet calls it as it closes, so
     /// no `git show` keeps computing a patch for a panel nobody can see.
-    func stop() {
+    public func stop() {
         generation += 1
         watcher?.stop(); watcher = nil
         refreshTask?.cancel(); refreshTask = nil; automaticRefresh = nil; automaticChangePending = false
@@ -170,7 +185,7 @@ import AppKit
     /// and up to two dozen commits' patches with it. It goes back to how it
     /// was made: a panel that opens over it again reads everything afresh, as
     /// a first open does.
-    func letGo() {
+    public func letGo() {
         selectedCommit = nil
         selection = nil
         status = GitRepositoryStatus(); statusRead = false; repositoryRoot = nil
@@ -180,7 +195,7 @@ import AppKit
         applyChecked([]); checkedByReader = false
         commitMessage = ""; amend = false; lastCommit = nil; notice = ""
         selectedDiffStale = false; panel = .changes
-        splitDiff = false; wholeDiffShown = nil; commitFilesShown = GitCommitFileChips.step
+        splitDiff = false; wholeDiffShown = nil; commitFilesShown = GitController.commitFilesStep
         logFilter = GitLogFilter()
         // Last: the resets above may have started reads of their own. A write
         // still running, whose refresh would read everything again, reads
@@ -191,7 +206,7 @@ import AppKit
     /// Let go of by a closed sheet; see `letGo()`.
     private var closed = false
     /// A panel is on screen over this controller: it reads again.
-    func opened() { closed = false }
+    public func opened() { closed = false }
     /// Test seam: commits whose reads are kept for moving back to them.
     var cachedCommits: Int { commitCache.count }
 
@@ -234,7 +249,7 @@ import AppKit
         self.watcher = watcher
     }
 
-    func refresh(automatic: Bool = false) async {
+    public func refresh(automatic: Bool = false) async {
         guard let root, !closed else { return }
         // Checked again here and not only where the task was made: the reader
         // may have started a refresh of their own in between, and theirs must
@@ -317,7 +332,7 @@ import AppKit
         } catch { if current(generation) { notice = error.localizedDescription } }
     }
 
-    func loadMoreHistory() async {
+    public func loadMoreHistory() async {
         guard let repositoryRoot, !historyExhausted else { return }
         do {
             let more = try await service.log(in: repositoryRoot, limit: 50, skip: commits.count, path: logFilter.path, filter: logFilter)
@@ -349,23 +364,23 @@ import AppKit
         await refresh()
         if let failure { notice = failure }
     }
-    func checkout(_ branch: String) async { guard let root = repositoryRoot else { return }; await perform("Switch") { try await service.checkout(branch, in: root) } }
-    func createBranch(_ name: String) async { guard let root = repositoryRoot else { return }; await perform("New branch") { try await service.createBranch(name, in: root) } }
-    func stash(message: String) async { guard let root = repositoryRoot else { return }; await perform("Stash") { try await service.stashPush(message: message, in: root) } }
-    func popStash(_ name: String? = nil) async { guard let root = repositoryRoot else { return }; await perform("Pop stash") { try await service.stashPop(name, in: root) } }
-    func fetch() async { guard let root = repositoryRoot else { return }; await perform("Fetch") { try await service.fetch(in: root) } }
-    func pull() async { guard let root = repositoryRoot else { return }; await perform("Pull") { try await service.pull(in: root) } }
-    func push() async { guard let root = repositoryRoot else { return }; await perform("Push") { try await service.push(in: root) } }
+    public func checkout(_ branch: String) async { guard let root = repositoryRoot else { return }; await perform("Switch") { try await service.checkout(branch, in: root) } }
+    public func createBranch(_ name: String) async { guard let root = repositoryRoot else { return }; await perform("New branch") { try await service.createBranch(name, in: root) } }
+    public func stash(message: String) async { guard let root = repositoryRoot else { return }; await perform("Stash") { try await service.stashPush(message: message, in: root) } }
+    public func popStash(_ name: String? = nil) async { guard let root = repositoryRoot else { return }; await perform("Pop stash") { try await service.stashPop(name, in: root) } }
+    public func fetch() async { guard let root = repositoryRoot else { return }; await perform("Fetch") { try await service.fetch(in: root) } }
+    public func pull() async { guard let root = repositoryRoot else { return }; await perform("Pull") { try await service.pull(in: root) } }
+    public func push() async { guard let root = repositoryRoot else { return }; await perform("Push") { try await service.push(in: root) } }
     /// Discards these rows. A rename goes back under its old name, unless a
     /// row left out of this discard is at that name now.
-    func discard(_ entries: [GitStatusEntry]) async {
+    public func discard(_ entries: [GitStatusEntry]) async {
         guard let root = repositoryRoot else { return }
         let held = allPaths.subtracting(entries.map(\.path))
         await perform("Discard") { try await service.discard(entries, in: root, held: held) }
     }
     /// Commits the checked files (their working-tree state), or the staged index when nothing is checked.
     /// A ticked rename is committed as one, under both of its names.
-    func commitChecked() async {
+    public func commitChecked() async {
         guard let root = repositoryRoot else { return }
         let rows = status.entries.filter { checked.contains($0.path) }
         let paths = GitService.paths(rows.map(\.path), renames: rows, for: .commit, held: allPaths.subtracting(checked))
@@ -386,7 +401,7 @@ import AppKit
     /// `git diff` running per file, all of them computing patches nobody reads.
     /// A silent read keeps the diff on screen, with no spinner, until the new
     /// one is ready, and replaces it only if it changed.
-    func startSelectedDiffLoad(silently: Bool = false) {
+    public func startSelectedDiffLoad(silently: Bool = false) {
         selectedDiffTask?.cancel()
         selectedDiffStale = false
         guard let repositoryRoot, let selection else { publish(\.diff, []); publish(\.diffLoading, false); return }
@@ -417,12 +432,12 @@ import AppKit
     /// Shows whatever of this commit is already read, then fetches only what is
     /// missing. Choosing another commit cancels the reads of the last one, so a
     /// superseded `git show` is terminated instead of finishing into nothing.
-    func startCommitLoad() {
+    public func startCommitLoad() {
         detailTask?.cancel()
         guard let repositoryRoot, let commit = selectedCommit else {
             detail = nil; detailDiff = []; detailFileDiff = []; detailDiffDeferred = false; commitLoading = false; return
         }
-        if detail?.commit.hash != commit.hash { commitFilesShown = GitCommitFileChips.step }
+        if detail?.commit.hash != commit.hash { commitFilesShown = GitController.commitFilesStep }
         let file = detailFile, cached = commitCache[commit.hash]
         if let cached { detail = cached.detail } else if detail?.commit.hash != commit.hash { detail = nil }
         detailDiff = cached?.diff ?? []
@@ -461,7 +476,7 @@ import AppKit
     }
 
     /// "Show the whole diff" for a commit whose patch was held back.
-    func loadDeferredCommitDiff() {
+    public func loadDeferredCommitDiff() {
         guard let commit = selectedCommit, detailFile == nil else { return }
         detailDiffDeferred = false
         detailTask?.cancel()
@@ -479,12 +494,12 @@ import AppKit
     }
 
     /// History of one path, from a file in the changes list or in a commit.
-    func showFileHistory(_ path: String) {
+    public func showFileHistory(_ path: String) {
         panel = .history
         selectedCommit = nil
         logFilter.path = path
     }
-    func clearFileHistory() { logFilter.path = nil }
+    public func clearFileHistory() { logFilter.path = nil }
 
     private func remember(_ entry: CachedCommit, for hash: String) {
         commitCache[hash] = entry
@@ -496,7 +511,7 @@ import AppKit
     }
 
     /// Stages the rows at these paths; a rename is staged under both names.
-    func stage(_ paths: [String]) async {
+    public func stage(_ paths: [String]) async {
         guard let repositoryRoot else { return }
         let paths = GitService.paths(paths, renames: status.entries, for: .stage)
         var failure: String?
@@ -504,14 +519,14 @@ import AppKit
         await refresh(reporting: failure)
     }
     /// Unstages the rows at these paths; a rename is unstaged whole, not by half.
-    func unstage(_ paths: [String]) async {
+    public func unstage(_ paths: [String]) async {
         guard let repositoryRoot else { return }
         let paths = GitService.paths(paths, renames: status.entries, for: .unstage)
         var failure: String?
         do { try await service.unstage(paths, in: repositoryRoot) } catch is CancellationError { } catch { failure = error.localizedDescription }
         await refresh(reporting: failure)
     }
-    func commit() async {
+    public func commit() async {
         guard let repositoryRoot else { return }
         var failure: String?
         do {

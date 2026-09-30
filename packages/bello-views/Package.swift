@@ -8,14 +8,20 @@ import PackageDescription
 // FileView: a file of any size, read away from the main thread (its lines
 // found, its encoding known, its text read a screen at a time), drawn,
 // selected and read to VoiceOver by an AppKit view.
+//
+// GitView: a repository's changes, history and diffs, read with git, watched
+// for changes, and the diff drawn by an AppKit table.
 let package = Package(
     name: "BelloViews",
     platforms: [.macOS(.v13)],
     products: [
         .library(name: "BelloFileView", targets: ["FileView"]),
+        .library(name: "BelloGitView", targets: ["GitView"]),
     ],
     targets: [
         .target(name: "FileView"),
         .testTarget(name: "FileViewTests", dependencies: ["FileView"]),
+        .target(name: "GitView"),
+        .testTarget(name: "GitViewTests", dependencies: ["GitView"]),
     ]
 )
