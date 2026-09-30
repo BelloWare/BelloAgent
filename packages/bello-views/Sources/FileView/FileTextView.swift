@@ -14,11 +14,9 @@ import AppKit
 // keyboard can start and extend a selection. VoiceOver reads the same text a
 // selection copies (`FileTextSource`).
 
-/// How the viewer sets text.
-@MainActor enum FileTextMetrics {
-    static let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    static let numbersFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-    static let lineHeight: CGFloat = 17
+/// How the viewer sets text: the room around it and how lines are cut, and
+/// from the style, the font's measures.
+struct FileTextMetrics {
     /// Room around the text: under the tabs above, and after the gutter.
     static let top: CGFloat = 8
     static let bottom: CGFloat = 16
@@ -34,21 +32,33 @@ import AppKit
     /// it, so the far end of a line of megabytes is as quick to reach as its
     /// start. Characters wider than a column are drawn narrower there.
     static let gridLine = 65_536
+
+    let font: NSFont
+    let numbersFont: NSFont
+    let lineHeight: CGFloat
     /// The width of one character of the font.
-    static let advance: CGFloat = {
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: "0", attributes: [.font: font]))
-        return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-    }()
-    static var tabInterval: CGFloat { advance * tabSpaces }
-    /// Where a line's baseline sits in its 17 points: the font's ascent and
+    let advance: CGFloat
+    /// Where a line's baseline sits in its height: the font's ascent and
     /// descent centred, on a whole point.
-    static let baseline: CGFloat = {
-        let content = font.ascender - font.descender
-        return (((lineHeight - content) / 2) + font.ascender).rounded()
-    }()
+    let baseline: CGFloat
+    /// The width of one digit of the line numbers.
+    let digitWidth: CGFloat
+    var tabInterval: CGFloat { advance * Self.tabSpaces }
+
+    init(_ style: FileTextStyle) {
+        font = style.font; numbersFont = style.lineNumberFont; lineHeight = style.lineHeight
+        func width(_ font: NSFont) -> CGFloat {
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: "0", attributes: [.font: font]))
+            return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+        }
+        advance = width(style.font); digitWidth = width(style.lineNumberFont)
+        let content = style.font.ascender - style.font.descender
+        baseline = (((style.lineHeight - content) / 2) + style.font.ascender).rounded()
+    }
+
     /// Text set with tab stops every four columns from the line's start, when
     /// the text itself starts `origin` points along the line.
-    static func attributes(origin: CGFloat, tabs: Bool, grid: Bool) -> [NSAttributedString.Key: Any] {
+    func attributes(origin: CGFloat, tabs: Bool, grid: Bool) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.tabStops = []
         if grid {
@@ -59,7 +69,7 @@ import AppKit
         } else {
             // A piece set apart from the line's start keeps the line's stops.
             let first = tabInterval - origin.truncatingRemainder(dividingBy: tabInterval)
-            let reach = CGFloat(piece + 1) * tabInterval
+            let reach = CGFloat(Self.piece + 1) * tabInterval
             paragraph.tabStops = stride(from: first, through: reach, by: tabInterval).map { NSTextTab(textAlignment: .left, location: $0) }
             paragraph.defaultTabInterval = tabInterval
         }
@@ -80,23 +90,31 @@ import AppKit
     static func built() { pieces &+= 1 }
 }
 
-/// One line as CoreText sets it, in pieces, each set when it is first needed.
-/// The colours a file's text is drawn in. The engine knows no app: the
-/// system's colours unless the host app gives its own.
-public struct FileTextColors {
+/// How a file's text looks: its font and its line numbers', the height of a
+/// line, and the colours it is drawn in. The engine knows no app: a
+/// monospaced system font and the system's colours unless the host app gives
+/// its own.
+public struct FileTextStyle {
+    public var font: NSFont
+    public var lineNumberFont: NSFont
+    public var lineHeight: CGFloat
     public var text: NSColor
     public var lineNumber: NSColor
     /// The numbers of the lines selected, or set apart.
     public var strongLineNumber: NSColor
     /// The band behind lines set apart: those a file was opened at.
     public var emphasis: NSColor
-    public init(text: NSColor = .textColor, lineNumber: NSColor = .tertiaryLabelColor, strongLineNumber: NSColor = .secondaryLabelColor,
+    public init(font: NSFont = .monospacedSystemFont(ofSize: 12, weight: .regular),
+                lineNumberFont: NSFont = .monospacedDigitSystemFont(ofSize: 11, weight: .regular), lineHeight: CGFloat = 17,
+                text: NSColor = .textColor, lineNumber: NSColor = .tertiaryLabelColor, strongLineNumber: NSColor = .secondaryLabelColor,
                 emphasis: NSColor = NSColor.controlAccentColor.withAlphaComponent(0.12)) {
+        self.font = font; self.lineNumberFont = lineNumberFont; self.lineHeight = lineHeight
         self.text = text; self.lineNumber = lineNumber; self.strongLineNumber = strongLineNumber; self.emphasis = emphasis
     }
-    @MainActor public static var standard = FileTextColors()
+    @MainActor public static var standard = FileTextStyle()
 }
 
+/// One line as CoreText sets it, in pieces, each set when it is first needed.
 /// A line up to `FileTextMetrics.gridLine` long is read whole when it is laid
 /// out, and kept, then set piece after piece from its start, each piece where
 /// the last one ended. A longer line is on the grid: each piece is read when
@@ -114,6 +132,7 @@ public struct FileTextColors {
         let squeeze: CGFloat
     }
     private unowned let source: FileTextSource
+    let metrics: FileTextMetrics
     let index: Int
     let length: Int
     let grid: Bool
@@ -128,8 +147,8 @@ public struct FileTextColors {
     private var gridStarts: [Int: Int] = [:]
 
     /// Nil for a line off the grid whose text has not come yet.
-    init?(source: FileTextSource, line index: Int) {
-        self.source = source; self.index = index
+    init?(source: FileTextSource, line index: Int, metrics: FileTextMetrics) {
+        self.source = source; self.index = index; self.metrics = metrics
         length = source.utf16Length(ofLine: index)
         grid = length > FileTextMetrics.gridLine
         if grid { text = nil } else {
@@ -141,7 +160,7 @@ public struct FileTextColors {
 
     /// The whole line's width: exact once every piece is set, and always on the grid.
     var width: CGFloat? {
-        if grid { return CGFloat(length) * FileTextMetrics.advance }
+        if grid { return CGFloat(length) * metrics.advance }
         return complete ? measuredEnd.x : nil
     }
     /// How wide the line is at least, as far as it is known: what is set,
@@ -149,7 +168,7 @@ public struct FileTextColors {
     /// line far wider than its length says.
     var extent: CGFloat {
         if let width { return width }
-        return measuredEnd.x + CGFloat(length - measuredEnd.index) * FileTextMetrics.advance
+        return measuredEnd.x + CGFloat(length - measuredEnd.index) * metrics.advance
     }
     private var measuredEnd: (index: Int, x: CGFloat) { ordered.last.map { ($0.range.upperBound, $0.x + $0.width) } ?? (0, 0) }
 
@@ -177,11 +196,11 @@ public struct FileTextColors {
     }
     private func set(_ range: Range<Int>, x: CGFloat) -> Piece? {
         guard let text = read(range) else { return nil }
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: FileTextMetrics.attributes(origin: x, tabs: text.contains("\t"), grid: grid)))
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: metrics.attributes(origin: x, tabs: text.contains("\t"), grid: grid)))
         FileTextRenderCount.built()
         let natural = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
         guard grid else { return Piece(range: range, x: x, width: natural, line: line, squeeze: 1) }
-        let cell = CGFloat(range.count) * FileTextMetrics.advance
+        let cell = CGFloat(range.count) * metrics.advance
         return Piece(range: range, x: x, width: cell, line: line, squeeze: natural > cell + 0.5 ? cell / natural : 1)
     }
     private func measureNext() {
@@ -223,22 +242,22 @@ public struct FileTextColors {
         // Pieces well away from the one asked for are let go of first.
         if gridPieces.count > 64 { gridPieces = gridPieces.filter { abs($0.key - number) < 16 } }
         guard let low = gridStart(number), let high = gridStart(number + 1),
-              let piece = set(low..<max(low + 1, high), x: CGFloat(low) * FileTextMetrics.advance) else { return nil }
+              let piece = set(low..<max(low + 1, high), x: CGFloat(low) * metrics.advance) else { return nil }
         gridPieces[number] = piece
         return piece
     }
     /// On the grid, where a column is: its cell, whether or not its piece is at hand.
-    private func gridColumnStart(_ column: Int) -> CGFloat { CGFloat(column) * FileTextMetrics.advance }
+    private func gridColumnStart(_ column: Int) -> CGFloat { CGFloat(column) * metrics.advance }
 
     /// The pieces that reach into `from..<to` along the line.
     func pieces(from: CGFloat, to: CGFloat) -> [Piece] {
         guard length > 0, to > from else { return [] }
         if grid {
             var result: [Piece] = []
-            var column = max(0, Int(from / FileTextMetrics.advance))
+            var column = max(0, Int(from / metrics.advance))
             // A column's place is known before its piece is set: nothing past
             // the edge is set.
-            while column < length, CGFloat(column) * FileTextMetrics.advance < to {
+            while column < length, CGFloat(column) * metrics.advance < to {
                 guard let piece = gridPiece(containing: column) else {
                     // Not come yet: the next piece's columns, drawn when it has.
                     column = (column / FileTextMetrics.piece + 1) * FileTextMetrics.piece
@@ -283,7 +302,7 @@ public struct FileTextColors {
         // hold it; inside a piece glyphs sit where they are drawn (squeezed
         // by wide characters), so the piece is started from its beginning.
         if grid, let window {
-            let edge = Int(max(0, window.lowerBound) / FileTextMetrics.advance)
+            let edge = Int(max(0, window.lowerBound) / metrics.advance)
             column = max(from, piece(containing: edge)?.range.lowerBound ?? edge / FileTextMetrics.piece * FileTextMetrics.piece)
         }
         while column < to {
@@ -351,8 +370,8 @@ public struct FileTextColors {
         guard x > 0, length > 0 else { return 0 }
         let piece: Piece
         if grid {
-            guard x < CGFloat(length) * FileTextMetrics.advance else { return length }
-            guard let found = gridPiece(containing: Int(x / FileTextMetrics.advance)) else { return nil }
+            guard x < CGFloat(length) * metrics.advance else { return length }
+            guard let found = gridPiece(containing: Int(x / metrics.advance)) else { return nil }
             piece = found
         } else {
             while !complete, measuredEnd.x <= x { measureNext() }
@@ -372,8 +391,18 @@ public struct FileTextColors {
     public private(set) var name = ""
     /// Lines to set apart, softly: the lines a file was opened at.
     public var emphasized: ClosedRange<Int>? { didSet { if emphasized != oldValue { needsDisplay = true; ruler?.needsDisplay = true } } }
-    /// What the text is drawn in: the host app's colours, or the system's.
-    public var colors = FileTextColors.standard { didSet { needsDisplay = true; ruler?.needsDisplay = true } }
+    /// How the text looks: the host app's font and colours, or the system's.
+    public var style = FileTextStyle.standard {
+        didSet {
+            metrics = FileTextMetrics(style)
+            // Everything placed in the old font's points is placed again: the
+            // lines set, the column Up and Down keep, and the screen read
+            // ahead for, which now shows other columns.
+            layouts = [:]; measuredWidth = 0; goalX = nil; readAhead = nil
+            updateFrame(); needsDisplay = true; ruler?.textChanged()
+        }
+    }
+    private(set) var metrics = FileTextMetrics(FileTextStyle.standard)
     /// Where Copy puts text. The general pasteboard; a test's own otherwise.
     public var pasteboard: NSPasteboard = .general
     weak var ruler: FileLineNumberRuler?
@@ -407,6 +436,7 @@ public struct FileTextColors {
         self.source.arrival = nil
         self.source = source; self.name = name
         pending = []
+        dropPending(); accessibilityHold?.release(); accessibilityHold = nil; revealing = nil
         source.arrival = { [weak self] lines in self?.arrived(lines) }
         layouts = [:]; layoutGeneration = source.generation; measuredWidth = 0; goalX = nil; emphasized = nil; readAhead = nil
         showing &+= 1; answers = []; answering = []
@@ -418,7 +448,7 @@ public struct FileTextColors {
 
     // MARK: Geometry
 
-    var lineHeight: CGFloat { FileTextMetrics.lineHeight }
+    var lineHeight: CGFloat { metrics.lineHeight }
     /// The top of a line.
     func top(ofLine index: Int) -> CGFloat { FileTextMetrics.top + CGFloat(index) * lineHeight }
     /// The lines that meet a rect, clamped to the text.
@@ -443,14 +473,14 @@ public struct FileTextColors {
             let keep = visibleLines
             layouts = layouts.filter { keep.contains($0.key) }
         }
-        guard let layout = FileLineLayout(source: source, line: index) else { return nil }
+        guard let layout = FileLineLayout(source: source, line: index, metrics: metrics) else { return nil }
         layouts[index] = layout
         return layout
     }
     /// Where a column is along a line: where it is set, or while the line's
     /// text has not come, in its column.
     func x(of position: FileTextPosition) -> CGFloat {
-        layout(position.line)?.x(at: position.column) ?? CGFloat(max(0, position.column)) * FileTextMetrics.advance
+        layout(position.line)?.x(at: position.column) ?? CGFloat(max(0, position.column)) * metrics.advance
     }
 
     /// Where a position is drawn, in this view.
@@ -463,7 +493,7 @@ public struct FileTextColors {
         if point.y < FileTextMetrics.top { return .start }
         if point.y >= top(ofLine: source.lineCount) { return end }
         let line = line(at: point.y), x = point.x - FileTextMetrics.left
-        let column = layout(line)?.index(at: x) ?? Int((max(0, x) / FileTextMetrics.advance).rounded())
+        let column = layout(line)?.index(at: x) ?? Int((max(0, x) / metrics.advance).rounded())
         return FileTextPosition(line: line, column: min(column, source.utf16Length(ofLine: line)))
     }
     /// The end of the text.
@@ -473,7 +503,7 @@ public struct FileTextColors {
     /// is shown in.
     func updateFrame() {
         let visible = enclosingScrollView?.contentView.bounds.size ?? frame.size
-        let estimate = CGFloat(source.longestLine) * FileTextMetrics.advance
+        let estimate = CGFloat(source.longestLine) * metrics.advance
         let width = max(visible.width, FileTextMetrics.left + max(estimate, measuredWidth) + FileTextMetrics.right)
         let height = max(visible.height, top(ofLine: source.lineCount) + FileTextMetrics.bottom)
         let size = NSSize(width: width.rounded(.up), height: height.rounded(.up))
@@ -489,7 +519,7 @@ public struct FileTextColors {
         NotificationCenter.default.addObserver(self, selector: #selector(clipScrolled(_:)), name: NSView.boundsDidChangeNotification, object: clip)
         updateFrame()
     }
-    @objc private func clipResized(_ note: Notification) { updateFrame() }
+    @objc private func clipResized(_ note: Notification) { updateFrame(); revealIfReady() }
     @objc private func clipScrolled(_ note: Notification) { ruler?.needsDisplay = true }
 
     // MARK: Drawing
@@ -502,6 +532,8 @@ public struct FileTextColors {
         guard let window else { return }
         NotificationCenter.default.addObserver(self, selector: #selector(keyChanged(_:)), name: NSWindow.didBecomeKeyNotification, object: window)
         NotificationCenter.default.addObserver(self, selector: #selector(keyChanged(_:)), name: NSWindow.didResignKeyNotification, object: window)
+        // Lines to reveal wait for the view to be laid out in its window.
+        if revealing != nil { DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.revealIfReady() } } }
     }
     @objc private func keyChanged(_ note: Notification) { if hasSelection { needsDisplay = true } }
     public override func becomeFirstResponder() -> Bool {
@@ -514,20 +546,28 @@ public struct FileTextColors {
     public override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let rows = lines(in: dirtyRect)
-        source.beginDrawing()
-        defer { source.endDrawing() }
-        // The screen and a screen either side are read ahead of being drawn,
+        // The source is told the screen, its lines and the columns in view,
         // once for each screen, up and down or sideways: drawing part of it
         // again (a line that came) is not a new screen, and must not tell
-        // the source it is.
-        let screen = visibleLines, margin = max(8, screen.count)
-        let ahead = max(0, screen.lowerBound - margin)...min(source.lineCount - 1, screen.upperBound + margin)
-        let shown = Screen(lines: ahead, left: visibleRect.minX.rounded(), width: visibleRect.width.rounded())
-        if shown != readAhead { readAhead = shown; source.prefetch(lines: ahead) }
+        // the source it is. The columns reach two pieces either side, which
+        // setting the pieces at the edges reads.
+        // What is drawn is what is on screen and what AppKit draws ahead of
+        // scrolling there (its prepared content, never more than a screen
+        // around it): all of it is the screen.
+        let drawn = visibleRect.union(preparedContentRect).intersection(aroundScreen)
+        let screen = lines(in: drawn)
+        let shown = Screen(lines: screen, left: drawn.minX.rounded(), width: drawn.width.rounded())
+        if shown != readAhead {
+            readAhead = shown
+            let reach = 2 * FileTextMetrics.piece
+            let from = max(0, Int((drawn.minX - FileTextMetrics.left) / metrics.advance) - reach)
+            let to = max(from + 1, Int(((drawn.maxX - FileTextMetrics.left) / metrics.advance).rounded(.up)) + reach)
+            source.showScreen(lines: screen, columns: from..<to)
+        }
         let (start, end) = selectedRange
         let selectionColor = (selectionActive ? NSColor.selectedTextBackgroundColor : NSColor.unemphasizedSelectedTextBackgroundColor).cgColor
         if let emphasized, emphasized.overlaps(rows) {
-            context.setFillColor(colors.emphasis.cgColor)
+            context.setFillColor(style.emphasis.cgColor)
             let band = CGRect(x: dirtyRect.minX, y: top(ofLine: emphasized.lowerBound), width: dirtyRect.width,
                               height: CGFloat(emphasized.count) * lineHeight)
             context.fill(band.intersection(dirtyRect))
@@ -546,13 +586,13 @@ public struct FileTextColors {
                 let window = (dirtyRect.minX - left)...(dirtyRect.maxX - left)
                 // A line whose text has not come is selected by its columns.
                 let spans = layout?.spans(from: from, to: to, within: window)
-                    ?? (to > from ? [CGFloat(from) * FileTextMetrics.advance...CGFloat(to) * FileTextMetrics.advance] : [])
+                    ?? (to > from ? [CGFloat(from) * metrics.advance...CGFloat(to) * metrics.advance] : [])
                 for span in spans where span.upperBound > span.lowerBound {
                     context.fill(CGRect(x: left + span.lowerBound, y: top, width: span.upperBound - span.lowerBound, height: lineHeight))
                 }
                 // A line selected through its end fills on to the view's edge.
                 if index < end.line {
-                    let edge = layout?.extent ?? CGFloat(length) * FileTextMetrics.advance
+                    let edge = layout?.extent ?? CGFloat(length) * metrics.advance
                     context.fill(CGRect(x: left + edge, y: top, width: max(0, max(bounds.width, dirtyRect.maxX) - left - edge), height: lineHeight))
                 }
             }
@@ -562,8 +602,8 @@ public struct FileTextColors {
             if layout.extent > measuredWidth { measuredWidth = layout.extent; scheduleWidth() }
             guard !shown.isEmpty else { continue }
             context.saveGState()
-            context.setFillColor(colors.text.cgColor)
-            context.translateBy(x: left, y: top + FileTextMetrics.baseline)
+            context.setFillColor(style.text.cgColor)
+            context.translateBy(x: left, y: top + metrics.baseline)
             context.scaleBy(x: 1, y: -1)
             for piece in shown {
                 if piece.squeeze < 1 {
@@ -582,10 +622,17 @@ public struct FileTextColors {
             context.restoreGState()
         }
     }
-    /// The screen last read ahead for: its lines with those around them,
-    /// and where it is sideways.
+    /// The screen the source was last told of: its lines, and where it is
+    /// sideways.
     private struct Screen: Equatable { let lines: ClosedRange<Int>; let left: CGFloat; let width: CGFloat }
     private var readAhead: Screen?
+    /// The screen and a screen on every side of it: as far as AppKit is let
+    /// draw ahead of scrolling (responsive scrolling's overdraw), so all it
+    /// draws is what the source was told is the screen.
+    private var aroundScreen: NSRect { visibleRect.insetBy(dx: -visibleRect.width, dy: -visibleRect.height) }
+    public override func prepareContent(in rect: NSRect) {
+        super.prepareContent(in: rect.intersection(aroundScreen))
+    }
     private var widthScheduled = false
     /// A line wider than the view was drawn: the view widens after this pass.
     private func scheduleWidth() {
@@ -686,6 +733,8 @@ public struct FileTextColors {
     public override func mouseDown(with event: NSEvent) {
         guard let window else { return }
         window.makeFirstResponder(self)
+        // A press is a new selection: keys still waiting for text are not done.
+        dropPending()
         let hit = position(at: convert(event.locationInWindow, from: nil))
         // A double click takes a word, a triple click the line; dragging on
         // from either keeps what the click took and extends by words or lines.
@@ -693,8 +742,22 @@ public struct FileTextColors {
         var taken: (FileTextPosition, FileTextPosition)?
         switch clicks {
         case ...1: event.modifierFlags.contains(.shift) ? select(from: anchor, to: hit) : select(from: hit, to: hit)
-        // A word whose text has not come yet is a click.
-        case 2: taken = wordRange(at: hit); if taken == nil { select(from: hit, to: hit) }
+        case 2:
+            taken = wordRange(at: hit)
+            if taken == nil {
+                // A word whose text has not come yet is taken when it has,
+                // unless the reader has moved on (dragged, clicked) since.
+                select(from: hit, to: hit)
+                deferredWord = nil
+                move(false, scrolls: false) { view, _ in view.wordRange(at: hit)?.0 }
+                move(true, scrolls: false) { view, _ in
+                    // Found while its text is held, and kept for the press
+                    // still going on, which may no longer have that text.
+                    let word = view.wordRange(at: hit)
+                    view.deferredWord = word
+                    return word?.1
+                }
+            }
         default: taken = lineRange(hit.line)
         }
         if let taken { select(from: taken.0, to: taken.1) }
@@ -714,6 +777,9 @@ public struct FileTextColors {
             if next.type == .leftMouseDragged { last = next }
             autoscroll(with: last)
             let moved = position(at: convert(last.locationInWindow, from: nil))
+            // A word whose text came while the press is held is taken from
+            // then, as if it had been there at the click.
+            if clicks == 2, taken == nil, let word = deferredWord { taken = word }
             if let taken {
                 if moved >= taken.0 && moved <= taken.1 { select(from: taken.0, to: taken.1) }
                 else if moved > taken.1 { select(from: taken.0, to: clicks == 2 ? max(wordRange(at: moved)?.1 ?? moved, moved) : lineRange(moved.line).1) }
@@ -758,6 +824,36 @@ public struct FileTextColors {
 
     // MARK: Keys
 
+    /// Shows lines set apart, near the top third, the insertion point at the
+    /// first of them: at once if the text has them, else when it does, and
+    /// the last line if the text ends before them. Until the text is read
+    /// through: read again (as Latin-1, say), they are shown again.
+    public func reveal(lines: ClosedRange<Int>) {
+        revealing = lines; revealShown = false; revealGeneration = source.generation
+        revealIfReady()
+    }
+    /// The reading of the text the lines were shown in: read again (as
+    /// Latin-1, say), they are shown again once found again.
+    private var revealGeneration = 0
+    private var revealing: ClosedRange<Int>?
+    /// Whether the lines being revealed have been scrolled to: once their
+    /// first is found. Their band grows until their last is.
+    private var revealShown = false
+    private func revealIfReady() {
+        guard let target = revealing, window != nil, (enclosingScrollView?.contentView.bounds.height ?? 0) > 0 else { return }
+        if source.generation != revealGeneration { revealGeneration = source.generation; revealShown = false }
+        let count = source.lineCount, indexing = source.isIndexing
+        guard target.lowerBound < count || !indexing else { return }
+        let first = max(0, min(target.lowerBound, count - 1)), last = min(max(first, target.upperBound), count - 1)
+        emphasized = first...last
+        if !revealShown {
+            revealShown = true
+            select(from: FileTextPosition(line: first, column: 0), to: FileTextPosition(line: first, column: 0))
+            scrollTo(line: first)
+        }
+        if !indexing { revealing = nil }
+    }
+
     /// The space bar pages, as it does in a read-only page. Everything else
     /// goes through the key bindings to the commands below.
     public override func keyDown(with event: NSEvent) {
@@ -785,6 +881,9 @@ public struct FileTextColors {
     /// A movement waiting for text to come.
     private struct Pending {
         let extend: Bool, keepGoal: Bool
+        /// Whether the view scrolls to show where it went: a key's movement
+        /// does, a click's word does not (the click was where the reader looks).
+        let scrolls: Bool
         let to: @MainActor (FileTextView, FileTextPosition) -> FileTextPosition?
     }
     /// Movements waiting for text to come, in the order the keys were
@@ -795,6 +894,13 @@ public struct FileTextColors {
     private var pending: [Pending] = []
     private var pendingRevision = 0
     private var selectionRevision = 0
+    /// What the movement waiting now needs, kept until it is done or dropped.
+    private var pendingHold: FileTextHold?
+    /// A double-clicked word found once its text came.
+    private var deferredWord: (FileTextPosition, FileTextPosition)?
+    /// What accessibility's latest small read needs, until the next.
+    private var accessibilityHold: FileTextHold?
+    private func dropPending() { pending = []; pendingHold?.release(); pendingHold = nil }
 
     /// Moves the insertion point, or with `extend` the selection's focus, and
     /// shows where it went. A movement that needs text not come yet waits
@@ -802,12 +908,13 @@ public struct FileTextColors {
     /// each from where the one before it ends.
     /// `to` is handed the view, and holds nothing of its own, so a movement
     /// left waiting keeps no view alive.
-    private func move(_ extend: Bool, keepGoal: Bool = false, _ to: @escaping @MainActor (FileTextView, FileTextPosition) -> FileTextPosition?) {
+    private func move(_ extend: Bool, keepGoal: Bool = false, scrolls: Bool = true, _ to: @escaping @MainActor (FileTextView, FileTextPosition) -> FileTextPosition?) {
         if !pending.isEmpty, pendingRevision == selectionRevision, source.isReading {
-            pending.append(Pending(extend: extend, keepGoal: keepGoal, to: to))
+            pending.append(Pending(extend: extend, keepGoal: keepGoal, scrolls: scrolls, to: to))
             return
         }
-        pending = [Pending(extend: extend, keepGoal: keepGoal, to: to)]
+        dropPending()
+        pending = [Pending(extend: extend, keepGoal: keepGoal, scrolls: scrolls, to: to)]
         pendingRevision = selectionRevision
         runPending()
     }
@@ -817,14 +924,20 @@ public struct FileTextColors {
     private func runPending() {
         var moved = false
         while let next = pending.first {
-            guard let target = next.to(self, focus) else {
-                if !source.isReading { pending = [] }
+            // Each movement holds what it needs while it waits: tried again,
+            // it reads what it held before letting go of that, and once done
+            // it holds nothing when the next is tried.
+            let (target, hold) = source.holding { next.to(self, focus) }
+            pendingHold?.release(); pendingHold = nil
+            guard let target else {
+                if source.isReading { pendingHold = hold } else { hold?.release(); dropPending() }
                 break
             }
+            hold?.release()
             pending.removeFirst()
             select(from: next.extend ? anchor : target, to: target, keepGoal: next.keepGoal)
             pendingRevision = selectionRevision
-            moved = true
+            moved = moved || next.scrolls
         }
         if moved { scrollToVisible(focus) }
     }
@@ -834,6 +947,7 @@ public struct FileTextColors {
     func arrived(_ lines: ClosedRange<Int>) {
         layouts = layouts.filter { !lines.contains($0.key) }
         updateFrame()
+        revealIfReady()
         let clamped = (clamp(anchor), clamp(focus))
         if clamped.0 != anchor || clamped.1 != focus { select(from: clamped.0, to: clamped.1) }
         let drawn = visibleRect.union(preparedContentRect)
@@ -841,7 +955,7 @@ public struct FileTextColors {
         if !rect.isNull, !rect.isEmpty { setNeedsDisplay(rect) }
         ruler?.textChanged()
         if !pending.isEmpty {
-            if pendingRevision == selectionRevision { runPending() } else { pending = [] }
+            if pendingRevision == selectionRevision { runPending() } else { dropPending() }
         }
         // What was read comes to accessibility too: once for all that comes
         // in one turn of the run loop.
@@ -1075,14 +1189,14 @@ public struct FileTextColors {
     }
     public override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
         guard let text = accessibilityString(for: range) else { return nil }
-        let font = FileTextMetrics.font
+        let font = metrics.font
         let described: [String: Any] = [
             NSAccessibility.FontAttributeKey.fontName.rawValue: font.fontName,
             NSAccessibility.FontAttributeKey.fontFamily.rawValue: font.familyName ?? font.fontName,
             NSAccessibility.FontAttributeKey.visibleName.rawValue: font.displayName ?? font.fontName,
             NSAccessibility.FontAttributeKey.fontSize.rawValue: font.pointSize,
         ]
-        return NSAttributedString(string: text, attributes: [.accessibilityFont: described, .accessibilityForegroundColor: colors.text.cgColor])
+        return NSAttributedString(string: text, attributes: [.accessibilityFont: described, .accessibilityForegroundColor: style.text.cgColor])
     }
     public override func accessibilityLine(for index: Int) -> Int { source.line(atUTF16: max(0, min(index, source.utf16Length))) }
     /// A line with its "\n", as a text view counts it.
@@ -1092,7 +1206,16 @@ public struct FileTextColors {
         let length = source.utf16Length(ofLine: line) + (line + 1 < source.lineCount ? 1 : 0)
         return NSRange(location: start, length: length)
     }
-    public override func accessibilityRange(for index: Int) -> NSRange {
+    /// Accessibility's small reads hold what they need until its next: asked
+    /// again once told the text came, it is all there.
+    private func heldForAccessibility<T>(_ body: () -> T) -> T {
+        let (result, hold) = source.holding(body)
+        accessibilityHold?.release()
+        accessibilityHold = hold
+        return result
+    }
+    public override func accessibilityRange(for index: Int) -> NSRange { heldForAccessibility { characterRange(at: index) } }
+    private func characterRange(at index: Int) -> NSRange {
         let position = source.position(atUTF16: index)
         let length = source.utf16Length(ofLine: position.line)
         guard position.column < length else {
@@ -1110,13 +1233,14 @@ public struct FileTextColors {
     }
     /// The character under a point: the one whose glyphs hold it, or past a
     /// line's end its "\n".
-    public override func accessibilityRange(for point: NSPoint) -> NSRange {
+    public override func accessibilityRange(for point: NSPoint) -> NSRange { heldForAccessibility { characterRange(atPoint: point) } }
+    private func characterRange(atPoint point: NSPoint) -> NSRange {
         guard let window else { return NSRange(location: NSNotFound, length: 0) }
         let local = convert(window.convertPoint(fromScreen: point), from: nil)
         let caret = position(at: local)
         let x = local.x - FileTextMetrics.left
         guard let layout = layout(caret.line), let (text, base) = surroundings(of: caret, radius: 64) else {
-            return accessibilityRange(for: source.utf16Offset(of: caret))
+            return characterRange(at: source.utf16Offset(of: caret))
         }
         var candidates: [NSRange] = []
         if caret.column < layout.length { candidates.append(text.rangeOfComposedCharacterSequence(at: caret.column - base)) }
@@ -1127,12 +1251,13 @@ public struct FileTextColors {
                 return NSRange(location: source.utf16Start(ofLine: caret.line) + base + character.location, length: character.length)
             }
         }
-        return accessibilityRange(for: source.utf16Offset(of: caret))
+        return characterRange(at: source.utf16Offset(of: caret))
     }
     /// Where a range is drawn, on the screen. Within a line, exactly; across
     /// lines, the band from its first line to its last, the width of the view
     /// (no line between is set to measure it).
-    public override func accessibilityFrame(for range: NSRange) -> NSRect {
+    public override func accessibilityFrame(for range: NSRange) -> NSRect { heldForAccessibility { frame(for: range) } }
+    private func frame(for range: NSRange) -> NSRect {
         guard let window else { return .zero }
         let clamped = clamped(range)
         let start = source.position(atUTF16: clamped.location), end = source.position(atUTF16: NSMaxRange(clamped))
@@ -1147,8 +1272,8 @@ public struct FileTextColors {
                 let head = layout.pieceRange(containing: start.column), tail = layout.pieceRange(containing: end.column - 1)
                 let first = head.map { layout.spans(from: start.column, to: min(end.column, $0.upperBound)) } ?? []
                 let last = tail.map { layout.spans(from: max(start.column, $0.lowerBound), to: end.column) } ?? []
-                from = first.map(\.lowerBound).min() ?? CGFloat(start.column) * FileTextMetrics.advance
-                to = last.map(\.upperBound).max() ?? CGFloat(end.column) * FileTextMetrics.advance
+                from = first.map(\.lowerBound).min() ?? CGFloat(start.column) * metrics.advance
+                to = last.map(\.upperBound).max() ?? CGFloat(end.column) * metrics.advance
             } else {
                 let spans = layout.spans(from: start.column, to: end.column)
                 from = spans.map(\.lowerBound).min() ?? layout.x(at: start.column)
@@ -1157,7 +1282,7 @@ public struct FileTextColors {
             rect = NSRect(x: FileTextMetrics.left + from, y: top(ofLine: start.line), width: max(1, to - from), height: lineHeight)
         } else if start.line == end.line {
             // Not come yet: its columns.
-            let from = CGFloat(start.column) * FileTextMetrics.advance, to = CGFloat(end.column) * FileTextMetrics.advance
+            let from = CGFloat(start.column) * metrics.advance, to = CGFloat(end.column) * metrics.advance
             rect = NSRect(x: FileTextMetrics.left + from, y: top(ofLine: start.line), width: max(1, to - from), height: lineHeight)
         } else {
             rect = NSRect(x: FileTextMetrics.left, y: top(ofLine: start.line), width: max(1, bounds.width - FileTextMetrics.left - FileTextMetrics.right),
@@ -1204,14 +1329,10 @@ extension FileTextView: NSMenuItemValidation {
     /// Wide enough for the last line's number, and room either side.
     func textChanged() {
         let digits = CGFloat(String(textView?.source.lineCount ?? 1).count)
-        let thickness = (max(2, digits) * Self.digitWidth + 12 + 8).rounded(.up)
+        let thickness = (max(2, digits) * (textView?.metrics.digitWidth ?? 7) + 12 + 8).rounded(.up)
         if ruleThickness != thickness { ruleThickness = thickness }
         needsDisplay = true
     }
-    private static let digitWidth: CGFloat = {
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: "0", attributes: [.font: FileTextMetrics.numbersFont]))
-        return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-    }()
     public override var requiredThickness: CGFloat { ruleThickness }
 
     /// The lines whose numbers are drawn stronger: the selected ones, or the
@@ -1231,13 +1352,13 @@ extension FileTextView: NSMenuItemValidation {
             guard y + textView.lineHeight >= dirtyRect.minY, y <= dirtyRect.maxY else { continue }
             let emphasized = selected.contains(index) || textView.emphasized?.contains(index) == true
             let line = CTLineCreateWithAttributedString(NSAttributedString(string: String(index + 1), attributes: [
-                .font: FileTextMetrics.numbersFont,
+                .font: textView.metrics.numbersFont,
                 NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true,
             ]))
             let width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
             context.saveGState()
-            context.setFillColor((emphasized ? textView.colors.strongLineNumber : textView.colors.lineNumber).cgColor)
-            context.translateBy(x: bounds.width - 12 - width, y: y + FileTextMetrics.baseline)
+            context.setFillColor((emphasized ? textView.style.strongLineNumber : textView.style.lineNumber).cgColor)
+            context.translateBy(x: bounds.width - 12 - width, y: y + textView.metrics.baseline)
             context.scaleBy(x: 1, y: -1)
             context.textPosition = .zero
             CTLineDraw(line, context)
@@ -1284,10 +1405,25 @@ extension FileTextView: NSMenuItemValidation {
         super.init(frame: frame)
         hasVerticalScroller = true; hasHorizontalScroller = true; autohidesScrollers = true
         borderType = .noBorder; drawsBackground = false
+        // The text starts under whatever its host puts above it, never under
+        // a title bar it is not under.
+        automaticallyAdjustsContentInsets = false
         documentView = textView
         numbers = FileLineNumberRuler(textView: textView, scrollView: self)
         verticalRulerView = numbers
         hasHorizontalRuler = false; hasVerticalRuler = true; rulersVisible = true
     }
     public required init?(coder: NSCoder) { nil }
+    /// The line numbers beside the text, not over it: AppKit lays a vertical
+    /// ruler over the clip view's left edge, so the clip view is moved to
+    /// start where the ruler ends.
+    public override func tile() {
+        super.tile()
+        guard rulersVisible, let ruler = verticalRulerView, !ruler.isHidden else { return }
+        var clip = contentView.frame
+        let edge = ruler.frame.maxX
+        guard clip.minX < edge else { return }
+        clip.size.width = max(0, clip.width - (edge - clip.minX)); clip.origin.x = edge
+        contentView.frame = clip
+    }
 }

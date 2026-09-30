@@ -60,5 +60,6 @@ extension WorkspaceModel {
         accountingTasks.removeAll(); dirtyAccounting.removeAll()
         for host in hosts.values { host.shutdown() }
         TerminalRegistry.shared.shutdown()
+        tabs.tearDown()
     }
 }

@@ -2,6 +2,9 @@ import XCTest
 import AppKit
 @testable import FileView
 
+/// The measures of the standard style, which every view here is drawn in.
+@MainActor private var standardMetrics: FileTextMetrics { FileTextMetrics(FileTextStyle()) }
+
 /// A file on disk as the viewer's text (`FileDocument`): where its lines are,
 /// found away from the main thread and exactly as a text held whole finds
 /// them, whatever its line endings, encoding and size, and wherever its
@@ -345,7 +348,7 @@ final class FileDocumentTests: XCTestCase {
         try await eventually("the change was seen") { document.status == .changed }
         let seen = await reads.count
         for line in stride(from: 0, to: 20_000, by: 97) { _ = document.text(ofLine: line, range: 0..<3) }
-        document.prefetch(lines: 5_000...9_000)
+        document.showScreen(lines: 5_000...9_000, columns: 0..<80)
         try await Task.sleep(for: .milliseconds(200))
         let after = await reads.count
         XCTAssertEqual(after, seen, "nothing more was read")
@@ -418,7 +421,7 @@ final class FileDocumentTests: XCTestCase {
         options.cacheUnits = 20_000
         let document = try await opened(try file(String(repeating: "\n", count: 100_000)), options)
         for start in stride(from: 0, to: 100_000, by: 512) {
-            document.prefetch(lines: start...(start + 511))
+            document.showScreen(lines: start...(start + 511), columns: 0..<80)
             try await eventually("read") { document.readsUnderWay == 0 }
         }
         XCTAssertGreaterThan(document.bytesRead, 50_000, "the file was read")
@@ -449,40 +452,161 @@ final class FileDocumentTests: XCTestCase {
         XCTAssertLessThanOrEqual(reads.last ?? 0, (runs + 1) * 5 * 60_005, "the runs on screen, and at most one read ahead: \(reads)")
     }
 
-    /// With the screen keeping more than the budget, a request that needs
-    /// two windows of a long line at once (a few characters across a cut)
-    /// still gets both: the latest asked for are kept together.
-    @MainActor func testARequestNeedingTwoWindowsGetsThemWhenTheScreenFillsTheCache() async throws {
+    /// With the screen keeping more than the budget, a held request gets
+    /// all its parts at once, however many: two windows of a long line for a
+    /// few characters across a cut, or four for most of a window's worth
+    /// of it; and once let go of, what it held goes again.
+    @MainActor func testAHeldRequestGetsAllItsPartsWhenTheScreenFillsTheCache() async throws {
         var options = FileDocument.Options()
         options.cacheUnits = 80_000
         let rows = (0..<10_000).map { "row \($0)" }.joined(separator: "\n")
         let document = try await opened(try file(rows + "\n" + String(repeating: "y", count: 100_000) + "\nend"), options)
-        document.beginDrawing()
-        document.prefetch(lines: 0...0)
-        for run in 0..<30 { _ = document.text(ofLine: run * 128, range: 0..<3) }
-        document.endDrawing()
+        document.showScreen(lines: 0...(30 * 128 - 1), columns: 0..<80)
         try await eventually("read") { document.readsUnderWay == 0 }
-        XCTAssertGreaterThan(document.cachedCost, options.cacheUnits, "the screen keeps more than the budget")
+        let screen = document.cachedCost
+        XCTAssertGreaterThan(screen, options.cacheUnits, "the screen keeps more than the budget")
         let cut = Int(FileScanner.markBytes)
-        let across = try await text(document, line: 10_000, range: (cut - 10)..<(cut + 10))
-        XCTAssertEqual(across, String(repeating: "y", count: 20))
+        for range in [(cut - 10)..<(cut + 10), 0..<50_000] {
+            let (first, hold) = document.holding { document.text(ofLine: 10_000, range: range) }
+            XCTAssertNil(first, "not read yet")
+            XCTAssertNotNil(hold, "so held")
+            let got = try await text(document, line: 10_000, range: range)
+            XCTAssertEqual(got, String(repeating: "y", count: range.count))
+            hold?.release(); hold?.release()
+            XCTAssertEqual(document.holdsKept, 0, "let go of, once and for all")
+        }
+        XCTAssertLessThanOrEqual(document.cachedCost, screen, "what the holds kept went again")
     }
 
-    /// A request bigger than half the budget, while the screen fills the
-    /// cache, still gets all its parts at once: the latest request is kept
-    /// whole, whatever it needs.
-    @MainActor func testTheLatestRequestIsKeptWholeHoweverBig() async throws {
+    /// A long line that is not on the view's grid (wide characters: fewer
+    /// units than it has bytes) is read whole by the view, so all of it is
+    /// kept while it is on screen, not just the columns in view.
+    @MainActor func testALongLineTheViewReadsWholeIsKeptWholeOnScreen() async throws {
         var options = FileDocument.Options()
-        options.cacheUnits = 80_000
-        let rows = (0..<10_000).map { "row \($0)" }.joined(separator: "\n")
-        let document = try await opened(try file(rows + "\n" + String(repeating: "y", count: 100_000) + "\nend"), options)
-        document.beginDrawing()
-        document.prefetch(lines: 0...0)
-        for run in 0..<30 { _ = document.text(ofLine: run * 128, range: 0..<3) }
-        document.endDrawing()
+        options.cacheUnits = 20_000
+        let wide = String(repeating: "漢", count: 30_000)
+        let document = try await opened(try file("before\n" + wide + "\n" + (0..<5_000).map { "row \($0)" }.joined(separator: "\n")), options)
+        XCTAssertLessThan(document.utf16Length(ofLine: 1), FileTextMetrics.gridLine, "not a grid line")
+        document.showScreen(lines: 0...2, columns: 0..<80)
         try await eventually("read") { document.readsUnderWay == 0 }
-        let most = try await text(document, line: 10_000, range: 0..<50_000)
-        XCTAssertEqual(most.utf16.count, 50_000, "four windows, all at hand at once")
+        XCTAssertGreaterThan(document.windowRequests, 2, "a long line, read by windows")
+        // Elsewhere, more than the budget holds.
+        for place in stride(from: 100, to: 5_000, by: 300) { _ = try await text(document, line: place + 2, range: 0..<3) }
+        let before = document.windowRequests
+        XCTAssertEqual(document.text(ofLine: 1, range: 0..<30_000), wide, "all of it at hand")
+        XCTAssertEqual(document.windowRequests, before)
+    }
+
+    /// A line becoming long while it is on screen (the pass reaching past a
+    /// long line's length in it) is kept as a long line from then: the
+    /// screen's needs are worked out again as the lines are found.
+    @MainActor func testALineBecomingLongOnScreenIsReadForTheScreen() async throws {
+        let chunks = Gate()
+        var options = FileDocument.Options()
+        options.chunkBytes = 32 << 10; options.firstPublishBytes = 32 << 10
+        options.beforeChunk = { offset in if offset > 0 { await chunks.wait() } }
+        let document = FileDocument(url: try file("start\n" + String(repeating: "z", count: 200_000) + "\nend"), options: options)
+        addTeardownBlock { @MainActor in document.close() }
+        try await eventually("the first lines came") { document.lineCount > 1 }
+        document.showScreen(lines: 0...2, columns: 0..<100)
+        try await eventually("read") { document.readsUnderWay == 0 }
+        XCTAssertEqual(document.windowRequests, 0, "no long line yet")
+        await chunks.open()
+        try await eventually("read to its end") { document.status == .ready }
+        try await eventually("read for the screen") { document.readsUnderWay == 0 && document.windowRequests > 0 }
+        XCTAssertNotNil(document.text(ofLine: 1, range: 0..<100), "the screen's columns of it, at hand without asking")
+    }
+
+    /// With the screen keeping more than the budget, accessibility asking
+    /// for the character at a cut of a long line (the text around it lies in
+    /// two windows) gets it: its read is held until it asks again.
+    @MainActor func testAccessibilityGetsACharacterAtACutWhenTheScreenFillsTheCache() async throws {
+        var options = FileDocument.Options()
+        options.cacheUnits = 1 << 20
+        // A screen of 60 KB lines, five to a run: more than the budget.
+        let rows = (0..<300).map { String(format: "%03d ", $0) + String(repeating: "x", count: 60_000) }.joined(separator: "\n")
+        let document = try await opened(try file(rows + "\n" + String(repeating: "y", count: 100_000) + "\nend"), options)
+        let scroll = shown(document)
+        draw(scroll)
+        try await eventually("the screen read") { document.readsUnderWay == 0 }
+        XCTAssertGreaterThan(document.cachedCost, options.cacheUnits, "the screen keeps more than the budget")
+        let index = document.utf16Start(ofLine: 300) + Int(FileScanner.markBytes)
+        var range = NSRange(location: NSNotFound, length: 0)
+        try await eventually("the character, once read") {
+            range = scroll.textView.accessibilityRange(for: index)
+            return range.location != NSNotFound
+        }
+        XCTAssertEqual(range, NSRange(location: index, length: 1))
+    }
+
+    /// With the screen keeping more than the budget, a movement that needs
+    /// two windows of a long line off screen (a character across a cut) is
+    /// done: tried again, it reads what it held before letting go of it.
+    @MainActor func testAMovementNeedingTwoWindowsIsDoneWhenTheScreenFillsTheCache() async throws {
+        var options = FileDocument.Options()
+        options.cacheUnits = 1 << 20
+        let rows = (0..<300).map { String(format: "%03d ", $0) + String(repeating: "x", count: 60_000) }.joined(separator: "\n")
+        let document = try await opened(try file(rows + "\n" + String(repeating: "y", count: 100_000) + "\nend"), options)
+        let scroll = shown(document)
+        draw(scroll)
+        try await eventually("the screen read") { document.readsUnderWay == 0 }
+        XCTAssertGreaterThan(document.cachedCost, options.cacheUnits, "the screen keeps more than the budget")
+        let cut = Int(FileScanner.markBytes)
+        let text = scroll.textView
+        text.select(from: FileTextPosition(line: 300, column: cut - 1), to: FileTextPosition(line: 300, column: cut - 1))
+        text.moveRight(nil)
+        try await eventually("moved across the cut") { text.focus == FileTextPosition(line: 300, column: cut) }
+        XCTAssertEqual(document.holdsKept, 0)
+    }
+
+    /// Lines AppKit draws ahead of scrolling (its prepared content) are part
+    /// of the screen: a long line of wide characters there, read whole by
+    /// the view, is kept whole with the screen over the budget.
+    @MainActor func testWhatIsDrawnAheadOfScrollingIsPartOfTheScreen() async throws {
+        var options = FileDocument.Options()
+        options.cacheUnits = 1 << 20
+        var lines = (0..<300).map { String(format: "%03d ", $0) + String(repeating: "x", count: 60_000) }
+        let wide = String(repeating: "漢", count: 30_000)
+        lines[20] = wide
+        let document = try await opened(try file(lines.joined(separator: "\n")), options)
+        let scroll = shown(document)
+        let text = scroll.textView
+        XCTAssertFalse(text.visibleLines.contains(20), "below the screen")
+        let prepared = text.visibleRect.union(NSRect(x: 0, y: text.top(ofLine: 20), width: text.visibleRect.width, height: text.lineHeight * 2))
+        text.preparedContentRect = prepared
+        func drawAhead() { if let bitmap = text.bitmapImageRepForCachingDisplay(in: prepared) { text.cacheDisplay(in: prepared, to: bitmap) } }
+        for _ in 0..<3 {
+            drawAhead()
+            try await eventually("read") { document.readsUnderWay == 0 }
+        }
+        let requests = document.windowRequests
+        drawAhead(); drawAhead()
+        XCTAssertEqual(document.windowRequests, requests, "drawn again, nothing read again")
+        XCTAssertEqual(document.text(ofLine: 20, range: 0..<30_000), wide, "all of it at hand")
+        // AppKit is let prepare no more than a screen around the screen.
+        let visible = text.visibleRect
+        text.prepareContent(in: NSRect(x: 0, y: 0, width: text.bounds.width, height: text.bounds.height))
+        XCTAssertLessThanOrEqual(text.preparedContentRect.height, visible.height * 3 + 1)
+        XCTAssertLessThanOrEqual(text.preparedContentRect.width, visible.width * 3 + 1)
+    }
+
+    /// A movement waiting for text holds what it needs, and lets go of it
+    /// once done: nothing stays held after the keys are done.
+    @MainActor func testAMovementLetsGoOfWhatItHeldOnceDone() async throws {
+        let gate = Gate()
+        var options = FileDocument.Options()
+        options.beforePage = { await gate.wait() }
+        let document = try await opened(try file((0..<500).map { "line \($0)" }.joined(separator: "\n")), options)
+        let scroll = shown(document)
+        let text = scroll.textView
+        text.select(from: FileTextPosition(line: 3, column: 1), to: FileTextPosition(line: 3, column: 1))
+        text.moveRight(nil)
+        text.moveRight(nil)
+        XCTAssertEqual(text.focus, FileTextPosition(line: 3, column: 1), "waiting for the line")
+        XCTAssertEqual(document.holdsKept, 1, "the waiting movement holds what it needs")
+        await gate.open()
+        try await eventually("done") { text.focus == FileTextPosition(line: 3, column: 3) }
+        XCTAssertEqual(document.holdsKept, 0, "and let go of it once done")
     }
 
     /// Accessibility asking for text not at hand is told nothing, the text is
@@ -545,7 +669,7 @@ final class FileDocumentTests: XCTestCase {
         let scroll = shown(document)
         let clip = scroll.contentView
         for step in 0..<40 {
-            clip.scroll(to: NSPoint(x: CGFloat(step * 20_000) * FileTextMetrics.advance, y: 0))
+            clip.scroll(to: NSPoint(x: CGFloat(step * 20_000) * standardMetrics.advance, y: 0))
             scroll.reflectScrolledClipView(clip)
             draw(scroll)
             try await eventually("read") { document.readsUnderWay == 0 }
@@ -562,7 +686,7 @@ final class FileDocumentTests: XCTestCase {
         options.cacheUnits = 50_000
         options.beforePage = { await gate.wait() }
         let document = try await opened(try file((0..<100_000).map { "row \($0)" }.joined(separator: "\n")), options)
-        for place in stride(from: 0, to: 100_000, by: 10_000) { document.prefetch(lines: place...(place + 511)) }
+        for place in stride(from: 0, to: 100_000, by: 10_000) { document.showScreen(lines: place...(place + 511), columns: 0..<80) }
         XCTAssertGreaterThan(document.readsUnderWay, 20, "each place asked for its runs")
         await gate.open()
         try await eventually("read") { document.readsUnderWay == 0 }
@@ -577,10 +701,7 @@ final class FileDocumentTests: XCTestCase {
         var options = FileDocument.Options()
         options.cacheUnits = 20_000
         let document = try await opened(try file((0..<100_000).map { "row \($0)" }.joined(separator: "\n")), options)
-        document.beginDrawing()
-        document.prefetch(lines: 0...0)
-        for run in 0..<10 { _ = document.text(ofLine: run * 128, range: 0..<3) }
-        document.endDrawing()
+        document.showScreen(lines: 0...1_279, columns: 0..<80)
         try await eventually("read") { document.readsUnderWay == 0 }
         let screen = document.cachedCost
         XCTAssertGreaterThan(screen, options.cacheUnits, "kept past the budget while the screen uses it")
@@ -591,8 +712,8 @@ final class FileDocumentTests: XCTestCase {
         let before = document.pageLoads
         for run in 0..<10 { XCTAssertNotNil(document.text(ofLine: run * 128, range: 0..<3), "the screen's line \(run * 128) is still at hand") }
         XCTAssertEqual(document.pageLoads, before, "reading for accessibility pushed out none of the screen's lines")
-        XCTAssertLessThanOrEqual(document.cachedCost, screen + options.cacheUnits / 2 + 3_500, "and of its own kept only the latest, up to half the budget")
-        document.beginDrawing(); document.prefetch(lines: 50_000...50_010); document.endDrawing()
+        XCTAssertLessThanOrEqual(document.cachedCost, screen + 3_500, "and of its own kept only the page that came last")
+        document.showScreen(lines: 50_000...50_010, columns: 0..<80)
         try await eventually("read") { document.readsUnderWay == 0 }
         XCTAssertLessThanOrEqual(document.cachedCost, options.cacheUnits, "let go of once another screen is shown")
     }
@@ -687,7 +808,7 @@ final class FileDocumentTests: XCTestCase {
         let before = document.windowRequests
         let frame = scroll.textView.accessibilityFrame(for: NSRange(location: 100, length: 1_900_000))
         XCTAssertLessThanOrEqual(document.windowRequests - before, 4, "the windows at its ends, not the line's")
-        XCTAssertEqual(frame.width, 1_900_000 * FileTextMetrics.advance, accuracy: FileTextMetrics.advance, "from its first column to its last")
+        XCTAssertEqual(frame.width, 1_900_000 * standardMetrics.advance, accuracy: standardMetrics.advance, "from its first column to its last")
         await gate.open()
     }
 
