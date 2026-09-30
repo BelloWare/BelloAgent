@@ -31,9 +31,10 @@ extension WorkspaceModel {
     /// ending ":N" names, else as the tab was if it is open. The chats come
     /// back if another page was shown, and the keyboard goes to the file.
     func openQuickOpenChoice(_ id: String? = nil) {
-        if let id { quickOpen.select(id) }
-        guard let row = quickOpen.selectedRow else { return }
-        let line = quickOpen.line
+        quickOpen.openChoice(id) { [weak self] row, line in self?.openQuickOpenFile(row, line: line) }
+    }
+
+    private func openQuickOpenFile(_ row: QuickOpen.Row, line: Int?) {
         quickOpen.close(restoringFocus: false)
         if page != .chats { page = .chats }
         // A listed symlink may resolve into another project's trust boundary.

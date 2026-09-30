@@ -75,6 +75,8 @@ import FileFinder
     private var generation = 0
     private var searching: SearchStop?
     private var listing: Task<Void, Never>?
+    /// Return waits for its query; another query or closing discards it.
+    private var pendingOpen: (query: String, id: String?, open: (Row, Int?) -> Void)?
     /// Files opened lately, newest first, by project.
     private var recents: [String: [URL]] = [:]
     /// Where the keyboard was before this took it.
@@ -121,6 +123,7 @@ import FileFinder
     func close(restoringFocus: Bool) {
         guard isOpen else { return }
         isOpen = false
+        pendingOpen = nil
         searching?.stop(); searching = nil
         listing?.cancel(); listing = nil
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
@@ -188,6 +191,19 @@ import FileFinder
     /// The line a query ending ":N" asks for, from 1.
     var line: Int? { FileFinderQuery(query).line }
 
+    /// Opens only a choice from the current query's answer. Keystrokes may
+    /// arrive before the background search has delivered that answer.
+    func openChoice(_ id: String? = nil, whenReady open: @escaping (Row, Int?) -> Void) {
+        guard isOpen else { return }
+        guard answered == query else { pendingOpen = (query, id, open); return }
+        if let id {
+            guard rows.contains(where: { $0.id == id }) else { return }
+            select(id)
+        }
+        guard let row = selectedRow else { return }
+        open(row, line)
+    }
+
     /// Notes a file opened in `project`, for the list with nothing typed.
     func noteOpened(_ url: URL, projectID: String?) {
         guard let projectID else { return }
@@ -202,7 +218,9 @@ import FileFinder
         let generation = generation
         searching?.stop(); searching = nil
         let typed = query, parsed = FileFinderQuery(query)
-        guard let project, project.trusted else { rows = []; selection = nil; return }
+        if pendingOpen?.query != typed { pendingOpen = nil }
+        answered = nil; searched = false
+        guard isOpen, let project, project.trusted else { rows = []; selection = nil; return }
         if parsed.isEmpty {
             searched = false; answered = typed
             show(recentRows(project))
@@ -229,6 +247,10 @@ import FileFinder
     private func show(_ rows: [Row]) {
         self.rows = rows
         if selection == nil || !rows.contains(where: { $0.id == selection }) { selection = rows.first?.id }
+        if let pending = pendingOpen, pending.query == answered {
+            pendingOpen = nil
+            openChoice(pending.id, whenReady: pending.open)
+        }
     }
 
     /// The files opened lately in `project` that are still there and still

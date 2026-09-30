@@ -25,7 +25,7 @@
 ## Left for 0.1.117
 - [ ] **Quick Open app side** — fix Codex's 8 findings, each with a test (Files/QuickOpen.swift, QuickOpenPanel.swift, Workspaces/WorkspaceQuickOpen.swift, Application/PiApp.swift, WindowPresentation.swift):
   1. [x] a symlink in a trusted project pointing into an untrusted one opens as trusted: open without `project:` so the resolved path decides;
-  2. Return before the new query's results opens the previous choice: keep a pending open until results for the current query arrive;
+  2. [x] Return before the new query's results opens the previous choice: keep a pending open until results for the current query arrive;
   3. a file and its symlink alias share a row id: dedupe by id;
   4. ⌘P in a pop-out tab window shows the list in the main window: use the window it was pressed in;
   5. opening from a text field saves the field editor, not the field: save the delegate control and its selection;
