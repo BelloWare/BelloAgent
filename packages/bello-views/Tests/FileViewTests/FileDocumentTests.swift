@@ -2,6 +2,9 @@ import XCTest
 import AppKit
 @testable import FileView
 
+/// The measures of the standard style, which every view here is drawn in.
+@MainActor private var standardMetrics: FileTextMetrics { FileTextMetrics(FileTextStyle()) }
+
 /// A file on disk as the viewer's text (`FileDocument`): where its lines are,
 /// found away from the main thread and exactly as a text held whole finds
 /// them, whatever its line endings, encoding and size, and wherever its
@@ -545,7 +548,7 @@ final class FileDocumentTests: XCTestCase {
         let scroll = shown(document)
         let clip = scroll.contentView
         for step in 0..<40 {
-            clip.scroll(to: NSPoint(x: CGFloat(step * 20_000) * FileTextMetrics.advance, y: 0))
+            clip.scroll(to: NSPoint(x: CGFloat(step * 20_000) * standardMetrics.advance, y: 0))
             scroll.reflectScrolledClipView(clip)
             draw(scroll)
             try await eventually("read") { document.readsUnderWay == 0 }
@@ -687,7 +690,7 @@ final class FileDocumentTests: XCTestCase {
         let before = document.windowRequests
         let frame = scroll.textView.accessibilityFrame(for: NSRange(location: 100, length: 1_900_000))
         XCTAssertLessThanOrEqual(document.windowRequests - before, 4, "the windows at its ends, not the line's")
-        XCTAssertEqual(frame.width, 1_900_000 * FileTextMetrics.advance, accuracy: FileTextMetrics.advance, "from its first column to its last")
+        XCTAssertEqual(frame.width, 1_900_000 * standardMetrics.advance, accuracy: standardMetrics.advance, "from its first column to its last")
         await gate.open()
     }
 

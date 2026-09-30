@@ -2,17 +2,17 @@ import AppKit
 import FileView
 
 // Bello Agent's own look for the file viewer's engine (`FileTextView`), which
-// itself depends on nothing of the app: its colours and its context menu, in
-// the app's design components.
+// itself depends on nothing of the app: its font and colours and its context
+// menu, in the app's design components.
 
-extension FileTextColors {
-    @MainActor static let pi = FileTextColors(text: .piInk, lineNumber: .piInkTertiary, strongLineNumber: .piInkSecondary, emphasis: .piAccentSoft)
+extension FileTextStyle {
+    @MainActor static let pi = FileTextStyle(text: .piInk, lineNumber: .piInkTertiary, strongLineNumber: .piInkSecondary, emphasis: .piAccentSoft)
 }
 
 extension FileTextView {
-    /// The app's colours and its own menus, for a view the app shows.
+    /// The app's look and its own menus, for a view the app shows.
     func usePiDesign() {
-        colors = .pi
+        style = .pi
         contextMenu = { view in
             PiMenus.menu([
                 .button("Copy", enabled: view.hasSelection, identifier: "file-text-copy") { [weak view] in view?.copy(nil) },

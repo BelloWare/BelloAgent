@@ -4,6 +4,9 @@ import ApplicationServices
 @testable import PiApp
 @testable import FileView
 
+/// The measures of the standard style, which every view here is drawn in.
+@MainActor private var standardMetrics: FileTextMetrics { FileTextMetrics(FileTextStyle()) }
+
 /// The file viewer's text (`FileTextView`): lines set only as they come into
 /// view, whatever the file's size; selection by mouse and keyboard as in any
 /// Mac text view; copy; and the text VoiceOver reads, asked for through the
@@ -219,7 +222,7 @@ final class FileTextViewTests: XCTestCase {
         let text = fixture.text
         // How many lines the view shows, from its height alone, not from the
         // view's own reckoning.
-        let visible = Int(ceil(fixture.scroll.contentView.bounds.height / FileTextMetrics.lineHeight)) + 1
+        let visible = Int(ceil(fixture.scroll.contentView.bounds.height / standardMetrics.lineHeight)) + 1
         XCTAssertEqual(text.frame.height, text.top(ofLine: 3_000_000) + FileTextMetrics.bottom, "the document is as tall as the file")
         XCTAssertGreaterThan(FileTextRenderCount.pieces, 0, "the first screen is drawn")
         XCTAssertLessThanOrEqual(FileTextRenderCount.pieces, visible + 4, "only the lines on screen are set")
@@ -241,7 +244,7 @@ final class FileTextViewTests: XCTestCase {
         let text = fixture.text
         for column in 0...15 {
             let point = text.point(of: at(0, column))
-            XCTAssertEqual(point.x, FileTextMetrics.left + CGFloat(column) * FileTextMetrics.advance, accuracy: 0.01, "column \(column)")
+            XCTAssertEqual(point.x, FileTextMetrics.left + CGFloat(column) * standardMetrics.advance, accuracy: 0.01, "column \(column)")
             XCTAssertEqual(text.position(at: NSPoint(x: point.x + 1, y: point.y + 8)), at(0, column), "a click just after column \(column)'s start")
         }
         XCTAssertEqual(text.position(at: NSPoint(x: 5_000, y: text.top(ofLine: 1) + 8)), at(1, 13), "past a line's end is its end")
@@ -391,7 +394,7 @@ final class FileTextViewTests: XCTestCase {
             let read = source.read
             fixture.draw()
             let end = text.point(of: at(0, length))
-            XCTAssertEqual(end.x, FileTextMetrics.left + CGFloat(length) * FileTextMetrics.advance, accuracy: CGFloat(length) * 0.0001 + 0.5,
+            XCTAssertEqual(end.x, FileTextMetrics.left + CGFloat(length) * standardMetrics.advance, accuracy: CGFloat(length) * 0.0001 + 0.5,
                            "\(length): the line's end is where its columns put it")
             let near = length - 37
             XCTAssertEqual(text.position(at: NSPoint(x: text.point(of: at(0, near)).x + 1, y: 12)), at(0, near), "\(length): a click near the far end lands there")
@@ -433,7 +436,7 @@ final class FileTextViewTests: XCTestCase {
         let tab = words.utf16.count - 6
         let line = try XCTUnwrap(text.layout(0))
         let after = line.x(at: tab + 1)
-        let interval = FileTextMetrics.tabInterval
+        let interval = standardMetrics.tabInterval
         XCTAssertEqual(after.truncatingRemainder(dividingBy: interval), 0, accuracy: 0.01, "the text after a tab starts on a stop")
         XCTAssertGreaterThan(after, line.x(at: tab), "and past where the tab began")
         XCTAssertLessThanOrEqual(after - line.x(at: tab), interval + 0.01)
@@ -448,10 +451,10 @@ final class FileTextViewTests: XCTestCase {
         let text = fixture.text
         let layout = try XCTUnwrap(text.layout(0))
         XCTAssertTrue(layout.grid)
-        let around = layout.pieces(from: CGFloat(1_000) * FileTextMetrics.advance, to: CGFloat(1_100) * FileTextMetrics.advance)
+        let around = layout.pieces(from: CGFloat(1_000) * standardMetrics.advance, to: CGFloat(1_100) * standardMetrics.advance)
         XCTAssertEqual(around.map(\.range), [0..<1_023, 1_023..<2_048], "the emoji starts the second piece; the first ends before it")
         let clip = fixture.scroll.contentView
-        clip.scroll(to: NSPoint(x: CGFloat(1_000) * FileTextMetrics.advance, y: 0)); fixture.scroll.reflectScrolledClipView(clip)
+        clip.scroll(to: NSPoint(x: CGFloat(1_000) * standardMetrics.advance, y: 0)); fixture.scroll.reflectScrolledClipView(clip)
         fixture.draw()
         XCTAssertEqual(text.position(at: NSPoint(x: text.point(of: at(0, 1_025)).x + 1, y: 12)), at(0, 1_025), "a click just past the emoji lands after it")
     }
@@ -468,7 +471,7 @@ final class FileTextViewTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         let end = text.point(of: at(0, 2_003))
-        XCTAssertGreaterThanOrEqual(end.x, FileTextMetrics.left + 2_000 * FileTextMetrics.tabInterval - 1, "two thousand tabs reach two thousand stops")
+        XCTAssertGreaterThanOrEqual(end.x, FileTextMetrics.left + 2_000 * standardMetrics.tabInterval - 1, "two thousand tabs reach two thousand stops")
         XCTAssertLessThanOrEqual(end.x, text.frame.width, "and the view is wide enough to show where the line ends")
         XCTAssertTrue(text.visibleRect.contains(NSPoint(x: text.point(of: at(0, 2_000)).x + 2, y: 10)), "scrolled right, END is on screen")
     }
@@ -511,7 +514,7 @@ final class FileTextViewTests: XCTestCase {
         let frame = text.accessibilityFrame(for: NSRange(location: 0, length: 50_000_000))
         XCTAssertLessThanOrEqual(FileTextRenderCount.pieces, 8, "the selection is drawn where the screen is, not along the whole line")
         XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 1)
-        XCTAssertEqual(frame.width, 50_000_000 * FileTextMetrics.advance, accuracy: 1, "its outline is the whole line's")
+        XCTAssertEqual(frame.width, 50_000_000 * standardMetrics.advance, accuracy: 1, "its outline is the whole line's")
     }
 
     /// On the grid, wide characters are drawn squeezed into their piece, so
@@ -524,11 +527,11 @@ final class FileTextViewTests: XCTestCase {
         let drawn = layout.spans(from: 60, to: 70)
         XCTAssertFalse(drawn.isEmpty)
         let left = drawn.map(\.lowerBound).min() ?? 0
-        XCTAssertGreaterThan(left, 60 * FileTextMetrics.advance + 20, "squeezed wide glyphs sit right of their columns")
+        XCTAssertGreaterThan(left, 60 * standardMetrics.advance + 20, "squeezed wide glyphs sit right of their columns")
         // A window whose left edge is past the selection's columns but not
         // past its glyphs.
         let window = (left + 5)...(left + 600)
-        XCTAssertGreaterThan(window.lowerBound / FileTextMetrics.advance, 70)
+        XCTAssertGreaterThan(window.lowerBound / standardMetrics.advance, 70)
         XCTAssertFalse(layout.spans(from: 60, to: 70, within: window).isEmpty, "the selection is still drawn in that window")
     }
 
@@ -539,7 +542,7 @@ final class FileTextViewTests: XCTestCase {
         let text = fixture.text
         let layout = try XCTUnwrap(text.layout(0))
         let lastGlyph = try XCTUnwrap(layout.spans(from: 4_165, to: 4_166).map(\.upperBound).max())
-        XCTAssertGreaterThan(lastGlyph, 4_166 * FileTextMetrics.advance + 50, "the wide glyphs sit right of their columns")
+        XCTAssertGreaterThan(lastGlyph, 4_166 * standardMetrics.advance + 50, "the wide glyphs sit right of their columns")
         let outline = text.accessibilityFrame(for: NSRange(location: 0, length: 4_166))
         let origin = fixture.window.convertToScreen(text.convert(NSRect(x: FileTextMetrics.left, y: 0, width: 1, height: 1), to: nil)).minX
         XCTAssertGreaterThanOrEqual(outline.maxX - origin, lastGlyph - 0.5, "the outline encloses the last selected glyph")
@@ -824,7 +827,7 @@ final class FileTextViewTests: XCTestCase {
         let height = NSScreen.screens.first?.frame.height ?? 0
         XCTAssertEqual(read.bounds.minX, expected.minX, accuracy: 0.5)
         XCTAssertEqual(read.bounds.minY, height - expected.maxY, accuracy: 0.5, "the bounds VoiceOver outlines are the text's")
-        XCTAssertEqual(read.bounds.width, 5 * FileTextMetrics.advance, accuracy: 0.5)
+        XCTAssertEqual(read.bounds.width, 5 * standardMetrics.advance, accuracy: 0.5)
 
         // Selecting through accessibility selects in the view.
         try AXProbe.select(pid: pid, label: label, range: NSRange(location: 19, length: 5))
