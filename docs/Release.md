@@ -42,7 +42,20 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.115/build 119 is publicly released** at
+**Bello Agent 0.1.116/build 120 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.116](https://github.com/BelloWare/BelloAgent/tree/v0.1.116) and website commit
+`6d4fa0d7ee7f024c5b315324a6393d26024340b6`. The signed/notarized DMG is **11,508,181 bytes (10.98 MiB)**;
+SHA-256 `d2a8337a2642d8427798061a1792d9c515ce739298f5527147b4222812a9ecbb`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-09-30 03:48:59 UTC**. Thousands read "K" and money reads with two decimals everywhere;
+the remaining stock controls and the large-table window have the app's own
+look; the footer under the composer stays still while a chat is read; a side
+whose chat was deleted opens no side of its own; the sidebar's chevron folds
+any chat's sides; and the helper encodes each reply once. The gate on 6ca16a4 ran 251 serial and 1,562 parallel native tests, 146 gallery screenshots, 521 helper tests and the script checks; its two failures, test expectations still written for one-decimal money, were fixed in the test (c2833d7), and that class then passed 11 of 11 in three runs. The fixture end-to-end compaction test passed 3 of 3.
+See the [0.1.116 validation record](validation/Bello-Agent-0.1.116-2026-09-30.md).
+
+**Bello Agent 0.1.115/build 119 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.115](https://github.com/BelloWare/BelloAgent/tree/v0.1.115) and website commit
 `f3fd11cc1878c51c8586db9d56dfa1652e030e34`. The signed/notarized DMG is **11,473,953 bytes (10.94 MiB)**;

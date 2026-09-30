@@ -1,6 +1,6 @@
 # Bello Agent 0.1.116 — K and two-decimal money everywhere, the app's own controls, a footer that stays still
 
-Status: candidate; publication pending.
+Status: publicly released and verified at 2026-09-30 03:48:59 UTC.
 Starting main: `ee1596406102247388edfd7a77c3d07482789b24` (0.1.115's verified record).
 
 ## Scope
@@ -92,9 +92,27 @@ The release notes (`releases/0.1.116.html`) give the user-facing items in full.
   forks' own runs: 521 helper tests on dev/helper; on dev/ui, the affected
   classes and the gallery with 146 captures, the new table-window scenes
   (23-table-window, light and dark) among them.
+- **Live compaction test, fixture mode, on the release helper:** 3 of 3
+  scenarios passed (mid-run recalled 10 of 10 markers); reported cost $0.83 of
+  the fixture's $5.00 cap (synthetic).
 - Installation and updater rehearsals are excluded by the owner's standing
   instruction.
 
 ## Publication
 
-Pending.
+- Release source: `166c254ea2d534b9aeb8d8673ade2db43e64fd8b`, pushed to GitHub `main`; annotated tag
+  `v0.1.116` is pushed and resolves to that commit.
+- Website publication: `6d4fa0d7ee7f024c5b315324a6393d26024340b6`, pushed to `BelloWare/belloware.com` `main`.
+- Signed/notarized Bello Agent 0.1.116, build 120. App notarization
+  `002509d7-0a50-40a5-aab9-c908fc01aa3f` and DMG notarization `3f75a03d-a1c5-4585-b1d3-3513c0147adf` were accepted. Stapling,
+  signature, Gatekeeper and artifact validation passed.
+- `BelloAgent-0.1.116.dmg`: **11,508,181 bytes (10.98 MiB)**; SHA-256
+  `d2a8337a2642d8427798061a1792d9c515ce739298f5527147b4222812a9ecbb`.
+- At 2026-09-30 03:48:59 UTC, the public product page linked to 0.1.116.
+  `scripts/verify-published.py` downloaded the public archive, verified its
+  SHA-256 and Ed25519 signature, and confirmed that both public update feeds
+  match the intended release and are byte-identical.
+- No GitHub release page was made: the `gh` CLI is not logged in here. The
+  tag and `main` went to GitHub over SSH.
+- No install or updater rehearsal was performed, at the owner's standing
+  instruction.
