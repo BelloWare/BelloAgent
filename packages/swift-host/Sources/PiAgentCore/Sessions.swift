@@ -231,6 +231,16 @@ public actor AgentSession {
     /// state a run keeps: where the open's replay stopped, taken on to the
     /// journal's end when asked for (`durableReplay`).
     var durable: JournalReplayConsumer?
+    /// A background load of the rows a fork opened without (`startHistoryFill`).
+    var historyFill: HistoryFill?
+    var historyFillTokens = 0
+    /// Test seam: what a background load waits on before each stage
+    /// ("replay", "prepare").
+    var historyFillHold: (@Sendable (String) async -> Void)?
+    func holdHistoryFill(_ hold: (@Sendable (String) async -> Void)?) { historyFillHold = hold }
+    /// Test seams: records written behind the chat's back, and its size.
+    func appendForTesting(_ records: [JSON]) throws { for record in records { try journal?.append(record) } }
+    var journalSizeForTesting: UInt64? { journal?.size }
     /// Where each loaded row's content is in the journal, for the next
     /// metadata file (`JournalCheckpoint`).
     var rowSpans: [String: JournalCheckpoint.Row] = [:]
@@ -372,6 +382,6 @@ public actor AgentSession {
     /// Stops the run and pauses the queue. `stopCount` lets work that awaited
     /// a run winding down tell that the chat was stopped again meanwhile.
     public func stop() { stopCount &+= 1; queuePaused=true; runTask?.cancel(); if runTask != nil { state = .stopping } else if state != .error { state = .paused }; event("state") }
-    public func unloadIfIdle() -> Bool { guard isIdle, !ephemeral else { return false }; closed=true; journal=nil; return true }
-    public func close() async { closed=true; stop(); await runTask?.value; journal=nil }
+    public func unloadIfIdle() -> Bool { guard isIdle, !ephemeral else { return false }; cancelHistoryFill(); closed=true; journal=nil; return true }
+    public func close() async { cancelHistoryFill(); closed=true; stop(); await runTask?.value; journal=nil }
 }

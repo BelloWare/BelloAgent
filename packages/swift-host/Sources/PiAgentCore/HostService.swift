@@ -273,6 +273,7 @@ public actor NativeHostService {
         switch method {
         case "workspace.quiesce":
             quiesced=true
+            for s in sessions.values { await s.cancelHistoryFill() }
             for s in sessions.values { let idle=await s.isIdle, ephemeral=await s.isEphemeral; if !idle || ephemeral { quiesced=false; throw AgentError("session_busy", "A run is active; stop it before updating") } }
             return ["quiesced":true]
         case "workspace.resume": quiesced=false; return ["resumed":true]
@@ -411,6 +412,8 @@ public actor NativeHostService {
                 let (result,replay)=try await session.forked(to:forkID,at:point)
                 let fork=try await makeSession(forkID,profile:profile,apiKey:key,readOnly:session.readOnly,resources:resources,tools:session.isConnectionTest ? DisabledTools() : nativeTools,resumePath:result["path"].text,prepared:replay)
                 sessions[forkID]=fork; profiles[forkID]=(profile,key)
+                // Opened with only its latest rows, the fork loads the rest in the background.
+                if !quiesced, !closing { await fork.startHistoryFill() }
                 // A fork is a chat of its own, with its own limit.
                 if let costLimit { await fork.setCostLimit(costLimit) }
                 _=try await traces.command("debug.mode",session:forkID,params:["mode":JSON(await traces.mode(id))])

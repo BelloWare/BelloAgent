@@ -211,6 +211,12 @@ final class SessionJournal {
     }
     /// The journal's size as written so far: where the next record goes.
     var size: UInt64 { bytes }
+    /// The file this journal writes, as the system knows it.
+    var fileIdentity: (device: UInt64, inode: UInt64)? {
+        var info = stat()
+        guard fstat(handle.fileDescriptor, &info) == 0 else { return nil }
+        return (UInt64(info.st_dev), UInt64(info.st_ino))
+    }
     /// Checks the whole chain after an open that resumed from a checkpoint
     /// whose rows then failed to load; the caller replays the whole journal.
     func checkWhole(id: String, binding: JSON) throws {

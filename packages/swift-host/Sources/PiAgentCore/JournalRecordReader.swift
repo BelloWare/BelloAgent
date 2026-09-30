@@ -19,6 +19,9 @@ final class JournalRecordReader {
     private var hasher: StreamingSHA256?
     private(set) var digest: String?
     private(set) var completeBytes: UInt64 = 0
+    /// The file read, as the system knows it: a reader of a prefix checks it
+    /// is the file it means.
+    let device: UInt64, inode: UInt64
     private(set) var rawLine = Data()
     var omittedBytes: UInt64 { size - completeBytes }
 
@@ -33,7 +36,7 @@ final class JournalRecordReader {
         guard fstat(fd, &info) == 0, info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG), info.st_size >= 0 else {
             throw AgentError("not_regular_file", "Only regular files can be read")
         }
-        size = UInt64(info.st_size)
+        size = UInt64(info.st_size); device = UInt64(info.st_dev); inode = UInt64(info.st_ino)
         guard expectedBytes == nil || expectedBytes == size else { throw Self.changed() }
         self.allowIncompleteTail = allowIncompleteTail
         hasher = hash ? StreamingSHA256() : nil

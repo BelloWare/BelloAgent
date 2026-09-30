@@ -108,6 +108,20 @@ private final class Spent: @unchecked Sendable {
     func release() { replay = nil }
 }
 
+/// Anything large (a whole history, a replay of every row) handed to another
+/// thread to be let go of there: letting go of every row takes a while, and
+/// the actor has others waiting on it. The caller hands it over (`consume`),
+/// holding no other reference, so the last one is let go of there.
+final class Discarded: @unchecked Sendable {
+    private var value: Any?
+    private init(_ value: consuming Any) { self.value = value }
+    static func release(_ value: consuming Any?) {
+        guard let value else { return }
+        let box = Discarded(value)
+        DispatchQueue.global(qos: .utility).async { box.value = nil; malloc_zone_pressure_relief(nil, 0) }
+    }
+}
+
 /// `work` for each of `count` items, spread over the processors, in order.
 func inParallel<T>(_ count: Int, _ work: (Int) -> T?) -> [T?] {
     var results = [T?](repeating: nil, count: count)

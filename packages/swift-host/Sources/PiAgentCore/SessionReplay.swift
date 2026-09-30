@@ -222,6 +222,16 @@ struct JournalReplayConsumer {
     /// for a replay that has consumed nothing yet.
     mutating func starts(at offset: UInt64) { if r.coveredBytes < offset { r.coveredBytes = offset } }
 
+    /// The latest checkpoint taken so far, with its receipts: what `finished`
+    /// gives as `captured`, without finishing every row.
+    func capturedCheckpoint() throws -> JournalCheckpoint? {
+        guard var captured=r.captured, let receipts=capturedReceipts else { return r.captured }
+        var helper=(try? JSON.parse(Data(captured.helper.utf8))) ?? [:]
+        helper["commands"] = .array(try CommandReceipts.rebuild(receipts.base, receipts.changes))
+        captured.helper=helper.encoded()
+        return captured
+    }
+
     /// What the records so far replay to. The consumer can go on after it.
     func finished() throws -> JournalReplay {
         var r = self.r
@@ -243,11 +253,7 @@ struct JournalReplayConsumer {
             whole["commands"] = .array(try CommandReceipts.rebuild(receiptsBase, receiptChanges))
             r.stateRecord=whole
         }
-        if var captured=r.captured, let receipts=capturedReceipts {
-            var helper=(try? JSON.parse(Data(captured.helper.utf8))) ?? [:]
-            helper["commands"] = .array(try CommandReceipts.rebuild(receipts.base, receipts.changes))
-            captured.helper=helper.encoded(); r.captured=captured
-        }
+        r.captured = try capturedCheckpoint()
         r.stateSource = stateSource.map { StateSource(line: $0.line, offset: $0.offset, key: $0.key) }
         return r
     }
