@@ -16,6 +16,7 @@ import SwiftUI
 // the code's toolbar) are the surface's overlays.
 
 extension NSAttributedString.Key {
+    static let piInlineCode = NSAttributedString.Key("PiMarkdownInlineCode")
     /// A code block's characters, its line breaks included: the panel behind
     /// them and what its copy button copies (`MarkdownCodeMark`).
     static let piCodeBlock = NSAttributedString.Key("PiMarkdownCodeBlock")
@@ -53,6 +54,10 @@ struct MarkdownFontSpec: Hashable, Sendable {
 enum MarkdownFontAttribute: AttributedStringKey {
     typealias Value = MarkdownFontSpec
     static let name = "PiMarkdownFont"
+}
+enum MarkdownInlineCodeAttribute: AttributedStringKey {
+    typealias Value = Bool
+    static let name = "PiMarkdownInlineCode"
 }
 
 /// One code block in the text. The same object stays with the block while it
@@ -262,6 +267,7 @@ enum MarkdownTextLayout {
             if let color = run.swiftUI.backgroundColor { attributes[.backgroundColor] = NSColor(color) }
             if run.swiftUI.strikethroughStyle != nil { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
             if let link = run.link { attributes[.link] = link }
+            if run[MarkdownInlineCodeAttribute.self] == true { attributes[.piInlineCode] = String(characters[run.range]) }
             result.append(NSAttributedString(string: String(characters[run.range]), attributes: attributes))
         }
         return result

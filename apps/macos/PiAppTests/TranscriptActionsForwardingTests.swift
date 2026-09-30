@@ -8,7 +8,7 @@ import AppKit
 /// action one of them leaves out compiles, and does nothing in any row.
 final class TranscriptActionsForwardingTests: XCTestCase {
     /// Each action a pane makes arrives once, from a row, through both relays.
-    @MainActor func testEveryActionReachesThePaneThroughBothRelays() {
+    @MainActor func testEveryActionReachesThePaneThroughBothRelays() async {
         var calls: [String] = []
         let pane = TranscriptActions(
             inspect: { calls.append("inspect \($0)") },
@@ -24,7 +24,8 @@ final class TranscriptActionsForwardingTests: XCTestCase {
             fork: { calls.append("fork \($0)") },
             switchVersion: { calls.append("switchVersion \($0) \($1)") },
             latestVersion: { calls.append("latestVersion") },
-            openFile: { calls.append("openFile \($0) \($1.map { "\($0.lowerBound)-\($0.upperBound)" } ?? "top")") })
+            openFile: { calls.append("openFile \($0) \($1.map { "\($0.lowerBound)-\($0.upperBound)" } ?? "top")") },
+            resolveReplyFile: { calls.append("resolveReplyFile \($0)"); return ReplyFileLocation(path: "/p/a.swift", line: 3) })
         let relay = TranscriptActionRelay()
         relay.current = pane
         let document = relay.forwarded
@@ -37,9 +38,11 @@ final class TranscriptActionsForwardingTests: XCTestCase {
         row.skillPressed?("m4", skill, anchor); row.skillHovered?("m5", skill, anchor, true)
         row.costLimit?(.raise, anchor); row.fork?("m6"); row.switchVersion?("m7", -1); row.latestVersion?()
         row.openFile?("/p/a.swift", 3...5); row.openFile?("/p/b.swift", nil)
+        let resolved = await row.resolveReplyFile?("a.swift:3")
+        XCTAssertEqual(resolved, ReplyFileLocation(path: "/p/a.swift", line: 3))
         XCTAssertEqual(calls, ["inspect m1", "edit m2", "copyMessage m3", "stop", "retry", "inspectTurn",
                                "skillPressed m4 review", "skillHovered m5 review true", "costLimit raise",
-                               "fork m6", "switchVersion m7 -1", "latestVersion", "openFile /p/a.swift 3-5", "openFile /p/b.swift top"])
+                               "fork m6", "switchVersion m7 -1", "latestVersion", "openFile /p/a.swift 3-5", "openFile /p/b.swift top", "resolveReplyFile a.swift:3"])
         XCTAssertNil(row.quoteReply, "Rows never ask for a quote; the page's selection controller does")
 
         // The rows keep the closures they were handed; the pane's newer
@@ -63,7 +66,7 @@ final class TranscriptActionsForwardingTests: XCTestCase {
     /// Fails when `TranscriptActions` gains or loses an action, so the
     /// relays cannot fall behind it.
     @MainActor func testTheRelaysForwardEveryAction() {
-        XCTAssertEqual(Mirror(reflecting: TranscriptActions()).children.count, 14,
+        XCTAssertEqual(Mirror(reflecting: TranscriptActions()).children.count, 15,
                        "TranscriptActions changed. Forward the action in `TranscriptActions.forwarding`, list it in `offered` if it is optional, and call it in testEveryActionReachesThePaneThroughBothRelays.")
     }
 }

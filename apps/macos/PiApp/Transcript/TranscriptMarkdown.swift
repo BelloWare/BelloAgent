@@ -352,6 +352,7 @@ enum TranscriptMarkdown {
             // TextKit text a reply is drawn in turns into its own font
             // (`MarkdownTextBuilder.appKit`).
             if intent.contains(.code) {
+                fragment[MarkdownInlineCodeAttribute.self] = true
                 fragment.font = .system(size: size * 0.9, weight: weight, design: .monospaced)
                 fragment.backgroundColor = style.codeBackground
                 fragment[MarkdownFontAttribute.self] = MarkdownFontSpec(size: size * 0.9, semibold: strong, monospaced: true, italic: italic)

@@ -23,6 +23,8 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     /// nothing and takes no room, so switching back finds the rendered reply
     /// exactly as the reader left it.
     var parked = false
+    var resolveFile: (@MainActor (String) async -> ReplyFileLocation?)? = nil
+    var openFile: ((String, ClosedRange<Int>?) -> Void)? = nil
 
     func makeNSView(context: Context) -> NativeMarkdownContainer {
         let view = NativeMarkdownContainer()
@@ -33,6 +35,9 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         view.read(source: source, style: style, capsWidth: capsWidth, streaming: streaming, headings: headings,
                   environment: TranscriptRowEnvironment(context.environment), identity: identity)
         view.park(parked)
+        view.textView.resolveFile = resolveFile
+        view.textView.openFile = openFile
+        view.textView.fileLinkIdentity = identity
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NativeMarkdownContainer, context: Context) -> CGSize? {
         parked ? CGSize(width: proposal.width ?? 0, height: 0) : nsView.measure(width: proposal.width)
@@ -43,7 +48,57 @@ struct NativeMarkdownSurface: NSViewRepresentable {
 /// elsewhere is the row's, and a copy is the reply's text as it reads —
 /// list items with their markers, table cells split by tabs, blocks by a
 /// blank line — without the page's own labels.
-@MainActor final class MarkdownTextView: NSTextView {
+@MainActor final class MarkdownTextView: NSTextView, NSTextViewDelegate {
+    var resolveFile: (@MainActor (String) async -> ReplyFileLocation?)?
+    var openFile: ((String, ClosedRange<Int>?) -> Void)?
+    private var attemptedFiles = Set<String>()
+    private var resolvedFiles = Set<String>()
+    private var pendingFiles = Set<String>()
+    var fileLinkIdentity = "" {
+        didSet { if oldValue != fileLinkIdentity { attemptedFiles = []; resolvedFiles = [] } }
+    }
+    var pendingFileLinks: Int { pendingFiles.count }
+
+    /// A visible code span is checked once for this surface, with results
+    /// cached by the workspace resolver. Plain prose carries no marker.
+    func resolveFileLinks(in characters: NSRange) {
+        guard let resolveFile, openFile != nil, let storage = textStorage, NSMaxRange(characters) <= storage.length else { return }
+        var candidates = Set<String>()
+        storage.enumerateAttribute(.piInlineCode, in: characters) { value, range, _ in
+            if let text = value as? String, storage.attribute(.link, at: range.location, effectiveRange: nil) == nil { candidates.insert(text) }
+        }
+        for text in candidates where !pendingFiles.contains(text) && (resolvedFiles.contains(text) || attemptedFiles.insert(text).inserted) {
+            pendingFiles.insert(text)
+            let identity = fileLinkIdentity
+            Task { [weak self] in
+                let target = await resolveFile(text)
+                guard let self else { return }
+                self.pendingFiles.remove(text)
+                guard target != nil, self.fileLinkIdentity == identity, self.resolveFile != nil, let storage = self.textStorage else { return }
+                self.resolvedFiles.insert(text)
+                var url = URLComponents(); url.scheme = "bello-file"; url.path = text
+                guard let link = url.url else { return }
+                var ranges: [NSRange] = []
+                storage.enumerateAttribute(.piInlineCode, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                    if value as? String == text, storage.attribute(.link, at: range.location, effectiveRange: nil) == nil { ranges.append(range) }
+                }
+                for range in ranges { storage.addAttribute(.link, value: link, range: range) }
+            }
+        }
+    }
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard let url = link as? URL, url.scheme == "bello-file" else { return false }
+        guard let storage = textStorage, charIndex < storage.length,
+              let text = storage.attribute(.piInlineCode, at: charIndex, effectiveRange: nil) as? String,
+              let resolveFile else { return true }
+        // Trust is read again through the current action relay at click time.
+        Task { [weak self] in
+            guard let target = await resolveFile(text) else { return }
+            self?.openFile?(target.path, target.line.map { $0...$0 })
+        }
+        return true
+    }
     // TextKit's back-pointers are weak. Own the storage before constructing
     // the text view, including the interval before super.init adopts it.
     private var ownedStorage: NSTextStorage?
@@ -58,6 +113,11 @@ struct NativeMarkdownSurface: NSViewRepresentable {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         didDraw?()
+        if let manager = layoutManager, let container = textContainer, (textStorage?.length ?? 0) > 0 {
+            let rect = visibleRect.offsetBy(dx: -textContainerOrigin.x, dy: -textContainerOrigin.y)
+            let glyphs = manager.glyphRange(forBoundingRect: rect, in: container)
+            resolveFileLinks(in: manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil))
+        }
     }
     convenience init() { self.init(frame: .zero, textContainer: nil) }
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
@@ -80,6 +140,7 @@ struct NativeMarkdownSurface: NSViewRepresentable {
         layoutManager?.allowsNonContiguousLayout = false
         linkTextAttributes = [.foregroundColor: NSColor(TranscriptPalette.accent), .cursor: NSCursor.pointingHand]
         setAccessibilityLabel("Reply")
+        delegate = self
     }
     required init?(coder: NSCoder) { nil }
 

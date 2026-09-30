@@ -31,13 +31,14 @@ struct TranscriptActions {
     /// A file tool's path: the file opens in a tab, at the lines (from 1)
     /// read or changed. Nil where files cannot be opened.
     var openFile: ((String, ClosedRange<Int>?) -> Void)? = nil
+    var resolveReplyFile: (@MainActor (String) async -> ReplyFileLocation?)? = nil
     /// Which of the optional actions are offered. A pane makes its actions
     /// afresh each time it is drawn, and every one of them reaches the chat
     /// through the model and the session it was made for; what can differ
     /// between two sets made for the same session is only which are offered.
     var offered: [Bool] {
         [quoteReply != nil, inspectTurn != nil, skillPressed != nil, skillHovered != nil, costLimit != nil,
-         fork != nil, switchVersion != nil, latestVersion != nil, openFile != nil]
+         fork != nil, switchVersion != nil, latestVersion != nil, openFile != nil, resolveReplyFile != nil]
     }
 }
 
@@ -70,7 +71,8 @@ extension TranscriptActions {
             fork: { source()?.fork?($0) },
             switchVersion: { source()?.switchVersion?($0, $1) },
             latestVersion: { source()?.latestVersion?() },
-            openFile: { source()?.openFile?($0, $1) }
+            openFile: { source()?.openFile?($0, $1) },
+            resolveReplyFile: { await source()?.resolveReplyFile?($0) }
         )
     }
 }

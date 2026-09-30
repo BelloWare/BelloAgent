@@ -11,6 +11,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let tabs = TabHost(defaults: ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard)
     /// ⌘P's list: its own to publish, so the window is not drawn again for it.
     let quickOpen = QuickOpen()
+    let replyFileResolver = ReplyFileResolver()
     /// Bumped by any change to the list, so views can cache derived labels
     /// instead of rebuilding them on every redraw.
     private(set) var workspacesRevision = 0

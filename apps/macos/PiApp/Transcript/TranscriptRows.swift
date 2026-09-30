@@ -213,6 +213,8 @@ struct MarkdownBodyView: View {
     /// place and its text's measurements, but draws nothing and takes no
     /// room until it is shown again.
     var parked = false
+    var resolveFile: (@MainActor (String) async -> ReplyFileLocation?)? = nil
+    var openFile: ((String, ClosedRange<Int>?) -> Void)? = nil
     @State private var hovering = false
     var body: some View {
         // The surface reads the message itself, so a token does not run this
@@ -220,7 +222,7 @@ struct MarkdownBodyView: View {
         let headings = copyTargets.filter { if case .section = $0.kind { return true }; return false }
         let introduction = copyTargets.first { $0.kind == .introduction || $0.kind == .whole }
         NativeMarkdownSurface(source: source, style: style, capsWidth: capsWidth, streaming: streaming,
-                              headings: headings, identity: sourceIdentity, parked: parked)
+                              headings: headings, identity: sourceIdentity, parked: parked, resolveFile: resolveFile, openFile: openFile)
             .frame(minHeight: source.isEmpty && streaming ? 22 : nil)
             .overlay(alignment: .leading) { if source.isEmpty && streaming { WaitingDots() } }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -503,7 +505,8 @@ struct MessageRowView: View {
                 // surface re-measured from estimates.
                 VStack(alignment: .leading, spacing: 0) {
                     MarkdownBodyView(source: message.text, streaming: message.isStreaming, copyTargets: copyTargets,
-                                     sourceIdentity: message.id, parked: raw).equatable()
+                                     sourceIdentity: message.id, parked: raw,
+                                     resolveFile: message.role == "assistant" ? actions.resolveReplyFile : nil, openFile: actions.openFile).equatable()
                     if raw { ReplySourceView(source: message.text).equatable() }
                 }
                 .background { if message.role == "assistant" { TranscriptQuoteRegion(messageID: message.id) } }
@@ -1166,7 +1169,7 @@ extension BlockRowView: Equatable {
 extension MarkdownBodyView: Equatable {
     nonisolated static func == (a: Self, b: Self) -> Bool {
         a.source == b.source && a.style == b.style && a.capsWidth == b.capsWidth && a.streaming == b.streaming && a.copyTargets == b.copyTargets && a.sourceIdentity == b.sourceIdentity
-            && a.parked == b.parked
+            && a.parked == b.parked && (a.resolveFile != nil) == (b.resolveFile != nil) && (a.openFile != nil) == (b.openFile != nil)
     }
 }
 extension CodeBlockView: Equatable {
