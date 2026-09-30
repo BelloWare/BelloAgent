@@ -30,7 +30,6 @@ final class FileTextViewTests: XCTestCase {
             return text.padding(toLength: width, withPad: ".", startingAt: 0)
         }
         var arrival: ((ClosedRange<Int>) -> Void)?
-        func prefetch(lines: ClosedRange<Int>) {}
         func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) { completion(text(from: start, to: end)) }
         func utf16Length(ofLine index: Int) -> Int { Self.width }
         func text(ofLine index: Int, range: Range<Int>) -> String? {
@@ -58,7 +57,6 @@ final class FileTextViewTests: XCTestCase {
         private(set) var read = 0
         init(_ length: Int, emojiAt emoji: Int? = nil, wide: Range<Int> = 0..<0) { self.length = length; self.emoji = emoji; self.wide = wide }
         var arrival: ((ClosedRange<Int>) -> Void)?
-        func prefetch(lines: ClosedRange<Int>) {}
         func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) { completion(text(from: start, to: end)) }
         func utf16Length(ofLine index: Int) -> Int { length }
         func text(ofLine index: Int, range: Range<Int>) -> String? {
@@ -90,6 +88,8 @@ final class FileTextViewTests: XCTestCase {
         init(_ text: String) { whole = FileTextLines(text) }
         /// Whether what has not come may still come.
         var isReading = true
+        /// Lets lines go again, as a full cache does.
+        func evict(_ lines: ClosedRange<Int>) { ready.subtract(lines) }
         /// Lets lines come, and tells the view.
         func release(_ lines: ClosedRange<Int>) {
             ready.formUnion(lines)
@@ -98,15 +98,26 @@ final class FileTextViewTests: XCTestCase {
         var lineCount: Int { whole.lineCount }
         let generation = 0
         func utf16Length(ofLine index: Int) -> Int { whole.utf16Length(ofLine: index) }
+        /// A line that comes by itself once it is asked for, on the next turn
+        /// of the run loop: while a press is held, say; and what happens next.
+        var comesWhenAsked: Int?
+        var afterComing: (() -> Void)?
         func text(ofLine index: Int, range: Range<Int>) -> String? {
-            guard ready.contains(index) else { asked.insert(index); return nil }
+            guard ready.contains(index) else {
+                asked.insert(index)
+                if comesWhenAsked == index {
+                    comesWhenAsked = nil
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self.release(index...index); self.afterComing?() } }
+                }
+                return nil
+            }
             return whole.text(ofLine: index, range: range)
         }
         func utf16Start(ofLine index: Int) -> Int { whole.utf16Start(ofLine: index) }
         func line(atUTF16 offset: Int) -> Int { whole.line(atUTF16: offset) }
         var utf16Length: Int { whole.utf16Length }
         var longestLine: Int { whole.longestLine }
-        func prefetch(lines: ClosedRange<Int>) { asked.formUnion(lines) }
+        func showScreen(lines: ClosedRange<Int>, columns: Range<Int>) { asked.formUnion(lines) }
         private var fetches: [(FileTextPosition, FileTextPosition, @MainActor (String?) -> Void)] = []
         func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) {
             if let text = text(from: start, to: end) { completion(text) } else { fetches.append((start, end, completion)) }
@@ -676,6 +687,99 @@ final class FileTextViewTests: XCTestCase {
         text.select(from: at(1, 0), to: at(1, 0))
         source.release(1...1)
         XCTAssertEqual(text.focus, at(1, 0), "the movement from before the change is not done")
+    }
+
+    /// A double-click on a word whose text has not come takes the word when
+    /// it comes; a drag or click meanwhile drops it.
+    @MainActor func testADoubleClickOnAWordNotComeYetTakesItWhenItComes() throws {
+        let source = DelayedLines("first line\nlet greeting = hello")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        try press(at: point(fixture, line: 1, column: 6, inset: 2), in: text, clicks: 2)
+        XCTAssertFalse(text.hasSelection, "a click while the word has not come")
+        source.release(1...1)
+        XCTAssertEqual(text.selectedText, "greeting", "the word, once it came")
+        let other = DelayedLines("first line\nlet greeting = hello")
+        text.show(other, name: "again.txt")
+        other.release(0...0)
+        try press(at: point(fixture, line: 1, column: 6, inset: 2), in: text, clicks: 2)
+        text.select(from: at(0, 1), to: at(0, 1))
+        other.release(1...1)
+        XCTAssertEqual(text.focus, at(0, 1), "a word the reader moved on from is not taken")
+    }
+
+    /// A word wider than the screen, double-clicked before its text came,
+    /// is taken when it comes without the view moving to its end: the click
+    /// was where the reader was looking.
+    @MainActor func testAWordTakenLaterDoesNotScrollTheView() throws {
+        let source = DelayedLines("first line\n" + String(repeating: "a", count: 1_000) + " end")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        try press(at: point(fixture, line: 1, column: 3, inset: 2), in: text, clicks: 2)
+        source.release(1...1)
+        XCTAssertEqual(text.selectedRange.start, at(1, 0))
+        XCTAssertEqual(text.selectedRange.end, at(1, 1_000), "the whole word")
+        XCTAssertEqual(fixture.scroll.contentView.bounds.minX, 0, "the view did not move to its end")
+    }
+
+    /// A press drops keys still waiting for text: Right waiting at the caret,
+    /// then a double-click there on a word not come yet, takes the word when
+    /// it comes, without the Right and without scrolling for it.
+    @MainActor func testAPressDropsKeysStillWaiting() throws {
+        let source = DelayedLines("first line\n" + String(repeating: "a", count: 1_000) + " end")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        text.select(from: at(1, 3), to: at(1, 3))
+        try key(fixture, right.0, right.1)
+        try press(at: point(fixture, line: 1, column: 3, inset: 2), in: text, clicks: 2)
+        source.release(1...1)
+        XCTAssertEqual(text.selectedRange.start, at(1, 0))
+        XCTAssertEqual(text.selectedRange.end, at(1, 1_000), "the word")
+        XCTAssertEqual(fixture.scroll.contentView.bounds.minX, 0, "and no scrolling for the dropped key")
+    }
+
+    /// A word whose text comes while the double-click's press is still held
+    /// is taken as the press goes on: held still, the selection is the word.
+    @MainActor func testAWordComingWhileThePressIsHeldIsTaken() throws {
+        let source = DelayedLines("first line\nlet greeting = hello")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        let at = point(fixture, line: 1, column: 6, inset: 2)
+        let still = try mouse(.leftMouseDragged, at: at, in: text, clicks: 2), up = try mouse(.leftMouseUp, at: at, in: text, clicks: 2)
+        // The line comes while the press waits for the pointer, which then
+        // stays where it was until the release.
+        source.comesWhenAsked = 1
+        source.afterComing = { NSApp.postEvent(still, atStart: false); NSApp.postEvent(up, atStart: false) }
+        while NSApp.nextEvent(matching: .any, until: .now, inMode: .default, dequeue: true) != nil {}
+        text.mouseDown(with: try mouse(.leftMouseDown, at: at, in: text, clicks: 2))
+        XCTAssertEqual(text.selectedText, "greeting")
+    }
+
+    /// A double-clicked word that came while the press is held stays taken
+    /// for the rest of the press even if its text goes again at once (a
+    /// word of many windows, let go of by a full cache once taken): the
+    /// press keeps the word found when it came, and never shrinks it to the
+    /// click.
+    @MainActor func testAWordTakenDuringAPressStaysTakenThoughItsTextGoes() throws {
+        let source = DelayedLines("first line\nlet greeting = hello")
+        let fixture = fixture(source)
+        let text = fixture.text
+        source.release(0...0)
+        let spot = point(fixture, line: 1, column: 6, inset: 2)
+        let still = try mouse(.leftMouseDragged, at: spot, in: text, clicks: 2), up = try mouse(.leftMouseUp, at: spot, in: text, clicks: 2)
+        source.comesWhenAsked = 1
+        source.afterComing = {
+            source.evict(1...1)
+            NSApp.postEvent(still, atStart: false); NSApp.postEvent(up, atStart: false)
+        }
+        while NSApp.nextEvent(matching: .any, until: .now, inMode: .default, dequeue: true) != nil {}
+        text.mouseDown(with: try mouse(.leftMouseDown, at: spot, in: text, clicks: 2))
+        XCTAssertEqual(text.selectedRange.start, at(1, 4))
+        XCTAssertEqual(text.selectedRange.end, at(1, 12), "the word, not shrunk to the click")
     }
 
     /// Text that comes after accessibility found it missing is announced:

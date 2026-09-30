@@ -125,8 +125,8 @@ struct FileLengths: Sendable {
         /// At most this many lines are kept: 4 bytes each.
         public var lineLimit = 50_000_000
         /// Text kept, in UTF-16 units, across pages and windows, each line
-        /// costing a little more than its text. What the latest drawing
-        /// uses is kept even past it.
+        /// costing a little more than its text. What the screen shows, and
+        /// reads held until answered, are kept even past it.
         public var cacheUnits = 8 << 20
         /// Called before opening, before each chunk the pass reads, and
         /// before each page or window is read.
@@ -168,41 +168,25 @@ struct FileLengths: Sendable {
     private var complete = false
     public private(set) var longestLine = 0
 
-    /// Pages by checkpoint, and windows of long lines by (line, mark).
-    private struct Page { let firstLine: Int; let lines: [String]; let cost: Int }
-    private struct WindowKey: Hashable { let line: Int; let mark: Int }
-    private var pages: [Int: Page] = [:]
-    private var windows: [WindowKey: NSString] = [:]
-    /// When each page and window was last used or asked for: the order they
-    /// go in, longest ago first.
-    private var used: [AnyHashable: Int] = [:]
-    private var clock = 0
-    /// What the drawings of the screen now shown have used or asked for:
-    /// kept even past the budget. A new screen (`prefetch`) starts afresh,
-    /// what the last one used kept until then. Reads for anything else
-    /// (accessibility, a copy, a movement) are kept only within the budget.
-    private var inUse: Set<AnyHashable> = []
-    /// What reads for anything else asked for, the latest last: the latest
-    /// are kept together (up to half the budget), so a request that needs
-    /// several pages or windows at once gets them all.
-    private var asked: [AnyHashable] = []
-    /// What the latest of those requests needs, all of it kept, however
-    /// much: a request is answered only with all its parts at hand at once.
-    private var lastRequest: Set<AnyHashable> = []
-    private var drawings = 0
-    private var cached = 0
-    /// Reads under way, with when each was last asked for.
-    private var loadingPages: [Int: Int] = [:]
-    private var loadingWindows: [WindowKey: Int] = [:]
+    /// What is kept of the text read, and what keeps it.
+    private var cache: FileReadCache
+    /// Reads under way, by what they read, with when each was last asked for.
+    private var inFlight: [FileReadCache.Key: Int] = [:]
+    /// The screen the view shows, as it said: what it needs is worked out
+    /// again whenever what is known of the lines changes.
+    private var screen: (lines: ClosedRange<Int>, columns: Range<Int>)?
+    /// While a read is held (`holding`), what it has needed.
+    private var recording: Set<FileReadCache.Key>?
     /// Test seams: bytes read for text (pages, windows, copies), pages and
-    /// windows asked for, what the cache holds as it counts it, and reads
-    /// under way.
+    /// windows asked for, what the cache holds as it counts it, holds kept,
+    /// and reads under way.
     private(set) var bytesRead = 0
     private(set) var pageLoads = 0
     private(set) var windowRequests = 0
-    var cachedCost: Int { cached }
-    var cachedPages: Int { pages.count }
-    var readsUnderWay: Int { loadingPages.count + loadingWindows.count + fetching }
+    var cachedCost: Int { cache.cost }
+    var cachedPages: Int { cache.pageCount }
+    var holdsKept: Int { cache.holdCount }
+    var readsUnderWay: Int { inFlight.count + fetching }
     /// Test seam: reads started for copies and accessibility.
     private(set) var fetchReads = 0
     private var fetching = 0
@@ -214,6 +198,7 @@ struct FileLengths: Sendable {
     /// Opens the file away from the main thread: this returns at once.
     public init(url: URL, options: Options = Options()) {
         self.url = url; self.options = options
+        cache = FileReadCache(budget: options.cacheUnits)
         open()
     }
     /// Stops reading. Reads under way finish and are dropped.
@@ -331,6 +316,7 @@ struct FileLengths: Sendable {
             complete = true
             status = .truncated(limit: options.lineLimit)
             indexing?.cancel()
+            applyScreen()
             arrival?(before...max(before, lineCount - 1))
             return false
         }
@@ -339,6 +325,8 @@ struct FileLengths: Sendable {
         longestLine = max(longestLine, provisional)
         scanned = delta.scanned
         if final { complete = true; openLong = nil; if status == .indexing { status = .ready } }
+        // Lines found, or become long: what the screen needs may be other.
+        applyScreen()
         arrival?(before...max(before, lineCount - 1))
         return true
     }
@@ -361,7 +349,7 @@ struct FileLengths: Sendable {
         status = .changed
         indexing?.cancel()
         self.version += 1
-        loadingPages = [:]; loadingWindows = [:]
+        inFlight = [:]
         arrival?(0...max(0, lineCount - 1))
     }
     private func failed(_ message: String, version: Int) {
@@ -369,7 +357,7 @@ struct FileLengths: Sendable {
         status = .failed(message); complete = true
         indexing?.cancel()
         self.version += 1
-        loadingPages = [:]; loadingWindows = [:]
+        inFlight = [:]
         arrival?(0...max(0, lineCount - 1))
     }
     private func reset() {
@@ -377,7 +365,7 @@ struct FileLengths: Sendable {
         version += 1
         lengths.removeAll(); checkpoints = []; longLines = [:]; openLong = nil
         provisional = 0; finishedUTF16 = 0; scanned = 0; keptEnd = nil; complete = false; longestLine = 0
-        pages = [:]; windows = [:]; used = [:]; inUse = []; asked = []; lastRequest = []; cached = 0; loadingPages = [:]; loadingWindows = [:]
+        cache.removeAll(); inFlight = [:]
         #if DEBUG
         pagesEverLoaded = []
         #endif
@@ -446,44 +434,76 @@ struct FileLengths: Sendable {
         // Nothing is known of the file before its first lines are found.
         guard !checkpoints.isEmpty else { return nil }
         if let long = longLine(index) { return longText(long, index: index, low: low, high: high, asking: asking) }
-        let page = checkpoint(holding: index)
-        if asking, drawings == 0 { lastRequest = [AnyHashable(page)] }
-        guard let cached = pages[page] else { if asking { load(page: page) }; return nil }
-        let offset = index - cached.firstLine
-        let line = offset < cached.lines.count ? cached.lines[offset] as NSString : nil
+        let page = checkpoint(holding: index), key = FileReadCache.Key.page(page)
+        if asking { recording?.insert(key) }
+        guard case .page(let firstLine, let lines)? = cache.payload(key, use: asking) else { if asking { load(page: page) }; return nil }
+        let offset = index - firstLine
+        let line = offset < lines.count ? lines[offset] as NSString : nil
         guard let line, high <= line.length else {
             // Never so: a page is what the pass had found when it comes, and
             // goes when the pass finds more of it. Read again if it ever were.
-            drop(page: page)
+            cache.remove(key)
             if asking { load(page: page) }
             return nil
         }
-        if asking { touch(AnyHashable(page)) }
-        return low == 0 && high == line.length ? cached.lines[offset] : line.substring(with: NSRange(location: low, length: high - low))
+        return low == 0 && high == line.length ? lines[offset] : line.substring(with: NSRange(location: low, length: high - low))
     }
-    /// A new screen: reads ahead the lines around it, from the middle of them
-    /// out, as much as half the cache holds, so what is read ahead never
-    /// pushes out what is on screen. Its drawing calls this first, once;
-    /// what the drawings of this screen use is in use until the next.
-    public func prefetch(lines: ClosedRange<Int>) {
-        // What the last screen used goes only now, if it is not used again,
-        // and anything older while more is kept than the budget.
-        evict()
-        inUse = []
-        guard reading, !checkpoints.isEmpty else { return }
-        let first = min(max(0, lines.lowerBound), lineCount - 1), last = min(max(first, lines.upperBound), lineCount - 1)
-        let low = checkpoint(holding: first), high = checkpoint(holding: last), middle = (low + high) / 2
+    /// The screen the view shows: its lines, and the columns of them in
+    /// view. What it needs is kept whatever the budget, until the next
+    /// screen; what is around it is read ahead.
+    public func showScreen(lines: ClosedRange<Int>, columns: Range<Int>) {
+        screen = (lines, columns)
+        applyScreen()
+    }
+    /// Pins what the screen needs, as its lines are known now, reads what of
+    /// it is missing, then reads ahead a screen either side.
+    private func applyScreen() {
+        guard let screen, reading, !checkpoints.isEmpty else { return }
+        let first = min(max(0, screen.lines.lowerBound), lineCount - 1), last = min(max(first, screen.lines.upperBound), lineCount - 1)
+        var keys: Set<FileReadCache.Key> = []
+        for line in first...last {
+            guard let long = longLine(line) else { keys.insert(.page(checkpoint(holding: line))); continue }
+            // The view reads a line on its grid by the columns it shows, and
+            // any other line whole (a long line of wide characters).
+            let length = utf16Length(ofLine: line)
+            guard length > 0 else { continue }
+            let grid = length > FileTextMetrics.gridLine
+            let low = grid ? min(max(0, screen.columns.lowerBound), length - 1) : 0
+            let high = grid ? min(max(low + 1, screen.columns.upperBound), length) : length
+            for mark in Self.mark(before: low, in: long)...Self.mark(before: high - 1, in: long) { keys.insert(.window(line: line, mark: mark)) }
+        }
+        cache.pin(screen: keys)
+        for key in keys where !cache.contains(key) { load(key) }
+        // Around the screen, from its middle out, as much as half the cache
+        // holds, not kept past the budget: pushing out nothing on screen.
+        let span = last - first + 1
+        let low = checkpoint(holding: max(0, first - span)), high = checkpoint(holding: min(lineCount - 1, last + span))
+        let middle = checkpoint(holding: (first + last) / 2)
         var room = options.cacheUnits / 2
         for distance in 0...max(middle - low, high - middle) {
             for page in distance == 0 ? [middle] : [middle - distance, middle + distance] where page >= low && page <= high {
-                // A long line is read by the part the drawing asks for.
+                // A long line is read by the part the view asks for.
                 guard longLine(checkpoints[page].line) == nil else { continue }
                 let cost = pageCost(page)
                 guard cost <= room else { return }
                 room -= cost
-                if pages[page] != nil { touch(AnyHashable(page)) } else { load(page: page) }
+                if cache.payload(.page(page), use: true) == nil { load(page: page) }
             }
         }
+    }
+    /// Runs `body`, which asks for text, and when some of what it asked for
+    /// had not come, keeps all of it until the hold returned is let go of:
+    /// asked again when it has come, it is all there at once, however much
+    /// else is read meanwhile.
+    public func holding<T>(_ body: () -> T) -> (T, FileTextHold?) {
+        let outer = recording
+        recording = []
+        let result = body()
+        let needed = recording ?? []
+        recording = outer.map { $0.union(needed) }
+        guard needed.contains(where: { !cache.contains($0) }) else { return (result, nil) }
+        let hold = cache.hold(needed)
+        return (result, FileTextHold { [weak self] in self?.cache.release(hold) })
     }
 
     // MARK: Pages
@@ -508,12 +528,18 @@ struct FileLengths: Sendable {
         let high = page + 1 < checkpoints.count ? checkpoints[page + 1].byte : keptEnd ?? scanned
         return low..<max(low, high)
     }
+    private func load(_ key: FileReadCache.Key) {
+        switch key {
+        case .page(let page): load(page: page)
+        case .window(let line, let mark): if let long = longLine(line) { load(window: mark, of: line, long: long) }
+        }
+    }
     private func load(page: Int) {
         guard reading, let bytes, let identity else { return }
-        // Asked for again while it is being read: in use from now.
-        note(AnyHashable(page))
-        guard loadingPages[page] == nil else { loadingPages[page] = tick(); return }
-        loadingPages[page] = tick(); pageLoads += 1
+        let key = FileReadCache.Key.page(page)
+        // Asked for again while it is being read: as used from now.
+        guard inFlight[key] == nil else { inFlight[key] = cache.tick(); return }
+        inFlight[key] = cache.tick(); pageLoads += 1
         #if DEBUG
         pagesEverLoaded.insert(page)
         #endif
@@ -547,17 +573,15 @@ struct FileLengths: Sendable {
         }
     }
     private func install(page: Int, firstLine: Int, _ result: Result<[String], Error>, bytes: Int, version: Int, partial: Int?) {
-        guard version == self.version, let asked = loadingPages.removeValue(forKey: page) else { return }
+        guard version == self.version, let asked = inFlight.removeValue(forKey: .page(page)) else { return }
         switch result {
         case .success(let lines):
             bytesRead += bytes
             let shown = firstLine...(firstLine + max(0, lines.count - 1))
             // Read short of what the pass has found since: read again when asked.
             if let partial, partial != epoch { arrival?(shown); return }
-            drop(page: page)
             let cost = lines.reduce(64) { $0 + ($1 as NSString).length + 16 }
-            pages[page] = Page(firstLine: firstLine, lines: lines, cost: cost)
-            cached += cost; used[AnyHashable(page)] = asked; evict(sparing: AnyHashable(page))
+            cache.put(.page(page), .page(firstLine: firstLine, lines: lines), cost: cost, asked: asked)
             arrival?(shown)
         case .failure:
             changed(version: version)
@@ -641,13 +665,13 @@ struct FileLengths: Sendable {
     /// covers, each read when first asked for.
     private func longText(_ long: FileLongLine, index: Int, low: Int, high: Int, asking: Bool) -> String? {
         let covered = Self.mark(before: low, in: long)...Self.mark(before: high - 1, in: long)
-        if asking, drawings == 0 { lastRequest = Set(covered.map { AnyHashable(WindowKey(line: index, mark: $0)) }) }
         var parts: [NSString] = []
         var missing = false
         for mark in covered {
-            let key = WindowKey(line: index, mark: mark)
-            if let window = windows[key] { parts.append(window); if asking { touch(AnyHashable(key)) } }
-            else { missing = true; if asking { load(window: key, long: long) } }
+            let key = FileReadCache.Key.window(line: index, mark: mark)
+            if asking { recording?.insert(key) }
+            if case .window(let window)? = cache.payload(key, use: asking) { parts.append(window) }
+            else { missing = true; if asking { load(window: mark, of: index, long: long) } }
         }
         guard !missing else { return nil }
         let text: NSString = parts.count == 1 ? parts[0] : parts.reduce(into: NSMutableString()) { $0.append($1 as String) }
@@ -656,20 +680,20 @@ struct FileLengths: Sendable {
         guard from >= 0, to <= text.length, to >= from else { return nil }
         return text.substring(with: NSRange(location: from, length: to - from))
     }
-    private func load(window key: WindowKey, long: FileLongLine) {
+    private func load(window index: Int, of line: Int, long: FileLongLine) {
         guard reading, let bytes, let identity else { return }
-        note(AnyHashable(key))
-        guard loadingWindows[key] == nil else { loadingWindows[key] = tick(); return }
-        loadingWindows[key] = tick(); windowRequests += 1
-        let isLast = key.mark == long.marks.count
-        let mark = Self.mark(key.mark, of: long)
+        let key = FileReadCache.Key.window(line: line, mark: index)
+        guard inFlight[key] == nil else { inFlight[key] = cache.tick(); return }
+        inFlight[key] = cache.tick(); windowRequests += 1
+        let isLast = index == long.marks.count
+        let mark = Self.mark(index, of: long)
         let from = long.byte + mark.byte
-        let to = long.byte + (isLast ? long.bytes : Self.mark(key.mark + 1, of: long).byte)
-        let end = isLast ? Int64(utf16Length(ofLine: key.line)) : Self.mark(key.mark + 1, of: long).utf16
+        let to = long.byte + (isLast ? long.bytes : Self.mark(index + 1, of: long).byte)
+        let end = isLast ? Int64(utf16Length(ofLine: line)) : Self.mark(index + 1, of: long).utf16
         let expected = Int(end - mark.utf16)
         // The last window of the line the pass is still in: as far as the
         // pass has gone, kept only if it has found nothing more since.
-        let partial = isLast && openLong?.line == key.line ? epoch : nil
+        let partial = isLast && openLong?.line == line ? epoch : nil
         let encoding = encoding, version = version, before = options.beforePage
         Task.detached(priority: .userInitiated) { [weak self] in
             await before?()
@@ -683,20 +707,18 @@ struct FileLengths: Sendable {
                 guard (text as NSString).length == expected else { throw CocoaError(.fileReadCorruptFile) }
                 result = .success(text)
             } catch { result = .failure(error) }
-            await self?.install(window: key, result, bytes: Int(to - from), version: version, partial: partial)
+            await self?.install(window: key, line: line, result, bytes: Int(to - from), version: version, partial: partial)
         }
     }
-    private func install(window key: WindowKey, _ result: Result<String, Error>, bytes: Int, version: Int, partial: Int?) {
-        guard version == self.version, let asked = loadingWindows.removeValue(forKey: key) else { return }
+    private func install(window key: FileReadCache.Key, line: Int, _ result: Result<String, Error>, bytes: Int, version: Int, partial: Int?) {
+        guard version == self.version, let asked = inFlight.removeValue(forKey: key) else { return }
         switch result {
         case .success(let text):
             bytesRead += bytes
-            if let partial, partial != epoch { arrival?(key.line...key.line); return }
-            dropWindow(key)
+            if let partial, partial != epoch { arrival?(line...line); return }
             let window = text as NSString
-            windows[key] = window
-            cached += window.length + 64; used[AnyHashable(key)] = asked; evict(sparing: AnyHashable(key))
-            arrival?(key.line...key.line)
+            cache.put(key, .window(window), cost: window.length + 64, asked: asked)
+            arrival?(line...line)
         case .failure:
             changed(version: version)
         }
@@ -704,59 +726,12 @@ struct FileLengths: Sendable {
 
     // MARK: The cache
 
-    /// The screen's drawing of itself: what it uses meanwhile is in use.
-    public func beginDrawing() { drawings += 1 }
-    public func endDrawing() { drawings = max(0, drawings - 1) }
-    private func tick() -> Int { clock += 1; return clock }
-    private func touch(_ key: AnyHashable) {
-        used[key] = tick()
-        note(key)
-    }
-    /// Who a page or window is used or asked for: the screen, or the latest
-    /// of what else asked.
-    private func note(_ key: AnyHashable) {
-        if drawings > 0 { inUse.insert(key); return }
-        if let index = asked.lastIndex(of: key) { asked.remove(at: index) }
-        asked.append(key)
-        if asked.count > 256 { asked.removeFirst(asked.count - 256) }
-    }
-    /// The latest of what else asked, kept together up to half the budget.
-    private var keptForAsking: Set<AnyHashable> {
-        var kept: Set<AnyHashable> = [], cost = 0
-        for key in asked.reversed() {
-            let entry = (key.base as? Int).flatMap { pages[$0]?.cost } ?? (key.base as? WindowKey).flatMap { windows[$0].map { $0.length + 64 } } ?? 0
-            guard cost + entry <= options.cacheUnits / 2 else { break }
-            cost += entry; kept.insert(key)
-        }
-        return kept
-    }
-    /// Pages and windows used longest ago go first, while more is kept than
-    /// the budget; what the screen uses stays, and the latest of what else
-    /// asked, and what has just come, to be read at least once.
-    private func evict(sparing just: AnyHashable? = nil) {
-        guard cached > options.cacheUnits else { return }
-        let spared = inUse.union(keptForAsking).union(lastRequest)
-        for (key, _) in used.sorted(by: { $0.value < $1.value }) {
-            guard cached > options.cacheUnits else { return }
-            guard !spared.contains(key), key != just else { continue }
-            if let page = key.base as? Int { drop(page: page) }
-            else if let window = key.base as? WindowKey { dropWindow(window) }
-        }
-    }
-    private func drop(page: Int) {
-        if let cachedPage = pages.removeValue(forKey: page) { cached -= cachedPage.cost }
-        used.removeValue(forKey: AnyHashable(page))
-    }
-    private func dropWindow(_ key: WindowKey) {
-        if let text = windows.removeValue(forKey: key) { cached -= text.length + 64 }
-        used.removeValue(forKey: AnyHashable(key))
-    }
     /// What was read of the line the pass is in may be short of it now: its
     /// page goes, or if it is long, its last window.
     private func dropOpenLine(_ line: Int) {
         guard !checkpoints.isEmpty, !complete else { return }
-        drop(page: checkpoint(holding: line))
-        if let open = openLong, open.line == line { dropWindow(WindowKey(line: line, mark: open.marks.count)) }
+        cache.remove(.page(checkpoint(holding: line)))
+        if let open = openLong, open.line == line { cache.remove(.window(line: line, mark: open.marks.count)) }
     }
 
     // MARK: Copy

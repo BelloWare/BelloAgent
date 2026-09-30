@@ -47,7 +47,7 @@ final class FileTextStyleTests: XCTestCase {
     @MainActor func testAChangeOfFontIsANewScreen() {
         final class Counting: FileTextSource {
             let whole = FileTextLines(String(repeating: "0123456789", count: 20_000))
-            var prefetches = 0
+            var screens = 0
             var lineCount: Int { whole.lineCount }
             var utf16Length: Int { whole.utf16Length }
             var longestLine: Int { whole.longestLine }
@@ -57,7 +57,7 @@ final class FileTextStyleTests: XCTestCase {
             func text(ofLine index: Int, range: Range<Int>) -> String? { whole.text(ofLine: index, range: range) }
             func utf16Start(ofLine index: Int) -> Int { whole.utf16Start(ofLine: index) }
             func line(atUTF16 offset: Int) -> Int { whole.line(atUTF16: offset) }
-            func prefetch(lines: ClosedRange<Int>) { prefetches += 1 }
+            func showScreen(lines: ClosedRange<Int>, columns: Range<Int>) { screens += 1 }
             func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) { completion(text(from: start, to: end)) }
         }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
@@ -73,9 +73,9 @@ final class FileTextStyleTests: XCTestCase {
         }
         scroll.contentView.scroll(to: NSPoint(x: 50_000, y: 0)); scroll.reflectScrolledClipView(scroll.contentView)
         draw(); draw()
-        XCTAssertEqual(source.prefetches, 1, "one screen, read ahead once")
+        XCTAssertEqual(source.screens, 1, "one screen, told once")
         scroll.textView.style = FileTextStyle(font: .monospacedSystemFont(ofSize: 16, weight: .regular), lineHeight: 22)
         draw()
-        XCTAssertEqual(source.prefetches, 2, "the same lines in another font are another screen")
+        XCTAssertEqual(source.screens, 2, "the same lines in another font are another screen")
     }
 }

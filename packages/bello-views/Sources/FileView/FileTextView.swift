@@ -436,6 +436,7 @@ public struct FileTextStyle {
         self.source.arrival = nil
         self.source = source; self.name = name
         pending = []
+        dropPending(); accessibilityHold?.release(); accessibilityHold = nil
         source.arrival = { [weak self] lines in self?.arrived(lines) }
         layouts = [:]; layoutGeneration = source.generation; measuredWidth = 0; goalX = nil; emphasized = nil; readAhead = nil
         showing &+= 1; answers = []; answering = []
@@ -543,16 +544,24 @@ public struct FileTextStyle {
     public override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let rows = lines(in: dirtyRect)
-        source.beginDrawing()
-        defer { source.endDrawing() }
-        // The screen and a screen either side are read ahead of being drawn,
+        // The source is told the screen, its lines and the columns in view,
         // once for each screen, up and down or sideways: drawing part of it
         // again (a line that came) is not a new screen, and must not tell
-        // the source it is.
-        let screen = visibleLines, margin = max(8, screen.count)
-        let ahead = max(0, screen.lowerBound - margin)...min(source.lineCount - 1, screen.upperBound + margin)
-        let shown = Screen(lines: ahead, left: visibleRect.minX.rounded(), width: visibleRect.width.rounded())
-        if shown != readAhead { readAhead = shown; source.prefetch(lines: ahead) }
+        // the source it is. The columns reach two pieces either side, which
+        // setting the pieces at the edges reads.
+        // What is drawn is what is on screen and what AppKit draws ahead of
+        // scrolling there (its prepared content, never more than a screen
+        // around it): all of it is the screen.
+        let drawn = visibleRect.union(preparedContentRect).intersection(aroundScreen)
+        let screen = lines(in: drawn)
+        let shown = Screen(lines: screen, left: drawn.minX.rounded(), width: drawn.width.rounded())
+        if shown != readAhead {
+            readAhead = shown
+            let reach = 2 * FileTextMetrics.piece
+            let from = max(0, Int((drawn.minX - FileTextMetrics.left) / metrics.advance) - reach)
+            let to = max(from + 1, Int(((drawn.maxX - FileTextMetrics.left) / metrics.advance).rounded(.up)) + reach)
+            source.showScreen(lines: screen, columns: from..<to)
+        }
         let (start, end) = selectedRange
         let selectionColor = (selectionActive ? NSColor.selectedTextBackgroundColor : NSColor.unemphasizedSelectedTextBackgroundColor).cgColor
         if let emphasized, emphasized.overlaps(rows) {
@@ -611,10 +620,17 @@ public struct FileTextStyle {
             context.restoreGState()
         }
     }
-    /// The screen last read ahead for: its lines with those around them,
-    /// and where it is sideways.
+    /// The screen the source was last told of: its lines, and where it is
+    /// sideways.
     private struct Screen: Equatable { let lines: ClosedRange<Int>; let left: CGFloat; let width: CGFloat }
     private var readAhead: Screen?
+    /// The screen and a screen on every side of it: as far as AppKit is let
+    /// draw ahead of scrolling (responsive scrolling's overdraw), so all it
+    /// draws is what the source was told is the screen.
+    private var aroundScreen: NSRect { visibleRect.insetBy(dx: -visibleRect.width, dy: -visibleRect.height) }
+    public override func prepareContent(in rect: NSRect) {
+        super.prepareContent(in: rect.intersection(aroundScreen))
+    }
     private var widthScheduled = false
     /// A line wider than the view was drawn: the view widens after this pass.
     private func scheduleWidth() {
@@ -715,6 +731,8 @@ public struct FileTextStyle {
     public override func mouseDown(with event: NSEvent) {
         guard let window else { return }
         window.makeFirstResponder(self)
+        // A press is a new selection: keys still waiting for text are not done.
+        dropPending()
         let hit = position(at: convert(event.locationInWindow, from: nil))
         // A double click takes a word, a triple click the line; dragging on
         // from either keeps what the click took and extends by words or lines.
@@ -722,8 +740,22 @@ public struct FileTextStyle {
         var taken: (FileTextPosition, FileTextPosition)?
         switch clicks {
         case ...1: event.modifierFlags.contains(.shift) ? select(from: anchor, to: hit) : select(from: hit, to: hit)
-        // A word whose text has not come yet is a click.
-        case 2: taken = wordRange(at: hit); if taken == nil { select(from: hit, to: hit) }
+        case 2:
+            taken = wordRange(at: hit)
+            if taken == nil {
+                // A word whose text has not come yet is taken when it has,
+                // unless the reader has moved on (dragged, clicked) since.
+                select(from: hit, to: hit)
+                deferredWord = nil
+                move(false, scrolls: false) { view, _ in view.wordRange(at: hit)?.0 }
+                move(true, scrolls: false) { view, _ in
+                    // Found while its text is held, and kept for the press
+                    // still going on, which may no longer have that text.
+                    let word = view.wordRange(at: hit)
+                    view.deferredWord = word
+                    return word?.1
+                }
+            }
         default: taken = lineRange(hit.line)
         }
         if let taken { select(from: taken.0, to: taken.1) }
@@ -743,6 +775,9 @@ public struct FileTextStyle {
             if next.type == .leftMouseDragged { last = next }
             autoscroll(with: last)
             let moved = position(at: convert(last.locationInWindow, from: nil))
+            // A word whose text came while the press is held is taken from
+            // then, as if it had been there at the click.
+            if clicks == 2, taken == nil, let word = deferredWord { taken = word }
             if let taken {
                 if moved >= taken.0 && moved <= taken.1 { select(from: taken.0, to: taken.1) }
                 else if moved > taken.1 { select(from: taken.0, to: clicks == 2 ? max(wordRange(at: moved)?.1 ?? moved, moved) : lineRange(moved.line).1) }
@@ -814,6 +849,9 @@ public struct FileTextStyle {
     /// A movement waiting for text to come.
     private struct Pending {
         let extend: Bool, keepGoal: Bool
+        /// Whether the view scrolls to show where it went: a key's movement
+        /// does, a click's word does not (the click was where the reader looks).
+        let scrolls: Bool
         let to: @MainActor (FileTextView, FileTextPosition) -> FileTextPosition?
     }
     /// Movements waiting for text to come, in the order the keys were
@@ -824,6 +862,13 @@ public struct FileTextStyle {
     private var pending: [Pending] = []
     private var pendingRevision = 0
     private var selectionRevision = 0
+    /// What the movement waiting now needs, kept until it is done or dropped.
+    private var pendingHold: FileTextHold?
+    /// A double-clicked word found once its text came.
+    private var deferredWord: (FileTextPosition, FileTextPosition)?
+    /// What accessibility's latest small read needs, until the next.
+    private var accessibilityHold: FileTextHold?
+    private func dropPending() { pending = []; pendingHold?.release(); pendingHold = nil }
 
     /// Moves the insertion point, or with `extend` the selection's focus, and
     /// shows where it went. A movement that needs text not come yet waits
@@ -831,12 +876,13 @@ public struct FileTextStyle {
     /// each from where the one before it ends.
     /// `to` is handed the view, and holds nothing of its own, so a movement
     /// left waiting keeps no view alive.
-    private func move(_ extend: Bool, keepGoal: Bool = false, _ to: @escaping @MainActor (FileTextView, FileTextPosition) -> FileTextPosition?) {
+    private func move(_ extend: Bool, keepGoal: Bool = false, scrolls: Bool = true, _ to: @escaping @MainActor (FileTextView, FileTextPosition) -> FileTextPosition?) {
         if !pending.isEmpty, pendingRevision == selectionRevision, source.isReading {
-            pending.append(Pending(extend: extend, keepGoal: keepGoal, to: to))
+            pending.append(Pending(extend: extend, keepGoal: keepGoal, scrolls: scrolls, to: to))
             return
         }
-        pending = [Pending(extend: extend, keepGoal: keepGoal, to: to)]
+        dropPending()
+        pending = [Pending(extend: extend, keepGoal: keepGoal, scrolls: scrolls, to: to)]
         pendingRevision = selectionRevision
         runPending()
     }
@@ -846,14 +892,20 @@ public struct FileTextStyle {
     private func runPending() {
         var moved = false
         while let next = pending.first {
-            guard let target = next.to(self, focus) else {
-                if !source.isReading { pending = [] }
+            // Each movement holds what it needs while it waits: tried again,
+            // it reads what it held before letting go of that, and once done
+            // it holds nothing when the next is tried.
+            let (target, hold) = source.holding { next.to(self, focus) }
+            pendingHold?.release(); pendingHold = nil
+            guard let target else {
+                if source.isReading { pendingHold = hold } else { hold?.release(); dropPending() }
                 break
             }
+            hold?.release()
             pending.removeFirst()
             select(from: next.extend ? anchor : target, to: target, keepGoal: next.keepGoal)
             pendingRevision = selectionRevision
-            moved = true
+            moved = moved || next.scrolls
         }
         if moved { scrollToVisible(focus) }
     }
@@ -870,7 +922,7 @@ public struct FileTextStyle {
         if !rect.isNull, !rect.isEmpty { setNeedsDisplay(rect) }
         ruler?.textChanged()
         if !pending.isEmpty {
-            if pendingRevision == selectionRevision { runPending() } else { pending = [] }
+            if pendingRevision == selectionRevision { runPending() } else { dropPending() }
         }
         // What was read comes to accessibility too: once for all that comes
         // in one turn of the run loop.
@@ -1121,7 +1173,16 @@ public struct FileTextStyle {
         let length = source.utf16Length(ofLine: line) + (line + 1 < source.lineCount ? 1 : 0)
         return NSRange(location: start, length: length)
     }
-    public override func accessibilityRange(for index: Int) -> NSRange {
+    /// Accessibility's small reads hold what they need until its next: asked
+    /// again once told the text came, it is all there.
+    private func heldForAccessibility<T>(_ body: () -> T) -> T {
+        let (result, hold) = source.holding(body)
+        accessibilityHold?.release()
+        accessibilityHold = hold
+        return result
+    }
+    public override func accessibilityRange(for index: Int) -> NSRange { heldForAccessibility { characterRange(at: index) } }
+    private func characterRange(at index: Int) -> NSRange {
         let position = source.position(atUTF16: index)
         let length = source.utf16Length(ofLine: position.line)
         guard position.column < length else {
@@ -1139,13 +1200,14 @@ public struct FileTextStyle {
     }
     /// The character under a point: the one whose glyphs hold it, or past a
     /// line's end its "\n".
-    public override func accessibilityRange(for point: NSPoint) -> NSRange {
+    public override func accessibilityRange(for point: NSPoint) -> NSRange { heldForAccessibility { characterRange(atPoint: point) } }
+    private func characterRange(atPoint point: NSPoint) -> NSRange {
         guard let window else { return NSRange(location: NSNotFound, length: 0) }
         let local = convert(window.convertPoint(fromScreen: point), from: nil)
         let caret = position(at: local)
         let x = local.x - FileTextMetrics.left
         guard let layout = layout(caret.line), let (text, base) = surroundings(of: caret, radius: 64) else {
-            return accessibilityRange(for: source.utf16Offset(of: caret))
+            return characterRange(at: source.utf16Offset(of: caret))
         }
         var candidates: [NSRange] = []
         if caret.column < layout.length { candidates.append(text.rangeOfComposedCharacterSequence(at: caret.column - base)) }
@@ -1156,12 +1218,13 @@ public struct FileTextStyle {
                 return NSRange(location: source.utf16Start(ofLine: caret.line) + base + character.location, length: character.length)
             }
         }
-        return accessibilityRange(for: source.utf16Offset(of: caret))
+        return characterRange(at: source.utf16Offset(of: caret))
     }
     /// Where a range is drawn, on the screen. Within a line, exactly; across
     /// lines, the band from its first line to its last, the width of the view
     /// (no line between is set to measure it).
-    public override func accessibilityFrame(for range: NSRange) -> NSRect {
+    public override func accessibilityFrame(for range: NSRange) -> NSRect { heldForAccessibility { frame(for: range) } }
+    private func frame(for range: NSRange) -> NSRect {
         guard let window else { return .zero }
         let clamped = clamped(range)
         let start = source.position(atUTF16: clamped.location), end = source.position(atUTF16: NSMaxRange(clamped))

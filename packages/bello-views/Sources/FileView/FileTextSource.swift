@@ -38,16 +38,17 @@ import Foundation
     /// Changes whenever the text does: what was set or measured of the text
     /// before is not used after.
     var generation: Int { get }
-    /// Reads lines before they are asked for: what is on screen and around
-    /// it, once for each new screen. What the screen uses is kept from then.
-    func prefetch(lines: ClosedRange<Int>)
+    /// The screen shown: its lines, and the columns of them in view, told
+    /// once for each new screen. What it needs is kept until the next
+    /// screen, and what is around it read ahead.
+    func showScreen(lines: ClosedRange<Int>, columns: Range<Int>)
+    /// Runs `body`, which asks for text, and when some of what it asked for
+    /// has not come, keeps all of it until the hold returned is let go of: a
+    /// read waiting to be answered then finds all its parts at once.
+    func holding<T>(_ body: () -> T) -> (T, FileTextHold?)
     /// The text between two positions if all of it is at hand now, reading
     /// nothing; nil when some of it is not, or it is too much to build here.
     func textAtHand(from start: FileTextPosition, to end: FileTextPosition) -> String?
-    /// Brackets the screen's drawing of itself: what it asks for meanwhile
-    /// is what the screen uses, and kept while the screen is shown.
-    func beginDrawing()
-    func endDrawing()
     /// The text from one position to another, lines joined by "\n", however
     /// much has to be read first; nil if it cannot be read. On the main
     /// thread, when it is ready.
@@ -62,8 +63,8 @@ import Foundation
 extension FileTextSource {
     public var isReading: Bool { true }
     public func textAtHand(from start: FileTextPosition, to end: FileTextPosition) -> String? { text(from: start, to: end) }
-    public func beginDrawing() {}
-    public func endDrawing() {}
+    public func showScreen(lines: ClosedRange<Int>, columns: Range<Int>) {}
+    public func holding<T>(_ body: () -> T) -> (T, FileTextHold?) { (body(), nil) }
     /// A whole line, if at hand.
     public func line(_ index: Int) -> String? { text(ofLine: index, range: 0..<utf16Length(ofLine: index)) }
     /// The text from one position to another, lines joined by "\n", if all
@@ -94,6 +95,19 @@ extension FileTextSource {
     }
 }
 
+/// A read held until it is let go of (`FileTextSource.holding`): what it
+/// needs is kept meanwhile.
+@MainActor public final class FileTextHold {
+    private var letGo: (@MainActor () -> Void)?
+    public init(release: @escaping @MainActor () -> Void) { letGo = release }
+    /// Lets go; again is nothing.
+    public func release() {
+        let letGo = self.letGo
+        self.letGo = nil
+        letGo?()
+    }
+}
+
 /// A place in a file's text: a line, and a UTF-16 offset into it.
 public struct FileTextPosition: Comparable, Hashable, Sendable {
     public var line: Int
@@ -108,7 +122,6 @@ public struct FileTextPosition: Comparable, Hashable, Sendable {
 @MainActor public final class FileTextLines: FileTextSource {
     private let lines: [String]
     public var arrival: ((ClosedRange<Int>) -> Void)?
-    public func prefetch(lines: ClosedRange<Int>) {}
     public func fetch(from start: FileTextPosition, to end: FileTextPosition, completion: @escaping @MainActor (String?) -> Void) {
         completion(text(from: start, to: end))
     }
