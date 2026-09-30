@@ -54,8 +54,14 @@ extension WorkspaceModel {
     /// A key pressed while ⌘P's list is up: true when the list took it.
     /// ↑ ↓ (and ⌃P ⌃N, page up and down) choose, ↩ opens, esc and ⌘W close.
     func quickOpenKey(_ event: NSEvent) -> Bool {
-        guard quickOpen.isOpen, event.type == .keyDown else { return false }
+        guard event.type == .keyDown, let window = event.window else { return false }
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        if modifiers == .command, key == "p", canQuickOpen {
+            showQuickOpen(in: window)
+            return true
+        }
+        guard quickOpen.isOpen, quickOpen.presentationWindow === window else { return false }
         if modifiers.isEmpty {
             switch event.keyCode {
             case 125: quickOpen.move(1); return true
@@ -67,7 +73,6 @@ extension WorkspaceModel {
             default: return false
             }
         }
-        let key = event.charactersIgnoringModifiers?.lowercased()
         if modifiers == .control, key == "n" { quickOpen.move(1); return true }
         if modifiers == .control, key == "p" { quickOpen.move(-1); return true }
         if modifiers == .command, key == "w" { quickOpen.close(restoringFocus: true); return true }

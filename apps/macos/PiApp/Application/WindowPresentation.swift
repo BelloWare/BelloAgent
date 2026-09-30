@@ -189,7 +189,9 @@ extension NSWindow {
     /// A key pressed in the app, before it is delivered: true when it is taken here.
     func takesKey(_ event: NSEvent) -> Bool {
         // ⌘P's list, while it is up, has its keys before anything else.
-        if let window, event.window === window, quickOpenKey?(event) == true { return true }
+        // The workspace routes this to the presenting window, including a
+        // pop-out tab window; the local monitor sees keys in both.
+        if let window, (event.window === window || event.window is TabWindow), quickOpenKey?(event) == true { return true }
         // ⌥← and ⌥→ outside text switch versions; that event is taken.
         if switchVersion(event) { return true }
         // A tab with focus has its own ⌘ keys first (a file's ⌘F), before the menus.

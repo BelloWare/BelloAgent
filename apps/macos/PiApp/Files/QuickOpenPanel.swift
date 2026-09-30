@@ -4,9 +4,39 @@ import SwiftUI
 /// what the list is (and what the keys do). A click outside closes it; the
 /// keys it answers are taken before anything else in the window
 /// (`WorkspaceModel.quickOpenKey`).
-struct QuickOpenLayer: View {
+struct QuickOpenLayer: NSViewRepresentable {
     @ObservedObject var quickOpen: QuickOpen
     /// Opens a row's file, or the chosen one's without one.
+    let open: (String?) -> Void
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> QuickOpenAnchor { QuickOpenAnchor() }
+    func updateNSView(_ view: QuickOpenAnchor, context: Context) { context.coordinator.show(quickOpen, open: open) }
+    static func dismantleNSView(_ view: QuickOpenAnchor, coordinator: Coordinator) { coordinator.close() }
+
+    @MainActor final class Coordinator {
+        private weak var window: NSWindow?
+        private var cover: NSView?
+        func show(_ quickOpen: QuickOpen, open: @escaping (String?) -> Void) {
+            guard let target = quickOpen.presentationWindow, let content = target.contentView else { close(); return }
+            guard window !== target || cover?.superview !== content else { return }
+            close()
+            let hosted = NSHostingView(rootView: QuickOpenWindowLayer(quickOpen: quickOpen, open: open))
+            hosted.frame = content.bounds
+            hosted.autoresizingMask = [.width, .height]
+            content.addSubview(hosted, positioned: .above, relativeTo: nil)
+            window = target; cover = hosted
+        }
+        func close() { cover?.removeFromSuperview(); cover = nil; window = nil }
+    }
+}
+
+/// The workspace's anchor never takes mouse events from the main window.
+final class QuickOpenAnchor: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private struct QuickOpenWindowLayer: View {
+    @ObservedObject var quickOpen: QuickOpen
     let open: (String?) -> Void
     var body: some View {
         if quickOpen.isOpen {

@@ -59,7 +59,7 @@ extension FocusedValues {
                     .disabled(commandModel.selectedWorkspaceID == nil)
                 Button("Open Project…", action: commandModel.pickWorkspace).keyboardShortcut("o")
                 // A file of the project on screen, by part of its name.
-                Button("Open File…") { commandModel.showQuickOpen() }.keyboardShortcut("p").disabled(!commandModel.canQuickOpen)
+                Button("Open File…") { commandModel.showQuickOpen(in: NSApp.keyWindow) }.keyboardShortcut("p").disabled(!commandModel.canQuickOpen)
                 Button("Import Pi Session…", action: commandModel.importChat)
                 Button("Rename Chat…", action: commandModel.rename).disabled(!commandModel.conversationCommandsEnabled)
                 Button("Delete Chat…", action: commandModel.deleteChat).disabled(!commandModel.conversationCommandsEnabled)

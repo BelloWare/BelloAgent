@@ -83,12 +83,14 @@ import FileFinder
     private weak var previousWindow: NSWindow?
     private weak var previousResponder: NSResponder?
     private var resignObserver: NSObjectProtocol?
+    /// The window whose keyboard the list took, also where it is drawn.
+    var presentationWindow: NSWindow? { isOpen ? previousWindow : nil }
 
     // MARK: Showing and closing
 
     /// Shows the list for `project`, the keyboard taken from `window`.
     func show(_ project: Project, in window: NSWindow?) {
-        if isOpen, self.project == project { return }
+        if isOpen, self.project == project, previousWindow === window { return }
         close(restoringFocus: false)
         previousWindow = window; previousResponder = window?.firstResponder
         // Another project's files are not this one's, even for a moment.
