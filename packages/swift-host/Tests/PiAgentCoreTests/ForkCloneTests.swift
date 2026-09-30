@@ -364,6 +364,51 @@ final class ForkCloneTests: XCTestCase {
         XCTAssertGreaterThan(stored.rowsBefore, 0, "opened from it, rows before the context are not loaded")
     }
 
+    func testAForkInThePublished116CopiedFormatOpensAndReloadsAsBefore() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        var repo = URL(fileURLWithPath: #filePath); for _ in 0..<5 { repo.deleteLastPathComponent() }
+        let fixture = repo.appendingPathComponent("fixtures/native/fork-clone.jsonl")
+        let expected = try fullReplay(chat, id: forkID, path: fixture.path)
+        let path = chat.state.appendingPathComponent("legacy-fork.jsonl")
+        // The published 0.1.116 copier retained conversation records,
+        // stripped queued branch state, omitted parent cost and run state,
+        // then wrote context, origin, zero cost (without reset), and an idle
+        // state. Use the shared tool/edit/compaction fixture in that format.
+        do {
+            let journal = try SessionJournal(url: path, id: forkID, cwd: chat.root, binding: chat.profile.binding, create: true)
+            let omitted: Set<String> = [JournalRecordKind.marker, JournalRecordKind.state, JournalRecordKind.sideOrigin,
+                JournalRecordKind.forkOrigin, JournalRecordKind.contextRecovery, SessionSpend.recordType]
+            for line in try lines(fixture.path).dropFirst() {
+                let record = try JSON.parse(line)
+                guard !omitted.contains(record["customType"].text ?? "") else { continue }
+                try journal.append(record.removing(["id", "parentId", "timestamp", "nativeState"]), id: try identity(record["id"]))
+            }
+            let ids = expected.context.map(\.id)
+            let timeline = EditReplayPlan.forkTimeline(visible: expected.visible.map(\.id), boundary: ids)
+            try journal.append(["type": "custom", "customType": JSON(JournalRecordKind.context),
+                                "data": ["ids": .array(ids.map { JSON($0) }), "visibleIDs": .array(timeline.map { JSON($0) })]])
+            try journal.append(["type": "custom", "customType": JSON(JournalRecordKind.forkOrigin), "data": expected.parentInfo])
+            var spend = SessionSpend().record; spend["source"] = "fork"
+            XCTAssertTrue(spend[SessionSpend.resetKey].isNull)
+            try journal.append(["type": "custom", "customType": JSON(SessionSpend.recordType), "data": spend])
+            try journal.append(["type": "custom", "customType": JSON(JournalRecordKind.state),
+                                "data": ["active": false, "queue": [], "steering": [], "commands": [], "queuePaused": false]])
+        }
+        for pass in 0..<2 {
+            let session = try chat.session(forkID, resume: path.path)
+            try await session.loadFullHistory()
+            let history = await session.history, visible = await session.visible, context = await session.context
+            let versions = await session.versions.ledger, origin = await session.parentInfo, spend = await session.spend
+            XCTAssertEqual(history, expected.history, "open \(pass): retained and hidden rows")
+            XCTAssertEqual(visible, expected.visible, "open \(pass): displayed timeline")
+            XCTAssertEqual(context, expected.context, "open \(pass): model context")
+            XCTAssertEqual(versions, expected.versions.ledger)
+            XCTAssertEqual(origin, expected.parentInfo)
+            XCTAssertEqual(spend, SessionSpend(), "old copied forks still start with their own zero spend")
+            await session.close()
+        }
+    }
+
     /// The replay of a fork's journal, and what a fork from the same reply
     /// that was copied replays to, compared: every row, the rows shown, the
     /// context, versions, counts, spend and origin (but for when it was made).

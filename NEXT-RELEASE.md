@@ -51,9 +51,9 @@ Current owner instruction (2026-10-01): keep new development commits local until
 - [x] Bring the published 0.1.116 release metadata and validation record into `dev/next`; its build is 120. Prepare 0.1.117's version/build and regenerate the Xcode project before packaging.
 - [ ] `scripts/check-next.sh gate` passes; an hour-long soak of a Release build passes.
 - [ ] A Release build-for-testing with testability compiles `@testable import FileView` and `GitView`.
-- [ ] Forks made by 0.1.116 and earlier open exactly as before.
+- [ ] Forks made by 0.1.116 and earlier open exactly as before. ForkCloneTests now covers the published copied-journal format across open/reopen; Mac execution and a retained old-fork check remain pending.
 - [ ] The owner turns VoiceOver on in the file viewer for a minute.
-- [ ] Release notes name the fork behaviour changes (a fork opens partly loaded and fills in; an older app would show the parent's cost in new forks).
+- [x] `releases/0.1.117.html` names the fork behaviour changes (a fork opens partly loaded and fills in; an older app can show the parent's cost in new forks), alongside the file and Changes features. Owner review pending before publication.
 
 ## Open decisions for the owner
 - ⌘↩, ⌘. and ⌘F ignored while typing in a tab's text box (e.g. a commit message)?
