@@ -234,13 +234,17 @@ public actor AgentSession {
     /// A background load of the rows a fork opened without (`startHistoryFill`).
     var historyFill: HistoryFill?
     var historyFillTokens = 0
-    /// Test seam: what a background load waits on before each stage
-    /// ("replay", "prepare").
+    /// A load of the rows this chat did not load, under way (`loadOlderRows`).
+    var olderRowsLoad: Task<Void, Error>?
+    /// Test seam: what a background load, or a load of older rows, waits on
+    /// before each stage ("replay", "prepare", "index").
     var historyFillHold: (@Sendable (String) async -> Void)?
     func holdHistoryFill(_ hold: (@Sendable (String) async -> Void)?) { historyFillHold = hold }
     /// Test seams: records written behind the chat's back, and its size.
     func appendForTesting(_ records: [JSON]) throws { for record in records { try journal?.append(record) } }
     var journalSizeForTesting: UInt64? { journal?.size }
+    /// Test seam: what a streamed token does to the display.
+    func streamedForTesting() { invalidateDisplay() }
     /// Where each loaded row's content is in the journal, for the next
     /// metadata file (`JournalCheckpoint`).
     var rowSpans: [String: JournalCheckpoint.Row] = [:]

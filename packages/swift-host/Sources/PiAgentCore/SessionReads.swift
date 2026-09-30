@@ -10,19 +10,23 @@ extension AgentSession {
         return ["messages":.array(messages),"before":start>0 ? JSON(start):.null,"total":JSON(visible.count)]
     }
     /// Versioned browsing contract; older numeric callers retain their adapter.
-    public func historyWindow(_ params: JSON) throws -> JSON {
-        let lineage = presentationTimeline
+    public func historyWindow(_ params: JSON) async throws -> JSON {
         let cursor: ConversationCursor? = params["cursor"].isNull ? nil : try JSONDecoder().decode(ConversationCursor.self, from: params["cursor"].data())
-        if let cursor, cursor.incarnation != displayEpoch || cursor.lineage != lineage {
+        if let cursor, cursor.incarnation != displayEpoch || cursor.lineage != presentationTimeline {
             throw AgentError("history_changed", "This conversation changed. Reload the visible history.")
         }
         let entry = cursor?.entry ?? params["entry"].text
         // A chat opened from its metadata file learns where its older rows
-        // are the first time a page reaches past the rows it loaded.
+        // are the first time a page reaches past the rows it loaded, without
+        // holding the actor: the chat is read again after.
         if olderRows > 0, olderIndex == nil {
             let at = entry.flatMap { id in visible.firstIndex { $0.id == id } }, target = params["around"].text
             let older = params["direction"].text != "newer" && target == nil
-            if (entry != nil && at == nil) || (target.map { id in !visible.contains { $0.id == id } } ?? false) || (older && at == 0) { try loadOlderRows() }
+            if (entry != nil && at == nil) || (target.map { id in !visible.contains { $0.id == id } } ?? false) || (older && at == 0) { try await loadOlderRows() }
+        }
+        let lineage = presentationTimeline
+        if let cursor, cursor.incarnation != displayEpoch || cursor.lineage != lineage {
+            throw AgentError("history_changed", "This conversation changed. Reload the visible history.")
         }
         if let oldLineage = params["lineage"].text, oldLineage != lineage { throw AgentError("history_changed", "The conversation branch changed during source handoff") }
         return try withShownRows { shown in
@@ -67,7 +71,7 @@ extension AgentSession {
     }
     /// Complete tool arguments. Large documents use automatic IPC transfer
     /// paging; expanding a card must not cut an edit or a file's contents.
-    public func toolInput(messageID: String, callID: String) throws -> JSON {
+    public func toolInput(messageID: String, callID: String) async throws -> JSON {
         if messageID == partialID, let card = partialTools[callID] {
             // A streaming call has no document yet: its arguments are still
             // arriving as text. Say so rather than hand over unparseable JSON.
@@ -75,7 +79,7 @@ extension AgentSession {
             return ["id": JSON(callID), "messageId": JSON(messageID), "name": card["name"], "input": JSON(input),
                     "inputTruncated": card["inputTruncated"], "inputBytes": JSON(input.utf8.count), "streaming": true]
         }
-        guard let message = try retainedMessage(messageID) else { throw AgentError("message_missing", "Message is not retained") }
+        guard let message = try await retainedMessage(messageID) else { throw AgentError("message_missing", "Message is not retained") }
         guard let block = message.content.first(where: { $0["type"].text == "toolCall" && $0["id"].text == callID }) else {
             throw AgentError("tool_call_missing", "That message does not retain this tool call")
         }
@@ -83,12 +87,12 @@ extension AgentSession {
         return ["id": JSON(callID), "messageId": JSON(messageID), "name": block["name"], "input": JSON(input),
                 "inputTruncated": false, "inputBytes": JSON(input.utf8.count), "streaming": false]
     }
-    public func messageRead(id: String, field: String, offset: Int) throws -> JSON {
-        guard let message=try retainedMessage(id) else { throw AgentError("message_missing", "Message is not retained") }; return try textPage(field == "thinking" ? message.thinking : message.retainedDisplayText,offset:offset)
+    public func messageRead(id: String, field: String, offset: Int) async throws -> JSON {
+        guard let message=try await retainedMessage(id) else { throw AgentError("message_missing", "Message is not retained") }; return try textPage(field == "thinking" ? message.thinking : message.retainedDisplayText,offset:offset)
     }
     public func eventPage(since: Int?) -> JSON { let since=since ?? max(0,sequence-128); return ["events":.array(events.filter{($0["seq"].int ?? 0)>since}.prefix(128).map{$0}),"seq":JSON(sequence),"resyncRequired":JSON(since < (events.first?["seq"].int ?? 1)-1)] }
-    public func contentSearch(_ params: JSON) throws -> JSON {
-        if olderRows > 0 { try loadOlderRows() }
+    public func contentSearch(_ params: JSON) async throws -> JSON {
+        if olderRows > 0 { try await loadOlderRows() }
         let query=params["query"].text ?? "", start=try boundedInt(params["start"],maximum:100000); guard query.count <= 256 else { throw AgentError("search_limit", "Search query too long") }
         return try withShownRows { shown in
             // Rows not loaded are read back a block at a time, several at
@@ -112,8 +116,8 @@ extension AgentSession {
         guard let olderIndex else { return "\(visible.count):\(history.count)" }
         return "\(olderIndex.shown + visible.count):\(olderIndex.historyRows + history.count)"
     }
-    public func contentPage(_ params: JSON) throws -> JSON {
-        if olderRows > 0 { try loadOlderRows() }
+    public func contentPage(_ params: JSON) async throws -> JSON {
+        if olderRows > 0 { try await loadOlderRows() }
         guard params["revision"].text == contentRevision else { throw AgentError("history_changed", "History changed; refresh the selection") }
         let first=try boundedInt(params["first"],fallback:1,maximum:100000), last=try boundedInt(params["last"],maximum:100000), index=try boundedInt(params["index"],fallback:1,maximum:100000), offset=try boundedInt(params["offset"],maximum:128*1024*1024)
         return try withShownRows { shown in

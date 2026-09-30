@@ -1,11 +1,17 @@
 import XCTest
 @testable import PiAgentCore
 
-/// A gate a test opens: what waits on it goes on then.
+/// A gate a test opens: what waits on it goes on then. It counts who came.
 private actor Gate {
     private var open = false
-    func wait() async { while !open { try? await Task.sleep(nanoseconds: 2_000_000) } }
+    private(set) var entered = 0
+    func wait() async { entered += 1; while !open { try? await Task.sleep(nanoseconds: 2_000_000) } }
     func release() { open = true }
+}
+/// Whether a piece of work is done yet.
+private actor Done {
+    private(set) var done = false
+    func finish() { done = true }
 }
 
 /// A fork that opens with only its latest rows loads the rest of its history
@@ -328,6 +334,140 @@ final class HistoryFillTests: XCTestCase {
         await fork.close()
         let read = try await whole(chat, "fork-q", forkPath)
         assertSame(after, read, "from the metadata file, filled")
+    }
+
+    /// A page back past the rows a chat holds waits for the replay of its
+    /// journal off the actor (the load's, for a fork), and a send meanwhile
+    /// goes at once; the page then has the rows a full load has. So for a
+    /// fork loading its rows, and for a chat opened from its metadata file.
+    func testAPageBackWaitsOffTheActorAndASendMeanwhileGoesAtOnce() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat)
+        for fork in [true, false] {
+            let gate = Gate(), client = ScriptClient([answer("an answer meanwhile")])
+            let session: AgentSession, name: String, sessionPath: String
+            if fork {
+                let parent = try chat.session(chatID, resume: path)
+                let (result, replay) = try await parent.forked(to: "fork-r")
+                await parent.close()
+                name = "fork-r"; sessionPath = try XCTUnwrap(result["path"].text)
+                session = try chat.session(name, client: client, resume: sessionPath, prepared: replay)
+                await session.holdHistoryFill { stage in if stage == "replay" { await gate.wait() } }
+                await session.startHistoryFill()
+            } else {
+                name = chatID; sessionPath = path
+                session = try chat.session(name, client: client, resume: path)
+                await session.holdHistoryFill { stage in if stage == "replay" { await gate.wait() } }
+            }
+            let partial = await session.partialHistory
+            XCTAssertTrue(partial)
+            let first = try await session.historyWindow(["version": 2]), done = Done()
+            let page = Task { () throws -> JSON in let value = try await session.historyWindow(["version": 2, "cursor": first["older"]]); await done.finish(); return value }
+            try await eventually { await gate.entered == 1 }
+            _ = try await session.submit(Submission(commandID: "m1", turnID: "m1", text: "meanwhile"), steer: false)
+            try await eventually { await client.count == 1 }
+            try await eventually { !(await session.isRunning) }
+            let pageDone = await done.done
+            XCTAssertFalse(pageDone, "\(fork ? "fork" : "chat"): the send went while the page waited")
+            await gate.release()
+            let older = try await page.value
+            let replays = await gate.entered
+            XCTAssertEqual(replays, 1, "\(fork ? "fork" : "chat"): one replay, the load's for a fork")
+            let ids = older["messages"].list.compactMap { $0["id"].text }
+            XCTAssertFalse(ids.isEmpty, "the older rows")
+            let held = try await self.held(session)
+            await session.close()
+            let read = try await whole(chat, name, sessionPath)
+            XCTAssertEqual(held.pages, read.pages, "\(fork ? "fork" : "chat"): every page back, as a full load's")
+        }
+    }
+
+    /// The chat changes (a send) while its older rows' index is being made
+    /// off the actor: that index is not taken, and one made again is, with
+    /// what the send brought.
+    func testAnIndexMadeBeforeTheChatChangedIsMadeAgain() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat)
+        let gate = Gate(), client = ScriptClient([answer("an answer meanwhile")])
+        let session = try chat.session(chatID, client: client, resume: path)
+        await session.holdHistoryFill { stage in if stage == "index" { await gate.wait() } }
+        let first = try await session.historyWindow(["version": 2])
+        let page = Task { try await session.historyWindow(["version": 2, "cursor": first["older"]]) }
+        try await eventually { await gate.entered == 1 }
+        try await send(session, "m2", "meanwhile")
+        await gate.release()
+        _ = try await page.value
+        let made = await gate.entered
+        XCTAssertEqual(made, 2, "made again after the send")
+        let held = try await self.held(session)
+        await session.close()
+        let read = try await whole(chat, chatID, path)
+        XCTAssertEqual(held.links, read.links, "the send's links too")
+        XCTAssertEqual(held.pages, read.pages)
+    }
+
+    /// Reads that come while the older rows load wait for that load: one
+    /// replay. A streamed token meanwhile changes nothing the index names:
+    /// it is taken as made. A cursor from another incarnation is refused at
+    /// once, before any replay.
+    func testReadsShareOneLoadAndStreamingDoesNotUndoIt() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat)
+        let replayGate = Gate(), indexGate = Gate()
+        let session = try chat.session(chatID, resume: path)
+        await session.holdHistoryFill { stage in
+            if stage == "replay" { await replayGate.wait() }
+            if stage == "index" { await indexGate.wait() }
+        }
+        let first = try await session.historyWindow(["version": 2])
+        var stale = first["older"]; stale["incarnation"] = "another"
+        let staleDone = Done()
+        let staleCall = Task { () -> String? in
+            defer { Task { await staleDone.finish() } }
+            do { _ = try await session.historyWindow(["version": 2, "cursor": stale]); return nil }
+            catch let error as AgentError { return error.code } catch { return "other" }
+        }
+        try await eventually {
+            let done = await staleDone.done, entered = await replayGate.entered
+            return done || entered > 0
+        }
+        let replaysBefore = await replayGate.entered
+        XCTAssertEqual(replaysBefore, 0, "refused before any replay")
+        if replaysBefore > 0 { await replayGate.release(); await indexGate.release(); _ = await staleCall.value; return }
+        let code = await staleCall.value
+        XCTAssertEqual(code, "history_changed")
+        let pages = (0..<3).map { _ in Task { try await session.historyWindow(["version": 2, "cursor": first["older"]]) } }
+        try await eventually { await replayGate.entered >= 1 }
+        await replayGate.release()
+        try await eventually { await indexGate.entered >= 1 }
+        await session.streamedForTesting()
+        await indexGate.release()
+        for page in pages { _ = try await page.value }
+        let replays = await replayGate.entered, indexes = await indexGate.entered
+        XCTAssertEqual(replays, 1, "one replay for every read")
+        XCTAssertEqual(indexes, 1, "streaming did not undo the index")
+        await session.close()
+    }
+
+    /// A chat whose older records no longer read: a page back fails, not
+    /// replaying on the actor, and the chat, still holding its latest rows,
+    /// goes on working.
+    func testAPageBackOverDamagedRecordsFailsAndTheChatGoesOn() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat)
+        var bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        let marker = Data(#""role":"user""#.utf8), range = try XCTUnwrap(bytes.range(of: marker))
+        bytes.replaceSubrange(range, with: Data(#""role":"usex""#.utf8))
+        try bytes.write(to: URL(fileURLWithPath: path))
+        let session = try chat.session(chatID, client: ScriptClient([answer("still working")]), resume: path)
+        let first = try await session.historyWindow(["version": 2])
+        do { _ = try await session.historyWindow(["version": 2, "cursor": first["older"]]); XCTFail("the damaged record fails the page") } catch { }
+        let partial = await session.partialHistory
+        XCTAssertTrue(partial, "still holding its latest rows")
+        try await send(session, "d1", "does it still work")
+        let rows = await session.visible.map(\.id)
+        XCTAssertTrue(rows.contains("d1"))
+        await session.close()
     }
 
     /// Through the host: a fork opened with its latest rows loads the rest,

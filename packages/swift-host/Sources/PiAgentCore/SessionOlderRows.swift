@@ -108,6 +108,14 @@ private final class Spent: @unchecked Sendable {
     func release() { replay = nil }
 }
 
+/// A value handed to another thread: whoever takes it out owns it, and the
+/// box left behind holds nothing.
+final class Handoff<Value>: @unchecked Sendable {
+    private var value: Value?
+    init(_ value: consuming Value) { self.value = value }
+    func take() -> Value? { let taken = value; value = nil; return taken }
+}
+
 /// Anything large (a whole history, a replay of every row) handed to another
 /// thread to be let go of there: letting go of every row takes a while, and
 /// the actor has others waiting on it. The caller hands it over (`consume`),
@@ -153,28 +161,84 @@ extension AgentSession {
         return message
     }
 
-    /// Learns where the rows this chat did not load are (`olderIndex`), once.
-    /// A replay that does not end in the rows this chat holds loads every row
-    /// instead, as before.
-    func loadOlderRows() throws {
-        guard partialHistory, olderIndex == nil, journal != nil else { return }
-        var spent: JournalReplay?
-        if !(try indexOlderRows(&spent)) { try ensureFullHistory() }
-        // The replay's rows are let go of on another thread, and their pages
-        // returned to the system after them, while the reader has its page.
-        let replay = Spent(spent); spent = nil
-        DispatchQueue.global(qos: .utility).async { replay.release(); malloc_zone_pressure_relief(nil, 0) }
+    /// Learns where the rows this chat did not load are (`olderIndex`), once,
+    /// without holding the actor: the whole journal's replay is the
+    /// background load's when there is one (`startHistoryFill`), else one
+    /// made now off the actor; the index is made off the actor from what the
+    /// chat holds, and taken only if the chat is still as it was (else made
+    /// again). A replay that does not end in the rows this chat holds loads
+    /// every row instead, as before, also off the actor.
+    func loadOlderRows() async throws {
+        // One load at a time: reads that come meanwhile wait for it.
+        if let pending = olderRowsLoad { return try await pending.value }
+        let load = Task { try await self.loadOlderRowsOnce() }
+        olderRowsLoad = load
+        defer { olderRowsLoad = nil }
+        try await load.value
+    }
+    private func loadOlderRowsOnce() async throws {
+        for _ in 0..<8 {
+            guard partialHistory, olderIndex == nil, !closed, journal != nil else { return }
+            // The replay goes to the worker in a box it empties: the actor
+            // holds no reference to it after.
+            let replay = Handoff(try await wholeJournalReplay())
+            guard partialHistory, olderIndex == nil, !closed, let journal, let identity = journal.fileIdentity, let header = journal.headerCheck else {
+                Discarded.release(replay.take()); return
+            }
+            let size = journal.size, generation = displayGeneration, url = journal.url, marker = journal.markerCheck, id = self.id
+            let loadedVisible = visible.map(\.id), loadedHistory = Set(history.map(\.id)), historyCount = history.count, older = olderRows
+            let live = history, liveTasks = recentTaskPresentations, hold = historyFillHold
+            let made = await Task.detached(priority: .userInitiated) { () -> Result<OlderRowsMade, Error> in
+                if let hold { await hold("index") }
+                return Result {
+                    guard let start = replay.take() else { throw AgentError("history_changed", "The replay was already taken") }
+                    let whole = try Self.replayPrefix(url: url, identity: identity, through: size, id: id, header: header, marker: marker, from: start)
+                    let replayed = try whole.finished()
+                    if let index = try Self.olderRows(replayed, url: url, loadedVisible: loadedVisible, loadedHistory: loadedHistory, historyCount: historyCount, older: older) {
+                        return .index(index, replayed.pendingRequestLinks, replayed.recentTaskPresentations, Set(replayed.visible.map(\.id)))
+                    }
+                    return .whole(Self.fullHistory(replayed, live: live, liveTasks: liveTasks), whole)
+                }
+            }.value
+            guard partialHistory, olderIndex == nil, !closed, self.journal?.size == size else { Discarded.release(consume made); continue }
+            switch consume made {
+            case .failure(let error): throw error
+            case let .success(.index(index, links, tasks, shown)):
+                // The index names where the rows before the ones held are:
+                // it holds while those rows and the journal are as they were,
+                // whatever is streamed meanwhile.
+                guard visible.count == loadedVisible.count, history.count == historyCount,
+                      visible.first?.id == loadedVisible.first, visible.last?.id == loadedVisible.last else {
+                    Discarded.release(consume index); Discarded.release(consume links); Discarded.release(consume shown); continue
+                }
+                olderIndex = index
+                // What loading every row brings with it, as a full load does.
+                pendingRequestLinks = links
+                recentTaskPresentations = mergedTasks(tasks, shown: shown)
+                Discarded.release(consume shown)
+            case let .success(.whole(full, replay)):
+                // Every row, with the live versions of those held: only if none changed.
+                guard displayGeneration == generation else { Discarded.release(consume full); Discarded.release(consume replay); continue }
+                commitFullHistory(full, through: size); durable = replay
+            }
+            return
+        }
+        throw AgentError("history_changed", "The conversation kept changing while its older rows loaded. Try again.")
+    }
+    /// What `loadOlderRows` makes off the actor.
+    enum OlderRowsMade: Sendable {
+        case index(OlderRows, [String: [String]], [TaskPresentationRecord], Set<String>)
+        case whole(FullHistory, JournalReplayConsumer)
     }
 
-    private func indexOlderRows(_ spent: inout JournalReplay?) throws -> Bool {
-        guard let journal else { return false }
-        spent = try Self.replay(journal, url: journal.url, id: id, binding: profile.binding, spendTracked: spendTracked, resume: false)
-        guard let replayed = spent else { return false }
-        let shown = replayed.visible.count - visible.count
-        guard shown == olderRows, zip(replayed.visible[shown...], visible).allSatisfy({ $0.id == $1.id }) else { return false }
-        let loaded = Set(history.map(\.id))
-        let unloaded = replayed.history.filter { !loaded.contains($0.id) }
-        guard replayed.history.count - unloaded.count == history.count, let file = try? FileHandle(forReadingFrom: journal.url) else { return false }
+    /// Where the rows a chat holding `loadedVisible` and `loadedHistory` did
+    /// not load are, from a replay of its whole journal; nil when the replay
+    /// does not end in those rows.
+    static func olderRows(_ replayed: JournalReplay, url: URL, loadedVisible: [String], loadedHistory: Set<String>, historyCount: Int, older: Int) throws -> OlderRows? {
+        let shown = replayed.visible.count - loadedVisible.count
+        guard shown == older, zip(replayed.visible[shown...], loadedVisible).allSatisfy({ $0.id == $1 }) else { return nil }
+        let unloaded = replayed.history.filter { !loadedHistory.contains($0.id) }
+        guard replayed.history.count - unloaded.count == historyCount, let file = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? file.close() }
         var index = OlderRows()
         // Only a row with a kind is ever changed after its record is read
@@ -190,7 +254,7 @@ extension AgentSession {
         index.shown = shown
         for message in unloaded where index.positions[message.id] == nil { add(message) }
         let descriptor = file.fileDescriptor
-        let same = inParallel(checked.count) { Self.storedRow(checked[$0].span, descriptor: descriptor) == checked[$0].message }
+        let same = inParallel(checked.count) { storedRow(checked[$0].span, descriptor: descriptor) == checked[$0].message }
         for (row, same) in zip(checked, same) where same != true { index.kept[row.message.id] = row.message }
         let tools = ToolHistoryIndex(replayed.history)
         for message in unloaded where message.role == "assistant" {
@@ -198,11 +262,7 @@ extension AgentSession {
             index.results[message.id] = pairs.mapValues { replayed.history[$0].id }
         }
         index.historyRows = unloaded.count
-        olderIndex = index
-        // What loading every row brings with it, as `ensureFullHistory` does.
-        pendingRequestLinks = replayed.pendingRequestLinks
-        recentTaskPresentations = mergedTasks(replayed.recentTaskPresentations, shown: Set(replayed.visible.map(\.id)))
-        return true
+        return index
     }
 
     /// Runs a read over the shown rows. A row not where the replay found it
@@ -220,10 +280,11 @@ extension AgentSession {
     }
 
     /// A row of the whole history, loaded or not.
-    func retainedMessage(_ id: String) throws -> ChatMessage? {
+    func retainedMessage(_ id: String) async throws -> ChatMessage? {
         if let message = history.first(where: { $0.id == id }) { return message }
         guard partialHistory else { return nil }
-        try loadOlderRows()
+        try await loadOlderRows()
+        if let message = history.first(where: { $0.id == id }) { return message }
         return try withShownRows { try $0.message(id) }
     }
 

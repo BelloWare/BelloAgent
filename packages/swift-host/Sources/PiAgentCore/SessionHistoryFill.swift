@@ -39,6 +39,24 @@ extension AgentSession {
         }
     }
 
+    /// The replay of the whole journal, or of as much of it as a load under
+    /// way read, made off the actor: the background load's when there is
+    /// one, else one made now. The caller takes it on to the journal's end.
+    func wholeJournalReplay() async throws -> JournalReplayConsumer {
+        if let fill = historyFill {
+            if let replay = fill.replay { return replay }
+            if let replay = try? await fill.task.value { return replay }
+        }
+        guard let journal, let header = journal.headerCheck, let identity = journal.fileIdentity else {
+            throw AgentError("session_unavailable", "The conversation is not open")
+        }
+        let url = journal.url, size = journal.size, id = self.id, marker = journal.markerCheck, hold = historyFillHold
+        return try await Task.detached(priority: .userInitiated) { () throws -> JournalReplayConsumer in
+            if let hold { await hold("replay") }
+            return try Self.replayPrefix(url: url, identity: identity, through: size, id: id, header: header, marker: marker)
+        }.value
+    }
+
     /// Stops the load under way; what it made is not taken.
     public func cancelHistoryFill() {
         guard let fill = historyFill else { return }
