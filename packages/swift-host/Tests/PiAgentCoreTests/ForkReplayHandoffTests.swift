@@ -10,9 +10,11 @@ final class ForkReplayHandoffTests: XCTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile, resources: Resources, traces: TraceStore
         func session(_ id: String, replies: [ModelReply] = [], resume: String? = nil, prepared: JournalReplay? = nil) throws -> AgentSession {
-            try AgentSession(id: id, profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: resources,
-                             client: ScriptClient(replies), tools: RecordingTools(), traces: traces, resumePath: resume, prepared: prepared,
-                             autoCompaction: false)
+            // Everything but the latest turn is summarized when compacted.
+            var policy = CompactionPolicy(); policy.keepRecentTokens = 1
+            return try AgentSession(id: id, profile: profile, apiKey: "fixture", cwd: root, directory: state, readOnly: false, resources: resources,
+                                    client: ScriptClient(replies), tools: RecordingTools(), traces: traces, resumePath: resume, prepared: prepared,
+                                    autoCompaction: false, compactionPolicy: policy)
         }
     }
     private func chat() throws -> Chat {
@@ -27,8 +29,8 @@ final class ForkReplayHandoffTests: XCTestCase {
     /// A chat with a little of everything a long one has.
     private func source(_ chat: Chat) async throws -> AgentSession {
         let session = try chat.session("source", replies: [
-            toolReply(["first", "second"]), answer("after the tools"),
-            answer("answer two"),
+            toolReply(["first", "second"]), answer(String(repeating: "after the tools ", count: 400)),
+            answer(String(repeating: "answer two ", count: 400)),
             answer("Summary of everything so far."),
             answer("answer three"), answer("the original answer"), answer("the edited answer"),
             toolReply(["first"]), answer("the last answer"),
@@ -42,6 +44,13 @@ final class ForkReplayHandoffTests: XCTestCase {
         _ = try await session.edit(fromMessageID: "u4", input: Submission(commandID: "u4b", turnID: "u4b", text: "the edited question"))
         try await eventually { !(await session.isRunning) }
         try await send(session, "u5", "one more with a tool")
+        let kinds = await session.history.filter { $0.role == "assistant" }.map(\.text)
+        XCTAssertEqual(kinds.last, "the last answer", "every reply was used")
+        let sessionPath = await session.path
+        let reader = try JournalRecordReader(URL(fileURLWithPath: try XCTUnwrap(sessionPath))); _ = try reader.next()
+        var shaping: [String] = []
+        while let record = try reader.next() { if let type = record["type"].text, ["compaction", "branch"].contains(type) { shaping.append(type) } }
+        XCTAssertEqual(shaping, ["compaction", "branch"], "the chat compacted, then edited")
         return session
     }
 

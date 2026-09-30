@@ -76,13 +76,8 @@ extension AgentSession {
             // and the same context a request sends, but the open's context
             // also keeps rows no request sends, such as an interrupted reply's
             // partial, until a record resets it (ReplayParityTests).
-            var state=try ConversationReplay()
-            do {
-                let reader=try journal.recordReader(); var index=0
-                while let record=try reader.next() {
-                    if index <= cutoff { try state.consume(record) }; index += 1
-                }
-            }
+            let state: ConversationReplay
+            do { state=try ConversationReplay(upTo: cutoff, in: journal.recordReader()) }
             catch { throw AgentError("fork_target", "The conversation up to that reply cannot be rebuilt: \(error.localizedDescription)") }
             contextIDs=state.context.map(\.id)
             timeline=EditReplayPlan.forkTimeline(visible:state.visible.map(\.id),boundary:contextIDs)
@@ -108,13 +103,13 @@ extension AgentSession {
             let reader=try journal.recordReader(); var index=0
             func copied(from lineStart: UInt64, length: Int) { if hydrating, let span=prepared.lastAppend { sourcePlaces[span.offset]=(lineStart, length) } }
             while true {
+                // The records past the reply a fork ends at are neither
+                // copied nor read again: forkPoint has read them.
+                if let end, index > end { break }
                 let lineStart=reader.completeBytes
                 guard let line=try reader.nextLine() else { break }
                 if line.isEmpty { continue }
                 defer { index += 1 }
-                // Past the reply a fork ends at, each record is still read in
-                // full, as it always was: the journal is checked to its end.
-                if let end, index > end { _ = try JSON.parse(line); continue }
                 // The record's kind and id, read without building it; a line
                 // the scan cannot read plainly is parsed. The thousands of
                 // run-state records a long chat has are left out, each still
@@ -142,6 +137,7 @@ extension AgentSession {
                 copied(from:lineStart,length:line.count)
                 try replayWritten()
             }
+            try reader.checkUnchanged()
             if hydrating {
                 // Every record copied: the chat's whole history, whose shown
                 // rows the fork's timeline is cut from.
@@ -170,10 +166,24 @@ extension AgentSession {
     /// its whole tool batch. A batch still running is refused; one a crash
     /// left without results is kept, and the fork records their outcome as
     /// unknown when it opens, as any reopened chat does.
+    ///
+    /// Every record to the journal's end is read, and one the parser refuses
+    /// fails the fork with its error. Only the reply and the messages after it
+    /// while its batch runs are built; any other record is read for its kind
+    /// and id alone and checked to be JSON the parser takes (`JSONSyntax`).
     func forkPoint(_ messageID: String, in reader: JournalRecordReader) throws -> Int {
         var index=0, start: Int?, end=0, pending=Set<String>(), batchFinished=false
-        while let record=try reader.next() {
+        while let line=try reader.nextLine() {
+            if line.isEmpty { continue }
             defer { index += 1 }
+            // The scan answers only when a record's id and type are plainly
+            // the parser's (not `stateTail`, which reads a run state's own
+            // from its end); any other record is built.
+            if let fields=JournalLineScan.fields(line) {
+                let read = start == nil ? fields.type == "message" && fields.id == messageID : !pending.isEmpty && !batchFinished && fields.type == "message"
+                if !read { if !JSONSyntax.plainlyValid(line) { _ = try JSON.parse(line) }; continue }
+            }
+            let record=try JSON.parse(line)
             if start == nil {
                 guard record["type"].text == "message", record["id"].text == messageID else { continue }
                 start=index; end=index
