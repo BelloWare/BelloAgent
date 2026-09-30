@@ -11,17 +11,24 @@ import PackageDescription
 //
 // GitView: a repository's changes, history and diffs, read with git, watched
 // for changes, and the diff drawn by an AppKit table.
+//
+// FileFinder: a project's files listed (as git lists them, or walked as its
+// ignore files say) and found by part of their name, away from the main
+// thread.
 let package = Package(
     name: "BelloViews",
     platforms: [.macOS(.v13)],
     products: [
         .library(name: "BelloFileView", targets: ["FileView"]),
         .library(name: "BelloGitView", targets: ["GitView"]),
+        .library(name: "BelloFileFinder", targets: ["FileFinder"]),
     ],
     targets: [
         .target(name: "FileView"),
         .testTarget(name: "FileViewTests", dependencies: ["FileView"]),
         .target(name: "GitView"),
         .testTarget(name: "GitViewTests", dependencies: ["GitView"]),
+        .target(name: "FileFinder"),
+        .testTarget(name: "FileFinderTests", dependencies: ["FileFinder"]),
     ]
 )

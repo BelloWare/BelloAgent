@@ -9,6 +9,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// publishing on their own (`TabHost`). Kept across launches in the app;
     /// in tests, nothing is kept.
     let tabs = TabHost(defaults: ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard)
+    /// ⌘P's list: its own to publish, so the window is not drawn again for it.
+    let quickOpen = QuickOpen()
     /// Bumped by any change to the list, so views can cache derived labels
     /// instead of rebuilding them on every redraw.
     private(set) var workspacesRevision = 0

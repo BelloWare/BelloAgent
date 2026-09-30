@@ -35,7 +35,7 @@ enum FileProjectState: Equatable {
 
     /// The key a file's tab is found by: one tab a file, whichever path
     /// reached it.
-    static func key(for url: URL) -> String { url.standardizedFileURL.resolvingSymlinksInPath().path }
+    nonisolated static func key(for url: URL) -> String { url.standardizedFileURL.resolvingSymlinksInPath().path }
 
     init(url: URL, projectID: String?, lines: ClosedRange<Int>? = nil) {
         let key = FileTab.key(for: url), file = URL(fileURLWithPath: key)
@@ -248,7 +248,7 @@ enum FileProjectState: Equatable {
     }
     private func updateSymbol() { symbol = missingReason == nil ? Self.symbol(for: url) : "exclamationmark.triangle" }
 
-    static func symbol(for url: URL) -> String {
+    nonisolated static func symbol(for url: URL) -> String {
         switch url.pathExtension.lowercased() {
         case "swift", "js", "mjs", "ts", "tsx", "jsx", "py", "rb", "go", "rs", "c", "h", "m", "mm", "cpp", "hpp", "java", "kt", "sh", "zsh",
              "json", "yml", "yaml", "toml", "css", "html", "xml", "sql":

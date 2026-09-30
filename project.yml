@@ -48,6 +48,8 @@ targets:
         product: BelloFileView
       - package: BelloViews
         product: BelloGitView
+      - package: BelloViews
+        product: BelloFileFinder
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.belloware.PiApp

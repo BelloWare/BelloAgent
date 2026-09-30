@@ -23,6 +23,9 @@ struct WindowChrome: NSViewRepresentable {
     /// ⌘W: closes the tab the window's pane shows, if it shows one. True
     /// when it closed one.
     var closeTab: (@MainActor () -> Bool)? = nil
+    /// A key for ⌘P's list while it is up, before anything else: true when
+    /// the list took it.
+    var quickOpenKey: (@MainActor (NSEvent) -> Bool)? = nil
     func makeCoordinator() -> WindowPresentationController { WindowPresentationController(defaults: .standard) }
     func makeNSView(context: Context) -> WindowChromeView {
         let view = WindowChromeView()
@@ -35,6 +38,7 @@ struct WindowChrome: NSViewRepresentable {
         context.coordinator.focusedSessionID = focusedSessionID
         context.coordinator.stepVersion = stepVersion
         context.coordinator.closeTab = closeTab
+        context.coordinator.quickOpenKey = quickOpenKey
         context.coordinator.attach(view.window, chrome: view)
     }
     static func dismantleNSView(_ view: WindowChromeView, coordinator: WindowPresentationController) { coordinator.detach() }
@@ -184,6 +188,8 @@ extension NSWindow {
     }
     /// A key pressed in the app, before it is delivered: true when it is taken here.
     func takesKey(_ event: NSEvent) -> Bool {
+        // ⌘P's list, while it is up, has its keys before anything else.
+        if let window, event.window === window, quickOpenKey?(event) == true { return true }
         // ⌥← and ⌥→ outside text switch versions; that event is taken.
         if switchVersion(event) { return true }
         // A tab with focus has its own ⌘ keys first (a file's ⌘F), before the menus.
@@ -234,6 +240,7 @@ extension NSWindow {
         return closeTab()
     }
     var closeTab: (@MainActor () -> Bool)?
+    var quickOpenKey: (@MainActor (NSEvent) -> Bool)?
     /// −1 for ⌥←, +1 for ⌥→, nil for any other key or modifier.
     static func versionStep(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> Int? {
         guard modifiers.intersection([.command, .control, .shift, .option]) == .option else { return nil }
