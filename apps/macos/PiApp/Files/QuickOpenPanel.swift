@@ -158,11 +158,12 @@ struct QuickOpenPanel: View {
     }
 
     /// What the list is, or why it is empty, and what the keys do.
-    private var footerText: String {
+    var footerText: String {
         let name = quickOpen.project?.name ?? "the project"
         switch quickOpen.status {
         case .untrusted: return "\(name) is not trusted, so its files are not listed."
-        case .failed(let reason): return "The files in \(name) could not be listed: \(reason)"
+        case .failed(let reason):
+            return quickOpen.hasListing ? "List as last read. Refresh failed: \(reason)" : "The files in \(name) could not be listed: \(reason)"
         case .listing where quickOpen.rows.isEmpty: return "Finding the files in \(name)…"
         default: break
         }

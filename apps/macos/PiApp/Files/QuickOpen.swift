@@ -72,6 +72,9 @@ import FileFinder
     private var finders: [(key: String, finder: FileFinder)] = []
     private static let finderLimit = 2
     private var index: FileFinderIndex?
+    var hasListing: Bool { index != nil }
+    private let listingLimits: FileListingLimits
+    private let refreshListing: @Sendable (FileFinder) async -> (FileFinderIndex?, String?)
     private var generation = 0
     private var searching: SearchStop?
     private var listing: Task<Void, Never>?
@@ -88,6 +91,15 @@ import FileFinder
     private var resignObserver: NSObjectProtocol?
     /// The window whose keyboard the list took, also where it is drawn.
     var presentationWindow: NSWindow? { isOpen ? previousWindow : nil }
+
+    init(limits: FileListingLimits = FileListingLimits(),
+         refreshListing: @escaping @Sendable (FileFinder) async -> (FileFinderIndex?, String?) = { finder in
+             let fresh = await finder.refreshed()
+             return (fresh, await finder.failure)
+         }) {
+        listingLimits = limits
+        self.refreshListing = refreshListing
+    }
 
     // MARK: Showing and closing
 
@@ -126,10 +138,11 @@ import FileFinder
             let latest = await finder.latest
             guard let self, !Task.isCancelled, self.isOpen, self.project == project else { return }
             if let latest { self.adopt(latest) }
-            let fresh = await finder.refreshed()
+            let (fresh, failure) = await self.refreshListing(finder)
             guard !Task.isCancelled, self.isOpen, self.project == project else { return }
             if let fresh { self.adopt(fresh) }
-            else { self.status = .failed(await finder.failure ?? "The project's files could not be listed.") }
+            if let failure { self.status = .failed(failure) }
+            else if fresh == nil { self.status = .failed("The project's files could not be listed.") }
         }
     }
 
@@ -210,7 +223,7 @@ import FileFinder
             finders.append(entry)
             return entry.finder
         }
-        let finder = FileFinder(roots: project.roots)
+        let finder = FileFinder(roots: project.roots, limits: listingLimits)
         finders.append((key, finder))
         // The oldest go, and their indexes with them.
         while finders.count > Self.finderLimit { finders.removeFirst() }
