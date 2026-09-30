@@ -38,16 +38,12 @@ final class GitPanelWidthTests: GitPanelTestCase {
     /// Where an accessibility element that SwiftUI draws is, in its window.
     @MainActor private func element(_ identifier: String, in window: NSWindow) -> NSRect? {
         var queue: [Any] = [window.contentView as Any], visited = 0
-        var identifiers: [String] = [], kinds: Set<String> = []
         while !queue.isEmpty, visited < 20_000 {
             let next = queue.removeFirst(); visited += 1
-            kinds.insert(String(describing: type(of: next)))
             guard let element = next as? NSAccessibilityProtocol else { continue }
             if element.accessibilityIdentifier() == identifier { return window.convertFromScreen(element.accessibilityFrame()) }
-            if !element.accessibilityIdentifier().isEmpty { identifiers.append(element.accessibilityIdentifier()) }
             queue += element.accessibilityChildren() ?? []
         }
-        print("AXDEBUG visited \(visited) kinds \(kinds.sorted().prefix(30)) identifiers \(identifiers.prefix(60))")
         return nil
     }
     @MainActor private func resize(_ window: NSWindow, width: CGFloat, height: CGFloat? = nil) async throws {
