@@ -130,27 +130,47 @@ extension AgentSession {
     /// file loaded. The rows' places are in this chat's own journal.
     func adoptFullHistory(_ replayed: JournalReplay) {
         guard let journal else { return }
-        let live = Dictionary(history.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
-        history = replayed.history.map { live[$0.id] ?? $0 }
-        visible = replayed.visible.map { live[$0.id] ?? $0 }
-        versions = replayed.versions
-        pendingRequestLinks = replayed.pendingRequestLinks
-        rowSpans = replayed.rowSpans
-        recentTaskPresentations = mergedTasks(replayed.recentTaskPresentations, shown: Set(visible.map(\.id)))
-        toolHistory = ToolHistoryIndex(history)
-        olderRows = 0; partialHistory = false; checkpointLineage = nil; cachedPresentationTimeline = nil; olderIndex = nil
+        commitFullHistory(Self.fullHistory(replayed, live: history, liveTasks: recentTaskPresentations), through: journal.size)
         // The replay kept from the open held only the rows it loaded; one of
         // the whole journal is made when next asked for (`durableReplay`).
         durable = nil
-        spansScannedTo = journal.size
+    }
+    /// The chat's rows from a replay of its whole journal, the live versions
+    /// of the rows it holds kept, and what goes with them: made apart from
+    /// the chat (`commitFullHistory` takes them), so a background load can
+    /// make them off the actor.
+    struct FullHistory: Sendable {
+        var history: [ChatMessage], visible: [ChatMessage], versions: MessageVersionStore
+        var pendingRequestLinks: [String: [String]], rowSpans: [String: JournalCheckpoint.Row]
+        var recentTaskPresentations: [TaskPresentationRecord], toolHistory: ToolHistoryIndex
+    }
+    static func fullHistory(_ replayed: JournalReplay, live: [ChatMessage], liveTasks: [TaskPresentationRecord]) -> FullHistory {
+        let byID = Dictionary(live.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        let history = replayed.history.map { byID[$0.id] ?? $0 }, visible = replayed.visible.map { byID[$0.id] ?? $0 }
+        return FullHistory(history: history, visible: visible, versions: replayed.versions, pendingRequestLinks: replayed.pendingRequestLinks,
+                           rowSpans: replayed.rowSpans, recentTaskPresentations: mergedTasks(replayed.recentTaskPresentations, live: liveTasks, shown: Set(visible.map(\.id))),
+                           toolHistory: ToolHistoryIndex(history))
+    }
+    /// Takes the chat's whole history in one step, with nothing to wait on.
+    func commitFullHistory(_ full: FullHistory, through size: UInt64) {
+        history = full.history; visible = full.visible; versions = full.versions
+        pendingRequestLinks = full.pendingRequestLinks; rowSpans = full.rowSpans
+        recentTaskPresentations = full.recentTaskPresentations; toolHistory = full.toolHistory
+        olderRows = 0; partialHistory = false; checkpointLineage = nil; cachedPresentationTimeline = nil; olderIndex = nil
+        spansScannedTo = size
         invalidateDisplay(allRows: true)
+        // Every row is here now: a background load of them is not needed.
+        cancelHistoryFill()
     }
     /// The task records of a replay of the whole journal, with the live ones
     /// kept: those of shown rows, the latest 64.
     func mergedTasks(_ replayed: [TaskPresentationRecord], shown: Set<String>) -> [TaskPresentationRecord] {
-        let liveTasks = Dictionary(recentTaskPresentations.map { ($0.key, $0) }, uniquingKeysWith: { _, latest in latest })
+        Self.mergedTasks(replayed, live: recentTaskPresentations, shown: shown)
+    }
+    static func mergedTasks(_ replayed: [TaskPresentationRecord], live: [TaskPresentationRecord], shown: Set<String>) -> [TaskPresentationRecord] {
+        let liveTasks = Dictionary(live.map { ($0.key, $0) }, uniquingKeysWith: { _, latest in latest })
         var tasks = replayed.map { liveTasks[$0.key] ?? $0 }
-        for task in recentTaskPresentations where !tasks.contains(where: { $0.key == task.key }) { tasks.append(task) }
+        for task in live where !tasks.contains(where: { $0.key == task.key }) { tasks.append(task) }
         tasks.removeAll { $0.lastSourceID.map { !shown.contains($0) } ?? true }
         if tasks.count > 64 { tasks.removeFirst(tasks.count - 64) }
         return tasks

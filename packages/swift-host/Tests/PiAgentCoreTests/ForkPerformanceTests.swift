@@ -164,6 +164,21 @@ final class ForkPerformanceTests: XCTestCase {
         }()
         // Fork identities no longer than the chat's, as the app's are.
         XCTAssertLessThanOrEqual("ha\(99)".count, "long".count)
+        // A local gateway for the chat's requests: it answers each one, and
+        // writes down when its request line and headers arrived.
+        let gatewayRoot = root.appendingPathComponent("gateway")
+        try FileManager.default.createDirectory(at: gatewayRoot, withIntermediateDirectories: true)
+        // On the port the fixture profile names: the journal is bound to it.
+        let gateway = try await PythonGateway.start(source: Self.arrivalGateway, root: gatewayRoot, arguments: ["12345"]); defer { gateway.stop() }
+        var gatewayProfile = try fixtureProfile().raw
+        XCTAssertEqual(gatewayProfile["baseUrl"].text, "http://127.0.0.1:\(gateway.port)/v1")
+        // A window the chat's context fits in: a send goes straight out, with
+        // no compaction first. The window is not part of the journal's binding.
+        gatewayProfile["contextWindow"] = 4_000_000
+        func gatewayArrivals() throws -> [Double] {
+            guard let text = try? String(contentsOf: gatewayRoot.appendingPathComponent("arrivals.txt"), encoding: .utf8) else { return [] }
+            return text.split(separator: "\n").compactMap { Double($0) }
+        }
         let repeats = environment["PI_PERF_REPEAT"].flatMap(Int.init) ?? 2
         for attempt in 1...repeats {
             // The same work in every build, as a control: reading the file,
@@ -196,16 +211,20 @@ final class ForkPerformanceTests: XCTestCase {
             await atFork.close(); await parent.close()
             for file in [forkPath, atPath] { for suffix in ["", ".lock", ".meta"] { try? FileManager.default.removeItem(atPath: file + suffix) } }
             // End to end, as the app asks: the chat just opened from its
-            // metadata file, then `session.fork`, which also opens the fork.
-            // Before a fork from a reply, the chat scrolls to it, as the one
-            // choosing it did; after each fork, the chat's first scroll to its
-            // oldest reply, and the fork's, and the disk the fork took.
-            for (label, point) in [("host-whole", nil), ("host-at", target)] as [(String, String?)] {
-                let profile = try fixtureProfile()
+            // metadata file (or, "-full", whole), then `session.fork`, which
+            // also opens the fork. Before a fork from a reply, the chat
+            // scrolls to it, as the one choosing it did. After each fork: the
+            // fork's background load of its older rows, until it holds every
+            // row; the chat's first scroll to its oldest reply, and the fork's;
+            // and the disk the fork took.
+            for (label, point, whole) in [("host-whole", nil, false), ("host-at", target, false), ("host-at-full", target, true)] as [(String, String?, Bool)] {
                 let host = NativeHostService(emit: { _ in })
-                _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(directory.path)])
-                _ = try await host.command("session.open", sessionID: "long", params: ["profile": profile.raw, "apiKey": "fixture", "path": JSON(path)])
-                let forkID = (point == nil ? "hw" : "ha") + "\(attempt)"
+                _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(directory.path), "resources": ["codexHome": JSON(root.appendingPathComponent("codex").path)]])
+                let meta = JournalCheckpoint.read(for: journal)
+                if whole { JournalCheckpoint.remove(for: journal) }
+                _ = try await host.command("session.open", sessionID: "long", params: ["profile": gatewayProfile, "apiKey": "fixture", "path": JSON(path)])
+                if whole { JournalCheckpoint.remove(for: journal); try meta?.write(for: journal) }
+                let forkID = (point == nil ? "hw" : whole ? "hf" : "ha") + "\(attempt)"
                 var params: JSON = ["forkSessionId": JSON(forkID)]
                 if let point {
                     params["atMessageId"] = JSON(point)
@@ -215,12 +234,47 @@ final class ForkPerformanceTests: XCTestCase {
                 let result = try await measure(label, attempt: attempt) { try await host.command("session.fork", sessionID: "long", params: params) }
                 print(String(format: "PERFDISK run=%d phase=%@ kb=%lld", attempt, label, free - Self.freeKB()))
                 XCTAssertEqual(result["accepted"].flag, true)
+                if let loaded = await host.loadedSession(forkID) {
+                    try await measure("\(label)-fill", attempt: attempt) { while await loaded.partialHistory { try await Task.sleep(nanoseconds: 5_000_000) } }
+                }
                 _ = try await measure("\(label)-parent-older", attempt: attempt) { try await host.command("session.history", sessionID: "long", params: ["version": 2, "around": JSON(oldest)]) }
                 if point == nil || oldest != point {
                     _ = try await measure("\(label)-fork-older", attempt: attempt) {
                         try? await host.command("session.history", sessionID: JSON(forkID).text!, params: ["version": 2, "around": JSON(oldest)])
                     }
                 }
+                await host.shutdown()
+                if let file = result["path"].text { for suffix in ["", ".lock", ".meta"] { try? FileManager.default.removeItem(atPath: file + suffix) } }
+            }
+            // A send from a fork just made, while it loads its older rows, and
+            // one from a fork that holds every row: from `turn.submit` to the
+            // request's arrival at the gateway (its request line and headers).
+            for mode in ["send-during-fill", "send-after-fill"] {
+                let host = NativeHostService(emit: { _ in })
+                _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(directory.path), "resources": ["codexHome": JSON(root.appendingPathComponent("codex").path)]])
+                _ = try await host.command("session.open", sessionID: "long", params: ["profile": gatewayProfile, "apiKey": "fixture", "path": JSON(path)])
+                let forkID = (mode == "send-during-fill" ? "sd" : "sa") + "\(attempt)"
+                let result = try await host.command("session.fork", sessionID: "long", params: ["forkSessionId": JSON(forkID)])
+                let session = await host.loadedSession(forkID)
+                let loaded = try XCTUnwrap(session)
+                let filling = await loaded.partialHistory
+                if mode == "send-after-fill" { while await loaded.partialHistory { try await Task.sleep(nanoseconds: 5_000_000) } }
+                let arrived = try gatewayArrivals().count
+                let sent = Date().timeIntervalSince1970
+                _ = try await host.command("turn.submit", sessionID: forkID, params: ["clientTurnId": JSON("\(mode)-\(attempt)"), "text": "a question for the fork"])
+                var at: Double?
+                for _ in 0..<20000 { if let last = try gatewayArrivals().dropFirst(arrived).first { at = last; break }; try await Task.sleep(nanoseconds: 1_000_000) }
+                if at == nil {
+                    let state = await loaded.snapshot()
+                    print("PERFNOTE no request: state=\(state["state"]) error=\(state["errorMessage"]) code=\(state["errorCode"]) run=\(state["runStatus"]) queue=\(state["queueCount"])")
+                }
+                let latency = try XCTUnwrap(at) - sent
+                let stillFilling = await loaded.partialHistory
+                let load = Self.loadAverage()
+                print(String(format: "PERFROW run=%d phase=%@ wall_ms=%.1f cpu_ms=0 load=%.2f cores=%d", attempt, mode, latency * 1000, load.average, load.cores))
+                print("PERFNOTE \(mode) fork partial at send: \(filling), still loading at arrival: \(stillFilling)")
+                try await eventually(timeout: .seconds(120)) { !(await loaded.isRunning) }
+                while await loaded.partialHistory { try await Task.sleep(nanoseconds: 5_000_000) }
                 await host.shutdown()
                 if let file = result["path"].text { for suffix in ["", ".lock", ".meta"] { try? FileManager.default.removeItem(atPath: file + suffix) } }
             }
@@ -235,6 +289,33 @@ final class ForkPerformanceTests: XCTestCase {
 }
 
 extension ForkPerformanceTests {
+    /// A gateway that answers every request with a finished reply, and
+    /// writes down when each request's line and headers arrived.
+    static let arrivalGateway = #"""
+import http.server, json, pathlib, sys, threading, time
+root = pathlib.Path(sys.argv[1])
+lock = threading.Lock()
+count = [0]
+class Gateway(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    def log_message(self, *args): pass
+    def do_POST(self):
+        arrived = time.time()
+        raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        with lock:
+            count[0] += 1; n = count[0]
+            with (root / 'arrivals.txt').open('a') as log: log.write('%.6f\n' % arrived)
+        body = json.loads(raw)
+        response = json.dumps({'id': 'resp-%d' % n, 'object': 'response', 'status': 'completed', 'model': body.get('model', 'fixture-model'),
+            'output': [{'id': 'msg-%d' % n, 'type': 'message', 'role': 'assistant', 'status': 'completed',
+                        'content': [{'type': 'output_text', 'text': 'Answer %d' % n}]}],
+            'usage': {'input_tokens': 100, 'output_tokens': 10, 'total_tokens': 110}}, separators=(',', ':')).encode()
+        self.send_response(200); self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(response))); self.end_headers(); self.wfile.write(response)
+server = http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[2]) if len(sys.argv) > 2 else 0), Gateway)
+(root / 'ready.tmp').write_text(json.dumps({'port': server.server_port})); (root / 'ready.tmp').replace(root / 'ready.json')
+server.serve_forever()
+"""#
     /// The volume's free space, in KiB, for the disk a fork takes.
     static func freeKB() -> Int64 {
         var info = statfs()

@@ -63,7 +63,7 @@ extension AgentSession {
     /// The fork is then copied, as before.
     private func clonedFork(to newID: String, journal: SessionJournal, at messageID: String?) -> (result: JSON, replay: JournalReplayConsumer)? {
         guard runTask == nil, !journaledCommandsUncertain, (try? identity(JSON(newID))) != nil, newID != id,
-              var replay = try? durableReplay() else { return nil }
+              var replay = try? forkBase() else { return nil }
         var origin=sideSeed().info.removing(["parentToolMode","cacheSessionId"]); origin["relationship"]="fork"
         origin["omittedIncompleteEntries"]=JSON(max(0,context.count-boundary.count))
         var contextIDs=boundary.map(\.id), through: (bytes: UInt64, lastID: String)?
@@ -120,7 +120,7 @@ extension AgentSession {
     /// its errors.
     private func replyPoint(_ messageID: String, journal: SessionJournal, chat: JournalReplayConsumer) throws
         -> (through: (bytes: UInt64, lastID: String), replay: JournalReplayConsumer, context: [String])? {
-        guard let span=chat.r.rowSpans[messageID] ?? olderIndex?.span(of: messageID), span.kind == .message else { return nil }
+        guard let span=chat.r.rowSpans[messageID] ?? rowSpans[messageID] ?? olderIndex?.span(of: messageID), span.kind == .message else { return nil }
         let reader=try JournalRecordReader(journal.url, expectedBytes: journal.size, startingAt: span.offset)
         guard let line=try reader.nextLine(), line.count == span.length else { return nil }
         let record=try JSON.parse(line)
@@ -143,16 +143,16 @@ extension AgentSession {
         // reply when both replays set the context at its record: after it
         // come only messages, each shown, and in the context if a request
         // sends it. Otherwise it is rebuilt from the start.
-        var seed=try chat.finished().captured ?? chat.r.resumedFrom
+        var seed=try chat.capturedCheckpoint() ?? chat.r.resumedFrom
         if let checkpoint=seed, checkpoint.start > span.offset || !Self.bothReplaysSetTheContext(at: checkpoint, in: journal.url) { seed=nil }
         var context=seed?.context ?? [], shown=seed?.rows.map(\.id) ?? [], pure: ConversationReplay?=seed == nil ? try ConversationReplay() : nil
-        // A chat opened from its metadata file gives a fork opened from its
-        // own, rebuilt from that checkpoint; one opened whole gives a fork
-        // opened whole, rebuilt from the start.
+        // Rebuilt from that checkpoint, the fork opens from its own metadata
+        // file, fast, and loads its older rows after (`startHistoryFill`);
+        // without one, it is rebuilt from the start and opens whole.
         let from: UInt64
-        if chat.r.resumed, let checkpoint=seed, let loaded=Self.loadCheckpoint(checkpoint, url: journal.url) {
+        if let checkpoint=seed, let loaded=Self.loadCheckpoint(checkpoint, url: journal.url) {
             replay.resume(from: checkpoint, loaded: loaded); from=checkpoint.start
-        } else if !chat.r.resumed || pure != nil { from=0 }
+        } else if pure != nil { from=0 }
         else { return nil }
         let records=try from == 0 ? journal.recordReader() : JournalRecordReader(journal.url, expectedBytes: journal.size, startingAt: from)
         if from == 0 { replay.starts(at: records.completeBytes) }

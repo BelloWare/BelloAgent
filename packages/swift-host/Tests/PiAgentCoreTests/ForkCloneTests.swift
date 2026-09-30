@@ -504,8 +504,10 @@ final class ForkCloneTests: XCTestCase {
     }
 
     /// A chat opened whole, with a compaction before the reply: the fork from
-    /// the reply is rebuilt from the start and opens whole, as a copy's does.
-    func testAForkFromAReplyOfAChatOpenedWholeOpensWhole() async throws {
+    /// the reply is rebuilt from that checkpoint, as copies of it are, and
+    /// opens with its latest rows, fast; then it loads the rest in the
+    /// background (`startHistoryFill`) and is the fork its whole journal is.
+    func testAForkFromAReplyOfAChatOpenedWholeOpensFastThenLoadsTheRest() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let path = try await source(chat)
         JournalCheckpoint.remove(for: URL(fileURLWithPath: path))
@@ -519,14 +521,16 @@ final class ForkCloneTests: XCTestCase {
         await parent.close()
         let clonePath = try XCTUnwrap(clone["path"].text)
         try assertLikeTheCopy(chat, clone: ("fork-w", clonePath), copy: ("a-copied-fork-of-a-whole-chat", try XCTUnwrap(copy["path"].text)), "opened whole")
-        XCTAssertFalse(replay.r.resumed)
-        let fork = try chat.session("fork-w", resume: clonePath, prepared: replay)
-        let forkPartial = await fork.partialHistory
-        XCTAssertFalse(forkPartial, "the host opens it whole")
+        XCTAssertTrue(replay.r.resumed, "rebuilt from the checkpoint")
         let read = try fullReplay(chat, id: "fork-w", path: clonePath)
         XCTAssertEqual(JournalCheckpoint.read(for: URL(fileURLWithPath: clonePath)), read.captured, "its metadata file is its replay's")
+        let fork = try chat.session("fork-w", resume: clonePath, prepared: replay)
+        let forkPartial = await fork.partialHistory
+        XCTAssertTrue(forkPartial, "opens with its latest rows")
+        await fork.startHistoryFill()
+        try await eventually(timeout: .seconds(30)) { !(await fork.partialHistory) }
         let rows = await fork.visible.map(\.id)
-        XCTAssertEqual(rows, read.visible.map(\.id))
+        XCTAssertEqual(rows, read.visible.map(\.id), "then every row")
         await fork.close()
     }
 

@@ -293,6 +293,8 @@ extension AgentSession {
         // accepted messages can sit idle forever. Failed/stopped work stays
         // paused and still requires an explicit Resume.
         if !closed, !queuePaused, state == .idle, !queue.isEmpty || !steering.isEmpty { launch() }
+        // A background load of older rows waits for the chat to be idle.
+        adoptHistoryFillIfIdle()
         if keepRequested && ephemeral && isIdle { do { _ = try keepNow() } catch { errorMessage="Could not keep side; in-memory content is intact"; event("side.keep-failed") } }
     }
 }
